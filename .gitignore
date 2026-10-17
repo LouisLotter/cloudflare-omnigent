@@ -1,0 +1,27 @@
+# Secrets and local configuration
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Node and Wrangler
+node_modules/
+.wrangler/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+*.egg-info/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
