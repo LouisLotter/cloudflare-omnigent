@@ -1,0 +1,49 @@
+Spike S2, local plumbing checks on the owner's laptop, 2026-10-18 (UTC). Not pass/fail
+evidence: they check the scripts before staging. Raw lines as printed, timestamps in UTC ms.
+The admin password used locally was a synthetic local value.
+
+== 1. wrangler dev (Wrangler 4.149.0, Docker 29.7.2) with spikes/s2/wrangler.jsonc ==
+Worker log:
+{"s2":"computer-wake","build":"local","t":1792333828392,"running":false,"reregister":true}
+{"s2":"server-wake","build":"local","t":1792333828676,"running":false,"reregister":true}
+{"s2":"server-start","build":"local","t":1792333833517}
+{"s2":"intercept","build":"local","t":1792333833530,"host":"omnigent.internal","generation":1,"ms":6}
+{"s2":"computer-start","build":"local","t":1792333834491,"generation":1}
+Computer container stdout:
+S2 {"k":"dns-config","ct":1792333834764,"boot":"3f2a2f02","gen":"1","phase":"boot","nameservers":["1.1.1.1","8.8.8.8"],"options":["search home"],"hostsInternal":["172.17.0.1\thost.docker.internal"]}
+S2 {"k":"dns","ct":1792333834793,"boot":"3f2a2f02","gen":"1","phase":"boot","name":"omnigent.internal","a":{"ok":true,"addrs":["11.0.0.1"],"ms":17},"aaaa":{"ok":true,"addrs":["fd00::1"],"ms":12}}
+S2 {"k":"echo-fail","ct":1792333844811,"boot":"3f2a2f02","gen":"1","failures":1,"error":"TimeoutError: timed out during handshake"}
+Interception sidecar (cloudflare/proxy-everything:3cb1195), repeated:
+2026/10/18 14:33:13 error: connecting to origin: dialing gateway: dial tcp 172.17.0.1:35185: connect: connection timed out
+Reading: locally the intercepted name resolves to placeholder addresses (11.0.0.1, fd00::1),
+registered before start. The sidecar could not reach workerd's egress gateway on the Docker
+host (the laptop's firewall drops bridge-to-host connections), and the next public lookup
+(example.com) hung, so the local route could not be exercised. Not pursued: the deployed
+platform is what the spike measures, and the firewall is not this spike's to change.
+
+== 2. Omnigent host and conversation, plain Docker network, no Worker ==
+Server: ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ec…, DATABASE_URL=sqlite.
+Computer: spikes/s2/computer image, S2_SERVER_URL=http://omnigent.internal:8000 (a Docker
+network alias for the server). Run A (host …0101), turns every 15 s:
+S2 {"k":"host-files","ct":1792334478318,"hostId":"0f0e0d0c0b0a49088706050403020101","refresh":true,"expiresIn":28800}
+S2 {"k":"host-hello","ct":1792334481817,"host":"0f0e0d0c0b0a49088706050403020101","runners":"0"}
+S2 {"k":"conv-created","ct":1792334483539,"session":"0244fd50595247649f5f1a9a35dca9e2","agent":"e95444c6e5c24e6aa596067f808d1c57"}
+S2 {"k":"runner-up","ct":1792334484356,"runner":"runner_token_ec9ef83a5e439b7164ebbf486d04c94d"}
+S2 {"k":"conv-turn","ct":1792334487102,"n":1,"ok":true,"ms":3562,"replyMs":2043,"assistantItems":1,"items":2}
+S2 {"k":"server-view","ct":1792334488559,"host":true,"runner":true}
+Run B (host …0102, turns every 60 s, turn 1 succeeded first); the server container was
+restarted (docker restart -t 2, same database file):
+S2 {"k":"host-down","ct":1792334662289,"logTime":"WARN  10-18 14:44:21.906","detail":": [Errno 111] Connect call failed ('172.27.0.2', 8000). Reconnecting in 1.3s"}
+S2 {"k":"runner-down","ct":1792334663290,"logTime":"INFO  10-18 14:44:22.382","detail":"[Errno 111] Connect call failed ('172.27.0.2', 8000); retrying in 0.72s (jitter…"}
+S2 {"k":"host-down","ct":1792334666296,"logTime":"WARN  10-18 14:44:26.249","detail":": [Errno 111] Connect call failed ('172.27.0.2', 8000). Reconnecting in 3.0s"}
+S2 {"k":"host-hello","ct":1792334669258,"host":"0f0e0d0c0b0a49088706050403020102","runners":"1"}
+S2 {"k":"server-view","ct":1792334671444,"host":true,"runner":true}
+S2 {"k":"runner-up","ct":1792334672305,"logTime":"INFO  10-18 14:44:32.014","runner":"runner_token_a01186dac652491c38987dec85dbc774"}
+S2 {"k":"conv-turn","ct":1792334673085,"n":2,"ok":true,"trigger":"reconnect","ms":3827,"replyMs":1027,"assistantItems":2,"items":4}
+Reading: the scripted login, host identity, mock LLM, host-bound conversation, runner tunnel,
+log parsing and the reconnect-triggered turn all work. The host was back about 7.4 s after
+the first refused connect (the server took about 7 s to start again), and the same
+conversation answered its next turn 3.8 s after the hello.
+In run A, an 8 s network detach of the server (docker network disconnect, no reset) did not
+drop the host tunnel at all: the WebSocket keepalive (30 s interval, 90 s timeout) rode it
+out. One conversation request in flight failed (RemoteProtocolError) and the next succeeded.

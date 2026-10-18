@@ -1,0 +1,10 @@
+checked at 2026-10-18T15:59:28Z
+worker cfo-stg-s2-route: absent ([10007] 404)
+container application cfo-stg-s2-route-server: 0 found (exit 0)
+container application cfo-stg-s2-route-computer: 0 found (exit 0)
+registry images for cfo-stg-s2-route-server: 0 references (exit 0)
+registry images for cfo-stg-s2-route-computer: 0 references (exit 0)
+Access applications on cfo-stg-s2-route.<zone>: 0 (exit 0)
+staging registry record for cfo-stg-s2-route: absent
+https://cfo-stg-s2-route.<zone>/s2/status: URLError
+registry listing sanity check: the same listing returned 5 repositories, all of other spikes (cfo-stg-s1-*, cfo-stg-s6-*, cfo-stg-s7-*); none named cfo-stg-s2-*
