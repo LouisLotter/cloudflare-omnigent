@@ -2,13 +2,14 @@
   "what": "S6 staging deployment for the owner session (no real accounts used yet)",
   "command": "pnpm stg deploy --suffix s6-creds --owner S6 --config spikes/s6/staging/wrangler.jsonc --days 2",
   "deploys": [
-    { "at": "2026-10-18T15:14Z", "revision": "cbdeb69 (before the review fixes)" },
+    { "at": "2026-10-18T15:14Z", "revision": "cbdeb69 (before review run 1's fixes)" },
+    { "at": "2026-10-18T15:50Z", "revision": "50ea7f2 (review run 1's fixes)" },
     {
-      "at": "2026-10-18T15:50Z",
-      "revision": "the review-fix commit; new Worker version and new image"
+      "at": "2026-10-18T16:14Z",
+      "revision": "a6aee54 (review run 2's fixes); new Worker version and new image"
     }
   ],
-  "expires_at": "2026-10-20T15:50:28Z",
+  "expires_at": "2026-10-20T16:14:40Z",
   "resources": [
     { "name": "cfo-stg-s6-creds", "type": "Worker with Durable Object class S6Computer" },
     { "name": "cfo-stg-s6-creds-pc", "type": "container application, max_instances 1, standard-1" },
@@ -17,7 +18,7 @@
       "type": "owner-only Access application on cfo-stg-s6-creds.<zone>"
     }
   ],
-  "unauthenticated_requests_after_redeploy": {
+  "unauthenticated_requests_after_last_deploy": {
     "GET /": "302 to the Access login",
     "GET /api/state": "302 to the Access login",
     "GET /term/": "302 to the Access login",

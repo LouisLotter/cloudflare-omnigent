@@ -1,6 +1,6 @@
 {
   "label": "A after refresh",
-  "at": "2026-10-18T15:44:02.982+00:00",
+  "at": "2026-10-18T16:10:21.721+00:00",
   "home": "~",
   "files": [
     {
@@ -10,9 +10,9 @@
       "mode": "0600",
       "size": 264,
       "uid": 0,
-      "inode": 3907468,
+      "inode": 8878828,
       "nlink": 1,
-      "mtime": "2026-10-18T15:44:01.219+00:00",
+      "mtime": "2026-10-18T16:10:14.910+00:00",
       "parse": "json",
       "keys": [
         {
@@ -32,7 +32,7 @@
         {
           "key": "claudeAiOauth.expiresAt",
           "type": "int",
-          "value": 1792341841218
+          "value": 1792343414910
         },
         {
           "key": "claudeAiOauth.refreshToken",
@@ -68,9 +68,9 @@
       "mode": "0600",
       "size": 370,
       "uid": 0,
-      "inode": 3886018,
+      "inode": 8878816,
       "nlink": 1,
-      "mtime": "2026-10-18T15:44:01.280+00:00",
+      "mtime": "2026-10-18T16:10:14.967+00:00",
       "parse": "json",
       "keys": [
         {
@@ -89,7 +89,7 @@
         {
           "key": "last_refresh",
           "type": "str",
-          "value": "2026-10-18T15:44:01.000000Z"
+          "value": "2026-10-18T16:10:14.000000Z"
         },
         {
           "key": "tokens",
@@ -115,12 +115,7 @@
       ],
       "inode_changed": false,
       "file_changed": true,
-      "changed_keys": [
-        "last_refresh",
-        "tokens.access_token",
-        "tokens.id_token",
-        "tokens.refresh_token"
-      ],
+      "changed_keys": ["tokens.access_token", "tokens.id_token", "tokens.refresh_token"],
       "removed_keys": []
     },
     {
@@ -134,9 +129,9 @@
       "mode": "0600",
       "size": 92,
       "uid": 0,
-      "inode": 3884882,
+      "inode": 8878814,
       "nlink": 1,
-      "mtime": "2026-10-18T15:43:59.400+00:00",
+      "mtime": "2026-10-18T16:10:14.047+00:00",
       "parse": "json",
       "keys": [
         {
@@ -174,9 +169,9 @@
       "mode": "0700",
       "size": 34,
       "uid": 0,
-      "inode": 3884875,
+      "inode": 8878812,
       "nlink": 1,
-      "mtime": "2026-10-18T15:44:01.219+00:00"
+      "mtime": "2026-10-18T16:10:14.910+00:00"
     },
     {
       "path": ".codex",
@@ -185,9 +180,9 @@
       "mode": "0755",
       "size": 18,
       "uid": 0,
-      "inode": 3886016,
+      "inode": 8878815,
       "nlink": 1,
-      "mtime": "2026-10-18T15:43:59.461+00:00"
+      "mtime": "2026-10-18T16:10:14.100+00:00"
     }
   ],
   "inventory": [
