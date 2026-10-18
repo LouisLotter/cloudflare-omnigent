@@ -1,0 +1,28 @@
+{
+  "started": "20261018T161017Z",
+  "steps": [
+    {
+      "argv": [
+        "restore",
+        "--sizes",
+        "10",
+        "100",
+        "1000",
+        "--wan",
+        "40",
+        "50000"
+      ],
+      "exit": 1,
+      "seconds": 198.8,
+      "step": 19
+    },
+    {
+      "argv": [
+        "window"
+      ],
+      "exit": 0,
+      "seconds": 162.9,
+      "step": 20
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+# S4 spike: Omnigent server + Litestream, replicating through Toxiproxy to
+# MinIO (a local S3 stand-in for R2). Local only. Secrets are generated at
+# run time by scripts/s4.py into .run/s4.env, which is not committed.
+#
+# The server has no volume: its disk is ephemeral, as on Cloudflare
+# Containers. Replacing the container restores the database from MinIO.
+name: cfo-s4
+
+services:
+  minio:
+    # Community build of MinIO (official images are no longer published).
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: ["server", "/data", "--address", ":9000"]
+    environment:
+      MINIO_ROOT_USER: ${S4_MINIO_USER:?run scripts/s4.py}
+      MINIO_ROOT_PASSWORD: ${S4_MINIO_PASSWORD:?run scripts/s4.py}
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "127.0.0.1:19000:9000"
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    ports:
+      - "127.0.0.1:18474:8474"
+
+  server:
+    build:
+      context: ./server
+      args:
+        OMNIGENT_IMAGE: cfo-s4/omnigent-server:90a9bed9a
+    image: cfo-s4/server:dev
+    depends_on: [toxiproxy, minio]
+    stop_grace_period: ${S4_STOP_GRACE:-60s}
+    environment:
+      OMNIGENT_AUTH_PROVIDER: accounts
+      OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: ${S4_ADMIN_USER:?run scripts/s4.py}
+      OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: ${S4_ADMIN_PASSWORD:?run scripts/s4.py}
+      OMNIGENT_ACCOUNTS_COOKIE_SECRET: ${S4_COOKIE_SECRET:?run scripts/s4.py}
+      OMNIGENT_ACCOUNTS_BASE_URL: http://s4-server.invalid
+      OMNIGENT_ACCOUNTS_AUTO_OPEN: "0"
+      LITESTREAM_ACCESS_KEY_ID: ${S4_MINIO_USER}
+      LITESTREAM_SECRET_ACCESS_KEY: ${S4_MINIO_PASSWORD}
+      S4_BUCKET: s4-replica
+      S4_S3_ENDPOINT: http://toxiproxy:9000
+      S4_REPLICA_PATH: ${S4_REPLICA_PATH:-omnigent}
+      S4_SYNC_INTERVAL: ${S4_SYNC_INTERVAL:-1s}
+      S4_SHUTDOWN_SYNC_TIMEOUT: ${S4_SHUTDOWN_SYNC_TIMEOUT:-30s}
+      S4_LITESTREAM_LOG_LEVEL: ${S4_LITESTREAM_LOG_LEVEL:-info}
+      S4_BARRIER_MODE: ${S4_BARRIER_MODE:-response}
+      S4_BARRIER_TIMEOUT_S: ${S4_BARRIER_TIMEOUT_S:-5}
+      S4_BARRIER_POLL_S: ${S4_BARRIER_POLL_S:-0.1}
+      S4_APP_WAL_AUTOCHECKPOINT: ${S4_APP_WAL_AUTOCHECKPOINT:-}
+    ports:
+      - "127.0.0.1:18080:8000"

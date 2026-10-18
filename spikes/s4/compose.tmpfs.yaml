@@ -1,0 +1,6 @@
+# Optional overlay: put the server database on tmpfs (fsync is free), to
+# separate Litestream's own latency from the laptop disk's fsync latency.
+services:
+  server:
+    tmpfs:
+      - /data/db

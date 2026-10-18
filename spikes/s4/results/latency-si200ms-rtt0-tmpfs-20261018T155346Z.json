@@ -1,0 +1,48 @@
+{
+  "ack_ms": {
+    "max": 1218.5,
+    "p50": 113.6,
+    "p95": 816.9
+  },
+  "barrier_timeout_s": 15,
+  "barrier_wait_ms": {
+    "max": 1212.4,
+    "n": 40,
+    "p50": 106.6,
+    "p95": 810.8
+  },
+  "class_a_per_ack_est": 1.23,
+  "disk": "tmpfs",
+  "failed": [],
+  "idle_class_a_per_month_est": 518400,
+  "idle_requests": {
+    "by_api": {
+      "getobject": 2,
+      "listobjectsv2": 21,
+      "putobject": 3
+    },
+    "class_a": 24,
+    "class_b": 2
+  },
+  "idle_s": 120.0,
+  "litestream_sync_probe": {
+    "phase_max_elapsed_s": {
+      "sync/verify": 0.0
+    },
+    "slow": []
+  },
+  "n": 40,
+  "note": "MinIO counts every S3 call on the server, including the driver's own few; only Litestream talks to it during the idle and write phases.",
+  "ok": 40,
+  "rtt_ms": 0,
+  "scenario": "latency",
+  "sync_interval": "200ms",
+  "write_phase_requests": {
+    "by_api": {
+      "listobjectsv2": 19,
+      "putobject": 45
+    },
+    "class_a": 64,
+    "class_b": 0
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "barrier_timeout_s": 5.0,
+  "catch_up": {
+    "caught_up": true,
+    "elapsed_s": 19.286,
+    "path": "/data/db/omnigent.db",
+    "replicated_txid": 39,
+    "status": "no_change",
+    "target_txid": 39,
+    "txid": 39
+  },
+  "first_confirmed_after_health_s": 60.67,
+  "health_s": 24.041,
+  "litestream_restore": {
+    "events": [
+      "attempt",
+      "done"
+    ],
+    "restore_s": 17.391
+  },
+  "replica_bytes_after": 2140316054,
+  "replica_bytes_before_replace": 713547504,
+  "replica_path": "postrestore-1000mb-wan-20261018T163342Z",
+  "scenario": "postrestore",
+  "seed": {
+    "batches": 910,
+    "body_bytes": 931840000,
+    "db_bytes": 788525056,
+    "max_id": 227500,
+    "rows": 227500,
+    "seconds": 49.06,
+    "wal_bytes": 265455752
+  },
+  "size_mb": 1000,
+  "wan_profile": {
+    "rate_kBps": 50000,
+    "rtt_ms": 40
+  },
+  "writes_after_health": [
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5048.7,
+      "status": 424,
+      "t_after_health_s": 5.13
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5009.6,
+      "status": 424,
+      "t_after_health_s": 11.14
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5006.2,
+      "status": 424,
+      "t_after_health_s": 17.15
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5005.6,
+      "status": 424,
+      "t_after_health_s": 23.16
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5009.4,
+      "status": 424,
+      "t_after_health_s": 29.18
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5006.2,
+      "status": 424,
+      "t_after_health_s": 35.19
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5005.5,
+      "status": 424,
+      "t_after_health_s": 41.2
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5005.7,
+      "status": 424,
+      "t_after_health_s": 47.21
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5005.8,
+      "status": 424,
+      "t_after_health_s": 53.22
+    },
+    {
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "ms": 5005.5,
+      "status": 424,
+      "t_after_health_s": 59.23
+    },
+    {
+      "code": null,
+      "durability": "confirmed",
+      "ms": 214.5,
+      "status": 200,
+      "t_after_health_s": 60.46
+    }
+  ]
+}

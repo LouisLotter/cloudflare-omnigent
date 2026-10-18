@@ -1,0 +1,72 @@
+{
+  "block": "refuse",
+  "first_boot": {
+    "health_s": 6.838,
+    "healthy": true,
+    "up_cmd_s": 0.387
+  },
+  "replica_path": "sigterm-term-refuse-20261018T154155Z",
+  "runs": [
+    {
+      "ack": {
+        "code": null,
+        "durability": "not-checked",
+        "ms": 8.5,
+        "status": 200
+      },
+      "exit": 0,
+      "restart_health_s": 4.361,
+      "shutdown_log": [
+        "2026-10-18T15:42:32.374244883Z time=2026-10-18T15:42:32.374Z level=INFO msg=\"signal received, litestream shutting down\" signal=terminated",
+        "2026-10-18T15:42:32.374252387Z time=2026-10-18T15:42:32.374Z level=INFO msg=\"sending signal to exec process\"",
+        "2026-10-18T15:42:32.374257187Z time=2026-10-18T15:42:32.374Z level=INFO msg=\"waiting for exec process to close\"",
+        "2026-10-18T15:43:02.596306483Z time=2026-10-18T15:43:02.596Z level=ERROR msg=\"shutdown sync failed after timeout\" system=store db=omnigent.db attempts=1 duration=30.000934192s error=\"write ltx file: s3: put object sigterm-term-refuse-202610",
+        "2026-10-18T15:43:03.818221215Z time=2026-10-18T15:43:03.818Z level=ERROR msg=\"failed to close database\" error=\"shutdown sync timeout after 1 attempts: write ltx file: s3: put object sigterm-term-refuse-20261018T154155Z/0000/0000000000000006",
+        "2026-10-18T15:43:03.818243788Z time=2026-10-18T15:43:03.818Z level=INFO msg=\"litestream shut down\"",
+        "2026-10-18T15:42:32.473706307Z INFO  [omnigent.server.shutdown_state] Server shutdown marked; suppressing runner disconnect reconciliation for 150s",
+        "2026-10-18T15:42:32.473742426Z INFO:     Shutting down",
+        "2026-10-18T15:42:32.574191575Z INFO:     Waiting for application shutdown.",
+        "2026-10-18T15:42:32.574566541Z INFO:     Application shutdown complete.",
+        "2026-10-18T15:42:32.574603541Z INFO:     Finished server process [24]"
+      ],
+      "signal_done_after_ack_ms": 12.6,
+      "stop_s": 33.63,
+      "write_present_after_restore": false
+    },
+    {
+      "ack": {
+        "code": null,
+        "durability": "not-checked",
+        "ms": 8.9,
+        "status": 200
+      },
+      "exit": 0,
+      "restart_health_s": 5.468,
+      "shutdown_log": [
+        "2026-10-18T15:43:12.671824366Z time=2026-10-18T15:43:12.671Z level=INFO msg=\"signal received, litestream shutting down\" signal=terminated",
+        "2026-10-18T15:43:12.671843051Z time=2026-10-18T15:43:12.671Z level=INFO msg=\"sending signal to exec process\"",
+        "2026-10-18T15:43:12.671849794Z time=2026-10-18T15:43:12.671Z level=INFO msg=\"waiting for exec process to close\"",
+        "2026-10-18T15:43:42.804333848Z time=2026-10-18T15:43:42.804Z level=ERROR msg=\"shutdown sync failed after timeout\" system=store db=omnigent.db attempts=1 duration=30.000708978s error=\"write ltx file: s3: put object sigterm-term-refuse-202610",
+        "2026-10-18T15:43:44.630495654Z time=2026-10-18T15:43:44.630Z level=ERROR msg=\"failed to close database\" error=\"shutdown sync timeout after 1 attempts: write ltx file: s3: put object sigterm-term-refuse-20261018T154155Z/0000/0000000000000006",
+        "2026-10-18T15:43:44.630512015Z time=2026-10-18T15:43:44.630Z level=INFO msg=\"litestream shut down\"",
+        "2026-10-18T15:43:12.689345225Z INFO:omnigent.server.shutdown_state:Server shutdown marked; suppressing runner disconnect reconciliation for 150s",
+        "2026-10-18T15:43:12.689399749Z INFO:     Shutting down",
+        "2026-10-18T15:43:12.789755291Z INFO:     Waiting for application shutdown.",
+        "2026-10-18T15:43:12.790221692Z INFO:     Application shutdown complete.",
+        "2026-10-18T15:43:12.790255626Z INFO:     Finished server process [26]"
+      ],
+      "signal_done_after_ack_ms": 17.4,
+      "stop_s": 32.18,
+      "write_present_after_restore": false
+    }
+  ],
+  "scenario": "sigterm",
+  "shutdown_sync_timeout": "30s",
+  "signal": "TERM",
+  "summary": {
+    "present": 0,
+    "runs": 2,
+    "stop_s_max": 33.63
+  },
+  "sync_interval": "30s"
+}

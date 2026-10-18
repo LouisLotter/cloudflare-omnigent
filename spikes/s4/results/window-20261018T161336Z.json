@@ -1,0 +1,123 @@
+{
+  "replica_path": "window-20261018T161336Z",
+  "runs": [
+    {
+      "ack": 200,
+      "delay_s": 0.0,
+      "kill_returned_after_ack_ms": 1637.0,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.25,
+      "kill_returned_after_ack_ms": 1523.6,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.5,
+      "kill_returned_after_ack_ms": 1705.8,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.0,
+      "kill_returned_after_ack_ms": 4417.6,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.5,
+      "kill_returned_after_ack_ms": 1818.1,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 2.5,
+      "kill_returned_after_ack_ms": 2765.5,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.0,
+      "kill_returned_after_ack_ms": 252.7,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.25,
+      "kill_returned_after_ack_ms": 513.3,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.5,
+      "kill_returned_after_ack_ms": 748.8,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.0,
+      "kill_returned_after_ack_ms": 2061.5,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.5,
+      "kill_returned_after_ack_ms": 2734.1,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 2.5,
+      "kill_returned_after_ack_ms": 2812.4,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.0,
+      "kill_returned_after_ack_ms": 1596.3,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.25,
+      "kill_returned_after_ack_ms": 530.1,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 0.5,
+      "kill_returned_after_ack_ms": 969.4,
+      "survived": false
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.0,
+      "kill_returned_after_ack_ms": 1311.9,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 1.5,
+      "kill_returned_after_ack_ms": 1796.8,
+      "survived": true
+    },
+    {
+      "ack": 200,
+      "delay_s": 2.5,
+      "kill_returned_after_ack_ms": 2816.8,
+      "survived": true
+    }
+  ],
+  "scenario": "window",
+  "survival_by_delay_s": {
+    "0.0": "0/3",
+    "0.25": "0/3",
+    "0.5": "0/3",
+    "1.0": "2/3",
+    "1.5": "3/3",
+    "2.5": "3/3"
+  },
+  "sync_interval": "1s"
+}
