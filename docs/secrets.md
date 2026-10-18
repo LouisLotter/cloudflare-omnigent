@@ -4,7 +4,7 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 
 ## Rules
 
-- [ ] No secret, login file, account ID or personal email address is committed. Local state that identifies the owner lives in gitignored files only: `.staging/`, `.env*`, `.dev.vars*`.
+- [ ] No secret, login file, account ID or personal email address is committed. Local state that identifies the owner lives outside the repository (the staging directory below) or in gitignored files (`.env*`, `.dev.vars*`).
 - [ ] Worker secrets are set with `wrangler secret put` from the owner's laptop, never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
 - [ ] CI holds no secrets. It runs on `pull_request` with a read-only token and no persisted checkout credentials, so code from a fork gets nothing.
 - [ ] Staging uses staging-only values. Deleting a staging Worker deletes its secrets with it.
@@ -20,8 +20,8 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 | Wrangler login | Deploy staging Workers | `~/.config/.wrangler/config/`, mode 600 | `wrangler logout` |
 | `cf` CLI login | Access applications, account checks, Worker lookups | `~/.config/cloudflare/config/`, mode 600 | `cf auth logout` |
 | GitHub CLI login | Pushes and pull requests | `~/.config/gh/`, mode 600 | `gh auth logout` |
-| Staging configuration | Account ID, zone, owner email, identity provider ID. Identifying rather than secret | `.staging/config.json`, mode 600, gitignored | Delete the file |
-| Staging registry | Which `cfo-stg-` deployments exist, with owners and expiries | `.staging/resources.json`, mode 600, gitignored | `stg.ts teardown` or `sweep` |
+| Staging configuration | Account ID, zone, owner email, identity provider ID. Identifying rather than secret | `~/.config/cloudflare-omnigent/staging/config.json` (or `$CFO_STAGING_DIR`), mode 600, outside the repository and shared by every worktree | Delete the file |
+| Staging registry and locks | Which `cfo-stg-` deployments exist, with owners and expiries; the locks that keep staging commands from overlapping | `resources.json` and `locks/` in the same directory, mode 600 | `stg.ts teardown` or `sweep` |
 | Real Claude and ChatGPT logins | Recorded real-account runs in spikes S6 and later | Only inside the staging computer under test | Sign out after each run, and check |
 
 ## In an installation (from M2 on)

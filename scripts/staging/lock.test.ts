@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { fileStore } from "./cloud.ts";
-import { acquireLock } from "./lock.ts";
+import { acquireLock, heldLockFds, sleepSync } from "./lock.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "cfo-stg-lock-"));
@@ -77,6 +77,23 @@ describe("staging locks", () => {
     release(); // releasing twice is harmless
     expect(free(file)).toBe(true);
     acquireLock(file, 0, "again")();
+  });
+
+  it("fails closed, naming flock, when flock(1) is missing", () => {
+    const path = process.env.PATH;
+    process.env.PATH = join(scratch, "no-such-bin");
+    try {
+      expect(() => acquireLock(join(scratch, "noflock.lock"), 0, "test")).toThrow("flock(1)");
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(heldLockFds()).toEqual([]);
+  });
+
+  it("sleeps synchronously for the settle wait", () => {
+    const start = performance.now();
+    sleepSync(40);
+    expect(performance.now() - start).toBeGreaterThanOrEqual(35);
   });
 
   it("is released when the holding process is killed", async () => {
