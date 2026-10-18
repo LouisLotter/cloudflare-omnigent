@@ -164,18 +164,20 @@ class FakeCloud implements Cloud {
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
     // Wrangler binds the declared buckets, creating any that is missing, and creates the
     // container applications and images, before the upload's outcome is known.
-    const raw = views[configPath]?.raw ?? {};
-    for (const bucket of declaredResources(raw).buckets) {
+    const declared = declaredResources(views[configPath]?.raw ?? {}, name);
+    for (const bucket of declared.buckets) {
       if (!this.buckets.has(bucket)) {
         this.violations.push(`Wrangler had to provision ${bucket}`);
         this.buckets.add(bucket);
       }
     }
-    for (const container of declaredResources(raw).containers) {
+    for (const container of declared.containers) {
       if (![...this.containerApps_.values()].includes(container)) {
         this.containerApps_.set(`ca-${this.nextAppId++}`, container);
       }
-      this.images.add(`${container}:${this.nextTag++}`);
+    }
+    for (const repository of declared.repositories) {
+      this.images.add(`${repository}:wrangler-${this.nextTag++}`);
     }
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
@@ -236,10 +238,14 @@ class FakeCloud implements Cloud {
   unrecorded(deployments: readonly Deployment[]): string[] {
     const containers = new Set(deployments.flatMap((d) => d.containers ?? []));
     const buckets = new Set(deployments.flatMap((d) => d.buckets ?? []));
+    const repositories = new Set([
+      ...containers,
+      ...deployments.flatMap((d) => d.repositories ?? []),
+    ]);
     return [
       ...[...this.buckets].filter((b) => !buckets.has(b)),
       ...[...this.containerApps_.values()].filter((c) => !containers.has(c)),
-      ...[...this.images].filter((i) => !containers.has(i.slice(0, i.lastIndexOf(":")))),
+      ...[...this.images].filter((i) => !repositories.has(i.slice(0, i.lastIndexOf(":")))),
     ];
   }
 }
@@ -782,6 +788,40 @@ describe("containers and buckets", () => {
     restart();
     teardown(ctx, "cfo-stg-a");
     expect(leftovers()).toBe(0);
+  });
+
+  it("removes every image a durable_object-policy container pushed, in its own repository", () => {
+    const path = "/w/policy-a.jsonc";
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "COMPUTER", class_name: "S1Computer" }] },
+        containers: [
+          {
+            name: "cfo-stg-a-computer",
+            class_name: "S1Computer",
+            scheduling_policy: "durable_object",
+            images: { computer: { dockerfile: "./computer/Dockerfile" } },
+          },
+        ],
+      },
+    };
+    deploy(ctx, request("a", 7, path));
+    deploy(ctx, request("a", 7, path)); // every deploy pushes a new tag
+    expect(record()?.repositories).toEqual(["cfo-stg-a-s1computer-computer"]);
+    expect(
+      [...cloud.images].filter((i) => i.startsWith("cfo-stg-a-s1computer-computer:")),
+    ).toHaveLength(2);
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+  });
+
+  it("refuses a repository that already has images this deployment did not push", () => {
+    cloud.images.add("cfo-stg-a-host:other");
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("did not push");
+    expect(store.load()).toEqual([]);
   });
 
   it("remembers the containers and buckets of earlier deploys", () => {

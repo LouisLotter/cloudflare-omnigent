@@ -101,6 +101,14 @@ function remove(ctx: Context, name: string): void {
   ctx.store.update((all) => all.filter((d) => d.name !== name));
 }
 
+/**
+ * The registry repositories a record owns: one per default-policy container, named after it,
+ * and the recorded ones, such as a `durable_object`-policy container's `<worker>-<class>-<image>`.
+ */
+function repositoriesOf(d: Deployment | undefined): string[] {
+  return [...new Set([...(d?.containers ?? []), ...(d?.repositories ?? [])])];
+}
+
 function locked<T>(ctx: Context, name: string, run: () => T): T {
   const release = ctx.lock(name);
   try {
@@ -117,7 +125,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
   // staging.
   const view = ctx.readConfig(request.configPath);
   validateDeployConfig(view, ctx.config.accountId, name);
-  const declared = declaredResources(view.raw);
+  const declared = declaredResources(view.raw, name);
   return locked(ctx, name, () => {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
@@ -151,6 +159,17 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         throw new Error(`R2 bucket ${bucket} exists but this deployment did not create it`);
       }
     }
+    const ownRepositories = repositoriesOf(existing);
+    for (const repository of declared.repositories) {
+      if (
+        !ownRepositories.includes(repository) &&
+        ctx.cloud.containerImages(repository).length > 0
+      ) {
+        throw new Error(
+          `registry repository ${repository} has images this deployment did not push`,
+        );
+      }
+    }
 
     // The record exists before anything is created, and one expiry covers every resource.
     // Containers and buckets accumulate across deploys, so none is ever forgotten.
@@ -163,15 +182,22 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       state: "pending",
       containers: union(existing?.containers, declared.containers),
       buckets: union(existing?.buckets, declared.buckets),
+      repositories: union(existing?.repositories, declared.repositories),
     };
     // Deployment names can nest (cfo-stg-a owns cfo-stg-a-x, and so does the deployment
     // cfo-stg-a-x), and their locks are separate, so the claim is checked and recorded in one
     // atomic registry update: no resource is ever recorded for two deployments.
     ctx.store.update((all) => {
-      const mine = [...(intent.containers ?? []), ...(intent.buckets ?? [])];
+      const claimed = (d: Deployment) => [
+        ...(d.containers ?? []),
+        ...(d.buckets ?? []),
+        ...(d.repositories ?? []),
+      ];
+      const mine = claimed(intent);
       for (const other of all) {
         if (other.name === name) continue;
-        const clash = mine.find((r) => other.containers?.includes(r) || other.buckets?.includes(r));
+        const theirs = claimed(other);
+        const clash = mine.find((r) => theirs.includes(r));
         if (clash) throw new Error(`${clash} is recorded for the deployment ${other.name}`);
       }
       return [...all.filter((d) => d.name !== name), intent];
@@ -265,10 +291,13 @@ export function teardown(
       if (ctx.cloud.containerApps(container).length > 0) {
         throw new Error(`${name}: container application ${container} still exists`);
       }
-      for (const image of ctx.cloud.containerImages(container))
+    }
+    for (const repository of repositoriesOf(record)) {
+      for (const image of ctx.cloud.containerImages(repository)) {
         ctx.cloud.deleteContainerImage(image);
-      if (ctx.cloud.containerImages(container).length > 0) {
-        throw new Error(`${name}: images of ${container} are still in the registry`);
+      }
+      if (ctx.cloud.containerImages(repository).length > 0) {
+        throw new Error(`${name}: images of ${repository} are still in the registry`);
       }
     }
     for (const bucket of record.buckets ?? []) {

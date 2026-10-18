@@ -286,6 +286,23 @@ describe("Wrangler's own reading of a configuration", () => {
     expect(() => check(write("foreign-bucket.json", foreign))).toThrow("bucket_name");
     const big = { ...own, containers: [{ ...own.containers[0], max_instances: 50 }] };
     expect(() => check(write("big-container.json", big))).toThrow("max_instances");
+    const policy = {
+      ...own,
+      containers: [
+        {
+          name: "cfo-stg-x-computer",
+          class_name: "Host",
+          scheduling_policy: "durable_object",
+          images: { computer: { dockerfile: "./Dockerfile" } },
+        },
+      ],
+    };
+    expect(() => check(write("policy.json", policy))).not.toThrow();
+    const sshPolicy = {
+      ...policy,
+      containers: [{ ...policy.containers[0], ssh: { enabled: true } }],
+    };
+    expect(() => check(write("policy-ssh.json", sshPolicy))).toThrow('"ssh"');
   });
 
   it("accepts the checked-in Worker configuration", () => {

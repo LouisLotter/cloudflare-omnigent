@@ -34,6 +34,11 @@ The lessons move into the design. The code here is not reused.
   - Every container's `name` and every bucket's `bucket_name` must be your deployment's name, `cfo-stg-<suffix>`, or start with `cfo-stg-<suffix>-`.
   - Each container needs `max_instances` between 1 and 3. Its `instance_type` must be `lite`, `basic`, `standard-1` or `standard-2`.
   - Only these container keys are allowed: `name`, `class_name`, `image`, `max_instances`, `instance_type`, `image_build_context` and `image_vars`. A bucket entry has only `binding` and `bucket_name`.
+  - **A `durable_object`-policy container** (`"scheduling_policy": "durable_object"`) uses only `name`, `class_name`, `scheduling_policy`, `images` and `observability` (logs on or off). Wrangler itself rejects `max_instances` for this policy, and the staging tool refuses `ssh`, `authorized_keys` and `unsafe`.
+    - Each entry of `images` is either `{dockerfile, build_context?, build_vars?}`, or `{image}` pinned by digest to a repository of your deployment in the staging account's registry.
+    - Wrangler pushes each image to the repository `<worker>-<class>-<image>`. The tool records that repository and deletes every tag in it on teardown.
+    - Instance size is chosen in code at each `start()`. Keep it small, and use one fixed Durable Object name so only one instance runs.
+    - Container snapshots cannot be listed or deleted through any API we found; they expire 30 days after creation or last restore. Record every snapshot ID you create, and list them in your evidence.
   - The tool records them before the deploy, creates the buckets itself, and on teardown removes the Worker, the container applications, their registry images and the buckets (emptied first), then Access.
   - A probe deployment is in `scripts/staging/probe/`.
   - **R2 is not yet enabled on the staging account.** The owner must enable it in the dashboard. Until then, use MinIO locally as an S3 stand-in for anything that needs R2, and ask the lead when you are ready for real R2.

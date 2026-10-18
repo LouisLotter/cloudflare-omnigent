@@ -45,6 +45,12 @@ export interface Deployment {
   readonly containers?: readonly string[];
   /** R2 buckets the deployment created, named like its containers. Teardown empties and deletes them. */
   readonly buckets?: readonly string[];
+  /**
+   * Registry repositories the deployment's containers push to, besides the ones named after a
+   * container (the default scheduling policy): a `durable_object`-policy container pushes to
+   * `<worker>-<class>-<image>`. Teardown deletes every tag in each.
+   */
+  readonly repositories?: readonly string[];
 }
 
 export interface StagingConfig {
@@ -174,7 +180,14 @@ export const ALLOWED_CONFIG_KEYS: readonly string[] = [
   "r2_buckets",
 ];
 
-/** Keys a container entry may use, and the instance types and count the staging budget allows. */
+/**
+ * Keys a container entry may use, and the instance types and count the staging budget allows.
+ * A `durable_object`-policy container has its own keys: Wrangler rejects `max_instances` and the
+ * image keys for it, and its images are a map. The staging tool leaves out `ssh`,
+ * `authorized_keys` and `unsafe`. Its instance size is chosen in code at each start, so the
+ * configuration cannot cap it; teardown and expiry bound its cost.
+ */
+const DO_CONTAINER_KEYS = ["name", "class_name", "scheduling_policy", "images", "observability"];
 const CONTAINER_KEYS = [
   "name",
   "class_name",
@@ -193,20 +206,58 @@ export const STAGING_INSTANCE_TYPES: readonly string[] = [
 export const STAGING_MAX_INSTANCES = 3;
 const RESOURCE_NAME = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/;
 
-/** The containers and R2 buckets a configuration declares, by name. */
-export function declaredResources(raw: Readonly<Record<string, unknown>>): {
-  containers: string[];
-  buckets: string[];
-} {
+/** A managed-registry image pinned by digest: registry.cloudflare.com/<account>/<repo>@sha256:… */
+const PINNED_IMAGE =
+  /^registry\.cloudflare\.com\/([0-9a-f]{32})\/([a-z0-9._-]+)@sha256:[0-9a-f]{64}$/;
+
+/** Wrangler's repository for a `durable_object`-policy image: `<worker>-<class>-<image>`, sanitised. */
+export function policyRepository(worker: string, className: string, image: string): string {
+  return `${worker}-${className}-${image}`
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function isPolicyContainer(entry: unknown): boolean {
+  return (entry as Record<string, unknown> | null)?.scheduling_policy === "durable_object";
+}
+
+/**
+ * The containers, R2 buckets and registry repositories a configuration declares, for the
+ * deployment `name`, which is also the Worker's name.
+ */
+export function declaredResources(
+  raw: Readonly<Record<string, unknown>>,
+  name: string,
+): { containers: string[]; buckets: string[]; repositories: string[] } {
   const list = (value: unknown, key: string): string[] =>
     Array.isArray(value)
       ? value
           .map((entry) => (entry as Record<string, unknown> | null)?.[key])
-          .filter((name): name is string => typeof name === "string")
+          .filter((item): item is string => typeof item === "string")
       : [];
+  const repositories: string[] = [];
+  for (const entry of Array.isArray(raw.containers) ? raw.containers : []) {
+    const c = (entry ?? {}) as Record<string, unknown>;
+    if (!isPolicyContainer(c)) {
+      if (typeof c.name === "string") repositories.push(c.name);
+      continue;
+    }
+    const images = c.images;
+    if (images === null || typeof images !== "object" || Array.isArray(images)) continue;
+    for (const [key, value] of Object.entries(images)) {
+      const pinned = (value as { image?: unknown } | null)?.image;
+      const match = typeof pinned === "string" ? PINNED_IMAGE.exec(pinned) : null;
+      if (match?.[2]) repositories.push(match[2]);
+      else if (typeof c.class_name === "string") {
+        repositories.push(policyRepository(name, c.class_name, key));
+      }
+    }
+  }
   return {
     containers: list(raw.containers, "name"),
     buckets: list(raw.r2_buckets, "bucket_name"),
+    repositories: [...new Set(repositories)],
   };
 }
 
@@ -264,7 +315,29 @@ function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown,
   ]);
   const containers = Array.isArray(raw.containers) ? raw.containers : [];
   containers.forEach((container, i) => {
-    shapes.push([`containers[${i}]`, container, CONTAINER_KEYS]);
+    if (!isPolicyContainer(container)) {
+      shapes.push([`containers[${i}]`, container, CONTAINER_KEYS]);
+      return;
+    }
+    const c = (container ?? {}) as Record<string, unknown>;
+    shapes.push([`containers[${i}]`, c, DO_CONTAINER_KEYS]);
+    // Wrangler allows only logs on or off for this policy.
+    shapes.push([`containers[${i}].observability`, c.observability, ["logs"]]);
+    shapes.push([
+      `containers[${i}].observability.logs`,
+      (c.observability as { logs?: unknown } | undefined)?.logs,
+      ["enabled"],
+    ]);
+    const images = c.images;
+    if (images !== null && typeof images === "object" && !Array.isArray(images)) {
+      for (const [key, value] of Object.entries(images)) {
+        const keys =
+          (value as { image?: unknown } | null)?.image !== undefined
+            ? ["image"]
+            : ["dockerfile", "build_context", "build_vars"];
+        shapes.push([`containers[${i}].images.${key}`, value, keys]);
+      }
+    }
   });
   const buckets = Array.isArray(raw.r2_buckets) ? raw.r2_buckets : [];
   buckets.forEach((bucket, i) => {
@@ -274,10 +347,54 @@ function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown,
 }
 
 /**
+ * A `durable_object`-policy container: 1 to 100 images, each either built from a Dockerfile or
+ * pinned by digest to a repository of this deployment in the staging account's registry.
+ */
+function policyContainerProblems(
+  c: Record<string, unknown>,
+  i: number,
+  name: string,
+  accountId: string,
+): string[] {
+  const problems: string[] = [];
+  if (typeof c.class_name !== "string" || c.class_name === "") {
+    problems.push(`containers[${i}] needs a "class_name"`);
+  }
+  const images = c.images;
+  if (images === null || typeof images !== "object" || Array.isArray(images)) {
+    return [...problems, `containers[${i}] needs an "images" map`];
+  }
+  const entries = Object.entries(images);
+  if (entries.length < 1 || entries.length > 100) {
+    problems.push(`containers[${i}] needs 1 to 100 "images"`);
+  }
+  for (const [key, value] of entries) {
+    const v = (value ?? {}) as Record<string, unknown>;
+    if (key.length < 1 || key.length > 128) problems.push(`containers[${i}].images has a bad key`);
+    if ((v.dockerfile === undefined) === (v.image === undefined)) {
+      problems.push(`containers[${i}].images.${key} needs exactly one of "dockerfile" and "image"`);
+    }
+    if (v.image !== undefined) {
+      const match = typeof v.image === "string" ? PINNED_IMAGE.exec(v.image) : null;
+      if (!match || match[1] !== accountId || !ownedBy(match[2] ?? "", name)) {
+        problems.push(
+          `containers[${i}].images.${key} may only pin an image of ${name} in the staging account's registry by digest`,
+        );
+      }
+    }
+  }
+  return problems;
+}
+
+/**
  * Containers and buckets must carry the deployment's name, so that teardown can find them and
  * nothing outside staging is attached. Containers stay within the staging budget.
  */
-function resourceProblems(raw: Readonly<Record<string, unknown>>, name: string): string[] {
+function resourceProblems(
+  raw: Readonly<Record<string, unknown>>,
+  name: string,
+  accountId: string,
+): string[] {
   const problems: string[] = [];
   for (const key of ["containers", "r2_buckets"]) {
     if (raw[key] !== undefined && !Array.isArray(raw[key]))
@@ -288,6 +405,13 @@ function resourceProblems(raw: Readonly<Record<string, unknown>>, name: string):
     const c = (entry ?? {}) as Record<string, unknown>;
     if (typeof c.name !== "string" || !RESOURCE_NAME.test(c.name) || !ownedBy(c.name, name)) {
       problems.push(`containers[${i}] needs a lowercase "name" of ${name} or ${name}-…`);
+    }
+    if (c.scheduling_policy !== undefined && c.scheduling_policy !== "durable_object") {
+      problems.push(`containers[${i}] "scheduling_policy" may only be "durable_object"`);
+    }
+    if (isPolicyContainer(c)) {
+      problems.push(...policyContainerProblems(c, i, name, accountId));
+      return;
     }
     if (
       !Number.isInteger(c.max_instances) ||
@@ -348,7 +472,7 @@ export function validateDeployConfig(
       );
     }
   }
-  problems.push(...resourceProblems(view.raw, name));
+  problems.push(...resourceProblems(view.raw, name, accountId));
   if (view.redirected) problems.push("it redirects to another configuration file");
   if ("env" in view.raw) problems.push("it defines environments; use a separate file instead");
   if (view.effective.targetEnvironment !== undefined) {
@@ -468,7 +592,8 @@ export function parseRegistry(json: unknown): Deployment[] {
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
       (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||
       !names(d.containers) ||
-      !names(d.buckets)
+      !names(d.buckets) ||
+      !names(d.repositories)
     ) {
       throw new Error("malformed entry in the staging registry");
     }

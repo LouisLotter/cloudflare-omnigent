@@ -17,6 +17,7 @@ import {
   markInterrupted,
   ownedBy,
   parseRegistry,
+  policyRepository,
   resourceName,
   serializeRegistry,
   validateDeployConfig,
@@ -281,9 +282,101 @@ describe("Wrangler configuration check", () => {
       ],
     });
     expect(() => validateDeployConfig(own, ACCOUNT, NAME)).not.toThrow();
-    expect(declaredResources(own.raw)).toEqual({
+    expect(declaredResources(own.raw, NAME)).toEqual({
       containers: ["cfo-stg-a", "cfo-stg-a-big"],
       buckets: ["cfo-stg-a", "cfo-stg-a-logs"],
+      repositories: ["cfo-stg-a", "cfo-stg-a-big"],
+    });
+  });
+
+  describe("durable_object scheduling policy", () => {
+    const pinned = (account: string, repo: string) =>
+      `registry.cloudflare.com/${account}/${repo}@sha256:${"0".repeat(64)}`;
+    const policy = (extra: Record<string, unknown>) =>
+      raw({
+        containers: [
+          {
+            name: "cfo-stg-a-computer",
+            class_name: "S1Computer",
+            scheduling_policy: "durable_object",
+            images: { computer: { dockerfile: "./computer/Dockerfile" } },
+            ...extra,
+          },
+        ],
+      });
+
+    it("accepts built and pinned images, and names the repositories as Wrangler does", () => {
+      const view = policy({
+        images: {
+          computer: { dockerfile: "./computer/Dockerfile", build_vars: { V: "1" } },
+          "Slim Image!": { image: pinned(ACCOUNT, "cfo-stg-a-prebuilt") },
+        },
+        observability: { logs: { enabled: true } },
+      });
+      expect(() => validateDeployConfig(view, ACCOUNT, NAME)).not.toThrow();
+      expect(declaredResources(view.raw, NAME)).toEqual({
+        containers: ["cfo-stg-a-computer"],
+        buckets: [],
+        repositories: ["cfo-stg-a-s1computer-computer", "cfo-stg-a-prebuilt"],
+      });
+    });
+
+    it("matches the repository a real Wrangler 4.149.0 dry run reported", () => {
+      // From spike S1's dry run: worker cfo-stg-s1-dop, class S1Computer, image "computer".
+      expect(policyRepository("cfo-stg-s1-dop", "S1Computer", "computer")).toBe(
+        "cfo-stg-s1-dop-s1computer-computer",
+      );
+      expect(policyRepository("cfo-stg-a", "Host", "-My Img!-")).toBe("cfo-stg-a-host--my-img");
+    });
+
+    it("refuses what the staging tool cannot keep inside the deployment", () => {
+      const refused: [string, DeployConfigView, string][] = [
+        [
+          "max_instances, which Wrangler rejects too",
+          policy({ max_instances: 1 }),
+          '"max_instances"',
+        ],
+        ["ssh", policy({ ssh: { enabled: true } }), '"ssh"'],
+        ["authorized_keys", policy({ authorized_keys: [] }), '"authorized_keys"'],
+        ["unsafe", policy({ unsafe: {} }), '"unsafe"'],
+        ["no images", policy({ images: undefined }), '"images" map'],
+        ["no image at all", policy({ images: {} }), "1 to 100"],
+        [
+          "an image with both sources",
+          policy({ images: { c: { dockerfile: "./D", image: pinned(ACCOUNT, "cfo-stg-a-x") } } }),
+          "exactly one",
+        ],
+        [
+          "another account's image",
+          policy({ images: { c: { image: pinned("b".repeat(32), "cfo-stg-a-x") } } }),
+          "staging account",
+        ],
+        [
+          "another deployment's image",
+          policy({ images: { c: { image: pinned(ACCOUNT, "cfo-stg-b-x") } } }),
+          "staging account",
+        ],
+        [
+          "an image by tag, not digest",
+          policy({ images: { c: { image: `registry.cloudflare.com/${ACCOUNT}/cfo-stg-a-x:1` } } }),
+          "by digest",
+        ],
+        [
+          "a public image",
+          policy({ images: { c: { image: "docker.io/library/busybox:1.37" } } }),
+          "by digest",
+        ],
+        [
+          "instance targeting",
+          policy({ observability: { logs: { enabled: true, target_instance_count: 2 } } }),
+          '"target_instance_count"',
+        ],
+        ["an unknown policy", policy({ scheduling_policy: "regional" }), '"scheduling_policy"'],
+        ["another deployment's name", policy({ name: "cfo-stg-b-computer" }), "lowercase"],
+      ];
+      for (const [label, view, message] of refused) {
+        expect(() => validateDeployConfig(view, ACCOUNT, NAME), label).toThrow(message);
+      }
     });
   });
 
