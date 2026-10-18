@@ -1,7 +1,16 @@
 # python
 
-Python side of the platform. For now: contract tests that check the golden fixtures against the JSON Schema exported from `contracts/`. Later: the computer supervisor (M3) and the Omnigent gateway backend (M5).
+The Python side of the platform: the distribution `cloudflare-omnigent`, managed with uv.
+
+| When | Contents |
+|---|---|
+| Now (M0) | Contract tests. `tests/test_contracts.py` validates every golden fixture in `contracts/fixtures/` against the JSON Schema exported to `contracts/schema/`. |
+| M3 | The computer supervisor (WP3.4), installed into the `images/computer` image |
+| M5 | The Omnigent MCP gateway backend and connection service (WP5.4) |
 
 ```bash
 uv run --directory python pytest
+uv run --directory python ruff check
 ```
+
+Dependencies observe the same seven-day release cooldown as the TypeScript workspace (`exclude-newer` in `pyproject.toml`).
