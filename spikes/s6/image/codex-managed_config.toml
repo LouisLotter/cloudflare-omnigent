@@ -1,0 +1,6 @@
+# Spike S6: Codex settings managed by the image (design, "Signing in" and "Network").
+cli_auth_credentials_store = "file"
+check_for_update_on_startup = false
+
+[analytics]
+enabled = false

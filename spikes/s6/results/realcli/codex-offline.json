@@ -1,0 +1,4086 @@
+{
+  "codex_version": "codex-cli 0.162.1",
+  "network": "none (loopback fake issuer only)",
+  "exit_codes": {
+    "login": 0,
+    "status_after_login": 0,
+    "exec_refresh": 1,
+    "forced_refresh": 1,
+    "login_again": 0,
+    "logout": 0,
+    "status_after_logout": 1
+  },
+  "status_lines": {
+    "after_login": ["Logged in using ChatGPT"],
+    "after_logout": ["Not logged in"],
+    "logout": ["Successfully logged out"]
+  },
+  "login_prompt_seen": true,
+  "issuer_requests": [
+    {
+      "at": 1792336712.8146799,
+      "method": "POST",
+      "path": "/api/accounts/deviceauth/usercode",
+      "step": "usercode"
+    },
+    {
+      "at": 1792336712.8217247,
+      "method": "POST",
+      "path": "/api/accounts/deviceauth/token",
+      "step": "poll",
+      "n": 1
+    },
+    {
+      "at": 1792336713.823699,
+      "method": "POST",
+      "path": "/api/accounts/deviceauth/token",
+      "step": "poll",
+      "n": 2
+    },
+    {
+      "at": 1792336713.830012,
+      "method": "POST",
+      "path": "/oauth/token",
+      "step": "token",
+      "grant_type": "authorization_code"
+    },
+    {
+      "at": 1792336714.4837046,
+      "method": "POST",
+      "path": "/oauth/token",
+      "step": "token",
+      "grant_type": "refresh_token"
+    },
+    {
+      "at": 1792336714.6896486,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/installed",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6898491,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/suggested/codex",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6900704,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/installed",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.690482,
+      "method": "GET",
+      "path": "/backend-api/plugins/featured",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6906304,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/list",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6909828,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/installed",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6918986,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336714.6977742,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336724.6808248,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/suggested/codex",
+      "step": "other"
+    },
+    {
+      "at": 1792336724.6843727,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336724.6845884,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336724.7506676,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/suggested/codex",
+      "step": "other"
+    },
+    {
+      "at": 1792336724.9358218,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336725.9379153,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336725.9386642,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336725.9446754,
+      "method": "GET",
+      "path": "/backend-api/wham/settings/user",
+      "step": "other"
+    },
+    {
+      "at": 1792336725.9512405,
+      "method": "GET",
+      "path": "/backend-api/ps/plugins/suggested/codex",
+      "step": "other"
+    },
+    {
+      "at": 1792336725.9633896,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336726.190926,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336726.191253,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336726.5916069,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336727.1932285,
+      "method": "POST",
+      "path": "/backend-api/ps/mcp",
+      "step": "other"
+    },
+    {
+      "at": 1792336727.3674297,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336728.8227766,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336732.2702029,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336732.276213,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336732.4911413,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336732.8766766,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336733.6441362,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336735.3472614,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336738.6081996,
+      "method": "GET",
+      "path": "/backend-api/wham/accounts/check",
+      "step": "other"
+    },
+    {
+      "at": 1792336739.7330456,
+      "method": "POST",
+      "path": "/oauth/token",
+      "step": "token",
+      "grant_type": "refresh_token"
+    },
+    {
+      "at": 1792336755.3513684,
+      "method": "POST",
+      "path": "/oauth/revoke",
+      "step": "revoke",
+      "token_type_hint": "refresh_token"
+    },
+    {
+      "at": 1792336755.3575678,
+      "method": "POST",
+      "path": "/api/accounts/deviceauth/usercode",
+      "step": "usercode"
+    },
+    {
+      "at": 1792336755.3642344,
+      "method": "POST",
+      "path": "/api/accounts/deviceauth/token",
+      "step": "poll",
+      "n": 3
+    },
+    {
+      "at": 1792336755.3699362,
+      "method": "POST",
+      "path": "/oauth/token",
+      "step": "token",
+      "grant_type": "authorization_code"
+    },
+    {
+      "at": 1792336755.9768686,
+      "method": "POST",
+      "path": "/oauth/revoke",
+      "step": "revoke",
+      "token_type_hint": "refresh_token"
+    }
+  ],
+  "inotify": [
+    {
+      "step": "login"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/codex-linux-sandbox"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/codex-execve-wrapper"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/log"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "MODIFY",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "CLOSE_WRITE,CLOSE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0kTQgTM/"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/applypatch"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/codex-linux-sandbox"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/codex-execve-wrapper"
+    },
+    {
+      "step": "refresh"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0lwUwmW/"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/codex-execve-wrapper"
+    },
+    {
+      "event": "MODIFY",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "CLOSE_WRITE,CLOSE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/state_5.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/state_5.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/state_5.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/state_5.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/state_5.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/state_5.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/state_5.sqlite-shm"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/logs_2.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/logs_2.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/logs_2.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/logs_2.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/logs_2.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/logs_2.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/logs_2.sqlite-shm"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/goals_1.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/goals_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/goals_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/goals_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/goals_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/goals_1.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/goals_1.sqlite-shm"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/memories_1.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/memories_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/memories_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/memories_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/memories_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/memories_1.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/memories_1.sqlite-shm"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/queue_1.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/queue_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/queue_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/queue_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/queue_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/queue_1.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/queue_1.sqlite-shm"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/installation_id"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/imagegen/SKILL.md"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/imagegen/agents"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/imagegen/assets"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/imagegen/references"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/imagegen/references/image-api.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/imagegen/references/prompting.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/imagegen/references/sample-prompts.md"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/imagegen/scripts"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/imagegen/scripts/remove_chroma_key.py"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/openai-docs"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/SKILL.md"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/openai-docs/agents"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/openai-docs/assets"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/assets/openai.png"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/openai-docs/references"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/latest-model.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/mcp-diagnostics.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/model-migration.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/model-selection.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/official-docs.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/prompting-guide.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/upgrade-guide.md"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/openai-docs/scripts"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/review-agent"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-creator"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-creator/agents"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-creator/assets"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-creator/assets/skill-creator.png"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-creator/license.txt"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-creator/references"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-creator/scripts"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-creator/scripts/init_skill.py"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-creator/scripts/quick_validate.py"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-installer"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-installer/agents"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-installer/assets"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/skills/.system/skill-installer/scripts"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/skill-installer/scripts/list-skills.py"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/skills/.system/.codex-system-skills.marker"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/.tmpuuaxkg"
+    },
+    {
+      "event": "MOVED_FROM",
+      "path": "~/.codex/.tmpuuaxkg"
+    },
+    {
+      "event": "MOVED_TO",
+      "path": "~/.codex/.sandbox_migration"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/thread-writer-locks"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread-writer-locks/01a14f97-dba2-7d01-bec0-b9051a6c833b.lock"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/mcp-oauth-locks"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/shell_snapshots"
+    },
+    {
+      "event": "MOVED_FROM",
+      "path": "~/.codex/shell_snapshots/01a14f97-dba2-7d01-bec0-b9051a6c833b.tmp-1792336724665830659"
+    },
+    {
+      "event": "MOVED_TO",
+      "path": "~/.codex/shell_snapshots/01a14f97-dba2-7d01-bec0-b9051a6c833b.1792336724665830659.sh"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/sessions"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread_history_1.sqlite"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread_history_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/thread_history_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread_history_1.sqlite-journal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/thread_history_1.sqlite-journal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread_history_1.sqlite-wal"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/thread_history_1.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/thread-writer-locks/01a14f97-dba2-7d01-bec0-b9051a6c833b.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/shell_snapshots/01a14f97-dba2-7d01-bec0-b9051a6c833b.1792336724665830659.sh"
+    },
+    {
+      "step": "forced-refresh"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0TnJsNp/"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/apply_patch"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/applypatch"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/codex-linux-sandbox"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/codex-execve-wrapper"
+    },
+    {
+      "event": "MODIFY",
+      "path": "~/.codex/auth.json",
+      "repeat": 2
+    },
+    {
+      "event": "CLOSE_WRITE,CLOSE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0nvlRQe/"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/goals_1.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/goals_1.sqlite-wal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/queue_1.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/queue_1.sqlite-wal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/state_5.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/memories_1.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/state_5.sqlite-wal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/memories_1.sqlite-wal"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/logs_2.sqlite-shm"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/logs_2.sqlite-wal"
+    },
+    {
+      "step": "login-again"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "MODIFY",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "CLOSE_WRITE,CLOSE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "step": "logout"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0nCiU1y/"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/auth.json"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/.lock"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/apply_patch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/applypatch"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/codex-linux-sandbox"
+    },
+    {
+      "event": "DELETE",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/codex-execve-wrapper"
+    },
+    {
+      "event": "DELETE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG"
+    },
+    {
+      "event": "DELETE_SELF",
+      "path": "~/.codex/tmp/arg0/codex-arg0CzJxJG/"
+    },
+    {
+      "event": "CREATE,ISDIR",
+      "path": "~/.codex/tmp/arg0/codex-arg0HhVREx"
+    },
+    {
+      "event": "CREATE",
+      "path": "~/.codex/tmp/arg0/codex-arg0HhVREx/codex-execve-wrapper"
+    },
+    {
+      "step": "end"
+    }
+  ],
+  "files_holding_canary_while_logged_in": ["~/.codex/auth.json"],
+  "files_holding_canary_after_logout": [],
+  "forced_refresh_result": "{\"initialized\": true, \"refresh_requested\": true, \"ok\": false, \"error\": \"workspace routing discovery failed\", \"auth_json_rewritten\": true}",
+  "audits": [
+    {
+      "label": "before login",
+      "at": "2026-10-18T15:18:32.754+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": false
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        }
+      ],
+      "inventory": [],
+      "inventory_truncated": false
+    },
+    {
+      "label": "after device-code login",
+      "at": "2026-10-18T15:18:34.434+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": true,
+          "type": "file",
+          "mode": "0600",
+          "size": 942,
+          "uid": 0,
+          "inode": 2979742,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:18:33.829+00:00",
+          "parse": "json",
+          "keys": [
+            {
+              "key": "$",
+              "type": "object",
+              "keys": ["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]
+            },
+            {
+              "key": "OPENAI_API_KEY",
+              "type": "null"
+            },
+            {
+              "key": "auth_mode",
+              "type": "str"
+            },
+            {
+              "key": "last_refresh",
+              "type": "str",
+              "value": "2026-10-18T15:18:33.830830693Z"
+            },
+            {
+              "key": "tokens",
+              "type": "object",
+              "keys": ["access_token", "account_id", "id_token", "refresh_token"]
+            },
+            {
+              "key": "tokens.access_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.account_id",
+              "type": "str"
+            },
+            {
+              "key": "tokens.id_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.refresh_token",
+              "type": "str"
+            }
+          ]
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex",
+          "exists": true,
+          "type": "dir",
+          "mode": "0755",
+          "size": 30,
+          "uid": 0,
+          "inode": 2979730,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:18:33.829+00:00"
+        }
+      ],
+      "inventory": [
+        {
+          "path": ".codex/log",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/auth.json",
+          "type": "file",
+          "mode": "0600",
+          "size": 942
+        },
+        {
+          "path": ".codex/log/codex-login.log",
+          "type": "file",
+          "mode": "0600",
+          "size": 389
+        },
+        {
+          "path": ".codex/tmp/arg0",
+          "type": "dir",
+          "mode": "0700",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW/.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW/apply_patch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW/applypatch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW/codex-execve-wrapper",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0lwUwmW/codex-linux-sandbox",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        }
+      ],
+      "inventory_truncated": false
+    },
+    {
+      "label": "after refresh (codex exec)",
+      "at": "2026-10-18T15:18:59.175+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": true,
+          "type": "file",
+          "mode": "0600",
+          "size": 942,
+          "uid": 0,
+          "inode": 2979742,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:18:34.483+00:00",
+          "parse": "json",
+          "keys": [
+            {
+              "key": "$",
+              "type": "object",
+              "keys": ["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]
+            },
+            {
+              "key": "OPENAI_API_KEY",
+              "type": "null"
+            },
+            {
+              "key": "auth_mode",
+              "type": "str"
+            },
+            {
+              "key": "last_refresh",
+              "type": "str",
+              "value": "2026-10-18T15:18:34.484062150Z"
+            },
+            {
+              "key": "tokens",
+              "type": "object",
+              "keys": ["access_token", "account_id", "id_token", "refresh_token"]
+            },
+            {
+              "key": "tokens.access_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.account_id",
+              "type": "str"
+            },
+            {
+              "key": "tokens.id_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.refresh_token",
+              "type": "str"
+            }
+          ],
+          "inode_changed": false,
+          "file_changed": true,
+          "changed_keys": [
+            "last_refresh",
+            "tokens.access_token",
+            "tokens.id_token",
+            "tokens.refresh_token"
+          ],
+          "removed_keys": []
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex",
+          "exists": true,
+          "type": "dir",
+          "mode": "0755",
+          "size": 888,
+          "uid": 0,
+          "inode": 2979730,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:18:44.735+00:00"
+        }
+      ],
+      "inventory": [
+        {
+          "path": ".codex/log",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/mcp-oauth-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/shell_snapshots",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/thread-writer-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/.sandbox_migration",
+          "type": "file",
+          "mode": "0600",
+          "size": 3
+        },
+        {
+          "path": ".codex/auth.json",
+          "type": "file",
+          "mode": "0600",
+          "size": 942
+        },
+        {
+          "path": ".codex/goals_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/goals_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/goals_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 74192
+        },
+        {
+          "path": ".codex/installation_id",
+          "type": "file",
+          "mode": "0644",
+          "size": 36
+        },
+        {
+          "path": ".codex/logs_2.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 49152
+        },
+        {
+          "path": ".codex/logs_2.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/logs_2.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 115392
+        },
+        {
+          "path": ".codex/memories_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/memories_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/memories_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 86552
+        },
+        {
+          "path": ".codex/queue_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/queue_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/queue_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 82432
+        },
+        {
+          "path": ".codex/state_5.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/state_5.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/state_5.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 2216592
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 337872
+        },
+        {
+          "path": ".codex/log/codex-login.log",
+          "type": "file",
+          "mode": "0600",
+          "size": 389
+        },
+        {
+          "path": ".codex/mcp-oauth-locks/file-store.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/sessions/2026",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18/rollout-2026-10-18T15-18-44-01a14f97-dba2-7d01-bec0-b9051a6c833b.jsonl",
+          "type": "file",
+          "mode": "0644",
+          "size": 36819
+        },
+        {
+          "path": ".codex/skills/.system",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/.codex-system-skills.marker",
+          "type": "file",
+          "mode": "0644",
+          "size": 17
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 19201
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 275
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 2889
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1711
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/cli.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 9655
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/codex-network.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1779
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/image-api.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 6072
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/prompting.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 8282
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/sample-prompts.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 17617
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/image_gen.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 34667
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/remove_chroma_key.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 13905
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5437
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 370
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1091
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1429
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/codex-self-knowledge.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 7417
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/latest-model.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2147
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/mcp-diagnostics.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2318
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-migration.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5094
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-selection.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1344
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/official-docs.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3337
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/prompting-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 10166
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrade-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1027
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 18993
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 16085
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info",
+          "type": "file",
+          "mode": "0644",
+          "size": 1038
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 3937
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2661
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 252
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 15311
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/license.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 183
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1319
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1563
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references/openai_yaml.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2356
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 6669
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/init_skill.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 10314
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/quick_validate.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 4249
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3367
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 221
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 923
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1086
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/github_utils.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 659
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 11917
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/list-skills.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 2948
+        },
+        {
+          "path": ".codex/thread-writer-locks/.coordination.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0",
+          "type": "dir",
+          "mode": "0700",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp/.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp/apply_patch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp/applypatch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp/codex-execve-wrapper",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0TnJsNp/codex-linux-sandbox",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        }
+      ],
+      "inventory_truncated": false
+    },
+    {
+      "label": "after forced refresh (app-server account/read)",
+      "at": "2026-10-18T15:19:15.305+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": true,
+          "type": "file",
+          "mode": "0600",
+          "size": 942,
+          "uid": 0,
+          "inode": 2979742,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:18:59.732+00:00",
+          "parse": "json",
+          "keys": [
+            {
+              "key": "$",
+              "type": "object",
+              "keys": ["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]
+            },
+            {
+              "key": "OPENAI_API_KEY",
+              "type": "null"
+            },
+            {
+              "key": "auth_mode",
+              "type": "str"
+            },
+            {
+              "key": "last_refresh",
+              "type": "str",
+              "value": "2026-10-18T15:18:59.733265755Z"
+            },
+            {
+              "key": "tokens",
+              "type": "object",
+              "keys": ["access_token", "account_id", "id_token", "refresh_token"]
+            },
+            {
+              "key": "tokens.access_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.account_id",
+              "type": "str"
+            },
+            {
+              "key": "tokens.id_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.refresh_token",
+              "type": "str"
+            }
+          ],
+          "inode_changed": false,
+          "file_changed": true,
+          "changed_keys": [
+            "last_refresh",
+            "tokens.access_token",
+            "tokens.id_token",
+            "tokens.refresh_token"
+          ],
+          "removed_keys": []
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex",
+          "exists": true,
+          "type": "dir",
+          "mode": "0755",
+          "size": 520,
+          "uid": 0,
+          "inode": 2979730,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:19:09.780+00:00"
+        }
+      ],
+      "inventory": [
+        {
+          "path": ".codex/log",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/mcp-oauth-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/shell_snapshots",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/thread-writer-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/.sandbox_migration",
+          "type": "file",
+          "mode": "0600",
+          "size": 3
+        },
+        {
+          "path": ".codex/auth.json",
+          "type": "file",
+          "mode": "0600",
+          "size": 942
+        },
+        {
+          "path": ".codex/goals_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/installation_id",
+          "type": "file",
+          "mode": "0644",
+          "size": 36
+        },
+        {
+          "path": ".codex/logs_2.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 53248
+        },
+        {
+          "path": ".codex/memories_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 45056
+        },
+        {
+          "path": ".codex/queue_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 40960
+        },
+        {
+          "path": ".codex/state_5.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 262144
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 337872
+        },
+        {
+          "path": ".codex/log/codex-login.log",
+          "type": "file",
+          "mode": "0600",
+          "size": 389
+        },
+        {
+          "path": ".codex/mcp-oauth-locks/file-store.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/sessions/2026",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18/rollout-2026-10-18T15-18-44-01a14f97-dba2-7d01-bec0-b9051a6c833b.jsonl",
+          "type": "file",
+          "mode": "0644",
+          "size": 36819
+        },
+        {
+          "path": ".codex/skills/.system",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/.codex-system-skills.marker",
+          "type": "file",
+          "mode": "0644",
+          "size": 17
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 19201
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 275
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 2889
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1711
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/cli.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 9655
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/codex-network.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1779
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/image-api.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 6072
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/prompting.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 8282
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/sample-prompts.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 17617
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/image_gen.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 34667
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/remove_chroma_key.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 13905
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5437
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 370
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1091
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1429
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/codex-self-knowledge.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 7417
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/latest-model.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2147
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/mcp-diagnostics.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2318
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-migration.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5094
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-selection.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1344
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/official-docs.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3337
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/prompting-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 10166
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrade-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1027
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 18993
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 16085
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info",
+          "type": "file",
+          "mode": "0644",
+          "size": 1038
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 3937
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2661
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 252
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 15311
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/license.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 183
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1319
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1563
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references/openai_yaml.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2356
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 6669
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/init_skill.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 10314
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/quick_validate.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 4249
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3367
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 221
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 923
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1086
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/github_utils.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 659
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 11917
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/list-skills.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 2948
+        },
+        {
+          "path": ".codex/thread-writer-locks/.coordination.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0",
+          "type": "dir",
+          "mode": "0700",
+          "size": null
+        }
+      ],
+      "inventory_truncated": false
+    },
+    {
+      "label": "after second login (Codex logs out first)",
+      "at": "2026-10-18T15:19:15.928+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": true,
+          "type": "file",
+          "mode": "0600",
+          "size": 942,
+          "uid": 0,
+          "inode": 2980742,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:19:15.370+00:00",
+          "parse": "json",
+          "keys": [
+            {
+              "key": "$",
+              "type": "object",
+              "keys": ["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]
+            },
+            {
+              "key": "OPENAI_API_KEY",
+              "type": "null"
+            },
+            {
+              "key": "auth_mode",
+              "type": "str"
+            },
+            {
+              "key": "last_refresh",
+              "type": "str",
+              "value": "2026-10-18T15:19:15.370594295Z"
+            },
+            {
+              "key": "tokens",
+              "type": "object",
+              "keys": ["access_token", "account_id", "id_token", "refresh_token"]
+            },
+            {
+              "key": "tokens.access_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.account_id",
+              "type": "str"
+            },
+            {
+              "key": "tokens.id_token",
+              "type": "str"
+            },
+            {
+              "key": "tokens.refresh_token",
+              "type": "str"
+            }
+          ],
+          "inode_changed": true,
+          "file_changed": true,
+          "changed_keys": [
+            "last_refresh",
+            "tokens.access_token",
+            "tokens.id_token",
+            "tokens.refresh_token"
+          ],
+          "removed_keys": []
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex",
+          "exists": true,
+          "type": "dir",
+          "mode": "0755",
+          "size": 520,
+          "uid": 0,
+          "inode": 2979730,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:19:15.370+00:00"
+        }
+      ],
+      "inventory": [
+        {
+          "path": ".codex/log",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/mcp-oauth-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/shell_snapshots",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/thread-writer-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/.sandbox_migration",
+          "type": "file",
+          "mode": "0600",
+          "size": 3
+        },
+        {
+          "path": ".codex/auth.json",
+          "type": "file",
+          "mode": "0600",
+          "size": 942
+        },
+        {
+          "path": ".codex/goals_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/installation_id",
+          "type": "file",
+          "mode": "0644",
+          "size": 36
+        },
+        {
+          "path": ".codex/logs_2.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 53248
+        },
+        {
+          "path": ".codex/memories_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 45056
+        },
+        {
+          "path": ".codex/queue_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 40960
+        },
+        {
+          "path": ".codex/state_5.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 262144
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 337872
+        },
+        {
+          "path": ".codex/log/codex-login.log",
+          "type": "file",
+          "mode": "0600",
+          "size": 778
+        },
+        {
+          "path": ".codex/mcp-oauth-locks/file-store.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/sessions/2026",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18/rollout-2026-10-18T15-18-44-01a14f97-dba2-7d01-bec0-b9051a6c833b.jsonl",
+          "type": "file",
+          "mode": "0644",
+          "size": 36819
+        },
+        {
+          "path": ".codex/skills/.system",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/.codex-system-skills.marker",
+          "type": "file",
+          "mode": "0644",
+          "size": 17
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 19201
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 275
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 2889
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1711
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/cli.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 9655
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/codex-network.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1779
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/image-api.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 6072
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/prompting.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 8282
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/sample-prompts.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 17617
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/image_gen.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 34667
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/remove_chroma_key.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 13905
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5437
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 370
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1091
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1429
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/codex-self-knowledge.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 7417
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/latest-model.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2147
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/mcp-diagnostics.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2318
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-migration.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5094
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-selection.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1344
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/official-docs.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3337
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/prompting-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 10166
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrade-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1027
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 18993
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 16085
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info",
+          "type": "file",
+          "mode": "0644",
+          "size": 1038
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 3937
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2661
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 252
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 15311
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/license.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 183
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1319
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1563
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references/openai_yaml.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2356
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 6669
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/init_skill.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 10314
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/quick_validate.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 4249
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3367
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 221
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 923
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1086
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/github_utils.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 659
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 11917
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/list-skills.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 2948
+        },
+        {
+          "path": ".codex/thread-writer-locks/.coordination.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0",
+          "type": "dir",
+          "mode": "0700",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y/.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y/apply_patch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y/applypatch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y/codex-execve-wrapper",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0nCiU1y/codex-linux-sandbox",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        }
+      ],
+      "inventory_truncated": false
+    },
+    {
+      "label": "after logout",
+      "at": "2026-10-18T15:19:16.562+00:00",
+      "home": "~",
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/auth.json",
+          "exists": false,
+          "was_present_before": true
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "exists": false
+        },
+        {
+          "path": ".claude.json",
+          "exists": false
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "exists": false
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "exists": false
+        },
+        {
+          "path": ".codex",
+          "exists": true,
+          "type": "dir",
+          "mode": "0755",
+          "size": 502,
+          "uid": 0,
+          "inode": 2979730,
+          "nlink": 1,
+          "mtime": "2026-10-18T15:19:15.976+00:00"
+        }
+      ],
+      "inventory": [
+        {
+          "path": ".codex/log",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/mcp-oauth-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/shell_snapshots",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/thread-writer-locks",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/.sandbox_migration",
+          "type": "file",
+          "mode": "0600",
+          "size": 3
+        },
+        {
+          "path": ".codex/goals_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/installation_id",
+          "type": "file",
+          "mode": "0644",
+          "size": 36
+        },
+        {
+          "path": ".codex/logs_2.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 53248
+        },
+        {
+          "path": ".codex/memories_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 45056
+        },
+        {
+          "path": ".codex/queue_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 40960
+        },
+        {
+          "path": ".codex/state_5.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 262144
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite",
+          "type": "file",
+          "mode": "0644",
+          "size": 4096
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-shm",
+          "type": "file",
+          "mode": "0644",
+          "size": 32768
+        },
+        {
+          "path": ".codex/thread_history_1.sqlite-wal",
+          "type": "file",
+          "mode": "0644",
+          "size": 337872
+        },
+        {
+          "path": ".codex/log/codex-login.log",
+          "type": "file",
+          "mode": "0600",
+          "size": 778
+        },
+        {
+          "path": ".codex/mcp-oauth-locks/file-store.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/sessions/2026",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/sessions/2026/10/18/rollout-2026-10-18T15-18-44-01a14f97-dba2-7d01-bec0-b9051a6c833b.jsonl",
+          "type": "file",
+          "mode": "0644",
+          "size": 36819
+        },
+        {
+          "path": ".codex/skills/.system",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/.codex-system-skills.marker",
+          "type": "file",
+          "mode": "0644",
+          "size": 17
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 19201
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 275
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 2889
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/assets/imagegen.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1711
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/cli.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 9655
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/codex-network.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1779
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/image-api.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 6072
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/prompting.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 8282
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/references/sample-prompts.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 17617
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/image_gen.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 34667
+        },
+        {
+          "path": ".codex/skills/.system/imagegen/scripts/remove_chroma_key.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 13905
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 10776
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5437
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 370
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1091
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/assets/openai.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1429
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/codex-self-knowledge.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 7417
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/latest-model.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2147
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/mcp-diagnostics.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2318
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-migration.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 5094
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/model-selection.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1344
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/official-docs.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3337
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/prompting-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 10166
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrade-guide.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 1027
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/references/upgrading-to-gpt-6-astra.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 18993
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 16085
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info",
+          "type": "file",
+          "mode": "0644",
+          "size": 1038
+        },
+        {
+          "path": ".codex/skills/.system/openai-docs/scripts/resolve-latest-model-info.cjs",
+          "type": "file",
+          "mode": "0644",
+          "size": 3937
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2661
+        },
+        {
+          "path": ".codex/skills/.system/review-agent/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 252
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 15311
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/license.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 183
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 1319
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/assets/skill-creator.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1563
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/references/openai_yaml.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 2356
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/generate_openai_yaml.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 6669
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/init_skill.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 10314
+        },
+        {
+          "path": ".codex/skills/.system/skill-creator/scripts/quick_validate.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 4249
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/LICENSE.txt",
+          "type": "file",
+          "mode": "0644",
+          "size": 11358
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/SKILL.md",
+          "type": "file",
+          "mode": "0644",
+          "size": 3367
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/agents/openai.yaml",
+          "type": "file",
+          "mode": "0644",
+          "size": 221
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer-small.svg",
+          "type": "file",
+          "mode": "0644",
+          "size": 923
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/assets/skill-installer.png",
+          "type": "file",
+          "mode": "0644",
+          "size": 1086
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/github_utils.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 659
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/install-skill-from-github.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 11917
+        },
+        {
+          "path": ".codex/skills/.system/skill-installer/scripts/list-skills.py",
+          "type": "file",
+          "mode": "0644",
+          "size": 2948
+        },
+        {
+          "path": ".codex/thread-writer-locks/.coordination.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0",
+          "type": "dir",
+          "mode": "0700",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx",
+          "type": "dir",
+          "mode": "0755",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx/.lock",
+          "type": "file",
+          "mode": "0644",
+          "size": 0
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx/apply_patch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx/applypatch",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx/codex-execve-wrapper",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        },
+        {
+          "path": ".codex/tmp/arg0/codex-arg0HhVREx/codex-linux-sandbox",
+          "type": "symlink",
+          "mode": "0777",
+          "size": null
+        }
+      ],
+      "inventory_truncated": false
+    }
+  ]
+}
