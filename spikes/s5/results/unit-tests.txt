@@ -1,0 +1,120 @@
+
+ RUN  v5.0.3 spikes/s5
+      Coverage enabled with istanbul
+
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > stores a verified grant, then reports the secret removable 16ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > keeps no password and no plaintext token 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > is idempotent once a grant is stored 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > without a secret, needs the owner 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > keeps the secret when the password is refused 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > keeps the secret after a 200 login without refresh material 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > refuses a grant whose first refresh fails, and revokes it 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > refuses a grant whose first read fails, and revokes it 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > treats unreachable as transient and keeps the secret 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > treats login 503 as transient and keeps the secret 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > treats login 429 as transient and keeps the secret 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > treats first refresh 502 as transient and keeps the secret 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > treats first read 500 as transient and keeps the secret 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > keeps the secret if the grant cannot be stored, and revokes the orphan 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > bootstrap > keeps the secret if the stored grant does not read back 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > reuses the access token until it nears expiry, then refreshes 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > refreshes once on a 401 and retries 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > revocation: needs_reauthentication, grant_rejected 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > password reset: needs_reauthentication, grant_rejected 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > absolute expiry: expired_token gives grant_expired 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > absolute expiry after a purge: invalid_grant, still grant_expired by the platform's clock 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > an access token outlives its grant's lifetime until its own expiry 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > refresh 503 is transient: state stays ok 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > refresh 429 is transient: state stays ok 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > server unreachable is transient: state stays ok 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > read 502 is transient: state stays ok 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > a 401 that survives a fresh token is a dead grant 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > an unexpected refusal code is a dead grant too 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > does not call the server while it needs the owner 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > shares one refresh between concurrent reads 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > reads with the platform's grant > reports an unexpected status from the read itself 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > a wrong password changes nothing 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > refuses an empty or oversized password without a request 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > the password stores a new grant and keeps nothing of the password 2ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > revokes the previous grant only after the new one is stored 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > login without refresh at repair keeps needs_reauthentication with that reason 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair > a proactive renewal that gets no refresh material leaves the working grant alone 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > shows no form while the login works 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > warns ahead of the absolute lifetime and offers renewal 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains no_credentials and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains credentials_rejected and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains login_without_refresh and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains grant_unusable and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains grant_expired and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > explains grant_rejected and asks for the password 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > repair card > escapes text 0ms
+ ✓ |spike-s5| test/platform-login.test.ts > crypto > seals with a fresh nonce, binds the purpose, and detects tampering 1ms
+ ✓ |spike-s5| test/platform-login.test.ts > crypto > form tokens are bound to identity, purpose and time 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > accepts a genuine assertion and returns the identity 3ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > accepts a token signed by the previous key during rotation 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > accepts `aud` as a string 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > fails closed when not configured 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a missing assertion (absent) 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a missing assertion (empty) 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects an oversized assertion before parsing 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects malformed tokens 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg none 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg HS256 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg RS512 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg ES256 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg PS256 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects alg undefined 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects an unknown key id 28ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > reports unavailable keys rather than guessing 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a forger's signature under a genuine kid 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a payload or header edited after signing 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a genuinely signed token from the wrong issuer 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > rejects a token for another application, or with no audience 3ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > checks expiry with leeway 2ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > checks nbf and iat with leeway 3ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > accepts only application tokens 1ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > requires sub 0ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > pins the owner by email hash, case-insensitively 2ms
+ ✓ |spike-s5| test/access.test.ts > validateAccessJwt > property: any single-character change to a genuine token is refused 24ms
+ ✓ |spike-s5| test/access.test.ts > base64url > refuses non-canonical spellings 1ms
+ ✓ |spike-s5| test/access.test.ts > team domain > derives issuer and certs URL, and refuses anything else 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://cfo-stg-s5-access.example.com/x -> true 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://CFO-STG-S5-ACCESS.example.com/ -> true 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://cfo-stg-s5-access.example.com.evil.test/ -> false 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://evil-cfo-stg-s5-access.example.com/ -> false 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://cfo-stg-s5-access.workers.dev/ -> false 0ms
+ ✓ |spike-s5| test/access.test.ts > checkHost > https://example.com/ -> false 0ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > fetches once and caches 11ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > refetches for an unknown kid at most once per interval, and picks up a rotation 1ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > keeps known keys through a certs outage, up to the stale limit 0ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > reports keys_unavailable with no keys at all 0ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > ignores non-RS256 keys, junk and oversized documents 1ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > shares one fetch between concurrent lookups 0ms
+ ✓ |spike-s5| test/access.test.ts > JwksCache > validates end to end through the cache 1ms
+ ✓ |spike-s5| test/access.test.ts > upstreamHeaders > strips identity and Access headers, and only the Access cookie 1ms
+ ✓ |spike-s5| test/access.test.ts > upstreamHeaders > drops the Cookie header when only the Access cookie was there 0ms
+ ✓ |spike-s5| test/access.test.ts > deriveNegativeCases > passes every derived case for a genuine token 2ms
+
+ Test Files  2 passed (2)
+      Tests  92 passed (92)
+   Start at  16:46:20
+   Duration  478ms (transform 59%, tests 33%, import 6%, worker 1%)
+
+ % Coverage report from istanbul
+-------------------|---------|----------|---------|---------|-----------------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s           
+-------------------|---------|----------|---------|---------|-----------------------------
+All files          |   95.64 |    89.44 |   95.16 |   96.58 |                             
+ access.ts         |    98.8 |    97.72 |     100 |   99.22 | 219                         
+ crypto.ts         |   96.42 |      100 |     100 |   95.83 | 97                          
+ platform-login.ts |      92 |    84.96 |      88 |    93.9 | 269-272,313,375,399,442-444 
+ repair-card.ts    |   91.66 |       75 |     100 |   95.65 | 73                          
+ selftest.ts       |     100 |    68.75 |     100 |     100 | 52-54,127-132               
+-------------------|---------|----------|---------|---------|-----------------------------
+
+=============================== Coverage summary ===============================
+Statements   : 95.64% ( 417/436 )
+Branches     : 89.44% ( 288/322 )
+Functions    : 95.16% ( 59/62 )
+Lines        : 96.58% ( 368/381 )
+================================================================================

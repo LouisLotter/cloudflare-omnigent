@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-18T15:46:08.471Z",
+  "workerLookup": "absent ([10007] 404)",
+  "accessApplicationsOnHostname": 0,
+  "containerApplications": 0,
+  "registryImagesForContainer": "none",
+  "stagingRegistryEntries": 0,
+  "httpsToHostname": "error: getaddrinfo ENOTFOUND <host>",
+  "gone": true
+}

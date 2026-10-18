@@ -1,0 +1,22 @@
+// Spike S5 base configuration. Deployed once, first, so that the staging tool creates the
+// owner-only Access application; the Worker answers 503 `not_configured` to everything until the
+// generated configuration (scripts/staging-config.ts) adds the team domain, the AUD tag and the
+// Omnigent container.
+//
+//   pnpm stg deploy --suffix s5-access --owner S5 --config spikes/s5/wrangler.jsonc --days 1
+{
+  "$schema": "../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s5-access",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "PLATFORM_LOGIN", "class_name": "PlatformLoginDO" },
+      { "name": "OMNIGENT_SERVER", "class_name": "OmnigentServerDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PlatformLoginDO", "OmnigentServerDO"] }],
+  "observability": { "enabled": true }
+}
