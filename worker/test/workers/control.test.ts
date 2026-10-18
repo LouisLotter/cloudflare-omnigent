@@ -40,6 +40,47 @@ describe("ControlDO", () => {
   });
 });
 
+describe("migration failure", () => {
+  it("rolls back a failed migration completely, including its journal entry", async () => {
+    const stub = env.CONTROL.getByName("failed-migration");
+    await stub.health();
+    await runInDurableObject(stub, (_instance: ControlDO, state) => {
+      const broken = [
+        ...CONTROL_MIGRATIONS,
+        {
+          version: 2,
+          name: "broken",
+          statements: [
+            "CREATE TABLE half_done (x INTEGER)",
+            "INSERT INTO table_that_does_not_exist VALUES (1)",
+          ],
+        },
+      ];
+      expect(() => migrate(state.storage, broken)).toThrow();
+      const tables = state.storage.sql
+        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .toArray()
+        .map((row) => row.name);
+      expect(tables).not.toContain("half_done");
+      const versions = state.storage.sql.exec("SELECT version FROM _cfo_schema").toArray();
+      expect(versions).toEqual([{ version: 1 }]);
+    });
+    // The object still starts after the failed attempt, at its original version.
+    await evictDurableObject(stub);
+    expect((await stub.health()).schemaVersion).toBe(1);
+
+    // A corrected migration then applies cleanly. (The object is not restarted afterwards:
+    // its code only knows version 1, and downgrade protection would refuse to start it.)
+    await runInDurableObject(stub, (_instance: ControlDO, state) => {
+      const fixed = [
+        ...CONTROL_MIGRATIONS,
+        { version: 2, name: "fixed", statements: ["CREATE TABLE half_done (x INTEGER)"] },
+      ];
+      expect(migrate(state.storage, fixed)).toBe(2);
+    });
+  });
+});
+
 describe("Worker entry point", () => {
   it("answers the health check", async () => {
     const response = await exports.default.fetch("https://example.test/__health");

@@ -9,7 +9,8 @@
       "!**/coverage",
       "!**/worker-configuration.d.ts",
       "!python/.venv",
-      "!contracts/schema"
+      "!contracts/schema",
+      "!**/.claude"
     ]
   },
   "formatter": {
