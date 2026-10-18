@@ -1,9 +1,13 @@
 # S1 computer image, approximating the design's computer image: the Omnigent host, Claude Code
-# and Codex, with git and tmux. The files come from the published Omnigent host image, pinned by
-# digest. That image also bundles Kiro, Antigravity, pi and gh (about 2.9 GB, one layer of
-# 1.7 GB), which the design does not use, so they are left out. The supervisor and the restore
-# step are not part of this spike's image.
+# and Codex, with git and tmux, plus the Sandbox SDK's helper for directory backups. The files
+# come from the published Omnigent host image, pinned by digest. That image also bundles Kiro,
+# Antigravity, pi and gh (about 2.9 GB, one layer of 1.7 GB), which the design does not use, so
+# they are left out. The design's supervisor is not part of this spike's image; the entrypoint
+# holds the host until the workspace restore is done, which is the part S1 measures.
 FROM ghcr.io/omnigent-ai/omnigent-host:v0.17.0@sha256:51880f0edb7e0357f395f88f4bc3c4e1dfc3df06e46cffb55ae6700c1dfd82b2 AS published
+
+# The DirectoryBackup helper, matching @cloudflare/sandbox 1.0.0 in spikes/s1/package.json.
+FROM docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06 AS sandbox
 
 FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
@@ -25,11 +29,13 @@ RUN ln -s ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/loca
  && ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 COPY --from=published /build /build
 COPY --from=published /opt/venv /opt/venv
+COPY --from=sandbox /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 
 # Changing S1_IMAGE_SALT changes only this layer, giving a new image digest for cold starts.
 ARG S1_IMAGE_SALT=1
 RUN echo "${S1_IMAGE_SALT}" > /etc/s1-image-salt
 COPY s1-entry.sh /usr/local/bin/s1-entry.sh
+COPY s1-workspace.py /usr/local/bin/s1-workspace.py
 RUN chmod 0755 /usr/local/bin/s1-entry.sh
 WORKDIR /root
 CMD ["/usr/local/bin/s1-entry.sh"]

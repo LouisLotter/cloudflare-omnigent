@@ -1,15 +1,22 @@
 // Spike S1: lifecycle and wake time. Deploy only with the guarded staging tool:
 //
+//   npm ci --prefix spikes/s1            (once: @cloudflare/sandbox for the restore phases)
 //   pnpm stg deploy --suffix s1-life --owner S1 --config spikes/s1/wrangler.jsonc --days 2
-//   pnpm stg teardown --suffix s1-life
+//   pnpm stg teardown --suffix s1-life   (also empties and deletes the backups bucket)
 //
-// After the first deploy, one owner-authenticated GET /s1/kickoff starts the alarm loop.
+// After the first deploy, the owner opens /s1/kickoff and clicks Start (a same-origin POST with a
+// request-intent token, IR-017); that arms the campaign for S1_ARM_HOURS and starts the alarm loop.
 // Later phases are queued by redeploying with a new S1_COMMAND (see src/index.js).
+//
+// c1, about 3 hours: server start; 21 plain wakes; for each workspace size, a backup to R2 and
+// wakes that restore it before the host is released (20 for medium, 5 each for small and large);
+// then the heartbeat, eviction and their controls.
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "cfo-stg-s1-life",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
   "observability": {
@@ -19,15 +26,18 @@
   "vars": {
     "S1_VERSION": "1",
     "S1_REARM": "1",
-    "S1_COMMAND": "c1:server-up,wake=21,heartbeat,no-heartbeat,eviction,eviction-control"
+    "S1_ARM_HOURS": "8",
+    "S1_COMMAND": "c1:server-up,wake=21,backup-medium,rwake-medium=20,backup-small,rwake-small=5,backup-large,rwake-large=5,heartbeat,no-heartbeat,eviction,eviction-control"
   },
   "durable_objects": {
     "bindings": [
       { "name": "SERVER", "class_name": "S1Server" },
-      { "name": "COMPUTER", "class_name": "S1Computer" }
+      { "name": "COMPUTER", "class_name": "S1Computer" },
+      { "name": "CONTROL", "class_name": "S1Control" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer", "S1Control"] }],
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "cfo-stg-s1-life-backups" }],
   "containers": [
     {
       "name": "cfo-stg-s1-life-server",

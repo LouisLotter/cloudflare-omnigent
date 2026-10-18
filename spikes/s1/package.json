@@ -1,0 +1,9 @@
+{
+  "name": "cfo-spike-s1",
+  "private": true,
+  "type": "module",
+  "description": "Spike S1 only: the Sandbox SDK's DirectoryBackup for the restore phase. Not part of the pnpm workspace; install with `npm ci --prefix spikes/s1`.",
+  "dependencies": {
+    "@cloudflare/sandbox": "1.0.0"
+  }
+}

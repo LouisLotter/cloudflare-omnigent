@@ -1,3 +1,3 @@
 {"image":"ghcr.io/omnigent-ai/omnigent-host:v0.17.0","compressedBytes":1752063085,"layers":21,"largestLayerBytes":1055265624,"unpackedBytes":3737798390}
 {"image":"ghcr.io/omnigent-ai/omnigent-server:v0.17.0","compressedBytes":225918617,"layers":10,"largestLayerBytes":161450423,"unpackedBytes":652945100}
-{"image":"cfo-s1/computer:local","gzipBytes":583061903,"unpackedBytes":1584910990}
+{"image":"cfo-s1/computer:local","gzipBytes":584684732,"unpackedBytes":1588825090}

@@ -45,12 +45,33 @@ for (const w of wakes) {
 }
 
 const fields = ["onlineMs", "bootMarkMs", "firstHttpMs", "wsUpgradeMs", "startReturnedMs"];
+// Restore wakes (label restore-<size>) add the restore's own times.
+const restoreFields = ["execReadyMs", "restoreMs", "releasedMs", "hostAfterReleaseMs"];
 const out = { file, total: wakes.length, failed: wakes.filter((w) => !w.ok).length, groups: {} };
 for (const [key, list] of groups) {
-  out.groups[key] = Object.fromEntries(fields.map((f) => [f, stats(list.map((w) => w[f]))]));
+  const keys = key.startsWith("restore-") ? [...fields, ...restoreFields] : fields;
+  out.groups[key] = Object.fromEntries(keys.map((f) => [f, stats(list.map((w) => w[f]))]));
   out.groups[key].locations = [...new Set(list.map((w) => w.location))];
   out.groups[key].dns = [...new Set(list.map((w) => w.dns))];
+  if (key.startsWith("restore-")) {
+    out.groups[key].archiveBytes = [...new Set(list.map((w) => w.archiveBytes))];
+    out.groups[key].rawBytes = [...new Set(list.map((w) => w.rawBytes))];
+    out.groups[key].restoredMatches = list.filter((w) => w.restoredMatches).length;
+    out.groups[key].restoreErrors = list.filter((w) => w.restoreError).length;
+  }
 }
+out.backups = lines
+  .filter((l) => l.s1 === "backup")
+  .map(({ size, ok, makeMs, backupMs, rawBytes, files, archiveBytes, error }) => ({
+    size,
+    ok,
+    makeMs,
+    backupMs,
+    rawBytes,
+    files,
+    archiveBytes,
+    error,
+  }));
 const series = wakes.filter((w) => w.ok && (w.label ?? "") === "" && w.index >= 0);
 out.series = Object.fromEntries(fields.map((f) => [f, stats(series.map((w) => w[f]))]));
 out.seriesWithoutFirst = Object.fromEntries(

@@ -32,6 +32,17 @@ on_term() {
 }
 trap on_term TERM INT
 
+# Restore wakes: hold the host until the controller has restored the workspace and created
+# /tmp/s1-host-release, as the design orders a wake (restore first, then the host).
+if [ "${S1_HOLD_HOST:-0}" = "1" ]; then
+  HELD=0
+  while [ ! -e /tmp/s1-host-release ] && [ "$HELD" -lt 18000 ]; do
+    sleep 0.1
+    HELD=$((HELD + 1))
+  done
+  mark release &
+fi
+
 omnigent host --server http://omnigent.internal --non-interactive --no-open &
 CHILD=$!
 wait "$CHILD"
