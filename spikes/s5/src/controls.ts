@@ -112,7 +112,7 @@ export const PAGE_HEADERS: Readonly<Record<string, string>> = {
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 };
 
 /** The confirmation page a GET shows: what the control does, and one button that POSTs it. */

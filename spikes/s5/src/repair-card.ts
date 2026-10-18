@@ -31,7 +31,7 @@ export const CARD_HEADERS: Readonly<Record<string, string>> = {
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 };
 
 const EXPIRY_WARNING_SECONDS = 7 * 86_400;

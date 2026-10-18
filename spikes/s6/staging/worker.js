@@ -44,7 +44,7 @@ const PAGE_HEADERS = {
   "x-frame-options": "DENY",
   "content-security-policy": "frame-ancestors 'none'",
   "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 };
 const enc = new TextEncoder();
 const dec = new TextDecoder();

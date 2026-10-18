@@ -373,7 +373,7 @@ const PAGE_HEADERS = {
   "content-security-policy":
     "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   "x-frame-options": "DENY",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 };
 const PAGE_TEXT = {
   start:

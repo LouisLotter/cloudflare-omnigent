@@ -155,6 +155,9 @@ describe("a GET never changes state", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toMatch(/^text\/html/);
       expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+      // Under no-referrer a browser sends `Origin: null` with this page's own form POST, and the
+      // origin check refuses it. same-origin keeps the real Origin and gives other sites nothing.
+      expect(res.headers.get("referrer-policy")).toBe("same-origin");
       const html = await res.text();
       expect(html).toContain(`<form method="post" action="/s2/${action}">`);
       expect(h.effects).toEqual([]);

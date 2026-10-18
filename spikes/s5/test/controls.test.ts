@@ -13,8 +13,10 @@ import {
   currentIntent,
   isArmed,
   newIntent,
+  PAGE_HEADERS,
   renderConfirmation,
 } from "../src/controls.ts";
+import { CARD_HEADERS } from "../src/repair-card.ts";
 
 const ORIGIN = "https://cfo-stg-s5-access.example.com";
 const INTENT = newIntent();
@@ -143,4 +145,17 @@ describe("confirmation page", () => {
       expect(CONTROLS[path]?.needsArm).toBe(false);
     }
   });
+});
+
+// Under no-referrer a browser sends `Origin: null` with a page's own form POST, which the origin
+// check refuses. same-origin keeps the real Origin for that POST and gives other sites nothing.
+describe("pages that post keep the Origin of their own form submissions", () => {
+  for (const [page, headers] of [
+    ["confirmation page", PAGE_HEADERS],
+    ["repair card", CARD_HEADERS],
+  ] as const) {
+    it(`${page}: referrer-policy is same-origin`, () => {
+      expect(headers["referrer-policy"]).toBe("same-origin");
+    });
+  }
 });
