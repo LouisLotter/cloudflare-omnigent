@@ -4,18 +4,40 @@
  * `(request: Request) => Promise<Response>` handler to hand to the code under test in place of its
  * Omnigent fetcher.
  *
- * Response bodies use Omnigent's own field names, taken from omnigent commit 90a9bed9a; each shape
- * cites its source, relative to the omnigent repository. Timestamps are Unix epoch seconds, except
- * `next_run_at`, which is an ISO 8601 string from the live scheduler.
+ * Sources are cited relative to the omnigent repository at commit 90a9bed9a.
  *
- * Modelled: a caller identity per request (none: 401, as `require_user` does), owner scoping
- * (another user's task is a 404), run ordering and cursor pagination, query and body validation
- * (FastAPI's 422), and the sharing route's admin check, validation and editability rules.
+ * What the fake guarantees, checked against those sources:
+ * - Response bodies: every field name, in Omnigent's order, and the success statuses (200, and 202
+ *   for "run now"). Timestamps are Unix epoch seconds, except `next_run_at`, which is ISO 8601.
+ * - Authentication: without a valid login, every route but `/v1/me` answers 401 with Omnigent's
+ *   error body. `/v1/me` answers as the server's auth source does; the default is the
+ *   deployment's accounts mode, 401 `{"user_id": null, "login_url": "/login"}`. Header mode, which
+ *   answers 200, is an explicit option.
+ * - Authorization: another user's task is a 404, as a missing one is; the sharing routes need an
+ *   admin (401 without a login, else 403).
+ * - Lists: tasks oldest first, runs newest first, with Omnigent's cursor pagination.
+ * - Input validation: the 422 bodies for the runs route's `limit` and for the `PUT /v1/sharing`
+ *   body, including FastAPI's JSON content-type rule and Pydantic's lax coercion of
+ *   `public_sharing` (for example "yes", "off", 1 and 0.0 are booleans). The unit tests replay
+ *   test/fixtures/omnigent/validation.json, recorded from the real model by
+ *   record_validation.py, so the fake is not its own authority.
+ * - Sharing rules: every field is validated and authorized before anything is written, with
+ *   Omnigent's messages for an empty update, unknown values and settings managed by the deployment.
  *
- * Not modelled: RRULE evaluation (`next_run_at` is whatever the test sets) and the scheduler. "Run
- * now" records a `running` run at once, where Omnigent records it from a background task; inject a
- * 409 or 503 fault for "already in flight" or "scheduler not running". Routes that create, edit or
- * delete tasks are absent: tests change state through the fake's methods.
+ * Intentional simplifications:
+ * - No RRULE evaluation or scheduler: `next_run_at` is whatever the test sets.
+ * - "Run now" records a `running` run immediately; Omnigent records it from a background task, so
+ *   the real run appears slightly later. Inject a 409 fault for "already in flight" and a 503 for
+ *   "scheduler not running"; the fake never produces those by itself.
+ * - No routes that create, edit or delete tasks: tests change state through the fake's methods.
+ * - Identity comes from the `identify` option. Cookies, session tokens, account generations and
+ *   revocation are not modelled, nor the six-hour stale-run backstop.
+ * - Sharing assumes multi-user mode, so the admin check always applies (single-user servers skip
+ *   it), and takes `public_sharing_max_level_options` as given rather than deriving it.
+ * - 422 approximations: `json_invalid` reports the JavaScript parser's position and message;
+ *   integer-valued numbers beyond 2^63 are not told apart as Pydantic does.
+ * - Unknown paths and methods get Starlette's plain 404 and 405; HEAD, OPTIONS and trailing-slash
+ *   redirects are not modelled.
  *
  * Faults are injected per route, or for every request with "*": a delay, an error status, or a
  * dropped request or response. Every request is logged, including those to unknown routes.
@@ -36,11 +58,27 @@ export type FakeOmnigentRoute = (typeof FAKE_OMNIGENT_ROUTES)[number];
 // ---------------------------------------------------------------------------------------------
 // Wire shapes
 
-/** `GET /v1/me`: omnigent/server/app.py:3197-3247. */
+/** `GET /v1/me`: omnigent/server/app.py:3197-3247. `user_id` is null only in header mode. */
 export interface MeJson {
   user_id: string | null;
   is_admin: boolean;
 }
+
+/** `GET /v1/me` without a login in accounts or OIDC mode, status 401: app.py:3228-3233. */
+export interface MeLoginRequiredJson {
+  user_id: null;
+  login_url: string;
+}
+
+/** The server's auth source (`OMNIGENT_AUTH_PROVIDER`); the deployment uses accounts. */
+export type OmnigentAuthSource = "accounts" | "oidc" | "header";
+
+/** Where each source sends a caller without a login: omnigent/server/auth.py:530-548. */
+const LOGIN_URLS: Readonly<Record<OmnigentAuthSource, string | null>> = {
+  accounts: "/login",
+  oidc: "/auth/login",
+  header: null,
+};
 
 /** Run status values: omnigent/entities/scheduled_task.py:109-110. */
 export type ScheduledRunStatus = "scheduled" | "running" | "succeeded" | "failed" | "skipped";
@@ -125,12 +163,15 @@ export interface SharingJson {
   default_public_sessions_options: DefaultPublicSessions[];
 }
 
-/** `PUT /v1/sharing` body: omnigent/server/routes/sharing.py:45-56. */
-export interface SetSharingJson {
-  sharing_mode?: string | null;
-  public_sharing?: boolean | null;
-  public_sharing_max_level?: string | null;
-  default_public_sessions?: string | null;
+/**
+ * The validated `PUT /v1/sharing` body, `SetSharingRequest` at omnigent/server/routes/sharing.py:45-56.
+ * Its fields are non-strict, so Pydantic coerces input: see `laxBoolean`.
+ */
+export interface SetSharingModel {
+  sharing_mode: string | null;
+  public_sharing: boolean | null;
+  public_sharing_max_level: string | null;
+  default_public_sessions: string | null;
 }
 
 /** Application errors: omnigent/server/app.py:2381-2384; codes at omnigent/errors.py:238-246. */
@@ -138,9 +179,17 @@ export interface OmnigentErrorJson {
   error: { code: string; message: string };
 }
 
+export interface ValidationErrorDetail {
+  type: string;
+  loc: (string | number)[];
+  msg: string;
+  input: unknown;
+  ctx?: Record<string, unknown>;
+}
+
 /** FastAPI's stock 422 body (omnigent/server/app.py:2386-2409 delegates to it). */
 export interface ValidationErrorJson {
-  detail: { type: string; loc: (string | number)[]; msg: string; input: unknown }[];
+  detail: ValidationErrorDetail[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -225,6 +274,8 @@ export class FakeOmnigentDroppedError extends Error {
 export interface FakeOmnigentOptions {
   /** Who is calling. Default: every request is FAKE_OWNER. Return null for no valid login. */
   readonly identify?: (request: Request) => FakeIdentity | null;
+  /** How `GET /v1/me` answers a request without a login. Default: "accounts", as deployed. */
+  readonly auth?: OmnigentAuthSource;
   /** Clock in Unix epoch seconds. Default: the system clock. */
   readonly now?: () => number;
   /** How a delay fault waits. Default: setTimeout. */
@@ -278,6 +329,7 @@ export class FakeOmnigent {
   readonly fetch = (request: Request): Promise<Response> => this.#handle(request);
 
   readonly #identify: (request: Request) => FakeIdentity | null;
+  readonly #loginUrl: string | null;
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #tasks = new Map<string, FakeScheduledTask>();
@@ -289,6 +341,7 @@ export class FakeOmnigent {
 
   constructor(options: FakeOmnigentOptions = {}) {
     this.#identify = options.identify ?? (() => FAKE_OWNER);
+    this.#loginUrl = LOGIN_URLS[options.auth ?? "accounts"];
     this.#now = options.now ?? (() => Math.floor(Date.now() / 1000));
     this.#sleep =
       options.sleep ??
@@ -507,12 +560,18 @@ export class FakeOmnigent {
   #route(match: RouteMatch, request: Request, url: URL, text: string): Response {
     const identity = this.#identify(request);
     switch (match.route) {
-      case "GET /v1/me":
-        return json(
-          identity === null
-            ? { user_id: null, is_admin: false }
-            : { user_id: identity.userId, is_admin: identity.isAdmin },
-        );
+      case "GET /v1/me": {
+        if (identity !== null) {
+          const body: MeJson = { user_id: identity.userId, is_admin: identity.isAdmin };
+          return json(body);
+        }
+        if (this.#loginUrl === null) {
+          const body: MeJson = { user_id: null, is_admin: false };
+          return json(body);
+        }
+        const body: MeLoginRequiredJson = { user_id: null, login_url: this.#loginUrl };
+        return json(body, 401);
+      }
       case "GET /v1/scheduled-tasks": {
         if (identity === null) return unauthorized();
         const tasks = this.tasks().filter((task) => task.owner_user_id === identity.userId);
@@ -533,7 +592,7 @@ export class FakeOmnigent {
       case "GET /v1/sharing":
         return this.#adminCheck(identity) ?? json(this.sharing);
       case "PUT /v1/sharing":
-        return this.#putSharing(identity, text);
+        return this.#putSharing(identity, request.headers.get("content-type"), text);
     }
   }
 
@@ -544,26 +603,33 @@ export class FakeOmnigent {
     identity: FakeIdentity | null,
     query: URLSearchParams,
   ): Response {
-    // FastAPI validates query parameters before the handler runs.
-    const rawLimit = query.get("limit");
+    // FastAPI validates query parameters before the handler runs; a repeated one counts once,
+    // with its last value.
+    const rawLimit = query.getAll("limit").at(-1);
     let limit = 100;
-    if (rawLimit !== null) {
-      if (!/^[+-]?\d+$/.test(rawLimit.trim())) {
-        return validationError("int_parsing", ["query", "limit"], rawLimit, INT_PARSING);
+    if (rawLimit !== undefined) {
+      const parsed = laxInteger(rawLimit);
+      const loc = ["query", "limit"];
+      if (parsed === null) {
+        return validationError([{ type: "int_parsing", loc, msg: INT_PARSING, input: rawLimit }]);
       }
-      limit = Number(rawLimit);
-      if (limit < 1) {
-        return validationError("greater_than_equal", ["query", "limit"], rawLimit, GE_1);
+      if (parsed < 1) {
+        const msg = "Input should be greater than or equal to 1";
+        const ctx = { ge: 1 };
+        return validationError([{ type: "greater_than_equal", loc, msg, input: rawLimit, ctx }]);
       }
-      if (limit > 1000) {
-        return validationError("less_than_equal", ["query", "limit"], rawLimit, LE_1000);
+      if (parsed > 1000) {
+        const msg = "Input should be less than or equal to 1000";
+        const ctx = { le: 1000 };
+        return validationError([{ type: "less_than_equal", loc, msg, input: rawLimit, ctx }]);
       }
+      limit = parsed;
     }
     if (identity === null) return unauthorized();
     const task = this.#ownedTask(taskId, identity);
     if (task === undefined) return taskNotFound();
     let runs = this.runs(task.id);
-    const after = query.get("after");
+    const after = query.getAll("after").at(-1) ?? null;
     if (after !== null) {
       // An unknown cursor matches nothing in Omnigent's keyset query, so the page is empty.
       const index = runs.findIndex((run) => run.id === after);
@@ -610,8 +676,9 @@ export class FakeOmnigent {
   }
 
   /** omnigent/server/routes/sharing.py:127-222: validate and authorize every field, then write. */
-  #putSharing(identity: FakeIdentity | null, text: string): Response {
-    const parsed = parseSetSharing(text);
+  #putSharing(identity: FakeIdentity | null, contentType: string | null, text: string): Response {
+    // FastAPI validates the body (422) before the handler's admin check runs.
+    const parsed = parseSetSharing(contentType, text);
     if (parsed instanceof Response) return parsed;
     const denied = this.#adminCheck(identity);
     if (denied !== null) return denied;
@@ -732,30 +799,118 @@ function matchRoute(method: string, path: string): RouteMatch | Response {
   );
 }
 
-function parseSetSharing(text: string): SetSharingJson | Response {
-  if (text.trim() === "") return validationError("missing", ["body"], null, "Field required");
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return validationError("json_invalid", ["body"], text, "JSON decode error");
+/**
+ * Reads a `PUT /v1/sharing` body as FastAPI and Pydantic do. FastAPI parses JSON only for a JSON
+ * content type (`strict_content_type`, its default, which Omnigent keeps); any other body reaches
+ * the model as text and fails as "not an object". An empty body or JSON `null` is missing. Each
+ * field is then validated, all errors reported together.
+ */
+function parseSetSharing(contentType: string | null, text: string): SetSharingModel | Response {
+  if (text === "") {
+    return validationError([{ type: "missing", loc: ["body"], msg: FIELD_REQUIRED, input: null }]);
   }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return validationError("model_attributes_type", ["body"], body, NOT_AN_OBJECT);
-  }
-  const record = body as Record<string, unknown>;
-  for (const key of ["sharing_mode", "public_sharing_max_level", "default_public_sessions"]) {
-    const value = record[key];
-    if (value != null && typeof value !== "string") {
-      return validationError("string_type", ["body", key], value, "Input should be a valid string");
+  let body: unknown = text;
+  if (isJsonContentType(contentType)) {
+    try {
+      body = JSON.parse(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const position = Number(/position (\d+)/.exec(message)?.[1] ?? 0);
+      return validationError([
+        {
+          type: "json_invalid",
+          loc: ["body", position],
+          msg: "JSON decode error",
+          input: {},
+          ctx: { error: message },
+        },
+      ]);
     }
   }
-  const publicSharing = record.public_sharing;
-  if (publicSharing != null && typeof publicSharing !== "boolean") {
-    return validationError("bool_type", ["body", "public_sharing"], publicSharing, NOT_A_BOOLEAN);
+  if (body === null) {
+    return validationError([{ type: "missing", loc: ["body"], msg: FIELD_REQUIRED, input: null }]);
   }
-  // Unknown fields are ignored: the request model does not forbid extras.
-  return record as SetSharingJson;
+  if (typeof body !== "object" || Array.isArray(body)) {
+    return validationError([
+      { type: "model_attributes_type", loc: ["body"], msg: NOT_AN_OBJECT, input: body },
+    ]);
+  }
+  const record = body as Record<string, unknown>;
+  const model: SetSharingModel = {
+    sharing_mode: null,
+    public_sharing: null,
+    public_sharing_max_level: null,
+    default_public_sessions: null,
+  };
+  const errors: ValidationErrorDetail[] = [];
+  // Field order as declared, which is the order Pydantic reports errors in. Unknown fields are
+  // ignored: the model does not forbid extras.
+  for (const key of SET_SHARING_FIELDS) {
+    const input = record[key];
+    if (input === undefined || input === null) continue;
+    if (key === "public_sharing") {
+      const value = laxBoolean(input);
+      if (typeof value === "boolean") model.public_sharing = value;
+      else errors.push({ ...value, loc: ["body", key], input });
+    } else if (typeof input === "string") {
+      model[key] = input;
+    } else {
+      errors.push({ type: "string_type", loc: ["body", key], msg: NOT_A_STRING, input });
+    }
+  }
+  return errors.length > 0 ? validationError(errors) : model;
+}
+
+const SET_SHARING_FIELDS = [
+  "sharing_mode",
+  "public_sharing",
+  "public_sharing_max_level",
+  "default_public_sessions",
+] as const;
+
+/** FastAPI's test: application/json or application/<anything>+json, ignoring parameters. */
+function isJsonContentType(contentType: string | null): boolean {
+  if (contentType === null) return false;
+  const essence = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  const [type = "", subtype = ""] = essence.split("/");
+  return type === "application" && (subtype === "json" || subtype.endsWith("+json"));
+}
+
+const TRUE_STRINGS: ReadonlySet<string> = new Set(["1", "on", "t", "true", "y", "yes"]);
+const FALSE_STRINGS: ReadonlySet<string> = new Set(["0", "off", "f", "false", "n", "no"]);
+
+/**
+ * Pydantic's lax (non-strict) boolean, as validation.json records it: booleans; the strings above
+ * in any case but without surrounding spaces; and the numbers 0 and 1, including 0.0 and 1.0.
+ */
+function laxBoolean(input: unknown): boolean | { type: string; msg: string } {
+  if (typeof input === "boolean") return input;
+  if (typeof input === "string") {
+    const lowered = input.toLowerCase();
+    if (TRUE_STRINGS.has(lowered)) return true;
+    if (FALSE_STRINGS.has(lowered)) return false;
+    return { type: "bool_parsing", msg: BOOL_PARSING };
+  }
+  if (typeof input === "number") {
+    if (input === 0) return false;
+    if (input === 1) return true;
+    // Other whole numbers in Pydantic's 64-bit range parse but mean nothing; the rest are the
+    // wrong type.
+    if (Number.isInteger(input) && Math.abs(input) < 2 ** 63) {
+      return { type: "bool_parsing", msg: BOOL_PARSING };
+    }
+  }
+  return { type: "bool_type", msg: NOT_A_BOOLEAN };
+}
+
+/**
+ * Pydantic's lax integer from a string, as validation.json records it: surrounding whitespace, a
+ * sign, single underscores between digits and a fraction of zeros are accepted. Null otherwise.
+ */
+function laxInteger(input: string): number | null {
+  const trimmed = input.trim();
+  if (!/^[+-]?[0-9]+(?:_[0-9]+)*(?:\.0+)?$/.test(trimmed)) return null;
+  return Number(trimmed.replaceAll("_", ""));
 }
 
 function parseLoggedBody(text: string): unknown {
@@ -786,19 +941,15 @@ const invalidInput = (message: string): Response => omnigentError(400, "invalid_
 const forbidden = (message: string): Response => omnigentError(403, "forbidden", message);
 
 // Pydantic's messages for the validation errors the fake reproduces.
+const FIELD_REQUIRED = "Field required";
 const INT_PARSING = "Input should be a valid integer, unable to parse string as an integer";
-const GE_1 = "Input should be greater than or equal to 1";
-const LE_1000 = "Input should be less than or equal to 1000";
 const NOT_AN_OBJECT = "Input should be a valid dictionary or object to extract fields from";
+const NOT_A_STRING = "Input should be a valid string";
 const NOT_A_BOOLEAN = "Input should be a valid boolean";
+const BOOL_PARSING = "Input should be a valid boolean, unable to interpret input";
 
-function validationError(
-  type: string,
-  loc: (string | number)[],
-  input: unknown,
-  msg: string,
-): Response {
-  const body: ValidationErrorJson = { detail: [{ type, loc, msg, input }] };
+function validationError(detail: ValidationErrorDetail[]): Response {
+  const body: ValidationErrorJson = { detail };
   return json(body, 422);
 }
 

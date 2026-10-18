@@ -14,8 +14,12 @@
 #           bundles the Worker without a Cloudflare account.
 #   python  The uv project in python/: locked install, ruff lint and format check, and pytest,
 #           which validates the golden fixtures against the exported JSON Schemas.
-#   canary  The canary-secret scanner. Its self-test proves it still finds a planted canary;
-#           then it scans the contracts, Worker source, Python tests and docs.
+#   canary  The canary-secret scanner (scripts/canary-scan.ts). Its self-test proves it still
+#           finds planted canaries in text, NUL-prefixed, binary, gzip and tar.gz files, and that
+#           a zip or an empty directory counts as incomplete; then it scans the contracts, Worker
+#           source, Python tests and docs. Any non-zero exit fails the step: 1 means a canary was
+#           found, 2 a usage error, and 3 an incomplete scan (undecodable data, an unreadable
+#           file, or a path with no files), which is never treated as clean.
 #   images  Not yet: see the placeholder at the end.
 #
 # Still to come, as the work packages that need them land: deterministic simulation tests (M3)
@@ -97,7 +101,8 @@ jobs:
       - name: Wrangler dry run
         run: pnpm --filter @cfo/worker dry-run
 
-      # Every built artefact is scanned too, not only the sources.
+      # Every built artefact is scanned too, not only the sources. A path given explicitly is
+      # scanned even though it is named dist, and an empty bundle directory exits 3, not 0.
       - name: Canary scan of the built Worker bundle
         run: node scripts/canary-scan.ts worker/dist
 
@@ -147,9 +152,12 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
 
-      - name: Scanner self-test (finds a planted canary)
+      # With no paths, --self-test runs alone: it plants canaries in a temporary directory and
+      # exits 0 only if every planted case is detected and every incomplete case is reported.
+      - name: Scanner self-test (finds planted canaries, rejects incomplete scans)
         run: node scripts/canary-scan.ts --self-test
 
+      # Each path must hold at least one file; binary files are scanned, not skipped.
       - name: Scan contracts, Worker source, Python tests and docs
         run: node scripts/canary-scan.ts contracts worker/src python/tests docs
 

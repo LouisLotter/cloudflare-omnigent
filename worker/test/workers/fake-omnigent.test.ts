@@ -16,7 +16,8 @@ describe("FakeOmnigent in workerd", () => {
     const put = await fetcher(
       new Request("https://omnigent.test/v1/sharing", {
         method: "PUT",
-        body: JSON.stringify({ sharing_mode: "off" }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sharing_mode: "off", public_sharing: "yes" }),
       }),
     );
 
@@ -24,7 +25,7 @@ describe("FakeOmnigent in workerd", () => {
       { id: task.id, host_id: "host-1" },
     ]);
     expect(put.status).toBe(200);
-    expect(fake.sharing.sharing_mode).toBe("off");
+    expect(fake.sharing).toMatchObject({ sharing_mode: "off", public_sharing_enabled: true });
   });
 
   it("delays with real timers and drops responses", async () => {

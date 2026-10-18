@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+// Recorded from Omnigent's real request models by ../fixtures/omnigent/record_validation.py.
+import validation from "../fixtures/omnigent/validation.json" with { type: "json" };
 import {
   DEFAULT_SHARING,
   FAKE_OWNER,
@@ -9,6 +11,7 @@ import {
   type ScheduledTaskListJson,
   type ScheduledTaskRunsJson,
   type SharingJson,
+  type ValidationErrorDetail,
 } from "../support/fake-omnigent.ts";
 
 const BASE = "https://omnigent.test";
@@ -24,16 +27,17 @@ function setup(options: FakeOmnigentOptions = {}) {
     },
     ...options,
   });
-  const call = (method: string, path: string, body?: unknown, headers?: Record<string, string>) =>
-    fake.fetch(
-      new Request(`${BASE}${path}`, {
-        method,
-        ...(headers === undefined ? {} : { headers }),
-        ...(body === undefined
-          ? {}
-          : { body: typeof body === "string" ? body : JSON.stringify(body) }),
-      }),
-    );
+  // A body is sent as JSON, with the content type FastAPI requires, unless headers override it.
+  const call = (method: string, path: string, body?: unknown, headers?: Record<string, string>) => {
+    const init: RequestInit = { method };
+    if (body !== undefined) {
+      init.body = typeof body === "string" ? body : JSON.stringify(body);
+      init.headers = { "content-type": "application/json", ...headers };
+    } else if (headers !== undefined) {
+      init.headers = headers;
+    }
+    return fake.fetch(new Request(`${BASE}${path}`, init));
+  };
   const advance = (seconds: number) => {
     clock += seconds;
   };
@@ -106,9 +110,36 @@ describe("GET /v1/me", () => {
     expect(await response.json()).toEqual({ user_id: FAKE_OWNER.userId, is_admin: true });
   });
 
-  it("returns a null user without a login, as header auth does", async () => {
+  it("answers 401 with the login page without a login, as the deployed accounts mode does", async () => {
     const { call } = setup({ identify: () => null });
-    expect(await (await call("GET", "/v1/me")).json()).toEqual({ user_id: null, is_admin: false });
+
+    const response = await call("GET", "/v1/me");
+
+    // Exact bytes, so the field order is checked too: omnigent/server/app.py:3228-3233.
+    expect(response.status).toBe(401);
+    expect(await response.text()).toBe('{"user_id":null,"login_url":"/login"}');
+  });
+
+  it("answers OIDC mode's login URL, and header mode's 200, only when asked", async () => {
+    const oidc = setup({ identify: () => null, auth: "oidc" });
+    const oidcResponse = await oidc.call("GET", "/v1/me");
+    expect(oidcResponse.status).toBe(401);
+    expect(await oidcResponse.json()).toEqual({ user_id: null, login_url: "/auth/login" });
+
+    const header = setup({ identify: () => null, auth: "header" });
+    const headerResponse = await header.call("GET", "/v1/me");
+    expect(headerResponse.status).toBe(200);
+    expect(await headerResponse.text()).toBe('{"user_id":null,"is_admin":false}');
+  });
+
+  it("answers a logged-in caller the same way in every mode", async () => {
+    for (const auth of ["accounts", "oidc", "header"] as const) {
+      const { call } = setup({ auth });
+      expect(await (await call("GET", "/v1/me")).json()).toEqual({
+        user_id: FAKE_OWNER.userId,
+        is_admin: true,
+      });
+    }
   });
 });
 
@@ -265,20 +296,35 @@ describe("GET /v1/scheduled-tasks/{id}/runs", () => {
     expect((await runsPage(call, `${path}&after=${"e".repeat(32)}`)).runs).toEqual([]);
   });
 
-  it.each([
-    ["0", "greater_than_equal"],
-    ["1001", "less_than_equal"],
-    ["ten", "int_parsing"],
-  ])("rejects limit=%s with FastAPI's 422", async (limit, type) => {
+  it.each(validation.runsLimit)(
+    "parses limit=$limit as FastAPI and Pydantic do",
+    async ({ limit, status, response: recorded }) => {
+      const { fake, call } = setup();
+      const task = fake.addTask();
+      for (let at = 1; at <= 60; at += 1) fake.addRun(task.id, { scheduled_at: at });
+      const query = new URLSearchParams({ limit });
+
+      const response = await call("GET", `/v1/scheduled-tasks/${task.id}/runs?${query}`);
+
+      expect(response.status).toBe(status);
+      if (status === 200) {
+        // The recorded route echoes the parsed limit; here it shows as the page size.
+        const page = (await response.json()) as ScheduledTaskRunsJson;
+        expect(page.runs).toHaveLength(Math.min(60, (recorded as { limit: number }).limit));
+      } else {
+        expect(await response.json()).toEqual(recorded);
+      }
+    },
+  );
+
+  it("uses the last value of a repeated limit", async () => {
     const { fake, call } = setup();
     const task = fake.addTask();
+    for (let at = 1; at <= 5; at += 1) fake.addRun(task.id, { scheduled_at: at });
 
-    const response = await call("GET", `/v1/scheduled-tasks/${task.id}/runs?limit=${limit}`);
+    const response = await call("GET", `/v1/scheduled-tasks/${task.id}/runs?limit=0&limit=2`);
 
-    expect(response.status).toBe(422);
-    expect(await response.json()).toMatchObject({
-      detail: [{ type, loc: ["query", "limit"], input: limit }],
-    });
+    expect(((await response.json()) as ScheduledTaskRunsJson).runs).toHaveLength(2);
   });
 });
 
@@ -405,19 +451,112 @@ describe("sharing", () => {
     });
   });
 
-  it.each([
-    ["", "missing"],
-    ["{not json", "json_invalid"],
-    ["[]", "model_attributes_type"],
-    [JSON.stringify({ public_sharing: "yes" }), "bool_type"],
-    [JSON.stringify({ sharing_mode: 3 }), "string_type"],
-  ])("answers 422 for the body %j", async (text, type) => {
-    const { call } = setup();
+  // IR-004: the public_sharing matrix and the other body cases, as the real model answered them.
+  it.each(validation.putSharing)(
+    "answers $body ($contentType) as the real model and route would",
+    async ({ body, contentType, status, response: recorded }) => {
+      const { fake, call } = setup();
+      // No content type at all needs a byte body: a string body would get text/plain.
+      const response =
+        contentType === null
+          ? await fake.fetch(
+              new Request(`${BASE}/v1/sharing`, {
+                method: "PUT",
+                body: new TextEncoder().encode(body),
+              }),
+            )
+          : await call("PUT", "/v1/sharing", body, { "content-type": contentType });
 
-    const response = await call("PUT", "/v1/sharing", text);
+      if (status === 422) {
+        const expected = (recorded as { detail: ValidationErrorDetail[] }).detail;
+        const actual = ((await response.json()) as { detail: ValidationErrorDetail[] }).detail;
+        expect(response.status).toBe(422);
+        if (expected[0]?.type === "json_invalid") {
+          // The parser's position and message differ between Python and JavaScript.
+          expect(actual).toMatchObject([{ type: "json_invalid", loc: ["body", 1], input: {} }]);
+        } else {
+          expect(actual).toEqual(expected);
+        }
+        expect(fake.sharing).toEqual(DEFAULT_SHARING);
+        return;
+      }
+      // The model accepted the body; the route's own rules (sharing.py:139-222) decide the rest.
+      const model = recorded as { sharing_mode: string | null; public_sharing: boolean | null };
+      if (model.sharing_mode === null && model.public_sharing === null) {
+        expect(response.status).toBe(400);
+        expect(fake.sharing).toEqual(DEFAULT_SHARING);
+        return;
+      }
+      const expected = {
+        ...DEFAULT_SHARING,
+        ...(model.sharing_mode === null ? {} : { sharing_mode: model.sharing_mode }),
+        ...(model.public_sharing === null ? {} : { public_sharing_enabled: model.public_sharing }),
+      };
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(expected);
+      expect(fake.sharing).toEqual(expected);
+    },
+  );
+
+  it.each([
+    [true, true],
+    ["yes", true],
+    ["On", true],
+    [1, true],
+    [1.0, true],
+    [false, false],
+    ["off", false],
+    ["N", false],
+    [0, false],
+  ])("coerces public_sharing %j to %j and applies it", async (input, enabled) => {
+    const { fake, call } = setup({ sharing: { public_sharing_enabled: !enabled } });
+
+    const response = await call("PUT", "/v1/sharing", { public_sharing: input });
+
+    expect(response.status).toBe(200);
+    expect(fake.sharing.public_sharing_enabled).toBe(enabled);
+  });
+
+  it.each([
+    ["maybe", "bool_parsing"],
+    [" yes", "bool_parsing"],
+    [2, "bool_parsing"],
+    [0.5, "bool_type"],
+    [[true], "bool_type"],
+  ])("rejects public_sharing %j with %s and changes nothing", async (input, type) => {
+    const { fake, call } = setup();
+
+    const response = await call("PUT", "/v1/sharing", { public_sharing: input });
 
     expect(response.status).toBe(422);
-    expect(await response.json()).toMatchObject({ detail: [{ type }] });
+    expect(await response.json()).toMatchObject({
+      detail: [{ type, loc: ["body", "public_sharing"], input }],
+    });
+    expect(fake.sharing).toEqual(DEFAULT_SHARING);
+  });
+
+  it("validates the body before checking for an admin, as FastAPI does", async () => {
+    const { call } = setup({ identify: () => OTHER_USER });
+
+    expect((await call("PUT", "/v1/sharing", { public_sharing: "maybe" })).status).toBe(422);
+    expect((await call("PUT", "/v1/sharing", { public_sharing: "yes" })).status).toBe(403);
+  });
+
+  it("rejects a JSON body sent without a JSON content type", async () => {
+    const { fake, call } = setup();
+
+    const response = await call(
+      "PUT",
+      "/v1/sharing",
+      { public_sharing: true },
+      {
+        "content-type": "text/plain",
+      },
+    );
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ detail: [{ type: "model_attributes_type" }] });
+    expect(fake.sharing.public_sharing_enabled).toBe(false);
   });
 });
 
