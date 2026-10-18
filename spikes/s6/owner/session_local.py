@@ -68,9 +68,54 @@ def say(text: str) -> None:
     print(f"\n=== {text}", flush=True)
 
 
+class LookupFailed(StepFailed):
+    """Docker could not answer: the state is unknown, which is never the same as "absent"."""
+
+
+def lookup(*args: str) -> str:
+    r = subprocess.run(list(args), capture_output=True, text=True)
+    if r.returncode != 0:
+        raise LookupFailed(f"lookup failed ({r.returncode}): {' '.join(args[:3])} ...")
+    return (r.stdout or "").strip()
+
+
 def computers() -> list[str]:
-    out = sh("docker", "ps", "-a", "--filter", f"name=^{PREFIX}", "--format", "{{.Names}}", check=False)
+    out = lookup("docker", "ps", "-a", "--filter", f"name=^{PREFIX}", "--format", "{{.Names}}")
     return [x for x in out.splitlines() if x]
+
+
+def store_state() -> str:
+    """'running', 'stopped' or 'absent'; raises LookupFailed when Docker cannot tell."""
+    if lookup("docker", "ps", "-q", "--filter", f"name=^{MINIO}$"):
+        return "running"
+    return "stopped" if lookup("docker", "ps", "-aq", "--filter", f"name=^{MINIO}$") else "absent"
+
+
+# The session's durable marker, in the results directory (no secrets): the positive evidence of
+# how far the session got. "started" is written before anything else, "signin-attempted" before
+# the first sign-in command runs, and "signed-out-verified" or "closed-never-signed-in" at the end.
+def state_file() -> Path:
+    return OUT / "session-state.json"
+
+
+def write_state(phase: str) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    tmp = state_file().with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump({"phase": phase, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, state_file())
+
+
+def read_state() -> str | None:
+    """The marker's phase; None when there is no marker; 'unreadable' when it cannot be read."""
+    try:
+        return json.loads(state_file().read_text())["phase"]
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unreadable"
 
 
 def wait_until_no_computer(timeout_s: float = 90) -> bool:
@@ -135,37 +180,76 @@ def stop_computer(name: str, final_capture: bool = True) -> None:
 
 
 def is_running(name: str) -> bool:
-    return sh("docker", "inspect", "-f", "{{.State.Running}}", name, check=False) == "true"
+    """Whether a computer runs. One being removed (an interrupted removal) counts as gone."""
+    for _ in range(15):
+        try:
+            return lookup("docker", "inspect", "-f", "{{.State.Running}}", name) == "true"
+        except LookupFailed:
+            if name not in computers():
+                return False
+            time.sleep(2)
+    raise LookupFailed(f"cannot tell whether {name} runs")
+
+
+def read_store_config() -> dict:
+    try:
+        cfg = json.loads((SHM / "s3.json").read_text())
+        if not (isinstance(cfg, dict) and cfg.get("user") and cfg.get("password")):
+            raise ValueError("incomplete")
+        return cfg
+    except (OSError, ValueError) as e:
+        raise StepFailed(f"the store configuration is missing or unreadable ({type(e).__name__})") from None
 
 
 def cleanup() -> dict:
     """Sign out, and verify it in a fresh computer, before anything that could retry is removed.
 
-    Recovery material (MinIO, the controller data in /dev/shm, a computer that is still signed in)
-    is removed only once the sign-out is verified. Otherwise it is kept, the cause is reported,
-    and `--cleanup` can be run again.
+    The outcome is "verified" only on positive evidence:
+    - the session's marker shows it never reached a sign-in; or
+    - the latest checkpoints, restored into a fresh computer, are signed out, after signing out
+      in any computer still running.
+    Anything else is unknown: a stopped or missing store, a failing Docker lookup, missing or
+    unreadable store configuration, an unreadable marker, recovery material without a marker.
+    Then nothing is removed, the exit status is non-zero, and the owner is told to revoke the
+    account sessions if a retry cannot verify the sign-out.
     """
     say("Cleanup: sign out, verify in a fresh computer, remove everything")
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not abandon the sign-out
-    outcome: dict = {"signed_out_verified": None}
-    s3 = json.loads((SHM / "s3.json").read_text()) if (SHM / "s3.json").exists() else None
-    minio_up = bool(sh("docker", "ps", "-q", "--filter", f"name=^{MINIO}$", check=False))
+    outcome: dict = {"signed_out_verified": None, "basis": None}
+    marker = read_state()
+    outcome["session_marker"] = marker
     try:
-        # 1. A computer that still runs may hold a login newer than any checkpoint: sign out in it,
-        #    check, and checkpoint the sign-out. If any of that fails, keep the computer.
-        for name in computers():
-            if is_running(name):
-                inner(name, "watch-stop", must=False)
-                inner(name, "claude-logout")
-                inner(name, "codex-logout")
-                inner(name, "signed-out-check")
-                if minio_up:
-                    inner(name, "capture", "credential")
-            sh("docker", "rm", "-f", name, check=False)
-        if not wait_until_no_computer():
-            raise StepFailed("a computer could not be removed")
-        # 2. Restore the latest checkpoints into a fresh computer; sign out there if needed.
-        if s3 and minio_up:
+        if marker == "started":
+            outcome.update(signed_out_verified=True, basis="never signed in: the session stopped before any sign-in")
+        elif marker in ("signed-out-verified", "closed-never-signed-in", "abandoned-after-manual-revocation"):
+            outcome.update(signed_out_verified=True, basis=f"already closed ({marker})")
+        elif marker is None:
+            leftovers = computers() or store_state() != "absent" or SHM.exists()
+            if leftovers:
+                raise StepFailed("recovery material exists without a session marker")
+            outcome.update(signed_out_verified=True, basis="no session: no marker and nothing left")
+        else:  # "signin-attempted", or a marker that cannot be read
+            if marker != "signin-attempted":
+                raise StepFailed(f"the session marker is {marker}")
+            s3 = read_store_config()
+            store = store_state()
+            if store != "running":
+                raise StepFailed(f"the checkpoint store is {store}")
+            # 1. A computer that still runs may hold a login newer than any checkpoint: sign out
+            #    in it, check, and checkpoint the sign-out. If any of that fails, keep it.
+            for name in computers():
+                if is_running(name):
+                    inner(name, "watch-stop", must=False)
+                    inner(name, "claude-logout")
+                    inner(name, "codex-logout")
+                    inner(name, "signed-out-check")
+                    rc, _ = inner(name, "capture", "credential", must=False)
+                    if rc not in (0, 3):  # 3: its restore never finished, so the checkpoint is current
+                        raise StepFailed(f"capture failed in {name}")
+                sh("docker", "rm", "-f", name, check=False)  # verified just below
+            if not wait_until_no_computer():
+                raise StepFailed("a computer could not be removed")
+            # 2. Restore the latest checkpoints into a fresh computer; sign out there if needed.
             r = start_computer("recover", s3)
             rc, _ = inner(r, "signed-out-check", must=False)
             if rc != 0:
@@ -178,35 +262,61 @@ def cleanup() -> dict:
             v = start_computer("verify", s3)
             rc, _ = inner(v, "signed-out-check", must=False)
             stop_computer(v, final_capture=False)
-            outcome["signed_out_verified"] = rc == 0
-        else:
-            outcome["signed_out_verified"] = True  # no checkpoint store: nothing was ever saved
-            outcome["note"] = "no checkpoint store was running"
-    except StepFailed as e:
+            if rc != 0:
+                raise StepFailed("the restored checkpoint is still signed in")
+            outcome.update(signed_out_verified=True, basis="signed out, verified in a fresh computer")
+    except StepFailed as e:  # includes LookupFailed
         outcome["recovery_error"] = str(e)
     if outcome["signed_out_verified"] is True:
-        for name in computers():
-            sh("docker", "rm", "-f", name, check=False)
+        try:
+            for name in computers():
+                sh("docker", "rm", "-f", name, check=False)
+        except LookupFailed:
+            pass
         sh("docker", "rm", "-f", MINIO, check=False)
         sh("docker", "network", "rm", NET, check=False)
         shutil.rmtree(SHM, ignore_errors=True)
+        if marker in (None, "signed-out-verified", "closed-never-signed-in", "abandoned-after-manual-revocation"):
+            pass
+        else:
+            write_state("closed-never-signed-in" if marker == "started" else "signed-out-verified")
     if OUT.exists():  # results were written by root in the container; hand them back
         sh("docker", "run", "--rm", "-v", f"{OUT}:/out", "--entrypoint", "chown", IMAGE, "-R",
            f"{os.getuid()}:{os.getgid()}", "/out", check=False)
-    outcome["left_behind"] = {
-        "computers": computers(),
-        "minio": bool(sh("docker", "ps", "-aq", "--filter", f"name=^{MINIO}$", check=False)),
-        "network": bool(sh("docker", "network", "ls", "-q", "--filter", f"name=^{NET}$", check=False)),
-        "shm": SHM.exists(),
-    }
+    try:
+        outcome["left_behind"] = {"computers": computers(), "store": store_state(), "shm": SHM.exists()}
+    except LookupFailed:
+        outcome["left_behind"] = {"docker": "lookup failed", "shm": SHM.exists()}
     print(f"   cleanup: {outcome}")
     record("cleanup", **outcome)
-    if outcome["signed_out_verified"] is not True:
-        print("\n!!! The sign-out is NOT verified. The recovery material is kept (MinIO, /dev/shm/cfo-s6-owner,\n"
-              "!!! and any computer still signed in). Fix the cause and run this again with --cleanup.\n"
-              "!!! If that cannot verify it either, sign out of this computer's sessions in your Claude and\n"
-              "!!! ChatGPT account settings, and tell the lead.")
+    if outcome["signed_out_verified"] is True:
+        print(f"   {outcome['basis']}")
+    else:
+        print("\n!!! The sign-out is NOT verified, and the state is unknown. Nothing has been removed:\n"
+              "!!! the store, /dev/shm/cfo-s6-owner and any computer still running are kept.\n"
+              "!!! Fix the cause and run this again with --cleanup. If it still cannot verify the\n"
+              "!!! sign-out, revoke this computer's sessions in your Claude and ChatGPT account\n"
+              "!!! settings, tell the lead, and then run this with --abandon-after-revoking.")
     return outcome
+
+
+def abandon() -> int:
+    """The owner revoked the sessions by hand: remove what cleanup kept, and record that."""
+    say("Abandon: the owner has revoked this computer's sessions in the account settings")
+    try:
+        names = computers()
+    except LookupFailed:
+        print("Docker cannot list the computers; nothing removed.")
+        return 1
+    for name in names:
+        sh("docker", "rm", "-f", name, check=False)
+    sh("docker", "rm", "-f", MINIO, check=False)
+    sh("docker", "network", "rm", NET, check=False)
+    shutil.rmtree(SHM, ignore_errors=True)
+    write_state("abandoned-after-manual-revocation")
+    record("abandoned", removed_computers=names, basis="owner revoked the sessions in the account settings")
+    print(f"   removed: computers {names}, the store, the network and {SHM}")
+    return 0
 
 
 def session(s3: dict) -> None:
@@ -216,6 +326,7 @@ def session(s3: dict) -> None:
     record("versions", versions=versions.splitlines())
     inner(a, "audit", "A fresh")
 
+    write_state("signin-attempted")  # from here on, only a verified sign-out closes the session
     say("Sign in to Claude (owner)")
     print("   Claude Code prints a link. Open it in your browser, sign in with your Claude account,\n"
           "   then copy the code the page shows and paste it at 'Paste code here if prompted'.")
@@ -293,6 +404,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cleanup", action="store_true")
     ap.add_argument("--fake", action="store_true", help="dry run with the fake CLIs")
+    ap.add_argument("--abandon-after-revoking", action="store_true",
+                    help="only after you revoked this computer's sessions in your Claude and ChatGPT account "
+                         "settings: remove the recovery material that --cleanup could not verify")
     ap.add_argument("--inject-failure", metavar="ACTION",
                     help="dry runs only: make this inner.sh action always fail, to test recovery")
     a = ap.parse_args()
@@ -304,10 +418,14 @@ def main() -> int:
         OUT = S6 / "results" / "owner-session-fake-dryrun"
     if a.cleanup:
         return 0 if cleanup().get("signed_out_verified") is True else 1
-    if computers():
-        raise SystemExit("a previous session is still present; run with --cleanup first")
+    if a.abandon_after_revoking:
+        return abandon()
+    if computers() or read_state() not in (None, "signed-out-verified", "closed-never-signed-in",
+                                           "abandoned-after-manual-revocation"):
+        raise SystemExit("a previous session is still open; run with --cleanup first")
 
     OUT.mkdir(parents=True, exist_ok=True)
+    write_state("started")
     revision = sh("git", "-C", str(REPO), "rev-parse", "HEAD", check=False)
     # Uncommitted code changes, not results (results are written while the session runs).
     dirty = bool(sh("git", "-C", str(REPO), "status", "--porcelain", "--", "spikes/s6", ":!spikes/s6/results", check=False))

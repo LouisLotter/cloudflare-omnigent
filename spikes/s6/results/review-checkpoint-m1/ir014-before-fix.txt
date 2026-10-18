@@ -1,0 +1,15 @@
+spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[stopped store after a sign-in attempt-docker0-ok] FAILED [ 12%]
+spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[missing store after a sign-in attempt-docker1-ok] FAILED [ 25%]
+spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[Docker lookup failing-docker2-ok] FAILED [ 37%]
+spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[store configuration missing after a sign-in attempt-docker3-None] FAILED [ 50%]
+spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[store configuration unreadable after a sign-in attempt-docker4-corrupt] FAILED [ 62%]
+spikes/s6/tests/test_session_cleanup.py::test_control_verified_sign_out_removes_everything PASSED [ 75%]
+spikes/s6/tests/test_session_cleanup.py::test_control_store_up_but_still_signed_in_keeps_everything PASSED [ 87%]
+spikes/s6/tests/test_session_cleanup.py::test_control_session_that_never_reached_sign_in FAILED [100%]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[stopped store after a sign-in attempt-docker0-ok]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[missing store after a sign-in attempt-docker1-ok]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[Docker lookup failing-docker2-ok]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[store configuration missing after a sign-in attempt-docker3-None]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_unknown_state_is_never_reported_as_signed_out[store configuration unreadable after a sign-in attempt-docker4-corrupt]
+FAILED spikes/s6/tests/test_session_cleanup.py::test_control_session_that_never_reached_sign_in
+========================= 6 failed, 2 passed in 0.05s ==========================

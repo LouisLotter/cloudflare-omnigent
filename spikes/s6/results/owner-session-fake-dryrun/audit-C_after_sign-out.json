@@ -1,84 +1,86 @@
 {
-  "label": "C after sign-out",
-  "at": "2026-10-18T16:10:38.383+00:00",
-  "home": "~",
-  "files": [
+ "label": "C after sign-out",
+ "at": "2026-10-18T19:07:23.757+00:00",
+ "home": "~",
+ "files": [
+  {
+   "path": ".claude/.credentials.json",
+   "exists": false,
+   "was_present_before": true
+  },
+  {
+   "path": ".claude/.device-keys.json",
+   "exists": false
+  },
+  {
+   "path": ".codex/auth.json",
+   "exists": false,
+   "was_present_before": true
+  },
+  {
+   "path": ".omnigent/auth_tokens.json",
+   "exists": false
+  },
+  {
+   "path": ".claude.json",
+   "exists": true,
+   "type": "file",
+   "mode": "0600",
+   "size": 36,
+   "uid": 0,
+   "inode": 11293017,
+   "nlink": 1,
+   "mtime": "2026-10-18T19:07:16.852+00:00",
+   "parse": "json",
+   "keys": [
     {
-      "path": ".claude/.credentials.json",
-      "exists": false,
-      "was_present_before": true
+     "key": "$",
+     "type": "object",
+     "keys": [
+      "hasCompletedOnboarding"
+     ]
     },
     {
-      "path": ".claude/.device-keys.json",
-      "exists": false
-    },
-    {
-      "path": ".codex/auth.json",
-      "exists": false,
-      "was_present_before": true
-    },
-    {
-      "path": ".omnigent/auth_tokens.json",
-      "exists": false
-    },
-    {
-      "path": ".claude.json",
-      "exists": true,
-      "type": "file",
-      "mode": "0600",
-      "size": 36,
-      "uid": 0,
-      "inode": 8879740,
-      "nlink": 1,
-      "mtime": "2026-10-18T16:10:31.480+00:00",
-      "parse": "json",
-      "keys": [
-        {
-          "key": "$",
-          "type": "object",
-          "keys": ["hasCompletedOnboarding"]
-        },
-        {
-          "key": "hasCompletedOnboarding",
-          "type": "bool"
-        }
-      ],
-      "inode_changed": true,
-      "file_changed": true,
-      "changed_keys": [],
-      "removed_keys": []
-    },
-    {
-      "path": ".claude/.device-keys.json",
-      "exists": false
-    },
-    {
-      "path": ".codex/.credentials.json",
-      "exists": false
-    },
-    {
-      "path": ".claude",
-      "exists": true,
-      "type": "dir",
-      "mode": "0700",
-      "size": 0,
-      "uid": 0,
-      "inode": 8879716,
-      "nlink": 1,
-      "mtime": "2026-10-18T16:10:31.479+00:00"
-    },
-    {
-      "path": ".codex",
-      "exists": true,
-      "type": "dir",
-      "mode": "0700",
-      "size": 0,
-      "uid": 0,
-      "inode": 8879718,
-      "nlink": 1,
-      "mtime": "2026-10-18T16:10:31.539+00:00"
+     "key": "hasCompletedOnboarding",
+     "type": "bool"
     }
-  ],
-  "inventory": [],
-  "inventory_truncated": false
+   ],
+   "inode_changed": true,
+   "file_changed": true,
+   "changed_keys": [],
+   "removed_keys": []
+  },
+  {
+   "path": ".claude/.device-keys.json",
+   "exists": false
+  },
+  {
+   "path": ".codex/.credentials.json",
+   "exists": false
+  },
+  {
+   "path": ".claude",
+   "exists": true,
+   "type": "dir",
+   "mode": "0700",
+   "size": 0,
+   "uid": 0,
+   "inode": 11293006,
+   "nlink": 1,
+   "mtime": "2026-10-18T19:07:16.852+00:00"
+  },
+  {
+   "path": ".codex",
+   "exists": true,
+   "type": "dir",
+   "mode": "0700",
+   "size": 0,
+   "uid": 0,
+   "inode": 11293008,
+   "nlink": 1,
+   "mtime": "2026-10-18T19:07:16.913+00:00"
+  }
+ ],
+ "inventory": [],
+ "inventory_truncated": false
 }

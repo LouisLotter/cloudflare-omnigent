@@ -11,7 +11,12 @@ for t in "$@"; do
   timeout -s INT "$t" python3 -I spikes/s6/owner/session_local.py --fake > "$LOGDIR/log-$t" 2>&1
   line=$(grep "cleanup:" "$LOGDIR/log-$t" | tail -1)
   echo "interrupt after ${t}s: ${line#*cleanup: }"
-  case "$line" in *"'signed_out_verified': True"*"'computers': []"*"'minio': False"*) ;; *) status=1 ;; esac
+  case "$line" in
+    *"'signed_out_verified': True"*"'computers': []"*"'store': 'absent'"*) ;;
+    *) status=1
+       python3 -I spikes/s6/owner/session_local.py --fake --cleanup > /dev/null 2>&1  # so the next run can start
+       echo "  (cleaned up with --cleanup, exit $?)" ;;
+  esac
 done
 rm -rf "$LOGDIR"
 exit $status

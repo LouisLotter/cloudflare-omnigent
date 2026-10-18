@@ -1,7 +1,7 @@
 """Fake Claude Code, Codex and Omnigent CLIs for spike S6 (throwaway test code).
 
 Each fake writes the same credential file, in the same way, as the pinned real CLI does
-(see docs/verification/spike-s6.md for the evidence):
+(see the S6 evidence report, kept outside the repository):
 
   claude    ~/.claude/.credentials.json   temp "<name>.tmp.<8 hex>" + rename, mode 0600.
             logout: revoke, then unlink (or rewrite with only non-Anthropic keys, such as

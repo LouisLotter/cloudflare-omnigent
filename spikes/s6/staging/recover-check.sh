@@ -14,8 +14,9 @@ set -uo pipefail
 BASE=${1:?base URL}
 OUT=${2:?output file}
 : > "$OUT"
+TOKEN=$(curl -sS "$BASE/" | grep -o 'data-intent="[0-9a-f]*"' | head -1 | cut -d'"' -f2)
 phase() { # $1 name, $2 extra query; prints the last line
-  curl -sS -X POST -H "Origin: $BASE" -H "X-S6-Request: 1" "$BASE/api/phase?name=$1&fake=1$2" --max-time 1800 | tee -a "$OUT" | tail -1
+  curl -sS -X POST -H "Origin: $BASE" -H "Sec-Fetch-Site: same-origin" -H "X-S6-Intent: $TOKEN" "$BASE/api/phase?name=$1&fake=1$2" --max-time 1800 | tee -a "$OUT" | tail -1
 }
 done_ok() { python3 -I -c 'import json,sys; d=json.loads(sys.stdin.read()); sys.exit(0 if d.get("done") else 1)'; }
 running() { curl -sS "$BASE/api/state" | python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["running"] else 1)'; }
@@ -37,6 +38,7 @@ running || fail "the signed-in computer was destroyed after a failed logout"
 phase recover "" | done_ok || fail "recover"
 running && fail "recover left a computer running"
 phase wipe "" | done_ok || fail "wipe after recover"
+TOKEN=$(curl -sS "$BASE/" | grep -o 'data-intent="[0-9a-f]*"' | head -1 | cut -d'"' -f2)  # a wipe creates a new token
 # 4
 phase start "" | done_ok || fail "start (second session)"
 phase fake-sign-in "" | done_ok || fail "fake-sign-in (second session)"

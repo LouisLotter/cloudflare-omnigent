@@ -1,0 +1,8 @@
+{
+ "q2_start": true,
+ "q3_terminal_self_check": true,
+ "q5_report_shows_running": true,
+ "q6_stop": true,
+ "q7_wipe": true,
+ "ok": true
+}

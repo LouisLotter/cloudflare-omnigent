@@ -29,7 +29,7 @@ from audit import audit  # noqa: E402
 from controller import Controller  # noqa: E402
 from core import CRED_KIND, WORKSPACE_KIND  # noqa: E402
 from objstore import store_from_spec  # noqa: E402
-from ops import Computer, CredentialWatcher, capture_credentials, capture_workspace, restore  # noqa: E402
+from ops import Computer, CredentialWatcher, RestoreNotDone, capture_credentials, capture_workspace, restore  # noqa: E402
 
 
 def _controller(spec: str):
@@ -124,7 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     comp = _comp(a)
     if a.cmd == "capture":
         if a.kind == CRED_KIND:
-            seq, ok, snap = capture_credentials(comp, Path(a.home))
+            try:
+                seq, ok, snap = capture_credentials(comp, Path(a.home))
+            except RestoreNotDone:
+                # Exit 3: refused by the restore gate; this computer's checkpoint is still the
+                # latest state, so callers may go on from the checkpoint.
+                print(json.dumps({"kind": a.kind, "refused": "the restore has not finished"}))
+                return 3
             print(json.dumps({"kind": a.kind, "seq": seq, "published": ok,
                               "files": [{"path": r.path, "state": r.state, "size": r.size, "mode": r.mode} for r in snap.records]}))
         else:

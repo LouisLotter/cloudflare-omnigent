@@ -1,0 +1,24 @@
+{
+  "recorded_at": "2026-10-18T19:25:12Z",
+  "worker": "cfo-stg-s6-creds",
+  "active_versions": [
+    {
+      "version_id": "7fa30ea0-4bab-4ad8-87ff-158ae3d3f9be",
+      "traffic_percent": 100
+    }
+  ],
+  "deployment_created": "2026-10-18T19:10:56.076Z",
+  "container_application": "cfo-stg-s6-creds-pc",
+  "container_image_serving": [
+    {
+      "version": 4,
+      "percentage": 100,
+      "image": "registry.cloudflare.com/<account>/cfo-stg-s6-creds-pc@sha256:150bbfb7a91545d6c35afb605a5a90912de4eb30b91c7e24237078c276f5c3e8"
+    }
+  ],
+  "container_application_record": {
+    "version": 3,
+    "image": "registry.cloudflare.com/<account>/cfo-stg-s6-creds-pc@sha256:ac043887ad789a15ca637c89a4c233bcfada515724045bf6302d1da5a64f2123"
+  },
+  "container_instances": 1
+}

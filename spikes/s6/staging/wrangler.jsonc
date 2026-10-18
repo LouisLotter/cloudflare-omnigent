@@ -11,6 +11,9 @@
   "workers_dev": false,
   "preview_urls": false,
   "observability": { "enabled": true },
+  // Fault injection is off when deployed; only local `wrangler dev` runs set
+  // --var S6_ALLOW_INJECTION:1 to test the failure paths.
+  "vars": { "S6_ALLOW_INJECTION": "0" },
   "durable_objects": { "bindings": [{ "name": "COMPUTER", "class_name": "S6Computer" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S6Computer"] }],
   "containers": [

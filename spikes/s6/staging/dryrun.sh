@@ -9,9 +9,10 @@ set -euo pipefail
 BASE=${1:?base URL}
 OUT=${2:?output file}
 : > "$OUT"
+TOKEN=$(curl -sS "$BASE/" | grep -o 'data-intent="[0-9a-f]*"' | head -1 | cut -d'"' -f2)
 for phase in selftest start fake-sign-in after-sign-in restore-b restore-c-sign-out restore-d wipe; do
   echo "phase $phase" >&2
-  curl -sS -X POST -H "Origin: $BASE" -H "X-S6-Request: 1" "$BASE/api/phase?name=$phase&fake=1" --max-time 1800 > "$OUT.part"
+  curl -sS -X POST -H "Origin: $BASE" -H "Sec-Fetch-Site: same-origin" -H "X-S6-Intent: $TOKEN" "$BASE/api/phase?name=$phase&fake=1" --max-time 1800 > "$OUT.part"
   cat "$OUT.part" >> "$OUT"
   python3 -I - "$OUT.part" "$phase" <<'EOF'
 import json, sys
@@ -28,10 +29,10 @@ print(f"phase {phase} ok ({len(lines)} lines)", file=sys.stderr)
 EOF
 done
 rm -f "$OUT.part"
-# Refusals: a request from another origin, and one without the request header.
-code1=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Origin: https://attacker.invalid" -H "X-S6-Request: 1" "$BASE/api/phase?name=stop")
+# Refusals: a request from another origin, and one without the request-intent token.
+code1=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Origin: https://attacker.invalid" -H "X-S6-Intent: $TOKEN" "$BASE/api/phase?name=stop")
 code2=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Origin: $BASE" "$BASE/api/phase?name=stop")
-echo "{\"cross_origin_phase\": $code1, \"missing_header_phase\": $code2}" >&2
+echo "{\"cross_origin_phase\": $code1, \"missing_token_phase\": $code2}" >&2
 [ "$code1" = 403 ] && [ "$code2" = 403 ]
 curl -sS "$BASE/api/state" >&2
 echo >&2

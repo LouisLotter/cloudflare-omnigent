@@ -57,7 +57,7 @@ class DeclaredFile:
 
 
 # The list confirmed by spike S6 for Claude Code 2.1.296, Codex 0.162.1 and Omnigent 0.17.0,
-# plus one provisional entry. Evidence: docs/verification/spike-s6.md.
+# plus one provisional entry. Evidence: the S6 evidence report (kept outside the repository).
 DECLARED_FILES: tuple[DeclaredFile, ...] = (
     DeclaredFile(
         cli="claude",

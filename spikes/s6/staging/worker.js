@@ -9,7 +9,14 @@
 //   the Durable Object's SQLite storage, standing in for R2 until R2 is enabled on staging.
 // - Nothing here parses a login file or logs checkpoint bytes. The container scripts print
 //   masked output only, and their stderr is never forwarded.
-// - State-changing requests and the terminal's WebSocket must come from this page's own origin.
+// - Campaign controls (spikes/README.md, IR-017): a GET never changes anything; a control URL
+//   opened with GET shows a confirmation page. A change is a POST with this deployment's exact
+//   Origin, Sec-Fetch-Site same-origin when present, and the stored request-intent token. The
+//   terminal's WebSocket needs the exact Origin, a SameSite=Strict cookie holding the same token,
+//   and a terminal window opened by a POST (Start, or Re-open). Fault injection exists only when
+//   the S6_ALLOW_INJECTION variable is "1", which only local `wrangler dev` runs set.
+//   Refusals change nothing but an audit row in boundary_log, so the deployed qualification can
+//   tell which attempts reached the Worker.
 import { DurableObject } from "cloudflare:workers";
 
 const PC = "s6-pc";
@@ -29,9 +36,54 @@ const STRIP_TO_CONTAINER = [
   "cf-access-client-id",
   "cf-access-client-secret",
 ];
+const TERMINAL_WINDOW_MS = 20 * 60 * 1000;
+const BOUNDARY_LOG_MAX = 500;
+// HTML from this Worker, and the terminal it proxies, is never framed (clickjacking).
+const PAGE_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "x-frame-options": "DENY",
+  "content-security-policy": "frame-ancestors 'none'",
+  "cache-control": "no-store",
+  "referrer-policy": "no-referrer",
+};
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function randomHex(bytes) {
+  return [...crypto.getRandomValues(new Uint8Array(bytes))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function constantTimeEqual(a, b) {
+  const x = enc.encode(String(a ?? ""));
+  const y = enc.encode(String(b ?? ""));
+  if (x.length !== y.length || x.length === 0) return false;
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i];
+  return d === 0;
+}
+
+function cookieValue(request, name) {
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+function originClass(origin, own) {
+  if (origin === null) return "missing origin";
+  if (origin === "null") return "null origin";
+  return origin === own ? "same origin" : "foreign origin";
+}
+
+const maskImage = (ref) =>
+  ref
+    ? ref.replace(/registry\.cloudflare\.com\/[^/]+\//, "registry.cloudflare.com/<account>/")
+    : null;
+const escapeHtml = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 function b64ToBytes(b64) {
   const bin = atob(b64);
@@ -72,6 +124,7 @@ export default {
 export class S6Computer extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.env = env;
     this.sql = ctx.storage.sql;
     this.busy = null;
     this.schema();
@@ -85,7 +138,28 @@ export class S6Computer extends DurableObject {
         manifest_key TEXT, published_at REAL, snap_order INTEGER, PRIMARY KEY (computer, kind));
       CREATE TABLE IF NOT EXISTS refusals (computer TEXT, kind TEXT, seq INTEGER, generation INTEGER, reason TEXT, at REAL);
       CREATE TABLE IF NOT EXISTS blobs (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part));
+      CREATE TABLE IF NOT EXISTS boundary_log (at REAL, method TEXT, path TEXT, case_tag TEXT, origin TEXT,
+        fetch_site TEXT, reason TEXT);
     `);
+    // The request-intent token: created once with the storage it protects (here, or after a
+    // wipe), never by a request.
+    if (!this.meta("intent")) this.meta("intent", randomHex(32));
+  }
+
+  logBoundary(method, path, caseTag, origin, fetchSite, reason) {
+    this.sql.exec(
+      "INSERT INTO boundary_log VALUES (?, ?, ?, ?, ?, ?, ?)",
+      Date.now() / 1000,
+      method,
+      path,
+      caseTag,
+      origin,
+      fetchSite,
+      reason,
+    );
+    this.sql.exec(
+      `DELETE FROM boundary_log WHERE rowid NOT IN (SELECT rowid FROM boundary_log ORDER BY at DESC LIMIT ${BOUNDARY_LOG_MAX})`,
+    );
   }
 
   meta(k, v) {
@@ -214,7 +288,8 @@ export class S6Computer extends DurableObject {
       .every((f) => f.state === "absent");
   }
 
-  async publishPayload(kind, payload, computer, generation) {
+  async publishPayload(kind, payload, computer, generation, fail = undefined) {
+    if (fail === "store") throw new Error("injected store failure");
     const archive = b64ToBytes(payload.archive_b64);
     const sha = await sha256Hex(archive);
     if (sha !== payload.archive_sha256) throw new Error("archive digest mismatch");
@@ -240,7 +315,7 @@ export class S6Computer extends DurableObject {
     const published = this.publish(
       computer,
       kind,
-      generation,
+      fail === "publish" ? generation - 1 : generation, // injected: refused as a stale generation
       seq,
       `${base}.json`,
       kind === "credential" ? payload.order : null,
@@ -374,12 +449,28 @@ export class S6Computer extends DurableObject {
     if (kind === "credential" && this.restoredGeneration(computer) !== generation) {
       return { error: "refused: this computer's restore has not finished", published: false };
     }
-    const r = await this.runRaw(
-      ["python3", "-I", CLI, "export", "--kind", kind, "--home", opts.home ?? "/root"],
-      opts,
-    );
+    const r =
+      opts.fail === "export"
+        ? { exit: 1 }
+        : await this.runRaw(
+            ["python3", "-I", CLI, "export", "--kind", kind, "--home", opts.home ?? "/root"],
+            opts,
+          );
     if (r.exit !== 0) return { error: `export failed (${r.exit})`, published: false };
-    return this.publishPayload(kind, parseSecretJson(r.stdout), computer, generation);
+    try {
+      return await this.publishPayload(
+        kind,
+        parseSecretJson(r.stdout),
+        computer,
+        generation,
+        opts.fail,
+      );
+    } catch (e) {
+      return {
+        error: `checkpoint failed: ${String(e?.message ?? e).slice(0, 120)}`,
+        published: false,
+      };
+    }
   }
 
   async restore(opts = {}) {
@@ -685,6 +776,7 @@ export class S6Computer extends DurableObject {
           restored,
         );
         await step("audit", () => this.s6(["audit-json", "A fresh"], o), exit0);
+        this.meta("terminal_open_until", Date.now() + TERMINAL_WINDOW_MS);
         await step("versions", () =>
           this.run([
             "bash",
@@ -707,6 +799,7 @@ export class S6Computer extends DurableObject {
         break;
       case "after-sign-in": {
         if (!this.ctx.container.running) throw new Error("no computer is running");
+        this.meta("terminal_open_until", 0); // the sign-ins are done: close the terminal
         await loggedIn();
         await step(
           "credential checkpoint C1, right after sign-in",
@@ -780,6 +873,7 @@ export class S6Computer extends DurableObject {
         );
         break;
       case "recover": {
+        this.meta("terminal_open_until", 0);
         // Sign out from whatever state the session stopped in, and verify it in a fresh computer.
         // A running computer may hold a login newer than any checkpoint: sign out there first,
         // and checkpoint the sign-out before the computer is destroyed.
@@ -828,6 +922,7 @@ export class S6Computer extends DurableObject {
           () => this.s6(["signed-out-check"], o),
           exit0,
         );
+        this.meta("unsaved_computer", "0");
         await step(
           "stop computer",
           () => this.stop(),
@@ -835,15 +930,56 @@ export class S6Computer extends DurableObject {
         );
         break;
       }
-      case "stop":
+      case "stop": {
+        // IR-013: a computer is stopped only after its final credential checkpoint is published.
         if (this.ctx.container.running && this.restoredGeneration(PC) === this.generation()) {
-          await step("final credential checkpoint", () => this.capture("credential", o));
+          const r = await this.capture("credential", o);
+          await emit({
+            phase: name,
+            step: "final credential checkpoint",
+            ok: r.published === true,
+            ...r,
+          });
+          if (r.published !== true) {
+            this.meta("unsaved_computer", "1");
+            throw new Error(
+              "the final credential checkpoint failed, so the computer keeps running. Retry Stop, or run Recover (signs out and verifies), or, last, Force stop (credentials may be lost)",
+            );
+          }
         }
+        this.meta("terminal_open_until", 0);
         await step(
           "stop computer",
           () => this.stop(),
           (r) => r.stopped,
         );
+        this.meta("unsaved_computer", "0");
+        break;
+      }
+      case "force-stop":
+        // Stops without the final checkpoint. Logins refreshed since the last checkpoint are lost,
+        // and their provider sessions may stay valid: say so, and keep saying so until a wipe.
+        if (o.confirm !== "credentials-may-be-lost") {
+          throw new Error("force-stop needs confirm=credentials-may-be-lost");
+        }
+        this.meta("credentials_may_be_lost", "1");
+        this.meta("terminal_open_until", 0);
+        await step(
+          "stop computer without a final checkpoint",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
+        this.meta("unsaved_computer", "0");
+        await emit({
+          phase: name,
+          warning:
+            "Stopped without a final credential checkpoint. Credentials may be lost. Run Recover; if it cannot verify the sign-out, revoke the sessions in the Claude and ChatGPT account settings.",
+        });
+        break;
+      case "reopen-terminal":
+        if (!this.ctx.container.running) throw new Error("no computer is running");
+        this.meta("terminal_open_until", Date.now() + TERMINAL_WINDOW_MS);
+        await emit({ phase: name, terminal_open_for_s: TERMINAL_WINDOW_MS / 1000 });
         break;
       case "wipe":
         if (this.ctx.container.running) throw new Error("stop the computer first (or run Recover)");
@@ -855,7 +991,7 @@ export class S6Computer extends DurableObject {
           async () => {
             await this.ctx.storage.deleteAlarm();
             await this.ctx.storage.deleteAll();
-            this.schema();
+            this.schema(); // new storage, new request-intent token: reload the page
             return { wiped: true, objects_left: this.state().objects };
           },
           (r) => r.objects_left === 0,
@@ -876,11 +1012,17 @@ export class S6Computer extends DurableObject {
     const blobs = this.sql
       .exec("SELECT COUNT(DISTINCT key) AS n, COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM blobs")
       .toArray()[0];
+    const boundary = this.sql.exec("SELECT COUNT(*) AS n FROM boundary_log").toArray()[0];
     return {
       running: this.ctx.container.running,
       busy: this.busy,
       generation: this.generation(),
       signed_out_in_checkpoint: this.signedOutInCheckpoint(),
+      unsaved_computer: this.ctx.container.running && this.meta("unsaved_computer") === "1",
+      credentials_may_be_lost: this.meta("credentials_may_be_lost") === "1",
+      terminal_open: Number(this.meta("terminal_open_until") ?? 0) > Date.now(),
+      fault_injection: this.env?.S6_ALLOW_INJECTION === "1",
+      boundary_refusals: boundary.n,
       pointers,
       refusals,
       objects: blobs.n,
@@ -891,28 +1033,89 @@ export class S6Computer extends DurableObject {
   // ---------------------------------------------------------------- owner page
   async fetch(request) {
     const url = new URL(request.url);
-    const sameOrigin = request.headers.get("origin") === url.origin;
+    const method = request.method;
+    const origin = request.headers.get("origin");
+    const fetchSite = request.headers.get("sec-fetch-site");
+    const caseTag = (url.searchParams.get("case") ?? "").slice(0, 40);
+    const token = this.meta("intent");
+    const refuse = (status, reason) => {
+      this.logBoundary(
+        method,
+        url.pathname,
+        caseTag,
+        originClass(origin, url.origin),
+        fetchSite,
+        reason,
+      );
+      return new Response(`refused: ${reason}\n`, { status });
+    };
+    // Origin exact, and Sec-Fetch-Site same-origin when the browser sends it.
+    const crossSite = () => {
+      if (origin !== url.origin) return originClass(origin, url.origin);
+      if (fetchSite !== null && fetchSite !== "same-origin") return `sec-fetch-site ${fetchSite}`;
+      return null;
+    };
+    const readOnly = method === "GET" || method === "HEAD";
+
     if (url.pathname === "/term" || url.pathname.startsWith("/term/")) {
-      if (!this.ctx.container.running) {
+      if (!readOnly) return refuse(405, "method");
+      if (!this.ctx.container.running)
         return new Response("The computer is not running.", { status: 503 });
+      if ((request.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+        const bad = crossSite();
+        if (bad) return refuse(403, `terminal: ${bad}`);
+        if (!constantTimeEqual(cookieValue(request, "s6_term"), token))
+          return refuse(403, "terminal: no terminal cookie");
+        if (Number(this.meta("terminal_open_until") ?? 0) <= Date.now())
+          return refuse(403, "terminal: window closed");
       }
-      const upgrade = (request.headers.get("upgrade") ?? "").toLowerCase() === "websocket";
-      if (upgrade && !sameOrigin)
-        return new Response("cross-origin terminal refused", { status: 403 });
       const headers = new Headers(request.headers);
       for (const h of STRIP_TO_CONTAINER) headers.delete(h);
-      return this.ctx.container.getTcpPort(TERM_PORT).fetch(new Request(request, { headers }));
+      const r = await this.ctx.container
+        .getTcpPort(TERM_PORT)
+        .fetch(new Request(request, { headers }));
+      if (r.webSocket) return r;
+      const out = new Response(r.body, r);
+      out.headers.set("x-frame-options", "DENY");
+      out.headers.set("content-security-policy", "frame-ancestors 'none'");
+      return out;
     }
-    if (url.pathname === "/api/state") return Response.json(this.state());
-    if (url.pathname === "/api/phase" && request.method === "POST") {
-      if (!sameOrigin || request.headers.get("x-s6-request") !== "1") {
-        return new Response("cross-origin request refused", { status: 403 });
+    if (url.pathname === "/api/state") {
+      if (!readOnly) return refuse(405, "method");
+      const info = this.ctx.container.running ? await this.ctx.container.inspect() : null;
+      return Response.json({ ...this.state(), container_image: maskImage(info?.image) });
+    }
+    if (url.pathname === "/api/boundary") {
+      if (!readOnly) return refuse(405, "method");
+      return Response.json(
+        this.sql
+          .exec(
+            "SELECT at, method, path, case_tag, origin, fetch_site, reason FROM boundary_log ORDER BY at",
+          )
+          .toArray(),
+      );
+    }
+    if (url.pathname === "/api/phase") {
+      const name = url.searchParams.get("name") ?? "";
+      if (readOnly) {
+        // A control URL opened with GET (for example from a link on another site) only shows a
+        // confirmation page; nothing runs until its button sends the POST.
+        return new Response(confirmPage(name, url.search, token), { headers: PAGE_HEADERS });
       }
-      if (this.busy) return new Response(`busy: ${this.busy}`, { status: 409 });
-      const name = url.searchParams.get("name");
+      if (method !== "POST") return refuse(405, "method");
+      const bad = crossSite();
+      if (bad) return refuse(403, bad);
+      if (!constantTimeEqual(request.headers.get("x-s6-intent"), token))
+        return refuse(403, "missing or wrong request-intent token");
       // fake=1: the same phases with the fake CLIs first on PATH (a dry run, no real accounts).
       const opts = url.searchParams.get("fake") === "1" ? { fake: true } : {};
-      if (opts.fake && url.searchParams.get("fail")) opts.fail = url.searchParams.get("fail");
+      if (url.searchParams.get("fail")) {
+        if (!(opts.fake && this.env?.S6_ALLOW_INJECTION === "1"))
+          return refuse(403, "fault injection is off");
+        opts.fail = url.searchParams.get("fail");
+      }
+      if (url.searchParams.get("confirm")) opts.confirm = url.searchParams.get("confirm");
+      if (this.busy) return new Response(`busy: ${this.busy}`, { status: 409 });
       this.busy = name;
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
@@ -940,26 +1143,52 @@ export class S6Computer extends DurableObject {
       return new Response(readable, { headers: { "content-type": "application/x-ndjson" } });
     }
     if (url.pathname === "/") {
-      return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
+      if (!readOnly) return refuse(405, "method");
+      // The terminal cookie carries the same token; SameSite=Strict keeps it off cross-site requests.
+      return new Response(PAGE.replace("__INTENT__", token), {
+        headers: {
+          ...PAGE_HEADERS,
+          "set-cookie": `s6_term=${token}; Path=/term; Secure; HttpOnly; SameSite=Strict`,
+        },
+      });
     }
     return new Response("Not found", { status: 404 });
   }
 }
 
+function confirmPage(name, search, token) {
+  const q = escapeHtml(search);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>S6: confirm</title></head>
+<body style="font:15px system-ui;margin:24px" data-intent="${token}">
+<p>This page changes nothing. Run the phase <b>${escapeHtml(name)}</b>?</p>
+<p><button id="go">Run ${escapeHtml(name)}</button> <a href="/">Back to the S6 page</a></p><pre id="out"></pre>
+<script>document.getElementById("go").onclick=async()=>{const r=await fetch("/api/phase${q}",{method:"POST",
+headers:{"X-S6-Intent":document.body.dataset.intent}});document.getElementById("out").textContent=await r.text();};</script>
+</body></html>`;
+}
+
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>S6 computer</title><style>
 body{font:15px/1.45 system-ui,sans-serif;margin:24px auto;max-width:980px;padding:0 16px;color:#1d1d1f;background:#fafafa}
-h1{font-size:22px}ol{padding-left:20px}li{margin:10px 0}button{font:inherit;padding:6px 12px;margin-right:8px;cursor:pointer}
+h1{font-size:22px}h2{font-size:17px;margin-top:22px}ol{padding-left:20px}li{margin:10px 0}button{font:inherit;padding:6px 12px;margin-right:8px;cursor:pointer}
 code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color:#ddd;padding:12px;border-radius:6px;max-height:520px;overflow:auto;white-space:pre-wrap;font-size:12px}
 .note{color:#555}.warn{color:#8a1c1c}#state{font-family:monospace;font-size:13px}
-</style></head><body>
+</style></head><body data-intent="__INTENT__">
 <h1>S6: sign-in and credential checkpoints</h1>
-<p class="note">Owner-only staging page. Output below is masked: paths, modes, sizes, key names, states and timestamps. The terminal is not recorded. Run the steps in order; each waits until it is done.</p>
+<p class="note">Owner-only staging page. Output below is masked: fixed text, exit codes, paths, modes, sizes, key names, states and timestamps. The terminal is not recorded. Run the steps in order; each waits until it is done.</p>
 <p class="warn">If a step reports an error: stop there, click <b>Recover</b>, then <b>Stop and wipe</b>.</p>
 <p id="state"></p>
+<h2>Part 1: qualification, synthetic credentials only</h2>
 <ol>
-<li><button data-phase="selftest">Run the fake-CLI self-test</button> about 3 minutes; no real accounts.</li>
-<li><button data-phase="start">Start computer A</button> then <a href="/term/" target="_blank">open the terminal</a>.</li>
+<li><button data-phase="selftest" data-fake="1">Q1 Fake-CLI self-test</button> about 3 minutes.</li>
+<li><button data-phase="start" data-fake="1">Q2 Start a synthetic computer</button> then <button id="termcheck">Q3 Terminal self-check</button></li>
+<li>Q4: open the attacker page (see the runbook) in another tab and let it finish, then come back.</li>
+<li><button id="report">Q5 Qualification report</button></li>
+<li><button data-phase="stop" data-fake="1">Q6 Stop the synthetic computer</button> then <button data-phase="wipe">Q7 Wipe</button></li>
+</ol>
+<h2>Part 2: real accounts</h2>
+<ol>
+<li><button data-phase="start">Start computer A</button> then <a href="/term/" target="_blank">open the terminal</a> (open for 20 minutes; <button data-phase="reopen-terminal">re-open</button>).</li>
 <li>In the terminal: <code>claude auth login --claudeai</code>, open the link, sign in, paste the code back.
  Then <code>codex login --device-auth</code>, open the link, sign in, enter the code. Close the terminal tab.</li>
 <li><button data-phase="after-sign-in">After sign-in: audit, checkpoints, forced refresh</button></li>
@@ -968,19 +1197,33 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 <li><button data-phase="restore-d">Computer D: restore; both must stay signed out</button></li>
 <li><button data-phase="wipe">Stop and wipe everything stored</button> then <button id="save">Download results</button></li>
 </ol>
-<p><button data-phase="recover">Recover: sign out and verify</button> only if a step failed.</p>
+<p><button data-phase="recover">Recover: sign out and verify</button> only if a step failed.
+ <button data-phase="stop">Stop</button> <button data-phase="force-stop" data-confirm="credentials-may-be-lost">Force stop (credentials may be lost)</button></p>
 <pre id="out"></pre>
 <script>
-const out=document.getElementById("out");const lines=[];
-async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);}
+const out=document.getElementById("out");const lines=[];const intent=document.body.dataset.intent;
+const log=(l)=>{lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;};
+async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);return s;}
 for(const b of document.querySelectorAll("button[data-phase]")){b.onclick=async()=>{
  if(b.dataset.phase==="wipe"&&!confirm("Delete every stored checkpoint?"))return;
+ if(b.dataset.confirm&&!confirm("Stop without a final checkpoint? Credentials may be lost."))return;
  for(const x of document.querySelectorAll("button"))x.disabled=true;
- try{const r=await fetch("/api/phase?name="+b.dataset.phase,{method:"POST",headers:{"X-S6-Request":"1"}});
- if(!r.ok){out.textContent+=r.status+" "+(await r.text())+"\\n";}else{const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
+ const q="name="+b.dataset.phase+(b.dataset.fake?"&fake=1":"")+(b.dataset.confirm?"&confirm="+b.dataset.confirm:"");
+ try{const r=await fetch("/api/phase?"+q,{method:"POST",headers:{"X-S6-Intent":intent}});
+ if(!r.ok){log(r.status+" "+(await r.text()).trim());}else{const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
  for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
-  while((i=buf.indexOf("\\n"))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);if(!l)continue;lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;}}}}
+  while((i=buf.indexOf("\\n"))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);if(l)log(l);}}}}
  finally{for(const x of document.querySelectorAll("button"))x.disabled=false;state();}};}
+document.getElementById("termcheck").onclick=()=>{
+ const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/term/ws?case=same-origin-control",["tty"]);
+ ws.binaryType="arraybuffer";let seen="";const t=setTimeout(()=>{log(JSON.stringify({terminal_self_check:"no reply"}));ws.close();},15000);
+ ws.onopen=()=>{ws.send(JSON.stringify({AuthToken:"",columns:80,rows:24}));setTimeout(()=>ws.send("0echo S6TERM$((40+2))OK\\r"),800);};
+ ws.onmessage=(e)=>{const b=new Uint8Array(e.data);if(b[0]===0x30)seen+=new TextDecoder().decode(b.slice(1));
+  if(seen.includes("S6TERM42OK")){clearTimeout(t);log(JSON.stringify({terminal_self_check:"command ran"}));ws.close();}};
+ ws.onerror=()=>{clearTimeout(t);log(JSON.stringify({terminal_self_check:"refused or failed"}));};};
+document.getElementById("report").onclick=async()=>{
+ const b=await (await fetch("/api/boundary")).json();const s=await state();
+ log(JSON.stringify({qualification_report:{state:{running:s.running,generation:s.generation,objects:s.objects,container_image:s.container_image},refused:b}}));};
 document.getElementById("save").onclick=()=>{const a=document.createElement("a");
  a.href=URL.createObjectURL(new Blob([lines.join("\\n")+"\\n"],{type:"application/x-ndjson"}));a.download="s6-staging-session.jsonl";a.click();};
 state();

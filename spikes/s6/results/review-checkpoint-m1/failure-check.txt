@@ -1,0 +1,9 @@
+inject codex-logout: session exit 1; recovery material kept: yes; {'signed_out_verified': None, 'basis': None, 'session_marker': 'signin-attempted', 'recovery_error': 'codex-logout failed in cfo-s6-owner-pc-c', 'left_behind': {'computers': ['cfo-s6-owner-pc-c'], 'store': 'running', 'shm': True}}
+  after removing the cause, --cleanup exit 0; {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
+inject capture: session exit 1; recovery material kept: yes; {'signed_out_verified': None, 'basis': None, 'session_marker': 'signin-attempted', 'recovery_error': 'capture failed in cfo-s6-owner-pc-a', 'left_behind': {'computers': ['cfo-s6-owner-pc-a'], 'store': 'running', 'shm': True}}
+  after removing the cause, --cleanup exit 0; {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
+inject store-stopped: session exit 1; recovery material kept: yes; {'signed_out_verified': None, 'basis': None, 'session_marker': 'signin-attempted', 'recovery_error': 'codex-logout failed in cfo-s6-owner-pc-c', 'left_behind': {'computers': ['cfo-s6-owner-pc-c'], 'store': 'running', 'shm': True}}
+  store stopped, --cleanup exit 1; shm kept: yes; told to revoke: yes; {'signed_out_verified': None, 'basis': None, 'session_marker': 'signin-attempted', 'recovery_error': 'the checkpoint store is stopped', 'left_behind': {'computers': ['cfo-s6-owner-pc-c'], 'store': 'stopped', 'shm': True}}
+  store back but empty, --cleanup exit 1; shm kept: yes
+  after manual revocation, --abandon-after-revoking exit 0; containers left: 0; shm left: no
+exit 0
