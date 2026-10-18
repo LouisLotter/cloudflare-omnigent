@@ -568,20 +568,65 @@ export function accessAppBody(
 const STATES: readonly string[] = ["pending", "deployed", "deleting"];
 
 /** Parses `.staging/resources.json`. Unknown formats are refused, never guessed at. */
+/**
+ * The registry format. Version 3 changed what an interrupted upload means (IR-001): version 2
+ * files from earlier tools may carry `settleUntil`, a wall-clock deadline the current tool no
+ * longer trusts. Tools that predate version 3 check for exactly version 2, so they refuse a
+ * version 3 file instead of misreading it.
+ */
+export const REGISTRY_VERSION = 3;
+
+const DEPLOYMENT_KEYS = [
+  "name",
+  "hostname",
+  "owner",
+  "createdAt",
+  "expiresAt",
+  "state",
+  "accessAppId",
+  "uploadStartedAt",
+  "uploadInterruptedAt",
+  "containers",
+  "buckets",
+  "repositories",
+];
+
+/**
+ * Parses the staging registry. Unknown formats and unknown fields are refused, never guessed at.
+ * A version 2 entry's `settleUntil`, elapsed or not, becomes `uploadInterruptedAt`: whatever
+ * upload it guarded may still land, so the next teardown makes the full settle wait.
+ */
 export function parseRegistry(json: unknown): Deployment[] {
   const file = json as { version?: unknown; deployments?: unknown };
-  if (!file || typeof file !== "object" || file.version !== 2 || !Array.isArray(file.deployments)) {
-    throw new Error("unrecognised staging registry format; expected version 2");
+  const version = file && typeof file === "object" ? file.version : undefined;
+  if ((version !== 2 && version !== REGISTRY_VERSION) || !Array.isArray(file.deployments)) {
+    throw new Error(
+      `unrecognised staging registry format; expected version 2 or ${REGISTRY_VERSION}`,
+    );
   }
   return file.deployments.map((entry: unknown) => {
-    const d = entry as Record<string, unknown>;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error("malformed entry in the staging registry");
+    }
+    const raw = { ...(entry as Record<string, unknown>) };
+    if (version === 2 && "settleUntil" in raw) {
+      if (typeof raw.settleUntil !== "string" || raw.settleUntil === "") {
+        throw new Error("malformed entry in the staging registry");
+      }
+      raw.uploadInterruptedAt ??= raw.settleUntil;
+      delete raw.settleUntil;
+    }
+    const unknown = Object.keys(raw).filter((key) => !DEPLOYMENT_KEYS.includes(key));
+    if (unknown.length > 0) {
+      throw new Error(`unknown field in the staging registry: ${unknown.join(", ")}`);
+    }
+    const d = raw;
     const text = (key: string) => typeof d[key] === "string" && d[key] !== "";
     const names = (value: unknown) =>
       value === undefined ||
       (Array.isArray(value) &&
         value.every((n) => typeof n === "string" && n.startsWith(STAGING_PREFIX)));
     if (
-      !d ||
       !text("name") ||
       !text("hostname") ||
       !text("owner") ||
@@ -603,5 +648,5 @@ export function parseRegistry(json: unknown): Deployment[] {
 }
 
 export function serializeRegistry(deployments: readonly Deployment[]): string {
-  return `${JSON.stringify({ version: 2, deployments }, null, 2)}\n`;
+  return `${JSON.stringify({ version: REGISTRY_VERSION, deployments }, null, 2)}\n`;
 }

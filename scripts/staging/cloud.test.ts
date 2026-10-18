@@ -410,6 +410,6 @@ describe("registry file store", () => {
     store.update((all) => all);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
-    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(2);
+    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(3);
   });
 });

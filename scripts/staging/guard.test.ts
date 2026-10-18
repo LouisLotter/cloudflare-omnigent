@@ -509,11 +509,43 @@ describe("registry file", () => {
     expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
   });
 
+  it("writes version 3, which tools before IR-001's fix refuse", () => {
+    expect(JSON.parse(serializeRegistry([deployment])).version).toBe(3);
+  });
+
+  // IR-001: version 2 files from the tool of d1988ea carry a wall-clock settleUntil.
+  it.each([
+    ["an elapsed", "2026-10-18T11:00:00.000Z"],
+    ["a future", "2099-01-01T00:00:00.000Z"],
+  ])("turns %s legacy settleUntil into an interrupted upload", (_, settleUntil) => {
+    const [migrated] = parseRegistry({
+      version: 2,
+      deployments: [{ ...deployment, state: "deployed", settleUntil }],
+    });
+    expect(migrated).not.toHaveProperty("settleUntil");
+    expect(migrated?.uploadInterruptedAt).toBe(settleUntil);
+  });
+
+  it("keeps an earlier interruption when a legacy entry has both", () => {
+    const [migrated] = parseRegistry({
+      version: 2,
+      deployments: [
+        { ...deployment, uploadInterruptedAt: "2026-10-18T10:00:00.000Z", settleUntil: "x" },
+      ],
+    });
+    expect(migrated?.uploadInterruptedAt).toBe("2026-10-18T10:00:00.000Z");
+  });
+
   it("refuses unknown formats and malformed or unmanaged entries", () => {
     for (const bad of [
       [],
       { version: 1, deployments: [] },
+      { version: 4, deployments: [] },
       { version: 2 },
+      { version: 3, deployments: [{ ...deployment, settleUntil: "2026-10-18T11:00:00.000Z" }] },
+      { version: 2, deployments: [{ ...deployment, settleUntil: 7 }] },
+      { version: 3, deployments: [{ ...deployment, futureField: true }] },
+      { version: 2, deployments: [{ ...deployment, futureField: true }] },
       { version: 2, deployments: [{ ...deployment, state: "gone" }] },
       { version: 2, deployments: [{ ...deployment, owner: "" }] },
       { version: 2, deployments: [{ ...deployment, accessAppId: 7 }] },

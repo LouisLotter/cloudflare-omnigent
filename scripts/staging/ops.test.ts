@@ -607,6 +607,33 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
     expect(cloud.violations).toEqual([]);
   });
 
+  // IR-001: a version 2 record from the tool of d1988ea, written after upload A lost its client
+  // and retry B succeeded. Its settleUntil has elapsed by the wall clock, yet A may still land.
+  it("waits for a legacy record's interrupted upload before removing Access", () => {
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = SETTLE - 1_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    deploy(ctx, request());
+    const current = record();
+    if (!current) throw new Error("missing record");
+    const { uploadInterruptedAt: _, ...legacy } = current;
+    store.text = JSON.stringify({
+      version: 2,
+      deployments: [{ ...legacy, settleUntil: new Date(T0 - 60 * 60_000).toISOString() }],
+    });
+
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
+    expect(JSON.parse(store.text).version).toBe(3);
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect(cloud.workers.size + cloud.apps.size).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
   it("keeps the first interruption across later attempts, failed or successful", () => {
     cloud.deployFault = "lost-response";
     expect(() => deploy(ctx, request())).toThrow();
