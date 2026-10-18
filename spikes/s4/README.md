@@ -1,6 +1,6 @@
 # S4: Litestream and the durability barrier
 
-Throwaway spike code. Results and conclusions are in [`docs/verification/spike-s4.md`](../../docs/verification/spike-s4.md).
+Throwaway spike code. Results and conclusions are in the S4 evidence report, kept in the maintainer's project notes outside this repository.
 
 ## What is here
 

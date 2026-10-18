@@ -1,0 +1,14 @@
+ ⛅️ wrangler 4.149.0 (update available 4.151.1)
+───────────────────────────────────────────────
+Building image cfo-stg-s2-route-server:wrangler-b3e95649-5704-455a-ab83-351d129ce0e8
+Total Upload: 14.65 KiB / gzip: 4.65 KiB
+Your Worker has access to the following bindings:
+Binding                        Resource            
+env.SERVER (ServerDO)          Durable Object      
+env.COMPUTER (ComputerDO)      Durable Object      
+The following containers are available:
+- cfo-stg-s2-route-server (~/Lervent/cloudflare-omnigent/.claude/worktrees/agent-ae730f25293cbe5a6/spikes/s2/server/Dockerfile)
+- ComputerDO (durable_object)
+--dry-run: exiting now.
+Untagged: cfo-stg-s2-route-server:wrangler-b3e95649-5704-455a-ab83-351d129ce0e8
+Untagged: cfo-stg-s2-route-computerdo-computer:wrangler-mve6aiwk

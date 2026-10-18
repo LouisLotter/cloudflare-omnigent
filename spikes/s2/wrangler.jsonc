@@ -1,5 +1,9 @@
 // Spike S2, the private host route: a computer container reaches the Omnigent server through
-// an intercept for omnigent.internal. Two containers, both `basic`, one instance each.
+// an intercept for omnigent.internal. Each container runs with the scheduling policy the design
+// gives it:
+//   - the server keeps the default policy: `basic`, one instance;
+//   - the computer uses the `durable_object` policy (public beta). ComputerDO starts it as
+//     `standard-1`, under one fixed Durable Object name, so only one instance ever runs.
 // Deploy only through the guarded tool, with scripts/deploy.sh (which also stamps the build):
 //
 //   spikes/s2/scripts/deploy.sh <label> [reregister]
@@ -34,10 +38,10 @@
     {
       "name": "cfo-stg-s2-route-computer",
       "class_name": "ComputerDO",
-      "image": "./computer/Dockerfile",
-      "image_build_context": "./computer",
-      "max_instances": 1,
-      "instance_type": "basic"
+      "scheduling_policy": "durable_object",
+      "images": {
+        "computer": { "dockerfile": "./computer/Dockerfile", "build_context": "./computer" }
+      }
     }
   ]
 }

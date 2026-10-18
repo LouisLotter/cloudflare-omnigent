@@ -6,7 +6,7 @@ This is an independent project. It is not an official Omnigent or Cloudflare pro
 
 ## Status
 
-**Implementation started: milestone M0, foundations.** The workspace scaffold is in place: the wire contract, a Worker with one Durable Object, and tests in TypeScript and Python. CI, the test harness, the staging environment and the process documents are in progress. Nothing is deployable yet. [`docs/WORKPLAN.md`](docs/WORKPLAN.md) tracks every milestone and work package.
+**In development.** Milestone M0, foundations, is done: the wire contract, a Worker with one Durable Object, tests in TypeScript and Python, CI, and a guarded staging tool. Milestone M1 is a set of throwaway spikes under [`spikes/`](spikes/) that settle the design's open questions. Nothing is deployable yet.
 
 ## What it does
 
@@ -37,7 +37,7 @@ Omnigent stays the application: its interface, conversations, harnesses, host pr
 
 ## Design
 
-The design documents (architecture, code structure and implementation plan, with the reviews behind them) are maintained outside this repository for now. They will move into [`docs/`](docs/). The summary above follows the current design.
+The design documents (architecture, code structure and implementation plan, with the reviews behind them) are maintained outside this repository. The summary above follows the current design.
 
 ## Development
 
@@ -58,7 +58,9 @@ contracts/   wire contract: zod schemas, exported JSON Schema, golden fixtures
 worker/      the Worker, its Durable Objects and their tests
 python/      Python side: contract tests now, the supervisor and gateway backend later
 images/      container images: server, computer, LinkedIn connector
-docs/        work plan, verification evidence, and later the design
+spikes/      throwaway M1 experiments
+scripts/     repository tools: canary scanner, guarded staging tool
+docs/        the secret checklist
 ```
 
 Each folder has a README describing what lives there.

@@ -5,7 +5,7 @@
 #   3. redeploys: four with intercept re-registration, one without, one with again, GAP_S
 #      seconds apart (default 5 min);
 #   4. collect the Workers Logs and summarise them into results/run/.
-# Teardown stays a separate, checked step (see docs/verification/spike-s2.md).
+# Teardown stays a separate, checked step (see the S2 evidence report in the project notes).
 #
 #   spikes/s2/scripts/campaign.sh <kickoff-ms>
 set -euo pipefail

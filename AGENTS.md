@@ -2,17 +2,19 @@
 
 ## Current phase: implementation
 
-Implementation has started at milestone M0 (foundations). Work runs in milestones M0 to M7, each split into work packages and ending at a gate with recorded evidence. [`docs/WORKPLAN.md`](docs/WORKPLAN.md) shows who owns what and where each package stands.
+Implementation has started. Work runs in milestones M0 to M7, each split into work packages and ending at a gate with recorded evidence.
+
+**Process documents never go in this repository.** The tracker, verification evidence, gate reports, design-change proposals, review reports and review responses live in the maintainer's project notes, outside this repository, in `../omnigent-cloudflare-context/project/`. Never commit them here, in any branch.
 
 ## Where the design lives
 
-The design documents are kept outside this repository for now, in the folder next to this checkout, `../omnigent-cloudflare-context`:
+The design documents are kept outside this repository, in the folder next to this checkout, `../omnigent-cloudflare-context`:
 
 - `design/hybrid-architecture.md`: the governing design, including the release checks and failure handling.
 - `design/code-structure.md`: repository layout, module rules, owned paths and conventions.
 - `design/implementation-plan.md`: roles, milestones, work packages, gates and the test strategy.
 
-They will move into `docs/`. If implementation shows the design is wrong, change the design first, add a line to the tracker's design change notes, then change the code.
+They stay there. If implementation shows the design is wrong, change the design first, add a line to the tracker's design change notes, then change the code.
 
 ## Roles
 
@@ -25,12 +27,12 @@ They will move into `docs/`. If implementation shows the design is wrong, change
 
 ## Working on a package
 
-1. **Pick up your row** in `docs/WORKPLAN.md` and set it to `in progress`. Edit only your own rows there and in `docs/verification/traceability.md`.
+1. **Take your package from the lead,** who keeps the tracker and the traceability matrix in the project notes and updates them from your reports.
 2. **Use your own worktree and branch,** named `wp/<id>-<slug>`, for example `git worktree add ../cfo-wp-3.1 -b wp/3.1-workspace-core <integration branch>`. The integration branch for M0 is `m0/foundations`. Claude Code agent worktrees under `.claude/worktrees/` are fine; they are gitignored.
 3. **Stay inside your owned paths,** as listed in the plan's work-package tables and the code-structure plan. Change shared files only through a pull request to the lead. If another package's interface blocks you, ask the lead for a contract change; never edit that package's paths.
 4. **Contract first.** Build against the milestone's contract package and its fakes, never against another package's unfinished code. Parse every inbound payload with a `contracts` schema.
 5. **Meet the definition of done** below.
-6. **Get an independent review,** then write the evidence entry and open a pull request to the lead. Merge needs green CI, a completed review and the evidence entry.
+6. **Get an independent review,** then write the evidence entry in the project notes and open a pull request to the lead. Merge needs green CI, a completed review and the evidence entry.
 
 ## Definition of done
 
@@ -39,16 +41,16 @@ They will move into `docs/`. If implementation shows the design is wrong, change
 3. At least 90% line and branch coverage for pure modules; mutation score of at least 75% for state machines and the schedule cache. These supplement the failure tests, never replace them.
 4. Every failure row the package touches has a test, not only the happy path.
 5. No secrets or login material in logs, fixtures or snapshots; the canary scan passes.
-6. Independent review done, findings fixed or answered, report saved.
-7. Evidence entry in `docs/verification/wp-<id>.md`, from the template.
+6. Independent review done, findings fixed or answered, report saved in the project notes.
+7. Evidence entry in the project notes, `verification/wp-<id>.md`, from the template there.
 8. The package's traceability rows name real tests.
 
 ## Independent review
 
 - Follow the handoff rules in `../AGENTS.md`, the workspace guidance one level above this checkout. Claude's work is reviewed by Codex with `codex exec` in a read-only sandbox, from a request packet that holds the diff, the test results and the questions.
 - The reviewer only reports. The implementing agent fixes valid findings, records reasons for declined ones, and reruns the checks. Allow at most two reviewer runs per handoff, then raise disagreements with the lead.
-- Save each report as `docs/verification/reviews/<id>-r<n>.md`, redacted for publication.
-- Codex also runs an ongoing review of the integration branch in [`docs/ACTIVE_REVIEW.md`](docs/ACTIVE_REVIEW.md). Write only in its response section.
+- Save each report in the project notes, as `verification/reviews/<id>-r<n>.md`. Never commit a review to this repository.
+- Codex also runs an ongoing review of the integration branch. Its file and the responses to it are kept in the project notes too.
 
 ## Staging and deployments
 
@@ -101,4 +103,6 @@ pnpm --filter @cfo/worker dry-run # wrangler deploy --dry-run
 | `worker/` | The Worker, its Durable Objects and their tests |
 | `python/` | Python side: contract tests now, the supervisor and gateway backend later |
 | `images/` | Container images: server, computer, LinkedIn connector |
-| `docs/` | Tracker, verification evidence, and later the design |
+| `spikes/` | Throwaway M1 experiments; their evidence is in the project notes |
+| `scripts/` | Repository tools: the canary scanner and the guarded staging tool |
+| `docs/` | `secrets.md`, the secret checklist |

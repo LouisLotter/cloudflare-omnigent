@@ -1,0 +1,38 @@
+IR-017 tests against the fixed handlers (the commit that adds this file).
+Command: pnpm exec vitest run --config spikes/s2/vitest.config.js --reporter verbose
+
+
+ RUN  v5.0.3 ~/Lervent/cloudflare-omnigent/.claude/worktrees/agent-ae730f25293cbe5a6/spikes/s2
+
+ ✓ test/controls.test.js > a GET never changes state > cross-site top-level GET /s2/start shows a confirmation page and does nothing 16ms
+ ✓ test/controls.test.js > a GET never changes state > HEAD /s2/start does nothing 0ms
+ ✓ test/controls.test.js > a GET never changes state > cross-site top-level GET /s2/stop shows a confirmation page and does nothing 0ms
+ ✓ test/controls.test.js > a GET never changes state > HEAD /s2/stop does nothing 0ms
+ ✓ test/controls.test.js > a GET never changes state > GET /s2/status reads only 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a foreign origin, even with a valid token 1ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a null origin, even with a valid token 1ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a missing origin, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a same-origin header with a cross-site fetch, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a same-site sibling origin, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a simple cross-site form (no token, urlencoded) 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses a same-origin POST without a token, or with a wrong one 1ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/start > refuses other methods 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a foreign origin, even with a valid token 1ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a null origin, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a missing origin, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a same-origin header with a cross-site fetch, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a same-site sibling origin, even with a valid token 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a simple cross-site form (no token, urlencoded) 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses a same-origin POST without a token, or with a wrong one 0ms
+ ✓ test/controls.test.js > a refused POST has zero effect > /s2/stop > refuses other methods 0ms
+ ✓ test/controls.test.js > a valid same-origin control works > start, then stop, each with the token from its own page 1ms
+ ✓ test/controls.test.js > a valid same-origin control works > a token works once: a replay is refused with zero effect 0ms
+ ✓ test/controls.test.js > a valid same-origin control works > a token is bound to its action: the start page's token cannot stop 0ms
+ ✓ test/controls.test.js > a valid same-origin control works > a token older than 10 minutes is refused with zero effect 0ms
+ ✓ test/controls.test.js > a valid same-origin control works > accepts the token in a header, without Sec-Fetch-Site (older browsers) 0ms
+
+ Test Files  1 passed (1)
+      Tests  26 passed (26)
+   Start at  20:39:24
+   Duration  117ms (tests 50%, transform 33%, import 14%, worker 4%)
+

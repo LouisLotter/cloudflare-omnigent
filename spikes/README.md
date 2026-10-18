@@ -22,8 +22,8 @@ The lessons move into the design. The code here is not reused.
 
 **Where you work**
 - Work only in your own directory, `spikes/s<n>/`.
-- Also write your evidence entry, `docs/verification/spike-s<n>.md`, and change only the Status, Branch and Evidence cells of your own row in `docs/WORKPLAN.md`.
-- Everything else in the repository is shared and owned by the lead: `contracts/`, `worker/`, `scripts/`, `python/`, `.github/`, the other docs. Ask the lead for a change instead of making it.
+- Write your evidence entry in the project notes, outside this repository: `../omnigent-cloudflare-context/project/verification/spike-s<n>.md`. **Never commit evidence, reviews or tracker changes to this repository.** Report your status to the lead, who keeps the tracker.
+- Everything else in the repository is shared and owned by the lead: `contracts/`, `worker/`, `scripts/`, `python/`, `.github/`, `docs/`. Ask the lead for a change instead of making it. The lead integrates only your `spikes/s<n>/` directory, never your branch's history.
 - Commit on your spike branch. Do not push.
 
 **Staging**
@@ -60,7 +60,7 @@ The lessons move into the design. The code here is not reused.
 - The Omnigent fork at `/home/decay/Lervent/omnigent` (branch `cloudflare`) is read-only for spikes. Use the published images, such as `ghcr.io/omnigent-ai/omnigent-server`, or build from the fork into your own directory.
 
 **Evidence**
-- Copy `docs/verification/TEMPLATE-wp.md` to `docs/verification/spike-s<n>.md`. Fill it in with:
+- Start from the template in the project notes, `verification/TEMPLATE-wp.md`. Fill it in with:
   - the question and the pass criteria, from the plan;
   - what ran, and the raw measurements, kept under `spikes/s<n>/results/` with the script that reproduces them;
   - the go or no-go, and the reasoning;

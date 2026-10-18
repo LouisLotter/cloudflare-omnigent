@@ -17,6 +17,9 @@ from pathlib import Path
 
 NAME = "cfo-stg-s2-route"
 CONTAINERS = [f"{NAME}-server", f"{NAME}-computer"]
+# The default-policy server pushes to its application's name; the durable_object-policy
+# computer pushes to <worker>-<class>-<image>.
+REPOSITORIES = [f"{NAME}-server", f"{NAME}-computerdo-computer"]
 STATE = Path(
     os.environ.get("CFO_STAGING_DIR")
     or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -56,8 +59,9 @@ def main() -> None:
         say(f"container application {name}: {len(matching)} found (exit {code})")
     code, images, _ = cf("containers", "images", "list")
     text = json.dumps(images)
-    for name in CONTAINERS:
-        say(f"registry images for {name}: {text.count(name)} references (exit {code})")
+    for name in REPOSITORIES:
+        say(f"registry images in {name}: {text.count(name)} references (exit {code})")
+    say(f"any registry reference containing {NAME}: {text.count(NAME)}")
     code, apps, _ = cf(
         "zero-trust", "access", "applications", "list", "--domain", HOSTNAME, "--exact"
     )

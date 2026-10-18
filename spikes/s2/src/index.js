@@ -13,7 +13,10 @@ const SERVER_PORT = 8000;
 const ALARM_MS = 10_000;
 const INACTIVITY_MS = 30 * 60_000;
 const VIRTUAL_HOST = "omnigent.internal";
+// One fixed name: the durable_object policy has no max_instances, so this keeps it to one.
 const COMPUTER_ID = "c1";
+const COMPUTER_IMAGE = "computer"; // the key under containers[].images in wrangler.jsonc
+const COMPUTER_INSTANCE = "standard-1";
 const ADMIN_USER = "s2-admin";
 
 function log(event, fields = {}) {
@@ -282,7 +285,12 @@ export class ComputerDO extends Keeper {
       }
       // Intercepts registered before start, so the first lookup already resolves.
       await this.intercept();
+      // The durable_object policy, as the design gives computers: the image comes from the
+      // Worker version's image map and the size is chosen here, at each start.
+      const image = container.images[COMPUTER_IMAGE];
       container.start({
+        image,
+        instance: COMPUTER_INSTANCE,
         enableInternet: true,
         env: {
           S2_SERVER_URL: `http://${VIRTUAL_HOST}`,
@@ -294,7 +302,7 @@ export class ComputerDO extends Keeper {
         },
       });
       await container.setInactivityTimeout(INACTIVITY_MS);
-      log("computer-start", { generation });
+      log("computer-start", { generation, image, instance: COMPUTER_INSTANCE });
     }
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + ALARM_MS);
@@ -310,23 +318,140 @@ export class ComputerDO extends Keeper {
       alarm: await this.ctx.storage.getAlarm(),
     };
   }
+
+  /**
+   * IR-017 request-intent token for one action. Random, held in this object's memory only (so
+   * showing the confirmation page writes nothing), valid for INTENT_TTL_MS and used once. A
+   * page on another site cannot read it. If the object is evicted in between, the token is
+   * gone and the POST is refused; the owner reloads the page.
+   */
+  intentToken(action) {
+    this.intents ??= {};
+    const held = this.intents[action];
+    if (!held || Date.now() - held.issuedAt > INTENT_TTL_MS) {
+      this.intents[action] = { value: randomHex(32), issuedAt: Date.now() };
+    }
+    return this.intents[action].value;
+  }
+
+  /** The only way the public entry changes state: the token is checked and spent first. */
+  async control(action, presented) {
+    const held = this.intents?.[action];
+    if (
+      !held ||
+      Date.now() - held.issuedAt > INTENT_TTL_MS ||
+      !sameToken(String(presented ?? ""), held.value)
+    ) {
+      return { ok: false };
+    }
+    delete this.intents[action];
+    if (action === "start") return { ok: true, computer: await this.ensure() };
+    const computer = await this.stop();
+    const server = await serverStub(this.env).stop();
+    return { ok: true, computer, server };
+  }
+}
+
+/** Constant-time comparison of two token strings. */
+function sameToken(a, b) {
+  if (a.length !== b.length || a.length === 0) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// Campaign controls (IR-017, spikes/README.md). Being through Access is not permission to
+// act: a GET or HEAD only shows a confirmation page, and a change is a same-origin POST that
+// carries the page's request-intent token. S2 has no fault or scenario route: the redeploy
+// series runs from the laptop through the staging tool, never from a browser.
+const CONTROLS = { "/s2/start": "start", "/s2/stop": "stop" };
+const INTENT_TTL_MS = 10 * 60_000;
+const MAX_FORM_BYTES = 4096;
+const PAGE_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-store",
+  "content-security-policy":
+    "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+};
+const PAGE_TEXT = {
+  start:
+    "Starts the S2 run: the Omnigent server (basic) and one computer container (standard-1), kept awake by an alarm until the run is stopped or torn down.",
+  stop: "Stops both containers and the keep-alive alarm. Teardown is still done with the staging tool.",
+};
+
+function confirmationPage(action, intent) {
+  const label = action === "start" ? "Start" : "Stop";
+  const html = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S2 ${action}</title></head>
+<body>
+<h1>Spike S2: ${action}</h1>
+<p>${PAGE_TEXT[action]}</p>
+<form method="post" action="/s2/${action}"><input type="hidden" name="intent" value="${intent}"><button type="submit">${label}</button></form>
+<p>Build ${BUILD.id}. The button works once, within 10 minutes; reload the page if it is refused.</p>
+</body>
+</html>
+`;
+  return new Response(html, { headers: PAGE_HEADERS });
+}
+
+/** Why a control POST is refused before anything else happens, or null when it may proceed. */
+function originRefusal(request, url) {
+  const origin = request.headers.get("origin");
+  if (origin === null) return "missing_origin";
+  if (origin !== url.origin) return "bad_origin"; // includes "null"
+  const site = request.headers.get("sec-fetch-site");
+  if (site !== null && site !== "same-origin") return "cross_site";
+  return null;
+}
+
+async function presentedIntent(request) {
+  const header = request.headers.get("x-s2-intent");
+  if (header) return header;
+  const type = request.headers.get("content-type") ?? "";
+  if (!type.startsWith("application/x-www-form-urlencoded")) return "";
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_FORM_BYTES) return "";
+  const text = await request.text();
+  if (text.length > MAX_FORM_BYTES) return "";
+  return new URLSearchParams(text).get("intent") ?? "";
+}
+
+async function control(request, env, url, action) {
+  if (request.method === "GET" || request.method === "HEAD") {
+    return confirmationPage(action, await computerStub(env).intentToken(action));
+  }
+  if (request.method !== "POST") {
+    return new Response("method not allowed", {
+      status: 405,
+      headers: { allow: "GET, HEAD, POST" },
+    });
+  }
+  const refusal = originRefusal(request, url);
+  if (refusal) {
+    log("control-refused", { action, reason: refusal });
+    return Response.json({ error: refusal }, { status: 403 });
+  }
+  const result = await computerStub(env).control(action, await presentedIntent(request));
+  if (!result.ok) {
+    log("control-refused", { action, reason: "bad_intent" });
+    return Response.json({ error: "bad_intent" }, { status: 403 });
+  }
+  log("control", { action });
+  const { ok: _, ...rest } = result;
+  return Response.json({ build: BUILD.id, action, ...rest });
 }
 
 /** The public entry, behind owner-only Access. Only the owner can start or stop the spike. */
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/s2/start") {
-      const computer = await computerStub(env).ensure();
-      return Response.json({ build: BUILD.id, computer });
-    }
-    if (url.pathname === "/s2/status") {
+    const action = CONTROLS[url.pathname];
+    if (action) return control(request, env, url, action);
+    if (url.pathname === "/s2/status" && (request.method === "GET" || request.method === "HEAD")) {
       return Response.json({ build: BUILD.id, computer: await computerStub(env).status() });
-    }
-    if (url.pathname === "/s2/stop" && request.method === "POST") {
-      const computer = await computerStub(env).stop();
-      const server = await serverStub(env).stop();
-      return Response.json({ build: BUILD.id, computer, server });
     }
     return new Response("not found", { status: 404 });
   },
