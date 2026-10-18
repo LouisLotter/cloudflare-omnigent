@@ -4,15 +4,38 @@
  *
  *   node scripts/canary-scan.ts [--self-test] <paths...>
  *
- * Exit status: 0 clean; 1 a canary was found or the self-test failed; 2 usage error, or the scan
- * could not read everything it was asked to scan.
+ * Exit status
+ *   0  Clean: every given path held at least one file, every file was scanned completely, and no
+ *      canary was found.
+ *   1  A canary was found (whether or not the scan was also incomplete), or the self-test failed.
+ *   2  Usage error: an unknown option, no paths without --self-test, or a path that does not exist.
+ *   3  Incomplete: no canary was found, but part of the input could not be scanned, so the run is
+ *      no evidence that the input is clean. Causes: a given path with no files in it; a file that
+ *      cannot be read or is larger than the file bound; data in a format whose compressed content
+ *      the scanner cannot decode (zip and zip-based formats, xz, bzip2, 7z, rar, lz4, lzip, Unix
+ *      compress, PNG, PDF, WOFF, WOFF2); corrupt gzip, zstd or brotli data; decoded data beyond
+ *      the decoded-size bound or nested beyond the depth bound; a malformed tar archive. The
+ *      bounds are in DEFAULT_LIMITS.
  *
- * A canary is any match of CANARY_PATTERN_SOURCE, or an exact value listed (comma-separated) in
- * the CFO_CANARY_VALUES environment variable. Directories are walked recursively. Below the given
- * paths, entries named in SKIPPED_NAMES, symbolic links and binary files are skipped; a path given
- * explicitly is always scanned, so `canary-scan.ts worker/dist` does scan the build output.
- * File and directory names are checked as well as contents. Reports give the path, line and
- * column and a masked form; a full canary value is never printed, even inside a path.
+ * Canaries: any match of CANARY_PATTERN_SOURCE, and each exact value listed (comma-separated) in
+ * the CFO_CANARY_VALUES environment variable.
+ *
+ * Reading. Every file is scanned as raw bytes, whatever it contains: no file is exempt because it
+ * looks binary. Canaries are looked for as UTF-8 (which covers ASCII) and as UTF-16LE, and exact
+ * values also as latin1. gzip and zstd data (recognised by signature) and brotli data (recognised
+ * by a .br name, as brotli has no signature) are decoded and the result scanned in the same way,
+ * recursively. A tar archive is scanned whole, and each member that is itself compressed or an
+ * archive is decoded or reported. Data without NUL bytes is reported by line and column, other
+ * data by byte offset.
+ *
+ * Paths. Directories are walked recursively. Below the given paths, entries named in
+ * SKIPPED_NAMES and symbolic links are skipped; a path given explicitly is always scanned, so
+ * `canary-scan.ts worker/dist` does scan the build output. Names are checked as well as contents.
+ *
+ * Reports never print a full canary value, even inside a path or an archive member's name.
+ *
+ * Not detected: canaries in UTF-16BE or other encodings, and canaries that are split up or
+ * transformed (for example base64-encoded) inside a file.
  *
  * Source files must never contain a literal canary: tests build them at run time.
  */
@@ -20,9 +43,20 @@ import { randomBytes } from "node:crypto";
 import type { Dirent, Stats } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import {
+  brotliDecompressSync,
+  crc32,
+  deflateRawSync,
+  gunzipSync,
+  gzipSync,
+  zstdDecompressSync,
+} from "node:zlib";
 
-export const CANARY_PATTERN_SOURCE = "CFO_CANARY_[A-Za-z0-9_]{8,}";
+export const CANARY_PREFIX = "CFO_CANARY_";
+export const CANARY_PATTERN_SOURCE = `${CANARY_PREFIX}[A-Za-z0-9_]{8,}`;
+/** The same pattern in UTF-16LE: every ASCII character is followed by a NUL byte. */
+const UTF16LE_PATTERN_SOURCE = `${[...CANARY_PREFIX].map((character) => `${character}\\x00`).join("")}(?:[A-Za-z0-9_]\\x00){8,}`;
 export const CANARY_VALUES_ENV = "CFO_CANARY_VALUES";
 export const SKIPPED_NAMES: ReadonlySet<string> = new Set([
   "node_modules",
@@ -32,28 +66,51 @@ export const SKIPPED_NAMES: ReadonlySet<string> = new Set([
   "coverage",
   ".venv",
 ]);
-/** Like Git, a file with a NUL byte in its first 8000 bytes is treated as binary. */
-const BINARY_SNIFF_BYTES = 8000;
+
+export const EXIT_CLEAN = 0;
+export const EXIT_FOUND = 1;
+export const EXIT_USAGE = 2;
+export const EXIT_INCOMPLETE = 3;
+
+export interface ScanLimits {
+  /** Larger files are not read: the scan is incomplete. */
+  readonly maxFileBytes: number;
+  /** Total decoded bytes per file, across all its compressed layers. */
+  readonly maxDecodedBytes: number;
+  /** How many layers (compression or archive members) deep the scan follows. */
+  readonly maxDepth: number;
+}
+
+export const DEFAULT_LIMITS: ScanLimits = {
+  maxFileBytes: 256 * 1024 * 1024,
+  maxDecodedBytes: 256 * 1024 * 1024,
+  maxDepth: 8,
+};
 
 const USAGE = "usage: node scripts/canary-scan.ts [--self-test] <paths...>";
 
 export type CanaryKind = "pattern" | "value";
+export type CanaryEncoding = "utf8" | "latin1" | "utf16le";
 
-export interface TextFinding {
-  /** 1-based. */
-  readonly line: number;
-  /** 1-based, in UTF-16 code units. */
-  readonly column: number;
+export interface DataFinding {
+  /** Byte offset in the scanned data. */
+  readonly offset: number;
+  /** 1-based line and column (in UTF-16 code units) when the data has no NUL byte, else null. */
+  readonly line: number | null;
+  readonly column: number | null;
   readonly kind: CanaryKind;
+  readonly encoding: CanaryEncoding;
   /** Safe to print: never the full value. */
   readonly masked: string;
 }
 
-export interface CanaryFinding extends TextFinding {
+export interface CanaryFinding extends DataFinding {
   /** The file, or for a canary in a name, the file or directory. Canaries in it are masked. */
   readonly path: string;
-  /** Whether the canary is in the path's last component rather than in the file's contents. */
+  /** Whether the canary is in the path's last component rather than in the contents. */
   readonly inName: boolean;
+  /** How the data was reached from the file, for example ["gzip", "tar member a.log"]. Masked. */
+  readonly layers: readonly string[];
 }
 
 export interface ScanProblem {
@@ -64,16 +121,17 @@ export interface ScanProblem {
 
 export interface ScanResult {
   readonly findings: CanaryFinding[];
-  readonly filesScanned: number;
-  readonly binarySkipped: number;
-  readonly symlinksSkipped: number;
-  /** Paths that could not be read. Any problem makes the scan incomplete. */
+  /** Anything that makes the scan incomplete. */
   readonly problems: ScanProblem[];
+  readonly filesScanned: number;
+  readonly layersDecoded: number;
+  readonly symlinksSkipped: number;
 }
 
 export interface ScanOptions {
   /** Exact canary values, in addition to the pattern. */
   readonly values?: readonly string[];
+  readonly limits?: Partial<ScanLimits>;
 }
 
 export interface CliIo {
@@ -108,79 +166,298 @@ export function redactCanaries(text: string, values: readonly string[] = []): st
   return redacted.replace(new RegExp(CANARY_PATTERN_SOURCE, "g"), (match) => maskCanary(match));
 }
 
-/** Finds every canary occurrence in `text`, ordered by position. */
-export function findCanariesInText(text: string, values: readonly string[] = []): TextFinding[] {
-  const matches = new Map<string, { offset: number; kind: CanaryKind; value: string }>();
-  for (const match of text.matchAll(new RegExp(CANARY_PATTERN_SOURCE, "g"))) {
-    matches.set(`${match.index}:${match[0].length}`, {
-      offset: match.index,
-      kind: "pattern",
-      value: match[0],
-    });
+/** The byte sequences an exact value is looked for as. */
+function valueEncodings(value: string): [CanaryEncoding, Buffer][] {
+  const encodings: [CanaryEncoding, Buffer][] = [
+    ["utf8", Buffer.from(value, "utf8")],
+    ["utf16le", Buffer.from(value, "utf16le")],
+  ];
+  const codes = [...value].map((character) => character.codePointAt(0) ?? 0);
+  if (codes.some((code) => code > 0x7f) && codes.every((code) => code <= 0xff)) {
+    encodings.push(["latin1", Buffer.from(value, "latin1")]);
+  }
+  return encodings;
+}
+
+/** Finds every canary occurrence in raw bytes, ordered by offset. */
+export function findCanaries(data: Uint8Array, values: readonly string[] = []): DataFinding[] {
+  const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  // latin1 maps each byte to one character, so string offsets are byte offsets.
+  const latin1 = bytes.toString("latin1");
+  const matches = new Map<
+    string,
+    { offset: number; kind: CanaryKind; encoding: CanaryEncoding; value: string }
+  >();
+  const add = (
+    offset: number,
+    length: number,
+    kind: CanaryKind,
+    encoding: CanaryEncoding,
+    value: string,
+  ): void => {
+    const key = `${offset}:${length}`;
+    if (!matches.has(key)) matches.set(key, { offset, kind, encoding, value });
+  };
+  for (const match of latin1.matchAll(new RegExp(CANARY_PATTERN_SOURCE, "g"))) {
+    add(match.index, match[0].length, "pattern", "utf8", match[0]);
+  }
+  for (const match of latin1.matchAll(new RegExp(UTF16LE_PATTERN_SOURCE, "g"))) {
+    add(match.index, match[0].length, "pattern", "utf16le", match[0].replaceAll("\u0000", ""));
   }
   for (const value of values) {
     if (value.length === 0) continue;
-    for (
-      let offset = text.indexOf(value);
-      offset !== -1;
-      offset = text.indexOf(value, offset + 1)
-    ) {
-      const key = `${offset}:${value.length}`;
-      if (!matches.has(key)) matches.set(key, { offset, kind: "value", value });
+    for (const [encoding, needle] of valueEncodings(value)) {
+      for (
+        let offset = bytes.indexOf(needle);
+        offset !== -1;
+        offset = bytes.indexOf(needle, offset + 1)
+      ) {
+        add(offset, needle.length, "value", encoding, value);
+      }
     }
   }
+
+  const isText = !bytes.includes(0);
   const lineStarts = [0];
-  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
-    lineStarts.push(index + 1);
+  if (isText) {
+    for (let index = bytes.indexOf(0x0a); index !== -1; index = bytes.indexOf(0x0a, index + 1)) {
+      lineStarts.push(index + 1);
+    }
   }
   return [...matches.values()]
     .sort((left, right) => left.offset - right.offset)
-    .map(({ offset, kind, value }) => {
-      const lineIndex = lastLineStartAtOrBefore(lineStarts, offset);
-      return {
-        line: lineIndex + 1,
-        column: offset - (lineStarts[lineIndex] ?? 0) + 1,
-        kind,
-        masked: maskCanary(value),
-      };
+    .map(({ offset, kind, encoding, value }) => {
+      let line: number | null = null;
+      let column: number | null = null;
+      if (isText) {
+        const lineIndex = lastAtOrBefore(lineStarts, offset);
+        const lineStart = lineStarts[lineIndex] ?? 0;
+        line = lineIndex + 1;
+        column = bytes.subarray(lineStart, offset).toString("utf8").length + 1;
+      }
+      return { offset, line, column, kind, encoding, masked: maskCanary(value) };
     });
 }
 
-function lastLineStartAtOrBefore(lineStarts: readonly number[], offset: number): number {
+/** Finds canaries in a string, as its UTF-8 bytes. */
+export function findCanariesInText(text: string, values: readonly string[] = []): DataFinding[] {
+  return findCanaries(Buffer.from(text, "utf8"), values);
+}
+
+function lastAtOrBefore(sorted: readonly number[], value: number): number {
   let low = 0;
-  let high = lineStarts.length - 1;
+  let high = sorted.length - 1;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if ((lineStarts[middle] ?? 0) <= offset) low = middle;
+    if ((sorted[middle] ?? 0) <= value) low = middle;
     else high = middle - 1;
   }
   return low;
 }
 
-export function isBinary(content: Uint8Array): boolean {
-  return content.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+type Codec = "gzip" | "zstd" | "brotli";
+
+export type DataFormat =
+  | { readonly kind: "plain" }
+  | { readonly kind: "compressed"; readonly codec: Codec }
+  | { readonly kind: "tar" }
+  | { readonly kind: "unsupported"; readonly format: string };
+
+const ascii = (text: string): number[] => [...text].map((character) => character.charCodeAt(0));
+
+/** Signatures of formats whose compressed content this scanner cannot decode. */
+const UNSUPPORTED_SIGNATURES: readonly (readonly [string, readonly number[]])[] = [
+  ["zip", [0x50, 0x4b, 0x03, 0x04]],
+  ["zip", [0x50, 0x4b, 0x05, 0x06]],
+  ["zip", [0x50, 0x4b, 0x07, 0x08]],
+  ["xz", [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]],
+  ["7z", [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]],
+  ["rar", [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07]],
+  ["lz4", [0x04, 0x22, 0x4d, 0x18]],
+  ["lzip", ascii("LZIP")],
+  ["Unix compress", [0x1f, 0x9d]],
+  ["PNG", [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  ["PDF", ascii("%PDF-")],
+  ["WOFF", ascii("wOFF")],
+  ["WOFF2", ascii("wOF2")],
+];
+
+function startsWith(data: Uint8Array, signature: readonly number[], at = 0): boolean {
+  return signature.every((byte, index) => data[at + index] === byte);
 }
 
-/** Scans files and directories. A path that does not exist is reported as a problem. */
+/** Recognises compressed data and archives by signature (brotli by a .br name). */
+export function detectFormat(data: Uint8Array, name: string): DataFormat {
+  if (startsWith(data, [0x1f, 0x8b, 0x08])) return { kind: "compressed", codec: "gzip" };
+  if (startsWith(data, [0x28, 0xb5, 0x2f, 0xfd])) return { kind: "compressed", codec: "zstd" };
+  for (const [format, signature] of UNSUPPORTED_SIGNATURES) {
+    if (startsWith(data, signature)) return { kind: "unsupported", format };
+  }
+  const level = data[3] ?? 0;
+  if (startsWith(data, ascii("BZh")) && level >= 0x31 && level <= 0x39) {
+    return { kind: "unsupported", format: "bzip2" };
+  }
+  if (data.length >= 512 && startsWith(data, ascii("ustar"), 257)) return { kind: "tar" };
+  if (/\.br$/i.test(name)) return { kind: "compressed", codec: "brotli" };
+  return { kind: "plain" };
+}
+
+function decode(codec: Codec, data: Buffer, maxOutputLength: number): Buffer {
+  if (codec === "gzip") return gunzipSync(data, { maxOutputLength });
+  if (codec === "zstd") return zstdDecompressSync(data, { maxOutputLength });
+  return brotliDecompressSync(data, { maxOutputLength });
+}
+
+export interface TarMember {
+  readonly name: string;
+  readonly data: Buffer;
+}
+
+/** The regular files in a ustar, GNU or pax tar archive, or null if the archive is malformed. */
+export function tarMembers(data: Buffer): TarMember[] | null {
+  const members: TarMember[] = [];
+  let offset = 0;
+  while (offset + 512 <= data.length) {
+    const header = data.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const size = tarNumber(header.subarray(124, 136));
+    if (size === null || !tarChecksumMatches(header)) return null;
+    const start = offset + 512;
+    if (start + size > data.length) return null;
+    const type = header[156];
+    if (type === 0 || type === 0x30 || type === 0x37) {
+      const name = tarString(header.subarray(0, 100));
+      const prefix = tarString(header.subarray(345, 500));
+      members.push({
+        name: prefix === "" ? name : `${prefix}/${name}`,
+        data: data.subarray(start, start + size),
+      });
+    }
+    offset = start + Math.ceil(size / 512) * 512;
+  }
+  return members;
+}
+
+function tarString(field: Buffer): string {
+  return field.toString("utf8").split("\u0000")[0] ?? "";
+}
+
+/** An octal tar number; null for anything else, including the base-256 form of huge sizes. */
+function tarNumber(field: Buffer): number | null {
+  const text = (field.toString("latin1").split("\u0000")[0] ?? "").trim();
+  if (text === "") return 0;
+  return /^[0-7]+$/.test(text) ? Number.parseInt(text, 8) : null;
+}
+
+function tarChecksumMatches(header: Buffer): boolean {
+  let sum = 0;
+  for (let index = 0; index < 512; index += 1) {
+    sum += index >= 148 && index < 156 ? 0x20 : (header[index] ?? 0);
+  }
+  return tarNumber(header.subarray(148, 156)) === sum;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isOverBound(error: unknown): boolean {
+  return error instanceof RangeError && "code" in error && error.code === "ERR_BUFFER_TOO_LARGE";
+}
+
+/** Scans files and directories. Paths that do not exist are reported as problems. */
 export async function scanPaths(
   paths: readonly string[],
   options: ScanOptions = {},
 ): Promise<ScanResult> {
   const values = options.values ?? [];
+  const limits: ScanLimits = { ...DEFAULT_LIMITS, ...options.limits };
   const findings: CanaryFinding[] = [];
   const problems: ScanProblem[] = [];
+  let filesFound = 0;
   let filesScanned = 0;
-  let binarySkipped = 0;
+  let layersDecoded = 0;
   let symlinksSkipped = 0;
-  const shown = (path: string): string => redactCanaries(path, values);
+  const shown = (text: string): string => redactCanaries(text, values);
 
   const checkName = (path: string, name: string): void => {
     for (const finding of findCanariesInText(name, values)) {
-      findings.push({ ...finding, path: shown(path), inName: true });
+      findings.push({ ...finding, path: shown(path), inName: true, layers: [] });
     }
   };
 
-  const scanFile = async (path: string): Promise<void> => {
+  const scanData = (
+    data: Buffer,
+    file: string,
+    layers: readonly string[],
+    name: string,
+    depth: number,
+    rawScanned: boolean,
+    budget: { left: number },
+  ): void => {
+    if (!rawScanned) {
+      for (const finding of findCanaries(data, values)) {
+        findings.push({ ...finding, path: shown(file), inName: false, layers });
+      }
+    }
+    const problem = (message: string): void => {
+      const where = layers.length > 0 ? ` (in ${layers.join(" > ")})` : "";
+      problems.push({ path: shown(file), message: `${message}${where}` });
+    };
+    const format = detectFormat(data, name);
+    if (format.kind === "plain") return;
+    if (format.kind === "unsupported") {
+      problem(`cannot decode ${format.format} data`);
+      return;
+    }
+    if (depth >= limits.maxDepth) {
+      problem(`nested more than ${limits.maxDepth} layers deep`);
+      return;
+    }
+    if (format.kind === "tar") {
+      const members = tarMembers(data);
+      if (members === null) {
+        problem("malformed tar archive");
+        return;
+      }
+      // The whole archive was scanned above; only members that need decoding go further.
+      for (const member of members) {
+        if (detectFormat(member.data, member.name).kind === "plain") continue;
+        const layer = `tar member ${shown(member.name)}`;
+        scanData(member.data, file, [...layers, layer], member.name, depth + 1, true, budget);
+      }
+      return;
+    }
+    let decoded: Buffer;
+    try {
+      if (budget.left <= 0) throw new RangeError("no decoding budget left");
+      decoded = decode(format.codec, data, budget.left);
+    } catch (error) {
+      problem(
+        isOverBound(error) || budget.left <= 0
+          ? `decoded data exceeds the ${limits.maxDecodedBytes}-byte bound`
+          : `corrupt ${format.codec} data`,
+      );
+      return;
+    }
+    budget.left -= decoded.length;
+    layersDecoded += 1;
+    const innerName = name.replace(/\.(gz|tgz|zst|br)$/i, "");
+    scanData(decoded, file, [...layers, format.codec], innerName, depth + 1, false, budget);
+  };
+
+  const scanFile = async (path: string, size: number): Promise<void> => {
+    filesFound += 1;
+    if (size > limits.maxFileBytes) {
+      problems.push({
+        path: shown(path),
+        message: `larger than the ${limits.maxFileBytes}-byte file bound`,
+      });
+      return;
+    }
     let content: Buffer;
     try {
       content = await readFile(path);
@@ -188,14 +465,8 @@ export async function scanPaths(
       problems.push({ path: shown(path), message: describeError(error) });
       return;
     }
-    if (isBinary(content)) {
-      binarySkipped += 1;
-      return;
-    }
     filesScanned += 1;
-    for (const finding of findCanariesInText(content.toString("utf8"), values)) {
-      findings.push({ ...finding, path: shown(path), inName: false });
-    }
+    scanData(content, path, [], basename(path), 0, false, { left: limits.maxDecodedBytes });
   };
 
   const scanDirectory = async (path: string): Promise<void> => {
@@ -213,43 +484,112 @@ export async function scanPaths(
       checkName(child, entry.name);
       if (entry.isSymbolicLink()) symlinksSkipped += 1;
       else if (entry.isDirectory()) await scanDirectory(child);
-      else if (entry.isFile()) await scanFile(child);
+      else if (entry.isFile()) await scanPath(child);
     }
   };
 
-  for (const path of paths) {
-    checkName(path, path);
+  const scanPath = async (path: string): Promise<void> => {
     let info: Stats;
     try {
       info = await stat(path);
     } catch (error) {
       problems.push({ path: shown(path), message: describeError(error) });
-      continue;
+      return;
     }
     if (info.isDirectory()) await scanDirectory(path);
-    else if (info.isFile()) await scanFile(path);
+    else if (info.isFile()) await scanFile(path, info.size);
     else problems.push({ path: shown(path), message: "not a regular file or directory" });
+  };
+
+  for (const path of paths) {
+    checkName(path, path);
+    const before = filesFound;
+    await scanPath(path);
+    // Scanning nothing is no evidence of a clean path.
+    if (filesFound === before) problems.push({ path: shown(path), message: "no files to scan" });
   }
-  return { findings, filesScanned, binarySkipped, symlinksSkipped, problems };
+  return { findings, problems, filesScanned, layersDecoded, symlinksSkipped };
 }
 
-function describeError(error: unknown): string {
-  if (error instanceof Error && "code" in error && typeof error.code === "string") {
-    return error.code;
-  }
-  return error instanceof Error ? error.message : String(error);
+/** 1 if a canary was found, else 3 if the scan was incomplete, else 0. */
+export function exitCodeFor(result: ScanResult): number {
+  if (result.findings.length > 0) return EXIT_FOUND;
+  if (result.problems.length > 0) return EXIT_INCOMPLETE;
+  return EXIT_CLEAN;
 }
 
 export function formatFinding(finding: CanaryFinding): string {
-  const location = finding.inName
-    ? `${finding.path} (name)`
-    : `${finding.path}:${finding.line}:${finding.column}`;
-  return `${location}: canary ${finding.masked} (${finding.kind})`;
+  const layers = finding.layers.length > 0 ? ` [${finding.layers.join(" > ")}]` : "";
+  let location: string;
+  if (finding.inName) location = `${finding.path} (name)`;
+  else if (finding.line !== null) {
+    location = `${finding.path}${layers}:${finding.line}:${finding.column}`;
+  } else location = `${finding.path}${layers}: byte ${finding.offset}`;
+  const detail =
+    finding.encoding === "utf8" ? finding.kind : `${finding.kind}, ${finding.encoding}`;
+  return `${location}: canary ${finding.masked} (${detail})`;
+}
+
+/** A ustar archive of regular files, for the self-test and tests. */
+export function tarArchive(entries: readonly { name: string; data: Uint8Array }[]): Buffer {
+  const blocks: Buffer[] = [];
+  for (const { name, data } of entries) {
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100, "utf8");
+    header.write("0000644\u0000", 100, "latin1");
+    header.write("0000000\u0000", 108, "latin1");
+    header.write("0000000\u0000", 116, "latin1");
+    header.write(`${data.length.toString(8).padStart(11, "0")}\u0000`, 124, "latin1");
+    header.write("00000000000\u0000", 136, "latin1");
+    header.write(" ".repeat(8), 148, "latin1");
+    header[156] = 0x30;
+    header.write("ustar\u000000", 257, "latin1");
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, "0")}\u0000 `, 148, "latin1");
+    blocks.push(header, Buffer.from(data), Buffer.alloc((512 - (data.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return Buffer.concat(blocks);
+}
+
+/** A zip archive holding one deflated file, for the self-test and tests. */
+export function zipArchive(name: string, content: Uint8Array): Buffer {
+  const fileName = Buffer.from(name, "utf8");
+  const compressed = deflateRawSync(content);
+  const checksum = crc32(content);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(8, 8);
+  local.writeUInt32LE(checksum, 14);
+  local.writeUInt32LE(compressed.length, 18);
+  local.writeUInt32LE(content.length, 22);
+  local.writeUInt16LE(fileName.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(8, 10);
+  central.writeUInt32LE(checksum, 16);
+  central.writeUInt32LE(compressed.length, 20);
+  central.writeUInt32LE(content.length, 24);
+  central.writeUInt16LE(fileName.length, 28);
+  const entries = Buffer.concat([local, fileName, compressed]);
+  const directory = Buffer.concat([central, fileName]);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(entries.length, 16);
+  return Buffer.concat([entries, directory, end]);
 }
 
 /**
- * Plants canaries in a temporary directory and checks that the scan finds them without printing
- * them, and that a clean directory passes. Returns the failed checks; empty means it passed.
+ * Plants canaries in a temporary directory, in text, binary, compressed and archived forms, and
+ * checks the exit status the scan would give for each, that reports never print a canary, and
+ * that unsupported input, an empty directory and clean text give the right status. Returns the
+ * failed checks; empty means it passed.
  */
 export async function runSelfTest(): Promise<string[]> {
   const failures: string[] = [];
@@ -257,36 +597,48 @@ export async function runSelfTest(): Promise<string[]> {
   try {
     const planted = ["CFO", "CANARY", "SELFTEST", randomBytes(8).toString("hex")].join("_");
     const exactValue = `self-test-login-${randomBytes(12).toString("hex")}`;
-    const dirty = join(root, "dirty");
-    const clean = join(root, "clean");
-    await mkdir(join(dirty, "logs"), { recursive: true });
-    await mkdir(join(clean, "logs"), { recursive: true });
-    await writeFile(join(dirty, "logs", "server.log"), `starting\nlogin token=${planted}\n`);
-    await writeFile(join(dirty, "state.json"), JSON.stringify({ refresh_token: exactValue }));
-    await writeFile(join(clean, "logs", "server.log"), "starting\nlogin token=[redacted]\n");
-    await writeFile(join(clean, "state.json"), JSON.stringify({ refresh_token: null }));
-
-    const options = { values: [exactValue] };
-    const dirtyResult = await scanPaths([dirty], options);
-    const found = (path: string, line: number, kind: CanaryKind): boolean =>
-      dirtyResult.findings.some(
-        (finding) => finding.path === path && finding.line === line && finding.kind === kind,
-      );
-    if (!found(join(dirty, "logs", "server.log"), 2, "pattern")) {
-      failures.push("planted pattern canary not found");
-    }
-    if (!found(join(dirty, "state.json"), 1, "value")) {
-      failures.push("planted exact-value canary not found");
-    }
-    const report = dirtyResult.findings.map(formatFinding).join("\n");
-    if (report.includes(planted) || report.includes(exactValue)) {
-      failures.push("report printed a full canary value");
-    }
-
-    const cleanResult = await scanPaths([clean], options);
-    if (cleanResult.findings.length > 0) failures.push("clean directory reported a canary");
-    if (cleanResult.filesScanned !== 2 || cleanResult.problems.length > 0) {
-      failures.push("clean directory was not scanned completely");
+    const values = [exactValue];
+    const log = `starting\nlogin token=${planted}\n`;
+    const cases: [string, Uint8Array | null, number][] = [
+      ["server.log", Buffer.from(log), EXIT_FOUND],
+      ["state.json", Buffer.from(JSON.stringify({ refresh_token: exactValue })), EXIT_FOUND],
+      ["nul-prefixed.log", Buffer.concat([Buffer.from([0]), Buffer.from(log)]), EXIT_FOUND],
+      [
+        "state.sqlite",
+        Buffer.concat([
+          Buffer.from("SQLite format 3\u0000", "latin1"),
+          Buffer.alloc(84),
+          randomBytes(64),
+          Buffer.from(`token=${planted}`, "utf16le"),
+          Buffer.alloc(32),
+        ]),
+        EXIT_FOUND,
+      ],
+      ["server.log.gz", gzipSync(log), EXIT_FOUND],
+      [
+        "logs.tar.gz",
+        gzipSync(tarArchive([{ name: "logs/app.log.gz", data: gzipSync(log) }])),
+        EXIT_FOUND,
+      ],
+      ["logs.zip", zipArchive("server.log", Buffer.from(log.repeat(4))), EXIT_INCOMPLETE],
+      ["empty", null, EXIT_INCOMPLETE],
+      ["clean.log", Buffer.from("starting\nlogin token=[redacted]\n"), EXIT_CLEAN],
+    ];
+    for (const [name, content, expected] of cases) {
+      const path = join(root, name);
+      if (content === null) await mkdir(path);
+      else await writeFile(path, content);
+      const result = await scanPaths([path], { values });
+      const status = exitCodeFor(result);
+      if (status !== expected)
+        failures.push(`${name}: exit status ${status}, expected ${expected}`);
+      const report = [
+        ...result.findings.map(formatFinding),
+        ...result.problems.map((problem) => problem.message),
+      ].join("\n");
+      if (report.includes(planted) || report.includes(exactValue)) {
+        failures.push(`${name}: the report printed a full canary value`);
+      }
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -305,23 +657,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     else if (argument === "--self-test") selfTest = true;
     else if (argument === "--help" || argument === "-h") {
       io.stdout(USAGE);
-      return 0;
+      return EXIT_CLEAN;
     } else {
       io.stderr(`canary-scan: unknown option ${argument}\n${USAGE}`);
-      return 2;
+      return EXIT_USAGE;
     }
   }
   if (!selfTest && paths.length === 0) {
     io.stderr(`canary-scan: no paths given\n${USAGE}`);
-    return 2;
+    return EXIT_USAGE;
   }
 
   if (selfTest) {
     const failures = await runSelfTest();
     for (const failure of failures) io.stderr(`canary-scan: self-test failed: ${failure}`);
-    if (failures.length > 0) return 1;
+    if (failures.length > 0) return EXIT_FOUND;
     io.stdout("canary-scan: self-test passed");
-    if (paths.length === 0) return 0;
+    if (paths.length === 0) return EXIT_CLEAN;
   }
 
   const values = parseCanaryValues(io.env[CANARY_VALUES_ENV]);
@@ -331,27 +683,27 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     } catch (error) {
       const shown = redactCanaries(path, values);
       io.stderr(`canary-scan: cannot scan ${shown}: ${describeError(error)}\n${USAGE}`);
-      return 2;
+      return EXIT_USAGE;
     }
   }
 
   const result = await scanPaths(paths, { values });
   for (const finding of result.findings) io.stdout(formatFinding(finding));
   for (const problem of result.problems) {
-    io.stderr(`canary-scan: could not read ${problem.path}: ${problem.message}`);
+    io.stderr(`canary-scan: not scanned completely: ${problem.path}: ${problem.message}`);
   }
   const files = new Set(result.findings.map((finding) => finding.path)).size;
   io.stdout(
     `canary-scan: ${result.findings.length} canary occurrence(s) in ${files} path(s); ` +
-      `scanned ${result.filesScanned} file(s), skipped ${result.binarySkipped} binary ` +
-      `and ${result.symlinksSkipped} symbolic link(s); ${values.length} exact value(s) configured`,
+      `scanned ${result.filesScanned} file(s), decoded ${result.layersDecoded} compressed ` +
+      `layer(s), skipped ${result.symlinksSkipped} symbolic link(s); ` +
+      `${result.problems.length} problem(s); ${values.length} exact value(s) configured`,
   );
-  if (result.findings.length > 0) return 1;
-  if (result.problems.length > 0) {
-    io.stderr("canary-scan: scan incomplete");
-    return 2;
+  const status = exitCodeFor(result);
+  if (status === EXIT_INCOMPLETE) {
+    io.stderr("canary-scan: scan incomplete: this run is no evidence that the input is clean");
   }
-  return 0;
+  return status;
 }
 
 if (import.meta.main) {
