@@ -56,4 +56,20 @@ out.series = Object.fromEntries(fields.map((f) => [f, stats(series.map((w) => w[
 out.seriesWithoutFirst = Object.fromEntries(
   fields.map((f) => [f, stats(series.filter((w) => w.index > 0).map((w) => w[f]))]),
 );
+
+// Local reference runs (local-wake.sh and restore-bench.sh).
+const local = {};
+for (const l of lines.filter((l) => l.s1 === "local-wake")) {
+  const key = `wake ${l.image.split("@")[0]} restore=${l.restore}`;
+  local[key] ??= [];
+  local[key].push(l.onlineMs);
+}
+for (const l of lines.filter((l) => l.s1 === "restore")) {
+  for (const f of ["downloadMs", "verifyMs", "extractMs", "totalMs"]) {
+    const key = `restore ${l.size} (${l.rawBytes} B raw, ${l.archiveBytes} B archive) ${f}`;
+    local[key] ??= [];
+    local[key].push(l[f]);
+  }
+}
+out.local = Object.fromEntries(Object.entries(local).map(([k, v]) => [k, stats(v)]));
 console.log(JSON.stringify(out, null, 2));
