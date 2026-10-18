@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,12 +6,16 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   type CommandResult,
   childEnv,
+  childStdio,
   cliCloud,
   fileStore,
+  type RunOptions,
   readWranglerConfig,
   workerLookup,
+  wranglerCli,
 } from "./cloud.ts";
 import { type Deployment, validateDeployConfig } from "./guard.ts";
+import { acquireLock, heldLockFds } from "./lock.ts";
 
 const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
 const scratch = mkdtempSync(join(tmpdir(), "cfo-stg-test-"));
@@ -52,9 +56,9 @@ describe("Worker lookup", () => {
 
 describe("CLI wiring", () => {
   const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
-  const calls: { command: string; args: readonly string[] }[] = [];
-  const cloud = cliCloud(config, "/repo/worker", (command, args) => {
-    calls.push({ command, args });
+  const calls: { command: string; args: readonly string[]; options: RunOptions }[] = [];
+  const cloud = cliCloud(config, WORKER, (command, args, options) => {
+    calls.push({ command, args, options });
     if (args[0] === "accounts") return ok(JSON.stringify({ result: [{ id: "a".repeat(32) }] }));
     if (args[3] === "create") return ok(JSON.stringify({ result: { id: "app-1" } }));
     if (args[3] === "list") return ok(JSON.stringify({ result: [] }));
@@ -74,15 +78,16 @@ describe("CLI wiring", () => {
     ]);
   });
 
-  it("deploys and deletes with exactly the guarded arguments", () => {
+  it("runs Wrangler's CLI directly, with exactly the guarded arguments", () => {
+    const cli = wranglerCli(WORKER);
+    expect(cli).toMatch(/wrangler-dist\/cli\.js$/);
+    expect(existsSync(cli)).toBe(true);
     cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc");
     expect(calls.at(-1)).toEqual({
-      command: "pnpm",
+      command: process.execPath,
       args: [
-        "--dir",
-        "/repo/worker",
-        "exec",
-        "wrangler",
+        "--no-warnings",
+        cli,
         "deploy",
         "--config",
         "/w/wrangler.jsonc",
@@ -91,21 +96,29 @@ describe("CLI wiring", () => {
         "--domain",
         "cfo-stg-a.example.com",
       ],
+      options: { inherit: true, cwd: WORKER },
     });
     cloud.deleteWorker("cfo-stg-a");
-    expect(calls.at(-1)?.args.slice(3)).toEqual([
-      "wrangler",
-      "delete",
-      "--name",
-      "cfo-stg-a",
-      "--force",
-    ]);
+    expect(calls.at(-1)?.args.slice(2)).toEqual(["delete", "--name", "cfo-stg-a", "--force"]);
+  });
+
+  it("passes the held staging locks to every child process", () => {
+    const release = acquireLock(join(scratch, "locks", "wiring.lock"), 0, "test");
+    try {
+      const stdio = childStdio(false) as unknown[];
+      expect(stdio.slice(0, 3)).toEqual(["ignore", "pipe", "pipe"]);
+      expect(stdio.slice(3)).toEqual(heldLockFds());
+      expect(heldLockFds()).toHaveLength(1);
+    } finally {
+      release();
+    }
+    expect(childStdio(true)).toEqual(["ignore", "inherit", "inherit"]);
   });
 
   it("returns the created application's ID and fails loudly on a CLI error", () => {
     expect(cloud.createAccessApp({ name: "cfo-stg-a" })).toBe("app-1");
     expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
-    const broken = cliCloud(config, "/repo/worker", () => failed("│ [10000] Authentication error"));
+    const broken = cliCloud(config, WORKER, () => failed("│ [10000] Authentication error"));
     expect(() => broken.accountIds()).toThrow("Authentication error");
     expect(() => broken.deployWorker("cfo-stg-a", "h", "/c")).toThrow("wrangler deploy exited");
   });
@@ -184,7 +197,7 @@ describe("Wrangler's own reading of a configuration", () => {
 describe("registry file store", () => {
   it("writes atomically, readable by the owner only", () => {
     const file = join(scratch, "state", "resources.json");
-    const store = fileStore(file);
+    const store = fileStore(file, "test");
     expect(store.load()).toEqual([]);
     const d: Deployment = {
       name: "cfo-stg-a",
@@ -194,8 +207,16 @@ describe("registry file store", () => {
       expiresAt: "2026-10-25T12:00:00.000Z",
       state: "pending",
     };
-    store.save([d]);
+    store.update((all) => [...all, d]);
     expect(store.load()).toEqual([d]);
+    // A failed change leaves the registry as it was and releases the registry lock.
+    expect(() =>
+      store.update(() => {
+        throw new Error("change failed");
+      }),
+    ).toThrow("change failed");
+    expect(store.load()).toEqual([d]);
+    store.update((all) => all);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
     expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(2);

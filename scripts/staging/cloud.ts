@@ -1,7 +1,7 @@
 // The real ports for ops.ts: the `cf` CLI for the Cloudflare API, Wrangler for Worker uploads,
-// Wrangler's own config reader, and the registry file under .staging/.
+// Wrangler's own config reader, and the registry file in the staging state directory.
 
-import { spawnSync } from "node:child_process";
+import { type StdioOptions, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -12,6 +12,7 @@ import {
   type StagingConfig,
   serializeRegistry,
 } from "./guard.ts";
+import { acquireLock, heldLockFds } from "./lock.ts";
 import type { Cloud, Store } from "./ops.ts";
 
 export interface CommandResult {
@@ -20,7 +21,17 @@ export interface CommandResult {
   readonly stderr: string;
 }
 
-export type Runner = (command: string, args: readonly string[], inherit: boolean) => CommandResult;
+export interface RunOptions {
+  /** Show the command's output to the user instead of capturing it. */
+  readonly inherit: boolean;
+  readonly cwd?: string;
+}
+
+export type Runner = (
+  command: string,
+  args: readonly string[],
+  options: RunOptions,
+) => CommandResult;
 
 /**
  * The environment for every child process. It pins the account, and drops CLOUDFLARE_ENV so
@@ -32,13 +43,23 @@ export function childEnv(accountId: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * stdio for a child process. Descriptors 3 and up are the staging locks this process holds,
+ * so a child that outlives a crashed staging command keeps its deployment locked.
+ */
+export function childStdio(inherit: boolean): StdioOptions {
+  const mode = inherit ? "inherit" : "pipe";
+  return ["ignore", mode, mode, ...heldLockFds()];
+}
+
 function spawnRunner(accountId: string): Runner {
-  return (command, args, inherit) => {
+  return (command, args, options) => {
     const child = spawnSync(command, args, {
       encoding: "utf8",
       env: childEnv(accountId),
-      stdio: inherit ? "inherit" : "pipe",
+      stdio: childStdio(options.inherit),
       maxBuffer: 64 * 1024 * 1024,
+      ...(options.cwd ? { cwd: options.cwd } : {}),
     });
     if (child.error) throw child.error;
     return { status: child.status, stdout: child.stdout ?? "", stderr: child.stderr ?? "" };
@@ -73,15 +94,27 @@ export function workerLookup(result: CommandResult, name: string): boolean {
   throw new Error(`could not tell whether Worker ${name} exists: ${firstLine(result.stderr)}`);
 }
 
+/**
+ * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
+ * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
+ */
+export function wranglerCli(workerDir: string): string {
+  const wranglerPackage = createRequire(join(workerDir, "package.json")).resolve(
+    "wrangler/package.json",
+  );
+  return join(dirname(wranglerPackage), "wrangler-dist", "cli.js");
+}
+
 export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runner): Cloud {
   const run = runner ?? spawnRunner(config.accountId);
   const cf = (args: string[]): unknown => {
-    const result = run("cf", args, false);
+    const result = run("cf", args, { inherit: false });
     if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${firstLine(result.stderr)}`);
     return resultOf(result.stdout);
   };
   const wrangler = (args: string[]): void => {
-    const result = run("pnpm", ["--dir", workerDir, "exec", "wrangler", ...args], true);
+    const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
+    const result = run(process.execPath, cli, { inherit: true, cwd: workerDir });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
   return {
@@ -111,7 +144,8 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     deleteAccessApp: (id) => {
       cf(["zero-trust", "access", "applications", "delete", id]);
     },
-    workerExists: (name) => workerLookup(run("cf", ["workers", "get", name], false), name),
+    workerExists: (name) =>
+      workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
     deployWorker: (name, hostname, configPath) =>
       wrangler(["deploy", "--config", configPath, "--name", name, "--domain", hostname]),
     deleteWorker: (name) => wrangler(["delete", "--name", name, "--force"]),
@@ -150,16 +184,25 @@ export function readWranglerConfig(path: string, workerDir: string): DeployConfi
   };
 }
 
-/** The registry file. Writes go to a temporary file first, so a crash never leaves half of one. */
-export function fileStore(file: string): Store {
+/**
+ * The registry file. Each update holds the registry lock for its read-modify-write, and writes
+ * to a temporary file first, so neither a concurrent command nor a crash loses or tears it.
+ */
+export function fileStore(file: string, holder: string): Store {
+  const load = () =>
+    existsSync(file) ? parseRegistry(JSON.parse(readFileSync(file, "utf8")) as unknown) : [];
   return {
-    load: () =>
-      existsSync(file) ? parseRegistry(JSON.parse(readFileSync(file, "utf8")) as unknown) : [],
-    save: (deployments) => {
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-      const temporary = `${file}.${process.pid}.tmp`;
-      writeFileSync(temporary, serializeRegistry(deployments), { mode: 0o600 });
-      renameSync(temporary, file);
+    load,
+    update: (change) => {
+      const release = acquireLock(`${file}.lock`, 30, holder);
+      try {
+        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+        const temporary = `${file}.${process.pid}.tmp`;
+        writeFileSync(temporary, serializeRegistry(change(load())), { mode: 0o600 });
+        renameSync(temporary, file);
+      } finally {
+        release();
+      }
     },
   };
 }

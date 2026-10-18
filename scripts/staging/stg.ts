@@ -10,33 +10,51 @@
 //   node scripts/staging/stg.ts teardown --suffix <s>
 //   node scripts/staging/stg.ts sweep [--yes]
 //
-// Account ID, zone and owner email live in .staging/config.json, which is never committed.
+// State lives outside the repository, so that every worktree on this laptop shares one
+// registry and one set of locks: $CFO_STAGING_DIR, or ~/.config/cloudflare-omnigent/staging.
+// It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it
+// is ever committed.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { cliCloud, fileStore, readWranglerConfig } from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
+import { acquireLock, sleepSync } from "./lock.ts";
 import { type Context, deploy, sweep, teardown } from "./ops.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
-const STATE = join(ROOT, ".staging");
+const STATE = resolve(
+  process.env.CFO_STAGING_DIR ??
+    join(
+      process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
+      "cloudflare-omnigent",
+      "staging",
+    ),
+);
 const CONFIG_FILE = join(STATE, "config.json");
 const REGISTRY_FILE = join(STATE, "resources.json");
+/** A request whose client died may still complete at Cloudflare within this time. */
+const SETTLE_MS = 60_000;
 
 function loadConfig(): StagingConfig {
-  if (!existsSync(CONFIG_FILE)) throw new Error("no staging config; run `stg.ts init` first");
+  if (!existsSync(CONFIG_FILE)) throw new Error(`no staging config at ${CONFIG_FILE}; run init`);
   return JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as StagingConfig;
 }
 
-function context(config: StagingConfig): Context {
+function context(config: StagingConfig, command: string): Context {
+  const holder = `pid ${process.pid}, stg.ts ${command}, started ${new Date().toISOString()}`;
   return {
     config,
     cloud: cliCloud(config, WORKER),
-    store: fileStore(REGISTRY_FILE),
+    store: fileStore(REGISTRY_FILE, holder),
     readConfig: (path) => readWranglerConfig(path, WORKER),
+    lock: (name) => acquireLock(join(STATE, "locks", `${name}.lock`), 0, holder),
+    sleep: sleepSync,
+    settleMs: SETTLE_MS,
     now: () => new Date(),
     log: (message) => console.log(message),
   };
@@ -72,12 +90,12 @@ function main(): void {
       };
       mkdirSync(STATE, { recursive: true, mode: 0o700 });
       writeFileSync(CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-      assertAccount(config.accountId, context(config).cloud.accountIds());
-      console.log("staging config written to .staging/config.json");
+      assertAccount(config.accountId, context(config, command).cloud.accountIds());
+      console.log(`staging config written to ${CONFIG_FILE}`);
       return;
     }
     case "check": {
-      const ctx = context(loadConfig());
+      const ctx = context(loadConfig(), command);
       assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
       console.log(
         `staging account accessible; zone ${ctx.config.zone}; ${ctx.store.load().length} deployments`,
@@ -86,7 +104,7 @@ function main(): void {
     }
     case "deploy": {
       if (!values.suffix || !values.owner) throw new Error("deploy needs --suffix and --owner");
-      deploy(context(loadConfig()), {
+      deploy(context(loadConfig(), command), {
         suffix: values.suffix,
         owner: values.owner,
         configPath: resolve(values.config),
@@ -95,20 +113,21 @@ function main(): void {
       return;
     }
     case "list": {
-      for (const d of fileStore(REGISTRY_FILE).load()) {
+      for (const d of fileStore(REGISTRY_FILE, command).load()) {
+        const unsettled = d.uploadStartedAt ? ` upload-interrupted=${d.uploadStartedAt}` : "";
         console.log(
-          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}`,
+          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}${unsettled}`,
         );
       }
       return;
     }
     case "teardown": {
       if (!values.suffix) throw new Error("teardown needs --suffix");
-      teardown(context(loadConfig()), resourceName(values.suffix));
+      teardown(context(loadConfig(), command), resourceName(values.suffix));
       return;
     }
     case "sweep": {
-      const failures = sweep(context(loadConfig()), values.yes);
+      const failures = sweep(context(loadConfig(), command), values.yes);
       if (failures.length > 0) throw new Error(`teardown failed for:\n  ${failures.join("\n  ")}`);
       return;
     }

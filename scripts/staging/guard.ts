@@ -24,6 +24,11 @@ export interface Deployment {
   readonly state: DeploymentState;
   /** Set as soon as the Access application exists. */
   readonly accessAppId?: string;
+  /**
+   * Set just before a Worker upload and cleared when it succeeds. While set, the upload's
+   * outcome is unknown, and teardown waits for it to settle before removing Access.
+   */
+  readonly uploadStartedAt?: string;
 }
 
 export interface StagingConfig {
@@ -223,7 +228,8 @@ export function parseRegistry(json: unknown): Deployment[] {
       !text("createdAt") ||
       !text("expiresAt") ||
       !STATES.includes(d.state as string) ||
-      (d.accessAppId !== undefined && !text("accessAppId"))
+      (d.accessAppId !== undefined && !text("accessAppId")) ||
+      (d.uploadStartedAt !== undefined && !text("uploadStartedAt"))
     ) {
       throw new Error("malformed entry in the staging registry");
     }
