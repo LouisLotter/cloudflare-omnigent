@@ -1,0 +1,9 @@
+2026-10-18T15:58:51Z
+$ node scripts/staging/stg.ts teardown --suffix s2-route
+
+ ⛅️ wrangler 4.149.0 (update available 4.151.1)
+───────────────────────────────────────────────
+Successfully deleted cfo-stg-s2-route
+removed cfo-stg-s2-route: Worker, containers and buckets, then Access
+exit 0
+2026-10-18T15:59:15Z

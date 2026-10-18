@@ -1,0 +1,333 @@
+// Spike S2: the private host route. A "computer" container reaches the Omnigent server through
+// a plain-HTTP intercept for the virtual host omnigent.internal. The intercept hands each
+// request to the PrivateRoute entrypoint, which strips trust headers, adds the computer's
+// identity from its props, and forwards to the ServerDO, which proxies to the server
+// container. WebSocket upgrades pass through unchanged.
+//
+// Everything is logged as one JSON object per line with an "s2" key, read back from Workers
+// Logs by scripts/collect.sh. Throwaway spike code: lessons go into the design, not this file.
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { BUILD } from "./build.js";
+
+const SERVER_PORT = 8000;
+const ALARM_MS = 10_000;
+const INACTIVITY_MS = 30 * 60_000;
+const VIRTUAL_HOST = "omnigent.internal";
+const COMPUTER_ID = "c1";
+const ADMIN_USER = "s2-admin";
+
+function log(event, fields = {}) {
+  console.log(JSON.stringify({ s2: event, build: BUILD.id, t: Date.now(), ...fields }));
+}
+
+function serverStub(env) {
+  return env.SERVER.get(env.SERVER.idFromName("server"));
+}
+
+function computerStub(env) {
+  return env.COMPUTER.get(env.COMPUTER.idFromName(COMPUTER_ID));
+}
+
+function randomHex(bytes) {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Headers a computer must never be able to set: Access identity and the route's own. */
+function stripTrust(headers) {
+  for (const name of [...headers.keys()]) {
+    if (
+      name.startsWith("cf-access-") ||
+      name.startsWith("x-cfo-") ||
+      name === "x-forwarded-email" ||
+      name === "x-forwarded-user"
+    ) {
+      headers.delete(name);
+    }
+  }
+}
+
+/** The handler behind the omnigent.internal intercept. Never on the public route table. */
+export class PrivateRoute extends WorkerEntrypoint {
+  async fetch(request) {
+    const props = this.ctx.props ?? {};
+    const url = new URL(request.url);
+    const upgrade = request.headers.get("upgrade");
+    if (url.pathname === "/_s2/report") {
+      const text = await request.text();
+      for (const line of text.split("\n")) {
+        if (line.trim() !== "") console.log(`{"s2":"report","build":"${BUILD.id}","r":${line}}`);
+      }
+      return new Response("ok");
+    }
+    if (url.pathname === "/_s2/whoami") {
+      return Response.json({
+        via: "private-route",
+        build: BUILD.id,
+        host: url.host,
+        computer: props.computerId,
+        generation: props.generation,
+      });
+    }
+    const headers = new Headers(request.headers);
+    stripTrust(headers);
+    headers.set("x-cfo-computer-id", String(props.computerId));
+    headers.set("x-cfo-generation", String(props.generation));
+    const started = Date.now();
+    const response = await serverStub(this.env).fetch(new Request(request, { headers }));
+    // Path and status only: never bodies, query strings or headers.
+    log("route", {
+      path: url.pathname,
+      method: request.method,
+      upgrade: upgrade ?? undefined,
+      status: response.status,
+      ms: Date.now() - started,
+      computer: props.computerId,
+      generation: props.generation,
+      registeredBy: props.registeredBy,
+    });
+    return response;
+  }
+}
+
+/** Shared lifecycle for both container DOs: a self-rearming alarm and the inactivity timeout. */
+class Keeper extends DurableObject {
+  constructor(ctx, env, role) {
+    super(ctx, env);
+    this.role = role;
+    this.wokeAt = Date.now();
+    ctx.blockConcurrencyWhile(async () => {
+      const running = ctx.container?.running ?? false;
+      log(`${role}-wake`, { running, reregister: BUILD.reregister });
+      if (running) {
+        await ctx.container.setInactivityTimeout(INACTIVITY_MS);
+        await this.onWakeRunning();
+      }
+      if ((await ctx.storage.get("wanted")) && (await ctx.storage.getAlarm()) === null) {
+        await ctx.storage.setAlarm(Date.now() + ALARM_MS);
+      }
+    });
+  }
+
+  async onWakeRunning() {}
+
+  async alarm() {
+    await this.ctx.storage.setAlarm(Date.now() + ALARM_MS);
+    if (!(await this.ctx.storage.get("wanted"))) return;
+    try {
+      if (this.ctx.container.running) {
+        await this.ctx.container.setInactivityTimeout(INACTIVITY_MS);
+      } else {
+        log(`${this.role}-not-running`);
+        await this.ensure();
+      }
+    } catch (error) {
+      log(`${this.role}-alarm-error`, { error: String(error) });
+    }
+  }
+
+  async stop() {
+    await this.ctx.storage.put("wanted", false);
+    await this.ctx.storage.deleteAlarm();
+    if (this.ctx.container.running) await this.ctx.container.destroy("s2 stop");
+    log(`${this.role}-stopped`);
+    return { stopped: true };
+  }
+}
+
+export class ServerDO extends Keeper {
+  constructor(ctx, env) {
+    super(ctx, env, "server");
+    this.ready = false;
+  }
+
+  async credentials() {
+    let secret = await this.ctx.storage.get("secret");
+    if (!secret) {
+      secret = { password: randomHex(24), cookie: randomHex(32) };
+      await this.ctx.storage.put("secret", secret);
+    }
+    return secret;
+  }
+
+  async ensure() {
+    await this.ctx.storage.put("wanted", true);
+    const container = this.ctx.container;
+    if (!container.running) {
+      const secret = await this.credentials();
+      this.ready = false;
+      container.start({
+        enableInternet: true,
+        env: {
+          DATABASE_URL: "sqlite:////data/omnigent.db",
+          OMNIGENT_ACCOUNTS_BASE_URL: `http://${VIRTUAL_HOST}`,
+          OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: ADMIN_USER,
+          OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: secret.password,
+          OMNIGENT_ACCOUNTS_COOKIE_SECRET: secret.cookie,
+        },
+      });
+      await container.setInactivityTimeout(INACTIVITY_MS);
+      log("server-start");
+    }
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + ALARM_MS);
+    }
+    return { running: container.running };
+  }
+
+  /** Admin login for the computer's setup script. Synthetic, generated per deployment. */
+  async adminLogin() {
+    await this.ensure();
+    const secret = await this.credentials();
+    return { username: ADMIN_USER, password: secret.password };
+  }
+
+  async waitReady() {
+    if (this.ready) return;
+    const port = this.ctx.container.getTcpPort(SERVER_PORT);
+    const started = Date.now();
+    while (Date.now() - started < 120_000) {
+      try {
+        const res = await port.fetch("http://container/health");
+        if (res.ok) {
+          this.ready = true;
+          log("server-ready", { waitedMs: Date.now() - started });
+          return;
+        }
+      } catch {
+        // not listening yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error("server container not ready after 120 s");
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/_s2/echo") return this.echo(url);
+    await this.ensure();
+    try {
+      await this.waitReady();
+      return await this.ctx.container.getTcpPort(SERVER_PORT).fetch(request);
+    } catch (error) {
+      this.ready = false;
+      log("server-proxy-error", { path: url.pathname, error: String(error) });
+      return new Response("server unavailable", { status: 502 });
+    }
+  }
+
+  echo(url) {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    const tag = url.searchParams.get("c") ?? "anon";
+    this.ctx.acceptWebSocket(server, [tag]);
+    log("echo-open", { tag, open: this.ctx.getWebSockets().length });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(ws, message) {
+    ws.send(
+      JSON.stringify({
+        echo: String(message),
+        build: BUILD.id,
+        wokeAt: this.wokeAt,
+        t: Date.now(),
+      }),
+    );
+  }
+
+  webSocketClose(ws, code, reason) {
+    log("echo-close", { tag: this.ctx.getTags(ws)[0], code, reason });
+  }
+
+  webSocketError(ws, error) {
+    log("echo-error", { tag: this.ctx.getTags(ws)[0], error: String(error) });
+  }
+}
+
+export class ComputerDO extends Keeper {
+  constructor(ctx, env) {
+    super(ctx, env, "computer");
+  }
+
+  async onWakeRunning() {
+    if (BUILD.reregister) await this.intercept();
+  }
+
+  async intercept() {
+    const generation = (await this.ctx.storage.get("generation")) ?? 0;
+    const started = Date.now();
+    // registeredBy names the Worker version that registered the intercept, so the route log
+    // shows whether an intercept registered by an older version still serves after a deploy.
+    const route = this.ctx.exports.PrivateRoute({
+      props: { computerId: COMPUTER_ID, generation, registeredBy: BUILD.id },
+    });
+    await this.ctx.container.interceptOutboundHttp(VIRTUAL_HOST, route);
+    log("intercept", { host: VIRTUAL_HOST, generation, ms: Date.now() - started });
+  }
+
+  async ensure() {
+    await this.ctx.storage.put("wanted", true);
+    const login = await serverStub(this.env).adminLogin();
+    const container = this.ctx.container;
+    if (!container.running) {
+      const generation = ((await this.ctx.storage.get("generation")) ?? 0) + 1;
+      await this.ctx.storage.put("generation", generation);
+      // The computer's stable host identity, assigned once, as WorkspaceDO would.
+      let hostId = await this.ctx.storage.get("hostId");
+      if (!hostId) {
+        hostId = randomHex(16);
+        await this.ctx.storage.put("hostId", hostId);
+      }
+      // Intercepts registered before start, so the first lookup already resolves.
+      await this.intercept();
+      container.start({
+        enableInternet: true,
+        env: {
+          S2_SERVER_URL: `http://${VIRTUAL_HOST}`,
+          S2_GENERATION: String(generation),
+          S2_HOST_ID: hostId,
+          S2_HOST_NAME: `s2-${COMPUTER_ID}`,
+          S2_ADMIN_USER: login.username,
+          S2_ADMIN_PASSWORD: login.password,
+        },
+      });
+      await container.setInactivityTimeout(INACTIVITY_MS);
+      log("computer-start", { generation });
+    }
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + ALARM_MS);
+    }
+    return { running: container.running };
+  }
+
+  async status() {
+    return {
+      running: this.ctx.container.running,
+      generation: (await this.ctx.storage.get("generation")) ?? 0,
+      wanted: (await this.ctx.storage.get("wanted")) ?? false,
+      alarm: await this.ctx.storage.getAlarm(),
+    };
+  }
+}
+
+/** The public entry, behind owner-only Access. Only the owner can start or stop the spike. */
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === "/s2/start") {
+      const computer = await computerStub(env).ensure();
+      return Response.json({ build: BUILD.id, computer });
+    }
+    if (url.pathname === "/s2/status") {
+      return Response.json({ build: BUILD.id, computer: await computerStub(env).status() });
+    }
+    if (url.pathname === "/s2/stop" && request.method === "POST") {
+      const computer = await computerStub(env).stop();
+      const server = await serverStub(env).stop();
+      return Response.json({ build: BUILD.id, computer, server });
+    }
+    return new Response("not found", { status: 404 });
+  },
+};
