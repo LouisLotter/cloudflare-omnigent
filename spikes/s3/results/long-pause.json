@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "date": "2026-10-18T16:48:17Z",
+    "spike_commit": "5eb918bd43bc13b1a68c0ff5845e385d34bf04aa",
+    "computer_image": "sha256:d6cfbbd3b3e5c00252eae2ef78e40d8dbc1c9c7a525b6eb6f12046edbbb4a7c8",
+    "host_cpus": 16,
+    "docker": "29.7.2",
+    "kernel": "7.2.5-3-omarchy"
+  },
+  "script": "spikes/s3/bench/long_pause.py",
+  "data": {
+    "rows": [
+      {
+        "pause_budget_s": 30.0,
+        "outcome": "worker_died",
+        "guard": "expired",
+        "host_states_seen": ["online"],
+        "seconds_not_online": 0,
+        "turns_after": [
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          },
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          }
+        ],
+        "stopped_after": [],
+        "daemon_log": [],
+        "runner_count_after": 2,
+        "wall_s": 105.7
+      },
+      {
+        "pause_budget_s": 60.0,
+        "outcome": "worker_died",
+        "guard": "expired",
+        "host_states_seen": ["online"],
+        "seconds_not_online": 0,
+        "turns_after": [
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          },
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          }
+        ],
+        "stopped_after": [],
+        "daemon_log": [],
+        "runner_count_after": 2,
+        "wall_s": 135.7
+      },
+      {
+        "pause_budget_s": 100.0,
+        "outcome": "worker_died",
+        "guard": "expired",
+        "host_states_seen": ["offline", "online"],
+        "seconds_not_online": 4,
+        "turns_after": [
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          },
+          {
+            "ok": true,
+            "s": 0.29,
+            "status": "idle",
+            "reply": "ok from mock",
+            "send_attempts": 1
+          }
+        ],
+        "stopped_after": [],
+        "daemon_log": [
+          "INFO  10-18 16:46:57.553 host.connect                     _connect_and_serve | Host tunnel disconnected",
+          "WARN  10-18 16:46:57.553 host.connect                     run                | Host tunnel disconnected: received 1011 (internal error) keepalive ping timeout; then sent 1011 (internal error) keepalive ping timeout. Reco"
+        ],
+        "runner_count_after": 2,
+        "wall_s": 175.7
+      }
+    ]
+  }
+}

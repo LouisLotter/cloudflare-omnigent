@@ -1,0 +1,105 @@
+{
+  "meta": {
+    "date": "2026-10-18T14:31:56Z",
+    "spike_commit": "5eb918bd43bc13b1a68c0ff5845e385d34bf04aa",
+    "computer_image": "sha256:65f263f78bc825512915eb5d10713ad23d2814e0e07eb602db2ef02824825bab",
+    "host_cpus": 16,
+    "docker": "29.7.2",
+    "kernel": "7.2.5-3-omarchy"
+  },
+  "script": "spikes/s3/bench/runner_count.py",
+  "data": {
+    "summary": {
+      "samples": 10,
+      "mismatches": 0,
+      "naive_count_wrong_samples": 8,
+      "max_runners": 4
+    },
+    "rows": [
+      {
+        "step": "run1: baseline",
+        "supervisor": 0,
+        "omnigent": 0,
+        "naive_zygote_children": 0,
+        "harnesses": 0,
+        "match": true,
+        "converge_s": 2.0
+      },
+      {
+        "step": "run1: 1 sessions started",
+        "supervisor": 1,
+        "omnigent": 1,
+        "naive_zygote_children": 2,
+        "harnesses": 1,
+        "match": true
+      },
+      {
+        "step": "run1: 2 sessions started",
+        "supervisor": 2,
+        "omnigent": 2,
+        "naive_zygote_children": 4,
+        "harnesses": 2,
+        "match": true
+      },
+      {
+        "step": "run1: 3 sessions started",
+        "supervisor": 3,
+        "omnigent": 3,
+        "naive_zygote_children": 6,
+        "harnesses": 3,
+        "match": true
+      },
+      {
+        "step": "run1: 4 sessions started",
+        "supervisor": 4,
+        "omnigent": 4,
+        "naive_zygote_children": 8,
+        "harnesses": 4,
+        "match": true
+      },
+      {
+        "step": "run1: turns done in 3 sessions",
+        "supervisor": 4,
+        "omnigent": 4,
+        "naive_zygote_children": 8,
+        "harnesses": 4,
+        "match": true
+      },
+      {
+        "step": "run1: after pause/resume (snapshot_ready, pause 0.2028 s)",
+        "supervisor": 4,
+        "omnigent": 4,
+        "naive_zygote_children": 8,
+        "harnesses": 4,
+        "match": true
+      },
+      {
+        "step": "run1: 2 sessions stopped",
+        "supervisor": 2,
+        "omnigent": 2,
+        "naive_zygote_children": 4,
+        "harnesses": 2,
+        "match": true,
+        "converge_s": 2.1
+      },
+      {
+        "step": "run1: 1 runner SIGKILLed",
+        "supervisor": 1,
+        "omnigent": 1,
+        "naive_zygote_children": 3,
+        "harnesses": 2,
+        "match": true,
+        "converge_s": 2.1
+      },
+      {
+        "step": "run1: idle timeout (46 s after kill)",
+        "supervisor": 0,
+        "omnigent": 0,
+        "naive_zygote_children": 0,
+        "harnesses": 0,
+        "match": true,
+        "converge_s": 2.1
+      }
+    ]
+  }
+}

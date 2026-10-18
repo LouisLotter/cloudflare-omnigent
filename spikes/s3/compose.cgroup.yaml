@@ -1,0 +1,9 @@
+# Variant for the cgroup v2 freezer: the supervisor needs a writable cgroupfs
+# to create a "workload" cgroup and write cgroup.freeze. Docker grants that
+# only to privileged containers. Whether Cloudflare Containers allow it is a
+# staging question (docs/verification/spike-s3.md).
+services:
+  computer:
+    privileged: true
+    environment:
+      S3_FREEZER: cgroup
