@@ -309,7 +309,8 @@ def main() -> int:
 
     OUT.mkdir(parents=True, exist_ok=True)
     revision = sh("git", "-C", str(REPO), "rev-parse", "HEAD", check=False)
-    dirty = bool(sh("git", "-C", str(REPO), "status", "--porcelain", "--", "spikes/s6", check=False))
+    # Uncommitted code changes, not results (results are written while the session runs).
+    dirty = bool(sh("git", "-C", str(REPO), "status", "--porcelain", "--", "spikes/s6", ":!spikes/s6/results", check=False))
     image_id = sh("docker", "image", "inspect", IMAGE, "--format", "{{.Id}}")
     record("session-start", revision=revision, spike_tree_dirty=dirty, image=IMAGE, image_id=image_id,
            mode="fake CLIs (dry run)" if FAKE else "real accounts",
