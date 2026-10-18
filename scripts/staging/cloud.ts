@@ -104,6 +104,46 @@ export function workerLookup(result: CommandResult, name: string): boolean {
 }
 
 /**
+ * Reads `cf r2 buckets get <name>`, like workerLookup: only a successful lookup of that bucket or
+ * R2's "no such bucket" answer ([10006], 404) count; anything else is unknown and throws.
+ */
+export function bucketLookup(result: CommandResult, name: string): boolean {
+  if (result.status === 0) {
+    const bucket = resultOf(result.stdout) as { name?: unknown } | null;
+    if (bucket?.name === name) return true;
+    throw new Error(`unexpected answer when looking up R2 bucket ${name}`);
+  }
+  if (result.stderr.includes("[10006]") && result.stderr.includes("404 Not Found")) return false;
+  throw new Error(`could not tell whether R2 bucket ${name} exists: ${firstLine(result.stderr)}`);
+}
+
+/**
+ * The `repository:tag` references in `cf containers images list` that belong to exactly this
+ * repository. Entries are either such references or objects with a name and tags.
+ */
+export function imagesOf(listing: unknown, repository: string): string[] {
+  if (!Array.isArray(listing)) throw new Error("unexpected image listing from the registry");
+  const references: string[] = [];
+  for (const entry of listing) {
+    if (typeof entry === "string") {
+      references.push(entry);
+      continue;
+    }
+    const image = entry as { name?: unknown; repository?: unknown; tags?: unknown } | null;
+    const repo = image?.name ?? image?.repository;
+    if (typeof repo !== "string" || !Array.isArray(image?.tags)) {
+      throw new Error("unexpected image entry from the registry");
+    }
+    for (const tag of image.tags) references.push(`${repo}:${String(tag)}`);
+  }
+  // A reference may carry the registry host and account: registry.cloudflare.com/<id>/<repo>:<tag>.
+  return references.filter((reference) => {
+    const path = reference.slice(0, reference.lastIndexOf(":"));
+    return path === repository || path.endsWith(`/${repository}`);
+  });
+}
+
+/**
  * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
  * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
  */
@@ -173,6 +213,37 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    },
+    bucketExists: (name) =>
+      bucketLookup(run("cf", ["r2", "buckets", "get", name], { inherit: false }), name),
+    createBucket: (name) => {
+      cf(["r2", "buckets", "create", "--body", JSON.stringify({ name })]);
+    },
+    // R2 deletes only an empty bucket. List a page, delete it, repeat until nothing is left.
+    emptyAndDeleteBucket: (name) => {
+      for (let page = 0; page < 10_000; page++) {
+        const listed = cf(["r2", "objects", "list", "--bucket-name", name, "--per-page", "1000"]);
+        const keys = (Array.isArray(listed) ? listed : [])
+          .map((o) => (o as { key?: unknown }).key)
+          .filter((k): k is string => typeof k === "string");
+        if (keys.length === 0) break;
+        cf(["r2", "objects", "bulk-delete", "--bucket-name", name, "--body", JSON.stringify(keys)]);
+      }
+      cf(["r2", "buckets", "delete", name, "--force"]);
+    },
+    containerApps: (name) => {
+      const apps = cf(["containers", "applications", "list", "--name", name]);
+      if (!Array.isArray(apps)) throw new Error("unexpected container application listing");
+      return apps
+        .filter((a) => (a as { name?: unknown }).name === name)
+        .map((a) => String((a as { id?: unknown }).id));
+    },
+    deleteContainerApp: (id) => {
+      cf(["containers", "applications", "delete", id, "--force"]);
+    },
+    containerImages: (repository) => imagesOf(cf(["containers", "images", "list"]), repository),
+    deleteContainerImage: (reference) => {
+      cf(["containers", "images", "delete", reference, "--force"]);
     },
   };
 }

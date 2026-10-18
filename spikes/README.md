@@ -30,7 +30,13 @@ The lessons move into the design. The code here is not reused.
 - Deploy only through the guarded tool: `pnpm stg deploy --suffix s<n>-<name> --owner S<n> --config spikes/s<n>/<config>.jsonc --days <1–7>`.
   - Your Wrangler config must set `"workers_dev": false` and `"preview_urls": false`, have no routes, and use only the keys the tool manages. The tool explains any refusal.
   - Every Worker gets an owner-only Access application before it can serve traffic.
-- **Containers and R2 buckets** are refused until the tool records and tears them down. The lead is adding that support. Until it lands, work locally (Docker, `wrangler dev`, MinIO as an S3 stand-in), and ask the lead when you are ready to deploy.
+- **Containers and R2 buckets** may be declared in your config, under these rules:
+  - Every container's `name` and every bucket's `bucket_name` must be your deployment's name, `cfo-stg-<suffix>`, or start with `cfo-stg-<suffix>-`.
+  - Each container needs `max_instances` between 1 and 3. Its `instance_type` must be `lite`, `basic`, `standard-1` or `standard-2`.
+  - Only these container keys are allowed: `name`, `class_name`, `image`, `max_instances`, `instance_type`, `image_build_context` and `image_vars`. A bucket entry has only `binding` and `bucket_name`.
+  - The tool records them before the deploy, creates the buckets itself, and on teardown removes the Worker, the container applications, their registry images and the buckets (emptied first), then Access.
+  - A probe deployment is in `scripts/staging/probe/`.
+  - **R2 is not yet enabled on the staging account.** The owner must enable it in the dashboard. Until then, use MinIO locally as an S3 stand-in for anything that needs R2, and ask the lead when you are ready for real R2.
 - Never create, change or delete any Cloudflare resource by hand. In particular, never touch the two existing Access applications ("Inyanda Omnigent", "Lervent Omnigent") or anything without the `cfo-stg-` prefix.
 - Keep cost small: one container instance unless the question needs more, and the smallest instance type that answers it.
 - Tear down when done with `pnpm stg teardown --suffix …`, and show in your evidence that the resources are gone.

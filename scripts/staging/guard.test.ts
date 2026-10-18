@@ -10,10 +10,12 @@ import {
   claimAccessApp,
   type DeployConfigView,
   type Deployment,
+  declaredResources,
   expired,
   expiry,
   hostnameFor,
   markInterrupted,
+  ownedBy,
   parseRegistry,
   resourceName,
   serializeRegistry,
@@ -116,6 +118,7 @@ const app = (overrides: Partial<AccessApp> = {}): AccessApp => ({
 
 describe("Wrangler configuration check", () => {
   const ACCOUNT = config.accountId;
+  const NAME = "cfo-stg-a";
   const closed: DeployConfigView = {
     path: "/w/wrangler.jsonc",
     redirected: false,
@@ -129,17 +132,25 @@ describe("Wrangler configuration check", () => {
   const raw = (extra: Record<string, unknown>) => ({ ...closed, raw: { ...closed.raw, ...extra } });
 
   it("accepts a configuration with alternate URLs off, no routes, and only managed keys", () => {
-    expect(() => validateDeployConfig(closed, ACCOUNT)).not.toThrow();
-    expect(() => validateDeployConfig(effective({ routes: [] }), ACCOUNT)).not.toThrow();
-    expect(() => validateDeployConfig(effective({ account_id: ACCOUNT }), ACCOUNT)).not.toThrow();
-    const everyKey = Object.fromEntries(ALLOWED_CONFIG_KEYS.map((key) => [key, null]));
+    expect(() => validateDeployConfig(closed, ACCOUNT, NAME)).not.toThrow();
+    expect(() => validateDeployConfig(effective({ routes: [] }), ACCOUNT, NAME)).not.toThrow();
     expect(() =>
-      validateDeployConfig({ ...closed, raw: { ...everyKey, ...closed.raw } }, ACCOUNT),
+      validateDeployConfig(effective({ account_id: ACCOUNT }), ACCOUNT, NAME),
+    ).not.toThrow();
+    const everyKey = Object.fromEntries(
+      ALLOWED_CONFIG_KEYS.map((key) => [
+        key,
+        key === "containers" || key === "r2_buckets" ? [] : null,
+      ]),
+    );
+    expect(() =>
+      validateDeployConfig({ ...closed, raw: { ...everyKey, ...closed.raw } }, ACCOUNT, NAME),
     ).not.toThrow();
     expect(() =>
       validateDeployConfig(
         raw({ durable_objects: { bindings: [{ name: "CONTROL", class_name: "ControlDO" }] } }),
         ACCOUNT,
+        NAME,
       ),
     ).not.toThrow();
   });
@@ -159,27 +170,25 @@ describe("Wrangler configuration check", () => {
       { ...closed, raw: { env: {} } },
       { ...closed, redirected: true },
     ]) {
-      expect(() => validateDeployConfig(view, ACCOUNT)).toThrow("refusing Wrangler config");
+      expect(() => validateDeployConfig(view, ACCOUNT, NAME)).toThrow("refusing Wrangler config");
     }
   });
 
   it("refuses another account, which Wrangler would prefer to CLOUDFLARE_ACCOUNT_ID", () => {
-    expect(() => validateDeployConfig(effective({ account_id: "b".repeat(32) }), ACCOUNT)).toThrow(
-      "another account",
-    );
-    expect(() => validateDeployConfig(effective({ account_id: "" }), ACCOUNT)).toThrow(
+    expect(() =>
+      validateDeployConfig(effective({ account_id: "b".repeat(32) }), ACCOUNT, NAME),
+    ).toThrow("another account");
+    expect(() => validateDeployConfig(effective({ account_id: "" }), ACCOUNT, NAME)).toThrow(
       "another account",
     );
   });
 
   it("refuses resources the staging tool does not record or tear down", () => {
     for (const key of [
-      "r2_buckets",
       "kv_namespaces",
       "d1_databases",
       "services",
       "queues",
-      "containers",
       "workflows",
       "vectorize",
       "hyperdrive",
@@ -190,7 +199,7 @@ describe("Wrangler configuration check", () => {
       "assets",
       "triggers",
     ]) {
-      expect(() => validateDeployConfig(raw({ [key]: [] }), ACCOUNT)).toThrow(`"${key}"`);
+      expect(() => validateDeployConfig(raw({ [key]: [] }), ACCOUNT, NAME)).toThrow(`"${key}"`);
     }
   });
 
@@ -231,7 +240,7 @@ describe("Wrangler configuration check", () => {
       ["an unknown observability key", { observability: { export: {} } }, '"export"'],
     ];
     for (const [label, extra, message] of refused) {
-      expect(() => validateDeployConfig(raw(extra), ACCOUNT), label).toThrow(message);
+      expect(() => validateDeployConfig(raw(extra), ACCOUNT, NAME), label).toThrow(message);
     }
   });
 
@@ -250,12 +259,73 @@ describe("Wrangler configuration check", () => {
         traces: { enabled: false },
       },
     });
-    expect(() => validateDeployConfig(own, ACCOUNT)).not.toThrow();
+    expect(() => validateDeployConfig(own, ACCOUNT, NAME)).not.toThrow();
+  });
+
+  it("accepts containers and buckets that carry the deployment's name, within budget", () => {
+    const own = raw({
+      durable_objects: { bindings: [{ name: "HOST", class_name: "Host" }] },
+      containers: [
+        { name: "cfo-stg-a", class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+        {
+          name: "cfo-stg-a-big",
+          class_name: "Host",
+          image: "docker.io/library/busybox:1.37",
+          max_instances: 3,
+          instance_type: "standard-2",
+        },
+      ],
+      r2_buckets: [
+        { binding: "DATA", bucket_name: "cfo-stg-a" },
+        { binding: "LOGS", bucket_name: "cfo-stg-a-logs" },
+      ],
+    });
+    expect(() => validateDeployConfig(own, ACCOUNT, NAME)).not.toThrow();
+    expect(declaredResources(own.raw)).toEqual({
+      containers: ["cfo-stg-a", "cfo-stg-a-big"],
+      buckets: ["cfo-stg-a", "cfo-stg-a-logs"],
+    });
+  });
+
+  it("refuses containers and buckets outside the deployment or the budget", () => {
+    const container = (extra: Record<string, unknown>) =>
+      raw({ containers: [{ name: "cfo-stg-a", class_name: "H", max_instances: 1, ...extra }] });
+    const bucket = (extra: Record<string, unknown>) =>
+      raw({ r2_buckets: [{ binding: "D", bucket_name: "cfo-stg-a", ...extra }] });
+    const refused: [string, DeployConfigView, string][] = [
+      ["an unnamed container", container({ name: undefined }), "lowercase"],
+      ["another deployment's container", container({ name: "cfo-stg-b" }), "lowercase"],
+      ["a prefix lookalike", container({ name: "cfo-stg-ab" }), "lowercase"],
+      ["an unprefixed container", container({ name: "production-host" }), "lowercase"],
+      ["an uppercase container", container({ name: "cfo-stg-a-Host" }), "lowercase"],
+      ["no instance limit", container({ max_instances: undefined }), "max_instances"],
+      ["too many instances", container({ max_instances: 4 }), "max_instances"],
+      ["a fractional limit", container({ max_instances: 1.5 }), "max_instances"],
+      ["a large instance type", container({ instance_type: "standard-4" }), "instance_type"],
+      ["a custom instance type", container({ instance_type: { vcpu: 8 } }), "instance_type"],
+      ["an unknown container key", container({ observability: { logs: true } }), '"observability"'],
+      ["another deployment's bucket", bucket({ bucket_name: "cfo-stg-b" }), "bucket_name"],
+      ["a production bucket", bucket({ bucket_name: "non-staging-data" }), "bucket_name"],
+      ["a bucket in a jurisdiction", bucket({ jurisdiction: "eu" }), '"jurisdiction"'],
+      ["a preview bucket", bucket({ preview_bucket_name: "x" }), '"preview_bucket_name"'],
+      ["containers not a list", raw({ containers: { name: "cfo-stg-a" } }), "must be a list"],
+    ];
+    for (const [label, view, message] of refused) {
+      expect(() => validateDeployConfig(view, ACCOUNT, NAME), label).toThrow(message);
+    }
+  });
+
+  it("only names that equal the deployment or extend it with a hyphen belong to it", () => {
+    expect(ownedBy("cfo-stg-a", "cfo-stg-a")).toBe(true);
+    expect(ownedBy("cfo-stg-a-x", "cfo-stg-a")).toBe(true);
+    expect(ownedBy("cfo-stg-ab", "cfo-stg-a")).toBe(false);
+    expect(ownedBy("cfo-stg-", "cfo-stg-a")).toBe(false);
+    expect(() => validateDeployConfig(closed, ACCOUNT, "agents")).toThrow("refusing to touch");
   });
 
   it("names every problem at once", () => {
     expect(() =>
-      validateDeployConfig(effective({ workers_dev: true, preview_urls: true }), ACCOUNT),
+      validateDeployConfig(effective({ workers_dev: true, preview_urls: true }), ACCOUNT, NAME),
     ).toThrow('"workers_dev" must be false; "preview_urls" must be false');
   });
 });

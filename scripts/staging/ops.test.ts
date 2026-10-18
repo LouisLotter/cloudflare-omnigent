@@ -4,6 +4,7 @@ import {
   type AccessApp,
   type DeployConfigView,
   type Deployment,
+  declaredResources,
   parseRegistry,
   serializeRegistry,
 } from "./guard.ts";
@@ -75,6 +76,17 @@ class FakeCloud implements Cloud {
   lookupUnknown = false;
   /** How long a Worker lookup takes to answer. It reports the state from when it started. */
   lookupDelay = 0;
+  /** R2 buckets, container applications (id -> name) and registry images (`repo:tag`). */
+  readonly buckets = new Set<string>();
+  readonly containerApps_ = new Map<string, string>();
+  readonly images = new Set<string>();
+  bucketDeleteFails = false;
+  /** Deletes that report success but leave the bucket or the image in place. */
+  bucketDeleteKeeps = false;
+  imageDeleteKeeps = false;
+  containerDeleteKeeps = false;
+  private nextAppId = 1;
+  private nextTag = 1;
   private nextId = 1;
   private readonly store: FakeStore;
 
@@ -150,6 +162,21 @@ class FakeCloud implements Cloud {
     this.calls.push(`worker.deploy ${name} ${configPath}`);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
+    // Wrangler binds the declared buckets, creating any that is missing, and creates the
+    // container applications and images, before the upload's outcome is known.
+    const raw = views[configPath]?.raw ?? {};
+    for (const bucket of declaredResources(raw).buckets) {
+      if (!this.buckets.has(bucket)) {
+        this.violations.push(`Wrangler had to provision ${bucket}`);
+        this.buckets.add(bucket);
+      }
+    }
+    for (const container of declaredResources(raw).containers) {
+      if (![...this.containerApps_.values()].includes(container)) {
+        this.containerApps_.set(`ca-${this.nextAppId++}`, container);
+      }
+      this.images.add(`${container}:${this.nextTag++}`);
+    }
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
       this.lateUploads.push({ name, hostname, landAt: real + this.lateDelay });
@@ -169,6 +196,52 @@ class FakeCloud implements Cloud {
       throw new Error("wrangler delete exited with 1");
     }
   }
+  bucketExists(name: string): boolean {
+    this.tick();
+    this.calls.push("bucket.exists");
+    return this.buckets.has(name);
+  }
+  createBucket(name: string): void {
+    this.tick();
+    this.calls.push(`bucket.create ${name}`);
+    this.buckets.add(name);
+  }
+  emptyAndDeleteBucket(name: string): void {
+    this.tick();
+    this.calls.push(`bucket.delete ${name}`);
+    if (this.bucketDeleteFails) throw new Error("cf r2 failed: bucket not empty");
+    if (!this.bucketDeleteKeeps) this.buckets.delete(name);
+  }
+  containerApps(name: string): string[] {
+    this.tick();
+    this.calls.push("container.list");
+    return [...this.containerApps_].filter(([, n]) => n === name).map(([id]) => id);
+  }
+  deleteContainerApp(id: string): void {
+    this.tick();
+    this.calls.push(`container.delete ${this.containerApps_.get(id)}`);
+    if (!this.containerDeleteKeeps) this.containerApps_.delete(id);
+  }
+  containerImages(repository: string): string[] {
+    this.tick();
+    this.calls.push("image.list");
+    return [...this.images].filter((i) => i.startsWith(`${repository}:`));
+  }
+  deleteContainerImage(reference: string): void {
+    this.tick();
+    this.calls.push(`image.delete ${reference}`);
+    if (!this.imageDeleteKeeps) this.images.delete(reference);
+  }
+  /** Every bucket, container application and image is recorded for some deployment. */
+  unrecorded(deployments: readonly Deployment[]): string[] {
+    const containers = new Set(deployments.flatMap((d) => d.containers ?? []));
+    const buckets = new Set(deployments.flatMap((d) => d.buckets ?? []));
+    return [
+      ...[...this.buckets].filter((b) => !buckets.has(b)),
+      ...[...this.containerApps_.values()].filter((c) => !containers.has(c)),
+      ...[...this.images].filter((i) => !containers.has(i.slice(0, i.lastIndexOf(":")))),
+    ];
+  }
 }
 
 const GOOD: DeployConfigView = {
@@ -177,6 +250,29 @@ const GOOD: DeployConfigView = {
   raw: { name: "x", workers_dev: false, preview_urls: false },
   effective: { workers_dev: false, preview_urls: false },
 };
+
+/** Registers a configuration with a container and a bucket named for `cfo-stg-<suffix>`. */
+function withResources(suffix: string, bucket = `cfo-stg-${suffix}-data`): string {
+  const path = `/w/res-${suffix}-${bucket}.jsonc`;
+  views[path] = {
+    ...GOOD,
+    path,
+    raw: {
+      ...GOOD.raw,
+      durable_objects: { bindings: [{ name: "HOST", class_name: "Host" }] },
+      containers: [
+        {
+          name: `cfo-stg-${suffix}-host`,
+          class_name: "Host",
+          image: "./Dockerfile",
+          max_instances: 1,
+        },
+      ],
+      r2_buckets: [{ binding: "DATA", bucket_name: bucket }],
+    },
+  };
+  return path;
+}
 
 let store: FakeStore;
 let cloud: FakeCloud;
@@ -234,6 +330,10 @@ function restart(): void {
   cloud.deleteModes.clear();
   cloud.lookupUnknown = false;
   cloud.lookupDelay = 0;
+  cloud.bucketDeleteFails = false;
+  cloud.bucketDeleteKeeps = false;
+  cloud.imageDeleteKeeps = false;
+  cloud.containerDeleteKeeps = false;
 }
 
 const request = (suffix = "a", days = 7, configPath = GOOD.path) => ({
@@ -594,6 +694,105 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
   });
 });
 
+describe("containers and buckets", () => {
+  const leftovers = () =>
+    cloud.buckets.size +
+    cloud.containerApps_.size +
+    cloud.images.size +
+    cloud.apps.size +
+    cloud.workers.size;
+
+  it("creates buckets before the upload, and removes containers, images and buckets before Access", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    expect(record()).toMatchObject({ containers: ["cfo-stg-a-host"], buckets: ["cfo-stg-a-data"] });
+    const [create, upload] = order("bucket.create", "worker.deploy");
+    expect(create).toBeGreaterThanOrEqual(0);
+    expect(create).toBeLessThan(upload ?? -1);
+
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    const steps = order(
+      "worker.delete",
+      "container.delete",
+      "image.delete",
+      "bucket.delete",
+      "access.delete",
+    );
+    expect(steps.every((step) => step >= 0)).toBe(true);
+    expect([...steps].sort((x, y) => x - y)).toEqual(steps);
+    expect(leftovers()).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("refuses a bucket that exists but this deployment did not create, before anything else", () => {
+    cloud.buckets.add("cfo-stg-a-data");
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("did not create");
+    expect(cloud.calls.filter((c) => /create|deploy/.test(c))).toEqual([]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("refuses a container application that exists but this deployment did not create", () => {
+    cloud.containerApps_.set("other", "cfo-stg-a-host");
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("did not create");
+    expect(store.load()).toEqual([]);
+  });
+
+  it("never records one resource for two deployments whose names nest", () => {
+    // cfo-stg-a may own cfo-stg-a-x, and so may the deployment cfo-stg-a-x.
+    cloud.deployFault = "crash-after-access"; // recorded, not yet created
+    expect(() => deploy(ctx, request("a", 7, withResources("a", "cfo-stg-a-x")))).toThrow();
+    restart();
+    expect(cloud.buckets.has("cfo-stg-a-x")).toBe(false);
+    expect(() => deploy(ctx, request("a-x", 7, withResources("a-x", "cfo-stg-a-x")))).toThrow(
+      "recorded for the deployment cfo-stg-a",
+    );
+    expect(record("cfo-stg-a-x")).toBeUndefined();
+  });
+
+  it("keeps Access and the record while a bucket cannot be deleted", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    cloud.bucketDeleteFails = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("not empty");
+    expect(cloud.apps.size).toBe(1);
+    expect(record()?.state).toBe("deleting");
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+  });
+
+  it("keeps Access while a container application survives its delete", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    cloud.containerDeleteKeeps = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("still exists");
+    expect(cloud.apps.size).toBe(1);
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+  });
+
+  it.each([
+    ["an image survives its delete", "imageDeleteKeeps", "still in the registry"],
+    ["a bucket survives a delete that reported success", "bucketDeleteKeeps", "still exists"],
+  ] as const)("keeps Access while %s", (_, fault, message) => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    cloud[fault] = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(message);
+    expect(cloud.apps.size).toBe(1);
+    expect(record()?.state).toBe("deleting");
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+  });
+
+  it("remembers the containers and buckets of earlier deploys", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    deploy(ctx, request("a")); // the plain configuration declares neither
+    expect(record()).toMatchObject({ containers: ["cfo-stg-a-host"], buckets: ["cfo-stg-a-data"] });
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+  });
+});
+
 describe("IR-002: only closed Wrangler configurations deploy", () => {
   const open: Record<string, Partial<DeployConfigView>> = {
     "workers.dev enabled": { effective: { workers_dev: true, preview_urls: false } },
@@ -734,6 +933,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "phantom-success",
       ),
       lateDelay: fc.integer({ min: 0, max: SETTLE }),
+      resources: fc.boolean(),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
@@ -743,6 +943,8 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       unknown: fc.boolean(),
       lookupDelay: fc.integer({ min: 0, max: 2 * SETTLE }),
       wallJump: fc.integer({ min: 0, max: 30 * 60_000 }),
+      bucketFails: fc.boolean(),
+      containerKeeps: fc.boolean(),
     }),
     fc.record({
       kind: fc.constant("sweep" as const),
@@ -773,12 +975,15 @@ describe("model check: no Worker is ever reachable without its Access applicatio
                   // Refused or failed; the invariants decide whether that was safe.
                 }
               };
-              deploy(ctx, request(op.suffix, op.days));
+              const path = op.resources ? withResources(op.suffix) : GOOD.path;
+              deploy(ctx, request(op.suffix, op.days, path));
             } else if (op.kind === "teardown") {
               clock += op.wallJump; // the wall clock only
               cloud.deleteModes.set(`cfo-stg-${op.suffix}`, op.mode);
               cloud.lookupUnknown = op.unknown;
               cloud.lookupDelay = op.lookupDelay;
+              cloud.bucketDeleteFails = op.bucketFails;
+              cloud.containerDeleteKeeps = op.containerKeeps;
               teardown(ctx, `cfo-stg-${op.suffix}`);
             } else if (op.kind === "sweep") {
               elapse(op.hours * HOUR);
@@ -798,6 +1003,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           const recorded = new Set(store.load().map((d) => d.name));
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
           for (const app of cloud.apps.values()) expect(recorded.has(app.name)).toBe(true);
+          expect(cloud.unrecorded(store.load())).toEqual([]);
         }
         // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
         // upload that lands during the settle wait costs one more attempt.
@@ -817,6 +1023,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         elapse(SETTLE);
         cloud.tick();
         expect(cloud.workers.size).toBe(0);
+        expect(cloud.buckets.size + cloud.containerApps_.size + cloud.images.size).toBe(0);
         expect(cloud.violations).toEqual([]);
       }),
       { numRuns: 300 },

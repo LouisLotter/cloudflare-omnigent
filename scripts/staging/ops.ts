@@ -18,6 +18,9 @@
 //     lookup, before removing Access. No wall-clock deadline is trusted, and no lookup that
 //     began before the wait counts. An unknown answer keeps Access and the record.
 //   - Worker and Access share one record and one expiry, so a sweep removes them together.
+//     Containers and R2 buckets the configuration declares carry the deployment's name, are
+//     recorded before the deploy that creates them, and are removed by the same teardown,
+//     after the Worker and before Access.
 
 import {
   type AccessApp,
@@ -28,6 +31,7 @@ import {
   claimAccessApp,
   type DeployConfigView,
   type Deployment,
+  declaredResources,
   expired,
   expiry,
   hostnameFor,
@@ -48,6 +52,17 @@ export interface Cloud {
   workerExists(name: string): boolean;
   deployWorker(name: string, hostname: string, configPath: string): void;
   deleteWorker(name: string): void;
+  /** True or false only when Cloudflare answered; throws when the answer is unknown. */
+  bucketExists(name: string): boolean;
+  createBucket(name: string): void;
+  /** Deletes every object, then the bucket. */
+  emptyAndDeleteBucket(name: string): void;
+  /** IDs of the container applications with exactly this name. */
+  containerApps(name: string): string[];
+  deleteContainerApp(id: string): void;
+  /** Image references (`repository:tag`) in this repository of the managed registry. */
+  containerImages(repository: string): string[];
+  deleteContainerImage(reference: string): void;
 }
 
 export interface Store {
@@ -98,8 +113,11 @@ function locked<T>(ctx: Context, name: string, run: () => T): T {
 export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const name = resourceName(request.suffix);
   const hostname = hostnameFor(name, ctx.config.zone);
-  // Local checks first: nothing below runs for a configuration that could open another route.
-  validateDeployConfig(ctx.readConfig(request.configPath), ctx.config.accountId);
+  // Local checks first: nothing below runs for a configuration that could reach outside
+  // staging.
+  const view = ctx.readConfig(request.configPath);
+  validateDeployConfig(view, ctx.config.accountId, name);
+  const declared = declaredResources(view.raw);
   return locked(ctx, name, () => {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
@@ -116,12 +134,49 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     }
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
 
-    // The record exists before anything is created, and one expiry covers both resources.
-    let record = put(ctx, {
+    // A container or bucket new to this deployment must not exist yet: otherwise it belongs to
+    // someone else, and recording it would let teardown delete it. Checked before recording.
+    for (const container of declared.containers) {
+      if (
+        !existing?.containers?.includes(container) &&
+        ctx.cloud.containerApps(container).length > 0
+      ) {
+        throw new Error(
+          `container application ${container} exists but this deployment did not create it`,
+        );
+      }
+    }
+    for (const bucket of declared.buckets) {
+      if (!existing?.buckets?.includes(bucket) && ctx.cloud.bucketExists(bucket)) {
+        throw new Error(`R2 bucket ${bucket} exists but this deployment did not create it`);
+      }
+    }
+
+    // The record exists before anything is created, and one expiry covers every resource.
+    // Containers and buckets accumulate across deploys, so none is ever forgotten.
+    const union = (a: readonly string[] | undefined, b: string[]) => [
+      ...new Set([...(a ?? []), ...b]),
+    ];
+    const intent: Deployment = {
       ...(existing ?? { name, hostname, owner: request.owner, createdAt: now.toISOString() }),
       expiresAt,
       state: "pending",
+      containers: union(existing?.containers, declared.containers),
+      buckets: union(existing?.buckets, declared.buckets),
+    };
+    // Deployment names can nest (cfo-stg-a owns cfo-stg-a-x, and so does the deployment
+    // cfo-stg-a-x), and their locks are separate, so the claim is checked and recorded in one
+    // atomic registry update: no resource is ever recorded for two deployments.
+    ctx.store.update((all) => {
+      const mine = [...(intent.containers ?? []), ...(intent.buckets ?? [])];
+      for (const other of all) {
+        if (other.name === name) continue;
+        const clash = mine.find((r) => other.containers?.includes(r) || other.buckets?.includes(r));
+        if (clash) throw new Error(`${clash} is recorded for the deployment ${other.name}`);
+      }
+      return [...all.filter((d) => d.name !== name), intent];
     });
+    let record = intent;
 
     // Access before the Worker: the hostname never serves traffic without the owner-only gate.
     const app = claimAccessApp(ctx.cloud.listAccessApps(hostname), record);
@@ -132,6 +187,16 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       const id = ctx.cloud.createAccessApp(accessAppBody(name, hostname, ctx.config));
       record = put(ctx, { ...record, accessAppId: id });
       ctx.log(`created Access application for ${hostname}`);
+    }
+
+    // Buckets before the Worker binds them, so Wrangler never provisions one itself. A bucket
+    // that exists here is one this record already owned (checked above), or one an
+    // interrupted run of this deploy created after recording it.
+    for (const bucket of declared.buckets) {
+      if (!ctx.cloud.bucketExists(bucket)) {
+        ctx.cloud.createBucket(bucket);
+        ctx.log(`created R2 bucket ${bucket}`);
+      }
     }
 
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
@@ -193,6 +258,25 @@ export function teardown(
       }
     }
 
+    // With the Worker gone, nothing reaches its containers or buckets. Remove them, checking
+    // each, and keep the record (and Access) if any is left.
+    for (const container of record.containers ?? []) {
+      for (const id of ctx.cloud.containerApps(container)) ctx.cloud.deleteContainerApp(id);
+      if (ctx.cloud.containerApps(container).length > 0) {
+        throw new Error(`${name}: container application ${container} still exists`);
+      }
+      for (const image of ctx.cloud.containerImages(container))
+        ctx.cloud.deleteContainerImage(image);
+      if (ctx.cloud.containerImages(container).length > 0) {
+        throw new Error(`${name}: images of ${container} are still in the registry`);
+      }
+    }
+    for (const bucket of record.buckets ?? []) {
+      if (ctx.cloud.bucketExists(bucket)) ctx.cloud.emptyAndDeleteBucket(bucket);
+      if (ctx.cloud.bucketExists(bucket))
+        throw new Error(`${name}: R2 bucket ${bucket} still exists`);
+    }
+
     // The Worker is confirmed absent. Remove the Access application the record points to, or,
     // if an interrupted deploy never recorded its ID, the one carrying this deployment's name.
     for (const app of ctx.cloud.listAccessApps(record.hostname)) {
@@ -201,7 +285,7 @@ export function teardown(
       if (ours) ctx.cloud.deleteAccessApp(app.id);
     }
     remove(ctx, name);
-    ctx.log(`removed ${name}: Worker, then Access`);
+    ctx.log(`removed ${name}: Worker, containers and buckets, then Access`);
   });
 }
 

@@ -4,11 +4,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  bucketLookup,
   type CommandResult,
   childEnv,
   childStdio,
   cliCloud,
   fileStore,
+  imagesOf,
   type RunOptions,
   readWranglerConfig,
   workerLookup,
@@ -51,6 +53,42 @@ describe("Worker lookup", () => {
       expect(() => workerLookup(result, "cfo-stg-a")).toThrow();
     }
     expect(() => workerLookup(ok("not json"), "cfo-stg-a")).toThrow();
+  });
+});
+
+describe("R2 bucket lookup and image listings", () => {
+  const NO_BUCKET =
+    "│ [10006] The specified bucket does not exist.\n│ 404 Not Found · HTTP /r2/buckets/x";
+
+  it("answers only when R2 answered about that exact bucket", () => {
+    expect(bucketLookup(ok(JSON.stringify({ result: { name: "cfo-stg-a" } })), "cfo-stg-a")).toBe(
+      true,
+    );
+    expect(bucketLookup(failed(NO_BUCKET), "cfo-stg-a")).toBe(false);
+    for (const result of [
+      ok(JSON.stringify({ result: { name: "cfo-stg-b" } })),
+      failed("│ [10042] Please enable R2 through the Cloudflare Dashboard.\n│ 403 Forbidden"),
+      failed("│ 404 Not Found"),
+    ]) {
+      expect(() => bucketLookup(result, "cfo-stg-a")).toThrow();
+    }
+  });
+
+  it("picks the references of exactly one repository, in either listing shape", () => {
+    const listing = [
+      { name: "cfo-stg-a-host", tags: ["1", "2"] },
+      { name: "cfo-stg-a-host-big", tags: ["1"] },
+      "registry.cloudflare.com/acct/cfo-stg-a-host:3",
+      "cfo-stg-ab:1",
+    ];
+    expect(imagesOf(listing, "cfo-stg-a-host")).toEqual([
+      "cfo-stg-a-host:1",
+      "cfo-stg-a-host:2",
+      "registry.cloudflare.com/acct/cfo-stg-a-host:3",
+    ]);
+    expect(imagesOf([], "cfo-stg-a-host")).toEqual([]);
+    expect(() => imagesOf({ images: [] }, "x")).toThrow();
+    expect(() => imagesOf([{ name: "x" }], "x")).toThrow();
   });
 });
 
@@ -142,6 +180,64 @@ describe("CLI wiring", () => {
     expect(childStdio(true)).toEqual(["ignore", "inherit", "inherit"]);
   });
 
+  it("manages buckets, container applications and images with cf, never interactively", () => {
+    const cfCalls: (readonly string[])[] = [];
+    let objects = 2;
+    const managing = cliCloud(config, WORKER, (command, args) => {
+      expect(command).toBe("cf");
+      cfCalls.push(args);
+      if (args[1] === "objects" && args[2] === "list") {
+        const page = objects > 0 ? [{ key: `k${objects}` }] : [];
+        objects -= 1;
+        return ok(JSON.stringify({ result: page }));
+      }
+      if (args[1] === "applications" && args[2] === "list") {
+        return ok(
+          JSON.stringify({
+            result: [
+              { id: "ca-1", name: "cfo-stg-a-host" },
+              { id: "ca-2", name: "cfo-stg-a-host-big" },
+            ],
+          }),
+        );
+      }
+      if (args[1] === "images" && args[2] === "list") {
+        return ok(JSON.stringify({ result: [{ name: "cfo-stg-a-host", tags: ["7"] }] }));
+      }
+      return ok("{}");
+    });
+    managing.createBucket("cfo-stg-a-data");
+    expect(cfCalls.at(-1)).toEqual([
+      "r2",
+      "buckets",
+      "create",
+      "--body",
+      '{"name":"cfo-stg-a-data"}',
+    ]);
+    managing.emptyAndDeleteBucket("cfo-stg-a-data");
+    expect(cfCalls.filter((c) => c[2] === "bulk-delete").map((c) => c.at(-1))).toEqual([
+      '["k2"]',
+      '["k1"]',
+    ]);
+    expect(cfCalls.at(-1)).toEqual(["r2", "buckets", "delete", "cfo-stg-a-data", "--force"]);
+    expect(managing.containerApps("cfo-stg-a-host")).toEqual(["ca-1"]);
+    managing.deleteContainerApp("ca-1");
+    expect(cfCalls.at(-1)).toEqual(["containers", "applications", "delete", "ca-1", "--force"]);
+    expect(managing.containerImages("cfo-stg-a-host")).toEqual(["cfo-stg-a-host:7"]);
+    managing.deleteContainerImage("cfo-stg-a-host:7");
+    expect(cfCalls.at(-1)).toEqual([
+      "containers",
+      "images",
+      "delete",
+      "cfo-stg-a-host:7",
+      "--force",
+    ]);
+    // Every delete passes --force: there is no terminal to answer a confirmation.
+    expect(cfCalls.filter((c) => c.includes("delete")).every((c) => c.includes("--force"))).toBe(
+      true,
+    );
+  });
+
   it("returns the created application's ID and fails loudly on a CLI error", () => {
     expect(cloud.createAccessApp({ name: "cfo-stg-a" })).toBe("app-1");
     expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
@@ -170,8 +266,27 @@ describe("Wrangler's own reading of a configuration", () => {
     return path;
   };
   const ACCOUNT = "a".repeat(32);
-  const check = (path: string) => validateDeployConfig(readWranglerConfig(path, WORKER), ACCOUNT);
+  const check = (path: string) =>
+    validateDeployConfig(readWranglerConfig(path, WORKER), ACCOUNT, "cfo-stg-x");
   const closed = { workers_dev: false, preview_urls: false };
+
+  it("accepts containers and buckets that carry the deployment's name, as Wrangler reads them", () => {
+    const own = {
+      ...closed,
+      durable_objects: { bindings: [{ name: "HOST", class_name: "Host" }] },
+      migrations: [{ tag: "v1", new_sqlite_classes: ["Host"] }],
+      containers: [
+        { name: "cfo-stg-x-host", class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+      ],
+      r2_buckets: [{ binding: "DATA", bucket_name: "cfo-stg-x-data" }],
+    };
+    writeFileSync(join(scratch, "Dockerfile"), "FROM busybox:1.37\n"); // Wrangler checks it exists
+    expect(() => check(write("own-resources.json", own))).not.toThrow();
+    const foreign = { ...own, r2_buckets: [{ binding: "DATA", bucket_name: "production-data" }] };
+    expect(() => check(write("foreign-bucket.json", foreign))).toThrow("bucket_name");
+    const big = { ...own, containers: [{ ...own.containers[0], max_instances: 50 }] };
+    expect(() => check(write("big-container.json", big))).toThrow("max_instances");
+  });
 
   it("accepts the checked-in Worker configuration", () => {
     expect(() => check(join(WORKER, "wrangler.jsonc"))).not.toThrow();

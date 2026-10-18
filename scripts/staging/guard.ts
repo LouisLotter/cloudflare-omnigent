@@ -37,6 +37,14 @@ export interface Deployment {
    * is trusted, because the clock can jump.
    */
   readonly uploadInterruptedAt?: string;
+  /**
+   * Container applications the deployment's configuration declared, by name. Each name, which
+   * is also its image repository, is the deployment's name or starts with it. Recorded before
+   * the deploy that creates them; teardown deletes the applications and their images.
+   */
+  readonly containers?: readonly string[];
+  /** R2 buckets the deployment created, named like its containers. Teardown empties and deletes them. */
+  readonly buckets?: readonly string[];
 }
 
 export interface StagingConfig {
@@ -131,10 +139,11 @@ export function markInterrupted(d: Deployment, now: Date): Deployment {
 
 /**
  * The top-level keys a staging Wrangler configuration may use. Everything else is refused,
- * because the staging tool records and tears down only the Worker and its Access application:
- * bindings such as `r2_buckets`, `kv_namespaces`, `d1_databases`, `services`, `queues` or
- * `containers` would attach existing resources, perhaps outside staging, or provision new ones
- * that teardown never removes. Support for each comes with its own lifecycle in the tool.
+ * because the staging tool records and tears down only what it manages: the Worker, its Access
+ * application, its containers and its R2 buckets. Bindings such as `kv_namespaces`,
+ * `d1_databases`, `services` or `queues` would attach existing resources, perhaps outside
+ * staging, or provision new ones that teardown never removes. Support for each comes with its
+ * own lifecycle in the tool.
  */
 export const ALLOWED_CONFIG_KEYS: readonly string[] = [
   "$schema",
@@ -161,7 +170,50 @@ export const ALLOWED_CONFIG_KEYS: readonly string[] = [
   "alias",
   "tsconfig",
   "upload_source_maps",
+  "containers",
+  "r2_buckets",
 ];
+
+/** Keys a container entry may use, and the instance types and count the staging budget allows. */
+const CONTAINER_KEYS = [
+  "name",
+  "class_name",
+  "image",
+  "max_instances",
+  "instance_type",
+  "image_build_context",
+  "image_vars",
+];
+export const STAGING_INSTANCE_TYPES: readonly string[] = [
+  "lite",
+  "basic",
+  "standard-1",
+  "standard-2",
+];
+export const STAGING_MAX_INSTANCES = 3;
+const RESOURCE_NAME = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/;
+
+/** The containers and R2 buckets a configuration declares, by name. */
+export function declaredResources(raw: Readonly<Record<string, unknown>>): {
+  containers: string[];
+  buckets: string[];
+} {
+  const list = (value: unknown, key: string): string[] =>
+    Array.isArray(value)
+      ? value
+          .map((entry) => (entry as Record<string, unknown> | null)?.[key])
+          .filter((name): name is string => typeof name === "string")
+      : [];
+  return {
+    containers: list(raw.containers, "name"),
+    buckets: list(raw.r2_buckets, "bucket_name"),
+  };
+}
+
+/** True when a resource name belongs to the deployment `name`: equal to it, or `name-…`. */
+export function ownedBy(resource: string, name: string): boolean {
+  return resource === name || resource.startsWith(`${name}-`);
+}
 
 function keysOutside(value: unknown, allowed: readonly string[]): string[] {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
@@ -210,7 +262,58 @@ function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown,
     observability?.traces,
     ["enabled", "head_sampling_rate", "persist"],
   ]);
+  const containers = Array.isArray(raw.containers) ? raw.containers : [];
+  containers.forEach((container, i) => {
+    shapes.push([`containers[${i}]`, container, CONTAINER_KEYS]);
+  });
+  const buckets = Array.isArray(raw.r2_buckets) ? raw.r2_buckets : [];
+  buckets.forEach((bucket, i) => {
+    shapes.push([`r2_buckets[${i}]`, bucket, ["binding", "bucket_name"]]);
+  });
   return shapes;
+}
+
+/**
+ * Containers and buckets must carry the deployment's name, so that teardown can find them and
+ * nothing outside staging is attached. Containers stay within the staging budget.
+ */
+function resourceProblems(raw: Readonly<Record<string, unknown>>, name: string): string[] {
+  const problems: string[] = [];
+  for (const key of ["containers", "r2_buckets"]) {
+    if (raw[key] !== undefined && !Array.isArray(raw[key]))
+      problems.push(`"${key}" must be a list`);
+  }
+  const containers = Array.isArray(raw.containers) ? raw.containers : [];
+  containers.forEach((entry, i) => {
+    const c = (entry ?? {}) as Record<string, unknown>;
+    if (typeof c.name !== "string" || !RESOURCE_NAME.test(c.name) || !ownedBy(c.name, name)) {
+      problems.push(`containers[${i}] needs a lowercase "name" of ${name} or ${name}-…`);
+    }
+    if (
+      !Number.isInteger(c.max_instances) ||
+      (c.max_instances as number) < 1 ||
+      (c.max_instances as number) > STAGING_MAX_INSTANCES
+    ) {
+      problems.push(`containers[${i}] needs "max_instances" from 1 to ${STAGING_MAX_INSTANCES}`);
+    }
+    if (
+      c.instance_type !== undefined &&
+      !STAGING_INSTANCE_TYPES.includes(c.instance_type as string)
+    ) {
+      problems.push(
+        `containers[${i}] "instance_type" must be one of ${STAGING_INSTANCE_TYPES.join(", ")}`,
+      );
+    }
+  });
+  const buckets = Array.isArray(raw.r2_buckets) ? raw.r2_buckets : [];
+  buckets.forEach((entry, i) => {
+    const b = (entry ?? {}) as Record<string, unknown>;
+    const bucket = b.bucket_name;
+    if (typeof bucket !== "string" || !RESOURCE_NAME.test(bucket) || !ownedBy(bucket, name)) {
+      problems.push(`r2_buckets[${i}] needs a "bucket_name" of ${name} or ${name}-…`);
+    }
+  });
+  return problems;
 }
 
 /**
@@ -220,10 +323,15 @@ function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown,
  *     that to the configured routes rather than replacing them, so the configuration must have
  *     no routes of its own and must disable workers.dev and preview URLs explicitly: both
  *     default to on.
- *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, and the nested structures in
- *     nestedShapes.
+ *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, the nested structures in
+ *     nestedShapes, and containers or buckets that do not carry the deployment's name.
  */
-export function validateDeployConfig(view: DeployConfigView, accountId: string): void {
+export function validateDeployConfig(
+  view: DeployConfigView,
+  accountId: string,
+  name: string,
+): void {
+  assertManaged(name);
   const problems: string[] = [];
   if (view.effective.account_id !== undefined && view.effective.account_id !== accountId) {
     problems.push('"account_id" names another account than the staging account');
@@ -240,6 +348,7 @@ export function validateDeployConfig(view: DeployConfigView, accountId: string):
       );
     }
   }
+  problems.push(...resourceProblems(view.raw, name));
   if (view.redirected) problems.push("it redirects to another configuration file");
   if ("env" in view.raw) problems.push("it defines environments; use a separate file instead");
   if (view.effective.targetEnvironment !== undefined) {
@@ -343,6 +452,10 @@ export function parseRegistry(json: unknown): Deployment[] {
   return file.deployments.map((entry: unknown) => {
     const d = entry as Record<string, unknown>;
     const text = (key: string) => typeof d[key] === "string" && d[key] !== "";
+    const names = (value: unknown) =>
+      value === undefined ||
+      (Array.isArray(value) &&
+        value.every((n) => typeof n === "string" && n.startsWith(STAGING_PREFIX)));
     if (
       !d ||
       !text("name") ||
@@ -353,7 +466,9 @@ export function parseRegistry(json: unknown): Deployment[] {
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
-      (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt"))
+      (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||
+      !names(d.containers) ||
+      !names(d.buckets)
     ) {
       throw new Error("malformed entry in the staging registry");
     }

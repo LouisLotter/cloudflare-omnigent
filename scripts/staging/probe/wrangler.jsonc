@@ -1,0 +1,25 @@
+// A minimal deployment with one container, for checking the staging tool's container lifecycle
+// against real Cloudflare: deploy creates the container application and its image, teardown
+// removes them. Deploy it with the suffix its names carry:
+//
+//   pnpm stg deploy --suffix tool-probe --owner lead --config scripts/staging/probe/wrangler.jsonc --days 1
+//   pnpm stg teardown --suffix tool-probe
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-tool-probe",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "PROBE", "class_name": "Probe" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Probe"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-tool-probe-box",
+      "class_name": "Probe",
+      "image": "./Dockerfile",
+      "max_instances": 1,
+      "instance_type": "lite"
+    }
+  ]
+}
