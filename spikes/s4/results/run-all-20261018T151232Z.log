@@ -1,0 +1,1137 @@
+### step 0: issue1540 --repeat 3 --soak-seconds 120 (exit 0, 640.3s)
+Tree 2 page 166405 cell 412: 2nd reference to page 166649\nTree 2 page 166405 cell 411: 2nd reference to page 166648\nTree 2 page 166405 cell 410: 2nd reference to page 166647\nTree 2 page 166405 cell 409: 2nd reference to page 166646\nTree 2 page 166405 cell 408: 2nd reference to page 166645\nTree 2 page 166405 cell 407: 2nd reference to page 166644\nTree 2 page 166405 cell 406: 2nd reference to page 166643\nTree 2 page 166405 cell 405: 2nd reference to page 166642\nTree 2 page 166405 cell 404: 2nd reference to page 166641\nTree 2 page 166405 cell 403: 2nd reference to page 166640\nTree 2 page 166405 cell 402: 2nd reference to page 166639\nTree 2 page 166405 cell 401: 2nd reference to page 166638\nTree 2 page 166405 cell 400: 2nd reference to page 166637\nTree 2 page 166405 cell 399: 2nd reference to page 166636\nTree 2 page 166405 cell 398: 2nd reference to page 166635\nTree 2 page 165607 cell 410: 2nd reference to page 165872\nTree 2 page 165607 cell 432: Rowid 165456 out of order\nTree 2 page 165607 cell 432: 2nd reference to page 165871\nTree 2 page 165607 cell 431: 2nd reference to page 165870\nTree 2 page 165607 cell 430: 2nd reference to page 165869\nTree 2 page 165607 cell 429: 2nd reference to page 165868\nTree 2 page 165607 cell 428: 2nd reference to page 165867\nTree 2 page 165607 cell 427: 2nd reference to page 165866\nTree 2 page 165607 cell 426: 2nd reference to page 165865\nTree 2 page 165607 cell 425: 2nd reference to page 165864\nTree 2 page 165607 cell 424: 2nd reference to page 165863\nTree 2 page 165607 cell 423: 2nd reference to page 165862\nTree 2 page 165607 cell 422: 2nd reference to page 165861\nTree 2 page 165607 cell 421: 2nd reference to page 165860\nTree 2 page 165607 cell 420: 2nd reference to page 165859\nTree 2 page 165607 cell 419: 2nd reference to page 165858\nTree 2 page 165607 cell 418: 2nd reference to page 165857\nTree 2 page 165607 cell 417: 2nd reference to page 165856\nTree 2 page 165607 cell 416: 2nd reference to page 165855\nTree 2 page 165607 cell 415: 2nd reference to page 165854\nTree 2 page 165607 cell 414: 2nd reference to page 165853\nTree 2 page 165607 cell 413: 2nd reference to page 165852\nTree 2 page 165607 cell 412: 2nd reference to page 165851\nTree 2 page 165607 cell 411: 2nd reference to page 165850\nTree 2 page 165607 cell 410: 2nd reference to page 165849\nTree 2 page 165607 cell 409: 2nd reference to page 165848\nTree 2 page 165607 cell 408: 2nd reference to page 165847\nTree 2 page 165607 cell 407: 2nd reference to page 165846\nTree 2 page 165607 cell 406: 2nd reference to page 165845\nTree 2 page 165607 cell 405: 2nd reference to page 165844\nTree 2 page 165607 cell 404: 2nd reference to page 165843\nTree 2 page 165607 cell 403: 2nd reference to page 165842\nTree 2 page 165607 cell 402: 2nd reference to page 165841\nTree 2 page 165607 cell 401: 2nd reference to page 165840\nTree 2 page 165607 cell 400: 2nd reference to page 165839\nTree 2 page 165607 cell 399: 2nd reference to page 165838\nTree 2 page 165607 cell 398: 2nd reference to page 165837\nTree 2 page 164809 cell 408: 2nd reference to page 165052\nTree 2 page 164809 cell 410: Rowid 164638 out of order\nTree 2 page 164809 cell 410: 2nd reference to page 165051\nTree 2 page 164809 cell 409: 2nd reference to page 165050\nTree 2 page 164809 cell 408: 2nd reference to page 165049\nTree 2 page 164809 cell 407: 2nd reference to page 165048\nTree 2 page 164809 cell 406: 2nd reference to page 165047\nTree 2 page 164809 cell 405: 2nd reference to page 165046\nTree 2 page 164809 cell 404: 2nd reference to page 165045\nTree 2 page 164809 cell 403: 2nd reference to page 165044\nTree 2 page 164809 cell 402: 2nd reference to page 165043\nTree 2 page 164809 cell 401: 2nd reference to page 165042\nTree 2 page 164809 cell 400: 2nd reference to page 165041\nTree 2 page 164809 cell 399: 2nd reference to page 165040\nTree 2 page 164809 cell 398: 2nd reference to page 165039\nTree 2 page 159223 cell 394: 2nd reference to page 159488\nTree 2 page 159223 cell 432: Rowid 159088 out of order\nTree 2 page 159223 cell 432: 2nd reference to page 159487\nTree 2 page 159223 cell 431: 2nd reference to page 159486\nTree 2 page 159223 cell 430: 2nd reference to page 159485\nTree 2 page 159223 cell 429: 2nd reference to page 159484\nTree 2 page 159223 cell 428: 2nd reference to page 159483\nTree 2 page 159223 cell 427: 2nd reference to page 159482\nTree 2 page 159223 cell 426: 2nd reference to page 159481\nTree 2 page 159223 cell 425: 2nd reference to page 159480\nTree 2 page 159223 cell 424: 2nd reference to page 159479", "data_rows": 168840, "exit": 0}}
+{"mode": "soak", "guard": null, "barrier": "nowait", "app_checkpoint_every_s": 3.0, "checkpoint_truncate": null, "local_rows": null, "lost_rows": null, "acked_max_id": 25100, "acked_rows_missing": 0, "error": null, "restore": {"integrity": "ok", "data_rows": 25100, "exit": 0}}
+{"mode": null, "guard": null, "barrier": null, "app_checkpoint_every_s": null, "checkpoint_truncate": null, "local_rows": null, "lost_rows": null, "acked_max_id": null, "acked_rows_missing": null, "error": "Traceback (most recent call last):\n  File \"/opt/s4/tools/issue1540.py\", line 284, in <module>\n    main()\n  File \"/opt/s4/tools/issue1540.py\", line 279, in main\n    res = repro(args) if args.mode == \"repro\" else soak(args)\n                                                   ^^^^^^^^^^\n  File \"/opt/s4/tools/issue1540.py\", line 254, in soak\n    res[\"restore\"] = restore()\n                     ^^^^^^^^^\n  File \"/opt/s4/tools/issue1540.py\", line 128, in restore\n    out[\"data_rows\"] = r.execute(\"SELECT count(*) FROM data\").fetchone()[0]\n                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsqlite3.DatabaseError: database disk image is malformed\n", "restore": {"integrity": null, "data_rows": null, "exit": null}}
+saved <repo>/spikes/s4/results/issue1540-20261018T152312Z.json
+
+
+### step 1: routes --mode response --rounds 5 (exit 0, 156.1s)
+{"round": 0, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{"round": 1, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{"round": 2, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{"round": 3, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{"round": 4, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{
+ "login_refresh": {
+  "acked": 5,
+  "survived_of_acked": 5,
+  "ack_ms_p50": 141.8,
+  "ack_ms_max": 2258.9
+ },
+ "schedule_create": {
+  "acked": 5,
+  "survived_of_acked": 5,
+  "ack_ms_p50": 152.2,
+  "ack_ms_max": 160.8
+ },
+ "schedule_edit": {
+  "acked": 5,
+  "survived_of_acked": 5,
+  "ack_ms_p50": 757.8,
+  "ack_ms_max": 858.4
+ },
+ "grant_revoke": {
+  "acked": 5,
+  "survived_of_acked": 5,
+  "ack_ms_p50": 116.0,
+  "ack_ms_max": 923.0
+ },
+ "password_change": {
+  "acked": 5,
+  "survived_of_acked": 5,
+  "ack_ms_p50": 159.0,
+  "ack_ms_max": 163.5
+ },
+ "replace_to_health_s": {
+  "p50": 3.9,
+  "max": 4.8,
+  "n": 25
+ }
+}
+saved <repo>/spikes/s4/results/routes-response-20261018T152312Z.json
+
+
+### step 2: routes --mode off --rounds 5 (exit 0, 144.1s)
+{"round": 0, "login_refresh": [true, false], "schedule_create": [true, false], "schedule_edit": [true, false], "grant_revoke": [true, false], "password_change": [true, false]}
+{"round": 1, "login_refresh": [true, false], "schedule_create": [true, false], "schedule_edit": [true, false], "grant_revoke": [true, false], "password_change": [true, false]}
+{"round": 2, "login_refresh": [true, false], "schedule_create": [true, false], "schedule_edit": [true, false], "grant_revoke": [true, false], "password_change": [true, false]}
+{"round": 3, "login_refresh": [true, false], "schedule_create": [true, false], "schedule_edit": [true, false], "grant_revoke": [true, false], "password_change": [true, false]}
+{"round": 4, "login_refresh": [true, false], "schedule_create": [true, false], "schedule_edit": [true, false], "grant_revoke": [true, false], "password_change": [true, false]}
+{
+ "login_refresh": {
+  "acked": 5,
+  "survived_of_acked": 0,
+  "ack_ms_p50": 27.6,
+  "ack_ms_max": 28.0
+ },
+ "schedule_create": {
+  "acked": 5,
+  "survived_of_acked": 0,
+  "ack_ms_p50": 6.8,
+  "ack_ms_max": 7.1
+ },
+ "schedule_edit": {
+  "acked": 5,
+  "survived_of_acked": 0,
+  "ack_ms_p50": 6.8,
+  "ack_ms_max": 7.2
+ },
+ "grant_revoke": {
+  "acked": 5,
+  "survived_of_acked": 0,
+  "ack_ms_p50": 4.7,
+  "ack_ms_max": 5.0
+ },
+ "password_change": {
+  "acked": 5,
+  "survived_of_acked": 0,
+  "ack_ms_p50": 50.1,
+  "ack_ms_max": 57.4
+ },
+ "replace_to_health_s": {
+  "p50": 4.0,
+  "max": 5.5,
+  "n": 25
+ }
+}
+saved <repo>/spikes/s4/results/routes-off-20261018T152548Z.json
+
+
+### step 3: routes --mode commit_hook --rounds 2 (exit 0, 71.4s)
+{"round": 0, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{"round": 1, "login_refresh": [true, true], "schedule_create": [true, true], "schedule_edit": [true, true], "grant_revoke": [true, true], "password_change": [true, true]}
+{
+ "login_refresh": {
+  "acked": 2,
+  "survived_of_acked": 2,
+  "ack_ms_p50": 152.8,
+  "ack_ms_max": 239.4
+ },
+ "schedule_create": {
+  "acked": 2,
+  "survived_of_acked": 2,
+  "ack_ms_p50": 155.7,
+  "ack_ms_max": 186.8
+ },
+ "schedule_edit": {
+  "acked": 2,
+  "survived_of_acked": 2,
+  "ack_ms_p50": 859.6,
+  "ack_ms_max": 861.4
+ },
+ "grant_revoke": {
+  "acked": 2,
+  "survived_of_acked": 2,
+  "ack_ms_p50": 116.6,
+  "ack_ms_max": 131.9
+ },
+ "password_change": {
+  "acked": 2,
+  "survived_of_acked": 2,
+  "ack_ms_p50": 161.5,
+  "ack_ms_max": 161.9
+ },
+ "replace_to_health_s": {
+  "p50": 4.7,
+  "max": 6.0,
+  "n": 10
+ }
+}
+saved <repo>/spikes/s4/results/routes-commit_hook-20261018T152812Z.json
+
+
+### step 4: blocked --mode response --block refuse --after unblock (exit 0, 50.1s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5027.6,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 4.0
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 25.4,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5005.7,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.5,
+    "max_ms": 2.3
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "schedule_edit": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5010.9,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 1.9
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "grant_revoke": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5005.8,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.1,
+    "max_ms": 2.0
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 6.1,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5049.2,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.0,
+    "max_ms": 1.4
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": true,
+  "schedule_edit_name": "s4-after-unblock",
+  "revoked_grant_refresh_status": 400,
+  "login_new_password": 200,
+  "login_old_password": 401,
+  "counts": {
+   "users": 2,
+   "device_grants": 4,
+   "scheduled_tasks": 2,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s 1.5
+saved <repo>/spikes/s4/results/blocked-response-refuse-unblock-20261018T152924Z.json
+
+
+### step 5: blocked --mode response --block blackhole --after unblock (exit 0, 47.8s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5028.7,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 28.6
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 26.5,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5006.5,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.2,
+    "max_ms": 3.6
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "schedule_edit": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5009.5,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 1.6
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "grant_revoke": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5005.5,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.5,
+    "max_ms": 2.8
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 6.0,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5050.1,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 2.2
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": true,
+  "schedule_edit_name": "s4-after-unblock",
+  "revoked_grant_refresh_status": 400,
+  "login_new_password": 200,
+  "login_old_password": 401,
+  "counts": {
+   "users": 2,
+   "device_grants": 4,
+   "scheduled_tasks": 2,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s 1.49
+saved <repo>/spikes/s4/results/blocked-response-blackhole-unblock-20261018T153014Z.json
+
+
+### step 6: blocked --mode response --block refuse --after kill (exit 0, 46.9s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5027.6,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 10.8
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 25.3,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5005.4,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 2.8
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "schedule_edit": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5007.9,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 1.9
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "grant_revoke": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5005.8,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.5,
+    "max_ms": 2.6
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 6.4,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5050.9,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.5,
+    "max_ms": 2.0
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": false,
+  "schedule_edit_name": "s4-blocked-edit",
+  "revoked_grant_refresh_status": 200,
+  "login_new_password": 401,
+  "login_old_password": 200,
+  "counts": {
+   "users": 2,
+   "device_grants": 3,
+   "scheduled_tasks": 1,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s None
+saved <repo>/spikes/s4/results/blocked-response-refuse-kill-20261018T153102Z.json
+
+
+### step 7: blocked --mode response --block blackhole --after kill (exit 0, 47.0s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5028.3,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 5.3
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 26.2,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5006.3,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.5,
+    "max_ms": 2.8
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "schedule_edit": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5008.9,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 1.8
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "grant_revoke": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5006.1,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 2.4
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 6.0,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5049.6,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 1.9
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": false,
+  "schedule_edit_name": "s4-blocked-edit",
+  "revoked_grant_refresh_status": 200,
+  "login_new_password": 401,
+  "login_old_password": 200,
+  "counts": {
+   "users": 2,
+   "device_grants": 3,
+   "scheduled_tasks": 1,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s None
+saved <repo>/spikes/s4/results/blocked-response-blackhole-kill-20261018T153149Z.json
+
+
+### step 8: blocked --mode commit_hook --block refuse --after unblock (exit 0, 57.4s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 5088.0,
+   "durability": "not-checked",
+   "health_during": {
+    "n": 1,
+    "errors": 0,
+    "p50_ms": 5062.6,
+    "max_ms": 5062.6
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ],
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 29.2,
+   "durability": null,
+   "health_during": {
+    "n": 1,
+    "errors": 0,
+    "p50_ms": 23.3,
+    "max_ms": 23.3
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 500,
+   "code": "internal_error",
+   "ms": 5062.1,
+   "durability": null,
+   "health_during": {
+    "n": 2,
+    "errors": 0,
+    "p50_ms": 4962.1,
+    "max_ms": 4962.1
+   },
+   "body_keys": [
+    "error"
+   ]
+  },
+  "schedule_edit": {
+   "status": 500,
+   "code": "internal_error",
+   "ms": 5011.9,
+   "durability": null,
+   "health_during": {
+    "n": 1,
+    "errors": 0,
+    "p50_ms": 5010.7,
+    "max_ms": 5010.7
+   },
+   "body_keys": [
+    "error"
+   ]
+  },
+  "grant_revoke": {
+   "status": 500,
+   "code": "internal_error",
+   "ms": 5063.2,
+   "durability": null,
+   "health_during": {
+    "n": 1,
+    "errors": 0,
+    "p50_ms": 5056.7,
+    "max_ms": 5056.7
+   },
+   "body_keys": [
+    "error"
+   ]
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 7.1,
+   "durability": null,
+   "health_during": {
+    "n": 1,
+    "errors": 0,
+    "p50_ms": 1.2,
+    "max_ms": 1.2
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 500,
+   "code": "internal_error",
+   "ms": 5106.4,
+   "durability": null,
+   "health_during": {
+    "n": 2,
+    "errors": 0,
+    "p50_ms": 5006.0,
+    "max_ms": 5006.0
+   },
+   "body_keys": [
+    "error"
+   ]
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": true,
+  "schedule_edit_name": "s4-after-unblock",
+  "revoked_grant_refresh_status": 400,
+  "login_new_password": 200,
+  "login_old_password": 401,
+  "counts": {
+   "users": 2,
+   "device_grants": 4,
+   "scheduled_tasks": 2,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s 5.46
+saved <repo>/spikes/s4/results/blocked-commit_hook-refuse-unblock-20261018T153236Z.json
+
+
+### step 9: blocked --mode response --block refuse --after unblock --hold 330 (exit 0, 348.6s)
+{
+ "routes": {
+  "login_refresh": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5028.9,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 3.5
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+   "refresh_token_returned": false
+  },
+  "login_browser_no_refresh": {
+   "status": 200,
+   "code": null,
+   "ms": 26.6,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "expires_in",
+    "token",
+    "user"
+   ]
+  },
+  "schedule_create": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5004.3,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 2.7
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "schedule_edit": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5007.8,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.3,
+    "max_ms": 1.8
+   },
+   "body_keys": [
+    "applied",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "grant_revoke": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5004.6,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 49,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 2.1
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "read_only_list": {
+   "status": 200,
+   "code": null,
+   "ms": 6.0,
+   "durability": null,
+   "health_during": {
+    "n": 0,
+    "errors": 0
+   },
+   "body_keys": [
+    "scheduled_tasks"
+   ]
+  },
+  "password_change": {
+   "status": 424,
+   "code": "durability_unconfirmed",
+   "ms": 5048.3,
+   "durability": "unconfirmed",
+   "health_during": {
+    "n": 50,
+    "errors": 0,
+    "p50_ms": 1.4,
+    "max_ms": 1.8
+   },
+   "body_keys": [
+    "applied",
+    "code",
+    "error"
+   ],
+   "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  }
+ },
+ "applied_locally": {
+  "login_refresh_grant_rows_delta": 1,
+  "schedule_create": true,
+  "schedule_edit": true,
+  "grant_revoke": true,
+  "password_change": true,
+  "old_access_token_after_password_change": 401
+ },
+ "after_restore": {
+  "schedule_create_present": true,
+  "schedule_edit_name": "s4-after-unblock",
+  "revoked_grant_refresh_status": 400,
+  "login_new_password": 200,
+  "login_old_password": 401,
+  "counts": {
+   "users": 2,
+   "device_grants": 4,
+   "scheduled_tasks": 2,
+   "hosts": 0,
+   "conversations": 0
+  }
+ }
+}
+catch_up_after_unblock_s 1.49
+saved <repo>/spikes/s4/results/blocked-response-refuse-unblock-20261018T153333Z.json
+
+
+### step 10: sigterm --signal TERM --runs 5 (exit 0, 80.7s)
+{"stop_s": 0.47, "exit": 0, "write_present_after_restore": true, "signal_done_after_ack_ms": 11.0}
+{"stop_s": 2.05, "exit": 0, "write_present_after_restore": true, "signal_done_after_ack_ms": 31.5}
+{"stop_s": 0.56, "exit": 0, "write_present_after_restore": true, "signal_done_after_ack_ms": 13.2}
+{"stop_s": 2.54, "exit": 0, "write_present_after_restore": true, "signal_done_after_ack_ms": 16.6}
+{"stop_s": 1.31, "exit": 0, "write_present_after_restore": true, "signal_done_after_ack_ms": 13.4}
+saved <repo>/spikes/s4/results/sigterm-term-none-20261018T153922Z.json
+
+
+### step 11: sigterm --signal KILL --runs 3 (exit 0, 72.2s)
+{"stop_s": 0.03, "exit": 137, "write_present_after_restore": false, "signal_done_after_ack_ms": 1990.1}
+{"stop_s": 0.03, "exit": 137, "write_present_after_restore": false, "signal_done_after_ack_ms": 7894.4}
+{"stop_s": 0.0, "exit": 137, "write_present_after_restore": false, "signal_done_after_ack_ms": 3602.5}
+saved <repo>/spikes/s4/results/sigterm-kill-none-20261018T154042Z.json
+
+
+### step 12: sigterm --signal TERM --block refuse --runs 2 (exit 0, 116.9s)
+{"stop_s": 33.63, "exit": 0, "write_present_after_restore": false, "signal_done_after_ack_ms": 12.6}
+{"stop_s": 32.18, "exit": 0, "write_present_after_restore": false, "signal_done_after_ack_ms": 17.4}
+saved <repo>/spikes/s4/results/sigterm-term-refuse-20261018T154155Z.json
+
+
+### step 13: sigterm --signal TERM --block blackhole --runs 1 (exit 0, 80.4s)
+{"stop_s": 30.96, "exit": 0, "write_present_after_restore": false, "signal_done_after_ack_ms": 24.7}
+saved <repo>/spikes/s4/results/sigterm-term-blackhole-20261018T154351Z.json
+
+
+### step 14: latency --n 40 --idle 120 (exit 0, 257.5s)
+{"scenario": "latency", "sync_interval": "1s", "rtt_ms": 0, "disk": "overlay", "barrier_timeout_s": 15, "litestream_sync_probe": {"slow": [], "phase_max_elapsed_s": {"sync/fsync_ltx": 2.385, "sync/rename_ltx": 4.452, "sync/verify": 0.0}}, "n": 40, "ok": 40, "failed": [], "ack_ms": {"p50": 222.3, "p95": 1184.7, "max": 4566.5}, "barrier_wait_ms": {"p50": 216.2, "p95": 1178.9, "max": 4560.4, "n": 40}, "idle_s": 120.0, "idle_requests": {"by_api": {"listobjectsv2": 20, "putobject": 2}, "class_a": 22, "class_b": 0}, "write_phase_requests": {"by_api": {"listobjectsv2": 21, "putobject": 45}, "class_a": 66, "class_b": 0}, "note": "MinIO counts every S3 call on the server, including the driver's own few; only Litestream talks to it during the idle and write phases.", "idle_class_a_per_month_est": 475200, "class_a_per_ack_est": 1.26}
+saved <repo>/spikes/s4/results/latency-si1s-rtt0-overlay-20261018T154512Z.json
+
+
+### step 15: latency --n 40 --idle 120 --tmpfs (exit 0, 256.6s)
+{"scenario": "latency", "sync_interval": "1s", "rtt_ms": 0, "disk": "tmpfs", "barrier_timeout_s": 15, "litestream_sync_probe": {"slow": [], "phase_max_elapsed_s": {}}, "n": 40, "ok": 40, "failed": [], "ack_ms": {"p50": 212.8, "p95": 926.3, "max": 1629.4}, "barrier_wait_ms": {"p50": 206.6, "p95": 919.1, "max": 1622.2, "n": 40}, "idle_s": 120.0, "idle_requests": {"by_api": {"putobject": 2, "listobjectsv2": 20}, "class_a": 22, "class_b": 0}, "write_phase_requests": {"by_api": {"putobject": 45, "listobjectsv2": 19}, "class_a": 64, "class_b": 0}, "note": "MinIO counts every S3 call on the server, including the driver's own few; only Litestream talks to it during the idle and write phases.", "idle_class_a_per_month_est": 475200, "class_a_per_ack_est": 1.23}
+saved <repo>/spikes/s4/results/latency-si1s-rtt0-tmpfs-20261018T154929Z.json
+
+
+### step 16: latency --n 40 --idle 120 --tmpfs --sync-interval 200ms (exit 0, 256.3s)
+{"scenario": "latency", "sync_interval": "200ms", "rtt_ms": 0, "disk": "tmpfs", "barrier_timeout_s": 15, "litestream_sync_probe": {"slow": [], "phase_max_elapsed_s": {"sync/verify": 0.0}}, "n": 40, "ok": 40, "failed": [], "ack_ms": {"p50": 113.6, "p95": 816.9, "max": 1218.5}, "barrier_wait_ms": {"p50": 106.6, "p95": 810.8, "max": 1212.4, "n": 40}, "idle_s": 120.0, "idle_requests": {"by_api": {"getobject": 2, "putobject": 3, "listobjectsv2": 21}, "class_a": 24, "class_b": 2}, "write_phase_requests": {"by_api": {"putobject": 45, "listobjectsv2": 19}, "class_a": 64, "class_b": 0}, "note": "MinIO counts every S3 call on the server, including the driver's own few; only Litestream talks to it during the idle and write phases.", "idle_class_a_per_month_est": 518400, "class_a_per_ack_est": 1.23}
+saved <repo>/spikes/s4/results/latency-si200ms-rtt0-tmpfs-20261018T155346Z.json
+
+
+### step 17: latency --n 40 --idle 120 --tmpfs --rtt 40 (exit 0, 259.6s)
+{"scenario": "latency", "sync_interval": "1s", "rtt_ms": 40, "disk": "tmpfs", "barrier_timeout_s": 15, "litestream_sync_probe": {"slow": [], "phase_max_elapsed_s": {}}, "n": 40, "ok": 40, "failed": [], "ack_ms": {"p50": 315.0, "p95": 1325.4, "max": 1831.4}, "barrier_wait_ms": {"p50": 308.8, "p95": 1318.8, "max": 1825.1, "n": 40}, "idle_s": 120.0, "idle_requests": {"by_api": {"putobject": 3, "getobject": 3, "listobjectsv2": 21}, "class_a": 24, "class_b": 3}, "write_phase_requests": {"by_api": {"putobject": 45, "listobjectsv2": 21}, "class_a": 66, "class_b": 0}, "note": "MinIO counts every S3 call on the server, including the driver's own few; only Litestream talks to it during the idle and write phases.", "idle_class_a_per_month_est": 518400, "class_a_per_ack_est": 1.23}
+saved <repo>/spikes/s4/results/latency-si1s-rtt40-tmpfs-20261018T155802Z.json
+
+
+### step 18: startup (exit 0, 291.6s)
+empty {"replica_path_used": "empty prefix", "healthy_after_s": 6.9, "exited": false, "exit_code": 0, "observed_s": 6.9, "login_with_env_password": 200, "marker_present": false}
+refuse {"replica_path_used": "populated", "healthy_after_s": null, "exited": true, "exit_code": 1, "observed_s": 124.0}
+blackhole {"replica_path_used": "populated", "healthy_after_s": null, "exited": false, "exit_code": 0, "observed_s": 150.0}
+saved <repo>/spikes/s4/results/startup-20261018T160222Z.json
+
+
+### step 19: restore --sizes 10 100 1000 --wan 40 50000 (exit 1, 144.6s)
+{"size_mb": 10, "replica_bytes": 7081731, "replica_layout": {"0000": {"files": 11, "bytes": 7080761}, "0001": {"files": 1, "bytes": 485}, "0009": {"files": 1, "bytes": 485}}}
+{"plain": 0.117, "replace": {"health_s": 5.009, "litestream_restore": {"events": ["attempt", "done"], "restore_s": 0.114}}, "wan": 1.618, "marker": true, "filler": true}
+{"size_mb": 100, "replica_bytes": 71378267, "replica_layout": {"0000": {"files": 18, "bytes": 71376741}, "0001": {"files": 1, "bytes": 763}, "0009": {"files": 1, "bytes": 763}}}
+{"plain": 1.288, "replace": {"health_s": 5.282, "litestream_restore": {"events": ["attempt", "done"], "restore_s": 1.178}}, "wan": 4.411, "marker": true, "filler": true}
+
+[stderr tail]
+.latency(int(lat), rate_kbps=int(rate))
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/spikes/s4/scripts/s4lib.py", line 197, in latency
+    httpx.post(f"{TOXI}/proxies/r2/toxics", timeout=5, json={
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "name": f"lat_{stream}", "type": "latency", "stream": stream,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        "attributes": {"latency": latency_ms // 2, "jitter": jitter_ms}}).raise_for_status()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_api.py", line 304, in post
+    return request(
+        "POST",
+    ...<13 lines>...
+        trust_env=trust_env,
+    )
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_api.py", line 109, in request
+    return client.request(
+           ~~~~~~~~~~~~~~^
+        method=method,
+        ^^^^^^^^^^^^^^
+    ...<8 lines>...
+        follow_redirects=follow_redirects,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+        request,
+    ...<2 lines>...
+        history=[],
+    )
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+        request,
+        follow_redirects=follow_redirects,
+        history=history,
+    )
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+         ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "~/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: timed out

@@ -1,0 +1,169 @@
+{
+  "after_replace_check": {
+    "check_s": 0.082,
+    "counts": {
+      "conversations": 0,
+      "device_grants": 1,
+      "hosts": 0,
+      "s4_filler": 22750,
+      "scheduled_tasks": 1,
+      "users": 2
+    },
+    "db_bytes": 105201664,
+    "dir_bytes": {
+      ".omnigent.db-litestream": 71302081,
+      "omnigent.db": 105201664,
+      "omnigent.db-shm": 32768,
+      "omnigent.db-wal": 4152
+    },
+    "filler": {
+      "body_bytes": 93184000,
+      "max_id": 22750,
+      "rows": 22750
+    },
+    "integrity": "ok",
+    "path": "/data/db/omnigent.db"
+  },
+  "catch_up": {
+    "caught_up": true,
+    "elapsed_s": 1.513,
+    "path": "/data/db/omnigent.db",
+    "replicated_txid": 18,
+    "status": "no_change",
+    "target_txid": 18,
+    "txid": 18
+  },
+  "catch_up_wall_s": 2.0,
+  "filler_matches": true,
+  "live_check": {
+    "check_s": 0.081,
+    "counts": {
+      "conversations": 0,
+      "device_grants": 1,
+      "hosts": 0,
+      "s4_filler": 22750,
+      "scheduled_tasks": 1,
+      "users": 2
+    },
+    "db_bytes": 105201664,
+    "dir_bytes": {
+      ".omnigent.db-litestream": 71376741,
+      "omnigent.db": 105201664,
+      "omnigent.db-shm": 131072,
+      "omnigent.db-wal": 64902392
+    },
+    "filler": {
+      "body_bytes": 93184000,
+      "max_id": 22750,
+      "rows": 22750
+    },
+    "integrity": "ok",
+    "path": "/data/db/omnigent.db"
+  },
+  "marker_ack": {
+    "code": null,
+    "durability": "confirmed",
+    "ms": 721.7,
+    "status": 200
+  },
+  "marker_present": true,
+  "plain_restore_local": {
+    "check": {
+      "check_s": 0.081,
+      "counts": {
+        "conversations": 0,
+        "device_grants": 1,
+        "hosts": 0,
+        "s4_filler": 22750,
+        "scheduled_tasks": 1,
+        "users": 2
+      },
+      "db_bytes": 105201664,
+      "dir_bytes": {
+        "omnigent.db": 105201664,
+        "omnigent.db-shm": 32768,
+        "omnigent.db-wal": 0
+      },
+      "filler": {
+        "body_bytes": 93184000,
+        "max_id": 22750,
+        "rows": 22750
+      },
+      "integrity": "ok",
+      "path": "/tmp/restore/omnigent.db"
+    },
+    "exit": 0,
+    "restore_s": 1.288,
+    "stderr_tail": []
+  },
+  "plain_restore_wan": {
+    "check": {
+      "check_s": 0.08,
+      "counts": {
+        "conversations": 0,
+        "device_grants": 1,
+        "hosts": 0,
+        "s4_filler": 22750,
+        "scheduled_tasks": 1,
+        "users": 2
+      },
+      "db_bytes": 105201664,
+      "dir_bytes": {
+        "omnigent.db": 105201664,
+        "omnigent.db-shm": 32768,
+        "omnigent.db-wal": 0
+      },
+      "filler": {
+        "body_bytes": 93184000,
+        "max_id": 22750,
+        "rows": 22750
+      },
+      "integrity": "ok",
+      "path": "/tmp/restore/omnigent.db"
+    },
+    "exit": 0,
+    "restore_s": 4.411,
+    "stderr_tail": []
+  },
+  "replace": {
+    "health_s": 5.282,
+    "litestream_restore": {
+      "events": [
+        "attempt",
+        "done"
+      ],
+      "restore_s": 1.178
+    }
+  },
+  "replica_bytes": 71378267,
+  "replica_layout": {
+    "0000": {
+      "bytes": 71376741,
+      "files": 18
+    },
+    "0001": {
+      "bytes": 763,
+      "files": 1
+    },
+    "0009": {
+      "bytes": 763,
+      "files": 1
+    }
+  },
+  "replica_path": "restore-100mb-20261018T160734Z",
+  "seed": {
+    "batches": 91,
+    "body_bytes": 93184000,
+    "db_bytes": 79851520,
+    "max_id": 22750,
+    "rows": 22750,
+    "seconds": 4.01,
+    "wal_bytes": 64902392
+  },
+  "seed_wall_s": 4.2,
+  "size_mb": 100,
+  "wan_profile": {
+    "rate_kBps": 50000,
+    "rtt_ms": 40
+  }
+}

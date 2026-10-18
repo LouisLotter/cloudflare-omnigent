@@ -1,0 +1,1390 @@
+{
+  "first_boot": {
+    "health_s": 5.28,
+    "healthy": true,
+    "up_cmd_s": 0.795
+  },
+  "mode": "response",
+  "replica_path": "routes-response-20261018T152312Z",
+  "rounds": [
+    {
+      "grant_revoke": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 121.4,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.322,
+          "healthy": true,
+          "kill_cmd_ms": 521.8,
+          "kill_done_after_ack_ms": 521.8,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/oauth/revoke",
+              "polls": 2,
+              "replicated_txid": 13,
+              "status": 200,
+              "t": 1792337023.8675,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 13,
+              "wait_ms": 110.8,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.154
+          },
+          "up_cmd_s": 0.577
+        },
+        "survived": true,
+        "verify": {
+          "refresh_after": {
+            "code": "invalid_grant",
+            "durability": null,
+            "ms": 78.8,
+            "status": 400
+          }
+        }
+      },
+      "login_refresh": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 2258.9,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.983,
+          "healthy": true,
+          "kill_cmd_ms": 1766.9,
+          "kill_done_after_ack_ms": 1766.9,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/login",
+              "polls": 23,
+              "replicated_txid": 6,
+              "status": 200,
+              "t": 1792337006.3831,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 6,
+              "wait_ms": 2232.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.044
+          },
+          "up_cmd_s": 0.337
+        },
+        "survived": true,
+        "verify": {
+          "refresh": {
+            "code": null,
+            "durability": null,
+            "ms": 80.5,
+            "status": 200
+          }
+        }
+      },
+      "password_change": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 157.0,
+          "status": 204
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.916,
+          "healthy": true,
+          "kill_cmd_ms": 270.9,
+          "kill_done_after_ack_ms": 270.9,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/users/me/password",
+              "polls": 2,
+              "replicated_txid": 16,
+              "status": 204,
+              "t": 1792337029.8699,
+              "tables": [
+                "scheduled_tasks",
+                "users"
+              ],
+              "target_txid": 16,
+              "wait_ms": 108.0,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.049
+          },
+          "up_cmd_s": 0.276
+        },
+        "survived": true,
+        "verify": {
+          "login_new": 200,
+          "login_old": 401,
+          "old_grant_refresh": 400
+        }
+      },
+      "round": 0,
+      "schedule_create": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 151.9,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.919,
+          "healthy": true,
+          "kill_cmd_ms": 269.4,
+          "kill_done_after_ack_ms": 269.4,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks",
+              "polls": 2,
+              "replicated_txid": 8,
+              "status": 200,
+              "t": 1792337012.6448,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 8,
+              "wait_ms": 144.9,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.038
+          },
+          "up_cmd_s": 0.276
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.2,
+            "status": 200
+          }
+        }
+      },
+      "schedule_edit": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 756.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.14,
+          "healthy": true,
+          "kill_cmd_ms": 251.1,
+          "kill_done_after_ack_ms": 251.1,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "PATCH",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks/d90ce390e1b04929a01ea9e227989dac",
+              "polls": 8,
+              "replicated_txid": 10,
+              "status": 200,
+              "t": 1792337018.3807,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 10,
+              "wait_ms": 750.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.109
+          },
+          "up_cmd_s": 0.39
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.3,
+            "status": 200
+          },
+          "name_matches": true,
+          "rrule_matches": true
+        }
+      }
+    },
+    {
+      "grant_revoke": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 116.0,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.913,
+          "healthy": true,
+          "kill_cmd_ms": 257.3,
+          "kill_done_after_ack_ms": 257.3,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/oauth/revoke",
+              "polls": 2,
+              "replicated_txid": 26,
+              "status": 200,
+              "t": 1792337051.8264,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 26,
+              "wait_ms": 110.3,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.047
+          },
+          "up_cmd_s": 0.264
+        },
+        "survived": true,
+        "verify": {
+          "refresh_after": {
+            "code": "invalid_grant",
+            "durability": null,
+            "ms": 82.4,
+            "status": 400
+          }
+        }
+      },
+      "login_refresh": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 142.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.925,
+          "healthy": true,
+          "kill_cmd_ms": 891.6,
+          "kill_done_after_ack_ms": 891.6,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/login",
+              "polls": 2,
+              "replicated_txid": 19,
+              "status": 200,
+              "t": 1792337035.3162,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 19,
+              "wait_ms": 116.0,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.052
+          },
+          "up_cmd_s": 0.281
+        },
+        "survived": true,
+        "verify": {
+          "refresh": {
+            "code": null,
+            "durability": null,
+            "ms": 81.2,
+            "status": 200
+          }
+        }
+      },
+      "password_change": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 158.8,
+          "status": 204
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.914,
+          "healthy": true,
+          "kill_cmd_ms": 263.1,
+          "kill_done_after_ack_ms": 263.1,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/users/me/password",
+              "polls": 2,
+              "replicated_txid": 29,
+              "status": 204,
+              "t": 1792337057.1049,
+              "tables": [
+                "scheduled_tasks",
+                "users"
+              ],
+              "target_txid": 29,
+              "wait_ms": 108.4,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.05
+          },
+          "up_cmd_s": 0.268
+        },
+        "survived": true,
+        "verify": {
+          "login_new": 200,
+          "login_old": 401,
+          "old_grant_refresh": 400
+        }
+      },
+      "round": 1,
+      "schedule_create": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 151.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.91,
+          "healthy": true,
+          "kill_cmd_ms": 248.0,
+          "kill_done_after_ack_ms": 248.0,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks",
+              "polls": 2,
+              "replicated_txid": 21,
+              "status": 200,
+              "t": 1792337040.5655,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 21,
+              "wait_ms": 145.4,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.05
+          },
+          "up_cmd_s": 0.267
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.3,
+            "status": 200
+          }
+        }
+      },
+      "schedule_edit": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 755.0,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.222,
+          "healthy": true,
+          "kill_cmd_ms": 253.6,
+          "kill_done_after_ack_ms": 253.6,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "PATCH",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks/d77b98ec5c584bc2ad78266b56f1c838",
+              "polls": 8,
+              "replicated_txid": 23,
+              "status": 200,
+              "t": 1792337046.269,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 23,
+              "wait_ms": 747.8,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.288
+          },
+          "up_cmd_s": 0.372
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.4,
+            "status": 200
+          },
+          "name_matches": true,
+          "rrule_matches": true
+        }
+      }
+    },
+    {
+      "grant_revoke": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 113.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.202,
+          "healthy": true,
+          "kill_cmd_ms": 754.3,
+          "kill_done_after_ack_ms": 754.3,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/oauth/revoke",
+              "polls": 2,
+              "replicated_txid": 39,
+              "status": 200,
+              "t": 1792337078.9957,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 39,
+              "wait_ms": 108.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.048
+          },
+          "up_cmd_s": 0.555
+        },
+        "survived": true,
+        "verify": {
+          "refresh_after": {
+            "code": "invalid_grant",
+            "durability": null,
+            "ms": 81.5,
+            "status": 400
+          }
+        }
+      },
+      "login_refresh": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 141.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.795,
+          "healthy": true,
+          "kill_cmd_ms": 247.5,
+          "kill_done_after_ack_ms": 247.5,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/login",
+              "polls": 2,
+              "replicated_txid": 32,
+              "status": 200,
+              "t": 1792337062.5273,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 32,
+              "wait_ms": 114.1,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.112
+          },
+          "up_cmd_s": 1.147
+        },
+        "survived": true,
+        "verify": {
+          "refresh": {
+            "code": null,
+            "durability": null,
+            "ms": 83.4,
+            "status": 200
+          }
+        }
+      },
+      "password_change": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 159.0,
+          "status": 204
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.916,
+          "healthy": true,
+          "kill_cmd_ms": 248.9,
+          "kill_done_after_ack_ms": 248.9,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/users/me/password",
+              "polls": 2,
+              "replicated_txid": 42,
+              "status": 204,
+              "t": 1792337085.0879,
+              "tables": [
+                "scheduled_tasks",
+                "users"
+              ],
+              "target_txid": 42,
+              "wait_ms": 107.9,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.05
+          },
+          "up_cmd_s": 0.27
+        },
+        "survived": true,
+        "verify": {
+          "login_new": 200,
+          "login_old": 401,
+          "old_grant_refresh": 400
+        }
+      },
+      "round": 2,
+      "schedule_create": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 152.2,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.915,
+          "healthy": true,
+          "kill_cmd_ms": 267.4,
+          "kill_done_after_ack_ms": 267.4,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks",
+              "polls": 2,
+              "replicated_txid": 34,
+              "status": 200,
+              "t": 1792337068.0212,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 34,
+              "wait_ms": 145.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.056
+          },
+          "up_cmd_s": 0.274
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.4,
+            "status": 200
+          }
+        }
+      },
+      "schedule_edit": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 757.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.915,
+          "healthy": true,
+          "kill_cmd_ms": 250.7,
+          "kill_done_after_ack_ms": 250.7,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "PATCH",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks/ccebaef854074b8da7a0c99e1abf4300",
+              "polls": 8,
+              "replicated_txid": 36,
+              "status": 200,
+              "t": 1792337073.7567,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 36,
+              "wait_ms": 751.6,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.055
+          },
+          "up_cmd_s": 0.273
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.3,
+            "status": 200
+          },
+          "name_matches": true,
+          "rrule_matches": true
+        }
+      }
+    },
+    {
+      "grant_revoke": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 113.9,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.216,
+          "healthy": true,
+          "kill_cmd_ms": 258.1,
+          "kill_done_after_ack_ms": 258.1,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/oauth/revoke",
+              "polls": 2,
+              "replicated_txid": 52,
+              "status": 200,
+              "t": 1792337106.6814,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 52,
+              "wait_ms": 108.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.259
+          },
+          "up_cmd_s": 0.365
+        },
+        "survived": true,
+        "verify": {
+          "refresh_after": {
+            "code": "invalid_grant",
+            "durability": null,
+            "ms": 77.4,
+            "status": 400
+          }
+        }
+      },
+      "login_refresh": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 135.5,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.921,
+          "healthy": true,
+          "kill_cmd_ms": 266.6,
+          "kill_done_after_ack_ms": 266.6,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/login",
+              "polls": 2,
+              "replicated_txid": 45,
+              "status": 200,
+              "t": 1792337090.4971,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 45,
+              "wait_ms": 108.5,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.053
+          },
+          "up_cmd_s": 0.277
+        },
+        "survived": true,
+        "verify": {
+          "refresh": {
+            "code": null,
+            "durability": null,
+            "ms": 81.9,
+            "status": 200
+          }
+        }
+      },
+      "password_change": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 159.2,
+          "status": 204
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.954,
+          "healthy": true,
+          "kill_cmd_ms": 791.0,
+          "kill_done_after_ack_ms": 791.1,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/users/me/password",
+              "polls": 2,
+              "replicated_txid": 55,
+              "status": 204,
+              "t": 1792337112.283,
+              "tables": [
+                "scheduled_tasks",
+                "users"
+              ],
+              "target_txid": 55,
+              "wait_ms": 109.9,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.066
+          },
+          "up_cmd_s": 0.315
+        },
+        "survived": true,
+        "verify": {
+          "login_new": 200,
+          "login_old": 401,
+          "old_grant_refresh": 400
+        }
+      },
+      "round": 3,
+      "schedule_create": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 160.8,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.914,
+          "healthy": true,
+          "kill_cmd_ms": 710.9,
+          "kill_done_after_ack_ms": 710.9,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks",
+              "polls": 2,
+              "replicated_txid": 47,
+              "status": 200,
+              "t": 1792337095.127,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 47,
+              "wait_ms": 153.6,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.059
+          },
+          "up_cmd_s": 0.274
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.5,
+            "status": 200
+          }
+        }
+      },
+      "schedule_edit": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 857.5,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.913,
+          "healthy": true,
+          "kill_cmd_ms": 282.1,
+          "kill_done_after_ack_ms": 282.1,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "PATCH",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks/17d450ff95c748a4a01cd08abe40f3fb",
+              "polls": 9,
+              "replicated_txid": 49,
+              "status": 200,
+              "t": 1792337101.4045,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 49,
+              "wait_ms": 851.3,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.052
+          },
+          "up_cmd_s": 0.27
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 7.2,
+            "status": 200
+          },
+          "name_matches": true,
+          "rrule_matches": true
+        }
+      }
+    },
+    {
+      "grant_revoke": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 923.0,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.376,
+          "healthy": true,
+          "kill_cmd_ms": 1519.7,
+          "kill_done_after_ack_ms": 1519.7,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/oauth/revoke",
+              "polls": 10,
+              "replicated_txid": 66,
+              "status": 200,
+              "t": 1792337137.0655,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 66,
+              "wait_ms": 918.3,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.386
+          },
+          "up_cmd_s": 0.418
+        },
+        "survived": true,
+        "verify": {
+          "refresh_after": {
+            "code": "invalid_grant",
+            "durability": null,
+            "ms": 81.5,
+            "status": 400
+          }
+        }
+      },
+      "login_refresh": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 134.7,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.952,
+          "healthy": true,
+          "kill_cmd_ms": 274.5,
+          "kill_done_after_ack_ms": 274.5,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/login",
+              "polls": 2,
+              "replicated_txid": 58,
+              "status": 200,
+              "t": 1792337118.2723,
+              "tables": [
+                "device_grants"
+              ],
+              "target_txid": 58,
+              "wait_ms": 107.8,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.069
+          },
+          "up_cmd_s": 0.31
+        },
+        "survived": true,
+        "verify": {
+          "refresh": {
+            "code": null,
+            "durability": null,
+            "ms": 79.4,
+            "status": 200
+          }
+        }
+      },
+      "password_change": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 163.5,
+          "status": 204
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 3.937,
+          "healthy": true,
+          "kill_cmd_ms": 430.2,
+          "kill_done_after_ack_ms": 430.2,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/auth/users/me/password",
+              "polls": 2,
+              "replicated_txid": 69,
+              "status": 204,
+              "t": 1792337144.1322,
+              "tables": [
+                "scheduled_tasks",
+                "users"
+              ],
+              "target_txid": 69,
+              "wait_ms": 114.0,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.059
+          },
+          "up_cmd_s": 0.288
+        },
+        "survived": true,
+        "verify": {
+          "login_new": 200,
+          "login_old": 401,
+          "old_grant_refresh": 400
+        }
+      },
+      "round": 4,
+      "schedule_create": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 153.6,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.366,
+          "healthy": true,
+          "kill_cmd_ms": 567.3,
+          "kill_done_after_ack_ms": 567.3,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "POST",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks",
+              "polls": 2,
+              "replicated_txid": 60,
+              "status": 200,
+              "t": 1792337122.9367,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 60,
+              "wait_ms": 147.0,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.071
+          },
+          "up_cmd_s": 0.722
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.3,
+            "status": 200
+          }
+        }
+      },
+      "schedule_edit": {
+        "ack": {
+          "code": null,
+          "durability": "confirmed",
+          "ms": 858.4,
+          "status": 200
+        },
+        "acked": true,
+        "restart": {
+          "health_s": 4.114,
+          "healthy": true,
+          "kill_cmd_ms": 372.3,
+          "kill_done_after_ack_ms": 372.3,
+          "killed_container_barrier": [
+            {
+              "commits": 1,
+              "event": "barrier",
+              "first_status": "synced_local",
+              "method": "PATCH",
+              "mode": "response",
+              "ok": true,
+              "path": "/v1/scheduled-tasks/c38cfc7389f5411b851f99908e0c391b",
+              "polls": 9,
+              "replicated_txid": 62,
+              "status": 200,
+              "t": 1792337129.586,
+              "tables": [
+                "scheduled_tasks"
+              ],
+              "target_txid": 62,
+              "wait_ms": 852.2,
+              "why": "request"
+            }
+          ],
+          "restore": {
+            "events": [
+              "attempt",
+              "done"
+            ],
+            "restore_s": 0.104
+          },
+          "up_cmd_s": 0.358
+        },
+        "survived": true,
+        "verify": {
+          "get": {
+            "code": null,
+            "durability": null,
+            "ms": 6.4,
+            "status": 200
+          },
+          "name_matches": true,
+          "rrule_matches": true
+        }
+      }
+    }
+  ],
+  "scenario": "routes",
+  "summary": {
+    "grant_revoke": {
+      "ack_ms_max": 923.0,
+      "ack_ms_p50": 116.0,
+      "acked": 5,
+      "survived_of_acked": 5
+    },
+    "login_refresh": {
+      "ack_ms_max": 2258.9,
+      "ack_ms_p50": 141.8,
+      "acked": 5,
+      "survived_of_acked": 5
+    },
+    "password_change": {
+      "ack_ms_max": 163.5,
+      "ack_ms_p50": 159.0,
+      "acked": 5,
+      "survived_of_acked": 5
+    },
+    "replace_to_health_s": {
+      "max": 4.8,
+      "n": 25,
+      "p50": 3.9
+    },
+    "schedule_create": {
+      "ack_ms_max": 160.8,
+      "ack_ms_p50": 152.2,
+      "acked": 5,
+      "survived_of_acked": 5
+    },
+    "schedule_edit": {
+      "ack_ms_max": 858.4,
+      "ack_ms_p50": 757.8,
+      "acked": 5,
+      "survived_of_acked": 5
+    }
+  },
+  "sync_interval": "1s"
+}

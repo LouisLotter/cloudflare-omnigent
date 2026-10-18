@@ -1,0 +1,269 @@
+{
+  "started": "20261018T151232Z",
+  "steps": [
+    {
+      "argv": [
+        "issue1540",
+        "--repeat",
+        "3",
+        "--soak-seconds",
+        "120"
+      ],
+      "exit": 0,
+      "seconds": 640.3,
+      "step": 0
+    },
+    {
+      "argv": [
+        "routes",
+        "--mode",
+        "response",
+        "--rounds",
+        "5"
+      ],
+      "exit": 0,
+      "seconds": 156.1,
+      "step": 1
+    },
+    {
+      "argv": [
+        "routes",
+        "--mode",
+        "off",
+        "--rounds",
+        "5"
+      ],
+      "exit": 0,
+      "seconds": 144.1,
+      "step": 2
+    },
+    {
+      "argv": [
+        "routes",
+        "--mode",
+        "commit_hook",
+        "--rounds",
+        "2"
+      ],
+      "exit": 0,
+      "seconds": 71.4,
+      "step": 3
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "response",
+        "--block",
+        "refuse",
+        "--after",
+        "unblock"
+      ],
+      "exit": 0,
+      "seconds": 50.1,
+      "step": 4
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "response",
+        "--block",
+        "blackhole",
+        "--after",
+        "unblock"
+      ],
+      "exit": 0,
+      "seconds": 47.8,
+      "step": 5
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "response",
+        "--block",
+        "refuse",
+        "--after",
+        "kill"
+      ],
+      "exit": 0,
+      "seconds": 46.9,
+      "step": 6
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "response",
+        "--block",
+        "blackhole",
+        "--after",
+        "kill"
+      ],
+      "exit": 0,
+      "seconds": 47.0,
+      "step": 7
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "commit_hook",
+        "--block",
+        "refuse",
+        "--after",
+        "unblock"
+      ],
+      "exit": 0,
+      "seconds": 57.4,
+      "step": 8
+    },
+    {
+      "argv": [
+        "blocked",
+        "--mode",
+        "response",
+        "--block",
+        "refuse",
+        "--after",
+        "unblock",
+        "--hold",
+        "330"
+      ],
+      "exit": 0,
+      "seconds": 348.6,
+      "step": 9
+    },
+    {
+      "argv": [
+        "sigterm",
+        "--signal",
+        "TERM",
+        "--runs",
+        "5"
+      ],
+      "exit": 0,
+      "seconds": 80.7,
+      "step": 10
+    },
+    {
+      "argv": [
+        "sigterm",
+        "--signal",
+        "KILL",
+        "--runs",
+        "3"
+      ],
+      "exit": 0,
+      "seconds": 72.2,
+      "step": 11
+    },
+    {
+      "argv": [
+        "sigterm",
+        "--signal",
+        "TERM",
+        "--block",
+        "refuse",
+        "--runs",
+        "2"
+      ],
+      "exit": 0,
+      "seconds": 116.9,
+      "step": 12
+    },
+    {
+      "argv": [
+        "sigterm",
+        "--signal",
+        "TERM",
+        "--block",
+        "blackhole",
+        "--runs",
+        "1"
+      ],
+      "exit": 0,
+      "seconds": 80.4,
+      "step": 13
+    },
+    {
+      "argv": [
+        "latency",
+        "--n",
+        "40",
+        "--idle",
+        "120"
+      ],
+      "exit": 0,
+      "seconds": 257.5,
+      "step": 14
+    },
+    {
+      "argv": [
+        "latency",
+        "--n",
+        "40",
+        "--idle",
+        "120",
+        "--tmpfs"
+      ],
+      "exit": 0,
+      "seconds": 256.6,
+      "step": 15
+    },
+    {
+      "argv": [
+        "latency",
+        "--n",
+        "40",
+        "--idle",
+        "120",
+        "--tmpfs",
+        "--sync-interval",
+        "200ms"
+      ],
+      "exit": 0,
+      "seconds": 256.3,
+      "step": 16
+    },
+    {
+      "argv": [
+        "latency",
+        "--n",
+        "40",
+        "--idle",
+        "120",
+        "--tmpfs",
+        "--rtt",
+        "40"
+      ],
+      "exit": 0,
+      "seconds": 259.6,
+      "step": 17
+    },
+    {
+      "argv": [
+        "startup"
+      ],
+      "exit": 0,
+      "seconds": 291.6,
+      "step": 18
+    },
+    {
+      "argv": [
+        "restore",
+        "--sizes",
+        "10",
+        "100",
+        "1000",
+        "--wan",
+        "40",
+        "50000"
+      ],
+      "exit": 1,
+      "seconds": 144.6,
+      "step": 19
+    }
+  ]
+}

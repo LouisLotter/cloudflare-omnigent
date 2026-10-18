@@ -1,0 +1,47 @@
+{
+  "block": "blackhole",
+  "first_boot": {
+    "health_s": 6.338,
+    "healthy": true,
+    "up_cmd_s": 0.283
+  },
+  "replica_path": "sigterm-term-blackhole-20261018T154351Z",
+  "runs": [
+    {
+      "ack": {
+        "code": null,
+        "durability": "not-checked",
+        "ms": 8.7,
+        "status": 200
+      },
+      "exit": 0,
+      "restart_health_s": 8.795,
+      "shutdown_log": [
+        "2026-10-18T15:43:57.596031036Z time=2026-10-18T15:43:57.595Z level=ERROR msg=\"sync error\" system=store db=omnigent.db error=\"database is locked (5) (SQLITE_BUSY)\" consecutive_errors=1 backoff=1s",
+        "2026-10-18T15:44:32.280065511Z time=2026-10-18T15:44:32.279Z level=INFO msg=\"signal received, litestream shutting down\" signal=terminated",
+        "2026-10-18T15:44:32.280075580Z time=2026-10-18T15:44:32.280Z level=INFO msg=\"sending signal to exec process\"",
+        "2026-10-18T15:44:32.280080910Z time=2026-10-18T15:44:32.280Z level=INFO msg=\"waiting for exec process to close\"",
+        "2026-10-18T15:45:02.436386589Z time=2026-10-18T15:45:02.436Z level=ERROR msg=\"shutdown sync failed after timeout\" system=store db=omnigent.db attempts=1 duration=30.001204447s error=\"write ltx file: s3: put object sigterm-term-blackhole-202",
+        "2026-10-18T15:45:02.514514918Z time=2026-10-18T15:45:02.514Z level=ERROR msg=\"failed to close database\" error=\"shutdown sync timeout after 1 attempts: write ltx file: s3: put object sigterm-term-blackhole-20261018T154351Z/0000/0000000000000",
+        "2026-10-18T15:45:02.514526730Z time=2026-10-18T15:45:02.514Z level=INFO msg=\"litestream shut down\"",
+        "2026-10-18T15:44:32.300389672Z INFO  [omnigent.server.shutdown_state] Server shutdown marked; suppressing runner disconnect reconciliation for 150s",
+        "2026-10-18T15:44:32.300434358Z INFO:     Shutting down",
+        "2026-10-18T15:44:32.400749264Z INFO:     Waiting for application shutdown.",
+        "2026-10-18T15:44:32.401192881Z INFO:     Application shutdown complete.",
+        "2026-10-18T15:44:32.401228639Z INFO:     Finished server process [25]"
+      ],
+      "signal_done_after_ack_ms": 24.7,
+      "stop_s": 30.96,
+      "write_present_after_restore": false
+    }
+  ],
+  "scenario": "sigterm",
+  "shutdown_sync_timeout": "30s",
+  "signal": "TERM",
+  "summary": {
+    "present": 0,
+    "runs": 1,
+    "stop_s_max": 30.96
+  },
+  "sync_interval": "30s"
+}

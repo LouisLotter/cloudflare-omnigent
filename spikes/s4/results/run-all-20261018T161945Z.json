@@ -1,0 +1,40 @@
+{
+  "started": "20261018T161945Z",
+  "steps": [
+    {
+      "argv": [
+        "issue1540",
+        "--repeat",
+        "3",
+        "--soak-seconds",
+        "120"
+      ],
+      "exit": 0,
+      "seconds": 700.9,
+      "step": 0
+    },
+    {
+      "argv": [
+        "postrestore",
+        "--size",
+        "1000"
+      ],
+      "exit": 0,
+      "seconds": 136.0,
+      "step": 21
+    },
+    {
+      "argv": [
+        "postrestore",
+        "--size",
+        "1000",
+        "--wan",
+        "40",
+        "50000"
+      ],
+      "exit": 0,
+      "seconds": 166.9,
+      "step": 22
+    }
+  ]
+}
