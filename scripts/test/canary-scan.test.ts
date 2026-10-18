@@ -19,6 +19,7 @@ import {
   main,
   maskCanary,
   parseCanaryValues,
+  paxRecords,
   redactCanaries,
   runSelfTest,
   SKIPPED_NAMES,
@@ -244,45 +245,138 @@ describe("detectFormat", () => {
 });
 
 describe("tarMembers", () => {
+  const names = (archive: Buffer) => {
+    const listing = tarMembers(archive);
+    return "error" in listing ? listing : listing.members.map((member) => member.name);
+  };
+
   it("lists regular files with their contents", () => {
     const archive = tarArchive([
       { name: "logs/a.log", data: Buffer.from("first") },
       { name: "b.bin", data: Buffer.alloc(700, 7) },
     ]);
-    expect(tarMembers(archive)?.map((member) => [member.name, member.data.length])).toEqual([
-      ["logs/a.log", 5],
-      ["b.bin", 700],
-    ]);
+    expect(tarMembers(archive)).toEqual({
+      members: [
+        { name: "logs/a.log", data: Buffer.from("first") },
+        { name: "b.bin", data: Buffer.alloc(700, 7) },
+      ],
+    });
   });
 
-  it("returns null for a bad checksum or a truncated member", () => {
+  it("reports a bad checksum, a truncated member or a size that is not octal as malformed", () => {
     const archive = tarArchive([{ name: "a.log", data: Buffer.alloc(600, 1) }]);
     const corrupted = Buffer.from(archive);
     corrupted[0] = 0x42;
-    expect(tarMembers(corrupted)).toBeNull();
-    expect(tarMembers(archive.subarray(0, 700))).toBeNull();
-  });
-
-  it("joins the ustar prefix to the name and skips entries that are not regular files", () => {
-    const archive = tarArchive([
-      { name: "logs", data: Buffer.alloc(0) },
-      { name: "a.log", data: Buffer.from("x") },
-    ]);
-    patchTarHeader(archive, 0, (header) => {
-      header[156] = 0x35; // a directory
-    });
-    patchTarHeader(archive, 512, (header) => {
-      header.write("var/lib", 345, "utf8");
-    });
-    expect(tarMembers(archive)?.map((member) => member.name)).toEqual(["var/lib/a.log"]);
-  });
-
-  it("returns null for a size that is not octal", () => {
-    const archive = tarArchive([{ name: "a.log", data: Buffer.from("x") }]);
-    patchTarHeader(archive, 0, (header) => {
+    const notOctal = Buffer.from(archive);
+    patchTarHeader(notOctal, 0, (header) => {
       header.write("9999", 124, "latin1");
     });
-    expect(tarMembers(archive)).toBeNull();
+    for (const broken of [corrupted, archive.subarray(0, 700), notOctal]) {
+      expect(tarMembers(broken)).toEqual({ error: "malformed tar archive" });
+    }
+  });
+
+  it("joins the POSIX prefix field to the name, but not in old GNU format", () => {
+    const posix = tarArchive([{ name: "a.log", data: Buffer.from("x") }]);
+    const gnu = tarArchive([{ name: "a.log", data: Buffer.from("x") }], "gnu");
+    for (const archive of [posix, gnu]) {
+      patchTarHeader(archive, 0, (header) => {
+        header.write("var/lib", 345, "utf8");
+      });
+    }
+    expect(names(posix)).toEqual(["var/lib/a.log"]);
+    expect(names(gnu)).toEqual(["a.log"]);
+  });
+
+  // The review's case: the header holds the first 100 bytes; the real name ends in .br.
+  const longName = `${"d/".repeat(60)}artifact`;
+
+  it("applies a GNU long name ('L') to the next entry only", () => {
+    const archive = tarArchive(
+      [
+        { name: "././@LongLink", type: "L", data: Buffer.from(`${longName}.br\u0000`) },
+        { name: longName, data: Buffer.from("x") },
+        { name: "short.log", data: Buffer.from("y") },
+      ],
+      "gnu",
+    );
+    expect(names(archive)).toEqual([`${longName}.br`, "short.log"]);
+  });
+
+  it("applies a pax path record to the next entry only", () => {
+    const archive = tarArchive([
+      { name: "PaxHeader", type: "x", data: paxRecords({ mtime: "1", path: `${longName}.br` }) },
+      { name: longName, data: Buffer.from("x") },
+      { name: "short.log", data: Buffer.from("y") },
+    ]);
+    expect(names(archive)).toEqual([`${longName}.br`, "short.log"]);
+  });
+
+  it("uses a pax size record as the next entry's length", () => {
+    const content = Buffer.alloc(1300, 7);
+    const archive = tarArchive([
+      { name: "PaxHeader", type: "x", data: paxRecords({ size: String(content.length) }) },
+      { name: "big.bin", data: content, headerSize: 0 },
+      { name: "after.log", data: Buffer.from("y") },
+    ]);
+    const listing = tarMembers(archive);
+    expect("error" in listing ? listing : listing.members.map((m) => m.data.length)).toEqual([
+      1300, 1,
+    ]);
+  });
+
+  it("skips a GNU long link name and entries without content, keeping names in step", () => {
+    const archive = tarArchive(
+      [
+        { name: "././@LongLink", type: "K", data: Buffer.from("some/link/target\u0000") },
+        { name: "link", type: "2", data: Buffer.alloc(0) },
+        { name: "././@LongLink", type: "L", data: Buffer.from(`${longName}.d\u0000`) },
+        { name: "dir", type: "5", data: Buffer.alloc(0) },
+        { name: "global", type: "g", data: paxRecords({ comment: "made by a test" }) },
+        { name: "a.log", data: Buffer.from("x") },
+      ],
+      "gnu",
+    );
+    expect(names(archive)).toEqual(["a.log"]);
+  });
+
+  it.each([
+    ["a GNU sparse file", [{ name: "s", type: "S", data: Buffer.alloc(10) }], '"S"'],
+    [
+      "a pax sparse file",
+      [
+        { name: "x", type: "x", data: paxRecords({ "GNU.sparse.map": "0,10" }) },
+        { name: "s", data: Buffer.alloc(10) },
+      ],
+      "tar archive holds a GNU sparse file",
+    ],
+    [
+      "a global pax path",
+      [
+        { name: "g", type: "g", data: paxRecords({ path: "renamed" }) },
+        { name: "a", data: Buffer.from("x") },
+      ],
+      "tar archive has a global pax path record",
+    ],
+    ["a multi-volume part", [{ name: "m", type: "M", data: Buffer.alloc(10) }], '"M"'],
+    ["an unknown type", [{ name: "q", type: "Q", data: Buffer.alloc(1) }], '"Q"'],
+  ] as const)("refuses %s rather than guessing", (_label, entries, message) => {
+    const listing = tarMembers(tarArchive(entries));
+    expect("error" in listing && listing.error).toContain(message);
+  });
+
+  it.each([
+    ["no length", Buffer.from("path=a\n")],
+    ["a length past the end", Buffer.from("99 path=a\n")],
+    ["no newline", Buffer.from("9 path=ab")],
+    ["no key", Buffer.from("6 =abc\n")],
+    ["a size that is not a number", paxRecords({ size: "12k" })],
+  ])("reports a pax header with %s as malformed", (_label, records) => {
+    const archive = tarArchive([
+      { name: "x", type: "x", data: records },
+      { name: "a", data: Buffer.from("x") },
+    ]);
+    expect(tarMembers(archive)).toEqual({ error: "malformed tar archive" });
   });
 });
 
@@ -409,6 +503,63 @@ describe("scanPaths", () => {
       [nested, ["gzip", "tar member app/server.log.gz", "gzip"], 0],
     ]);
     expect(result.problems).toEqual([]);
+  });
+
+  // The G0 review's finding: a brotli member named only by a GNU or pax long name was missed.
+  it.each([
+    ["GNU long name", "gnu" as const, "L"],
+    ["pax path", "ustar" as const, "x"],
+  ])("decodes a brotli member whose .br comes from a %s", async (_label, format, type) => {
+    const longName = `artifacts/${"x".repeat(110)}`;
+    const header =
+      type === "L"
+        ? { name: "././@LongLink", type, data: Buffer.from(`${longName}.br\u0000`) }
+        : { name: "PaxHeader", type, data: paxRecords({ path: `${longName}.br` }) };
+    const log = `boot\nlogin=${canary("LONGNAMEBR")}\n`.repeat(20);
+    const file = await put(
+      "long.tar",
+      tarArchive([header, { name: longName, data: brotliCompressSync(log) }], format),
+    );
+
+    const result = await scanPaths([file]);
+
+    expect(result.findings[0]).toMatchObject({
+      path: file,
+      layers: [`tar member ${longName}.br`, "brotli"],
+      line: 2,
+      column: 7,
+    });
+    expect(result.findings.every((finding) => finding.layers.includes("brotli"))).toBe(true);
+    expect(exitCodeFor(result)).toBe(EXIT_FOUND);
+  });
+
+  it("finds a canary in a member whose length comes from a pax size record", async () => {
+    const content = gzipSync(`log\n${canary("PAXSIZED01")}\n`);
+    const file = await put(
+      "sized.tar",
+      tarArchive([
+        { name: "PaxHeader", type: "x", data: paxRecords({ size: String(content.length) }) },
+        { name: "app.log.gz", data: content, headerSize: 0 },
+      ]),
+    );
+
+    const result = await scanPaths([file]);
+
+    expect(result.findings.map((finding) => finding.layers)).toEqual([
+      ["tar member app.log.gz", "gzip"],
+    ]);
+  });
+
+  it("reports an unsupported tar entry type as a problem", async () => {
+    const file = await put(
+      "sparse.tar",
+      tarArchive([{ name: "s", type: "S", data: Buffer.alloc(9) }]),
+    );
+
+    const result = await scanPaths([file]);
+
+    expect(result.problems).toEqual([{ path: file, message: 'unsupported tar entry type "S"' }]);
+    expect(exitCodeFor(result)).toBe(EXIT_INCOMPLETE);
   });
 
   it("masks canaries in archive member names", async () => {
@@ -704,6 +855,38 @@ describe("command line", () => {
       EXIT_FOUND,
     ],
     ["a gzip file with a canary", () => gzipSync(`log\n${canary("CLIGZIP001")}\n`), EXIT_FOUND],
+    [
+      "a GNU long-name tar with a brotli canary",
+      () =>
+        tarArchive(
+          [
+            { name: "././@LongLink", type: "L", data: Buffer.from(`${"g".repeat(120)}.br\u0000`) },
+            {
+              name: "g".repeat(120),
+              data: brotliCompressSync(`${canary("CLIGNULONG")}\n`.repeat(20)),
+            },
+          ],
+          "gnu",
+        ),
+      EXIT_FOUND,
+    ],
+    [
+      "a pax long-name tar with a brotli canary",
+      () =>
+        tarArchive([
+          { name: "PaxHeader", type: "x", data: paxRecords({ path: `${"p".repeat(120)}.br` }) },
+          {
+            name: "p".repeat(120),
+            data: brotliCompressSync(`${canary("CLIPAXLONG")}\n`.repeat(20)),
+          },
+        ]),
+      EXIT_FOUND,
+    ],
+    [
+      "a tar with a sparse entry",
+      () => tarArchive([{ name: "s", type: "S", data: Buffer.alloc(9) }]),
+      EXIT_INCOMPLETE,
+    ],
     [
       "a zip artefact",
       () => zipArchive("server.log", Buffer.from(`${canary("CLIZIPPED1")}\n`.repeat(20))),
