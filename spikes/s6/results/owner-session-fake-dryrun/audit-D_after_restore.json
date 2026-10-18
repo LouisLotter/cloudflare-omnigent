@@ -1,0 +1,61 @@
+{
+  "label": "D after restore",
+  "at": "2026-10-18T16:10:39.445+00:00",
+  "home": "~",
+  "files": [
+    {
+      "path": ".claude/.credentials.json",
+      "exists": false
+    },
+    {
+      "path": ".claude/.device-keys.json",
+      "exists": false
+    },
+    {
+      "path": ".codex/auth.json",
+      "exists": false
+    },
+    {
+      "path": ".omnigent/auth_tokens.json",
+      "exists": false
+    },
+    {
+      "path": ".claude.json",
+      "exists": true,
+      "type": "file",
+      "mode": "0600",
+      "size": 92,
+      "uid": 0,
+      "inode": 8880198,
+      "nlink": 1,
+      "mtime": "2026-10-18T16:10:39.250+00:00",
+      "parse": "json",
+      "keys": [
+        {
+          "key": "$",
+          "type": "object",
+          "keys": ["hasCompletedOnboarding", "oauthAccount"]
+        },
+        {
+          "key": "hasCompletedOnboarding",
+          "type": "bool"
+        },
+        {
+          "key": "oauthAccount",
+          "type": "object",
+          "keys": 1
+        }
+      ]
+    },
+    {
+      "path": ".claude/.device-keys.json",
+      "exists": false
+    },
+    {
+      "path": ".codex/.credentials.json",
+      "exists": false
+    }
+  ],
+  "inventory": [],
+  "inventory_truncated": false
+}

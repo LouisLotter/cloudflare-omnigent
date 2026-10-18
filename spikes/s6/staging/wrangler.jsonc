@@ -1,0 +1,27 @@
+// Spike S6 staging deployment: one cloud computer with the pinned CLIs, a terminal for the
+// owner's sign-in session, and checkpoints kept in the Durable Object until R2 is enabled.
+//
+//   pnpm stg deploy --suffix s6-creds --owner S6 --config spikes/s6/staging/wrangler.jsonc --days 2
+//   pnpm stg teardown --suffix s6-creds
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s6-creds",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "durable_objects": { "bindings": [{ "name": "COMPUTER", "class_name": "S6Computer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S6Computer"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-s6-creds-pc",
+      "class_name": "S6Computer",
+      "image": "../image/Dockerfile",
+      "image_build_context": "..",
+      "image_vars": { "S6_SERVE": "1" },
+      "max_instances": 1,
+      "instance_type": "standard-1"
+    }
+  ]
+}
