@@ -19,6 +19,7 @@ const TERM_PORT = 7681;
 const CLI = "/opt/s6/credsync/cli.py";
 const OUT = "/var/lib/s6/out";
 const FAKE_PROVIDER = "/tmp/s6-selftest-provider.json";
+const LOGIN_FILES = [".claude/.credentials.json", ".codex/auth.json", ".omnigent/auth_tokens.json"];
 // Headers that identify the owner to Access; they never go into the computer.
 const STRIP_TO_CONTAINER = [
   "cookie",
@@ -202,11 +203,15 @@ export class S6Computer extends DurableObject {
   }
 
   // True when the latest credential checkpoint records every declared file as absent.
+  // True when the latest credential checkpoint records every login file as absent. (A device
+  // key that survives a logout is reported in the state, but is not a login.)
   signedOutInCheckpoint(computer = PC) {
     const ptr = this.current(computer, "credential");
     if (!ptr) return true;
     const manifest = JSON.parse(dec.decode(this.getBlob(ptr.manifest_key)));
-    return manifest.files.every((f) => f.state === "absent");
+    return manifest.files
+      .filter((f) => LOGIN_FILES.includes(f.path))
+      .every((f) => f.state === "absent");
   }
 
   async publishPayload(kind, payload, computer, generation) {
@@ -351,12 +356,21 @@ export class S6Computer extends DurableObject {
   }
 
   s6(args, opts = {}) {
+    if (opts.fake && opts.fail === "logout" && args[0].endsWith("-logout")) {
+      return Promise.resolve({
+        exit: 1,
+        stdout: '{"injected_failure": "logout"}',
+        stderr_bytes: 0,
+      });
+    }
     return this.run(["bash", "/opt/s6/owner/inner.sh", ...args], opts);
   }
 
   async capture(kind, opts = {}) {
     const computer = opts.computer ?? PC;
     const generation = this.generation();
+    if (opts.fake && opts.fail === "capture")
+      return { error: "injected failure", published: false };
     if (kind === "credential" && this.restoredGeneration(computer) !== generation) {
       return { error: "refused: this computer's restore has not finished", published: false };
     }
@@ -412,21 +426,27 @@ export class S6Computer extends DurableObject {
     if (this.restoredGeneration(computer) !== generation) {
       throw new Error("refused to watch: this computer's restore has not finished");
     }
-    const p = await this.ctx.container.exec(
-      [
-        "python3",
-        "-I",
-        CLI,
-        "watch-export",
-        "--home",
-        opts.home ?? "/root",
-        "--settle-ms",
-        "500",
-        "--log",
-        `${OUT}/watch-${computer}-gen${generation}.jsonl`,
-      ],
-      { env: this.execEnv(opts), cwd: "/root", stdin: "pipe", stdout: "pipe", stderr: "ignore" },
-    );
+    const watchCmd = [
+      "python3",
+      "-I",
+      CLI,
+      "watch-export",
+      "--home",
+      opts.home ?? "/root",
+      "--settle-ms",
+      "500",
+      "--log",
+      `${OUT}/watch-${computer}-gen${generation}.jsonl`,
+    ];
+    // Dry runs only: a watcher that exits at once, to test that its absence stops the phase.
+    const cmd = opts.fake && opts.fail === "watch" ? ["python3", "-c", "pass"] : watchCmd;
+    const p = await this.ctx.container.exec(cmd, {
+      env: this.execEnv(opts),
+      cwd: "/root",
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
     const writer = p.stdin.getWriter();
     const reader = p.stdout.pipeThrough(new TextDecoderStream()).getReader();
     let ready;
@@ -458,16 +478,38 @@ export class S6Computer extends DurableObject {
         }
       }
     })();
-    // The watcher records the current files as published before anything else may run.
-    await Promise.race([readyPromise, sleep(15000)]);
+    // The watcher records the current files as published before anything else may run. It must
+    // say so; a timeout, or an end before that, fails the step.
+    let ended = false;
+    const loopDone = loop.then(
+      () => {
+        ended = true;
+        return "ended";
+      },
+      () => {
+        ended = true;
+        return "ended";
+      },
+    );
+    const first = await Promise.race([
+      readyPromise.then(() => "ready"),
+      loopDone,
+      sleep(15000).then(() => "timeout"),
+    ]);
+    if (first !== "ready") {
+      p.kill(9);
+      throw new Error(`the credential watcher did not start (${first})`);
+    }
     return {
       stop: async () => {
         await sleep(1500); // let a pending change settle and publish first
+        const diedEarly = ended;
         try {
           await writer.close();
         } catch {}
-        await Promise.race([loop.catch(() => {}), sleep(5000)]);
+        await Promise.race([loopDone, sleep(5000)]);
         p.kill(15);
+        return { watcher_ran_to_stop: !diedEarly };
       },
     };
   }
@@ -507,15 +549,22 @@ export class S6Computer extends DurableObject {
       );
     // End of a phase with a running, restored computer: nothing un-checkpointed is left behind.
     const finish = async (w) => {
-      if (w) await w.stop();
+      if (w)
+        await step(
+          "stop watcher",
+          () => w.stop(),
+          (r) => r.watcher_ran_to_stop,
+        );
       await watchSummary();
       await step("final credential checkpoint", () => this.capture("credential", o), published);
     };
     const stopAndStart = async (letter) => {
       if (this.ctx.container.running) {
         if (this.restoredGeneration(PC) === this.generation()) {
-          await step("final credential checkpoint of the previous computer", () =>
-            this.capture("credential", o),
+          await step(
+            "final credential checkpoint of the previous computer",
+            () => this.capture("credential", o),
+            published,
           );
         }
         await step(
@@ -732,14 +781,47 @@ export class S6Computer extends DurableObject {
         break;
       case "recover": {
         // Sign out from whatever state the session stopped in, and verify it in a fresh computer.
+        // A running computer may hold a login newer than any checkpoint: sign out there first,
+        // and checkpoint the sign-out before the computer is destroyed.
+        if (this.ctx.container.running) {
+          await step(
+            "claude auth logout (running computer)",
+            () => this.s6(["claude-logout"], o),
+            exit0,
+          );
+          await step("codex logout (running computer)", () => this.s6(["codex-logout"], o), exit0);
+          await step("signed out here", () => this.s6(["signed-out-check"], o), exit0);
+          if (this.restoredGeneration(PC) === this.generation()) {
+            await step(
+              "credential checkpoint of the sign-out",
+              () => this.capture("credential", o),
+              published,
+            );
+          }
+          await step(
+            "stop computer",
+            () => this.stop(),
+            (r) => r.stopped,
+          );
+        }
         await stopAndStart("R1");
         const out = await this.s6(["signed-out-check"], o);
-        await emit({ phase: name, step: "signed-out check", ...out });
+        await emit({ phase: name, step: "signed-out check after restore", ...out });
         if (out.exit !== 0) {
-          await step("claude auth logout", () => this.s6(["claude-logout"], o));
-          await step("codex logout", () => this.s6(["codex-logout"], o));
+          await step("claude auth logout", () => this.s6(["claude-logout"], o), exit0);
+          await step("codex logout", () => this.s6(["codex-logout"], o), exit0);
+          await step("signed out here", () => this.s6(["signed-out-check"], o), exit0);
+          await step(
+            "credential checkpoint of the sign-out",
+            () => this.capture("credential", o),
+            published,
+          );
         }
-        await step("credential checkpoint", () => this.capture("credential", o), published);
+        await step(
+          "stop computer",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
         await stopAndStart("R2");
         await step(
           "verified signed out in a fresh computer",
@@ -830,6 +912,7 @@ export class S6Computer extends DurableObject {
       const name = url.searchParams.get("name");
       // fake=1: the same phases with the fake CLIs first on PATH (a dry run, no real accounts).
       const opts = url.searchParams.get("fake") === "1" ? { fake: true } : {};
+      if (opts.fake && url.searchParams.get("fail")) opts.fail = url.searchParams.get("fail");
       this.busy = name;
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();

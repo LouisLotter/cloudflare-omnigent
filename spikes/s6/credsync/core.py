@@ -14,6 +14,7 @@ Rules this module follows, from the design ("Checkpoints", "Which credentials wi
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import fcntl
 import hashlib
@@ -249,19 +250,34 @@ def take_credential_snapshot(home: Path, declared: Iterable[DeclaredFile] = DECL
     The copy is taken under an exclusive lock that also hands out its order number, so the order
     numbers of all copies on one computer follow the order in which the files were read.
     """
-    state = state_dir or default_state_dir()
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(state / "snapshot.lock", "a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        counter = state / "snapshot.counter"
-        try:
-            order = int(counter.read_text() or "0") + 1
-        except FileNotFoundError:
-            order = 1
+    with _snapshot_lock(state_dir) as counter:
+        order = _read_counter(counter) + 1
         counter.write_text(str(order))
         snap = _read_declared(home, declared)
         snap.order = order
         return snap
+
+
+@contextlib.contextmanager
+def _snapshot_lock(state_dir: Path | None):
+    state = state_dir or default_state_dir()
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(state / "snapshot.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield state / "snapshot.counter"
+
+
+def _read_counter(counter: Path) -> int:
+    try:
+        return int(counter.read_text() or "0")
+    except FileNotFoundError:
+        return 0
+
+
+def current_snapshot_order(state_dir: Path | None = None) -> int:
+    """The order number of the latest copy taken on this computer (0 if none)."""
+    with _snapshot_lock(state_dir) as counter:
+        return _read_counter(counter)
 
 
 def _read_declared(home: Path, declared: Iterable[DeclaredFile]) -> CredentialSnapshot:

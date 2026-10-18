@@ -47,6 +47,12 @@ ask() { # $1 name; rest: command. Prints exit code and whether the reply contain
   [ "$rc" = 0 ] && [ "$ok" = true ]
 }
 
+# Dry runs only: a file /ctl/fail-always-<action> makes that action fail, to test recovery.
+if [ "$FAKE" = 1 ] && [ -e "/ctl/fail-always-${1:-}" ]; then
+  echo "{\"injected_failure\": \"${1:-}\"}"
+  exit 1
+fi
+
 case "${1:-}" in
   start-generation)
     $CS start --controller "$CTL" --computer "$COMPUTER" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["generation"])' > /ctl/generation
@@ -93,13 +99,27 @@ EOF
   restore)
     $CS restore "${COMMON[@]}" --staging /var/lib/s6/cred-staging 2>/dev/null | tee -a "$OUT/restores.jsonl" ;;
   watch-start)
-    nohup $CS watch "${COMMON[@]}" --settle-ms 500 --poll-ms 50 --log "$OUT/watch-gen$GEN.jsonl" > /dev/null 2>&1 &
+    # Ready only once the watcher has recorded the current files and said so in its log.
+    log="$OUT/watch-gen$GEN.jsonl"
+    before=$(grep -c '"event": "watching"' "$log" 2>/dev/null || true)
+    nohup $CS watch "${COMMON[@]}" --settle-ms 500 --poll-ms 50 --log "$log" > /dev/null 2>&1 &
     echo $! > /var/lib/s6/watch.pid
-    sleep 1  # the watcher records the current files as published before anything else runs
-    kill -0 "$(cat /var/lib/s6/watch.pid)" 2>/dev/null && echo "watcher started" ;;
+    for _ in $(seq 1 150); do
+      now=$(grep -c '"event": "watching"' "$log" 2>/dev/null || true)
+      if [ "${now:-0}" -gt "${before:-0}" ] && kill -0 "$(cat /var/lib/s6/watch.pid)" 2>/dev/null; then
+        echo "watcher ready"; exit 0
+      fi
+      kill -0 "$(cat /var/lib/s6/watch.pid)" 2>/dev/null || break
+      sleep 0.1
+    done
+    echo "watcher failed to start"; exit 1 ;;
   watch-stop)
+    pid=$(cat /var/lib/s6/watch.pid 2>/dev/null)
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then echo "watcher was not running"; exit 1; fi
     sleep 1.5  # let a pending change settle and publish first
-    kill "$(cat /var/lib/s6/watch.pid 2>/dev/null)" 2>/dev/null; echo "watcher stopped" ;;
+    kill "$pid"; for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    rm -f /var/lib/s6/watch.pid
+    echo "watcher stopped" ;;
   claude-status)
     s=$(claude_logged_in); echo "{\"claude_logged_in\": \"$s\"}" | tee -a "$OUT/status.jsonl"; [ "$s" != unknown ] ;;
   codex-status)

@@ -134,39 +134,62 @@ def stop_computer(name: str, final_capture: bool = True) -> None:
         raise StepFailed("container still present")
 
 
+def is_running(name: str) -> bool:
+    return sh("docker", "inspect", "-f", "{{.State.Running}}", name, check=False) == "true"
+
+
 def cleanup() -> dict:
-    """Sign out and verify in a fresh computer whenever a login may remain, then remove all."""
+    """Sign out, and verify it in a fresh computer, before anything that could retry is removed.
+
+    Recovery material (MinIO, the controller data in /dev/shm, a computer that is still signed in)
+    is removed only once the sign-out is verified. Otherwise it is kept, the cause is reported,
+    and `--cleanup` can be run again.
+    """
     say("Cleanup: sign out, verify in a fresh computer, remove everything")
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not abandon the sign-out
     outcome: dict = {"signed_out_verified": None}
     s3 = json.loads((SHM / "s3.json").read_text()) if (SHM / "s3.json").exists() else None
-    for name in computers():  # a computer still running: checkpoint, sign out, checkpoint
-        inner(name, "watch-stop", must=False)
-        inner(name, "capture", "credential", must=False)
-        inner(name, "claude-logout", must=False)
-        inner(name, "codex-logout", must=False)
-        inner(name, "capture", "credential", must=False)
-        sh("docker", "rm", "-f", name, check=False)
-    wait_until_no_computer()
-    if s3 and sh("docker", "ps", "-q", "--filter", f"name=^{MINIO}$", check=False):
-        try:
+    minio_up = bool(sh("docker", "ps", "-q", "--filter", f"name=^{MINIO}$", check=False))
+    try:
+        # 1. A computer that still runs may hold a login newer than any checkpoint: sign out in it,
+        #    check, and checkpoint the sign-out. If any of that fails, keep the computer.
+        for name in computers():
+            if is_running(name):
+                inner(name, "watch-stop", must=False)
+                inner(name, "claude-logout")
+                inner(name, "codex-logout")
+                inner(name, "signed-out-check")
+                if minio_up:
+                    inner(name, "capture", "credential")
+            sh("docker", "rm", "-f", name, check=False)
+        if not wait_until_no_computer():
+            raise StepFailed("a computer could not be removed")
+        # 2. Restore the latest checkpoints into a fresh computer; sign out there if needed.
+        if s3 and minio_up:
             r = start_computer("recover", s3)
             rc, _ = inner(r, "signed-out-check", must=False)
             if rc != 0:
-                inner(r, "claude-logout", must=False)
-                inner(r, "codex-logout", must=False)
-            stop_computer(r)
+                inner(r, "claude-logout")
+                inner(r, "codex-logout")
+                inner(r, "signed-out-check")
+                inner(r, "capture", "credential")
+            stop_computer(r, final_capture=False)
+            # 3. Verify in another fresh computer.
             v = start_computer("verify", s3)
             rc, _ = inner(v, "signed-out-check", must=False)
-            outcome["signed_out_verified"] = rc == 0
             stop_computer(v, final_capture=False)
-        except StepFailed as e:
-            outcome["recovery_error"] = str(e)
-    for name in computers():
-        sh("docker", "rm", "-f", name, check=False)
-    sh("docker", "rm", "-f", MINIO, check=False)
-    sh("docker", "network", "rm", NET, check=False)
-    shutil.rmtree(SHM, ignore_errors=True)
+            outcome["signed_out_verified"] = rc == 0
+        else:
+            outcome["signed_out_verified"] = True  # no checkpoint store: nothing was ever saved
+            outcome["note"] = "no checkpoint store was running"
+    except StepFailed as e:
+        outcome["recovery_error"] = str(e)
+    if outcome["signed_out_verified"] is True:
+        for name in computers():
+            sh("docker", "rm", "-f", name, check=False)
+        sh("docker", "rm", "-f", MINIO, check=False)
+        sh("docker", "network", "rm", NET, check=False)
+        shutil.rmtree(SHM, ignore_errors=True)
     if OUT.exists():  # results were written by root in the container; hand them back
         sh("docker", "run", "--rm", "-v", f"{OUT}:/out", "--entrypoint", "chown", IMAGE, "-R",
            f"{os.getuid()}:{os.getgid()}", "/out", check=False)
@@ -178,9 +201,11 @@ def cleanup() -> dict:
     }
     print(f"   cleanup: {outcome}")
     record("cleanup", **outcome)
-    if outcome["signed_out_verified"] is False:
-        print("\n!!! The sign-out could not be verified. Sign out of this computer's sessions in your Claude\n"
-              "!!! and ChatGPT account settings, and tell the lead.")
+    if outcome["signed_out_verified"] is not True:
+        print("\n!!! The sign-out is NOT verified. The recovery material is kept (MinIO, /dev/shm/cfo-s6-owner,\n"
+              "!!! and any computer still signed in). Fix the cause and run this again with --cleanup.\n"
+              "!!! If that cannot verify it either, sign out of this computer's sessions in your Claude and\n"
+              "!!! ChatGPT account settings, and tell the lead.")
     return outcome
 
 
@@ -268,13 +293,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cleanup", action="store_true")
     ap.add_argument("--fake", action="store_true", help="dry run with the fake CLIs")
+    ap.add_argument("--inject-failure", metavar="ACTION",
+                    help="dry runs only: make this inner.sh action always fail, to test recovery")
     a = ap.parse_args()
+    if a.inject_failure and not a.fake:
+        raise SystemExit("--inject-failure is for dry runs (--fake) only")
     global FAKE, OUT
     if a.fake:
         FAKE = True
         OUT = S6 / "results" / "owner-session-fake-dryrun"
     if a.cleanup:
-        return 0 if cleanup().get("signed_out_verified") is not False else 1
+        return 0 if cleanup().get("signed_out_verified") is True else 1
     if computers():
         raise SystemExit("a previous session is still present; run with --cleanup first")
 
@@ -292,6 +321,9 @@ def main() -> int:
     fd = os.open(SHM / "s3.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.write(fd, json.dumps(s3).encode())
     os.close(fd)
+    if a.inject_failure:
+        (SHM / f"fail-always-{a.inject_failure}").write_text("injected\n")
+        record("failure-injected", action=a.inject_failure)
     ok = False
     try:
         sh("docker", "network", "create", NET)
@@ -309,7 +341,7 @@ def main() -> int:
         outcome = cleanup()
     record("session-end", completed=ok, signed_out_verified=outcome.get("signed_out_verified"))
     say(f"{'Done' if ok else 'Stopped'}. Masked results: {OUT}")
-    return 0 if ok and outcome.get("signed_out_verified") is not False else 1
+    return 0 if ok and outcome.get("signed_out_verified") is True else 1
 
 
 if __name__ == "__main__":

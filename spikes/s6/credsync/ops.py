@@ -17,6 +17,7 @@ from core import (
     RefusedFile,
     UnstableRead,
     credential_manifest,
+    current_snapshot_order,
     default_state_dir,
     install_workspace,
     pack_tar,
@@ -56,16 +57,30 @@ def _restore_marker(state_dir: Path | None = None) -> Path:
 
 
 def mark_restored(comp: Computer, state_dir: Path | None = None) -> None:
+    """Record that this generation's restore is done, and the copy order at that moment.
+
+    Only copies taken after this point (a higher order number) may be published, so a copy taken
+    before or during the restore can never be published, even if it is published afterwards.
+    """
     marker = _restore_marker(state_dir)
     marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    marker.write_text(f"{comp.computer_id}:{comp.generation}")
+    order = current_snapshot_order(state_dir)
+    marker.write_text(f"{comp.computer_id}:{comp.generation}:{order}")
+
+
+def restore_order(comp: Computer, state_dir: Path | None = None) -> int | None:
+    """The copy order at this generation's restore, or None if the restore is not done."""
+    try:
+        computer_id, generation, order = _restore_marker(state_dir).read_text().rsplit(":", 2)
+    except (FileNotFoundError, ValueError):
+        return None
+    if computer_id != comp.computer_id or generation != str(comp.generation):
+        return None
+    return int(order)
 
 
 def restore_done(comp: Computer, state_dir: Path | None = None) -> bool:
-    try:
-        return _restore_marker(state_dir).read_text() == f"{comp.computer_id}:{comp.generation}"
-    except FileNotFoundError:
-        return False
+    return restore_order(comp, state_dir) is not None
 
 
 def publish_credential_snapshot(comp: Computer, snap: CredentialSnapshot, *, timings: dict | None = None,
@@ -76,8 +91,12 @@ def publish_credential_snapshot(comp: Computer, snap: CredentialSnapshot, *, tim
     Refuses until this generation's restore has finished: a copy of the not-yet-restored home
     would publish tombstones and delete the logins.
     """
-    if require_restore and not restore_done(comp):
-        raise RestoreNotDone(f"generation {comp.generation} has not finished its restore")
+    if require_restore:
+        restored_at = restore_order(comp)
+        if restored_at is None:
+            raise RestoreNotDone(f"generation {comp.generation} has not finished its restore")
+        if snap.order <= restored_at:
+            raise RestoreNotDone("this copy was taken before the restore finished")
     seq = comp.controller.next_seq(comp.computer_id, CRED_KIND, comp.generation)
     entries = {r.path: (snap.blobs[r.path], int(r.mode, 8)) for r in snap.records if r.state == "present"}
     archive = pack_tar(entries)
@@ -98,6 +117,8 @@ def publish_credential_snapshot(comp: Computer, snap: CredentialSnapshot, *, tim
 
 def capture_credentials(comp: Computer, home: Path, retries: int = 20,
                         require_restore: bool = True) -> tuple[int, bool, CredentialSnapshot]:
+    if require_restore and not restore_done(comp):  # checked before the copy, and again at publish
+        raise RestoreNotDone(f"generation {comp.generation} has not finished its restore")
     for _ in range(retries):
         try:
             snap = take_credential_snapshot(home)

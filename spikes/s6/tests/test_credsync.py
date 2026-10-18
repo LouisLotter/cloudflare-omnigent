@@ -388,6 +388,20 @@ def test_capture_before_restore_is_refused(box: Box):
     box.cred()  # after the restore, captures are allowed
 
 
+def test_a_copy_taken_before_the_restore_is_refused_even_if_published_after(box: Box):
+    """Restore finishes between the copy and its publication: the copy is still refused."""
+    box.sign_in_all()
+    box.cred()
+    box.new_container()
+    early = take_credential_snapshot(box.home)  # the empty, not yet restored home
+    restore(box.comp, box.home, box.tmp / "st")
+    with pytest.raises(RestoreNotDone):
+        publish_credential_snapshot(box.comp, early)
+    assert box.logged_in() == ALL_IN
+    later = take_credential_snapshot(box.home)
+    assert publish_credential_snapshot(box.comp, later)[1]
+
+
 def test_without_the_restore_gate_the_logins_are_lost(box: Box):
     """Negative control: why the gate is needed."""
     box.sign_in_all()
