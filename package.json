@@ -9,8 +9,10 @@
   "scripts": {
     "lint": "biome check .",
     "format": "biome format --write .",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc -p scripts",
+    "test": "pnpm -r --if-present test && pnpm test:scripts",
+    "test:scripts": "pnpm --filter @cfo/worker exec vitest run --config ../scripts/vitest.config.ts",
     "contracts:export": "pnpm --filter @cfo/contracts export-schema",
     "check": "pnpm lint && pnpm typecheck && pnpm test"
   },

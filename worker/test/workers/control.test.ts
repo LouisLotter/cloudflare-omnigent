@@ -1,4 +1,4 @@
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { ErrorBody } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
@@ -6,17 +6,21 @@ import type { ControlDO } from "../../src/control/ControlDO.ts";
 import { CONTROL_MIGRATIONS } from "../../src/control/schema.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
 import { migrate } from "../../src/shared/sql.ts";
+import { stepsWithEviction } from "../support/eviction.ts";
 
 describe("ControlDO", () => {
   it("applies its schema once and keeps state across eviction", async () => {
     const stub = env.CONTROL.getByName("installation");
-    expect(await stub.health()).toEqual({ schemaVersion: 1, boots: 1 });
-
-    await evictDurableObject(stub);
-    expect(await stub.health()).toEqual({ schemaVersion: 1, boots: 2 });
-
-    await evictDurableObject(stub);
-    expect(await stub.health()).toEqual({ schemaVersion: 1, boots: 3 });
+    const health = await stepsWithEviction(stub, [
+      (control) => control.health(),
+      (control) => control.health(),
+      (control) => control.health(),
+    ]);
+    expect(health).toEqual([
+      { schemaVersion: 1, boots: 1 },
+      { schemaVersion: 1, boots: 2 },
+      { schemaVersion: 1, boots: 3 },
+    ]);
 
     await runInDurableObject(stub, (_instance: ControlDO, state) => {
       const rows = state.storage.sql.exec("SELECT version, name FROM _cfo_schema").toArray();
