@@ -46,6 +46,14 @@ The lessons move into the design. The code here is not reused.
 - Keep cost small: one container instance unless the question needs more, and the smallest instance type that answers it.
 - Tear down when done with `pnpm stg teardown --suffix …`, and show in your evidence that the resources are gone.
 
+**Campaign controls (IR-017).** The owner's logged-in browser is the only thing that reaches a staging spike. Being logged in through Access is therefore not, by itself, permission to start, stop, reset or inject anything. Every spike route that changes state follows these rules:
+- A `GET` or `HEAD` never changes state: no container start or stop, no scenario, no fault, no write. A `GET` to a control URL shows a confirmation page with a button.
+- A change is a `POST` that carries both of the following, checked before any effect:
+  1. an `Origin` header exactly equal to the deployment's own origin. Missing, `null` and foreign origins get 403, and when `Sec-Fetch-Site` is present it must be `same-origin`;
+  2. a request-intent token: a random value the Worker stores and embeds in the confirmation page, sent back in a form field or header and compared in constant time. A page on another site can't read it.
+- Fault-injection and scenario routes are off unless a campaign has been armed by such a `POST`. They disarm themselves after a bounded time.
+- Tests cover a foreign origin, `null`, a missing origin, a simple cross-site form, a cross-site top-level `GET`, and a valid same-origin control. Each refusal must have zero effect.
+
 **Secrets and accounts**
 - No secrets, tokens, account IDs or email addresses in commits, logs you keep, or evidence. Use synthetic values and runtime-generated canaries.
 - Real Claude and ChatGPT accounts are for S6 only. The owner has standing approval, but signing in needs the owner at the keyboard: the lead schedules it. Record every run, and sign out afterwards.
