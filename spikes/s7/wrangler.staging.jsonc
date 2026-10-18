@@ -1,0 +1,41 @@
+// Spike S7 on staging: the forwarding Worker, the Omnigent server container behind it, and an
+// emulated computer container that reaches the server only through the private host route.
+//
+//   pnpm stg deploy --suffix s7-managed --owner S7 --config spikes/s7/wrangler.staging.jsonc --days 1
+//   pnpm stg teardown --suffix s7-managed
+{
+  "$schema": "../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s7-managed",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "BASE_PATH": "",
+    "GUARD_MODE": "strict"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "OmnigentServer" },
+      { "name": "COMPUTER", "class_name": "ComputerSim" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OmnigentServer", "ComputerSim"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-s7-managed-server",
+      "class_name": "OmnigentServer",
+      "image": "./server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-s7-managed-computer",
+      "class_name": "ComputerSim",
+      "image": "./server/computer/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "observability": { "enabled": true }
+}

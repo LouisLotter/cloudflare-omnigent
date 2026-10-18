@@ -1,0 +1,17 @@
+// Local only: `wrangler dev` in front of the Omnigent container started by scripts/server.sh.
+// scripts/workers.sh starts two of these, the browser entry on 8787 and, with ENTRY=computer,
+// the emulated private host route on 8788. Never deployed.
+{
+  "$schema": "../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-s7-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "UPSTREAM_ORIGIN": "http://127.0.0.1:18700",
+    "ENTRY": "browser",
+    "BASE_PATH": "",
+    "GUARD_MODE": "strict"
+  }
+}

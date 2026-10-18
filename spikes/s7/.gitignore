@@ -1,0 +1,4 @@
+# Runtime state: generated local passwords, session tokens, container data. Never committed.
+.run/
+.wrangler/
+worker-configuration.d.ts

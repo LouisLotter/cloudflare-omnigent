@@ -1,0 +1,64 @@
+
+ RUN  v5.0.3 <repo>/spikes/s7
+      Coverage enabled with istanbul
+
+ ✓ test/forward.test.ts > forwardToServer > refuses a write without contacting the server, from either entry 15ms
+ ✓ test/forward.test.ts > forwardToServer > refuses while the server is down, because it never asks the server 1ms
+ ✓ test/forward.test.ts > forwardToServer > marks a read as managed and drops stale body headers 1ms
+ ✓ test/forward.test.ts > forwardToServer > answers HEAD with headers only 0ms
+ ✓ test/forward.test.ts > forwardToServer > passes non-200 and non-JSON reads through unchanged 1ms
+ ✓ test/forward.test.ts > forwardToServer > fails closed when a JSON read cannot be rewritten 1ms
+ ✓ test/forward.test.ts > forwardToServer > forwards other traffic to the server's origin, never to a host named in the path 0ms
+ ✓ test/forward.test.ts > forwardToServer > naive mode, kept for comparison, misses encoded spellings 0ms
+ ✓ test/guard.test.ts > percentDecode > decodes letters, slashes and UTF-8 like unquote 1ms
+ ✓ test/guard.test.ts > percentDecode > leaves invalid escapes literal and replaces invalid UTF-8 0ms
+ ✓ test/guard.test.ts > percentDecode > decodes only once 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing/ -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > //v1//sharing// -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /V1/SHARING -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/%2573haring -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1%252Fsharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/x/../sharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/x/%2e%2e/sharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/x%2F..%2Fsharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1\sharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1%5Csharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing;x=1 -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing%00 -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing. -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /v1/sharing%20 -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > canonicalPath > /../../v1/sharing -> /v1/sharing 0ms
+ ✓ test/guard.test.ts > isManagedPath > matches the endpoint and anything under it 0ms
+ ✓ test/guard.test.ts > isManagedPath > does not match near misses 0ms
+ ✓ test/guard.test.ts > isManagedPath > matches under a configured base path, and still without it 0ms
+ ✓ test/guard.test.ts > isManagedPath > normalizes empty and root base paths to none 0ms
+ ✓ test/guard.test.ts > decide > reads GET and HEAD, refuses every other method 11ms
+ ✓ test/guard.test.ts > decide > refuses method overrides and upgrades even on GET 0ms
+ ✓ test/guard.test.ts > decide > passes everything that is not the managed path 0ms
+ ✓ test/guard.test.ts > markManaged > sets every editable flag to false and keeps the values 0ms
+ ✓ test/guard.test.ts > markManaged > refuses anything that is not an object 0ms
+ ✓ test/guard.test.ts > properties > refuses writes to every spelling of the managed path 55ms
+ ✓ test/guard.test.ts > properties > never refuses paths whose segments do not spell the managed path 23ms
+ ✓ test/guard.test.ts > properties > canonicalPath is idempotent 11ms
+
+ Test Files  2 passed (2)
+      Tests  39 passed (39)
+   Start at  17:20:14
+   Duration  315ms (transform 60%, tests 32%, import 6%, worker 3%)
+
+ % Coverage report from istanbul
+------------|---------|----------|---------|---------|-------------------
+File        | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+------------|---------|----------|---------|---------|-------------------
+All files   |   95.94 |    86.81 |     100 |    97.6 |                   
+ forward.ts |   92.75 |       75 |     100 |      95 | 106,115,127       
+ guard.ts   |   98.73 |    94.54 |     100 |     100 | 47,72,79          
+------------|---------|----------|---------|---------|-------------------
+
+=============================== Coverage summary ===============================
+Statements   : 95.94% ( 142/148 )
+Branches     : 86.81% ( 79/91 )
+Functions    : 100% ( 16/16 )
+Lines        : 97.6% ( 122/125 )
+================================================================================

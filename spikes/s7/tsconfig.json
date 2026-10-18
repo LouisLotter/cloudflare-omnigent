@@ -1,0 +1,10 @@
+{
+  // Type-checks the spike Worker. Generate the runtime types first (they are gitignored):
+  //   (cd worker && ./node_modules/.bin/wrangler types --config ../spikes/s7/wrangler.staging.jsonc ../spikes/s7/worker-configuration.d.ts)
+  //   pnpm exec tsc -p spikes/s7
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["src", "worker-configuration.d.ts"]
+}

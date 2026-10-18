@@ -1,0 +1,902 @@
+[
+  {
+    "id": "P01",
+    "group": "path",
+    "description": "canonical path",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P02",
+    "group": "path",
+    "description": "trailing slash",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing/ HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P03",
+    "group": "path",
+    "description": "two trailing slashes",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing// HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P04",
+    "group": "path",
+    "description": "leading double slash",
+    "expect": "refuse",
+    "line": "PUT //v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P05",
+    "group": "path",
+    "description": "inner double slash",
+    "expect": "refuse",
+    "line": "PUT /v1//sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P06",
+    "group": "path",
+    "description": "slashes everywhere",
+    "expect": "refuse",
+    "line": "PUT ///v1///sharing/// HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P07",
+    "group": "path",
+    "description": "upper case",
+    "expect": "refuse",
+    "line": "PUT /V1/SHARING HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P08",
+    "group": "path",
+    "description": "mixed case",
+    "expect": "refuse",
+    "line": "PUT /v1/Sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P09",
+    "group": "path",
+    "description": "one encoded letter",
+    "expect": "refuse",
+    "line": "PUT /v1/%73haring HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P10",
+    "group": "path",
+    "description": "fully encoded segment",
+    "expect": "refuse",
+    "line": "PUT /v1/%73%68%61%72%69%6e%67 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P11",
+    "group": "path",
+    "description": "encoded upper case",
+    "expect": "refuse",
+    "line": "PUT /v1/%53HARING HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P12",
+    "group": "path",
+    "description": "encoded slash",
+    "expect": "refuse",
+    "line": "PUT /v1%2Fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P13",
+    "group": "path",
+    "description": "encoded slash, lower-case hex",
+    "expect": "refuse",
+    "line": "PUT /v1%2fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P14",
+    "group": "path",
+    "description": "every slash encoded after the first",
+    "expect": "refuse",
+    "line": "PUT /%2Fv1%2Fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P15",
+    "group": "path",
+    "description": "double-encoded letter",
+    "expect": "refuse",
+    "line": "PUT /v1/%2573haring HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P16",
+    "group": "path",
+    "description": "double-encoded slash",
+    "expect": "refuse",
+    "line": "PUT /v1%252Fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P17",
+    "group": "path",
+    "description": "dot segment",
+    "expect": "refuse",
+    "line": "PUT /v1/./sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P18",
+    "group": "path",
+    "description": "dot-dot segment",
+    "expect": "refuse",
+    "line": "PUT /v1/x/../sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P19",
+    "group": "path",
+    "description": "leading dot segment",
+    "expect": "refuse",
+    "line": "PUT /./v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P20",
+    "group": "path",
+    "description": "encoded dot segment",
+    "expect": "refuse",
+    "line": "PUT /v1/%2e/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P21",
+    "group": "path",
+    "description": "encoded dot-dot segment",
+    "expect": "refuse",
+    "line": "PUT /v1/x/%2e%2e/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P22",
+    "group": "path",
+    "description": "dot-dot with encoded slash",
+    "expect": "refuse",
+    "line": "PUT /v1/x/..%2Fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P23",
+    "group": "path",
+    "description": "encoded slash dot-dot encoded slash",
+    "expect": "refuse",
+    "line": "PUT /v1/x%2F..%2Fsharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P24",
+    "group": "path",
+    "description": "query string",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing?x=1 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P25",
+    "group": "path",
+    "description": "matrix parameter",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing;x=1 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P26",
+    "group": "path",
+    "description": "encoded semicolon",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing%3Bx=1 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P27",
+    "group": "path",
+    "description": "encoded NUL",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing%00 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P28",
+    "group": "path",
+    "description": "encoded trailing space",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing%20 HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P29",
+    "group": "path",
+    "description": "encoded trailing slash",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing%2F HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P30",
+    "group": "path",
+    "description": "encoded backslash",
+    "expect": "refuse",
+    "line": "PUT /v1%5Csharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P31",
+    "group": "path",
+    "description": "raw backslash",
+    "expect": "refuse",
+    "line": "PUT /v1\\sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P32",
+    "group": "path",
+    "description": "fragment in request line",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing#x HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P33",
+    "group": "path",
+    "description": "absolute-form request target",
+    "expect": "refuse",
+    "line": "PUT http://127.0.0.1:80/v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P34",
+    "group": "path",
+    "description": "absolute-form target naming the private host",
+    "expect": "refuse",
+    "line": "PUT http://omnigent.internal/v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P35",
+    "group": "path",
+    "description": "trailing dot",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing. HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "P36",
+    "group": "path",
+    "description": "HTTP/1.0 request",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.0",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M01",
+    "group": "method",
+    "description": "POST",
+    "expect": "refuse",
+    "line": "POST /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M02",
+    "group": "method",
+    "description": "PATCH",
+    "expect": "refuse",
+    "line": "PATCH /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M03",
+    "group": "method",
+    "description": "DELETE",
+    "expect": "refuse",
+    "line": "DELETE /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M04",
+    "group": "method",
+    "description": "OPTIONS",
+    "expect": "refuse",
+    "line": "OPTIONS /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "M05",
+    "group": "method",
+    "description": "lower-case put",
+    "expect": "refuse",
+    "line": "put /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M06",
+    "group": "method",
+    "description": "mixed-case Put",
+    "expect": "refuse",
+    "line": "Put /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M07",
+    "group": "method",
+    "description": "WebDAV PROPPATCH",
+    "expect": "refuse",
+    "line": "PROPPATCH /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M08",
+    "group": "method",
+    "description": "unknown method",
+    "expect": "refuse",
+    "line": "FOO /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "M09",
+    "group": "method",
+    "description": "TRACE",
+    "expect": "refuse",
+    "line": "TRACE /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "O01",
+    "group": "override",
+    "description": "GET with X-HTTP-Method-Override: PUT",
+    "expect": "refuse",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["X-HTTP-Method-Override", "PUT"]
+    ],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "O02",
+    "group": "override",
+    "description": "GET with X-HTTP-Method: PUT",
+    "expect": "refuse",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["X-HTTP-Method", "PUT"]
+    ],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "O03",
+    "group": "override",
+    "description": "GET with X-Method-Override: PUT",
+    "expect": "refuse",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["X-Method-Override", "PUT"]
+    ],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "O04",
+    "group": "override",
+    "description": "POST with X-HTTP-Method-Override: PUT",
+    "expect": "refuse",
+    "line": "POST /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["X-HTTP-Method-Override", "PUT"]
+    ],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "O05",
+    "group": "override",
+    "description": "GET with ?_method=PUT",
+    "expect": "refuse",
+    "line": "GET /v1/sharing?_method=PUT HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "O06",
+    "group": "override",
+    "description": "WebSocket upgrade",
+    "expect": "refuse",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["Upgrade", "websocket"],
+      ["Connection", "Upgrade"],
+      ["Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="],
+      ["Sec-WebSocket-Version", "13"]
+    ],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "D01",
+    "group": "body",
+    "description": "JSON boolean true",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "D02",
+    "group": "body",
+    "description": "lax boolean \"true\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICJ0cnVlIn0=",
+    "chunked": false
+  },
+  {
+    "id": "D03",
+    "group": "body",
+    "description": "lax boolean \"yes\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICJ5ZXMifQ==",
+    "chunked": false
+  },
+  {
+    "id": "D04",
+    "group": "body",
+    "description": "lax boolean \"on\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICJvbiJ9",
+    "chunked": false
+  },
+  {
+    "id": "D05",
+    "group": "body",
+    "description": "lax boolean 1",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IDF9",
+    "chunked": false
+  },
+  {
+    "id": "D06",
+    "group": "body",
+    "description": "lax boolean \"1\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICIxIn0=",
+    "chunked": false
+  },
+  {
+    "id": "D07",
+    "group": "body",
+    "description": "lax boolean \"t\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICJ0In0=",
+    "chunked": false
+  },
+  {
+    "id": "D08",
+    "group": "body",
+    "description": "lax boolean \"YES\"",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6ICJZRVMifQ==",
+    "chunked": false
+  },
+  {
+    "id": "D09",
+    "group": "body",
+    "description": "mode in upper case",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJzaGFyaW5nX21vZGUiOiAiT04ifQ==",
+    "chunked": false
+  },
+  {
+    "id": "D10",
+    "group": "body",
+    "description": "mode with spaces",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJzaGFyaW5nX21vZGUiOiAiIG9uICJ9",
+    "chunked": false
+  },
+  {
+    "id": "D11",
+    "group": "body",
+    "description": "default public sessions",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJkZWZhdWx0X3B1YmxpY19zZXNzaW9ucyI6ICJhbGwifQ==",
+    "chunked": false
+  },
+  {
+    "id": "D12",
+    "group": "body",
+    "description": "public permission ceiling",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZ19tYXhfbGV2ZWwiOiAiZWRpdCJ9",
+    "chunked": false
+  },
+  {
+    "id": "D13",
+    "group": "body",
+    "description": "duplicate key, last wins",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IGZhbHNlLCAicHVibGljX3NoYXJpbmciOiB0cnVlfQ==",
+    "chunked": false
+  },
+  {
+    "id": "D14",
+    "group": "body",
+    "description": "escaped key",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNcdTAwNWZzaGFyaW5nIjogdHJ1ZX0=",
+    "chunked": false
+  },
+  {
+    "id": "D15",
+    "group": "body",
+    "description": "unknown extra field",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWUsICJ1bmtub3duIjogMX0=",
+    "chunked": false
+  },
+  {
+    "id": "D16",
+    "group": "body",
+    "description": "no Content-Type",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "D17",
+    "group": "body",
+    "description": "text/plain Content-Type",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "text/plain"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "D18",
+    "group": "body",
+    "description": "form-encoded body",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/x-www-form-urlencoded"]
+    ],
+    "bodyBase64": "cHVibGljX3NoYXJpbmc9dHJ1ZQ==",
+    "chunked": false
+  },
+  {
+    "id": "D19",
+    "group": "body",
+    "description": "chunked transfer encoding",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": true
+  },
+  {
+    "id": "D20",
+    "group": "body",
+    "description": "gzip Content-Encoding",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [
+      ["Authorization", "__S7_AUTH__"],
+      ["Content-Type", "application/json"],
+      ["Content-Encoding", "gzip"]
+    ],
+    "bodyBase64": "H4sIAAAAAAAAA6tWKihNyslMji/OSCzKzEtXslIoKSpNrQUAm0MLThgAAAA=",
+    "chunked": false
+  },
+  {
+    "id": "D21",
+    "group": "body",
+    "description": "no body",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "D22",
+    "group": "body",
+    "description": "empty object",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "e30=",
+    "chunked": false
+  },
+  {
+    "id": "D23",
+    "group": "body",
+    "description": "UTF-8 byte order mark",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "77u/eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "D24",
+    "group": "body",
+    "description": "the managed value itself (a no-op that still writes a file)",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IGZhbHNlfQ==",
+    "chunked": false
+  },
+  {
+    "id": "D25",
+    "group": "body",
+    "description": "+json media type",
+    "expect": "refuse",
+    "line": "PUT /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/merge-patch+json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "G01",
+    "group": "get",
+    "description": "GET, rewritten as managed",
+    "expect": "rewrite",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "G02",
+    "group": "get",
+    "description": "HEAD, headers only",
+    "expect": "rewrite",
+    "line": "HEAD /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "G03",
+    "group": "get",
+    "description": "GET with encoded letter",
+    "expect": "rewrite",
+    "line": "GET /v1/%73haring HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "G04",
+    "group": "get",
+    "description": "GET with gzip accepted",
+    "expect": "rewrite",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Accept-Encoding", "gzip"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "G05",
+    "group": "get",
+    "description": "GET without credentials (401 passes through)",
+    "expect": "rewrite",
+    "line": "GET /v1/sharing HTTP/1.1",
+    "headers": [],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "G06",
+    "group": "get",
+    "description": "GET /v1/info (not a managed path)",
+    "expect": "forward",
+    "line": "GET /v1/info HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"]],
+    "bodyBase64": null,
+    "chunked": false
+  },
+  {
+    "id": "N01",
+    "group": "near-miss",
+    "description": "longer last segment",
+    "expect": "forward",
+    "line": "PUT /v1/sharingx HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "N02",
+    "group": "near-miss",
+    "description": "suffixed last segment",
+    "expect": "forward",
+    "line": "PUT /v1/sharing-x HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "N03",
+    "group": "near-miss",
+    "description": "unknown prefix (no base path configured)",
+    "expect": "forward",
+    "line": "PUT /x/v1/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "N04",
+    "group": "near-miss",
+    "description": "full-width letter",
+    "expect": "forward",
+    "line": "PUT /v1/%EF%BD%93haring HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  },
+  {
+    "id": "N05",
+    "group": "near-miss",
+    "description": "sub-resource of a session",
+    "expect": "forward",
+    "line": "PUT /v1/sessions/abc/sharing HTTP/1.1",
+    "headers": [["Authorization", "__S7_AUTH__"], ["Content-Type", "application/json"]],
+    "bodyBase64": "eyJwdWJsaWNfc2hhcmluZyI6IHRydWV9",
+    "chunked": false
+  }
+]

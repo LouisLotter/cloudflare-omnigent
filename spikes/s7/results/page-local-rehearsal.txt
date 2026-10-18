@@ -1,0 +1,25 @@
+server start: {"kind":"start","state":"done","startedAt":1792336509167,"result":{"readyMs":4009},"finishedAt":1792336513211}
+before-replacement before variants: server settings managed=true, override files=[]
+before-replacement browser variants: 80/80 pass
+before-replacement after browser variants: server settings managed=true, override files=[]
+before-replacement computer variants: {"label":"before-replacement","state":"failed","startedAt":1792336517612,"error":"the computer did not report results in time","finishedAt":1792336538426}
+before-replacement after computer variants: server settings managed=true, override files=[]
+before-replacement interface: {"title":true,"modeBanner":true,"publicNote":true,"ceilingNote":true,"radios":7,"radiosDisabled":7,"switches":1,"switchesDisabled":1,"selects":1,"selectsDisabled":1,"fieldsets":2,"fieldsetsDisabled":2}
+during replacement: 10/10 PUTs refused
+replacement: {"kind":"replace","state":"done","startedAt":1792336541180,"result":{"destroyMs":305,"readyMs":5282},"finishedAt":1792336546784}
+after-replacement before variants: server settings managed=true, override files=[]
+after-replacement browser variants: 80/80 pass
+after-replacement after browser variants: server settings managed=true, override files=[]
+after-replacement computer variants: {"label":"after-replacement","state":"failed","startedAt":1792336559189,"error":"the computer did not report results in time","finishedAt":1792336579694}
+after-replacement after computer variants: server settings managed=true, override files=[]
+after-replacement interface: {"title":true,"modeBanner":true,"publicNote":true,"ceilingNote":true,"radios":7,"radiosDisabled":7,"switches":1,"switchesDisabled":1,"selects":1,"selectsDisabled":1,"fieldsets":2,"fieldsetsDisabled":2}
+finished
+
+--- log ---
+2026-10-18T15:15:09.164Z starting the server
+2026-10-18T15:15:15.213Z phase before-replacement
+2026-10-18T15:15:17.603Z computer run before-replacement
+2026-10-18T15:15:41.177Z replacing the server
+2026-10-18T15:15:56.255Z phase after-replacement
+2026-10-18T15:15:59.186Z computer run after-replacement
+
