@@ -36,7 +36,8 @@ function log(line) { logEl.textContent += new Date().toISOString() + " " + line 
 function show() { summaryEl.textContent = summary.join("\n"); }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function api(path, body) {
-  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}), credentials: "same-origin" });
+  // Every control is a same-origin POST carrying the request-intent token this page was served with.
+  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-s7-intent": INTENT }, body: JSON.stringify(body || {}), credentials: "same-origin" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(path + " -> " + res.status + " " + JSON.stringify(data));
   return data;
@@ -169,9 +170,16 @@ async function during() {
   summary.push("replacement: " + JSON.stringify(job)); show();
   await record({ kind: "replacement", job });
 }
+async function disarm() {
+  await api("/__s7/api/disarm").catch((e) => log("disarm failed: " + String(e)));
+  summary.push("campaign disarmed; containers stopped"); show();
+}
+document.getElementById("disarm").onclick = () => disarm();
 document.getElementById("run").onclick = async () => {
   document.getElementById("run").disabled = true;
   try {
+    const armed = await api("/__s7/api/arm");
+    summary.push("campaign armed until " + new Date(armed.armedUntil).toISOString()); show();
     log("starting the server");
     await api("/__s7/api/start");
     const job = await pollJob("/__s7/api/job", serverJobDone, 10 * 60000);
@@ -179,11 +187,13 @@ document.getElementById("run").onclick = async () => {
     await phase("before-replacement");
     await attempt("replacement", () => during());
     await phase("after-replacement");
-    summary.push("finished"); show();
     await record({ kind: "finished", summary });
+    await disarm();
+    summary.push("finished"); show();
   } catch (e) {
     summary.push("ERROR " + String(e)); show();
     await record({ kind: "error", error: String(e) }).catch(() => {});
+    await disarm();
   }
 };
 `;
@@ -202,13 +212,15 @@ iframe { width: 100%; height: 700px; border: 1px solid #888; }
 <h1>Spike S7: managed sharing settings</h1>
 <p>Runs the S7 sequence once: browser variants, the computer run, the interface check, a server
 replacement with requests during it, then all of it again. It takes about fifteen minutes. Leave
-this tab open until the summary says <b>finished</b>.</p>
-<button id="run">Run S7</button>
+this tab open until the summary says <b>finished</b>. Nothing runs until you press the button:
+it arms a 30-minute campaign, and the page disarms it and stops the containers at the end.</p>
+<button id="run">Run S7</button> <button id="disarm">Disarm now</button>
 <h2>Summary</h2><pre id="summary">not started</pre>
 <h2>Omnigent's sharing settings page</h2><iframe id="ui" title="Omnigent sharing settings"></iframe>
 <h2>Log</h2><pre id="log"></pre>
 <script>
 const VARIANTS = __VARIANTS__;
+const INTENT = __INTENT__;
 ${UI_CHECK_SOURCE}
 ${PAGE_SCRIPT}
 </script></body></html>`;
