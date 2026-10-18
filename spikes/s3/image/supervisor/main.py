@@ -42,20 +42,23 @@ CG_ROOT = "/sys/fs/cgroup"
 CG_WORKLOAD = os.path.join(CG_ROOT, "workload")
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(HOME, ".claude"))
 
-# The declared directories of the workspace checkpoint. Credential files and
-# caches are excluded (design, "Checkpoints").
+# The declared directories of the workspace checkpoint (design, "Checkpoints").
+# Credential files, their temporary siblings and locks are excluded by
+# credpolicy from S6's audited list (IR-015); these lists hold caches, logs and
+# runtime files only. home_rel ties each root to S6's home-relative names.
 ITEMS: list[dict[str, Any]] = [
-    {"name": "work", "src": os.path.join(HOME, "work"),
+    {"name": "work", "src": os.path.join(HOME, "work"), "home_rel": "work",
      "exclude": ["node_modules/", ".venv/", "venv/", "__pycache__/", ".cache/", ".pytest_cache/"]},
-    {"name": "claude", "src": CLAUDE_DIR,
-     "exclude": [".credentials.json", "shell-snapshots/", "statsig/"]},
+    {"name": "claude", "src": CLAUDE_DIR, "home_rel": os.path.relpath(CLAUDE_DIR, HOME),
+     "exclude": ["shell-snapshots/", "statsig/"]},
     # Codex reinstalls its bundled skills (skills/.system) on start; they hold
     # PNG assets that the RC-22 canary scanner cannot decode.
-    {"name": "codex", "src": os.path.join(HOME, ".codex"),
-     "exclude": ["auth.json", "log/", ".tmp/", "tmp/", "/skills/.system/"]},
-    {"name": "omnigent", "src": os.path.join(HOME, ".omnigent"),
-     "exclude": ["auth_tokens.json", "logs/", "cache/", "run/", "*.pid", "*.lock", "*.sock"]},
+    {"name": "codex", "src": os.path.join(HOME, ".codex"), "home_rel": ".codex",
+     "exclude": ["log/", ".tmp/", "tmp/", "/skills/.system/"]},
+    {"name": "omnigent", "src": os.path.join(HOME, ".omnigent"), "home_rel": ".omnigent",
+     "exclude": ["logs/", "cache/", "run/", "*.pid", "*.lock", "*.sock"]},
 ]
+ROOTS = {it["name"]: it["home_rel"] for it in ITEMS}
 
 STATE: dict[str, Any] = {"workload_pids": [], "jobs": {}, "cgroup": False, "last_snapshot": None}
 
@@ -197,6 +200,7 @@ def do_upload(body: dict[str, Any]) -> dict[str, Any]:
         "bucket": os.environ.get("S3_BUCKET", "checkpoints"),
         "computer_id": os.environ.get("S3_COMPUTER_ID", "computer-1"),
         "generation": int(os.environ.get("S3_GENERATION", "1")),
+        "roots": ROOTS,
         **body,
     }
     return U.upload_snapshot(spec)

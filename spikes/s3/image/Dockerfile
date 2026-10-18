@@ -8,6 +8,7 @@ FROM ghcr.io/omnigent-ai/omnigent-server@sha256:dba491573ba16b42da7447a7ab6e978b
 ARG CLAUDE_CODE_VERSION=2.1.296
 ARG CODEX_VERSION=0.162.1
 ARG BOTO3_VERSION=1.43.111
+ARG PYTEST_VERSION=9.1.1
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -29,7 +30,7 @@ RUN npm install -g --no-audit --no-fund \
 
 # Separate venv for the supervisor so Omnigent's own environment is untouched.
 RUN python -m venv /opt/s3venv \
- && /opt/s3venv/bin/pip install --no-cache-dir boto3==${BOTO3_VERSION}
+ && /opt/s3venv/bin/pip install --no-cache-dir boto3==${BOTO3_VERSION} pytest==${PYTEST_VERSION}
 
 # The unprivileged user that runs the host, the runners and the CLIs.
 RUN useradd -m -u 1000 -s /bin/bash agent \
@@ -37,6 +38,10 @@ RUN useradd -m -u 1000 -s /bin/bash agent \
  && chown agent:agent /snap /restore-staging
 
 COPY supervisor /opt/s3/supervisor
+# S6's audited credential policy, copied into the build context by
+# spikes/s3/bench/sync_policy.py: capture and restore share one list.
+COPY s6credsync /opt/s3/s6credsync
+COPY tests /opt/s3/tests
 
 ENV PYTHONPATH=/opt/s3 \
     S3_AGENT_USER=agent \

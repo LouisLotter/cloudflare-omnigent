@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 STEPS: dict[str, list[list[str]]] = {
     "capture": [["up.py"], ["capture_bench.py", "--profiles", "small,realistic,large,many-small", "--runs", "5"]],
     "capture2phase": [["up.py"], ["capture_bench.py", "--plan", "2phase", "--profiles", "realistic,large,many-small", "--runs", "5"]],
+    "capture-corrected": [["up.py"], ["capture_bench.py", "--plan", "corrected", "--profiles", "realistic,large,many-small", "--runs", "5"]],
     "capture-reflink": [["up.py"], ["capture_bench.py", "--plan", "reflink", "--profiles", "realistic,large", "--runs", "5"]],
     "lease": [["up.py"], ["lease_tests.py", "--runs", "3"]],
     "upload": [["up.py"], ["upload_tests.py", "--block", "120", "--runs", "2"]],

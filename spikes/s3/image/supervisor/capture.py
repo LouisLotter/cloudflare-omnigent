@@ -18,11 +18,13 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import asdict
 from typing import Any
 
+from . import credpolicy
 from . import freeze as F
 
 # Fault-injection seams for the lease tests. Never set outside the spike.
@@ -65,65 +67,115 @@ def free_bytes(path: str) -> int:
     return st.f_bavail * st.f_frsize
 
 
-def copy_cmd(method: str, src: str, dst: str, excludes: list[str]) -> list[str]:
+METHODS = ("rsync", "rsync-2phase", "rsync-incremental", "reflink")
+
+
+def rsync_argv(src: str, dst: str, it: dict[str, Any], *, final: bool) -> list[str]:
+    """One rsync of one declared root.
+
+    -a: perms, times, symlinks, owners. --delete and --delete-excluded: a
+    reused snapshot may hold files that no longer exist or are now excluded.
+    final: the destination already holds an earlier copy (the two-phase second
+    pass, or a reused snapshot), so compare contents, not size and mtime
+    (IR-011): rsync's quick check skips a same-size rewrite within the same
+    second, or one that kept its mtime, and the snapshot kept the old bytes.
+    """
     ex: list[str] = []
-    for e in excludes:
-        ex += ["--exclude", e]
-    if method in ("rsync", "rsync-incremental"):
-        # -a: perms, times, symlinks, owners. --delete: incremental base may hold
-        # files that no longer exist. --inplace avoids temp files on the target.
-        s = src + "/" if os.path.isdir(src) else src
-        return ["rsync", "-a", "--delete", "--inplace", *ex, s, dst]
-    raise ValueError(method)
+    for pattern in credpolicy.rsync_excludes(it):
+        ex += ["--exclude", pattern]
+    s = src + "/" if os.path.isdir(src) else src
+    content = ["--checksum"] if final else []
+    return ["rsync", "-a", *content, "--no-specials", "--no-devices", "--delete", "--delete-excluded",
+            "--inplace", *ex, s, dst]
 
 
-def run_copy(method: str, items: list[dict[str, Any]], snap: str) -> subprocess.Popen[bytes]:
-    """Start the copy of all declared items as one shell pipeline."""
-    steps: list[str] = []
+def copy_steps(method: str, items: list[dict[str, Any]], snap: str, *, final: bool = True) -> list[list[str]]:
+    """The copy as a list of separate commands, one or two per declared root."""
+    if method not in METHODS:
+        raise ValueError(f"unknown copy method {method!r}")
+    steps: list[list[str]] = []
     for it in items:
         src = it["src"]
-        if not os.path.exists(src):
+        if not os.path.lexists(src):
             continue
         dst = os.path.join(snap, it["name"])
-        excludes = it.get("exclude", [])
-        if method == "tar":
-            ex = " ".join(f"--exclude={sh(e.rstrip('/'))}" for e in excludes)
-            if os.path.isdir(src):
-                steps.append(f"mkdir -p {sh(dst)} && tar -C {sh(src)} {ex} -cf - . | tar -C {sh(dst)} -xf -")
-            else:
-                steps.append(f"cp -p {sh(src)} {sh(dst)}")
-        elif method == "reflink":
+        is_dir = os.path.isdir(src) and not os.path.islink(src)
+        if method == "reflink":
             # Copy-on-write clones (btrfs, XFS): data is shared, only metadata is
-            # written. Excluded directories are cloned too, then removed.
-            if os.path.isdir(src):
-                names = " -o ".join(f"-name {sh(e.strip('/'))}" for e in excludes if "/" not in e.strip("/") and "*" not in e)
-                prune = f" && find {sh(dst)} -depth \\( {names} \\) -exec rm -rf {{}} +" if names else ""
-                steps.append(f"mkdir -p {sh(dst)} && cp -a --reflink=always {sh(src)}/. {sh(dst)}/{prune}")
+            # written. Excluded files are cloned too and pruned afterwards.
+            if is_dir:
+                steps.append(["mkdir", "-p", dst])
+                steps.append(["cp", "-a", "--reflink=always", src + "/.", dst + "/"])
             else:
-                steps.append(f"cp -a --reflink=always {sh(src)} {sh(dst)}")
-        elif method == "tar-zstd":
-            ex = " ".join(f"--exclude={sh(e.rstrip('/'))}" for e in excludes)
-            parent, base = os.path.split(src.rstrip("/"))
-            steps.append(
-                f"tar -C {sh(parent)} {ex} -cf - {sh(base)} | zstd -q -1 -T0 -o {sh(dst + '.tar.zst')}"
-            )
+                steps.append(["cp", "-a", "--reflink=always", src, dst])
         else:
-            if os.path.isdir(src):
-                steps.append(f"mkdir -p {sh(dst)}")
-            steps.append(" ".join(sh(a) for a in copy_cmd(method, src, dst, excludes)))
-    script = "set -eo pipefail\n" + "\n".join(steps) + "\n"
-    return subprocess.Popen(
-        ["bash", "-c", script],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        # Own process group, so an expired lease can stop the whole pipeline
-        # (bash, rsync's helpers, tar) and not just the shell.
-        start_new_session=True,
-    )
+            if is_dir:
+                steps.append(["mkdir", "-p", dst])
+            steps.append(rsync_argv(src, dst, it, final=final))
+    return steps
 
 
-def sh(s: str) -> str:
-    return "'" + s.replace("'", "'\"'\"'") + "'"
+class CopyRunner:
+    """Runs the copy steps one after another (IR-016).
+
+    The first step that exits with a status outside ``ok`` fails the whole
+    copy; nothing later runs and the failure is reported. A shell script with
+    ``set -e`` hid a failed ``cp`` inside an ``&&`` list when a later root
+    succeeded. Each step runs in its own process group, so an expired lease
+    can kill it whole.
+    """
+
+    def __init__(self, steps: list[list[str]], ok: tuple[int, ...] = (0,)) -> None:
+        self.steps = steps
+        self.ok = set(ok)
+        self.i = -1
+        self.cur: subprocess.Popen[bytes] | None = None
+        self.rc: int | None = None
+        self.failed_step: list[str] | None = None
+        self._err = tempfile.TemporaryFile()
+        self._next()
+
+    def _next(self) -> None:
+        self.i += 1
+        if self.i >= len(self.steps):
+            self.rc = 0
+            self.cur = None
+            return
+        self.cur = subprocess.Popen(self.steps[self.i], stdout=subprocess.DEVNULL, stderr=self._err,
+                                    start_new_session=True)
+
+    def poll(self) -> int | None:
+        while self.rc is None:
+            assert self.cur is not None
+            r = self.cur.poll()
+            if r is None:
+                return None
+            if r not in self.ok:
+                self.rc = r
+                self.failed_step = self.steps[self.i]
+                return r
+            self._next()
+        return self.rc
+
+    def wait(self) -> int:
+        while self.poll() is None:
+            time.sleep(0.005)
+        assert self.rc is not None
+        return self.rc
+
+    def kill(self) -> None:
+        if self.cur is not None and self.cur.poll() is None:
+            try:
+                os.killpg(self.cur.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.cur.wait()
+        if self.rc is None:
+            self.rc = -9
+
+    def stderr(self) -> str:
+        self._err.seek(0)
+        return self._err.read().decode(errors="replace")[-2000:]
 
 
 def capture(spec: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +186,12 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
     budget = float(spec.get("budget_s", 20.0))
     items = spec["items"]
     mechanism = spec.get("mechanism", "sigstop")
+    # In-process test hooks (callables); never set by the supervisor.
+    hooks = spec.get("hooks") or {}
     res: dict[str, Any] = {"capture_id": cid, "method": method, "mechanism": mechanism, "budget_s": budget}
+    if method not in METHODS:
+        res.update(outcome="failed_method", published=False, detail=f"unknown copy method {method!r}")
+        return res
 
     # 1. Disk budget, outside the pause.
     t0 = time.monotonic()
@@ -171,17 +228,22 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
         # result is inconsistent, but phase 2 (paused) only has to fix up the
         # files that changed since, so the pause no longer scales with size.
         t_pre = time.monotonic()
-        pre = run_copy("rsync", items, partial)
-        _, pre_err = pre.communicate()
+        # 24: files vanished while copying, expected while the workload runs.
+        pre = CopyRunner(copy_steps("rsync", items, partial, final=False), ok=(0, 24))
+        pre_rc = pre.wait()
         res["precopy_s"] = round(time.monotonic() - t_pre, 4)
-        res["precopy_rc"] = pre.returncode
-        if pre.returncode not in (0, 24):  # 24: files vanished while copying, expected
+        res["precopy_rc"] = pre_rc
+        # Test seam (IR-011): change files between the two passes.
+        if hooks.get("after_precopy"):
+            hooks["after_precopy"]()
+        if pre_rc != 0:
             shutil.rmtree(partial, ignore_errors=True)
-            nospace = b"No space left on device" in pre_err
+            pre_err = pre.stderr()
+            nospace = "No space left on device" in pre_err
             res.update(outcome="failed_no_space" if nospace else "failed_copy", published=False,
-                       copy_stderr=pre_err.decode(errors="replace")[-500:])
+                       copy_stderr=pre_err[-500:], failed_step=pre.failed_step)
             return res
-        method = "rsync"
+    paused_method = "reflink" if method == "reflink" else "rsync"
 
     # 2. Lease guard, before anything is paused. Wait until it is ready, then
     # arm it: the lease clock starts only now, so guard start-up time can
@@ -205,16 +267,39 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
     # Our deadline is never later than the guard's: it armed after we wrote.
     deadline = time.monotonic() + budget
 
-    def notify(line: str) -> None:
+    guard_state = {"expired_seen": False, "gone": False}
+
+    def ask_guard(line: str, expect_prefix: str) -> str:
+        """Send one request and wait for its answer; the guard does the stopping
+        (IR-012). Returns "ok" or the guard's reason for refusing."""
         try:
             gin.write((line + "\n").encode())
             gin.flush()
         except BrokenPipeError as exc:
+            guard_state["gone"] = True
             raise F.FreezeError("lease guard is gone") from exc
+        while True:
+            raw = gout.readline()
+            if not raw:
+                guard_state["gone"] = True
+                raise F.FreezeError("lease guard is gone")
+            ans = raw.decode().strip()
+            if ans == "expired":
+                guard_state["expired_seen"] = True
+                continue
+            if ans.startswith("ok " + expect_prefix):
+                return "ok"
+            if ans.startswith("refused " + expect_prefix):
+                return ans.split()[-1]
 
-    def may_stop() -> bool:
-        # Never stop another process once the lease may have expired.
-        return time.monotonic() < deadline
+    def request_stop(pid: int, start: int) -> str:
+        return ask_guard(f"stop {pid} {start}", f"stop {pid}")
+
+    def request_freeze(cg: str) -> str:
+        return ask_guard(f"freeze {cg}", "freeze")
+
+    def lease_alive() -> bool:
+        return time.monotonic() < deadline and not guard_state["expired_seen"]
 
     main_pid = int(spec["supervisor_pid"])
     workload_roots = set(spec.get("workload_pids", []))
@@ -225,12 +310,33 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
     def wl_roots() -> set[int]:
         return workload_roots
 
-    if mechanism == "cgroup":
-        fz: F.SignalFreezer | F.CgroupFreezer = F.CgroupFreezer(spec["cgroup_dir"], notify)
-    else:
-        fz = F.SignalFreezer(infra_roots, wl_roots, notify, may_stop)
-
     fault = os.environ.get(FAULT_ENV, spec.get("fault", ""))
+    stalled = {"done": False}
+
+    def before_stop(_pid: int) -> None:
+        # Fault seam (IR-012): stall after finding a target and before its stop,
+        # until the lease has expired and the guard has resumed everything.
+        if fault.startswith("stall_before_stop") and not stalled["done"]:
+            time.sleep(max(0.0, deadline - time.monotonic()) + float(spec.get("stall_extra_s", 0.5)))
+
+    def after_stop(_pid: int) -> None:
+        # ...then, for the "then_die" variant, the controller dies right after its late stop
+        # attempt (with the guard as the authority, the guard refused that stop).
+        if fault == "stall_before_stop_then_die" and not stalled["done"]:
+            os.kill(os.getpid(), signal.SIGKILL)
+        stalled["done"] = True
+        if hooks.get("after_stop"):
+            hooks["after_stop"](_pid)
+
+    scope_pid = spec.get("scope_pid")
+    scope = (lambda: {int(scope_pid)}) if scope_pid else None
+    if mechanism == "cgroup":
+        fz: F.SignalFreezer | F.CgroupFreezer = F.CgroupFreezer(
+            spec["cgroup_dir"], request_freeze, lease_alive, before_stop=before_stop, after_stop=after_stop)
+    else:
+        fz = F.SignalFreezer(infra_roots, wl_roots, request_stop, lease_alive, scope=scope,
+                             before_stop=before_stop, after_stop=after_stop)
+
     expired = False
     t_expired: float | None = None
     copy_rc: int | None = None
@@ -251,7 +357,11 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
                 time.sleep(3600)
 
         # 3. Copy, watching the guard for expiry.
-        cp = run_copy(method, items, partial)
+        # The destination holds an earlier copy for two-phase and incremental:
+        # the paused pass must compare contents (IR-011). A full copy into an
+        # empty directory copies every file anyway.
+        reused = method in ("rsync-2phase", "rsync-incremental")
+        cp = CopyRunner(copy_steps(paused_method, items, partial, final=reused))
         if fault.startswith("slow_copy:"):
             time.sleep(float(fault.split(":", 1)[1]))
         while True:
@@ -261,27 +371,28 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
                 break
             r, _, _ = select.select([gout], [], [], 0.01)
             if r:
-                line = gout.readline().decode().strip()
-                if line == "expired":
-                    # The guard has already resumed everything at the deadline.
-                    # Resume our own list too: SIGCONT is idempotent.
+                raw = gout.readline()
+                line = raw.decode().strip()
+                if line == "expired" or not raw:
+                    # The guard has resumed everything at the deadline (or is gone):
+                    # this copy can no longer be consistent.
                     expired = True
                     t_expired = time.monotonic()
-                    fz.thaw()
-                    try:
-                        os.killpg(cp.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    cp.wait()
+                    guard_state["gone"] = guard_state["gone"] or not raw
+                    cp.kill()
+                    if guard_state["gone"]:
+                        fz.thaw()  # fallback: nobody else is left to resume
                     copy_rc = -9
                     break
-        assert cp.stderr is not None
-        copy_err = cp.stderr.read().decode(errors="replace")[-2000:]
+        copy_err = cp.stderr()
+        res["failed_step"] = cp.failed_step
         t_copied = time.monotonic()
     except F.FreezeError as exc:
-        # Resume whatever we stopped before giving up; the guard does too.
+        # The guard resumes what it stopped when we release below; we resume
+        # ourselves only if the guard itself is gone.
         res["freeze_error"] = str(exc)
-        fz.thaw()
+        if guard_state["gone"]:
+            fz.thaw()
         t_frozen = t_copied = time.monotonic()
 
     # 4. Release: the guard resumes, and tells us whether the lease held.
@@ -338,7 +449,15 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
         pass
 
     nospace = "No space left on device" in copy_err
-    if expired or copy_rc != 0 or "freeze_error" in res:
+    prune_error = None
+    if not (expired or copy_rc != 0 or "freeze_error" in res):
+        # 5. Enforce the exclusions on the finished copy, after the resume: the
+        # snapshot is local and fixed now. Any failure discards it (IR-016).
+        try:
+            res["pruned"] = credpolicy.prune(partial, items)
+        except Exception as exc:  # noqa: BLE001 - any prune failure invalidates the snapshot
+            prune_error = f"{type(exc).__name__}: {exc}"[:300]
+    if expired or copy_rc != 0 or "freeze_error" in res or prune_error:
         shutil.rmtree(partial, ignore_errors=True)
         if expired:
             outcome = "discarded_lease_expired"
@@ -346,6 +465,9 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
             outcome = "failed_no_space"
         elif "freeze_error" in res:
             outcome = "failed_freeze"
+        elif prune_error:
+            outcome = "failed_prune"
+            res["prune_error"] = prune_error
         else:
             outcome = "failed_copy"
         res.update(outcome=outcome, published=False, copy_stderr=copy_err[-500:])

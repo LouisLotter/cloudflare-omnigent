@@ -1,0 +1,282 @@
+{
+  "meta": {
+    "date": "2026-10-18T16:40:50Z",
+    "spike_commit": "5eb918bd43bc13b1a68c0ff5845e385d34bf04aa",
+    "computer_image": "sha256:70d30107d7580ad3b6b845baf422b1fb3b16b3798e86d3c205849ef8aba7b78e",
+    "host_cpus": 16,
+    "docker": "29.7.2",
+    "kernel": "7.2.5-3-omarchy"
+  },
+  "script": "spikes/s3/bench/upload_tests.py",
+  "data": {
+    "summary": {
+      "blocked": {
+        "short": {
+          "outcomes": ["upload_failed"],
+          "all_turns_ok": true,
+          "host_always_online": true,
+          "pointer_only_moves_on_success": true,
+          "capture_during_block_pause_s": {
+            "n": 2,
+            "median": 0.304,
+            "worst": 0.305,
+            "best": 0.304
+          }
+        },
+        "patient": {
+          "outcomes": ["published", "upload_failed"],
+          "all_turns_ok": true,
+          "host_always_online": true,
+          "pointer_only_moves_on_success": true,
+          "capture_during_block_pause_s": {
+            "n": 2,
+            "median": 0.305,
+            "worst": 0.305,
+            "best": 0.305
+          }
+        }
+      },
+      "fulldisk": {
+        "preflight": {
+          "outcome": "skipped_no_space",
+          "published": false,
+          "pointer_unchanged": true,
+          "left_in_snapshot_area": [],
+          "stopped_after": [],
+          "turn_ok": true
+        },
+        "enospc_during_paused_copy": {
+          "outcome": "failed_no_space",
+          "published": false,
+          "pointer_unchanged": true,
+          "left_in_snapshot_area": [],
+          "stopped_after": [],
+          "turn_ok": true
+        },
+        "enospc_during_precopy": {
+          "outcome": "failed_no_space",
+          "published": false,
+          "pointer_unchanged": true,
+          "left_in_snapshot_area": [],
+          "stopped_after": [],
+          "turn_ok": true
+        }
+      }
+    },
+    "blocked": [
+      {
+        "policy": {
+          "name": "short",
+          "request_timeout_s": 20,
+          "attempts": 3,
+          "deadline_s": 600
+        },
+        "block_s": 130.9,
+        "upload": {
+          "outcome": "upload_failed",
+          "published": false,
+          "error": "ConnectionClosedError: Connection was closed before we received a valid response from endpoint URL: \"http://minio:9000/checkpoints/checkpoints/computer-1/e158b60fb4b2.tar.zst?uploadId=ZWUyYWZmZjYtMTc2OS00ZDMyLTg2ZTAtNDg1YjI5MTVlZTE1LmZjOWFkOTFmLTRiMzUtNDU4Ni1hNmE0LWM0MDUzYWVhMmE2YXgxNzkyMzQxMDU5MjQyNTE5NTg5&partNumber=17\".",
+          "total_s": 33.94,
+          "upload_s": null,
+          "abort_error": "ReadTimeoutError"
+        },
+        "upload_finished_after_unblock_s": -97.9,
+        "pointer_before": "202d72528e5e",
+        "pointer_after": "202d72528e5e",
+        "pointer_moved_to_new": false,
+        "turns": 12,
+        "turns_ok": 12,
+        "turn_s": {
+          "n": 12,
+          "median": 0.29,
+          "worst": 0.95,
+          "best": 0.29
+        },
+        "host_states": ["online"],
+        "capture_during_block": {
+          "outcome": "snapshot_ready",
+          "pause_s": 0.3046,
+          "copy_s": 0.3027
+        },
+        "runners_during_block": 3,
+        "stopped_after": []
+      },
+      {
+        "policy": {
+          "name": "patient",
+          "request_timeout_s": 60,
+          "attempts": 10,
+          "deadline_s": 900
+        },
+        "block_s": 121.4,
+        "upload": {
+          "outcome": "published",
+          "published": true,
+          "error": null,
+          "total_s": 131.326,
+          "upload_s": 131.321,
+          "abort_error": null
+        },
+        "upload_finished_after_unblock_s": 8.9,
+        "pointer_before": "e94ba91430c0",
+        "pointer_after": "f80320838d8a",
+        "pointer_moved_to_new": true,
+        "turns": 12,
+        "turns_ok": 12,
+        "turn_s": {
+          "n": 12,
+          "median": 0.29,
+          "worst": 2.37,
+          "best": 0.29
+        },
+        "host_states": ["online"],
+        "capture_during_block": {
+          "outcome": "snapshot_ready",
+          "pause_s": 0.3047,
+          "copy_s": 0.3027
+        },
+        "runners_during_block": 3,
+        "stopped_after": []
+      },
+      {
+        "policy": {
+          "name": "short",
+          "request_timeout_s": 20,
+          "attempts": 3,
+          "deadline_s": 600
+        },
+        "block_s": 120.0,
+        "upload": {
+          "outcome": "upload_failed",
+          "published": false,
+          "error": "ConnectionClosedError: Connection was closed before we received a valid response from endpoint URL: \"http://minio:9000/checkpoints/checkpoints/computer-1/b3178780470e.tar.zst?uploadId=ZWUyYWZmZjYtMTc2OS00ZDMyLTg2ZTAtNDg1YjI5MTVlZTE1LjA1MDg1ZGFmLTBjODItNDVlOC1iMTQzLTIzNmVkM2Y4ZjkxZHgxNzkyMzQxMzc1ODU0ODc4OTIy&partNumber=16\".",
+          "total_s": 35.071,
+          "upload_s": null,
+          "abort_error": "ReadTimeoutError"
+        },
+        "upload_finished_after_unblock_s": -86.0,
+        "pointer_before": "06b19c420379",
+        "pointer_after": "06b19c420379",
+        "pointer_moved_to_new": false,
+        "turns": 12,
+        "turns_ok": 12,
+        "turn_s": {
+          "n": 12,
+          "median": 0.29,
+          "worst": 0.37,
+          "best": 0.29
+        },
+        "host_states": ["online"],
+        "capture_during_block": {
+          "outcome": "snapshot_ready",
+          "pause_s": 0.3044,
+          "copy_s": 0.3025
+        },
+        "runners_during_block": 3,
+        "stopped_after": []
+      },
+      {
+        "policy": {
+          "name": "patient",
+          "request_timeout_s": 60,
+          "attempts": 10,
+          "deadline_s": 900
+        },
+        "block_s": 120.1,
+        "upload": {
+          "outcome": "upload_failed",
+          "published": false,
+          "error": "ConnectionClosedError: Connection was closed before we received a valid response from endpoint URL: \"http://minio:9000/checkpoints/checkpoints/computer-1/95e9a3ebc136.tar.zst?uploadId=ZWUyYWZmZjYtMTc2OS00ZDMyLTg2ZTAtNDg1YjI5MTVlZTE1LjM0NDI4NDYzLTdiNWItNDE5NS1hNmViLTJlMGM3Mjg5ODJkYXgxNzkyMzQxNTI2MDg1NzY5NTEw&partNumber=17\".",
+          "total_s": 121.048,
+          "upload_s": null,
+          "abort_error": null
+        },
+        "upload_finished_after_unblock_s": -0.0,
+        "pointer_before": "ac7dcae694f1",
+        "pointer_after": "ac7dcae694f1",
+        "pointer_moved_to_new": false,
+        "turns": 12,
+        "turns_ok": 12,
+        "turn_s": {
+          "n": 12,
+          "median": 0.29,
+          "worst": 0.29,
+          "best": 0.29
+        },
+        "host_states": ["online"],
+        "capture_during_block": {
+          "outcome": "snapshot_ready",
+          "pause_s": 0.3046,
+          "copy_s": 0.3027
+        },
+        "runners_during_block": 3,
+        "stopped_after": []
+      }
+    ],
+    "fulldisk": [
+      {
+        "case": "preflight",
+        "snap_fs_bytes": 50331648,
+        "outcome": "skipped_no_space",
+        "detail": "need 779757423 bytes, 50331648 free",
+        "required_bytes": 779757423,
+        "free_bytes": 50331648,
+        "pause_s": null,
+        "guard": null,
+        "published": false,
+        "left_in_snapshot_area": [],
+        "pointer_unchanged": true,
+        "stopped_after": [],
+        "turn_after": {
+          "ok": true,
+          "s": 0.29,
+          "status": "idle",
+          "reply": "ok from mock",
+          "send_attempts": 1
+        }
+      },
+      {
+        "case": "enospc_during_paused_copy",
+        "snap_fs_bytes": 50331648,
+        "outcome": "failed_no_space",
+        "detail": "-08b9d0420fe29601a5edca830655ef978049c037.pack\": No space left on device (28)\nrsync error: error in file IO (code 11) at receiver.c(657) [receiver=3.5.0]\nrsync: [sender] write error: Broken pipe (32)\n",
+        "required_bytes": -999287351441,
+        "free_bytes": 50331648,
+        "pause_s": 0.1751,
+        "guard": "released",
+        "published": false,
+        "left_in_snapshot_area": [],
+        "pointer_unchanged": true,
+        "stopped_after": [],
+        "turn_after": {
+          "ok": true,
+          "s": 0.29,
+          "status": "idle",
+          "reply": "ok from mock",
+          "send_attempts": 1
+        }
+      },
+      {
+        "case": "enospc_during_precopy",
+        "snap_fs_bytes": 50331648,
+        "outcome": "failed_no_space",
+        "detail": "-08b9d0420fe29601a5edca830655ef978049c037.pack\": No space left on device (28)\nrsync error: error in file IO (code 11) at receiver.c(657) [receiver=3.5.0]\nrsync: [sender] write error: Broken pipe (32)\n",
+        "required_bytes": -999287351441,
+        "free_bytes": 50331648,
+        "pause_s": null,
+        "guard": null,
+        "published": false,
+        "left_in_snapshot_area": [],
+        "pointer_unchanged": true,
+        "stopped_after": [],
+        "turn_after": {
+          "ok": true,
+          "s": 0.29,
+          "status": "idle",
+          "reply": "ok from mock",
+          "send_attempts": 1
+        }
+      }
+    ]
+  }
+}

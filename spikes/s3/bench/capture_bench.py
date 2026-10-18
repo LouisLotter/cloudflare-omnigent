@@ -123,7 +123,7 @@ def main() -> None:
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--budget", type=float, default=85.0)
     ap.add_argument("--sessions", type=int, default=4)
-    ap.add_argument("--plan", choices=["standard", "2phase", "reflink"], default="standard")
+    ap.add_argument("--plan", choices=["standard", "2phase", "reflink", "corrected"], default="standard")
     args = ap.parse_args()
 
     agent = omni.register_agent()
@@ -141,14 +141,16 @@ def main() -> None:
             plan = [("reflink", False), ("reflink", True)]
         elif args.plan == "2phase":
             plan = [("rsync-2phase", False), ("rsync-2phase", True)]
+        elif args.plan == "corrected":
+            # After IR-008/011/012/015/016: content-correct final pass, guard-owned
+            # stops, credential policy and checked copy steps.
+            plan = [("rsync-2phase", False), ("rsync-2phase", True), ("reflink", False), ("reflink", True)]
         else:
-            plan = [("rsync", False), ("rsync", True), ("tar", True)]
-            if profile != "large":
-                plan.append(("tar-zstd", True))
+            plan = [("rsync", False), ("rsync", True)]
         for method, cold in plan:
             for _ in range(args.runs if method.startswith("rsync") else max(3, args.runs // 2)):
                 rows.append(capture_once(method, args.budget, cold, main_session))
-        if args.plan == "standard":
+        if args.plan in ("standard", "corrected"):
             # Incremental: one full base, then small changes captured incrementally.
             sup("/rm", {"path": "/snap", "all": True, "forget_base": True})
             rows.append(capture_once("rsync-incremental", args.budget, True, main_session) | {"incremental_base": True})

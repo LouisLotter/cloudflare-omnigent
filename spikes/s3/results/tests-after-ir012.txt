@@ -1,0 +1,24 @@
+# spike S3 tests, label after-ir012
+# 2026-10-18T18:58:58Z
+# image sha256:e592364ed6999720162dfd955b8d33e4a8c3a449f336a0231b1ab6f253580712
+# S6 policy sha256 a4bd281c5924166c0ad06aa55bccfb1aac04e4ad89cf2b0dfb98879e8a458f01
+# exit 0
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.7.0
+rootdir: /opt/s3/tests
+collected 37 items / 28 deselected / 9 selected
+
+../opt/s3/tests/test_ir012_lease_race.py .........                       [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_late_stop_then_controller_death_pid_path
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_delayed_live_controller_publishes_nothing
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_prestopped_process_stays_stopped
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_reused_pid_is_never_resumed
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_late_freeze_then_controller_death_cgroup_path
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_refuses_a_stop_after_expiry
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_resumes_on_controller_loss
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_refuses_a_reused_pid
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_leaves_a_prestopped_process_alone
+======================= 9 passed, 28 deselected in 6.85s =======================
