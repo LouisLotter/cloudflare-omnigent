@@ -97,6 +97,10 @@ jobs:
       - name: Wrangler dry run
         run: pnpm --filter @cfo/worker dry-run
 
+      # Every built artefact is scanned too, not only the sources.
+      - name: Canary scan of the built Worker bundle
+        run: node scripts/canary-scan.ts worker/dist
+
   python:
     name: Python (ruff, pytest)
     runs-on: ubuntu-24.04
