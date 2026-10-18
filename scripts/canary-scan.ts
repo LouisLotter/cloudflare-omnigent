@@ -45,6 +45,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  brotliCompressSync,
   brotliDecompressSync,
   crc32,
   deflateRawSync,
@@ -309,33 +310,120 @@ function decode(codec: Codec, data: Buffer, maxOutputLength: number): Buffer {
 }
 
 export interface TarMember {
+  /** The full name, from a GNU long-name or pax `path` record when there is one. */
   readonly name: string;
   readonly data: Buffer;
 }
 
-/** The regular files in a ustar, GNU or pax tar archive, or null if the archive is malformed. */
-export function tarMembers(data: Buffer): TarMember[] | null {
+/** A tar archive's regular files, or why they cannot all be listed. */
+export type TarListing = { readonly members: TarMember[] } | { readonly error: string };
+
+const MALFORMED_TAR = { error: "malformed tar archive" } as const;
+
+/**
+ * Entry types skipped on purpose, with the reason. They carry no file content of their own;
+ * whatever bytes they hold are still covered by the raw scan of the whole archive.
+ */
+const TAR_ENTRIES_WITHOUT_CONTENT: Readonly<Record<string, string>> = {
+  "1": "hard link: its content belongs to another entry",
+  "2": "symbolic link",
+  "3": "character device",
+  "4": "block device",
+  "5": "directory",
+  "6": "FIFO",
+  V: "GNU volume label",
+  D: "GNU directory dump: a list of names",
+};
+
+/**
+ * The regular files in a ustar, GNU or pax tar archive. GNU long names ('L') and pax `path` and
+ * `size` records apply to the entry that follows them; a GNU long link name ('K') and other pax
+ * records (times, ownership, link targets, comments, character sets, extended attributes) do
+ * not affect what is scanned and are skipped. Anything else, such as a sparse file ('S' or
+ * `GNU.sparse.*`), a multi-volume part ('M'), a global pax `path` or `size`, or an unknown type,
+ * makes the listing fail rather than fall back to a truncated name or a wrong length.
+ */
+export function tarMembers(data: Buffer): TarListing {
   const members: TarMember[] = [];
+  let next: { name?: string; size?: number } = {};
   let offset = 0;
   while (offset + 512 <= data.length) {
     const header = data.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
-    const size = tarNumber(header.subarray(124, 136));
-    if (size === null || !tarChecksumMatches(header)) return null;
+    const headerSize = tarNumber(header.subarray(124, 136));
+    if (headerSize === null || !tarChecksumMatches(header)) return MALFORMED_TAR;
+    const type = String.fromCharCode(header[156] ?? 0);
+    const isExtension = type === "L" || type === "K" || type === "x" || type === "g";
+    const size = isExtension ? headerSize : (next.size ?? headerSize);
     const start = offset + 512;
-    if (start + size > data.length) return null;
-    const type = header[156];
-    if (type === 0 || type === 0x30 || type === 0x37) {
-      const name = tarString(header.subarray(0, 100));
-      const prefix = tarString(header.subarray(345, 500));
-      members.push({
-        name: prefix === "" ? name : `${prefix}/${name}`,
-        data: data.subarray(start, start + size),
-      });
-    }
+    if (start + size > data.length) return MALFORMED_TAR;
+    const content = data.subarray(start, start + size);
     offset = start + Math.ceil(size / 512) * 512;
+
+    if (type === "L") {
+      next = { ...next, name: tarString(content) };
+    } else if (type === "x" || type === "g") {
+      const records = paxRecordsIn(content);
+      if (records === null) return MALFORMED_TAR;
+      const applied = applyPaxRecords(records, type === "g", next);
+      if ("error" in applied) return applied;
+      next = applied;
+    } else if (type === "K") {
+      // The long name of a link target: not content, and it does not rename the next entry.
+    } else {
+      if (type === "0" || type === "\u0000" || type === "7") {
+        members.push({ name: next.name ?? tarHeaderName(header), data: content });
+      } else if (TAR_ENTRIES_WITHOUT_CONTENT[type] === undefined) {
+        return { error: `unsupported tar entry type ${JSON.stringify(type)}` };
+      }
+      next = {};
+    }
   }
-  return members;
+  return { members };
+}
+
+/** The name in a ustar header, joined to its prefix field in POSIX ustar (not old GNU) format. */
+function tarHeaderName(header: Buffer): string {
+  const name = tarString(header.subarray(0, 100));
+  const posix = header.subarray(257, 263).toString("latin1") === "ustar\u0000";
+  const prefix = posix ? tarString(header.subarray(345, 500)) : "";
+  return prefix === "" ? name : `${prefix}/${name}`;
+}
+
+/** Parses pax extended-header records, `<length> <key>=<value>\n`; null if malformed. */
+function paxRecordsIn(content: Buffer): Map<string, string> | null {
+  const records = new Map<string, string>();
+  let position = 0;
+  while (position < content.length) {
+    const space = content.indexOf(0x20, position);
+    const lengthText = content.subarray(position, Math.max(space, position)).toString("latin1");
+    if (space === -1 || !/^[0-9]+$/.test(lengthText)) return null;
+    const end = position + Number(lengthText);
+    if (end <= space + 1 || end > content.length || content[end - 1] !== 0x0a) return null;
+    const record = content.subarray(space + 1, end - 1).toString("utf8");
+    const equals = record.indexOf("=");
+    if (equals <= 0) return null;
+    records.set(record.slice(0, equals), record.slice(equals + 1));
+    position = end;
+  }
+  return records;
+}
+
+function applyPaxRecords(
+  records: ReadonlyMap<string, string>,
+  global: boolean,
+  next: { name?: string; size?: number },
+): { name?: string; size?: number } | { error: string } {
+  let applied = next;
+  for (const [key, value] of records) {
+    if (key.startsWith("GNU.sparse.")) return { error: "tar archive holds a GNU sparse file" };
+    if (key !== "path" && key !== "size") continue;
+    if (global) return { error: `tar archive has a global pax ${key} record` };
+    if (key === "path") applied = { ...applied, name: value };
+    else if (/^[0-9]+$/.test(value)) applied = { ...applied, size: Number(value) };
+    else return MALFORMED_TAR;
+  }
+  return applied;
 }
 
 function tarString(field: Buffer): string {
@@ -418,13 +506,13 @@ export async function scanPaths(
       return;
     }
     if (format.kind === "tar") {
-      const members = tarMembers(data);
-      if (members === null) {
-        problem("malformed tar archive");
+      const listing = tarMembers(data);
+      if ("error" in listing) {
+        problem(listing.error);
         return;
       }
       // The whole archive was scanned above; only members that need decoding go further.
-      for (const member of members) {
+      for (const member of listing.members) {
         if (detectFormat(member.data, member.name).kind === "plain") continue;
         const layer = `tar member ${shown(member.name)}`;
         scanData(member.data, file, [...layers, layer], member.name, depth + 1, true, budget);
@@ -530,26 +618,55 @@ export function formatFinding(finding: CanaryFinding): string {
   return `${location}: canary ${finding.masked} (${detail})`;
 }
 
-/** A ustar archive of regular files, for the self-test and tests. */
-export function tarArchive(entries: readonly { name: string; data: Uint8Array }[]): Buffer {
+export interface TarEntry {
+  /** Written to the 100-byte name field, so longer names are cut short, as real writers do. */
+  readonly name: string;
+  readonly data: Uint8Array;
+  /** The type flag; "0", a regular file, by default. */
+  readonly type?: string;
+  /** The header's size field, if it should differ from the data's length. */
+  readonly headerSize?: number;
+}
+
+/** A tar archive of the given entries, in POSIX ustar or old GNU format, for tests. */
+export function tarArchive(
+  entries: readonly TarEntry[],
+  format: "ustar" | "gnu" = "ustar",
+): Buffer {
   const blocks: Buffer[] = [];
-  for (const { name, data } of entries) {
+  for (const { name, data, type = "0", headerSize = data.length } of entries) {
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, "utf8");
     header.write("0000644\u0000", 100, "latin1");
     header.write("0000000\u0000", 108, "latin1");
     header.write("0000000\u0000", 116, "latin1");
-    header.write(`${data.length.toString(8).padStart(11, "0")}\u0000`, 124, "latin1");
+    header.write(`${headerSize.toString(8).padStart(11, "0")}\u0000`, 124, "latin1");
     header.write("00000000000\u0000", 136, "latin1");
     header.write(" ".repeat(8), 148, "latin1");
-    header[156] = 0x30;
-    header.write("ustar\u000000", 257, "latin1");
+    header.write(type, 156, "latin1");
+    header.write(format === "gnu" ? "ustar  \u0000" : "ustar\u000000", 257, "latin1");
     const sum = header.reduce((total, byte) => total + byte, 0);
     header.write(`${sum.toString(8).padStart(6, "0")}\u0000 `, 148, "latin1");
     blocks.push(header, Buffer.from(data), Buffer.alloc((512 - (data.length % 512)) % 512));
   }
   blocks.push(Buffer.alloc(1024));
   return Buffer.concat(blocks);
+}
+
+/** Pax extended-header records, `<length> <key>=<value>\n`, for tests. */
+export function paxRecords(records: Readonly<Record<string, string>>): Buffer {
+  return Buffer.concat(
+    Object.entries(records).map(([key, value]) => {
+      const body = ` ${key}=${value}\n`;
+      const bodyLength = Buffer.byteLength(body);
+      // The length counts its own digits.
+      let length = bodyLength;
+      while (String(length).length + bodyLength !== length) {
+        length = String(length).length + bodyLength;
+      }
+      return Buffer.from(`${length}${body}`);
+    }),
+  );
 }
 
 /** A zip archive holding one deflated file, for the self-test and tests. */
@@ -599,6 +716,7 @@ export async function runSelfTest(): Promise<string[]> {
     const exactValue = `self-test-login-${randomBytes(12).toString("hex")}`;
     const values = [exactValue];
     const log = `starting\nlogin token=${planted}\n`;
+    const longName = `artifacts/${"long-directory-name/".repeat(6)}server.log`;
     const cases: [string, Uint8Array | null, number][] = [
       ["server.log", Buffer.from(log), EXIT_FOUND],
       ["state.json", Buffer.from(JSON.stringify({ refresh_token: exactValue })), EXIT_FOUND],
@@ -620,6 +738,15 @@ export async function runSelfTest(): Promise<string[]> {
         gzipSync(tarArchive([{ name: "logs/app.log.gz", data: gzipSync(log) }])),
         EXIT_FOUND,
       ],
+      // A brotli member recognisable only by the .br at the end of its pax long name.
+      [
+        "long-name.tar",
+        tarArchive([
+          { name: "PaxHeader", type: "x", data: paxRecords({ path: `${longName}.br` }) },
+          { name: longName, data: brotliCompressSync(log.repeat(20)) },
+        ]),
+        EXIT_FOUND,
+      ],
       ["logs.zip", zipArchive("server.log", Buffer.from(log.repeat(4))), EXIT_INCOMPLETE],
       ["empty", null, EXIT_INCOMPLETE],
       ["clean.log", Buffer.from("starting\nlogin token=[redacted]\n"), EXIT_CLEAN],
@@ -632,6 +759,9 @@ export async function runSelfTest(): Promise<string[]> {
       const status = exitCodeFor(result);
       if (status !== expected)
         failures.push(`${name}: exit status ${status}, expected ${expected}`);
+      if (name === "long-name.tar" && !result.findings.some((f) => f.layers.includes("brotli"))) {
+        failures.push(`${name}: the brotli member was not decoded`);
+      }
       const report = [
         ...result.findings.map(formatFinding),
         ...result.problems.map((problem) => problem.message),
