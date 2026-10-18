@@ -25,3 +25,9 @@ build/
 .idea/
 .vscode/
 .DS_Store
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/
+
+# Local staging state: account, owner email and resource registry (never committed)
+.staging/

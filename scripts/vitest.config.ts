@@ -1,14 +1,13 @@
-import type { ViteUserConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 
-// Run by the root `test:scripts` script with the worker package's vitest: the repository root has
-// no vitest dependency, so this file has no runtime imports.
-export default {
+// Tests for the repository tools in scripts/: the canary scanner and the staging tool.
+export default defineConfig({
   root: import.meta.dirname,
-  // Keep Vite's cache out of scripts/, which has no node_modules of its own.
+  // Keep Vite's cache in the root node_modules rather than creating scripts/node_modules.
   cacheDir: "../node_modules/.vite/scripts",
   test: {
     name: "scripts",
-    include: ["test/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "staging/**/*.test.ts"],
     environment: "node",
   },
-} satisfies ViteUserConfig;
+});

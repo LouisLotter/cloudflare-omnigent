@@ -1,13 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node"],
-    // The repository root has no vitest dependency; the scripts tests run on the worker package's
-    // vitest (see the root test:scripts script), so its types resolve from there too.
-    "paths": {
-      "vitest": ["../worker/node_modules/vitest"],
-      "vitest/config": ["../worker/node_modules/vitest/config"]
-    }
+    "types": ["node"]
   },
-  "include": ["./**/*.ts"]
+  "include": ["."]
 }

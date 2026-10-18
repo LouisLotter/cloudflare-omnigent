@@ -14,9 +14,15 @@ importers:
       '@types/node':
         specifier: 26.6.5
         version: 26.6.5
+      fast-check:
+        specifier: 4.10.2
+        version: 4.10.2
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+      vitest:
+        specifier: 5.0.3
+        version: 5.0.3(@types/node@26.6.5)(@vitest/coverage-istanbul@5.0.3)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2))
 
   contracts:
     dependencies:
@@ -24,6 +30,9 @@ importers:
         specifier: 4.6.5
         version: 4.6.5
     devDependencies:
+      '@vitest/coverage-istanbul':
+        specifier: 5.0.3
+        version: 5.0.3(vitest@5.0.3)
       fast-check:
         specifier: 4.10.2
         version: 4.10.2
