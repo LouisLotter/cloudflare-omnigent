@@ -1,0 +1,18 @@
+checked 2026-10-18T16:04:21Z
+-- Worker: cf workers get cfo-stg-s7-managed
+
+┌ APIError
+│ [10007] This Worker does not exist on your account.
+-- container application cfo-stg-s7-managed-server: cf containers applications list --name cfo-stg-s7-managed-server
+[]
+-- container application cfo-stg-s7-managed-computer: cf containers applications list --name cfo-stg-s7-managed-computer
+[]
+-- registry images: cf containers images list (total entries, then entries matching cfo-stg-s7-managed)
+valid listing: 1 entries; 0 matching
+-- Access applications on cfo-stg-s7-managed.<zone>: cf zero-trust access applications list --domain … --exact
+[]
+-- staging registry record: pnpm stg list | grep cfo-stg-s7-managed
+0
+-- hostname: curl https://cfo-stg-s7-managed.<zone>/
+000
+no response
