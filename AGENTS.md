@@ -50,7 +50,7 @@ They stay there. If implementation shows the design is wrong, change the design 
 - Follow the handoff rules in `../AGENTS.md`, the workspace guidance one level above this checkout. Claude's work is reviewed by Codex with `codex exec` in a read-only sandbox, from a request packet that holds the diff, the test results and the questions.
 - The reviewer only reports. The implementing agent fixes valid findings, records reasons for declined ones, and reruns the checks. Allow at most two reviewer runs per handoff, then raise disagreements with the lead.
 - Save each report in the project notes, as `verification/reviews/<id>-r<n>.md`. Never commit a review to this repository.
-- Codex also runs an ongoing review of the integration branch. Its file and the responses to it are kept in the project notes too.
+- Codex also runs an ongoing review of the integration branch. It writes `docs/ACTIVE_REVIEW.md` in the maintainer's checkout, which `.gitignore` keeps out of the repository; responses to it go in the project notes.
 
 ## Staging and deployments
 
