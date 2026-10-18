@@ -26,8 +26,18 @@ class FakeStore implements Store {
   load(): Deployment[] {
     return parseRegistry(JSON.parse(this.text));
   }
-  save(deployments: readonly Deployment[]): void {
-    if (!this.frozen) this.text = serializeRegistry(deployments);
+  update(change: (current: Deployment[]) => Deployment[]): void {
+    if (!this.frozen) this.text = serializeRegistry(change(this.load()));
+  }
+}
+
+/** Per-deployment locks. A second holder is refused, as with flock --nonblock. */
+class FakeLocks {
+  readonly held = new Set<string>();
+  lock(name: string): () => void {
+    if (this.held.has(name)) throw new Error(`busy: ${name} is held by another command`);
+    this.held.add(name);
+    return () => this.held.delete(name);
   }
 }
 
@@ -36,7 +46,8 @@ type DeployFault =
   | "before-upload"
   | "after-upload"
   | "crash-after-access"
-  | "crash-after-upload";
+  | "crash-after-upload"
+  | "lost-response";
 type DeleteMode = "ok" | "fails-after-delete" | "fails" | "silently-keeps";
 
 /**
@@ -49,6 +60,10 @@ class FakeCloud implements Cloud {
   readonly apps = new Map<string, AccessApp>();
   readonly workers = new Map<string, string>(); // name -> hostname
   deployFault: DeployFault = "none";
+  /** Runs inside an upload, before it takes effect: another command acting meanwhile. */
+  duringUpload: (() => void) | undefined;
+  /** Uploads whose client died; they take effect at the next land(). */
+  readonly lateUploads = new Map<string, string>();
   readonly deleteModes = new Map<string, DeleteMode>();
   lookupUnknown = false;
   private nextId = 1;
@@ -105,11 +120,23 @@ class FakeCloud implements Cloud {
   }
   deployWorker(name: string, hostname: string, configPath: string): void {
     this.calls.push(`worker.deploy ${name} ${configPath}`);
+    this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
+    if (this.deployFault === "lost-response") {
+      this.lateUploads.set(name, hostname);
+      throw new Error("wrangler deploy exited with 1");
+    }
+    this.lateUploads.delete(name);
     this.workers.set(name, hostname);
     this.check();
     if (this.deployFault === "after-upload") throw new Error("wrangler deploy exited with 1");
     if (this.deployFault === "crash-after-upload") this.die();
+  }
+  /** The late uploads complete at Cloudflare. */
+  land(): void {
+    for (const [name, hostname] of this.lateUploads) this.workers.set(name, hostname);
+    this.lateUploads.clear();
+    this.check();
   }
   deleteWorker(name: string): void {
     this.calls.push(`worker.delete ${name}`);
@@ -132,14 +159,16 @@ let store: FakeStore;
 let cloud: FakeCloud;
 let clock: number;
 let views: Record<string, DeployConfigView>;
+let locks: FakeLocks;
 let ctx: Context;
+const SETTLE = 60_000;
 
-beforeEach(() => {
+function newContext(): Context {
   store = new FakeStore();
   cloud = new FakeCloud(store);
+  locks = new FakeLocks();
   clock = T0;
-  views = { [GOOD.path]: GOOD };
-  ctx = {
+  return {
     config,
     cloud,
     store,
@@ -148,15 +177,28 @@ beforeEach(() => {
       if (!view) throw new Error(`no config at ${path}`);
       return view;
     },
+    lock: (name) => locks.lock(name),
+    sleep: (ms) => {
+      clock += ms;
+      cloud.calls.push(`sleep ${ms}`);
+      cloud.land();
+    },
+    settleMs: SETTLE,
     now: () => new Date(clock),
     log: () => {},
   };
+}
+
+beforeEach(() => {
+  views = { [GOOD.path]: GOOD };
+  ctx = newContext();
 });
 
 /** A new process: the store is readable again and the injected faults are gone. */
 function restart(): void {
   store.frozen = false;
   cloud.deployFault = "none";
+  cloud.duringUpload = undefined;
   cloud.deleteModes.clear();
   cloud.lookupUnknown = false;
 }
@@ -349,6 +391,90 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
   });
 });
 
+describe("IR-001: overlapping commands and interrupted uploads", () => {
+  it("refuses a teardown from another command while an upload is in flight", () => {
+    // The reviewer's interleaving: Access created, upload paused, teardown runs, upload lands.
+    cloud.duringUpload = () => {
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("busy");
+      clock += 2 * DAY;
+      expect(sweep(ctx, true)).toEqual([expect.stringContaining("busy")]);
+      clock -= 2 * DAY;
+    };
+    deploy(ctx, request("a", 1));
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(record()).toMatchObject({ state: "deployed" });
+    expect(record()?.uploadStartedAt).toBeUndefined();
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("refuses a deploy while another command holds the deployment", () => {
+    const release = ctx.lock("cfo-stg-a");
+    expect(() => deploy(ctx, request())).toThrow("busy");
+    expect(cloud.calls).toEqual([]);
+    release();
+    expect(deploy(ctx, request()).state).toBe("deployed");
+  });
+
+  it("keeps Access when an interrupted upload lands during the settle wait", () => {
+    cloud.deployFault = "lost-response";
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    expect(record()?.uploadStartedAt).toBe(new Date(T0).toISOString());
+    expect(cloud.workers.size).toBe(0);
+
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
+
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.workers.size + cloud.apps.size).toBe(0);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("waits the settle time before removing Access after an interrupted upload", () => {
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.calls).toEqual([
+      "accounts",
+      "worker.exists",
+      `sleep ${SETTLE}`,
+      "worker.exists",
+      "access.list",
+      "access.delete cfo-stg-a",
+    ]);
+  });
+
+  it("does not wait after a clean deploy", () => {
+    deploy(ctx, request());
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.calls.some((call) => call.startsWith("sleep"))).toBe(false);
+  });
+
+  it("skips a deployment that another command redeployed after the sweep listed it", () => {
+    deploy(ctx, request("a", 1));
+    clock += 2 * DAY;
+    // The redeploy finishes between the sweep's listing and its teardown taking the lock.
+    ctx = {
+      ...ctx,
+      lock: (name) => {
+        store.update((all) =>
+          all.map((d) => ({ ...d, expiresAt: new Date(clock + DAY).toISOString() })),
+        );
+        return locks.lock(name);
+      },
+    };
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(record()?.state).toBe("deployed");
+  });
+});
+
 describe("IR-002: only closed Wrangler configurations deploy", () => {
   const open: Record<string, Partial<DeployConfigView>> = {
     "workers.dev enabled": { effective: { workers_dev: true, preview_urls: false } },
@@ -462,7 +588,9 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "after-upload",
         "crash-after-access",
         "crash-after-upload",
+        "lost-response",
       ),
+      overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
       kind: fc.constant("teardown" as const),
@@ -480,14 +608,21 @@ describe("model check: no Worker is ever reachable without its Access applicatio
   it("holds across any sequence of deploys, failures, crashes, teardowns and sweeps", () => {
     fc.assert(
       fc.property(fc.array(operation, { maxLength: 25 }), (operations) => {
-        store = new FakeStore();
-        cloud = new FakeCloud(store);
-        ctx = { ...ctx, cloud, store };
-        clock = T0;
+        ctx = newContext();
         for (const op of operations) {
           try {
             if (op.kind === "deploy") {
               cloud.deployFault = op.fault;
+              // Another command runs while the upload is in flight.
+              cloud.duringUpload = () => {
+                cloud.duringUpload = undefined;
+                try {
+                  if (op.overlap === "teardown") teardown(ctx, `cfo-stg-${op.suffix}`);
+                  if (op.overlap === "sweep") sweep(ctx, true);
+                } catch {
+                  // Refused or failed; the invariants decide whether that was safe.
+                }
+              };
               deploy(ctx, request(op.suffix, op.days));
             } else if (op.kind === "teardown") {
               cloud.deleteModes.set(`cfo-stg-${op.suffix}`, op.mode);
@@ -508,8 +643,18 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
           for (const app of cloud.apps.values()) expect(recorded.has(app.name)).toBe(true);
         }
-        // With the faults gone, teardown always finishes and leaves nothing behind.
-        for (const d of store.load()) teardown(ctx, d.name);
+        // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
+        // upload that lands during the settle wait costs one more attempt.
+        for (const d of store.load()) {
+          for (let attempt = 1; record(d.name); attempt++) {
+            try {
+              teardown(ctx, d.name);
+            } catch (error) {
+              if (attempt >= 2) throw error;
+            }
+          }
+        }
+        expect(cloud.violations).toEqual([]);
         expect(store.load()).toEqual([]);
         expect(cloud.workers.size + cloud.apps.size).toBe(0);
       }),
