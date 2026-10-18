@@ -1,0 +1,203 @@
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  type CommandResult,
+  childEnv,
+  cliCloud,
+  fileStore,
+  readWranglerConfig,
+  workerLookup,
+} from "./cloud.ts";
+import { type Deployment, validateDeployConfig } from "./guard.ts";
+
+const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
+const scratch = mkdtempSync(join(tmpdir(), "cfo-stg-test-"));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+const ok = (stdout: string): CommandResult => ({ status: 0, stdout, stderr: "" });
+const failed = (stderr: string): CommandResult => ({ status: 1, stdout: "", stderr });
+const NOT_FOUND = [
+  "┌ APIError",
+  "│ [10007] This Worker does not exist on your account.",
+  "│ 404 Not Found · HTTP /accounts/x/workers/workers/cfo-stg-a",
+  "└",
+].join("\n");
+
+describe("Worker lookup", () => {
+  it("answers only when Cloudflare answered about that exact Worker", () => {
+    expect(workerLookup(ok(JSON.stringify({ name: "cfo-stg-a" })), "cfo-stg-a")).toBe(true);
+    expect(workerLookup(ok(JSON.stringify({ result: { name: "cfo-stg-a" } })), "cfo-stg-a")).toBe(
+      true,
+    );
+    expect(workerLookup(failed(NOT_FOUND), "cfo-stg-a")).toBe(false);
+  });
+
+  it("treats every other outcome as unknown", () => {
+    for (const result of [
+      ok(JSON.stringify({ name: "cfo-stg-b" })),
+      ok("null"),
+      failed("│ [10000] Authentication error\n│ 403 Forbidden"),
+      failed("│ 404 Not Found"),
+      failed("fetch failed: ECONNRESET"),
+      { status: null, stdout: "", stderr: "" },
+    ]) {
+      expect(() => workerLookup(result, "cfo-stg-a")).toThrow();
+    }
+    expect(() => workerLookup(ok("not json"), "cfo-stg-a")).toThrow();
+  });
+});
+
+describe("CLI wiring", () => {
+  const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const cloud = cliCloud(config, "/repo/worker", (command, args) => {
+    calls.push({ command, args });
+    if (args[0] === "accounts") return ok(JSON.stringify({ result: [{ id: "a".repeat(32) }] }));
+    if (args[3] === "create") return ok(JSON.stringify({ result: { id: "app-1" } }));
+    if (args[3] === "list") return ok(JSON.stringify({ result: [] }));
+    return ok("{}");
+  });
+
+  it("asks Access only about the exact hostname", () => {
+    cloud.listAccessApps("cfo-stg-a.example.com");
+    expect(calls.at(-1)?.args).toEqual([
+      "zero-trust",
+      "access",
+      "applications",
+      "list",
+      "--domain",
+      "cfo-stg-a.example.com",
+      "--exact",
+    ]);
+  });
+
+  it("deploys and deletes with exactly the guarded arguments", () => {
+    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc");
+    expect(calls.at(-1)).toEqual({
+      command: "pnpm",
+      args: [
+        "--dir",
+        "/repo/worker",
+        "exec",
+        "wrangler",
+        "deploy",
+        "--config",
+        "/w/wrangler.jsonc",
+        "--name",
+        "cfo-stg-a",
+        "--domain",
+        "cfo-stg-a.example.com",
+      ],
+    });
+    cloud.deleteWorker("cfo-stg-a");
+    expect(calls.at(-1)?.args.slice(3)).toEqual([
+      "wrangler",
+      "delete",
+      "--name",
+      "cfo-stg-a",
+      "--force",
+    ]);
+  });
+
+  it("returns the created application's ID and fails loudly on a CLI error", () => {
+    expect(cloud.createAccessApp({ name: "cfo-stg-a" })).toBe("app-1");
+    expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
+    const broken = cliCloud(config, "/repo/worker", () => failed("│ [10000] Authentication error"));
+    expect(() => broken.accountIds()).toThrow("Authentication error");
+    expect(() => broken.deployWorker("cfo-stg-a", "h", "/c")).toThrow("wrangler deploy exited");
+  });
+
+  it("pins the account and drops CLOUDFLARE_ENV for every child process", () => {
+    process.env.CLOUDFLARE_ENV = "production";
+    try {
+      const env = childEnv("b".repeat(32));
+      expect(env.CLOUDFLARE_ACCOUNT_ID).toBe("b".repeat(32));
+      expect(env.CLOUDFLARE_ENV).toBeUndefined();
+    } finally {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  });
+});
+
+describe("Wrangler's own reading of a configuration", () => {
+  const write = (name: string, body: Record<string, unknown> | string): string => {
+    const path = join(scratch, name);
+    const base = { name: "x", main: "src/index.ts", compatibility_date: "2026-10-01" };
+    writeFileSync(path, typeof body === "string" ? body : JSON.stringify({ ...base, ...body }));
+    return path;
+  };
+  const check = (path: string) => validateDeployConfig(readWranglerConfig(path, WORKER));
+  const closed = { workers_dev: false, preview_urls: false };
+
+  it("accepts the checked-in Worker configuration", () => {
+    expect(() => check(join(WORKER, "wrangler.jsonc"))).not.toThrow();
+  });
+
+  it.each([
+    ["workers.dev enabled", { ...closed, workers_dev: true }],
+    ["preview URLs enabled", { ...closed, preview_urls: true }],
+    ["alternate URLs left to their defaults", {}],
+    ["a legacy route", { ...closed, route: "x.example.com/*" }],
+    ["several routes", { ...closed, routes: ["a.example.com/*", "b.example.com/*"] }],
+    [
+      "an extra custom domain",
+      { ...closed, routes: [{ pattern: "x.example.com", custom_domain: true }] },
+    ],
+    ["an environment", { ...closed, env: { staging: { workers_dev: true } } }],
+  ])("refuses %s", (label, body) => {
+    expect(() => check(write(`${label.replaceAll(" ", "-")}.json`, body))).toThrow(
+      "refusing Wrangler config",
+    );
+  });
+
+  it("reads JSONC the way Wrangler does, including comments and repeated keys", () => {
+    const path = write(
+      "repeated.jsonc",
+      `{
+        // the later key wins in Wrangler's parser
+        "name": "x", "main": "src/index.ts", "compatibility_date": "2026-10-01",
+        "workers_dev": false, "preview_urls": false, "workers_dev": true,
+      }`,
+    );
+    expect(() => check(path)).toThrow('"workers_dev" must be false');
+  });
+
+  it("refuses missing files, other formats, and a selected environment", () => {
+    expect(() => readWranglerConfig(join(scratch, "missing.jsonc"), WORKER)).toThrow("no Wrangler");
+    expect(() => readWranglerConfig(write("wrangler.toml", "name = 'x'"), WORKER)).toThrow(
+      "no Wrangler",
+    );
+    process.env.CLOUDFLARE_ENV = "staging";
+    try {
+      expect(() => readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER)).toThrow(
+        "CLOUDFLARE_ENV",
+      );
+    } finally {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  });
+});
+
+describe("registry file store", () => {
+  it("writes atomically, readable by the owner only", () => {
+    const file = join(scratch, "state", "resources.json");
+    const store = fileStore(file);
+    expect(store.load()).toEqual([]);
+    const d: Deployment = {
+      name: "cfo-stg-a",
+      hostname: "cfo-stg-a.example.com",
+      owner: "wp0.4",
+      createdAt: "2026-10-18T12:00:00.000Z",
+      expiresAt: "2026-10-25T12:00:00.000Z",
+      state: "pending",
+    };
+    store.save([d]);
+    expect(store.load()).toEqual([d]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(2);
+  });
+});
