@@ -60,6 +60,15 @@ function captureIo(env: Record<string, string | undefined> = {}): CliIo & {
   return { env, out, err, stdout: (line) => out.push(line), stderr: (line) => err.push(line) };
 }
 
+/** Edits the tar header at `offset` in place and recomputes its checksum. */
+function patchTarHeader(archive: Buffer, offset: number, patch: (header: Buffer) => void): void {
+  const header = archive.subarray(offset, offset + 512);
+  patch(header);
+  header.write(" ".repeat(8), 148, "latin1");
+  const sum = header.reduce((total, byte) => total + byte, 0);
+  header.write(`${sum.toString(8).padStart(6, "0")}\u0000 `, 148, "latin1");
+}
+
 /** Bytes shaped like an SQLite database, with `embedded` inside binary pages. */
 function sqliteLike(embedded: Uint8Array): Buffer {
   return Buffer.concat([
@@ -252,6 +261,28 @@ describe("tarMembers", () => {
     corrupted[0] = 0x42;
     expect(tarMembers(corrupted)).toBeNull();
     expect(tarMembers(archive.subarray(0, 700))).toBeNull();
+  });
+
+  it("joins the ustar prefix to the name and skips entries that are not regular files", () => {
+    const archive = tarArchive([
+      { name: "logs", data: Buffer.alloc(0) },
+      { name: "a.log", data: Buffer.from("x") },
+    ]);
+    patchTarHeader(archive, 0, (header) => {
+      header[156] = 0x35; // a directory
+    });
+    patchTarHeader(archive, 512, (header) => {
+      header.write("var/lib", 345, "utf8");
+    });
+    expect(tarMembers(archive)?.map((member) => member.name)).toEqual(["var/lib/a.log"]);
+  });
+
+  it("returns null for a size that is not octal", () => {
+    const archive = tarArchive([{ name: "a.log", data: Buffer.from("x") }]);
+    patchTarHeader(archive, 0, (header) => {
+      header.write("9999", 124, "latin1");
+    });
+    expect(tarMembers(archive)).toBeNull();
   });
 });
 
@@ -514,6 +545,39 @@ describe("scanPaths", () => {
     if (!isRoot) expect(result.problems).toContainEqual({ path: unreadable, message: "EACCES" });
     expect(result.problems).toContainEqual({ path: missing, message: "ENOENT" });
   });
+
+  it("reports an unreadable directory and a path that is neither file nor directory", async () => {
+    const locked = join(root, "locked");
+    await mkdir(locked);
+    await put("ok.txt", "clean");
+    await chmod(locked, 0o000);
+    try {
+      const result = await scanPaths([root, "/dev/null"]);
+
+      if (!isRoot) expect(result.problems).toContainEqual({ path: locked, message: "EACCES" });
+      expect(result.problems).toContainEqual({
+        path: "/dev/null",
+        message: "not a regular file or directory",
+      });
+    } finally {
+      await chmod(locked, 0o700);
+    }
+  });
+
+  it("stops decoding when the budget is used up exactly", async () => {
+    const inner = gzipSync("x");
+    const file = await put("two.gz", gzipSync(inner));
+
+    const result = await scanPaths([file], { limits: { maxDecodedBytes: inner.length } });
+
+    expect(result.problems).toEqual([
+      { path: file, message: `decoded data exceeds the ${inner.length}-byte bound (in gzip)` },
+    ]);
+  });
+
+  it("ignores an empty exact value", () => {
+    expect(findCanaries(Buffer.from("anything"), [""])).toEqual([]);
+  });
 });
 
 describe("main", () => {
@@ -565,6 +629,13 @@ describe("main", () => {
     expect(noPaths.err.join("\n")).toContain("usage:");
     expect(await main(["--unknown", root], captureIo())).toBe(EXIT_USAGE);
     expect(await main([join(root, "missing")], captureIo())).toBe(EXIT_USAGE);
+  });
+
+  it("prints its usage with --help", async () => {
+    const io = captureIo();
+
+    expect(await main(["--help"], io)).toBe(EXIT_CLEAN);
+    expect(io.out).toEqual(["usage: node scripts/canary-scan.ts [--self-test] <paths...>"]);
   });
 
   it("treats arguments after -- as paths", async () => {
