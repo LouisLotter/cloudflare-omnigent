@@ -7,6 +7,10 @@
 // Spike-only parts, never for the product: the `/__s5/*` routes (self-test, scenario runner,
 // fault injection), failure reasons in 403 bodies, synthetic secrets passed as variables, and
 // the `*_LOCAL_ONLY` origins, which are honoured only for http://127.0.0.1.
+//
+// Every route that changes state is a campaign control (src/controls.ts, IR-017): a GET shows a
+// confirmation page, the change is a same-origin POST with the stored request-intent token, and
+// fault and scenario controls also need an armed campaign that disarms itself.
 
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -19,6 +23,18 @@ import {
   upstreamHeaders,
   validateAccessJwt,
 } from "./access.ts";
+import {
+  armUntil,
+  type CampaignState,
+  CONTROLS,
+  type ControlSpec,
+  checkControl,
+  currentIntent,
+  isArmed,
+  newIntent,
+  PAGE_HEADERS,
+  renderConfirmation,
+} from "./controls.ts";
 import { aesGcmSealer, checkFormToken, formToken } from "./crypto.ts";
 import { type LoginRecord, PlatformLogin } from "./platform-login.ts";
 import { CARD_HEADERS, renderLoginCard } from "./repair-card.ts";
@@ -41,6 +57,8 @@ export interface Env {
   PLATFORM_LOGIN_KEY?: string;
   GRANT_LIFETIME_DAYS?: string;
   S5_FAULTS?: string;
+  /** The first request-intent token, random per deployment; rotated in storage on arm and disarm. */
+  S5_INTENT_SEED?: string;
   PLATFORM_LOGIN: DurableObjectNamespace<PlatformLoginDO>;
   OMNIGENT_SERVER: DurableObjectNamespace<OmnigentServerDO>;
 }
@@ -186,15 +204,22 @@ export class OmnigentServerDO extends DurableObject<Env> {
     return this.ready;
   }
 
+  /** Starts the container. Only the armed `POST /__s5/run` control calls this (IR-017). */
+  async start(): Promise<void> {
+    if (this.origin()) return;
+    await this.ensureStarted();
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = `${url.pathname}${url.search}`;
     // Never follow Omnigent's redirects here: the browser must see them.
     const origin = this.origin();
     if (origin) return fetch(new Request(`${origin}${path}`, request), { redirect: "manual" });
-    await this.ensureStarted();
     const container = this.ctx.container;
-    if (!container) return json({ error: { code: "no_upstream" } }, 503);
+    // Browsing never starts the container: a request only reaches one that is already running.
+    if (!container?.running) return json({ error: { code: "server_not_started" } }, 503);
+    await this.ensureStarted();
     return container
       .getTcpPort(OMNIGENT_PORT)
       .fetch(new Request(`http://omnigent${path}`, request), { redirect: "manual" });
@@ -208,9 +233,9 @@ export class OmnigentServerDO extends DurableObject<Env> {
       const r = await fetch(`${helper}/sql`, { method: "POST", body: sql });
       return { exitCode: r.ok ? 0 : 1, output: (await r.text()).slice(0, 500) };
     }
-    await this.ensureStarted();
     const container = this.ctx.container;
-    if (!container) throw new Error("no container");
+    if (!container?.running) throw new Error("the server is not running");
+    await this.ensureStarted();
     const code = [
       "import sqlite3, sys",
       "c = sqlite3.connect('/data/omnigent.db')",
@@ -291,6 +316,24 @@ export class PlatformLoginDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now());
   }
 
+  /** The campaign: the request-intent token in force and the arming deadline. Read-only. */
+  async campaign(): Promise<CampaignState> {
+    return (await this.ctx.storage.get<CampaignState>("campaign")) ?? {};
+  }
+
+  /** Arms until `untilMs` and rotates the intent token. Called only by a checked control. */
+  async arm(untilMs: number): Promise<string> {
+    const intent = newIntent();
+    await this.ctx.storage.put("campaign", { intent, armedUntil: untilMs });
+    return intent;
+  }
+
+  async disarm(): Promise<string> {
+    const intent = newIntent();
+    await this.ctx.storage.put("campaign", { intent });
+    return intent;
+  }
+
   async report(): Promise<unknown> {
     return (await this.ctx.storage.get("scenario-report")) ?? { state: "not_started" };
   }
@@ -342,18 +385,27 @@ function platform(env: Env): DurableObjectStub<PlatformLoginDO> {
 
 async function repairForm(request: Request, env: Env, admitted: Admitted): Promise<Response> {
   const url = new URL(request.url);
-  // Exact origin: the form posts only from this page.
-  if (request.headers.get("origin") !== url.origin) {
-    return json({ error: { code: "bad_origin" } }, 403);
-  }
-  const form = await request.formData();
-  const token = String(form.get("form_token") ?? "");
-  const password = String(form.get("password") ?? "");
+  const form = await request.formData().catch(() => undefined);
+  const stub = platform(env);
+  // The same campaign-control checks as every other change (IR-017): exact Origin, then the
+  // stored request-intent token. Then the form token bound to this Access identity.
+  const campaign = await stub.campaign();
+  const refusal = checkControl({
+    origin: request.headers.get("origin"),
+    secFetchSite: request.headers.get("sec-fetch-site"),
+    expectedOrigin: url.origin,
+    presented: (form?.get("intent") as string | null | undefined) ?? null,
+    expected: currentIntent(campaign, env.S5_INTENT_SEED),
+    needsArm: false,
+    armed: true,
+  });
+  if (refusal) return json({ error: { code: refusal } }, 403);
+  const token = String(form?.get("form_token") ?? "");
+  const password = String(form?.get("password") ?? "");
   const key = env.PLATFORM_LOGIN_KEY ?? "";
   if (!(await checkFormToken(key, token, admitted.identity.sub, "repair", Date.now()))) {
     return json({ error: { code: "bad_form_token" } }, 403);
   }
-  const stub = platform(env);
   const outcome = await stub.repair(password);
   log("repair", { outcome: outcome.kind });
   const message =
@@ -363,7 +415,8 @@ async function repairForm(request: Request, env: Env, admitted: Admitted): Promi
         ? "wrong_password"
         : "failed";
   const fresh = await formToken(key, admitted.identity.sub, "repair", Date.now());
-  return new Response(renderLoginCard(await stub.status(), fresh, message), {
+  const intent = currentIntent(await stub.campaign(), env.S5_INTENT_SEED) ?? "";
+  return new Response(renderLoginCard(await stub.status(), fresh, message, intent), {
     status: outcome.kind === "stored" ? 200 : 400,
     headers: { ...CARD_HEADERS, ...MARK },
   });
@@ -390,15 +443,151 @@ async function selfTest(request: Request, env: Env, admitted: Admitted) {
   return summary;
 }
 
+/**
+ * The owner's staging run, inside an armed campaign: the assertion self-test on this genuine
+ * assertion, the server started, requests through the public proxy path (with this request's
+ * own Access headers and cookies, which the proxy strips), and the scenarios in the background.
+ */
+async function run(request: Request, env: Env, admitted: Admitted): Promise<Response> {
+  const url = new URL(request.url);
+  const access = await selfTest(request, env, admitted);
+  const started = Date.now();
+  let serverStart = "started";
+  try {
+    await server(env).start();
+  } catch (error) {
+    serverStart = error instanceof Error ? error.message.slice(0, 200) : "error";
+  }
+  const viaProxy = async (method: string, path: string, body?: string) => {
+    const headers = new Headers(request.headers);
+    headers.delete("content-type");
+    if (body !== undefined) headers.set("content-type", "application/json");
+    try {
+      const r = await proxy(
+        new Request(new URL(path, url), { method, headers, ...(body ? { body } : {}) }),
+        env,
+      );
+      return `${r.status}${r.headers.get("x-s5-worker") === "1" ? " via worker" : ""}`;
+    } catch (error) {
+      return error instanceof Error ? error.message.slice(0, 200) : "error";
+    }
+  };
+  const behindAccess = {
+    serverStart,
+    health: await viaProxy("GET", "/health"),
+    coldStartMs: Date.now() - started,
+    scheduledTasksWithoutOmnigentLogin: await viaProxy("GET", "/v1/scheduled-tasks"),
+    firstVisitorSetup: await viaProxy(
+      "POST",
+      "/auth/setup",
+      JSON.stringify({ username: "intruder", password: "intruder-password" }),
+    ),
+    loginPage: await viaProxy("GET", "/"),
+  };
+  log("behind_access", behindAccess);
+  await platform(env).startScenarios();
+  return json({
+    access: { passed: access.passed, failed: access.failed, cases: access.cases },
+    behindAccess,
+    scenarios: "started; see /__s5/report",
+  });
+}
+
+/** A checked control's effect. Every check in checkControl has already passed. */
+async function runControl(
+  path: string,
+  request: Request,
+  env: Env,
+  admitted: Admitted,
+  form: FormData | undefined,
+): Promise<Response> {
+  const now = Date.now();
+  const page = (target: string, intent: string, armedUntil: number | undefined, message: string) =>
+    new Response(renderConfirmation(target, intent, armedUntil, now, message), {
+      headers: { ...PAGE_HEADERS, ...MARK },
+    });
+  switch (path) {
+    case "/__s5/arm": {
+      const until = armUntil(now, form?.get("seconds") as string | null | undefined);
+      const intent = await platform(env).arm(until);
+      log("campaign_armed", { until: new Date(until).toISOString() });
+      return page("/__s5/run", intent, until, "armed");
+    }
+    case "/__s5/disarm": {
+      const intent = await platform(env).disarm();
+      log("campaign_disarmed", {});
+      return page("/__s5/arm", intent, undefined, "disarmed");
+    }
+    case "/__s5/run":
+      return run(request, env, admitted);
+    case "/__s5/fault/revoke-grant":
+      return json({ revokeStatus: (await platform(env).faultRevoke()) ?? null });
+    case "/__s5/fault/drop-access":
+      await platform(env).faultDropAccess();
+      return json({ dropped: true });
+    case "/platform/bootstrap":
+      return json(await platform(env).bootstrap());
+    case "/platform/schedules":
+      return json(await platform(env).readSchedules());
+  }
+  return json({ error: { code: "not_found" } }, 404);
+}
+
+/**
+ * Campaign controls (IR-017). A GET or HEAD renders the confirmation page and writes nothing; a
+ * POST passes the origin, intent and arming checks before any effect.
+ */
+async function controlRoute(
+  request: Request,
+  env: Env,
+  admitted: Admitted,
+  spec: ControlSpec,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const campaign = await platform(env).campaign();
+  const expected = currentIntent(campaign, env.S5_INTENT_SEED);
+  const now = Date.now();
+  if (request.method === "GET" || request.method === "HEAD") {
+    if (expected === undefined) return json({ error: { code: "controls_disabled" } }, 503);
+    return new Response(renderConfirmation(url.pathname, expected, campaign.armedUntil, now), {
+      headers: { ...PAGE_HEADERS, ...MARK },
+    });
+  }
+  if (request.method !== "POST") {
+    return json({ error: { code: "method_not_allowed" } }, 405, { allow: "GET, HEAD, POST" });
+  }
+  const type = request.headers.get("content-type") ?? "";
+  const form =
+    type.includes("application/x-www-form-urlencoded") || type.includes("multipart/form-data")
+      ? await request.formData().catch(() => undefined)
+      : undefined;
+  const refusal = checkControl({
+    origin: request.headers.get("origin"),
+    secFetchSite: request.headers.get("sec-fetch-site"),
+    expectedOrigin: url.origin,
+    presented:
+      (form?.get("intent") as string | null | undefined) ?? request.headers.get("x-s5-intent"),
+    expected,
+    needsArm: spec.needsArm,
+    armed: env.S5_FAULTS === "1" && isArmed(campaign, now),
+  });
+  if (refusal) {
+    log("control_refused", { path: url.pathname, refusal });
+    return json({ error: { code: refusal } }, 403);
+  }
+  return runControl(url.pathname, request, env, admitted, form);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const admitted = await admit(request, env);
     if (admitted instanceof Response) return admitted;
     const url = new URL(request.url);
-    const route = `${request.method} ${url.pathname}`;
-    const faults = env.S5_FAULTS === "1";
+    const spec = CONTROLS[url.pathname];
+    if (spec) return controlRoute(request, env, admitted, spec);
 
-    switch (route) {
+    const method = request.method === "HEAD" ? "GET" : request.method;
+    switch (`${method} ${url.pathname}`) {
       case "GET /__s5/whoami":
         return json({
           ok: true,
@@ -408,59 +597,25 @@ export default {
         });
       case "GET /__s5/selftest":
         return json(await selfTest(request, env, admitted));
-      case "GET /__s5/run": {
-        // One owner visit in staging: the assertion self-test on this genuine assertion,
-        // requests through the public proxy path to the Omnigent container (with this request's
-        // own Access headers and cookies, which the proxy strips), and the platform-login
-        // scenarios started in the background.
-        const access = await selfTest(request, env, admitted);
-        const started = Date.now();
-        const viaProxy = async (method: string, path: string, body?: string) => {
-          const headers = new Headers(request.headers);
-          if (body !== undefined) headers.set("content-type", "application/json");
-          try {
-            const r = await proxy(
-              new Request(new URL(path, url), { method, headers, ...(body ? { body } : {}) }),
-              env,
-            );
-            return `${r.status}${r.headers.get("x-s5-worker") === "1" ? " via worker" : ""}`;
-          } catch (error) {
-            return error instanceof Error ? error.message.slice(0, 200) : "error";
-          }
-        };
-        const behindAccess = {
-          health: await viaProxy("GET", "/health"),
-          coldStartMs: Date.now() - started,
-          scheduledTasksWithoutOmnigentLogin: await viaProxy("GET", "/v1/scheduled-tasks"),
-          firstVisitorSetup: await viaProxy(
-            "POST",
-            "/auth/setup",
-            JSON.stringify({ username: "intruder", password: "intruder-password" }),
-          ),
-          loginPage: await viaProxy("GET", "/"),
-        };
-        log("behind_access", behindAccess);
-        if (faults) await platform(env).startScenarios();
-        return json({
-          access: { passed: access.passed, failed: access.failed, cases: access.cases },
-          behindAccess,
-          scenarios: faults ? "started; see /__s5/report" : "disabled",
-        });
-      }
-      case "POST /__s5/scenarios/run":
-        if (!faults) break;
-        await platform(env).startScenarios();
-        return json({ started: true });
       case "GET /__s5/report":
         return json(await platform(env).report());
+      case "GET /__s5/status": {
+        const campaign = await platform(env).campaign();
+        return json({
+          armed: env.S5_FAULTS === "1" && isArmed(campaign, Date.now()),
+          armedUntil: campaign.armedUntil ?? null,
+        });
+      }
       case "GET /platform/login": {
+        const stub = platform(env);
         const token = await formToken(
           env.PLATFORM_LOGIN_KEY ?? "",
           admitted.identity.sub,
           "repair",
           Date.now(),
         );
-        return new Response(renderLoginCard(await platform(env).status(), token), {
+        const intent = currentIntent(await stub.campaign(), env.S5_INTENT_SEED) ?? "";
+        return new Response(renderLoginCard(await stub.status(), token, undefined, intent), {
           headers: { ...CARD_HEADERS, ...MARK },
         });
       }
@@ -468,17 +623,6 @@ export default {
         return repairForm(request, env, admitted);
       case "GET /platform/status":
         return json(await platform(env).status());
-      case "POST /platform/bootstrap":
-        return json(await platform(env).bootstrap());
-      case "GET /platform/schedules":
-        return json(await platform(env).readSchedules());
-      case "POST /__s5/fault/revoke-grant":
-        if (!faults) break;
-        return json({ revokeStatus: (await platform(env).faultRevoke()) ?? null });
-      case "POST /__s5/fault/drop-access":
-        if (!faults) break;
-        await platform(env).faultDropAccess();
-        return json({ dropped: true });
     }
     if (url.pathname.startsWith("/__s5/") || url.pathname.startsWith("/platform/")) {
       return json({ error: { code: "not_found" } }, 404);

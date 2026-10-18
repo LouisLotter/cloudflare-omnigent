@@ -44,6 +44,7 @@ export function renderLoginCard(
   status: LoginStatus,
   formToken: string,
   message?: "repaired" | "wrong_password" | "failed",
+  intent = "",
 ): string {
   const parts: string[] = [];
   const needs = status.state !== "ok";
@@ -77,6 +78,7 @@ export function renderLoginCard(
     parts.push(
       '<form method="post" action="/platform/login/repair" autocomplete="off">',
       `<input type="hidden" name="form_token" value="${escapeHtml(formToken)}">`,
+      `<input type="hidden" name="intent" value="${escapeHtml(intent)}">`,
       '<label>Your Omnigent password <input type="password" name="password" required maxlength="1024" autocomplete="current-password"></label>',
       '<button type="submit">Sign the platform in</button>',
       "</form>",

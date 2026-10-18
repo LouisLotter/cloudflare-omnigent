@@ -1,0 +1,25 @@
+
+ RUN  v5.0.3 spikes/s5
+
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > reviewer scenario: a read failure right after the save that holds the grant 17ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > save after effect on the first save that holds the grant 2ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > save before effect on the first save that holds the grant 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > decrypt failure when reading the stored grant back 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > promotion fails before effect: the verified pending grant is promoted on restart, without a new login 2ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > promotion fails after effect: confirmed on restart, without a new login 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > read failure after promotion: no signal until a restart confirms it 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > a pending grant revoked before reconciliation is dropped, and bootstrap logs in again 2ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > Omnigent unreachable while a pending grant is reconciled: no signal, settled later 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > confirmation refreshes when the stored access token has expired 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > confirmation that finds the stored grant dead gives no signal, and bootstrap logs in again 2ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > a 5xx during confirmation leaves the acceptance pending 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: bootstrap acceptance is confirmed before success > storage unreadable at the start: no login with the secret, no signal 1ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: repair keeps the previous usable grant until its replacement is confirmed > proactive renewal whose promotion fails keeps reading with the old grant 2ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: repair keeps the previous usable grant until its replacement is confirmed > repair after revocation whose save commits but throws does not report ok with a dead grant 3ms
+ ✓ |spike-s5| test/ir-009.test.ts > IR-009: repair keeps the previous usable grant until its replacement is confirmed > repair read failure after the save that holds the grant 3ms
+
+ Test Files  1 passed (1)
+      Tests  16 passed (16)
+   Start at  20:50:22
+   Duration  148ms (tests 48%, transform 37%, import 13%, worker 2%)
+

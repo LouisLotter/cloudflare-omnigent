@@ -1,0 +1,339 @@
+{
+  "started": "2026-10-18T18:51:10.520Z",
+  "finished": "2026-10-18T18:51:24.509Z",
+  "image": "ghcr.io/omnigent-ai/omnigent-server@sha256:dba491573ba16b42da7447a7ab6e978bfeb6f49876093cc925f8340abd010df6",
+  "node": "v26.8.1",
+  "passed": 47,
+  "failed": 0,
+  "steps": [
+    {
+      "section": "setup",
+      "step": "Omnigent container, ms to healthy",
+      "expect": "(measurement)",
+      "got": "4542",
+      "pass": true
+    },
+    {
+      "section": "setup",
+      "step": "wrangler dev, ms to ready",
+      "expect": "(measurement)",
+      "got": "1007",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/run",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/run: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "GET shows a confirmation page whose button POSTs",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the page carries a request-intent token",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "HEAD /__s5/run",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "HEAD /__s5/run: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/fault/revoke-grant",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/fault/revoke-grant: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "simple cross-site form POST /__s5/arm",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "simple cross-site form POST /__s5/arm: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site form even with a valid token",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site form even with a valid token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "Origin: null",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "Origin: null: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "missing Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "missing Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin but Sec-Fetch-Site cross-site",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin but Sec-Fetch-Site cross-site: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, wrong token",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, wrong token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, no token",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, no token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on a fault route while disarmed",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on a fault route while disarmed: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on the scenario route while disarmed",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on the scenario route while disarmed: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform bootstrap without Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform bootstrap without Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform schedules read with a foreign Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform schedules read with a foreign Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid same-origin arm",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "campaign armed",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "token rotated when armed",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the previous token after rotation",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the previous token after rotation: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid fault control while armed",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "disarmed itself after its bound",
+      "expect": "false",
+      "got": "false",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after the bound",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after the bound: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "arm again",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "explicit disarm",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after disarm",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after disarm: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "server log",
+      "step": "login handler logged 'refresh grant issuance failed'",
+      "expect": "(measurement)",
+      "got": "0 time(s)",
+      "pass": true
+    },
+    {
+      "section": "secrets scan",
+      "step": "synthetic secrets or JWTs in 6 output files",
+      "expect": "0",
+      "got": "0",
+      "pass": true
+    }
+  ]
+}

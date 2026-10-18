@@ -108,6 +108,8 @@ function main(): void {
       OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: b64url(randomBytes(18)),
       OMNIGENT_COOKIE_SECRET: randomBytes(32).toString("hex"),
       PLATFORM_LOGIN_KEY: b64url(randomBytes(32)),
+      // The first request-intent token for the campaign controls (IR-017); rotated on arm.
+      S5_INTENT_SEED: b64url(randomBytes(32)),
     },
   };
   mkdirSync(GENERATED, { recursive: true, mode: 0o700 });

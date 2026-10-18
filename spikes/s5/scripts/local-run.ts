@@ -51,11 +51,18 @@ const AUD = randomBytes(32).toString("hex");
 const OTHER_AUD = randomBytes(32).toString("hex");
 const OWNER_EMAIL = "owner@s5.example.invalid";
 const USERNAME = "owner";
+// `--only-controls --label before|after`: run only the IR-017 section, into results/ir-017-<label>.json.
+const ONLY = process.argv.includes("--only-controls") ? "controls" : undefined;
+const LABEL = process.argv.includes("--label")
+  ? process.argv[process.argv.indexOf("--label") + 1]
+  : "run";
+const RESULT_NAME = ONLY ? `ir-017-${LABEL}.json` : "local-run.json";
 
 const secret = {
   password: base64UrlEncode(randomBytes(18)),
   cookie: randomBytes(32).toString("hex"),
   platformKey: base64UrlEncode(randomBytes(32)),
+  intentSeed: base64UrlEncode(randomBytes(32)),
 };
 
 const steps: { section: string; step: string; expect: string; got: string; pass: boolean }[] = [];
@@ -294,6 +301,7 @@ async function writeWorkerSecrets(withBootstrap: boolean): Promise<string> {
   const lines = [
     `PLATFORM_LOGIN_KEY=${secret.platformKey}`,
     `OWNER_EMAIL_SHA256=${await sha256Hex(OWNER_EMAIL)}`,
+    `S5_INTENT_SEED=${secret.intentSeed}`,
   ];
   if (withBootstrap) lines.push(`OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD=${secret.password}`);
   writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
@@ -514,6 +522,163 @@ async function ingress(): Promise<void> {
   note("derived cases passed", String(selftest.passed));
 }
 
+// ---- Campaign controls (IR-017, spikes/README.md) ----
+
+const LOCAL_ORIGIN = () => `http://127.0.0.1:${PORT.worker}`;
+
+function intentOf(html: string): string {
+  return /name="intent" value="([^"]+)"/.exec(html)?.[1] ?? "";
+}
+
+/** Everything a control could change: the scenario report, the campaign, Omnigent traffic, the login record. */
+async function snapshot(headers: Record<string, string>): Promise<string> {
+  const report = await call("GET", "/__s5/report", { headers });
+  const campaign = await call("GET", "/__s5/status", { headers });
+  const login = await call("GET", "/platform/status", { headers });
+  return JSON.stringify({
+    report: report.body,
+    campaign: campaign.body,
+    login: login.body,
+    upstream: upstream.length,
+  });
+}
+
+function postForm(
+  path: string,
+  headers: Record<string, string>,
+  fields: Record<string, string>,
+): Promise<Reply> {
+  return call("POST", path, {
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body: new URLSearchParams(fields).toString(),
+  });
+}
+
+/** A same-origin control as the confirmation page's button sends it: GET the page, POST its form. */
+async function control(
+  path: string,
+  fields: Record<string, string> = {},
+  headers?: Record<string, string>,
+): Promise<Reply> {
+  const good = headers ?? access(await sign(keys.current, claims()));
+  const page = await call("GET", path, { headers: good });
+  return postForm(
+    path,
+    { ...good, origin: LOCAL_ORIGIN(), "sec-fetch-site": "same-origin" },
+    { ...fields, intent: intentOf(page.body) },
+  );
+}
+
+async function campaignControls(): Promise<void> {
+  section = "campaign controls (IR-017)";
+  const good = access(await sign(keys.current, claims()));
+  const origin = LOCAL_ORIGIN();
+  const zero = async (step: string, expect: string, run: () => Promise<Reply>) => {
+    const before = await snapshot(good);
+    const r = await run();
+    const after = await snapshot(good);
+    check(step, expect, `${r.status} ${reasonOf(r)}`);
+    check(`${step}: zero effect`, "unchanged", before === after ? "unchanged" : "changed");
+    return r;
+  };
+
+  const page = await zero("cross-site top-level GET /__s5/run", "200 none", () =>
+    call("GET", "/__s5/run", {
+      headers: {
+        ...good,
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+      },
+    }),
+  );
+  check(
+    "GET shows a confirmation page whose button POSTs",
+    "true",
+    String(/<form method="post" action="\/__s5\/run"/.test(page.body)),
+  );
+  const intent = intentOf(page.body);
+  check("the page carries a request-intent token", "true", String(intent.length >= 32));
+  await zero("HEAD /__s5/run", "200 none", () => call("HEAD", "/__s5/run", { headers: good }));
+  await zero("cross-site top-level GET /__s5/fault/revoke-grant", "200 none", () =>
+    call("GET", "/__s5/fault/revoke-grant", {
+      headers: { ...good, "sec-fetch-site": "cross-site" },
+    }),
+  );
+  await zero("simple cross-site form POST /__s5/arm", "403 bad_origin", () =>
+    postForm(
+      "/__s5/arm",
+      { ...good, origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+      { seconds: "600" },
+    ),
+  );
+  await zero("cross-site form even with a valid token", "403 bad_origin", () =>
+    postForm(
+      "/__s5/arm",
+      { ...good, origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+      { seconds: "600", intent },
+    ),
+  );
+  await zero("Origin: null", "403 bad_origin", () =>
+    postForm("/__s5/arm", { ...good, origin: "null" }, { intent }),
+  );
+  await zero("missing Origin", "403 bad_origin", () => postForm("/__s5/arm", good, { intent }));
+  await zero("same Origin but Sec-Fetch-Site cross-site", "403 bad_origin", () =>
+    postForm("/__s5/arm", { ...good, origin, "sec-fetch-site": "cross-site" }, { intent }),
+  );
+  await zero("same Origin, wrong token", "403 bad_intent", () =>
+    postForm("/__s5/arm", { ...good, origin }, { intent: "x".repeat(43) }),
+  );
+  await zero("same Origin, no token", "403 bad_intent", () =>
+    postForm("/__s5/arm", { ...good, origin }, {}),
+  );
+  await zero("valid control on a fault route while disarmed", "403 not_armed", () =>
+    postForm("/__s5/fault/revoke-grant", { ...good, origin }, { intent }),
+  );
+  await zero("valid control on the scenario route while disarmed", "403 not_armed", () =>
+    postForm("/__s5/run", { ...good, origin }, { intent }),
+  );
+  await zero("platform bootstrap without Origin", "403 bad_origin", () =>
+    postForm("/platform/bootstrap", good, { intent }),
+  );
+  await zero("platform schedules read with a foreign Origin", "403 bad_origin", () =>
+    postForm("/platform/schedules", { ...good, origin: "https://attacker.example" }, { intent }),
+  );
+
+  const armed = await postForm(
+    "/__s5/arm",
+    { ...good, origin, "sec-fetch-site": "same-origin" },
+    { intent, seconds: "4" },
+  );
+  check("valid same-origin arm", "200", String(armed.status));
+  const status = (await call("GET", "/__s5/status", { headers: good })).body;
+  check("campaign armed", "true", String((JSON.parse(status) as { armed?: boolean }).armed));
+  const rotated = intentOf(armed.body);
+  check("token rotated when armed", "true", String(rotated !== "" && rotated !== intent));
+  await zero("the previous token after rotation", "403 bad_intent", () =>
+    postForm("/__s5/fault/drop-access", { ...good, origin }, { intent }),
+  );
+  const fault = await postForm("/__s5/fault/drop-access", { ...good, origin }, { intent: rotated });
+  check("valid fault control while armed", "200", String(fault.status));
+  await sleep(4500);
+  const later = (await call("GET", "/__s5/status", { headers: good })).body;
+  check(
+    "disarmed itself after its bound",
+    "false",
+    String((JSON.parse(later) as { armed?: boolean }).armed),
+  );
+  await zero("fault control after the bound", "403 not_armed", () =>
+    postForm("/__s5/fault/drop-access", { ...good, origin }, { intent: rotated }),
+  );
+  const rearmed = await control("/__s5/arm", { seconds: "600" });
+  check("arm again", "200", String(rearmed.status));
+  const disarmed = await control("/__s5/disarm");
+  check("explicit disarm", "200", String(disarmed.status));
+  await zero("fault control after disarm", "403 not_armed", () =>
+    postForm("/__s5/fault/drop-access", { ...good, origin }, { intent: intentOf(disarmed.body) }),
+  );
+}
+
 async function behindAccess(): Promise<void> {
   section = "omnigent behind the Worker";
   const good = access(await sign(keys.current, claims()));
@@ -566,12 +731,12 @@ async function bootstrapAndSecretRemoval(): Promise<void> {
     "bootstrap_pending false",
     `${status0.state} ${status0.bootstrapSecretRemovable}`,
   );
-  const boot = JSON.parse((await call("POST", "/platform/bootstrap", { headers: good })).body) as {
+  const boot = JSON.parse((await control("/platform/bootstrap", {}, good)).body) as {
     outcome: string;
     secretRemovable: boolean;
   };
   check("bootstrap", "stored true", `${boot.outcome} ${boot.secretRemovable}`);
-  const read = JSON.parse((await call("GET", "/platform/schedules", { headers: good })).body) as {
+  const read = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
   };
   check("platform reads /v1/scheduled-tasks with its own grant", "ok", read.kind);
@@ -588,14 +753,12 @@ async function bootstrapAndSecretRemoval(): Promise<void> {
     String(await startWorker(false)),
   );
   const good2 = access(await sign(keys.current, claims()));
-  const read2 = JSON.parse((await call("GET", "/platform/schedules", { headers: good2 })).body) as {
+  const read2 = JSON.parse((await control("/platform/schedules", {}, good2)).body) as {
     kind: string;
   };
   check("reads after the secret is gone", "ok", read2.kind);
   const loginsBefore = upstream.filter((u) => u.path === "/auth/login").length;
-  const boot2 = JSON.parse(
-    (await call("POST", "/platform/bootstrap", { headers: good2 })).body,
-  ) as {
+  const boot2 = JSON.parse((await control("/platform/bootstrap", {}, good2)).body) as {
     outcome: string;
   };
   check("bootstrap without the secret, after a stored grant", "already_stored", boot2.outcome);
@@ -613,8 +776,10 @@ function formTokenOf(html: string): string {
 async function repairOverHttp(): Promise<void> {
   section = "repair card over HTTP";
   const good = access(await sign(keys.current, claims()));
-  await call("POST", "/__s5/fault/revoke-grant", { headers: good });
-  const read = JSON.parse((await call("GET", "/platform/schedules", { headers: good })).body) as {
+  // Fault controls work only inside an armed campaign (IR-017).
+  await control("/__s5/arm", { seconds: "1200" }, good);
+  await control("/__s5/fault/revoke-grant", {}, good);
+  const read = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
     reason?: string;
   };
@@ -633,8 +798,9 @@ async function repairOverHttp(): Promise<void> {
   );
   const token = formTokenOf(page.body);
   const origin = `http://127.0.0.1:${PORT.worker}`;
+  const intent = intentOf(page.body);
   const form = (password: string, t = token) =>
-    new URLSearchParams({ form_token: t, password }).toString();
+    new URLSearchParams({ form_token: t, password, intent }).toString();
   const formHeaders = { ...good, "content-type": "application/x-www-form-urlencoded" };
 
   let r = await call("POST", "/platform/login/repair", {
@@ -647,6 +813,11 @@ async function repairOverHttp(): Promise<void> {
     body: form(secret.password),
   });
   check("foreign Origin", "403 bad_origin", `${r.status} ${reasonOf(r)}`);
+  r = await call("POST", "/platform/login/repair", {
+    headers: { ...formHeaders, origin },
+    body: new URLSearchParams({ form_token: token, password: secret.password }).toString(),
+  });
+  check("no request-intent token", "403 bad_intent", `${r.status} ${reasonOf(r)}`);
   r = await call("POST", "/platform/login/repair", {
     headers: { ...formHeaders, origin },
     body: form(secret.password, "1.AAAA"),
@@ -682,7 +853,7 @@ async function repairOverHttp(): Promise<void> {
     "200 repaired",
     `${r.status} ${/data-message="([^"]+)"/.exec(r.body)?.[1]}`,
   );
-  const after = JSON.parse((await call("GET", "/platform/schedules", { headers: good })).body) as {
+  const after = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
   };
   check("read after repair", "ok", after.kind);
@@ -692,8 +863,8 @@ async function transientAndPurge(): Promise<void> {
   section = "transient outage";
   const good = access(await sign(keys.current, claims()));
   execFileSync("docker", ["stop", "-t", "5", CONTAINER], { stdio: "ignore" });
-  await call("POST", "/__s5/fault/drop-access", { headers: good });
-  const down = JSON.parse((await call("GET", "/platform/schedules", { headers: good })).body) as {
+  await control("/__s5/fault/drop-access", {}, good);
+  const down = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
   };
   check("read while Omnigent is down", "transient", down.kind);
@@ -706,7 +877,7 @@ async function transientAndPurge(): Promise<void> {
     "Omnigent restart, ms to healthy",
     String(await waitHealthy(PORT.omnigent, "/health", (x) => x.status === 200)),
   );
-  const up = JSON.parse((await call("GET", "/platform/schedules", { headers: good })).body) as {
+  const up = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
   };
   check("read after Omnigent is back", "ok", up.kind);
@@ -718,10 +889,8 @@ async function transientAndPurge(): Promise<void> {
   // A fresh server process purges on its first refresh: the aged row is deleted before lookup.
   execFileSync("docker", ["restart", "-t", "5", CONTAINER], { stdio: "ignore" });
   await waitHealthy(PORT.omnigent, "/health", (x) => x.status === 200);
-  await call("POST", "/__s5/fault/drop-access", { headers: good });
-  const expired = JSON.parse(
-    (await call("GET", "/platform/schedules", { headers: good })).body,
-  ) as {
+  await control("/__s5/fault/drop-access", {}, good);
+  const expired = JSON.parse((await control("/platform/schedules", {}, good)).body) as {
     kind: string;
     reason?: string;
   };
@@ -741,6 +910,7 @@ async function transientAndPurge(): Promise<void> {
     body: new URLSearchParams({
       form_token: formTokenOf(page.body),
       password: secret.password,
+      intent: intentOf(page.body),
     }).toString(),
   });
   check("repair after expiry", "200", String(r.status));
@@ -751,12 +921,22 @@ async function scenarios(): Promise<void> {
   await stopWorker();
   await startWorker(true);
   const good = () => sign(keys.current, claims()).then(access);
-  // The same entry point the owner opens in staging.
+  // The same controls the owner uses in staging: arm, then confirm the run.
+  check(
+    "arm the campaign",
+    "200",
+    String((await control("/__s5/arm", { seconds: "1200" })).status),
+  );
   const run = JSON.parse(
     (
-      await call("GET", "/__s5/run", {
-        headers: { ...(await good()), cookie: "CF_Authorization=synthetic; theme=dark" },
-      })
+      await control(
+        "/__s5/run",
+        {},
+        {
+          ...(await good()),
+          cookie: "CF_Authorization=synthetic; theme=dark",
+        },
+      )
     ).body,
   ) as {
     access: { failed: number };
@@ -802,12 +982,12 @@ async function scenarios(): Promise<void> {
 
 function scanOutputs(): void {
   section = "secrets scan";
-  const needles = [secret.password, secret.cookie, secret.platformKey];
+  const needles = [secret.password, secret.cookie, secret.platformKey, secret.intentSeed];
   const files = [
     ...readdirSync(WORK)
       .filter((f) => f.endsWith(".log"))
       .map((f) => join(WORK, f)),
-    join(RESULTS, "local-run.json"),
+    join(RESULTS, RESULT_NAME),
     join(WORK, "omnigent.log"),
   ];
   let hits = 0;
@@ -843,7 +1023,12 @@ async function main(): Promise<void> {
       String(await waitHealthy(PORT.omnigent, "/health", (r) => r.status === 200)),
     );
     note("wrangler dev, ms to ready", String(await startWorker(true)));
+    if (ONLY === "controls") {
+      await campaignControls();
+      return;
+    }
     await ingress();
+    await campaignControls();
     await behindAccess();
     await bootstrapAndSecretRemoval();
     await repairOverHttp();
@@ -886,12 +1071,12 @@ async function main(): Promise<void> {
       failed: steps.filter((s) => !s.pass).length,
       steps,
     };
-    writeFileSync(join(RESULTS, "local-run.json"), `${JSON.stringify(summary, null, 2)}\n`);
+    writeFileSync(join(RESULTS, RESULT_NAME), `${JSON.stringify(summary, null, 2)}\n`);
     scanOutputs();
     summary.passed = steps.filter((s) => s.pass).length;
     summary.failed = steps.filter((s) => !s.pass).length;
     writeFileSync(
-      join(RESULTS, "local-run.json"),
+      join(RESULTS, RESULT_NAME),
       `${JSON.stringify({ ...summary, steps }, null, 2)}\n`,
     );
     console.log(`\n${summary.passed} passed, ${summary.failed} failed`);

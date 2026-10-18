@@ -6,15 +6,28 @@
 //
 // The rules it prototypes:
 //   - A grant is accepted only from a login response that carries refresh material, and only
-//     after it has minted an access token and read /v1/scheduled-tasks. Then it is sealed and
-//     written, read back, and only then does `firstGrantStoredAt` exist. The bootstrap secret is
-//     removable only from that moment (RC-02).
+//     after it has minted an access token and read /v1/scheduled-tasks.
+//   - Acceptance has three durable steps, because a storage write can fail before or after it
+//     takes effect, and a read-back can fail on its own (IR-009):
+//       1. `pending`: the sealed candidate is written beside the current grant and read back.
+//          A pending grant is never used; it is verified again before it can become current. If
+//          this step fails, the candidate is revoked: nothing trusts it.
+//       2. promotion: one write makes the candidate current (the replaced grant is kept as
+//          `sealedRetiring`) and clears `pending`. From here on the candidate may be durably
+//          current, so a failure is "pending", never a revocation.
+//       3. confirmation: the stored grant is read back intact and used for an authenticated read,
+//          and then `confirmedAt` (and once, `firstConfirmedAt`) is written and read back. Only
+//          then is the previous grant revoked, and only `firstConfirmedAt` makes the bootstrap
+//          secret removable (RC-02).
+//     Every bootstrap, repair and authenticated call first reconciles whatever an interrupted
+//     run left behind: it verifies and promotes a pending grant, or drops it when Omnigent refuses
+//     it, and confirms an unconfirmed promotion.
 //   - Omnigent login grants do not rotate, so concurrent or repeated refreshes are safe.
 //   - A refusal from /oauth/token (`invalid_grant`, `expired_token`, `invalid_request`), or a
 //     401 that survives a fresh access token, means the grant is dead: `needs_reauthentication`.
 //     A network error, 429 or 5xx is transient: the state stays `ok`, the data is stale.
 //   - Repair takes the owner's password once, obtains a new grant the same way, and keeps no
-//     password. The old grant is revoked only after the new one is stored.
+//     password. The previous usable grant stays current until its replacement is confirmed.
 
 import type { Sealer } from "./crypto.ts";
 
@@ -59,8 +72,14 @@ export interface LoginRecord {
   readonly accessExpiresAt?: number;
   readonly grantObtainedAt?: number;
   readonly grantLifetimeEndsAt?: number;
-  /** Set in the same write as the first stored grant. The bootstrap secret may go after this. */
-  readonly firstGrantStoredAt?: number;
+  /** A verified candidate written beside the current grant. Never used until reconciled. */
+  readonly pending?: PendingGrant;
+  /** The grant the current one replaced; revoked once the current one is confirmed. */
+  readonly sealedRetiring?: string;
+  /** When the current grant was confirmed. Unset after a promotion until confirmation. */
+  readonly confirmedAt?: number;
+  /** Set once, by the first confirmation. The bootstrap secret may go after this. */
+  readonly firstConfirmedAt?: number;
   readonly reason?: ReauthReason;
   /** What the server said, for example `expired_token`, `invalid_grant` or `http 401`. */
   readonly serverError?: string;
@@ -70,12 +89,33 @@ export interface LoginRecord {
   readonly events: readonly LoginEvent[];
 }
 
+export interface PendingGrant {
+  readonly sealedRefresh: string;
+  readonly sealedAccess: string;
+  readonly accessExpiresAt: number;
+  readonly obtainedAt: number;
+  readonly source: "bootstrap" | "repair";
+}
+
 export type ObtainOutcome =
+  /** Promoted and confirmed. */
   | { readonly kind: "stored" }
+  /** Possibly current, not yet confirmed; the next reconciliation settles it. Nothing revoked. */
+  | { readonly kind: "pending"; readonly detail: string }
+  /** Not kept: the candidate was revoked. */
+  | { readonly kind: "storage_failed"; readonly detail: string }
   | { readonly kind: "rejected"; readonly detail: string }
   | { readonly kind: "no_refresh" }
   | { readonly kind: "unusable"; readonly detail: string }
   | { readonly kind: "transient"; readonly detail: string };
+
+type Verified =
+  | { readonly kind: "ok"; readonly access: string; readonly expiresAt: number }
+  | { readonly kind: "dead"; readonly detail: string }
+  | { readonly kind: "transient"; readonly detail: string };
+
+const errorText = (error: unknown) =>
+  error instanceof Error ? error.message.slice(0, 120) : String(error);
 
 export type CallResult =
   | { readonly kind: "ok"; readonly response: Response }
@@ -167,25 +207,43 @@ export class PlatformLogin {
   }
 
   /**
-   * First login, with the bootstrap secret. Idempotent: once a grant has been stored, it never
-   * logs in again and reports the secret as removable.
+   * First login, with the bootstrap secret. Reconciles an interrupted earlier run first. Once a
+   * grant has been confirmed it never logs in again and reports the secret as removable; while
+   * an acceptance is unconfirmed it neither logs in nor reports the secret as removable.
    */
   async bootstrap(
     secret: string | undefined,
-  ): Promise<{ state: LoginState; secretRemovable: boolean; outcome: string }> {
-    const current = await this.record();
-    if (current.firstGrantStoredAt !== undefined) {
+  ): Promise<{ state: LoginState | "unknown"; secretRemovable: boolean; outcome: string }> {
+    let current: LoginRecord;
+    try {
+      await this.reconcile();
+      current = await this.record();
+    } catch {
+      // The durable state is unknown: logging in now could orphan or duplicate a grant.
+      return { state: "unknown", secretRemovable: false, outcome: "storage_unavailable" };
+    }
+    if (current.firstConfirmedAt !== undefined) {
       return { state: current.state, secretRemovable: true, outcome: "already_stored" };
+    }
+    const unsettled =
+      current.pending !== undefined ||
+      (current.state === "ok" &&
+        current.sealedRefresh !== undefined &&
+        current.confirmedAt === undefined);
+    if (unsettled) {
+      // A pending or unconfirmed grant that reconciliation could not settle yet (transient).
+      // A never-confirmed grant that reconciliation found dead falls through: log in again.
+      return { state: current.state, secretRemovable: false, outcome: "pending" };
     }
     if (secret === undefined || secret === "") {
       await this.needsReauth("no_credentials", undefined, "bootstrap: no secret");
       return { state: "needs_reauthentication", secretRemovable: false, outcome: "no_secret" };
     }
     const outcome = await this.obtain(secret, "bootstrap");
-    const after = await this.record();
+    const after = await this.record().catch(() => undefined);
     return {
-      state: after.state,
-      secretRemovable: after.firstGrantStoredAt !== undefined,
+      state: after?.state ?? "unknown",
+      secretRemovable: after?.firstConfirmedAt !== undefined && outcome.kind === "stored",
       outcome: outcome.kind,
     };
   }
@@ -195,7 +253,239 @@ export class PlatformLogin {
     if (password === "" || password.length > 1024) {
       return { kind: "rejected", detail: "empty or oversized password" };
     }
+    try {
+      await this.reconcile();
+    } catch (error) {
+      return { kind: "transient", detail: `storage: ${errorText(error)}` };
+    }
     return this.obtain(password, "repair");
+  }
+
+  /**
+   * Settles what an interrupted acceptance left behind. A pending grant is verified with
+   * Omnigent and promoted, or dropped if Omnigent refuses it. A promoted but unconfirmed grant
+   * is confirmed. A confirmed grant's retired predecessor is revoked. Transient failures leave
+   * everything as it is. Storage failures propagate.
+   */
+  async reconcile(): Promise<"settled" | "transient"> {
+    const record = await this.record();
+    if (record.pending !== undefined) {
+      let refresh: string | undefined;
+      try {
+        refresh = await this.deps.sealer.open(record.pending.sealedRefresh);
+      } catch {
+        refresh = undefined;
+      }
+      if (refresh === undefined) {
+        await this.dropPending("reconcile: pending grant unreadable, dropped");
+      } else {
+        const verified = await this.verifyGrant(refresh);
+        if (verified.kind === "transient") return "transient";
+        if (verified.kind === "dead") {
+          await this.dropPending(`reconcile: pending grant refused (${verified.detail}), dropped`);
+        } else {
+          const promoted = await this.promote(refresh, verified, record.pending.source);
+          if (promoted.kind !== "stored") return "transient";
+        }
+      }
+    }
+    const latest = await this.record();
+    if (
+      latest.state === "ok" &&
+      latest.sealedRefresh !== undefined &&
+      latest.confirmedAt === undefined
+    ) {
+      const confirmed = await this.confirm(undefined, "reconcile");
+      if (confirmed.kind !== "stored") return "transient";
+    } else if (latest.confirmedAt !== undefined && latest.sealedRetiring !== undefined) {
+      await this.retire(latest);
+    }
+    return "settled";
+  }
+
+  private async dropPending(event: string): Promise<void> {
+    const { pending: _p, ...rest } = await this.record();
+    await this.deps.store.save(this.withEvent(rest, event));
+  }
+
+  /** One refresh and one authoritative read. No side effects on the record. */
+  private async verifyGrant(refresh: string): Promise<Verified> {
+    const minted = await this.mint(refresh);
+    if (minted.kind === "transient") return minted;
+    if (minted.kind === "rejected") return { kind: "dead", detail: minted.error };
+    let probe: Response;
+    try {
+      probe = await this.deps.omnigent.request("/v1/scheduled-tasks", {
+        method: "GET",
+        headers: { authorization: `Bearer ${minted.access}` },
+      });
+    } catch (error) {
+      return {
+        kind: "transient",
+        detail: `read unreachable: ${error instanceof Error ? error.name : "error"}`,
+      };
+    }
+    if (probe.status === 200) return minted;
+    const detail = `read http ${probe.status}`;
+    return isTransientStatus(probe.status)
+      ? { kind: "transient", detail }
+      : { kind: "dead", detail };
+  }
+
+  /**
+   * Step 2: make the verified candidate current in one write, keeping the replaced grant as
+   * `sealedRetiring`. From the moment this write may have taken effect, nothing revokes the
+   * candidate; a failure is reported as `pending` and left to reconciliation.
+   */
+  private async promote(
+    refresh: string,
+    verified: { readonly access: string; readonly expiresAt: number },
+    source: "bootstrap" | "repair",
+  ): Promise<ObtainOutcome> {
+    try {
+      const latest = await this.record();
+      const {
+        pending,
+        confirmedAt: _c,
+        reason: _r,
+        serverError: _e,
+        since: _s,
+        lastTransient: _t,
+        ...kept
+      } = latest;
+      const now = this.deps.nowSeconds();
+      // An older retiring grant that never got revoked is revoked now, before its slot is reused.
+      if (kept.sealedRetiring !== undefined && kept.sealedRetiring !== kept.sealedRefresh) {
+        const older = await this.deps.sealer.open(kept.sealedRetiring).catch(() => undefined);
+        if (older !== undefined && older !== refresh) await this.revoke(older);
+      }
+      const next: LoginRecord = this.withEvent(
+        {
+          ...kept,
+          state: "ok",
+          sealedRefresh: pending?.sealedRefresh ?? (await this.deps.sealer.seal(refresh)),
+          sealedAccess: await this.deps.sealer.seal(verified.access),
+          accessExpiresAt: verified.expiresAt,
+          grantObtainedAt: pending?.obtainedAt ?? now,
+          grantLifetimeEndsAt: (pending?.obtainedAt ?? now) + this.deps.grantLifetimeSeconds,
+          ...(latest.sealedRefresh !== undefined ? { sealedRetiring: latest.sealedRefresh } : {}),
+        },
+        `${source}: grant promoted`,
+      );
+      await this.deps.store.save(next);
+    } catch (error) {
+      return { kind: "pending", detail: `promotion not confirmed: ${errorText(error)}` };
+    }
+    return this.confirm(refresh, source);
+  }
+
+  /**
+   * Step 3: the stored grant reads back intact (and equals `expected` when the caller still
+   * holds it in memory), works for an authenticated read with the stored copy, and the
+   * confirmation itself reads back. Only then is the replaced grant revoked.
+   */
+  private async confirm(expected: string | undefined, source: string): Promise<ObtainOutcome> {
+    let stored: string;
+    let access: string | undefined;
+    try {
+      const record = await this.record();
+      if (record.pending !== undefined || record.sealedRefresh === undefined) {
+        return { kind: "pending", detail: "promotion did not read back" };
+      }
+      stored = await this.deps.sealer.open(record.sealedRefresh);
+      if (expected !== undefined && stored !== expected) {
+        return { kind: "pending", detail: "stored grant differs from the one promoted" };
+      }
+      access =
+        record.sealedAccess !== undefined
+          ? await this.deps.sealer.open(record.sealedAccess)
+          : undefined;
+    } catch (error) {
+      return { kind: "pending", detail: `stored grant unreadable: ${errorText(error)}` };
+    }
+    // A real authenticated operation with what is stored, not with what is in memory.
+    let used = access !== undefined ? await this.readWith(access) : "refresh";
+    let fresh: { access: string; expiresAt: number } | undefined;
+    if (used === "refresh") {
+      const verified = await this.verifyGrant(stored);
+      if (verified.kind === "transient") return { kind: "pending", detail: verified.detail };
+      if (verified.kind === "dead") {
+        await this.needsReauth(
+          "grant_unusable",
+          verified.detail,
+          `${source}: stored grant refused`,
+        );
+        return { kind: "unusable", detail: verified.detail };
+      }
+      fresh = verified;
+      used = "ok";
+    }
+    if (used !== "ok") return { kind: "pending", detail: used };
+    try {
+      const latest = await this.record();
+      const now = this.deps.nowSeconds();
+      const confirmed: LoginRecord = this.withEvent(
+        {
+          ...latest,
+          ...(fresh
+            ? {
+                sealedAccess: await this.deps.sealer.seal(fresh.access),
+                accessExpiresAt: fresh.expiresAt,
+              }
+            : {}),
+          confirmedAt: now,
+          firstConfirmedAt: latest.firstConfirmedAt ?? now,
+          lastGoodAt: now,
+        },
+        `${source}: grant confirmed`,
+      );
+      await this.deps.store.save(confirmed);
+      const back = await this.record();
+      if (
+        back.confirmedAt === undefined ||
+        back.sealedRefresh === undefined ||
+        (await this.deps.sealer.open(back.sealedRefresh)) !== stored
+      ) {
+        return { kind: "pending", detail: "confirmation did not read back" };
+      }
+      await this.retire(back);
+    } catch (error) {
+      return { kind: "pending", detail: `confirmation not stored: ${errorText(error)}` };
+    }
+    return { kind: "stored" };
+  }
+
+  /** An authenticated read with a given access token: "ok", "refresh" on 401, or a transient detail. */
+  private async readWith(access: string): Promise<"ok" | "refresh" | string> {
+    try {
+      const r = await this.deps.omnigent.request("/v1/scheduled-tasks", {
+        method: "GET",
+        headers: { authorization: `Bearer ${access}` },
+      });
+      if (r.status === 200) return "ok";
+      if (r.status === 401) return "refresh";
+      return `read http ${r.status}`;
+    } catch (error) {
+      return `read unreachable: ${error instanceof Error ? error.name : "error"}`;
+    }
+  }
+
+  /** Revokes the replaced grant of a confirmed record, then forgets it. Best effort. */
+  private async retire(record: LoginRecord): Promise<void> {
+    if (record.sealedRetiring === undefined) return;
+    const [old, current] = await Promise.all([
+      this.deps.sealer.open(record.sealedRetiring).catch(() => undefined),
+      record.sealedRefresh !== undefined
+        ? this.deps.sealer.open(record.sealedRefresh).catch(() => undefined)
+        : Promise.resolve(undefined),
+    ]);
+    if (old !== undefined && old !== current) await this.revoke(old);
+    try {
+      const { sealedRetiring: _r, ...rest } = await this.record();
+      await this.deps.store.save(rest);
+    } catch {
+      // Reconciliation retries; a second revoke of the same grant is harmless.
+    }
   }
 
   private async obtain(password: string, source: "bootstrap" | "repair"): Promise<ObtainOutcome> {
@@ -284,45 +574,40 @@ export class PlatformLogin {
       return { kind: "unusable", detail };
     }
 
-    const now = this.deps.nowSeconds();
-    const {
-      reason: _r,
-      serverError: _e,
-      since: _s,
-      lastTransient: _t,
-      ...kept
-    } = await this.record();
-    const next: LoginRecord = this.withEvent(
-      {
-        ...kept,
-        state: "ok",
-        sealedRefresh: await this.deps.sealer.seal(refresh),
-        sealedAccess: await this.deps.sealer.seal(minted.access),
-        accessExpiresAt: minted.expiresAt,
-        grantObtainedAt: now,
-        grantLifetimeEndsAt: now + this.deps.grantLifetimeSeconds,
-        firstGrantStoredAt: kept.firstGrantStoredAt ?? now,
-        lastGoodAt: now,
-      },
-      `${source}: grant stored`,
-    );
+    // Step 1: write the candidate as pending, beside the current grant, and read it back.
+    const candidate: PendingGrant = {
+      sealedRefresh: await this.deps.sealer.seal(refresh),
+      sealedAccess: await this.deps.sealer.seal(minted.access),
+      accessExpiresAt: minted.expiresAt,
+      obtainedAt: this.deps.nowSeconds(),
+      source,
+    };
+    let replaced: PendingGrant | undefined;
     try {
-      await this.deps.store.save(next);
-      const back = await this.deps.store.load();
-      if (!back?.sealedRefresh || (await this.deps.sealer.open(back.sealedRefresh)) !== refresh) {
-        throw new Error("the stored grant did not read back");
+      const latest = await this.record();
+      replaced = latest.pending;
+      await this.deps.store.save(
+        this.withEvent({ ...latest, pending: candidate }, `${source}: grant written as pending`),
+      );
+      const back = await this.record();
+      if (
+        back.pending === undefined ||
+        (await this.deps.sealer.open(back.pending.sealedRefresh)) !== refresh
+      ) {
+        throw new Error("the pending grant did not read back");
       }
     } catch (error) {
-      // Never leave a live grant that nobody holds.
+      // Nothing uses a pending grant without verifying it again, so revoking it is safe even if
+      // the write took effect: reconciliation then finds it refused and drops it.
       await this.revoke(refresh);
-      throw error;
+      return { kind: "storage_failed", detail: errorText(error) };
     }
-    // Retire the previous grant only now that its replacement is durable.
-    if (before.sealedRefresh !== undefined) {
-      const old = await this.deps.sealer.open(before.sealedRefresh).catch(() => undefined);
+    if (replaced !== undefined) {
+      const old = await this.deps.sealer.open(replaced.sealedRefresh).catch(() => undefined);
       if (old !== undefined && old !== refresh) await this.revoke(old);
     }
-    return { kind: "stored" };
+    // Steps 2 and 3: promote, then confirm.
+    return this.promote(refresh, minted, source);
   }
 
   private async mint(refresh: string): Promise<Minted> {
@@ -428,7 +713,15 @@ export class PlatformLogin {
 
   /** An authenticated request with the platform's own grant. Never touches a computer's login. */
   async call(path: string, init: RequestInit = {}): Promise<CallResult> {
-    const record = await this.record();
+    let record: LoginRecord;
+    try {
+      // Settle an interrupted acceptance first; while it stays unsettled the current grant,
+      // which is the previous usable one, keeps serving.
+      await this.reconcile();
+      record = await this.record();
+    } catch (error) {
+      return { kind: "transient", detail: `storage: ${errorText(error)}` };
+    }
     if (record.state !== "ok") return { kind: "needs_reauthentication", reason: record.reason };
     for (const force of [false, true]) {
       const access = await this.accessToken(force);
@@ -500,7 +793,13 @@ export class PlatformLogin {
       grantObtainedAt: r.grantObtainedAt ?? null,
       grantLifetimeEndsAt: r.grantLifetimeEndsAt ?? null,
       expiresInSeconds: r.grantLifetimeEndsAt !== undefined ? r.grantLifetimeEndsAt - now : null,
-      bootstrapSecretRemovable: r.firstGrantStoredAt !== undefined,
+      bootstrapSecretRemovable: r.firstConfirmedAt !== undefined,
+      acceptance:
+        r.pending !== undefined || (r.sealedRefresh !== undefined && r.confirmedAt === undefined)
+          ? "pending"
+          : r.confirmedAt !== undefined
+            ? "confirmed"
+            : "none",
       lastTransient: r.lastTransient ?? null,
       events: r.events.slice(-12),
     };
@@ -531,7 +830,10 @@ export interface LoginStatus {
   readonly grantObtainedAt: number | null;
   readonly grantLifetimeEndsAt: number | null;
   readonly expiresInSeconds: number | null;
+  /** True once a grant has been confirmed: stored, read back, and used. Never reset. */
   readonly bootstrapSecretRemovable: boolean;
+  /** "pending" while an acceptance is unsettled; the platform then keeps its previous grant. */
+  readonly acceptance: "none" | "pending" | "confirmed";
   readonly lastTransient: { readonly at: number; readonly detail: string } | null;
   readonly events: readonly LoginEvent[];
 }

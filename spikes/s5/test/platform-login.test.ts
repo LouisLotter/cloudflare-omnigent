@@ -55,10 +55,12 @@ describe("bootstrap", () => {
     expect((await login.status()).bootstrapSecretRemovable).toBe(false);
     const r = await login.bootstrap(PASSWORD);
     expect(r).toEqual({ state: "ok", secretRemovable: true, outcome: "stored" });
-    // Verified before storing: one refresh and one read happened before the save.
+    // Verified before storing (one refresh, one read), then confirmed after promotion with an
+    // authenticated read that uses the stored copy of the access token.
     expect(server.calls).toEqual([
       "POST /auth/login",
       "POST /oauth/token",
+      "GET /v1/scheduled-tasks",
       "GET /v1/scheduled-tasks",
     ]);
     const read = await login.readSchedules();
@@ -153,25 +155,31 @@ describe("bootstrap", () => {
     expect((await login.bootstrap(PASSWORD)).outcome).toBe("stored");
   });
 
-  it("keeps the secret if the grant cannot be stored, and revokes the orphan", async () => {
-    store.failSave = false;
+  it("a promotion that cannot be stored stays pending: secret kept, grant not revoked", async () => {
+    // IR-009: once the promotion write may have taken effect, the candidate is never revoked.
     const original = store.save.bind(store);
-    let saves = 0;
+    let failing = true;
     store.save = async (record) => {
-      saves++;
-      if (record.state === "ok") throw new Error("storage unavailable");
+      if (failing && record.state === "ok") throw new Error("storage unavailable");
       return original(record);
     };
-    await expect(login.bootstrap(PASSWORD)).rejects.toThrow("storage unavailable");
-    expect(saves).toBeGreaterThan(0);
-    expect((await login.status()).bootstrapSecretRemovable).toBe(false);
-    expect(server.liveGrants()).toBe(0);
+    const r = await login.bootstrap(PASSWORD);
+    expect(r).toMatchObject({ secretRemovable: false, outcome: "pending" });
+    expect((await login.status()).acceptance).toBe("pending");
+    expect(server.liveGrants()).toBe(1);
+    failing = false;
+    expect(await login.bootstrap(PASSWORD)).toMatchObject({ secretRemovable: true });
+    expect(count("POST /auth/login")).toBe(1);
   });
 
-  it("keeps the secret if the stored grant does not read back", async () => {
+  it("a stored grant that does not read back is not confirmed until it does", async () => {
     store.corruptReadBack = true;
-    await expect(login.bootstrap(PASSWORD)).rejects.toThrow();
-    expect(server.liveGrants()).toBe(0);
+    const r = await login.bootstrap(PASSWORD);
+    expect(r).toMatchObject({ secretRemovable: false, outcome: "pending" });
+    expect(server.liveGrants()).toBe(1);
+    store.corruptReadBack = false;
+    expect(await login.bootstrap(PASSWORD)).toMatchObject({ secretRemovable: true });
+    expect((await login.readSchedules()).kind).toBe("ok");
   });
 });
 
@@ -329,28 +337,28 @@ describe("repair", () => {
     for (const saved of store.saves) expect(saved).not.toContain(PASSWORD);
   });
 
-  it("revokes the previous grant only after the new one is stored", async () => {
+  it("revokes the previous grant only once the new one is durably current and confirmed", async () => {
     await login.repair(PASSWORD); // the revoked grant gets a (harmless) revoke too
-    server.calls.length = 0;
-    const savesBefore = store.saves.length;
-    const order: string[] = [];
-    const save = store.save.bind(store);
-    store.save = async (r) => {
-      order.push(`save:${r.state}`);
-      return save(r);
-    };
+    const durableAtRevoke: (LoginRecord | undefined)[] = [];
+    const revoked: string[] = [];
     const request = server.request.bind(server);
     server.request = async (path, init) => {
-      order.push(`${init.method ?? "GET"} ${path}`);
+      if (path === "/oauth/revoke") {
+        durableAtRevoke.push(structuredClone(store.value));
+        revoked.push(new URLSearchParams(String(init.body)).get("refresh_token") ?? "");
+      }
       return request(path, init);
     };
     expect((await login.repair(PASSWORD)).kind).toBe("stored"); // proactive renewal while ok
-    expect(store.saves.length).toBeGreaterThan(savesBefore);
-    const stored = order.lastIndexOf("save:ok");
-    const revoke = order.indexOf("POST /oauth/revoke");
-    expect(stored).toBeGreaterThan(-1);
-    expect(revoke).toBeGreaterThan(stored);
+    expect(revoked).toHaveLength(1);
+    const at = durableAtRevoke[0];
+    expect(at?.pending).toBeUndefined();
+    expect(at?.confirmedAt).toBeDefined();
+    const current = at?.sealedRefresh ? await sealer.open(at.sealedRefresh) : undefined;
+    expect(current).toBeDefined();
+    expect(current).not.toBe(revoked[0]);
     expect(server.liveGrants()).toBe(1);
+    expect((await login.readSchedules()).kind).toBe("ok");
   });
 
   it("login without refresh at repair keeps needs_reauthentication with that reason", async () => {
@@ -380,6 +388,7 @@ describe("repair card", () => {
     grantLifetimeEndsAt: 1_800_000_000 + 30 * 86_400,
     expiresInSeconds: 30 * 86_400,
     bootstrapSecretRemovable: true,
+    acceptance: "confirmed" as const,
     lastTransient: null,
     events: [],
   };
