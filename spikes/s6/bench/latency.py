@@ -36,7 +36,7 @@ sys.path.insert(0, str(S6 / "credsync"))
 
 from controller import Controller  # noqa: E402
 from objstore import S3Store  # noqa: E402
-from ops import Computer, CredentialWatcher, capture_credentials  # noqa: E402
+from ops import Computer, CredentialWatcher, capture_credentials, mark_restored  # noqa: E402
 
 MINIO_IMAGE = "pgsty/minio@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372"
 FAKES = S6 / "fakes" / "fake_cli.py"
@@ -79,6 +79,7 @@ def main() -> int:
     a = ap.parse_args()
 
     tmp = Path(tempfile.mkdtemp(prefix="s6-bench-"))
+    os.environ["S6_STATE_DIR"] = str(tmp / "state")
     container = None
     user, password = "s6bench", secrets.token_hex(16)  # throwaway local MinIO root, never kept
     try:
@@ -117,6 +118,7 @@ def main() -> int:
             cli("omnigent", "login", "http://omnigent.internal")
             ctl = Controller(tmp / f"ctl-{int(settle_ms)}.sqlite")
             comp = Computer(f"bench{int(settle_ms)}", ctl.start_generation(f"bench{int(settle_ms)}"), store, ctl)
+            mark_restored(comp)  # a new computer: nothing to restore
             capture_credentials(comp, home)
 
             events: list[dict] = []

@@ -1,10 +1,14 @@
 {
   "label": "D after restore",
-  "at": "2026-10-18T15:16:23.733+00:00",
+  "at": "2026-10-18T15:44:25.484+00:00",
   "home": "~",
   "files": [
     {
       "path": ".claude/.credentials.json",
+      "exists": false
+    },
+    {
+      "path": ".claude/.device-keys.json",
       "exists": false
     },
     {
@@ -22,9 +26,9 @@
       "mode": "0600",
       "size": 92,
       "uid": 0,
-      "inode": 2977363,
+      "inode": 3971286,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:23.582+00:00",
+      "mtime": "2026-10-18T15:44:25.276+00:00",
       "parse": "json",
       "keys": [
         {

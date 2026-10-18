@@ -1,10 +1,12 @@
-{"loggedIn": true, "authMethod": "claude.ai"}
-Logged in using ChatGPT
-{"loggedIn": true, "authMethod": "claude.ai"}
-Logged in using ChatGPT
-{"loggedIn": true, "authMethod": "claude.ai"}
-Logged in using ChatGPT
-{"loggedIn": false, "authMethod": "none"}
-Not logged in
-{"loggedIn": false, "authMethod": "none"}
-Not logged in
+{"claude_logged_in": "true"}
+{"codex_logged_in": "true"}
+{"claude_logged_in": "true"}
+{"codex_logged_in": "true"}
+{"claude_logged_in": "true"}
+{"codex_logged_in": "true"}
+{"claude_logout_exit": 0}
+{"codex_logout_exit": 0}
+{"claude_logged_in": "false", "codex_logged_in": "false", "declared_files_present": []}
+{"claude_logged_in": "false", "codex_logged_in": "false", "declared_files_present": []}
+{"claude_logged_in": "false", "codex_logged_in": "false", "declared_files_present": []}
+{"claude_logged_in": "false", "codex_logged_in": "false", "declared_files_present": []}

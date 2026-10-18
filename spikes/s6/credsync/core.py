@@ -15,6 +15,7 @@ Rules this module follows, from the design ("Checkpoints", "Which credentials wi
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import hashlib
 import io
 import json
@@ -23,6 +24,7 @@ import re
 import secrets
 import stat
 import tarfile
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
@@ -53,8 +55,8 @@ class DeclaredFile:
         return str(PurePosixPath(self.path).parent)
 
 
-# The list confirmed by spike S6 for Claude Code 2.1.296, Codex 0.162.1 and Omnigent 0.17.0.
-# Evidence: docs/verification/spike-s6.md.
+# The list confirmed by spike S6 for Claude Code 2.1.296, Codex 0.162.1 and Omnigent 0.17.0,
+# plus one provisional entry. Evidence: docs/verification/spike-s6.md.
 DECLARED_FILES: tuple[DeclaredFile, ...] = (
     DeclaredFile(
         cli="claude",
@@ -62,6 +64,16 @@ DECLARED_FILES: tuple[DeclaredFile, ...] = (
         # Claude's atomic writer stages "<target>.tmp.<8 hex>" (or ".tmp.<pid>.<12 hex>") beside
         # the target and renames it into place.
         temp_name_patterns=(r"\.credentials\.json\.tmp\.[0-9a-f]{8}", r"\.credentials\.json\.tmp\.\d+\.[0-9a-f]{12}"),
+    ),
+    DeclaredFile(
+        cli="claude",
+        path=".claude/.device-keys.json",
+        # Provisional: Claude Code 2.1.296 has a device-key store (a private key for its device
+        # registry) kept either inside .credentials.json or in this file. No tested flow created
+        # it; until the owner session shows whether a real login does, it is treated as login
+        # material, so it never enters a workspace checkpoint.
+        temp_name_patterns=(r"\.device-keys\.json\.tmp\.[0-9a-f]{8}", r"\.device-keys\.json\.tmp\.\d+\.[0-9a-f]{12}"),
+        lock_names=(".device-keys.lock",),
     ),
     DeclaredFile(
         cli="codex",
@@ -153,7 +165,13 @@ def read_stable(path: Path, max_bytes: int = 1 << 20) -> tuple[Signature, bytes 
         return before, None
     if not before.is_regular:
         raise RefusedFile(str(path))
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (FileNotFoundError, OSError) as e:
+        # Deleted or replaced between the stat and the open (for example a logout): settle again.
+        if isinstance(e, FileNotFoundError) or getattr(e, "errno", None) == 40:  # ELOOP
+            raise UnstableRead(str(path)) from None
+        raise
     try:
         chunks = []
         total = 0
@@ -197,6 +215,9 @@ class CredentialSnapshot:
     records: list[FileRecord]
     blobs: dict[str, bytes]  # path -> bytes, present files only. Never logged.
     taken_at: float
+    # Position in the order the copies were taken on this computer, within one generation.
+    # Publishing is fenced on it, so a copy that is uploaded late never replaces a newer one.
+    order: int = 0
 
     def digest(self) -> str:
         """Identity of the snapshot's contents: paths, states and content hashes."""
@@ -206,8 +227,44 @@ class CredentialSnapshot:
         return h.hexdigest()
 
 
-def take_credential_snapshot(home: Path, declared: Iterable[DeclaredFile] = DECLARED_FILES) -> CredentialSnapshot:
-    """Copy every declared file's bytes, or record its absence. Raises UnstableRead on a race."""
+def default_state_dir() -> Path:
+    """Per-computer state outside the home directory (never checkpointed)."""
+    explicit = os.environ.get("S6_STATE_DIR")
+    if explicit:
+        return Path(explicit)
+    system = Path("/var/lib/s6")
+    try:
+        system.mkdir(parents=True, exist_ok=True)
+        if os.access(system, os.W_OK):
+            return system
+    except OSError:
+        pass
+    return Path(tempfile.gettempdir()) / f"s6-state-{os.getuid()}"
+
+
+def take_credential_snapshot(home: Path, declared: Iterable[DeclaredFile] = DECLARED_FILES,
+                             state_dir: Path | None = None) -> CredentialSnapshot:
+    """Copy every declared file's bytes, or record its absence. Raises UnstableRead on a race.
+
+    The copy is taken under an exclusive lock that also hands out its order number, so the order
+    numbers of all copies on one computer follow the order in which the files were read.
+    """
+    state = state_dir or default_state_dir()
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(state / "snapshot.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        counter = state / "snapshot.counter"
+        try:
+            order = int(counter.read_text() or "0") + 1
+        except FileNotFoundError:
+            order = 1
+        counter.write_text(str(order))
+        snap = _read_declared(home, declared)
+        snap.order = order
+        return snap
+
+
+def _read_declared(home: Path, declared: Iterable[DeclaredFile]) -> CredentialSnapshot:
     records: list[FileRecord] = []
     blobs: dict[str, bytes] = {}
     for d in declared:
@@ -272,6 +329,7 @@ def credential_manifest(snapshot: CredentialSnapshot, *, computer_id: str, gener
         "computer_id": computer_id,
         "generation": generation,
         "seq": seq,
+        "snapshot_order": snapshot.order,
         "captured_at": snapshot.taken_at,
         "archive": {"key": archive_key, "sha256": archive_sha256},
         "files": [r.to_json() for r in snapshot.records],

@@ -1,17 +1,76 @@
-{"at": "2026-10-18T15:16:04Z", "step": "session-start", "revision": "5eb918bd43bc13b1a68c0ff5845e385d34bf04aa", "spike_tree_dirty": true, "image": "cfo-s6-computer:dev", "image_id": "sha256:91640caeadf2daff36d6d2259e4e808079cdbcccdda75181aa6eab4af5f49e8c", "mode": "fake CLIs (dry run)", "approval": null}
-{"at": "2026-10-18T15:16:09Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-a"}
-{"at": "2026-10-18T15:16:09Z", "step": "versions", "versions": []}
-{"at": "2026-10-18T15:16:09Z", "step": "claude-sign-in", "status": "{\"loggedIn\": true, \"authMethod\": \"claude.ai\"}"}
-{"at": "2026-10-18T15:16:09Z", "step": "codex-sign-in", "status": "Logged in using ChatGPT"}
-{"at": "2026-10-18T15:16:14Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-a", "confirmed_gone": true}
-{"at": "2026-10-18T15:16:14Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-b"}
-{"at": "2026-10-18T15:16:15Z", "step": "b-status", "claude": "{\"loggedIn\": true, \"authMethod\": \"claude.ai\"}", "codex": "Logged in using ChatGPT"}
-{"at": "2026-10-18T15:16:18Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-b", "confirmed_gone": true}
-{"at": "2026-10-18T15:16:18Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-c"}
-{"at": "2026-10-18T15:16:18Z", "step": "c-status", "claude": "{\"loggedIn\": true, \"authMethod\": \"claude.ai\"}", "codex": "Logged in using ChatGPT"}
-{"at": "2026-10-18T15:16:22Z", "step": "c-signed-out", "claude": "{\"loggedIn\": false, \"authMethod\": \"none\"}", "codex": "Not logged in"}
-{"at": "2026-10-18T15:16:22Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-c", "confirmed_gone": true}
-{"at": "2026-10-18T15:16:23Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-d"}
-{"at": "2026-10-18T15:16:23Z", "step": "d-status", "claude": "{\"loggedIn\": false, \"authMethod\": \"none\"}", "codex": "Not logged in"}
-{"at": "2026-10-18T15:16:25Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-d", "confirmed_gone": true}
-{"at": "2026-10-18T15:16:26Z", "step": "cleanup", "left_behind": {"computers": [], "minio": false, "network": false, "shm": false}}
+{"at": "2026-10-18T15:43:54Z", "step": "session-start", "revision": "cbdeb6980d505cc9684f10ef2fee2beddcc0428e", "spike_tree_dirty": true, "image": "cfo-s6-computer:dev", "image_id": "sha256:492b7b37c321c11832bfe2ef5bb7d002cf180f543deea14d3934acd638b933f3", "mode": "fake CLIs (dry run)", "approval": null}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-a"}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "versions", "versions": []}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "sign-in", "computer": "cfo-s6-owner-pc-a", "command": "claude", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "sign-in", "computer": "cfo-s6-owner-pc-a", "command": "codex", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "claude-status", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "codex-status", "exit": 0}
+{"at": "2026-10-18T15:43:59Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:00Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "watch-start", "exit": 0}
+{"at": "2026-10-18T15:44:00Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:00Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "copies", "exit": 0}
+{"at": "2026-10-18T15:44:00Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "lifetimes", "exit": 0}
+{"at": "2026-10-18T15:44:00Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "claude-ask", "exit": 0}
+{"at": "2026-10-18T15:44:01Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "codex-ask", "exit": 0}
+{"at": "2026-10-18T15:44:01Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:01Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "claude-force-refresh", "exit": 0}
+{"at": "2026-10-18T15:44:01Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "codex-force-refresh", "exit": 0}
+{"at": "2026-10-18T15:44:02Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "watch-stop", "exit": 0}
+{"at": "2026-10-18T15:44:02Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:03Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:03Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "copies", "exit": 0}
+{"at": "2026-10-18T15:44:03Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "lifetimes", "exit": 0}
+{"at": "2026-10-18T15:44:03Z", "step": "inner", "computer": "cfo-s6-owner-pc-a", "action": "leak-check", "exit": 0}
+{"at": "2026-10-18T15:44:03Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-a", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:13Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:44:13Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-b"}
+{"at": "2026-10-18T15:44:14Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:44:15Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "watch-start", "exit": 0}
+{"at": "2026-10-18T15:44:15Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:15Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "claude-status", "exit": 0}
+{"at": "2026-10-18T15:44:15Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "codex-status", "exit": 0}
+{"at": "2026-10-18T15:44:15Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "claude-ask", "exit": 0}
+{"at": "2026-10-18T15:44:16Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "codex-ask", "exit": 0}
+{"at": "2026-10-18T15:44:16Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:17Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "watch-stop", "exit": 0}
+{"at": "2026-10-18T15:44:17Z", "step": "inner", "computer": "cfo-s6-owner-pc-b", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:18Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-b", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:18Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:44:18Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-c"}
+{"at": "2026-10-18T15:44:18Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:44:19Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "watch-start", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "claude-status", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "codex-status", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "codex-ask", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "leak-check", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "claude-logout", "exit": 0}
+{"at": "2026-10-18T15:44:20Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "codex-logout", "exit": 0}
+{"at": "2026-10-18T15:44:21Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "watch-stop", "exit": 0}
+{"at": "2026-10-18T15:44:22Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:22Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "signed-out-check", "exit": 0}
+{"at": "2026-10-18T15:44:22Z", "step": "inner", "computer": "cfo-s6-owner-pc-c", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:23Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-c", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:25Z", "step": "inner", "computer": "cfo-s6-owner-pc-d", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:44:25Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-d"}
+{"at": "2026-10-18T15:44:25Z", "step": "inner", "computer": "cfo-s6-owner-pc-d", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:44:25Z", "step": "inner", "computer": "cfo-s6-owner-pc-d", "action": "signed-out-check", "exit": 0}
+{"at": "2026-10-18T15:44:25Z", "step": "inner", "computer": "cfo-s6-owner-pc-d", "action": "audit", "exit": 0}
+{"at": "2026-10-18T15:44:25Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-d", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:26Z", "step": "inner", "computer": "cfo-s6-owner-pc-recover", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:44:26Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-recover"}
+{"at": "2026-10-18T15:44:26Z", "step": "inner", "computer": "cfo-s6-owner-pc-recover", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:44:26Z", "step": "inner", "computer": "cfo-s6-owner-pc-recover", "action": "signed-out-check", "exit": 0}
+{"at": "2026-10-18T15:44:28Z", "step": "inner", "computer": "cfo-s6-owner-pc-recover", "action": "watch-stop", "exit": 0}
+{"at": "2026-10-18T15:44:28Z", "step": "inner", "computer": "cfo-s6-owner-pc-recover", "action": "capture", "exit": 0}
+{"at": "2026-10-18T15:44:30Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-recover", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:31Z", "step": "inner", "computer": "cfo-s6-owner-pc-verify", "action": "start-generation", "exit": 0}
+{"at": "2026-10-18T15:44:31Z", "step": "computer-started", "computer": "cfo-s6-owner-pc-verify"}
+{"at": "2026-10-18T15:44:31Z", "step": "inner", "computer": "cfo-s6-owner-pc-verify", "action": "restore", "exit": 0}
+{"at": "2026-10-18T15:44:31Z", "step": "inner", "computer": "cfo-s6-owner-pc-verify", "action": "signed-out-check", "exit": 0}
+{"at": "2026-10-18T15:44:32Z", "step": "computer-removed", "computer": "cfo-s6-owner-pc-verify", "confirmed_gone": true}
+{"at": "2026-10-18T15:44:34Z", "step": "cleanup", "signed_out_verified": true, "left_behind": {"computers": [], "minio": false, "network": false, "shm": false}}
+{"at": "2026-10-18T15:44:34Z", "step": "session-end", "completed": true, "signed_out_verified": true}

@@ -1,6 +1,6 @@
 {
-  "at": 1792336569.903306,
-  "claude_access_expires_in_s": 3600,
+  "at": 1792338241,
+  "claude_access_expires_in_s": 3598,
   "claude_has_refreshTokenExpiresAt": false,
   "codex": "IndexError"
 }

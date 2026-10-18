@@ -3,11 +3,13 @@
 // - The owner opens the page (behind the staging tool's owner-only Access application), starts
 //   the computer, and signs in to Claude and Codex in the embedded terminal (ttyd, at /term/).
 // - The Durable Object plays WorkspaceDO: it numbers, stores and publishes checkpoints, fences
-//   them by generation, and restores them into each new container, workspace first. Checkpoint
-//   bytes move over exec() pipes (credsync export/import/watch-export) and are kept in the
-//   Durable Object's SQLite storage, standing in for R2 until R2 is enabled on staging.
-// - Nothing here parses a login file, and nothing logs checkpoint bytes. The container scripts
-//   print masked output only: paths, modes, sizes, key names, states and timestamps.
+//   them by generation and by the order the copies were taken, refuses credential checkpoints
+//   until a computer's restore is done, and restores into each new container, workspace first.
+//   Checkpoint bytes move over exec() pipes (credsync export/import/watch-export) and are kept in
+//   the Durable Object's SQLite storage, standing in for R2 until R2 is enabled on staging.
+// - Nothing here parses a login file or logs checkpoint bytes. The container scripts print
+//   masked output only, and their stderr is never forwarded.
+// - State-changing requests and the terminal's WebSocket must come from this page's own origin.
 import { DurableObject } from "cloudflare:workers";
 
 const PC = "s6-pc";
@@ -17,10 +19,18 @@ const TERM_PORT = 7681;
 const CLI = "/opt/s6/credsync/cli.py";
 const OUT = "/var/lib/s6/out";
 const FAKE_PROVIDER = "/tmp/s6-selftest-provider.json";
+// Headers that identify the owner to Access; they never go into the computer.
+const STRIP_TO_CONTAINER = [
+  "cookie",
+  "authorization",
+  "cf-access-jwt-assertion",
+  "cf-access-authenticated-user-email",
+  "cf-access-client-id",
+  "cf-access-client-secret",
+];
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const maskText = (s) => s.replace(/https?:\/\/\S+/g, "<url>").slice(-400);
 
 function b64ToBytes(b64) {
   const bin = atob(b64);
@@ -62,6 +72,7 @@ export class S6Computer extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.busy = null;
     this.schema();
   }
 
@@ -70,7 +81,7 @@ export class S6Computer extends DurableObject {
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
       CREATE TABLE IF NOT EXISTS counters (computer TEXT, kind TEXT, next_seq INTEGER, PRIMARY KEY (computer, kind));
       CREATE TABLE IF NOT EXISTS pointers (computer TEXT, kind TEXT, seq INTEGER, generation INTEGER,
-        manifest_key TEXT, published_at REAL, PRIMARY KEY (computer, kind));
+        manifest_key TEXT, published_at REAL, snap_order INTEGER, PRIMARY KEY (computer, kind));
       CREATE TABLE IF NOT EXISTS refusals (computer TEXT, kind TEXT, seq INTEGER, generation INTEGER, reason TEXT, at REAL);
       CREATE TABLE IF NOT EXISTS blobs (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part));
     `);
@@ -134,8 +145,10 @@ export class S6Computer extends DurableObject {
     return seq;
   }
 
-  // Atomic pointer switch, fenced by generation and by sequence number.
-  publish(computer, kind, generation, seq, manifestKey) {
+  // Atomic pointer switch. Refused from an older generation, and refused unless the copy was
+  // taken after the published one (snapshot order within one generation), whatever order the
+  // uploads arrive in.
+  publish(computer, kind, generation, seq, manifestKey, order) {
     const refuse = (reason) => {
       this.sql.exec(
         "INSERT INTO refusals VALUES (?, ?, ?, ?, ?, ?)",
@@ -150,18 +163,30 @@ export class S6Computer extends DurableObject {
     };
     if (generation !== this.generation()) return refuse("stale-generation");
     const row = this.sql
-      .exec("SELECT seq FROM pointers WHERE computer = ? AND kind = ?", computer, kind)
+      .exec(
+        "SELECT seq, generation, snap_order FROM pointers WHERE computer = ? AND kind = ?",
+        computer,
+        kind,
+      )
       .toArray()[0];
-    if (row && row.seq >= seq) return refuse("not-newer");
+    let notNewer = false;
+    if (row && order != null && row.generation === generation && row.snap_order != null) {
+      notNewer = row.snap_order >= order;
+    } else if (row && order == null) {
+      notNewer = row.seq >= seq;
+    }
+    if (notNewer) return refuse("not-newer");
     this.sql.exec(
-      `INSERT INTO pointers VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(computer, kind) DO UPDATE SET seq = excluded.seq,
-       generation = excluded.generation, manifest_key = excluded.manifest_key, published_at = excluded.published_at`,
+      `INSERT INTO pointers VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(computer, kind) DO UPDATE SET seq = excluded.seq,
+       generation = excluded.generation, manifest_key = excluded.manifest_key,
+       published_at = excluded.published_at, snap_order = excluded.snap_order`,
       computer,
       kind,
       seq,
       generation,
       manifestKey,
       Date.now() / 1000,
+      order ?? null,
     );
     return true;
   }
@@ -174,6 +199,14 @@ export class S6Computer extends DurableObject {
         kind,
       )
       .toArray()[0];
+  }
+
+  // True when the latest credential checkpoint records every declared file as absent.
+  signedOutInCheckpoint(computer = PC) {
+    const ptr = this.current(computer, "credential");
+    if (!ptr) return true;
+    const manifest = JSON.parse(dec.decode(this.getBlob(ptr.manifest_key)));
+    return manifest.files.every((f) => f.state === "absent");
   }
 
   async publishPayload(kind, payload, computer, generation) {
@@ -191,6 +224,7 @@ export class S6Computer extends DurableObject {
       computer_id: computer,
       generation,
       seq,
+      snapshot_order: payload.order ?? null,
       captured_at: payload.taken_at,
       archive: { key: `${base}.tar`, sha256: sha },
       ...(kind === "credential"
@@ -198,7 +232,14 @@ export class S6Computer extends DurableObject {
         : { file_count: payload.file_count, bytes: payload.bytes }),
     };
     this.putBlob(`${base}.json`, enc.encode(JSON.stringify(manifest)));
-    const published = this.publish(computer, kind, generation, seq, `${base}.json`);
+    const published = this.publish(
+      computer,
+      kind,
+      generation,
+      seq,
+      `${base}.json`,
+      kind === "credential" ? payload.order : null,
+    );
     // Report paths, states, sizes and modes only; the content digests stay in the manifest.
     return {
       kind,
@@ -233,8 +274,12 @@ export class S6Computer extends DurableObject {
     };
   }
 
+  restoredGeneration(computer) {
+    return Number(this.meta(`restored:${computer}`) ?? -1);
+  }
+
   async start() {
-    if (this.ctx.container.running) await this.stop();
+    if (this.ctx.container.running) throw new Error("a computer is already running");
     const generation = this.generation() + 1;
     this.meta("generation", generation); // persisted before the container starts
     this.meta("started_at", Date.now());
@@ -258,10 +303,20 @@ export class S6Computer extends DurableObject {
   }
 
   async alarm() {
-    // Heartbeat while awake; a hard limit keeps staging cost small.
     if (!this.ctx.container.running) return;
-    if (Date.now() - Number(this.meta("started_at") ?? 0) > MAX_AWAKE_MS) {
-      await this.stop();
+    if (Date.now() - Number(this.meta("started_at") ?? 0) > MAX_AWAKE_MS && !this.busy) {
+      // Awake too long: sign out and verify, then stop. Keeps cost small and never leaves a
+      // login behind in an unattended computer.
+      this.busy = "recover (alarm)";
+      try {
+        await this.phase("recover", async (o) => console.log(`S6RESULT ${JSON.stringify(o)}`));
+      } catch (e) {
+        console.log(
+          `S6RESULT ${JSON.stringify({ alarm: "recover failed", error: String(e?.message ?? e).slice(0, 200) })}`,
+        );
+      } finally {
+        this.busy = null;
+      }
       return;
     }
     await this.ctx.container.setInactivityTimeout(30 * 60 * 1000);
@@ -282,13 +337,17 @@ export class S6Computer extends DurableObject {
     }
     const out = await p.output();
     clearTimeout(timer);
-    return { exit: out.exitCode, stdout: dec.decode(out.stdout), stderr: dec.decode(out.stderr) };
+    return {
+      exit: out.exitCode,
+      stdout: dec.decode(out.stdout),
+      stderr_bytes: out.stderr.byteLength,
+    };
   }
 
-  // For masked scripts only: the inner.sh actions and the audits print no login material.
+  // Masked scripts only (inner.sh, the audits, the self-test); their stderr is never forwarded.
   async run(cmd, opts = {}, timeoutMs = 300_000) {
     const r = await this.runRaw(cmd, opts, undefined, timeoutMs);
-    return { exit: r.exit, stdout: r.stdout.trim(), stderr: maskText(r.stderr.trim()) };
+    return { exit: r.exit, stdout: r.stdout.trim(), stderr_bytes: r.stderr_bytes };
   }
 
   s6(args, opts = {}) {
@@ -296,17 +355,22 @@ export class S6Computer extends DurableObject {
   }
 
   async capture(kind, opts = {}) {
+    const computer = opts.computer ?? PC;
     const generation = this.generation();
+    if (kind === "credential" && this.restoredGeneration(computer) !== generation) {
+      return { error: "refused: this computer's restore has not finished", published: false };
+    }
     const r = await this.runRaw(
       ["python3", "-I", CLI, "export", "--kind", kind, "--home", opts.home ?? "/root"],
       opts,
     );
-    if (r.exit !== 0) return { error: `export failed (${r.exit})`, stderr: maskText(r.stderr) };
-    return this.publishPayload(kind, parseSecretJson(r.stdout), opts.computer ?? PC, generation);
+    if (r.exit !== 0) return { error: `export failed (${r.exit})`, published: false };
+    return this.publishPayload(kind, parseSecretJson(r.stdout), computer, generation);
   }
 
   async restore(opts = {}) {
     const computer = opts.computer ?? PC;
+    const generation = this.generation();
     const report = {};
     for (const kind of ["workspace", "credential"]) {
       const ptr = this.current(computer, kind);
@@ -317,7 +381,6 @@ export class S6Computer extends DurableObject {
       const manifest = JSON.parse(dec.decode(this.getBlob(ptr.manifest_key)));
       const archive = this.getBlob(manifest.archive.key);
       const stdin = JSON.stringify({ manifest, archive_b64: bytesToB64(archive) });
-      const home = opts.home ?? "/root";
       const r = await this.runRaw(
         [
           "python3",
@@ -327,19 +390,18 @@ export class S6Computer extends DurableObject {
           "--kind",
           kind,
           "--home",
-          home,
+          opts.home ?? "/root",
           "--staging",
           "/var/lib/s6/staging",
         ],
         opts,
         stdin,
       );
-      report[kind] =
-        r.exit === 0
-          ? JSON.parse(r.stdout)
-          : { error: `import failed (${r.exit})`, stderr: maskText(r.stderr) };
+      report[kind] = r.exit === 0 ? JSON.parse(r.stdout) : { error: `import failed (${r.exit})` };
     }
-    return report;
+    const ok = Object.values(report).every((v) => v === null || !v.error);
+    if (ok) this.meta(`restored:${computer}`, generation); // only now may credentials be captured
+    return { ...report, restore_complete: ok };
   }
 
   // The settle-and-copy watcher runs in the container; this end numbers, stores and publishes
@@ -347,6 +409,9 @@ export class S6Computer extends DurableObject {
   async startWatcher(emit, opts = {}) {
     const generation = this.generation();
     const computer = opts.computer ?? PC;
+    if (this.restoredGeneration(computer) !== generation) {
+      throw new Error("refused to watch: this computer's restore has not finished");
+    }
     const p = await this.ctx.container.exec(
       [
         "python3",
@@ -364,6 +429,10 @@ export class S6Computer extends DurableObject {
     );
     const writer = p.stdin.getWriter();
     const reader = p.stdout.pipeThrough(new TextDecoderStream()).getReader();
+    let ready;
+    const readyPromise = new Promise((r) => {
+      ready = r;
+    });
     const loop = (async () => {
       let buf = "";
       for (;;) {
@@ -376,6 +445,10 @@ export class S6Computer extends DurableObject {
           buf = buf.slice(i + 1);
           i = buf.indexOf("\n");
           const msg = parseSecretJson(line);
+          if (msg.event === "watching") {
+            ready();
+            continue;
+          }
           if (msg.event !== "snapshot") continue;
           const res = await this.publishPayload("credential", msg, computer, generation);
           await writer.write(
@@ -385,8 +458,11 @@ export class S6Computer extends DurableObject {
         }
       }
     })();
+    // The watcher records the current files as published before anything else may run.
+    await Promise.race([readyPromise, sleep(15000)]);
     return {
       stop: async () => {
+        await sleep(1500); // let a pending change settle and publish first
         try {
           await writer.close();
         } catch {}
@@ -398,17 +474,27 @@ export class S6Computer extends DurableObject {
 
   // ---------------------------------------------------------------- phases
   async phase(name, emit, o = {}) {
-    const step = async (label, fn) => {
+    const step = async (label, fn, ok = () => true) => {
       const t0 = Date.now();
       const r = await fn();
-      await emit({ phase: name, step: label, ms: Date.now() - t0, ...r });
+      const passed = Boolean(ok(r));
+      await emit({ phase: name, step: label, ms: Date.now() - t0, ok: passed, ...r });
+      if (!passed) throw new Error(`step failed: ${label}`);
       return r;
     };
-    const statuses = async (opts = o) => {
-      await step("claude status", () => this.s6(["claude-status"], opts));
-      await step("codex status", () => this.s6(["codex-status"], opts));
+    const exit0 = (r) => r.exit === 0;
+    const published = (r) => r.published === true;
+    const restored = (r) => r.restore_complete === true;
+    const isIn = (who) => (r) => r.exit === 0 && r.stdout.includes(`"${who}_logged_in": "true"`);
+    const loggedIn = async (opts = o) => {
+      await step(
+        "claude status: signed in",
+        () => this.s6(["claude-status"], opts),
+        isIn("claude"),
+      );
+      await step("codex status: signed in", () => this.s6(["codex-status"], opts), isIn("codex"));
     };
-    const watchLog = (computer) =>
+    const watchSummary = (computer = PC) =>
       step("watcher timings (container clock: change to acknowledged publish)", () =>
         this.run([
           "python3",
@@ -419,38 +505,77 @@ export class S6Computer extends DurableObject {
           `${OUT}/watch-${computer}-gen${this.generation()}.jsonl`,
         ]),
       );
-    const restart = async (letter) => {
-      // Dry run only: the fake provider's state (token hashes) stands for the provider's
-      // servers, so it is carried from one container to the next.
-      const provider = o.fake ? (await this.runRaw(["cat", FAKE_PROVIDER], o)).stdout : null;
-      await step("stop previous computer", () => this.stop());
-      await step(`start computer ${letter}`, () => this.start());
-      if (provider) await this.runRaw(["bash", "-c", `cat > ${FAKE_PROVIDER}`], o, provider);
-      await step("restore: workspace, then credentials", () => this.restore(o));
-      await step("audit", () => this.s6(["audit", `${letter} after restore`], o));
-      await statuses();
+    // End of a phase with a running, restored computer: nothing un-checkpointed is left behind.
+    const finish = async (w) => {
+      if (w) await w.stop();
+      await watchSummary();
+      await step("final credential checkpoint", () => this.capture("credential", o), published);
     };
+    const stopAndStart = async (letter) => {
+      if (this.ctx.container.running) {
+        if (this.restoredGeneration(PC) === this.generation()) {
+          await step("final credential checkpoint of the previous computer", () =>
+            this.capture("credential", o),
+          );
+        }
+        await step(
+          "stop previous computer",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
+      }
+      // Dry run only: the fake provider's state (token hashes) stands for the providers' servers,
+      // so it is carried from one container to the next.
+      const provider = o.fake ? this.meta("fake_provider") : null;
+      await step(
+        `start computer ${letter}`,
+        () => this.start(),
+        (r) => r.ready !== false,
+      );
+      if (provider) await this.runRaw(["bash", "-c", `cat > ${FAKE_PROVIDER}`], o, provider);
+      await step("restore: workspace, then credentials", () => this.restore(o), restored);
+    };
+    const keepFakeProvider = async () => {
+      if (o.fake) this.meta("fake_provider", (await this.runRaw(["cat", FAKE_PROVIDER], o)).stdout);
+    };
+
     switch (name) {
       case "selftest": {
-        if (!this.ctx.container.running) await step("start computer", () => this.start());
-        await step("file handling in this container (local store)", () =>
-          this.run(["python3", "-I", "/opt/s6/staging/selftest.py", "--rounds", "5"], {}, 600_000),
+        if (this.ctx.container.running) throw new Error("stop the computer before the self-test");
+        await step(
+          "start computer",
+          () => this.start(),
+          (r) => r.ready !== false,
+        );
+        await step(
+          "file handling in this container (local store)",
+          () =>
+            this.run(
+              ["python3", "-I", "/opt/s6/staging/selftest.py", "--rounds", "5"],
+              {},
+              600_000,
+            ),
+          exit0,
         );
         const f1 = { fake: true, home: "/tmp/s6-selftest-home1", computer: "s6-selftest" };
         const f2 = { ...f1, home: "/tmp/s6-selftest-home2" };
         const f3 = { ...f1, home: "/tmp/s6-selftest-home3" };
-        await step("fake sign-ins", () =>
-          this.run(
-            [
-              "bash",
-              "-c",
-              "claude auth login && codex login && omnigent login http://omnigent.internal",
-            ],
-            f1,
-          ),
+        await step("new computer: nothing to restore", () => this.restore(f1), restored);
+        await step(
+          "fake sign-ins",
+          () =>
+            this.run(
+              [
+                "bash",
+                "-c",
+                "claude auth login && codex login && omnigent login http://omnigent.internal",
+              ],
+              f1,
+            ),
+          exit0,
         );
-        await step("workspace checkpoint", () => this.capture("workspace", f1));
-        await step("credential checkpoint", () => this.capture("credential", f1));
+        await step("credential checkpoint", () => this.capture("credential", f1), published);
+        await step("workspace checkpoint", () => this.capture("workspace", f1), published);
         const w = await this.startWatcher(emit, f1);
         for (let round = 0; round < 5; round++) {
           for (const cmd of [
@@ -463,30 +588,54 @@ export class S6Computer extends DurableObject {
           }
         }
         await w.stop();
-        await watchLog("s6-selftest");
-        await step("restore into a fresh home", () => this.restore(f2));
-        await step("fake statuses after restore", () =>
-          this.run(
-            ["bash", "-c", "claude auth status; codex login status; codex refresh; claude refresh"],
-            f2,
-          ),
+        await watchSummary("s6-selftest");
+        await step("restore into a fresh home", () => this.restore(f2), restored);
+        await loggedIn(f2);
+        await step(
+          "restored tokens are the rotated ones: refresh works",
+          () => this.run(["bash", "-c", "codex refresh && claude refresh"], f2),
+          exit0,
         );
-        await step("fake sign-out", () =>
-          this.run(["bash", "-c", "claude auth logout; codex logout; omnigent signout-delete"], f2),
+        await step("credential checkpoint", () => this.capture("credential", f2), published);
+        await step(
+          "fake sign-out",
+          () =>
+            this.run(
+              ["bash", "-c", "claude auth logout; codex logout; omnigent signout-delete"],
+              f2,
+            ),
+          exit0,
         );
-        await step("credential checkpoint after sign-out", () => this.capture("credential", f2));
-        await step("restore into another fresh home", () => this.restore(f3));
-        await step("fake statuses: must be signed out", () =>
-          this.run(
-            ["bash", "-c", "claude auth status; codex login status; ls -a ~/.claude ~/.codex 2>&1"],
-            f3,
-          ),
+        await step(
+          "credential checkpoint after sign-out",
+          () => this.capture("credential", f2),
+          published,
+        );
+        await step("restore into another fresh home", () => this.restore(f3), restored);
+        await step("must be signed out", () => this.s6(["signed-out-check"], f3), exit0);
+        await step(
+          "stop computer",
+          () => this.stop(),
+          (r) => r.stopped,
         );
         break;
       }
       case "start":
-        await step("start computer A", () => this.start());
-        await step("audit", () => this.s6(["audit", "A fresh"], o));
+        if (this.ctx.container.running) throw new Error("a computer is already running");
+        if (!this.signedOutInCheckpoint()) {
+          throw new Error("an earlier session is still signed in: run Recover first");
+        }
+        await step(
+          "start computer A",
+          () => this.start(),
+          (r) => r.ready !== false,
+        );
+        await step(
+          "restore: nothing yet, or a signed-out checkpoint",
+          () => this.restore(o),
+          restored,
+        );
+        await step("audit", () => this.s6(["audit-json", "A fresh"], o), exit0);
         await step("versions", () =>
           this.run([
             "bash",
@@ -497,75 +646,147 @@ export class S6Computer extends DurableObject {
         break;
       case "fake-sign-in":
         if (!o.fake) throw new Error("fake-sign-in is for dry runs only (fake=1)");
-        await step("fake sign-ins", () =>
-          this.run(["bash", "-c", "claude auth login --claudeai && codex login --device-auth"], o),
+        await step(
+          "fake sign-ins",
+          () =>
+            this.run(
+              ["bash", "-c", "claude auth login --claudeai && codex login --device-auth"],
+              o,
+            ),
+          exit0,
         );
         break;
       case "after-sign-in": {
-        await statuses();
-        await step("audit", () => this.s6(["audit", "A after sign-in"], o));
-        await step("files holding login values", () => this.s6(["copies", "A after sign-in"], o));
-        await step("login lifetimes", () => this.s6(["lifetimes", "A after sign-in"], o));
-        await step("claude request", () => this.s6(["claude-ask"], o));
-        await step("codex request", () => this.s6(["codex-ask"], o));
-        await step("workspace checkpoint W1", () => this.capture("workspace", o));
-        await step("credential checkpoint C1", () => this.capture("credential", o));
+        if (!this.ctx.container.running) throw new Error("no computer is running");
+        await loggedIn();
+        await step(
+          "credential checkpoint C1, right after sign-in",
+          () => this.capture("credential", o),
+          published,
+        );
         const w = await this.startWatcher(emit, o);
-        await step("force Claude refresh", () => this.s6(["claude-force-refresh"], o));
-        await step("force Codex refresh", () => this.s6(["codex-force-refresh"], o));
-        await sleep(4000);
-        await w.stop();
-        await watchLog(PC);
-        await step("audit", () => this.s6(["audit", "A after refresh"], o));
-        await step("files holding login values", () => this.s6(["copies", "A after refresh"], o));
-        await step("login lifetimes", () => this.s6(["lifetimes", "A after refresh"], o));
-        await step("leak check of results", () => this.s6(["leak-check", "A"], o));
+        await step("audit", () => this.s6(["audit-json", "A after sign-in"], o), exit0);
+        await step(
+          "files holding login values",
+          () => this.s6(["copies", "A after sign-in"], o),
+          exit0,
+        );
+        await step("login lifetimes", () => this.s6(["lifetimes", "A after sign-in"], o), exit0);
+        await step("claude request", () => this.s6(["claude-ask"], o), exit0);
+        await step("codex request", () => this.s6(["codex-ask"], o), exit0);
+        await step("workspace checkpoint W1", () => this.capture("workspace", o), published);
+        await step("force Claude refresh", () => this.s6(["claude-force-refresh"], o), exit0);
+        await step("force Codex refresh", () => this.s6(["codex-force-refresh"], o), exit0);
+        await finish(w);
+        await step("audit", () => this.s6(["audit-json", "A after refresh"], o), exit0);
+        await step(
+          "files holding login values",
+          () => this.s6(["copies", "A after refresh"], o),
+          exit0,
+        );
+        await step("login lifetimes", () => this.s6(["lifetimes", "A after refresh"], o), exit0);
+        await step("leak check of results", () => this.s6(["leak-check", "A"], o), exit0);
+        await keepFakeProvider();
         break;
       }
-      case "restore-b":
-        await restart("B");
-        await step("claude request", () => this.s6(["claude-ask"], o));
-        await step("codex request", () => this.s6(["codex-ask"], o));
-        await step("workspace checkpoint W2", () => this.capture("workspace", o));
-        break;
-      case "restore-c-sign-out": {
-        await restart("C");
-        await step("codex request", () => this.s6(["codex-ask"], o));
-        await step("leak check of results", () => this.s6(["leak-check", "C"], o));
+      case "restore-b": {
+        await stopAndStart("B");
         const w = await this.startWatcher(emit, o);
-        await step("claude auth logout", () => this.run(["claude", "auth", "logout"], o));
-        await step("codex logout", () => this.run(["codex", "logout"], o));
-        await sleep(4000);
-        await w.stop();
-        await watchLog(PC);
-        await step("credential checkpoint after sign-out", () => this.capture("credential", o));
-        await step("audit", () => this.s6(["audit", "C after sign-out"], o));
-        await statuses();
+        await step("audit", () => this.s6(["audit-json", "B after restore"], o), exit0);
+        await loggedIn();
+        await step("claude request", () => this.s6(["claude-ask"], o), exit0);
+        await step("codex request", () => this.s6(["codex-ask"], o), exit0);
+        await step("workspace checkpoint W2", () => this.capture("workspace", o), published);
+        await finish(w);
+        await keepFakeProvider();
+        break;
+      }
+      case "restore-c-sign-out": {
+        await stopAndStart("C");
+        const w = await this.startWatcher(emit, o);
+        await step("audit", () => this.s6(["audit-json", "C after restore"], o), exit0);
+        await loggedIn();
+        await step("codex request", () => this.s6(["codex-ask"], o), exit0);
+        await step("leak check of results", () => this.s6(["leak-check", "C"], o), exit0);
+        await step("claude auth logout", () => this.s6(["claude-logout"], o), exit0);
+        await step("codex logout", () => this.s6(["codex-logout"], o), exit0);
+        await finish(w);
+        await step("signed out here", () => this.s6(["signed-out-check"], o), exit0);
+        await step("audit", () => this.s6(["audit-json", "C after sign-out"], o), exit0);
+        await keepFakeProvider();
         break;
       }
       case "restore-d":
-        await restart("D");
+        await stopAndStart("D");
+        await step(
+          "signed out after restore (tombstones hold)",
+          () => this.s6(["signed-out-check"], o),
+          exit0,
+        );
+        await step("audit", () => this.s6(["audit-json", "D after restore"], o), exit0);
+        await step(
+          "stop computer",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
         break;
+      case "recover": {
+        // Sign out from whatever state the session stopped in, and verify it in a fresh computer.
+        await stopAndStart("R1");
+        const out = await this.s6(["signed-out-check"], o);
+        await emit({ phase: name, step: "signed-out check", ...out });
+        if (out.exit !== 0) {
+          await step("claude auth logout", () => this.s6(["claude-logout"], o));
+          await step("codex logout", () => this.s6(["codex-logout"], o));
+        }
+        await step("credential checkpoint", () => this.capture("credential", o), published);
+        await stopAndStart("R2");
+        await step(
+          "verified signed out in a fresh computer",
+          () => this.s6(["signed-out-check"], o),
+          exit0,
+        );
+        await step(
+          "stop computer",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
+        break;
+      }
       case "stop":
-        await step("stop computer", () => this.stop());
+        if (this.ctx.container.running && this.restoredGeneration(PC) === this.generation()) {
+          await step("final credential checkpoint", () => this.capture("credential", o));
+        }
+        await step(
+          "stop computer",
+          () => this.stop(),
+          (r) => r.stopped,
+        );
         break;
       case "wipe":
-        await step("stop computer", () => this.stop());
-        await step("delete all stored checkpoints and state", async () => {
-          await this.ctx.storage.deleteAlarm();
-          await this.ctx.storage.deleteAll();
-          this.schema();
-          return { wiped: true, objects_left: this.state().objects };
-        });
+        if (this.ctx.container.running) throw new Error("stop the computer first (or run Recover)");
+        if (!this.signedOutInCheckpoint()) {
+          throw new Error("the latest checkpoint is still signed in: run Recover first");
+        }
+        await step(
+          "delete all stored checkpoints and state",
+          async () => {
+            await this.ctx.storage.deleteAlarm();
+            await this.ctx.storage.deleteAll();
+            this.schema();
+            return { wiped: true, objects_left: this.state().objects };
+          },
+          (r) => r.objects_left === 0,
+        );
         break;
       default:
-        await emit({ error: `unknown phase ${name}` });
+        throw new Error(`unknown phase ${name}`);
     }
   }
 
   state() {
     const pointers = this.sql
-      .exec("SELECT computer, kind, seq, generation FROM pointers")
+      .exec("SELECT computer, kind, seq, generation, snap_order FROM pointers")
       .toArray();
     const refusals = this.sql
       .exec("SELECT computer, kind, seq, generation, reason FROM refusals")
@@ -575,7 +796,9 @@ export class S6Computer extends DurableObject {
       .toArray()[0];
     return {
       running: this.ctx.container.running,
+      busy: this.busy,
       generation: this.generation(),
+      signed_out_in_checkpoint: this.signedOutInCheckpoint(),
       pointers,
       refusals,
       objects: blobs.n,
@@ -586,17 +809,28 @@ export class S6Computer extends DurableObject {
   // ---------------------------------------------------------------- owner page
   async fetch(request) {
     const url = new URL(request.url);
+    const sameOrigin = request.headers.get("origin") === url.origin;
     if (url.pathname === "/term" || url.pathname.startsWith("/term/")) {
       if (!this.ctx.container.running) {
         return new Response("The computer is not running.", { status: 503 });
       }
-      return this.ctx.container.getTcpPort(TERM_PORT).fetch(request);
+      const upgrade = (request.headers.get("upgrade") ?? "").toLowerCase() === "websocket";
+      if (upgrade && !sameOrigin)
+        return new Response("cross-origin terminal refused", { status: 403 });
+      const headers = new Headers(request.headers);
+      for (const h of STRIP_TO_CONTAINER) headers.delete(h);
+      return this.ctx.container.getTcpPort(TERM_PORT).fetch(new Request(request, { headers }));
     }
     if (url.pathname === "/api/state") return Response.json(this.state());
     if (url.pathname === "/api/phase" && request.method === "POST") {
+      if (!sameOrigin || request.headers.get("x-s6-request") !== "1") {
+        return new Response("cross-origin request refused", { status: 403 });
+      }
+      if (this.busy) return new Response(`busy: ${this.busy}`, { status: 409 });
       const name = url.searchParams.get("name");
       // fake=1: the same phases with the fake CLIs first on PATH (a dry run, no real accounts).
       const opts = url.searchParams.get("fake") === "1" ? { fake: true } : {};
+      this.busy = name;
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
       const emit = async (obj) => {
@@ -609,8 +843,14 @@ export class S6Computer extends DurableObject {
           await this.phase(name, emit, opts);
           await emit({ phase: name, done: true, state: this.state() });
         } catch (e) {
-          await emit({ phase: name, error: String(e?.message ?? e).slice(0, 300) });
+          await emit({
+            phase: name,
+            error: String(e?.message ?? e).slice(0, 300),
+            advice: "Stop here. Run Recover (sign out and verify), then Stop and wipe.",
+            state: this.state(),
+          });
         } finally {
+          this.busy = null;
           await writer.close();
         }
       })();
@@ -628,10 +868,11 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 body{font:15px/1.45 system-ui,sans-serif;margin:24px auto;max-width:980px;padding:0 16px;color:#1d1d1f;background:#fafafa}
 h1{font-size:22px}ol{padding-left:20px}li{margin:10px 0}button{font:inherit;padding:6px 12px;margin-right:8px;cursor:pointer}
 code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color:#ddd;padding:12px;border-radius:6px;max-height:520px;overflow:auto;white-space:pre-wrap;font-size:12px}
-.note{color:#555}#state{font-family:monospace;font-size:13px}
+.note{color:#555}.warn{color:#8a1c1c}#state{font-family:monospace;font-size:13px}
 </style></head><body>
 <h1>S6: sign-in and credential checkpoints</h1>
 <p class="note">Owner-only staging page. Output below is masked: paths, modes, sizes, key names, states and timestamps. The terminal is not recorded. Run the steps in order; each waits until it is done.</p>
+<p class="warn">If a step reports an error: stop there, click <b>Recover</b>, then <b>Stop and wipe</b>.</p>
 <p id="state"></p>
 <ol>
 <li><button data-phase="selftest">Run the fake-CLI self-test</button> about 3 minutes; no real accounts.</li>
@@ -644,17 +885,19 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 <li><button data-phase="restore-d">Computer D: restore; both must stay signed out</button></li>
 <li><button data-phase="wipe">Stop and wipe everything stored</button> then <button id="save">Download results</button></li>
 </ol>
+<p><button data-phase="recover">Recover: sign out and verify</button> only if a step failed.</p>
 <pre id="out"></pre>
 <script>
 const out=document.getElementById("out");const lines=[];
 async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);}
 for(const b of document.querySelectorAll("button[data-phase]")){b.onclick=async()=>{
- if(b.dataset.phase==="wipe"&&!confirm("Stop the computer and delete every stored checkpoint?"))return;
+ if(b.dataset.phase==="wipe"&&!confirm("Delete every stored checkpoint?"))return;
  for(const x of document.querySelectorAll("button"))x.disabled=true;
- const r=await fetch("/api/phase?name="+b.dataset.phase,{method:"POST"});const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
+ try{const r=await fetch("/api/phase?name="+b.dataset.phase,{method:"POST",headers:{"X-S6-Request":"1"}});
+ if(!r.ok){out.textContent+=r.status+" "+(await r.text())+"\\n";}else{const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
  for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
-  while((i=buf.indexOf("\\n"))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);if(!l)continue;lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;}}
- for(const x of document.querySelectorAll("button"))x.disabled=false;state();};}
+  while((i=buf.indexOf("\\n"))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);if(!l)continue;lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;}}}}
+ finally{for(const x of document.querySelectorAll("button"))x.disabled=false;state();}};}
 document.getElementById("save").onclick=()=>{const a=document.createElement("a");
  a.href=URL.createObjectURL(new Blob([lines.join("\\n")+"\\n"],{type:"application/x-ndjson"}));a.download="s6-staging-session.jsonl";a.click();};
 state();

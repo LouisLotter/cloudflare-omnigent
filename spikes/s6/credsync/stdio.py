@@ -48,6 +48,7 @@ def _cred_payload(snap) -> dict:
         "kind": "credential",
         "records": [r.to_json() for r in snap.records],
         "taken_at": snap.taken_at,
+        "order": snap.order,
         "archive_sha256": hashlib.sha256(archive).hexdigest(),
         "archive_b64": base64.b64encode(archive).decode(),
     }

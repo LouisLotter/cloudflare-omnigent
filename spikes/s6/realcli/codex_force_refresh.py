@@ -62,10 +62,14 @@ def main() -> int:
         if resp is None:
             result["error"] = "timeout"
         elif "error" in resp:
-            result["error"] = str(resp["error"].get("message", "error"))[:200]
+            # A fixed label and the numeric code only: the message may name the account.
+            code = resp["error"].get("code") if isinstance(resp.get("error"), dict) else None
+            result["error"] = "rpc-error"
+            result["error_code"] = code if isinstance(code, int) else None
         else:
             account = (resp.get("result") or {}).get("account") or {}
-            result.update(ok=True, account_type=account.get("type"))
+            kind = account.get("type")
+            result.update(ok=True, account_type=kind if kind in ("chatgpt", "apiKey", "amazonBedrock") else "other")
     finally:
         proc.terminate()
         try:

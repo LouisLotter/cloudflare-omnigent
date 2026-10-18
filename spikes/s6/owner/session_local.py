@@ -1,21 +1,25 @@
 """Spike S6 owner session, on the laptop with Docker: real Claude and ChatGPT sign-in in a
 container, credential checkpoints in MinIO, restores in both orders, sign-out and tombstones.
+The fallback for the staging page (spikes/s6/staging), with the same steps.
 
 Needs the owner at the keyboard for two sign-ins. Everything else is automatic. Run from the
 repository root:
 
   python3 -I spikes/s6/owner/session_local.py            # the whole session (about 15 minutes)
-  python3 -I spikes/s6/owner/session_local.py --cleanup  # sign out and remove everything
+  python3 -I spikes/s6/owner/session_local.py --fake     # dry run with the fake CLIs
+  python3 -I spikes/s6/owner/session_local.py --cleanup  # sign out, verify, remove everything
 
 Safety:
 - One computer container at a time. Each is removed, and its removal confirmed, before the next
   starts, so two containers never hold the same login.
-- MinIO keeps its data in memory (tmpfs); the controller database lives in /dev/shm. Both are
-  removed at the end. Nothing that holds a login is written to the repository.
+- Every step's result is checked; the first failure stops the session, which then signs out,
+  verifies the sign-out in a fresh computer, and removes everything (cleanup).
+- The credential watcher starts right after each restore, before any CLI runs, and every
+  computer ends with a final credential checkpoint, so no refreshed login is left behind.
+- MinIO keeps its data in memory (tmpfs); the controller database and MinIO's local password live
+  in /dev/shm. All are removed at the end. Nothing that holds a login goes into the repository.
 - Results under spikes/s6/results/owner-session/ are masked; a leak check run inside the
   computer, while signed in, confirms that no results file holds a login value.
-- The session ends signed out of both accounts (`claude auth logout`, `codex logout`, both
-  revoke on the provider side), with the sign-out checked in a fresh container.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -42,11 +47,15 @@ OUT = S6 / "results" / "owner-session"
 FAKE = False  # --fake: a dry run of the whole session with the fake CLIs, no real accounts
 
 
-def sh(*args: str, check: bool = True, capture: bool = True) -> str:
-    r = subprocess.run(list(args), capture_output=capture, text=True)
+class StepFailed(Exception):
+    pass
+
+
+def sh(*args: str, check: bool = True) -> str:
+    r = subprocess.run(list(args), capture_output=True, text=True)
     if check and r.returncode != 0:
-        raise SystemExit(f"command failed ({r.returncode}): {' '.join(args[:4])} ...\n{(r.stderr or '')[-400:]}")
-    return (r.stdout or "").strip() if capture else ""
+        raise StepFailed(f"command failed ({r.returncode}): {' '.join(args[:3])} ...")
+    return (r.stdout or "").strip()
 
 
 def record(step: str, **kw) -> None:
@@ -59,55 +68,101 @@ def say(text: str) -> None:
     print(f"\n=== {text}", flush=True)
 
 
-def pause(text: str) -> None:
-    if not FAKE:
-        input(f"\n>>> {text}\n    Press Enter to continue... ")
-
-
-def running_computers() -> list[str]:
+def computers() -> list[str]:
     out = sh("docker", "ps", "-a", "--filter", f"name=^{PREFIX}", "--format", "{{.Names}}", check=False)
     return [x for x in out.splitlines() if x]
 
 
-def inner(name: str, *args: str, interactive: bool = False) -> str:
-    if interactive:
-        subprocess.run(["docker", "exec", *([] if FAKE else ["-it"]), name, *args])
-        return ""
+def wait_until_no_computer(timeout_s: float = 90) -> bool:
+    """A removal interrupted on the client side still completes in the daemon: wait for it."""
+    deadline = time.time() + timeout_s
+    while computers() and time.time() < deadline:
+        for name in computers():
+            sh("docker", "rm", "-f", name, check=False)
+        time.sleep(2)
+    return not computers()
+
+
+def inner(name: str, *args: str, must: bool = True) -> tuple[int, str]:
+    """Run one masked inner.sh action; with must=True a non-zero exit stops the session."""
     r = subprocess.run(["docker", "exec", name, "bash", "/opt/s6/owner/inner.sh", *args], capture_output=True, text=True)
     text = (r.stdout or "").strip()
-    print("   " + text.replace("\n", "\n   "))
-    return text
+    print(f"   [{args[0]}] exit {r.returncode}: " + text.replace("\n", "\n      "), flush=True)
+    record("inner", computer=name, action=args[0], exit=r.returncode)
+    if must and r.returncode != 0:
+        raise StepFailed(f"{args[0]} failed in {name}")
+    return r.returncode, text
+
+
+def sign_in(name: str, *cmd: str) -> None:
+    rc = subprocess.run(["docker", "exec", *([] if FAKE else ["-it"]), name, *cmd]).returncode
+    record("sign-in", computer=name, command=cmd[0], exit=rc)
+    if rc != 0:
+        raise StepFailed(f"{cmd[0]} sign-in failed")
+
+
+def s3_env(s3: dict) -> list[str]:
+    return ["-e", f"S6_S3_ENDPOINT=http://{MINIO}:9000", "-e", "S6_S3_BUCKET=s6-owner",
+            "-e", f"S6_S3_ACCESS_KEY={s3['user']}", "-e", f"S6_S3_SECRET_KEY={s3['password']}"]
 
 
 def start_computer(letter: str, s3: dict) -> str:
-    existing = running_computers()
+    existing = computers()
     if existing:
-        raise SystemExit(f"refusing to start a second computer while {existing} exists")
+        raise StepFailed(f"refusing to start a second computer while {existing} exists")
     name = f"{PREFIX}-{letter}"
     fake_env = ["-e", "S6_FAKE=1", "-e", "S6_FAKE_PROVIDER=/ctl/fake-provider.json",
                 "-e", "PATH=/opt/s6/fakes/bin:/opt/venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"] if FAKE else []
-    sh("docker", "run", "-d", "--name", name, "--network", NET, *fake_env,
-       "-e", f"S6_S3_ENDPOINT=http://{MINIO}:9000", "-e", "S6_S3_BUCKET=s6-owner",
-       "-e", f"S6_S3_ACCESS_KEY={s3['user']}", "-e", f"S6_S3_SECRET_KEY={s3['password']}",
+    sh("docker", "run", "-d", "--name", name, "--network", NET, *fake_env, *s3_env(s3),
        "-v", f"{SHM}:/ctl", "-v", f"{OUT}:/out", IMAGE)
     inner(name, "start-generation")
     record("computer-started", computer=name)
+    # Workspace first, then credentials; only after this may credentials be captured.
+    inner(name, "restore")
     return name
 
 
-def stop_computer(name: str) -> None:
+def stop_computer(name: str, final_capture: bool = True) -> None:
+    if final_capture:
+        inner(name, "watch-stop", must=False)
+        inner(name, "capture", "credential")  # nothing refreshed is left behind
     sh("docker", "rm", "-f", name)
-    gone = name not in running_computers()
+    gone = name not in computers()
     print(f"   {name} removed: {gone}")
     record("computer-removed", computer=name, confirmed_gone=gone)
     if not gone:
-        raise SystemExit("container still present; stopping the session")
+        raise StepFailed("container still present")
 
 
-def cleanup() -> None:
-    say("Cleanup: sign out in any running computer, then remove everything")
-    for name in running_computers():
-        subprocess.run(["docker", "exec", name, "bash", "-c", "claude auth logout; codex logout"], capture_output=True)
+def cleanup() -> dict:
+    """Sign out and verify in a fresh computer whenever a login may remain, then remove all."""
+    say("Cleanup: sign out, verify in a fresh computer, remove everything")
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not abandon the sign-out
+    outcome: dict = {"signed_out_verified": None}
+    s3 = json.loads((SHM / "s3.json").read_text()) if (SHM / "s3.json").exists() else None
+    for name in computers():  # a computer still running: checkpoint, sign out, checkpoint
+        inner(name, "watch-stop", must=False)
+        inner(name, "capture", "credential", must=False)
+        inner(name, "claude-logout", must=False)
+        inner(name, "codex-logout", must=False)
+        inner(name, "capture", "credential", must=False)
+        sh("docker", "rm", "-f", name, check=False)
+    wait_until_no_computer()
+    if s3 and sh("docker", "ps", "-q", "--filter", f"name=^{MINIO}$", check=False):
+        try:
+            r = start_computer("recover", s3)
+            rc, _ = inner(r, "signed-out-check", must=False)
+            if rc != 0:
+                inner(r, "claude-logout", must=False)
+                inner(r, "codex-logout", must=False)
+            stop_computer(r)
+            v = start_computer("verify", s3)
+            rc, _ = inner(v, "signed-out-check", must=False)
+            outcome["signed_out_verified"] = rc == 0
+            stop_computer(v, final_capture=False)
+        except StepFailed as e:
+            outcome["recovery_error"] = str(e)
+    for name in computers():
         sh("docker", "rm", "-f", name, check=False)
     sh("docker", "rm", "-f", MINIO, check=False)
     sh("docker", "network", "rm", NET, check=False)
@@ -115,10 +170,98 @@ def cleanup() -> None:
     if OUT.exists():  # results were written by root in the container; hand them back
         sh("docker", "run", "--rm", "-v", f"{OUT}:/out", "--entrypoint", "chown", IMAGE, "-R",
            f"{os.getuid()}:{os.getgid()}", "/out", check=False)
-    left = {"computers": running_computers(), "minio": bool(sh("docker", "ps", "-aq", "--filter", f"name=^{MINIO}$", check=False)),
-            "network": bool(sh("docker", "network", "ls", "-q", "--filter", f"name=^{NET}$", check=False)), "shm": SHM.exists()}
-    print(f"   left behind: {left}")
-    record("cleanup", left_behind=left)
+    outcome["left_behind"] = {
+        "computers": computers(),
+        "minio": bool(sh("docker", "ps", "-aq", "--filter", f"name=^{MINIO}$", check=False)),
+        "network": bool(sh("docker", "network", "ls", "-q", "--filter", f"name=^{NET}$", check=False)),
+        "shm": SHM.exists(),
+    }
+    print(f"   cleanup: {outcome}")
+    record("cleanup", **outcome)
+    if outcome["signed_out_verified"] is False:
+        print("\n!!! The sign-out could not be verified. Sign out of this computer's sessions in your Claude\n"
+              "!!! and ChatGPT account settings, and tell the lead.")
+    return outcome
+
+
+def session(s3: dict) -> None:
+    # ---------------------------------------------------------------- computer A: sign in
+    a = start_computer("a", s3)
+    versions = sh("docker", "exec", a, "bash", "-c", "claude --version; codex --version; omnigent --version | tail -1")
+    record("versions", versions=versions.splitlines())
+    inner(a, "audit", "A fresh")
+
+    say("Sign in to Claude (owner)")
+    print("   Claude Code prints a link. Open it in your browser, sign in with your Claude account,\n"
+          "   then copy the code the page shows and paste it at 'Paste code here if prompted'.")
+    sign_in(a, "claude", "auth", "login", "--claudeai")
+    say("Sign in to ChatGPT for Codex (owner)")
+    print("   Device-code login must be enabled first: ChatGPT > Settings > Security.\n"
+          "   Codex prints a link and a one-time code. Open the link, sign in, enter the code.")
+    sign_in(a, "codex", "login", "--device-auth")
+
+    say("Computer A: checkpoint right after sign-in, then watch")
+    inner(a, "claude-status")
+    inner(a, "codex-status")
+    inner(a, "capture", "credential")  # C1
+    inner(a, "watch-start")
+    inner(a, "audit", "A after sign-in")
+    inner(a, "copies", "A after sign-in")
+    inner(a, "lifetimes", "A after sign-in")
+    inner(a, "claude-ask")
+    inner(a, "codex-ask")
+    inner(a, "capture", "workspace")  # W1
+    say("Force a refresh of each login; the watcher publishes the new credentials")
+    inner(a, "claude-force-refresh")
+    inner(a, "codex-force-refresh")
+    inner(a, "watch-stop")
+    inner(a, "capture", "credential")
+    inner(a, "audit", "A after refresh")
+    inner(a, "copies", "A after refresh")
+    inner(a, "lifetimes", "A after refresh")
+    inner(a, "leak-check", "A")
+    stop_computer(a, final_capture=False)  # final checkpoint just taken
+
+    # ------------------------------------- computer B: older workspace, newer credentials
+    say("Computer B: W1 (older workspace) with the latest credentials")
+    b = start_computer("b", s3)
+    inner(b, "watch-start")  # before any CLI runs
+    inner(b, "audit", "B after restore")
+    _, c = inner(b, "claude-status")
+    _, x = inner(b, "codex-status")
+    if '"true"' not in c or '"true"' not in x:
+        raise StepFailed("computer B is not signed in after the restore")
+    inner(b, "claude-ask")
+    inner(b, "codex-ask")
+    inner(b, "capture", "workspace")  # W2: newer than the credential checkpoint
+    stop_computer(b)
+
+    # ---------------------------- computer C: newer workspace, older credentials; sign out
+    say("Computer C: W2 (newer workspace) with the latest credentials, then sign out")
+    c_name = start_computer("c", s3)
+    inner(c_name, "watch-start")
+    inner(c_name, "audit", "C after restore")
+    _, c = inner(c_name, "claude-status")
+    _, x = inner(c_name, "codex-status")
+    if '"true"' not in c or '"true"' not in x:
+        raise StepFailed("computer C is not signed in after the restore")
+    inner(c_name, "codex-ask")
+    inner(c_name, "leak-check", "C")
+    say("Signing out of both accounts")
+    inner(c_name, "claude-logout")
+    inner(c_name, "codex-logout")
+    inner(c_name, "watch-stop")
+    inner(c_name, "capture", "credential")  # the design also checkpoints right after a logout
+    inner(c_name, "signed-out-check")
+    inner(c_name, "audit", "C after sign-out")
+    stop_computer(c_name, final_capture=False)
+
+    # ------------------------------------------- computer D: tombstones hold after restore
+    say("Computer D: restore the latest checkpoints; the logins must stay signed out")
+    d = start_computer("d", s3)
+    inner(d, "signed-out-check")
+    inner(d, "audit", "D after restore")
+    stop_computer(d, final_capture=False)
 
 
 def main() -> int:
@@ -131,9 +274,8 @@ def main() -> int:
         FAKE = True
         OUT = S6 / "results" / "owner-session-fake-dryrun"
     if a.cleanup:
-        cleanup()
-        return 0
-    if running_computers():
+        return 0 if cleanup().get("signed_out_verified") is not False else 1
+    if computers():
         raise SystemExit("a previous session is still present; run with --cleanup first")
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -147,107 +289,27 @@ def main() -> int:
     say("Preparing: network, MinIO in memory, controller database in /dev/shm")
     SHM.mkdir(mode=0o700, parents=True, exist_ok=True)
     s3 = {"user": "s6owner", "password": secrets.token_hex(16)}  # local, in-memory MinIO only
-    sh("docker", "network", "create", NET)
-    sh("docker", "run", "-d", "--name", MINIO, "--network", NET, "--tmpfs", "/data:rw,size=256m",
-       "-e", f"MINIO_ROOT_USER={s3['user']}", "-e", f"MINIO_ROOT_PASSWORD={s3['password']}", MINIO_IMAGE, "server", "/data")
-    time.sleep(3)
-    sh("docker", "run", "--rm", "--network", NET, "-e", f"S6_S3_ENDPOINT=http://{MINIO}:9000",
-       "-e", "S6_S3_BUCKET=s6-owner", "-e", f"S6_S3_ACCESS_KEY={s3['user']}", "-e", f"S6_S3_SECRET_KEY={s3['password']}",
-       "--entrypoint", "python3", IMAGE, "-I", "-c",
-       "import sys; sys.path.insert(0,'/opt/s6/credsync'); from objstore import S3Store; S3Store.from_env().create_bucket()")
-
+    fd = os.open(SHM / "s3.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.write(fd, json.dumps(s3).encode())
+    os.close(fd)
+    ok = False
     try:
-        # ---------------------------------------------------------------- computer A: sign in
-        a_name = start_computer("a", s3)
-        versions = sh("docker", "exec", a_name, "bash", "-c", "claude --version; codex --version; omnigent --version | tail -1")
-        record("versions", versions=versions.splitlines())
-        inner(a_name, "audit", "A fresh")
-
-        say("Sign in to Claude (owner)")
-        print("   Claude Code prints a link. Open it in your browser, sign in with your Claude account,\n"
-              "   then copy the code the page shows and paste it at 'Paste code here if prompted'.")
-        inner(a_name, "claude", "auth", "login", "--claudeai", interactive=True)
-        record("claude-sign-in", status=inner(a_name, "claude-status"))
-
-        say("Sign in to ChatGPT for Codex (owner)")
-        print("   Device-code login must be enabled first: ChatGPT > Settings > Security.\n"
-              "   Codex prints a link and a one-time code. Open the link, sign in, enter the code.")
-        inner(a_name, "codex", "login", "--device-auth", interactive=True)
-        record("codex-sign-in", status=inner(a_name, "codex-status"))
-
-        say("Audit after sign-in (masked)")
-        inner(a_name, "audit", "A after sign-in")
-        inner(a_name, "copies", "A after sign-in")
-        inner(a_name, "lifetimes", "A after sign-in")
-
-        say("One small request each, to prove the logins work and create continuation state")
-        inner(a_name, "claude-ask")
-        inner(a_name, "codex-ask")
-
-        say("Checkpoints right after sign-in: workspace W1, credentials C1; start the watcher")
-        inner(a_name, "capture", "workspace")
-        inner(a_name, "capture", "credential")
-        inner(a_name, "watch-start")
-
-        say("Force a refresh of each login, and watch the credential checkpoints follow")
-        inner(a_name, "claude-force-refresh")
-        inner(a_name, "codex-force-refresh")
+        sh("docker", "network", "create", NET)
+        sh("docker", "run", "-d", "--name", MINIO, "--network", NET, "--tmpfs", "/data:rw,size=256m",
+           "-e", f"MINIO_ROOT_USER={s3['user']}", "-e", f"MINIO_ROOT_PASSWORD={s3['password']}", MINIO_IMAGE, "server", "/data")
         time.sleep(3)
-        inner(a_name, "audit", "A after refresh")
-        inner(a_name, "copies", "A after refresh")
-        inner(a_name, "lifetimes", "A after refresh")
-        inner(a_name, "leak-check", "A")
-        inner(a_name, "watch-stop")
-        stop_computer(a_name)
-
-        # ------------------------------------- computer B: older workspace, newer credentials
-        say("Computer B: restore W1 (older workspace) with C2 (newer credentials)")
-        b_name = start_computer("b", s3)
-        inner(b_name, "restore")
-        inner(b_name, "audit", "B after restore")
-        record("b-status", claude=inner(b_name, "claude-status"), codex=inner(b_name, "codex-status"))
-        inner(b_name, "claude-ask")
-        inner(b_name, "codex-ask")
-        inner(b_name, "watch-start")
-        inner(b_name, "capture", "workspace")  # W2: newer than the credential checkpoint
-        time.sleep(2)
-        inner(b_name, "watch-stop")
-        stop_computer(b_name)
-
-        # ---------------------------- computer C: newer workspace, older credentials; sign out
-        say("Computer C: restore W2 (newer workspace) with the latest credentials, then sign out")
-        c_name = start_computer("c", s3)
-        inner(c_name, "restore")
-        inner(c_name, "audit", "C after restore")
-        record("c-status", claude=inner(c_name, "claude-status"), codex=inner(c_name, "codex-status"))
-        inner(c_name, "codex-ask")
-        inner(c_name, "leak-check", "C")
-        inner(c_name, "watch-start")
-        say("Signing out of both accounts")
-        subprocess.run(["docker", "exec", c_name, "claude", "auth", "logout"])
-        subprocess.run(["docker", "exec", c_name, "codex", "logout"])
-        time.sleep(3)
-        inner(c_name, "watch-stop")
-        inner(c_name, "capture", "credential")  # the design also checkpoints right after a logout
-        inner(c_name, "audit", "C after sign-out")
-        record("c-signed-out", claude=inner(c_name, "claude-status"), codex=inner(c_name, "codex-status"))
-        stop_computer(c_name)
-
-        # ------------------------------------------- computer D: tombstones hold after restore
-        say("Computer D: restore the latest checkpoints; the logins must stay signed out")
-        d_name = start_computer("d", s3)
-        inner(d_name, "restore")
-        inner(d_name, "audit", "D after restore")
-        record("d-status", claude=inner(d_name, "claude-status"), codex=inner(d_name, "codex-status"))
-        stop_computer(d_name)
-    except BaseException as e:
-        record("session-error", error=type(e).__name__)
-        print(f"\nThe session stopped ({type(e).__name__}). Cleaning up, which signs out first.")
-        cleanup()
-        raise
-    cleanup()
-    say(f"Done. Masked results: {OUT}")
-    return 0
+        sh("docker", "run", "--rm", "--network", NET, *s3_env(s3), "--entrypoint", "python3", IMAGE, "-I", "-c",
+           "import sys; sys.path.insert(0,'/opt/s6/credsync'); from objstore import S3Store; S3Store.from_env().create_bucket()")
+        session(s3)
+        ok = True
+    except (StepFailed, KeyboardInterrupt) as e:
+        record("session-stopped", reason=type(e).__name__, detail=str(e)[:200])
+        print(f"\nThe session stopped: {e}")
+    finally:
+        outcome = cleanup()
+    record("session-end", completed=ok, signed_out_verified=outcome.get("signed_out_verified"))
+    say(f"{'Done' if ok else 'Stopped'}. Masked results: {OUT}")
+    return 0 if ok and outcome.get("signed_out_verified") is not False else 1
 
 
 if __name__ == "__main__":

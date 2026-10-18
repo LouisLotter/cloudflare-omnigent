@@ -31,7 +31,15 @@ from core import (  # noqa: E402
     take_workspace_snapshot,
 )
 from objstore import LocalStore  # noqa: E402
-from ops import Computer, CredentialWatcher, capture_credentials, capture_workspace, publish_credential_snapshot, restore  # noqa: E402
+from ops import (  # noqa: E402
+    Computer,
+    CredentialWatcher,
+    RestoreNotDone,
+    capture_credentials,
+    capture_workspace,
+    publish_credential_snapshot,
+    restore,
+)
 
 CANARY = re.compile(rb"CFO_CANARY_[A-Za-z0-9_]{8,}")
 FAKES = S6 / "fakes" / "fake_cli.py"
@@ -49,6 +57,7 @@ class Box:
         self.home: Path
         self.comp: Computer
         self.new_container()
+        restore(self.comp, self.home, tmp / "staging0")  # nothing to restore yet; opens the gate
 
     def new_container(self) -> None:
         """A fresh container: empty home, new generation."""
@@ -103,7 +112,8 @@ class Box:
 
 
 @pytest.fixture
-def box(tmp_path: Path) -> Box:
+def box(tmp_path: Path, monkeypatch) -> Box:
+    monkeypatch.setenv("S6_STATE_DIR", str(tmp_path / "state"))  # snapshot order and restore gate
     return Box(tmp_path)
 
 
@@ -119,7 +129,12 @@ ALL_OUT = {"claude": False, "codex": False, "omnigent": False}
 
 
 def test_declared_files_and_siblings_are_excluded_from_workspace(box: Box):
-    assert [d.path for d in DECLARED_FILES] == [".claude/.credentials.json", ".codex/auth.json", ".omnigent/auth_tokens.json"]
+    assert [d.path for d in DECLARED_FILES] == [
+        ".claude/.credentials.json",
+        ".claude/.device-keys.json",  # provisional, until the owner session
+        ".codex/auth.json",
+        ".omnigent/auth_tokens.json",
+    ]
     for name in [".claude/.credentials.json.tmp.0a1b2c3d", ".claude/.credentials.json.tmp.123.0a1b2c3d4e5f",
                  ".omnigent/.auth_tokens.json.k2j3h4.tmp", ".omnigent/auth_tokens.lock"]:
         assert is_credential_or_sibling(name), name
@@ -184,7 +199,7 @@ def test_workspace_checkpoint_never_brings_a_login_back(box: Box):
         box.ok(prog, *args)
     box.cred()  # all three tombstoned
     report = box.restart_and_restore()
-    assert [f["action"] for f in report["credentials"]["files"]] == ["tombstone-absent"] * 3
+    assert [f["action"] for f in report["credentials"]["files"]] == ["tombstone-absent"] * len(DECLARED_FILES)
     assert box.logged_in() == ALL_OUT
     for d in DECLARED_FILES:
         assert not (box.home / d.path).exists()
@@ -254,17 +269,85 @@ def test_omnigent_clear_token_leaves_an_empty_file_that_is_restored_as_content(b
 
 
 def test_late_publish_of_an_older_capture_is_refused(box: Box):
+    """Overlapping captures through the real capture path: the copy taken first uploads last."""
     box.ok("codex", "login")
     old = take_credential_snapshot(box.home)
     box.ok("codex", "refresh")
     new = take_credential_snapshot(box.home)
-    seq_old = box.controller.next_seq("pc1", CRED_KIND, box.comp.generation)  # older capture's number
+    assert new.order > old.order and old.digest() != new.digest()
     seq_new, ok_new = publish_credential_snapshot(box.comp, new)
-    assert ok_new and seq_new > seq_old
-    # The older capture finishes its upload last and tries to publish: refused.
-    assert not box.controller.publish("pc1", CRED_KIND, box.comp.generation, seq_old, "computers/pc1/cred/stale.json")
+    assert ok_new
+    # The older copy gets the higher sequence number, because it publishes second; it is refused
+    # all the same, because it was taken first.
+    seq_old, ok_old = publish_credential_snapshot(box.comp, old)
+    assert seq_old > seq_new and not ok_old
     assert box.controller.current("pc1", CRED_KIND)[0] == seq_new
-    assert old.digest() != new.digest()
+    assert ("credential", seq_old, box.comp.generation, "not-newer") in [tuple(r) for r in box.controller.refusals("pc1")]
+    # And a tombstone taken after a login is not undone by the login's late upload.
+    box.ok("codex", "logout")
+    tomb = take_credential_snapshot(box.home)
+    box.ok("codex", "login")
+    relogin = take_credential_snapshot(box.home)
+    box.ok("codex", "logout")
+    last = take_credential_snapshot(box.home)
+    assert publish_credential_snapshot(box.comp, last)[1]
+    assert not publish_credential_snapshot(box.comp, relogin)[1]
+    assert not publish_credential_snapshot(box.comp, tomb)[1]
+    m = json.loads(box.store.get(box.controller.current("pc1", CRED_KIND)[1]))
+    assert {f["path"]: f["state"] for f in m["files"]}[".codex/auth.json"] == "absent"
+
+
+def test_a_file_deleted_mid_read_is_an_unstable_read_not_a_crash(box: Box, monkeypatch):
+    import core
+
+    box.ok("codex", "login")
+    target = box.home / ".codex/auth.json"
+    real_open = core.os.open
+
+    def racing_open(path, *a, **kw):
+        if Path(path) == target:
+            target.unlink()  # a logout lands between the stat and the open
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(core.os, "open", racing_open)
+    with pytest.raises(core.UnstableRead):
+        core.read_stable(target)
+    monkeypatch.setattr(core.os, "open", real_open)
+    # The watcher survives it, settles, and publishes the logout as a tombstone.
+    box.ok("codex", "login")
+    box.cred()
+    calls = {"n": 0}
+
+    def flaky_open(path, *a, **kw):
+        if Path(path) == target and calls["n"] == 0:
+            calls["n"] += 1
+            raise FileNotFoundError(path)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(core.os, "open", flaky_open)
+    events = run_watcher(box, 0.3, lambda: box.ok("codex", "refresh"), wait_s=2.0)
+    published = [e for e in events if e["event"] == "published"]
+    assert published and calls["n"] == 1
+
+
+def test_watcher_keeps_running_after_an_unexpected_error(box: Box, monkeypatch):
+    import ops
+
+    box.ok("codex", "login")
+    box.cred()
+    real = ops.publish_credential_snapshot
+    calls = {"n": 0}
+
+    def failing_once(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("store unavailable")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(ops, "publish_credential_snapshot", failing_once)
+    events = run_watcher(box, 0.3, lambda: box.ok("codex", "refresh"), wait_s=3.0)
+    assert [e for e in events if e["event"] == "watcher-error"]
+    assert [e for e in events if e["event"] == "published"]
 
 
 def test_old_generation_cannot_publish_after_replacement(box: Box):
@@ -294,15 +377,26 @@ def test_interrupted_capture_never_moves_the_pointer(box: Box):
     assert report["credentials"]["seq"] == c1
 
 
-def test_capture_before_restore_would_publish_tombstones(box: Box):
-    """Why the supervisor must not capture until the credential restore is done."""
+def test_capture_before_restore_is_refused(box: Box):
     box.sign_in_all()
     box.cred()
     box.new_container()
-    seq, ok, snap = capture_credentials(box.comp, box.home)  # wrong order: empty home
+    with pytest.raises(RestoreNotDone):
+        capture_credentials(box.comp, box.home)  # the gate holds: no copy of the empty home
+    restore(box.comp, box.home, box.tmp / "st")
+    assert box.logged_in() == ALL_IN
+    box.cred()  # after the restore, captures are allowed
+
+
+def test_without_the_restore_gate_the_logins_are_lost(box: Box):
+    """Negative control: why the gate is needed."""
+    box.sign_in_all()
+    box.cred()
+    box.new_container()
+    seq, ok, snap = capture_credentials(box.comp, box.home, require_restore=False)  # wrong order
     assert ok and all(r.state == "absent" for r in snap.records)
     restore(box.comp, box.home, box.tmp / "st")
-    assert box.logged_in() == ALL_OUT  # the login was lost: the gate is required
+    assert box.logged_in() == ALL_OUT
 
 
 # -- RC-13: computer lost just before or after a credential checkpoint ------------------------------
@@ -346,7 +440,8 @@ def test_install_touches_only_declared_files_with_private_modes(box: Box):
     restore(box.comp, box.home, box.tmp / "st")
     for p, ino in before.items():
         assert p.read_text() == "keep" and p.stat().st_ino == ino
-    for d in DECLARED_FILES:
+    installed = [d for d in DECLARED_FILES if d.path != ".claude/.device-keys.json"]  # never created
+    for d in installed:
         assert oct((box.home / d.path).stat().st_mode & 0o777) == "0o600"
     assert not list((box.tmp / "st").rglob("*.json")), "staging copy left behind"
 

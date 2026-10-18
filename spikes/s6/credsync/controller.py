@@ -4,8 +4,9 @@ Holds, per computer: the current generation, a sequence counter per checkpoint k
 published manifest pointer per kind. Publishing is atomic and fenced:
 
 - a call from an older generation is refused (a replaced container cannot publish);
-- a sequence number at or below the published one is refused, so a capture that finishes
-  uploading late can never replace a newer published checkpoint.
+- a checkpoint is refused unless it is newer than the published one: by the order in which the
+  copies were taken (snapshot order, within one generation) when the caller supplies it, and by
+  sequence number otherwise. A copy that finishes uploading late can never replace a newer one.
 
 SQLite with BEGIN IMMEDIATE makes each operation atomic across processes.
 """
@@ -36,7 +37,7 @@ class Controller:
             c.execute(
                 "CREATE TABLE IF NOT EXISTS pointers (computer_id TEXT, kind TEXT, seq INTEGER NOT NULL,"
                 " generation INTEGER NOT NULL, manifest_key TEXT NOT NULL, published_at REAL NOT NULL,"
-                " PRIMARY KEY (computer_id, kind))"
+                " snap_order INTEGER, PRIMARY KEY (computer_id, kind))"
             )
             c.execute(
                 "CREATE TABLE IF NOT EXISTS refusals (computer_id TEXT, kind TEXT, seq INTEGER, generation INTEGER,"
@@ -97,7 +98,8 @@ class Controller:
             )
             return seq
 
-    def publish(self, computer_id: str, kind: str, generation: int, seq: int, manifest_key: str) -> bool:
+    def publish(self, computer_id: str, kind: str, generation: int, seq: int, manifest_key: str,
+                order: int | None = None) -> bool:
         """Switch the pointer if this checkpoint is newer. Returns False when fenced out."""
         with self._tx() as c:
             try:
@@ -109,20 +111,27 @@ class Controller:
                 )
                 return False
             row = c.execute(
-                "SELECT seq FROM pointers WHERE computer_id=? AND kind=?", (computer_id, kind)
+                "SELECT seq, generation, snap_order FROM pointers WHERE computer_id=? AND kind=?",
+                (computer_id, kind),
             ).fetchone()
-            if row and row[0] >= seq:
+            if order is not None and row and row[1] == generation and row[2] is not None:
+                not_newer = row[2] >= order  # same container: compare when the copies were taken
+            elif order is not None and row and row[1] != generation:
+                not_newer = False  # the current generation is newer than the pointer's (checked above)
+            else:
+                not_newer = bool(row) and row[0] >= seq
+            if not_newer:
                 c.execute(
                     "INSERT INTO refusals VALUES(?,?,?,?,?,?)",
                     (computer_id, kind, seq, generation, "not-newer", time.time()),
                 )
                 return False
             c.execute(
-                "INSERT INTO pointers(computer_id, kind, seq, generation, manifest_key, published_at)"
-                " VALUES(?,?,?,?,?,?) ON CONFLICT(computer_id, kind) DO UPDATE SET seq=excluded.seq,"
+                "INSERT INTO pointers(computer_id, kind, seq, generation, manifest_key, published_at, snap_order)"
+                " VALUES(?,?,?,?,?,?,?) ON CONFLICT(computer_id, kind) DO UPDATE SET seq=excluded.seq,"
                 " generation=excluded.generation, manifest_key=excluded.manifest_key,"
-                " published_at=excluded.published_at",
-                (computer_id, kind, seq, generation, manifest_key, time.time()),
+                " published_at=excluded.published_at, snap_order=excluded.snap_order",
+                (computer_id, kind, seq, generation, manifest_key, time.time(), order),
             )
             return True
 

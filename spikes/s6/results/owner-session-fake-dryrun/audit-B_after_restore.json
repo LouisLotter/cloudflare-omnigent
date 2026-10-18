@@ -1,6 +1,6 @@
 {
   "label": "B after restore",
-  "at": "2026-10-18T15:16:15.202+00:00",
+  "at": "2026-10-18T15:44:15.749+00:00",
   "home": "~",
   "files": [
     {
@@ -10,9 +10,9 @@
       "mode": "0600",
       "size": 264,
       "uid": 0,
-      "inode": 2976677,
+      "inode": 3923292,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:15.106+00:00",
+      "mtime": "2026-10-18T15:44:14.602+00:00",
       "parse": "json",
       "keys": [
         {
@@ -32,7 +32,7 @@
         {
           "key": "claudeAiOauth.expiresAt",
           "type": "int",
-          "value": 1792340170298
+          "value": 1792341841218
         },
         {
           "key": "claudeAiOauth.refreshToken",
@@ -50,15 +50,19 @@
       ]
     },
     {
+      "path": ".claude/.device-keys.json",
+      "exists": false
+    },
+    {
       "path": ".codex/auth.json",
       "exists": true,
       "type": "file",
       "mode": "0600",
       "size": 370,
       "uid": 0,
-      "inode": 2976679,
+      "inode": 3923393,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:15.110+00:00",
+      "mtime": "2026-10-18T15:44:14.607+00:00",
       "parse": "json",
       "keys": [
         {
@@ -77,7 +81,7 @@
         {
           "key": "last_refresh",
           "type": "str",
-          "value": "2026-10-18T15:16:10.000000Z"
+          "value": "2026-10-18T15:44:01.000000Z"
         },
         {
           "key": "tokens",
@@ -113,9 +117,9 @@
       "mode": "0600",
       "size": 92,
       "uid": 0,
-      "inode": 2976669,
+      "inode": 3914713,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:14.749+00:00",
+      "mtime": "2026-10-18T15:44:13.539+00:00",
       "parse": "json",
       "keys": [
         {
@@ -149,9 +153,9 @@
       "mode": "0700",
       "size": 34,
       "uid": 0,
-      "inode": 2976676,
+      "inode": 3923290,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:15.107+00:00"
+      "mtime": "2026-10-18T15:44:14.605+00:00"
     },
     {
       "path": ".codex",
@@ -160,9 +164,9 @@
       "mode": "0700",
       "size": 18,
       "uid": 0,
-      "inode": 2976678,
+      "inode": 3923391,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:15.111+00:00"
+      "mtime": "2026-10-18T15:44:14.613+00:00"
     }
   ],
   "inventory": [

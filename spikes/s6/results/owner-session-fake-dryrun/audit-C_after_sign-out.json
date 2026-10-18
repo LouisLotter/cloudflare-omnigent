@@ -1,12 +1,16 @@
 {
   "label": "C after sign-out",
-  "at": "2026-10-18T15:16:22.405+00:00",
+  "at": "2026-10-18T15:44:22.703+00:00",
   "home": "~",
   "files": [
     {
       "path": ".claude/.credentials.json",
       "exists": false,
       "was_present_before": true
+    },
+    {
+      "path": ".claude/.device-keys.json",
+      "exists": false
     },
     {
       "path": ".codex/auth.json",
@@ -24,9 +28,9 @@
       "mode": "0600",
       "size": 36,
       "uid": 0,
-      "inode": 2977006,
+      "inode": 3945212,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:19.147+00:00",
+      "mtime": "2026-10-18T15:44:20.328+00:00",
       "parse": "json",
       "keys": [
         {
@@ -59,9 +63,9 @@
       "mode": "0700",
       "size": 0,
       "uid": 0,
-      "inode": 2976991,
+      "inode": 3934900,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:19.146+00:00"
+      "mtime": "2026-10-18T15:44:20.328+00:00"
     },
     {
       "path": ".codex",
@@ -70,9 +74,9 @@
       "mode": "0700",
       "size": 0,
       "uid": 0,
-      "inode": 2976993,
+      "inode": 3934902,
       "nlink": 1,
-      "mtime": "2026-10-18T15:16:19.203+00:00"
+      "mtime": "2026-10-18T15:44:20.386+00:00"
     }
   ],
   "inventory": [],

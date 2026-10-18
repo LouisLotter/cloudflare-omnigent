@@ -17,6 +17,7 @@ from core import (
     RefusedFile,
     UnstableRead,
     credential_manifest,
+    default_state_dir,
     install_workspace,
     pack_tar,
     signature,
@@ -46,9 +47,37 @@ def _put_verified(store: ObjectStore, key: str, data: bytes) -> str:
     return digest
 
 
+class RestoreNotDone(Exception):
+    """A credential checkpoint was attempted before this generation's restore had finished."""
+
+
+def _restore_marker(state_dir: Path | None = None) -> Path:
+    return (state_dir or default_state_dir()) / "restored"
+
+
+def mark_restored(comp: Computer, state_dir: Path | None = None) -> None:
+    marker = _restore_marker(state_dir)
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marker.write_text(f"{comp.computer_id}:{comp.generation}")
+
+
+def restore_done(comp: Computer, state_dir: Path | None = None) -> bool:
+    try:
+        return _restore_marker(state_dir).read_text() == f"{comp.computer_id}:{comp.generation}"
+    except FileNotFoundError:
+        return False
+
+
 def publish_credential_snapshot(comp: Computer, snap: CredentialSnapshot, *, timings: dict | None = None,
-                                before_publish: Callable[[], None] | None = None) -> tuple[int, bool]:
-    """Upload one credential checkpoint and switch the pointer. Returns (seq, published)."""
+                                before_publish: Callable[[], None] | None = None,
+                                require_restore: bool = True) -> tuple[int, bool]:
+    """Upload one credential checkpoint and switch the pointer. Returns (seq, published).
+
+    Refuses until this generation's restore has finished: a copy of the not-yet-restored home
+    would publish tombstones and delete the logins.
+    """
+    if require_restore and not restore_done(comp):
+        raise RestoreNotDone(f"generation {comp.generation} has not finished its restore")
     seq = comp.controller.next_seq(comp.computer_id, CRED_KIND, comp.generation)
     entries = {r.path: (snap.blobs[r.path], int(r.mode, 8)) for r in snap.records if r.state == "present"}
     archive = pack_tar(entries)
@@ -61,13 +90,14 @@ def publish_credential_snapshot(comp: Computer, snap: CredentialSnapshot, *, tim
         timings["uploaded"] = time.time()
     if before_publish is not None:
         before_publish()
-    ok = comp.controller.publish(comp.computer_id, CRED_KIND, comp.generation, seq, base + ".json")
+    ok = comp.controller.publish(comp.computer_id, CRED_KIND, comp.generation, seq, base + ".json", order=snap.order)
     if timings is not None:
         timings["published"] = time.time()
     return seq, ok
 
 
-def capture_credentials(comp: Computer, home: Path, retries: int = 20) -> tuple[int, bool, CredentialSnapshot]:
+def capture_credentials(comp: Computer, home: Path, retries: int = 20,
+                        require_restore: bool = True) -> tuple[int, bool, CredentialSnapshot]:
     for _ in range(retries):
         try:
             snap = take_credential_snapshot(home)
@@ -76,7 +106,7 @@ def capture_credentials(comp: Computer, home: Path, retries: int = 20) -> tuple[
             time.sleep(0.05)
     else:
         raise UnstableRead("credential files kept changing")
-    seq, ok = publish_credential_snapshot(comp, snap)
+    seq, ok = publish_credential_snapshot(comp, snap, require_restore=require_restore)
     return seq, ok, snap
 
 
@@ -108,6 +138,7 @@ def restore(comp: Computer, home: Path, staging: Path) -> dict:
         manifest = json.loads(comp.store.get(cred[1]))
         archive = comp.store.get(manifest["archive"]["key"])
         report["credentials"] = {"seq": cred[0], "files": stage_and_install_credentials(home, staging, manifest, archive)}
+    mark_restored(comp)  # only now may credential checkpoints be taken
     return report
 
 
@@ -193,5 +224,11 @@ class CredentialWatcher:
 
     def run(self, until: Callable[[], bool] | None = None) -> None:
         while not self.stopped and not (until and until()):
-            self.step()
+            try:
+                self.step()
+            except (SystemExit, KeyboardInterrupt):
+                raise
+            except Exception as e:  # report and keep watching; the change stays pending
+                self.log({"event": "watcher-error", "type": type(e).__name__, "at": time.time()})
+                self.last_change = time.time()
             time.sleep(self.poll_s)

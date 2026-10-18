@@ -1,10 +1,14 @@
 {
   "label": "A fresh",
-  "at": "2026-10-18T15:16:09.473+00:00",
+  "at": "2026-10-18T15:43:59.325+00:00",
   "home": "~",
   "files": [
     {
       "path": ".claude/.credentials.json",
+      "exists": false
+    },
+    {
+      "path": ".claude/.device-keys.json",
       "exists": false
     },
     {

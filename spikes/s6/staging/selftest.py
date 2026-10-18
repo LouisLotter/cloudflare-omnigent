@@ -26,7 +26,7 @@ from pathlib import Path
 S6 = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(S6 / "credsync"))
 
-from ops import Computer, CredentialWatcher, capture_credentials, capture_workspace, restore  # noqa: E402
+from ops import Computer, CredentialWatcher, capture_credentials, capture_workspace, mark_restored, restore  # noqa: E402
 from controller import Controller  # noqa: E402
 from objstore import LocalStore  # noqa: E402
 
@@ -49,9 +49,11 @@ def main() -> int:
     ap.add_argument("--settle-ms", type=float, default=500)
     a = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="s6-selftest-"))
+    os.environ["S6_STATE_DIR"] = str(tmp / "state")
     provider = tmp / "provider.json"
     ctl = Controller(tmp / "controller.sqlite")
     comp = Computer(COMPUTER_ID, ctl.start_generation(COMPUTER_ID), LocalStore(tmp / "store"), ctl)
+    mark_restored(comp)  # a new computer: nothing to restore
     result: dict = {"store": "container-local directory", "settle_ms": a.settle_ms, "rounds": a.rounds, "checks": {}}
     n = 0
 

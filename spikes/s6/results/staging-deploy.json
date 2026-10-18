@@ -1,8 +1,14 @@
 {
   "what": "S6 staging deployment for the owner session (no real accounts used yet)",
   "command": "pnpm stg deploy --suffix s6-creds --owner S6 --config spikes/s6/staging/wrangler.jsonc --days 2",
-  "deployed_at": "2026-10-18T15:14Z",
-  "expires_at": "2026-10-20T15:14:27Z",
+  "deploys": [
+    { "at": "2026-10-18T15:14Z", "revision": "cbdeb69 (before the review fixes)" },
+    {
+      "at": "2026-10-18T15:50Z",
+      "revision": "the review-fix commit; new Worker version and new image"
+    }
+  ],
+  "expires_at": "2026-10-20T15:50:28Z",
   "resources": [
     { "name": "cfo-stg-s6-creds", "type": "Worker with Durable Object class S6Computer" },
     { "name": "cfo-stg-s6-creds-pc", "type": "container application, max_instances 1, standard-1" },
@@ -11,10 +17,11 @@
       "type": "owner-only Access application on cfo-stg-s6-creds.<zone>"
     }
   ],
-  "unauthenticated_requests": {
+  "unauthenticated_requests_after_redeploy": {
     "GET /": "302 to the Access login",
     "GET /api/state": "302 to the Access login",
     "GET /term/": "302 to the Access login",
+    "GET /term/ws": "302 to the Access login",
     "POST /api/phase?name=start": "302 to the Access login"
   },
   "container_started": false,
