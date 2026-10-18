@@ -54,7 +54,9 @@ type DeleteMode = "ok" | "fails-after-delete" | "fails" | "silently-keeps";
 /**
  * Cloudflare as the staging tool sees it. Records every call, and records a violation whenever
  * a Worker exists without an owner-only Access application on its hostname. Time is the test
- * clock: an upload whose client died lands at its own time, within SETTLE, whatever happens
+ * clock. `real` is elapsed time, which decides when a lost upload lands; `clock` is the wall
+ * clock the tool reads, which can jump. An upload whose client died lands at its own time,
+ * within SETTLE of real time, whatever happens
  * meanwhile, including later successful uploads.
  */
 class FakeCloud implements Cloud {
@@ -71,6 +73,8 @@ class FakeCloud implements Cloud {
   readonly lateUploads: { name: string; hostname: string; landAt: number }[] = [];
   readonly deleteModes = new Map<string, DeleteMode>();
   lookupUnknown = false;
+  /** How long a Worker lookup takes to answer. It reports the state from when it started. */
+  lookupDelay = 0;
   private nextId = 1;
   private readonly store: FakeStore;
 
@@ -101,7 +105,7 @@ class FakeCloud implements Cloud {
   /** Lands every lost upload whose time has come. Every call to Cloudflare passes through. */
   tick(): void {
     for (const late of [...this.lateUploads]) {
-      if (late.landAt > clock) continue;
+      if (late.landAt > real) continue;
       this.lateUploads.splice(this.lateUploads.indexOf(late), 1);
       this.workers.set(late.name, late.hostname);
     }
@@ -136,7 +140,10 @@ class FakeCloud implements Cloud {
     this.tick();
     this.calls.push("worker.exists");
     if (this.lookupUnknown) throw new Error("could not tell whether the Worker exists");
-    return this.workers.has(name);
+    const answer = this.workers.has(name);
+    elapse(this.lookupDelay);
+    this.tick();
+    return answer;
   }
   deployWorker(name: string, hostname: string, configPath: string): void {
     this.tick();
@@ -145,7 +152,7 @@ class FakeCloud implements Cloud {
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
-      this.lateUploads.push({ name, hostname, landAt: clock + this.lateDelay });
+      this.lateUploads.push({ name, hostname, landAt: real + this.lateDelay });
       throw new Error("wrangler deploy exited with 1");
     }
     this.workers.set(name, hostname);
@@ -174,6 +181,14 @@ const GOOD: DeployConfigView = {
 let store: FakeStore;
 let cloud: FakeCloud;
 let clock: number;
+/** Elapsed time, unaffected by wall-clock jumps. */
+let real: number;
+
+/** Time passes: both clocks advance. */
+function elapse(ms: number): void {
+  clock += ms;
+  real += ms;
+}
 let views: Record<string, DeployConfigView>;
 let locks: FakeLocks;
 let ctx: Context;
@@ -184,6 +199,7 @@ function newContext(): Context {
   cloud = new FakeCloud(store);
   locks = new FakeLocks();
   clock = T0;
+  real = 0;
   return {
     config,
     cloud,
@@ -195,7 +211,7 @@ function newContext(): Context {
     },
     lock: (name) => locks.lock(name),
     sleep: (ms) => {
-      clock += ms;
+      elapse(ms);
       cloud.calls.push(`sleep ${ms}`);
       cloud.tick();
     },
@@ -217,6 +233,7 @@ function restart(): void {
   cloud.duringUpload = undefined;
   cloud.deleteModes.clear();
   cloud.lookupUnknown = false;
+  cloud.lookupDelay = 0;
 }
 
 const request = (suffix = "a", days = 7, configPath = GOOD.path) => ({
@@ -472,27 +489,76 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
     expect(() => deploy(ctx, request())).toThrow();
     restart();
     deploy(ctx, request());
-    expect(record()?.settleUntil).toBe(new Date(T0 + SETTLE).toISOString());
+    expect(record()?.uploadInterruptedAt).toBe(new Date(T0).toISOString());
 
     expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
     expect(cloud.apps.size).toBe(1);
     expect(cloud.violations).toEqual([]);
     teardown(ctx, "cfo-stg-a");
-    clock += SETTLE;
+    elapse(SETTLE);
     cloud.tick();
     expect(cloud.workers.size + cloud.apps.size).toBe(0);
     expect(cloud.violations).toEqual([]);
   });
 
-  it("keeps the latest settle deadline across several interrupted uploads", () => {
+  it("keeps the first interruption across later attempts, failed or successful", () => {
     cloud.deployFault = "lost-response";
     expect(() => deploy(ctx, request())).toThrow();
-    clock += 10_000;
+    elapse(10_000);
     expect(() => deploy(ctx, request())).toThrow();
     restart();
-    clock += 5_000;
+    elapse(5_000);
     deploy(ctx, request());
-    expect(record()?.settleUntil).toBe(new Date(clock + SETTLE).toISOString());
+    expect(record()).toMatchObject({
+      state: "deployed",
+      uploadInterruptedAt: new Date(T0 + 10_000).toISOString(),
+    });
+    expect(record()?.uploadStartedAt).toBeUndefined();
+  });
+
+  // G0 review, run 2, finding 1: the wall clock jumps forward between the commands.
+  it("waits the full settle time even after the wall clock jumps forward", () => {
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = SETTLE - 1_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    deploy(ctx, request());
+    clock += 10 * 60_000; // the wall clock only
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("waits again when a teardown resumes from deleting after a clock jump", () => {
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = SETTLE - 1_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    cloud.lookupUnknown = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("could not tell");
+    restart();
+    expect(record()?.state).toBe("deleting");
+    clock += 10 * 60_000; // the wall clock only
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  // G0 review, run 2, finding 2: an absence lookup whose answer arrives after the lost upload
+  // landed must not count as the final check.
+  it("does not let a slow lookup that began before the wait count as the final check", () => {
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = SETTLE - 1_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    deploy(ctx, request());
+    // The lost upload lands at 59 s. Each lookup takes 40 s: the first ends at 40 s, then the
+    // delete; the second samples "absent" at 40 s and answers at 80 s, after the landing.
+    cloud.lookupDelay = 40_000;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
   });
 
   it("refuses to record a deploy that Wrangler reports but Cloudflare does not show", () => {
@@ -675,12 +741,17 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       suffix,
       mode: fc.constantFrom<DeleteMode>("ok", "fails-after-delete", "fails", "silently-keeps"),
       unknown: fc.boolean(),
+      lookupDelay: fc.integer({ min: 0, max: 2 * SETTLE }),
+      wallJump: fc.integer({ min: 0, max: 30 * 60_000 }),
     }),
     fc.record({
       kind: fc.constant("sweep" as const),
       hours: fc.integer({ min: 0, max: 40 * 24 }),
       mode: fc.constantFrom<DeleteMode>("ok", "fails-after-delete", "fails", "silently-keeps"),
+      lookupDelay: fc.integer({ min: 0, max: 2 * SETTLE }),
     }),
+    // Time passes between commands; a lost upload may land meanwhile.
+    fc.record({ kind: fc.constant("wait" as const), ms: fc.integer({ min: 0, max: 2 * SETTLE }) }),
   );
 
   it("holds across any sequence of deploys, failures, crashes, teardowns and sweeps", () => {
@@ -704,13 +775,19 @@ describe("model check: no Worker is ever reachable without its Access applicatio
               };
               deploy(ctx, request(op.suffix, op.days));
             } else if (op.kind === "teardown") {
+              clock += op.wallJump; // the wall clock only
               cloud.deleteModes.set(`cfo-stg-${op.suffix}`, op.mode);
               cloud.lookupUnknown = op.unknown;
+              cloud.lookupDelay = op.lookupDelay;
               teardown(ctx, `cfo-stg-${op.suffix}`);
-            } else {
-              clock += op.hours * HOUR;
+            } else if (op.kind === "sweep") {
+              elapse(op.hours * HOUR);
               for (const name of ["cfo-stg-a", "cfo-stg-b"]) cloud.deleteModes.set(name, op.mode);
+              cloud.lookupDelay = op.lookupDelay;
               sweep(ctx, true);
+            } else {
+              elapse(op.ms);
+              cloud.tick();
             }
           } catch {
             // Refusals and injected failures are expected; the invariants below are not.
@@ -737,7 +814,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         expect(store.load()).toEqual([]);
         expect(cloud.workers.size + cloud.apps.size).toBe(0);
         // Every lost upload has had its time; none may land after the cleanup.
-        clock += SETTLE;
+        elapse(SETTLE);
         cloud.tick();
         expect(cloud.workers.size).toBe(0);
         expect(cloud.violations).toEqual([]);

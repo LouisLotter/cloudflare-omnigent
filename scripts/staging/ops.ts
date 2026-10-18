@@ -12,10 +12,11 @@
 //   - Access is created, or claimed and checked, before the Worker is deployed, and a deploy
 //     counts only once the Worker is found in the staging account.
 //   - Teardown removes Access only after Cloudflare confirms that the Worker no longer exists.
-//     An interrupted upload may still land for `settleMs` after its process ended, so the
-//     record keeps a settle deadline (settleInterrupted) that no later deploy clears, and
-//     teardown confirms the Worker absent again after it. An unknown answer keeps Access and
-//     the record.
+//     An interrupted upload may still land for up to `settleMs` after its process ended. Once
+//     a record shows one (markInterrupted), no later deploy clears that, and every teardown
+//     waits the full `settleMs` on its own process's monotonic clock, then starts a fresh
+//     lookup, before removing Access. No wall-clock deadline is trusted, and no lookup that
+//     began before the wait counts. An unknown answer keeps Access and the record.
 //   - Worker and Access share one record and one expiry, so a sweep removes them together.
 
 import {
@@ -30,9 +31,9 @@ import {
   expired,
   expiry,
   hostnameFor,
+  markInterrupted,
   resourceName,
   type StagingConfig,
-  settleInterrupted,
   validateDeployConfig,
 } from "./guard.ts";
 
@@ -103,7 +104,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
     const found = ctx.store.load().find((d) => d.name === name);
-    const existing = found && settleInterrupted(found, now, ctx.settleMs);
+    const existing = found && markInterrupted(found, now);
     if (existing?.state === "deleting") {
       throw new Error(`${name} is being torn down; run teardown --suffix ${request.suffix} first`);
     }
@@ -134,7 +135,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     }
 
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
-    // still appear, and the next command turns that into a settle deadline.
+    // still appear, and the next command marks the upload interrupted.
     record = put(ctx, { ...record, uploadStartedAt: ctx.now().toISOString() });
     ctx.cloud.deployWorker(name, hostname, request.configPath);
     if (!ctx.cloud.workerExists(name)) {
@@ -164,10 +165,7 @@ export function teardown(
     }
     if (options.ifExpiredAt && expired([found], options.ifExpiredAt).length === 0) return;
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
-    const record = put(ctx, {
-      ...settleInterrupted(found, ctx.now(), ctx.settleMs),
-      state: "deleting",
-    });
+    const record = put(ctx, { ...markInterrupted(found, ctx.now()), state: "deleting" });
 
     if (ctx.cloud.workerExists(name)) {
       let failure: unknown;
@@ -183,12 +181,11 @@ export function teardown(
         });
       }
     }
-    const wait = record.settleUntil ? Date.parse(record.settleUntil) - ctx.now().getTime() : 0;
-    if (wait > 0) {
-      ctx.log(
-        `${name}: an interrupted upload may still land; checking again in ${Math.ceil(wait / 1000)}s`,
-      );
-      ctx.sleep(wait);
+    if (record.uploadInterruptedAt !== undefined) {
+      // The interrupted upload's process ended before this command took the lock, so after a
+      // full settle time from here any request it left behind has landed or never will.
+      ctx.log(`${name}: an upload was interrupted; checking again in ${ctx.settleMs / 1000}s`);
+      ctx.sleep(ctx.settleMs);
       if (ctx.cloud.workerExists(name)) {
         throw new Error(
           `${name}: the Worker appeared after an interrupted upload, so its Access application was kept; run teardown again`,

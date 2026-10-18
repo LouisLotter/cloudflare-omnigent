@@ -312,6 +312,16 @@ describe("tarMembers", () => {
     expect(names(archive)).toEqual([`${longName}.br`, "short.log"]);
   });
 
+  it("treats an empty pax value as deleting the override, as POSIX says", () => {
+    const archive = tarArchive([
+      { name: "PaxHeader", type: "x", data: paxRecords({ path: "" }) },
+      { name: "artifact.br", data: Buffer.from("x") },
+      { name: "PaxHeader", type: "x", data: paxRecords({ path: "renamed.log", size: "" }) },
+      { name: "second.log", data: Buffer.from("y") },
+    ]);
+    expect(names(archive)).toEqual(["artifact.br", "renamed.log"]);
+  });
+
   it("uses a pax size record as the next entry's length", () => {
     const content = Buffer.alloc(1300, 7);
     const archive = tarArchive([
@@ -530,6 +540,23 @@ describe("scanPaths", () => {
       column: 7,
     });
     expect(result.findings.every((finding) => finding.layers.includes("brotli"))).toBe(true);
+    expect(exitCodeFor(result)).toBe(EXIT_FOUND);
+  });
+
+  // G0 review, run 2: an empty pax path hid the header's own ".br" name.
+  it("decodes a brotli member whose empty pax path leaves the header name in force", async () => {
+    const log = `boot\nlogin=${canary("EMPTYPAXBR")}\n`.repeat(20);
+    const file = await put(
+      "empty-path.tar",
+      tarArchive([
+        { name: "PaxHeader", type: "x", data: paxRecords({ path: "" }) },
+        { name: "artifact.br", data: brotliCompressSync(log) },
+      ]),
+    );
+
+    const result = await scanPaths([file]);
+
+    expect(result.findings[0]?.layers).toEqual(["tar member artifact.br", "brotli"]);
     expect(exitCodeFor(result)).toBe(EXIT_FOUND);
   });
 

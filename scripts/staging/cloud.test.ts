@@ -203,6 +203,22 @@ describe("Wrangler's own reading of a configuration", () => {
         durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] },
       },
     ],
+    [
+      "a migration that takes another Worker's Durable Objects",
+      {
+        ...closed,
+        migrations: [
+          {
+            tag: "v1",
+            transferred_classes: [{ from: "P", from_script: "production-worker", to: "I" }],
+          },
+        ],
+      },
+    ],
+    [
+      "a log export destination",
+      { ...closed, observability: { logs: { enabled: true, destinations: ["prod-sink"] } } },
+    ],
   ])("refuses %s", (label, body) => {
     expect(() => check(write(`${label.replaceAll(" ", "-")}.json`, body))).toThrow(
       "refusing Wrangler config",

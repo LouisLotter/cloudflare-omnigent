@@ -419,7 +419,14 @@ function applyPaxRecords(
     if (key.startsWith("GNU.sparse.")) return { error: "tar archive holds a GNU sparse file" };
     if (key !== "path" && key !== "size") continue;
     if (global) return { error: `tar archive has a global pax ${key} record` };
-    if (key === "path") applied = { ...applied, name: value };
+    if (value === "") {
+      // POSIX: an empty value deletes the override, so the header's own field applies again.
+      const { name, size } = applied;
+      applied =
+        key === "path"
+          ? { ...(size === undefined ? {} : { size }) }
+          : { ...(name === undefined ? {} : { name }) };
+    } else if (key === "path") applied = { ...applied, name: value };
     else if (/^[0-9]+$/.test(value)) applied = { ...applied, size: Number(value) };
     else return MALFORMED_TAR;
   }

@@ -26,15 +26,17 @@ export interface Deployment {
   readonly accessAppId?: string;
   /**
    * Set just before a Worker upload and cleared when it succeeds. If the next command finds it
-   * still set, that upload was interrupted, and the command turns it into `settleUntil`.
+   * still set, that upload was interrupted, and the command records `uploadInterruptedAt`.
    */
   readonly uploadStartedAt?: string;
   /**
-   * Until this time an interrupted upload may still take effect at Cloudflare. Teardown waits
-   * for it before removing Access. A later successful upload does not clear it, because it says
-   * nothing about the earlier request.
+   * When a command first found an interrupted upload. While it is set, a request may still take
+   * effect at Cloudflare, so every teardown waits the full settle time, measured by its own
+   * process, before its final check. Only the teardown that removes the record clears it: a
+   * later successful upload says nothing about the earlier request, and no wall-clock deadline
+   * is trusted, because the clock can jump.
    */
-  readonly settleUntil?: string;
+  readonly uploadInterruptedAt?: string;
 }
 
 export interface StagingConfig {
@@ -118,15 +120,13 @@ export function expired(deployments: readonly Deployment[], now: Date): Deployme
 
 /**
  * Called by every command when it takes a deployment's lock. If the record still shows an upload
- * in progress, no process is running it any more (the lock proves that), so it was interrupted:
- * from now on it may land for up to `settleMs`. The latest such deadline wins.
+ * in progress, no process is running it any more (the lock proves that), so it was interrupted.
+ * The earliest such time is kept, for the record only.
  */
-export function settleInterrupted(d: Deployment, now: Date, settleMs: number): Deployment {
+export function markInterrupted(d: Deployment, now: Date): Deployment {
   if (d.uploadStartedAt === undefined) return d;
   const { uploadStartedAt: _, ...rest } = d;
-  const until = now.getTime() + settleMs;
-  const previous = d.settleUntil === undefined ? 0 : Date.parse(d.settleUntil);
-  return { ...rest, settleUntil: new Date(Math.max(until, previous)).toISOString() };
+  return { ...rest, uploadInterruptedAt: d.uploadInterruptedAt ?? now.toISOString() };
 }
 
 /**
@@ -163,6 +163,56 @@ export const ALLOWED_CONFIG_KEYS: readonly string[] = [
   "upload_source_maps",
 ];
 
+function keysOutside(value: unknown, allowed: readonly string[]): string[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value).filter((key) => !allowed.includes(key));
+}
+
+/**
+ * The nested structures of the allowed keys that could still reach outside the deployment,
+ * each with the keys it may use:
+ *   - a Durable Object binding names only its own class: no `script_name` or `environment`,
+ *     which would bind another Worker's objects;
+ *   - a migration only creates, renames or deletes this Worker's own classes: no
+ *     `transferred_classes`, which would move another Worker's stored objects into this one;
+ *   - observability stays inside the Worker: no `destinations`, which would export logs or
+ *     traces to existing account-level destinations.
+ */
+function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown, string[]][] {
+  const shapes: [string, unknown, string[]][] = [];
+  const objects = raw.durable_objects as { bindings?: unknown } | undefined;
+  shapes.push(["durable_objects", objects, ["bindings"]]);
+  const bindings = Array.isArray(objects?.bindings) ? objects.bindings : [];
+  bindings.forEach((binding, i) => {
+    shapes.push([`durable_objects.bindings[${i}]`, binding, ["name", "class_name"]]);
+  });
+  const migrations = Array.isArray(raw.migrations) ? raw.migrations : [];
+  migrations.forEach((migration, i) => {
+    shapes.push([
+      `migrations[${i}]`,
+      migration,
+      ["tag", "new_classes", "new_sqlite_classes", "renamed_classes", "deleted_classes"],
+    ]);
+  });
+  const observability = raw.observability as { logs?: unknown; traces?: unknown } | undefined;
+  shapes.push([
+    "observability",
+    observability,
+    ["enabled", "head_sampling_rate", "logs", "traces"],
+  ]);
+  shapes.push([
+    "observability.logs",
+    observability?.logs,
+    ["enabled", "head_sampling_rate", "invocation_logs", "persist"],
+  ]);
+  shapes.push([
+    "observability.traces",
+    observability?.traces,
+    ["enabled", "head_sampling_rate", "persist"],
+  ]);
+  return shapes;
+}
+
 /**
  * Refuses a Wrangler configuration that could reach outside the staging deployment:
  *   - Another account. Wrangler prefers the config's `account_id` to CLOUDFLARE_ACCOUNT_ID.
@@ -170,8 +220,8 @@ export const ALLOWED_CONFIG_KEYS: readonly string[] = [
  *     that to the configured routes rather than replacing them, so the configuration must have
  *     no routes of its own and must disable workers.dev and preview URLs explicitly: both
  *     default to on.
- *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, and Durable Objects that live in
- *     another Worker.
+ *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, and the nested structures in
+ *     nestedShapes.
  */
 export function validateDeployConfig(view: DeployConfigView, accountId: string): void {
   const problems: string[] = [];
@@ -182,12 +232,13 @@ export function validateDeployConfig(view: DeployConfigView, accountId: string):
   if (extra.length > 0) {
     problems.push(`the staging tool does not manage ${extra.map((k) => `"${k}"`).join(", ")}`);
   }
-  const objects = (view.raw.durable_objects as { bindings?: unknown } | undefined)?.bindings;
-  if (
-    Array.isArray(objects) &&
-    objects.some((b) => (b as { script_name?: unknown })?.script_name !== undefined)
-  ) {
-    problems.push("a Durable Object binding points at another Worker");
+  for (const [path, value, allowed] of nestedShapes(view.raw)) {
+    const outside = keysOutside(value, allowed);
+    if (outside.length > 0) {
+      problems.push(
+        `${path} uses ${outside.map((k) => `"${k}"`).join(", ")}, which the staging tool does not manage`,
+      );
+    }
   }
   if (view.redirected) problems.push("it redirects to another configuration file");
   if ("env" in view.raw) problems.push("it defines environments; use a separate file instead");
@@ -302,7 +353,7 @@ export function parseRegistry(json: unknown): Deployment[] {
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
-      (d.settleUntil !== undefined && !text("settleUntil"))
+      (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt"))
     ) {
       throw new Error("malformed entry in the staging registry");
     }

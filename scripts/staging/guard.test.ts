@@ -13,10 +13,10 @@ import {
   expired,
   expiry,
   hostnameFor,
+  markInterrupted,
   parseRegistry,
   resourceName,
   serializeRegistry,
-  settleInterrupted,
   validateDeployConfig,
 } from "./guard.ts";
 
@@ -192,14 +192,65 @@ describe("Wrangler configuration check", () => {
     ]) {
       expect(() => validateDeployConfig(raw({ [key]: [] }), ACCOUNT)).toThrow(`"${key}"`);
     }
-    expect(() =>
-      validateDeployConfig(
-        raw({
-          durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] },
-        }),
-        ACCOUNT,
-      ),
-    ).toThrow("another Worker");
+  });
+
+  it("refuses nested structures that reach another Worker or the account", () => {
+    const refused: [string, Record<string, unknown>, string][] = [
+      [
+        "a Durable Object of another Worker",
+        { durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] } },
+        '"script_name"',
+      ],
+      [
+        "a Durable Object of another environment",
+        { durable_objects: { bindings: [{ name: "D", class_name: "D", environment: "prod" }] } },
+        '"environment"',
+      ],
+      [
+        "a transfer migration",
+        {
+          migrations: [
+            {
+              tag: "v1",
+              transferred_classes: [{ from: "P", from_script: "production-worker", to: "I" }],
+            },
+          ],
+        },
+        '"transferred_classes"',
+      ],
+      [
+        "a log export destination",
+        { observability: { logs: { enabled: true, destinations: ["prod-sink"] } } },
+        "observability.logs",
+      ],
+      [
+        "a trace export destination",
+        { observability: { traces: { enabled: true, destinations: ["prod-sink"] } } },
+        "observability.traces",
+      ],
+      ["an unknown observability key", { observability: { export: {} } }, '"export"'],
+    ];
+    for (const [label, extra, message] of refused) {
+      expect(() => validateDeployConfig(raw(extra), ACCOUNT), label).toThrow(message);
+    }
+  });
+
+  it("accepts the nested structures a staging Worker of its own needs", () => {
+    const own = raw({
+      durable_objects: { bindings: [{ name: "CONTROL", class_name: "ControlDO" }] },
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["ControlDO"] },
+        { tag: "v2", renamed_classes: [{ from: "ControlDO", to: "Control" }] },
+        { tag: "v3", deleted_classes: ["Old"], new_classes: ["New"] },
+      ],
+      observability: {
+        enabled: true,
+        head_sampling_rate: 1,
+        logs: { enabled: true, invocation_logs: true, persist: true },
+        traces: { enabled: false },
+      },
+    });
+    expect(() => validateDeployConfig(own, ACCOUNT)).not.toThrow();
   });
 
   it("names every problem at once", () => {
@@ -211,26 +262,24 @@ describe("Wrangler configuration check", () => {
 
 describe("interrupted uploads", () => {
   const now = new Date("2026-10-18T12:00:00.000Z");
-  const later = (ms: number) => new Date(now.getTime() + ms).toISOString();
 
   it("leaves a record without an unfinished upload alone", () => {
-    expect(settleInterrupted(deployment, now, 60_000)).toBe(deployment);
+    expect(markInterrupted(deployment, now)).toBe(deployment);
   });
 
-  it("turns an unfinished upload into a settle deadline", () => {
-    const settled = settleInterrupted({ ...deployment, uploadStartedAt: "x" }, now, 60_000);
-    expect(settled.uploadStartedAt).toBeUndefined();
-    expect(settled.settleUntil).toBe(later(60_000));
+  it("marks an unfinished upload as interrupted", () => {
+    const marked = markInterrupted({ ...deployment, uploadStartedAt: "x" }, now);
+    expect(marked.uploadStartedAt).toBeUndefined();
+    expect(marked.uploadInterruptedAt).toBe(now.toISOString());
   });
 
-  it("keeps the later of the old and new deadlines", () => {
-    const old = { ...deployment, uploadStartedAt: "x" };
-    expect(settleInterrupted({ ...old, settleUntil: later(90_000) }, now, 60_000).settleUntil).toBe(
-      later(90_000),
+  it("keeps the first interruption", () => {
+    const first = "2026-10-18T11:00:00.000Z";
+    const marked = markInterrupted(
+      { ...deployment, uploadStartedAt: "x", uploadInterruptedAt: first },
+      now,
     );
-    expect(settleInterrupted({ ...old, settleUntil: later(10_000) }, now, 60_000).settleUntil).toBe(
-      later(60_000),
-    );
+    expect(marked.uploadInterruptedAt).toBe(first);
   });
 });
 
