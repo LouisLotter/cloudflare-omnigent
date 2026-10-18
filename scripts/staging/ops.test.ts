@@ -47,12 +47,15 @@ type DeployFault =
   | "after-upload"
   | "crash-after-access"
   | "crash-after-upload"
-  | "lost-response";
+  | "lost-response"
+  | "phantom-success";
 type DeleteMode = "ok" | "fails-after-delete" | "fails" | "silently-keeps";
 
 /**
  * Cloudflare as the staging tool sees it. Records every call, and records a violation whenever
- * a Worker exists without an owner-only Access application on its hostname.
+ * a Worker exists without an owner-only Access application on its hostname. Time is the test
+ * clock: an upload whose client died lands at its own time, within SETTLE, whatever happens
+ * meanwhile, including later successful uploads.
  */
 class FakeCloud implements Cloud {
   readonly calls: string[] = [];
@@ -60,10 +63,12 @@ class FakeCloud implements Cloud {
   readonly apps = new Map<string, AccessApp>();
   readonly workers = new Map<string, string>(); // name -> hostname
   deployFault: DeployFault = "none";
+  /** How long after its client died a lost upload lands; at most SETTLE. */
+  lateDelay = SETTLE - 1_000;
   /** Runs inside an upload, before it takes effect: another command acting meanwhile. */
   duringUpload: (() => void) | undefined;
-  /** Uploads whose client died; they take effect at the next land(). */
-  readonly lateUploads = new Map<string, string>();
+  /** Uploads whose client died, each with the time it takes effect. */
+  readonly lateUploads: { name: string; hostname: string; landAt: number }[] = [];
   readonly deleteModes = new Map<string, DeleteMode>();
   lookupUnknown = false;
   private nextId = 1;
@@ -93,15 +98,28 @@ class FakeCloud implements Cloud {
     }
   }
 
+  /** Lands every lost upload whose time has come. Every call to Cloudflare passes through. */
+  tick(): void {
+    for (const late of [...this.lateUploads]) {
+      if (late.landAt > clock) continue;
+      this.lateUploads.splice(this.lateUploads.indexOf(late), 1);
+      this.workers.set(late.name, late.hostname);
+    }
+    this.check();
+  }
+
   accountIds(): string[] {
+    this.tick();
     this.calls.push("accounts");
     return [ACCOUNT];
   }
   listAccessApps(hostname: string): AccessApp[] {
+    this.tick();
     this.calls.push("access.list");
     return [...this.apps.values()].filter((app) => app.domain === hostname);
   }
   createAccessApp(body: Record<string, unknown>): string {
+    this.tick();
     const id = `app-${this.nextId++}`;
     this.apps.set(id, { ...(body as unknown as AccessApp), id });
     this.calls.push(`access.create ${String(body.name)}`);
@@ -109,36 +127,34 @@ class FakeCloud implements Cloud {
     return id;
   }
   deleteAccessApp(id: string): void {
+    this.tick();
     this.calls.push(`access.delete ${this.apps.get(id)?.name}`);
     this.apps.delete(id);
     this.check();
   }
   workerExists(name: string): boolean {
+    this.tick();
     this.calls.push("worker.exists");
     if (this.lookupUnknown) throw new Error("could not tell whether the Worker exists");
     return this.workers.has(name);
   }
   deployWorker(name: string, hostname: string, configPath: string): void {
+    this.tick();
     this.calls.push(`worker.deploy ${name} ${configPath}`);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
+    if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
-      this.lateUploads.set(name, hostname);
+      this.lateUploads.push({ name, hostname, landAt: clock + this.lateDelay });
       throw new Error("wrangler deploy exited with 1");
     }
-    this.lateUploads.delete(name);
     this.workers.set(name, hostname);
     this.check();
     if (this.deployFault === "after-upload") throw new Error("wrangler deploy exited with 1");
     if (this.deployFault === "crash-after-upload") this.die();
   }
-  /** The late uploads complete at Cloudflare. */
-  land(): void {
-    for (const [name, hostname] of this.lateUploads) this.workers.set(name, hostname);
-    this.lateUploads.clear();
-    this.check();
-  }
   deleteWorker(name: string): void {
+    this.tick();
     this.calls.push(`worker.delete ${name}`);
     const mode = this.deleteModes.get(name) ?? "ok";
     if (mode === "ok" || mode === "fails-after-delete") this.workers.delete(name);
@@ -181,7 +197,7 @@ function newContext(): Context {
     sleep: (ms) => {
       clock += ms;
       cloud.calls.push(`sleep ${ms}`);
-      cloud.land();
+      cloud.tick();
     },
     settleMs: SETTLE,
     now: () => new Date(clock),
@@ -449,6 +465,43 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
     ]);
   });
 
+  it("keeps Access when an earlier lost upload lands after a successful retry", () => {
+    // The G0 review's sequence: A loses its client, B succeeds, teardown, then A lands.
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = 3_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    deploy(ctx, request());
+    expect(record()?.settleUntil).toBe(new Date(T0 + SETTLE).toISOString());
+
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.violations).toEqual([]);
+    teardown(ctx, "cfo-stg-a");
+    clock += SETTLE;
+    cloud.tick();
+    expect(cloud.workers.size + cloud.apps.size).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("keeps the latest settle deadline across several interrupted uploads", () => {
+    cloud.deployFault = "lost-response";
+    expect(() => deploy(ctx, request())).toThrow();
+    clock += 10_000;
+    expect(() => deploy(ctx, request())).toThrow();
+    restart();
+    clock += 5_000;
+    deploy(ctx, request());
+    expect(record()?.settleUntil).toBe(new Date(clock + SETTLE).toISOString());
+  });
+
+  it("refuses to record a deploy that Wrangler reports but Cloudflare does not show", () => {
+    cloud.deployFault = "phantom-success";
+    expect(() => deploy(ctx, request())).toThrow("has no such Worker");
+    expect(record()).toMatchObject({ state: "pending" });
+    expect(record()?.uploadStartedAt).toBeDefined();
+  });
+
   it("does not wait after a clean deploy", () => {
     deploy(ctx, request());
     cloud.calls.length = 0;
@@ -503,6 +556,23 @@ describe("IR-002: only closed Wrangler configurations deploy", () => {
       effective: { workers_dev: false, preview_urls: false, targetEnvironment: "x" },
     },
     "a redirected config": { redirected: true },
+    "another account": {
+      effective: { ...GOOD.effective, account_id: "b".repeat(32) },
+    },
+    "an R2 bucket": {
+      raw: { ...GOOD.raw, r2_buckets: [{ binding: "DATA", bucket_name: "non-staging-data" }] },
+    },
+    "a service binding": { raw: { ...GOOD.raw, services: [{ binding: "S", service: "prod" }] } },
+    "a KV namespace": { raw: { ...GOOD.raw, kv_namespaces: [{ binding: "K", id: "x" }] } },
+    "a container": {
+      raw: { ...GOOD.raw, containers: [{ class_name: "C", image: "./Dockerfile" }] },
+    },
+    "a Durable Object in another Worker": {
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] },
+      },
+    },
   };
 
   it.each(Object.entries(open))("refuses %s before any cloud call", (_, change) => {
@@ -512,7 +582,13 @@ describe("IR-002: only closed Wrangler configurations deploy", () => {
     expect(store.load()).toEqual([]);
   });
 
-  it("deploys the approved configuration", () => {
+  it("deploys the approved configuration, also with the staging account named", () => {
+    views["/w/own.jsonc"] = {
+      ...GOOD,
+      path: "/w/own.jsonc",
+      effective: { ...GOOD.effective, account_id: ACCOUNT },
+    };
+    expect(deploy(ctx, request("b", 7, "/w/own.jsonc")).state).toBe("deployed");
     expect(deploy(ctx, request()).state).toBe("deployed");
     expect(cloud.calls).toContain(`worker.deploy cfo-stg-a ${GOOD.path}`);
   });
@@ -589,7 +665,9 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "crash-after-access",
         "crash-after-upload",
         "lost-response",
+        "phantom-success",
       ),
+      lateDelay: fc.integer({ min: 0, max: SETTLE }),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
@@ -613,6 +691,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           try {
             if (op.kind === "deploy") {
               cloud.deployFault = op.fault;
+              cloud.lateDelay = op.lateDelay;
               // Another command runs while the upload is in flight.
               cloud.duringUpload = () => {
                 cloud.duringUpload = undefined;
@@ -657,6 +736,11 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         expect(cloud.violations).toEqual([]);
         expect(store.load()).toEqual([]);
         expect(cloud.workers.size + cloud.apps.size).toBe(0);
+        // Every lost upload has had its time; none may land after the cleanup.
+        clock += SETTLE;
+        cloud.tick();
+        expect(cloud.workers.size).toBe(0);
+        expect(cloud.violations).toEqual([]);
       }),
       { numRuns: 300 },
     );

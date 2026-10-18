@@ -7,11 +7,15 @@
 //   - Deploy and teardown of one deployment hold its lock for their whole run, so they never
 //     overlap, even when started from different worktrees. The lock outlives a crashed command
 //     until its child processes exit (lock.ts). Registry updates are atomic (Store.update).
-//   - The Worker configuration is checked before the first cloud call (validateDeployConfig).
-//   - Access is created, or claimed and checked, before the Worker is deployed.
+//   - The Worker configuration is checked before the first cloud call (validateDeployConfig):
+//     the staging account, no other route, no resource the tool does not manage.
+//   - Access is created, or claimed and checked, before the Worker is deployed, and a deploy
+//     counts only once the Worker is found in the staging account.
 //   - Teardown removes Access only after Cloudflare confirms that the Worker no longer exists.
-//     After an interrupted upload it confirms twice, `settleMs` apart, because a request that
-//     lost its client can still complete. An unknown answer keeps Access and the record.
+//     An interrupted upload may still land for `settleMs` after its process ended, so the
+//     record keeps a settle deadline (settleInterrupted) that no later deploy clears, and
+//     teardown confirms the Worker absent again after it. An unknown answer keeps Access and
+//     the record.
 //   - Worker and Access share one record and one expiry, so a sweep removes them together.
 
 import {
@@ -28,6 +32,7 @@ import {
   hostnameFor,
   resourceName,
   type StagingConfig,
+  settleInterrupted,
   validateDeployConfig,
 } from "./guard.ts";
 
@@ -93,11 +98,12 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const name = resourceName(request.suffix);
   const hostname = hostnameFor(name, ctx.config.zone);
   // Local checks first: nothing below runs for a configuration that could open another route.
-  validateDeployConfig(ctx.readConfig(request.configPath));
+  validateDeployConfig(ctx.readConfig(request.configPath), ctx.config.accountId);
   return locked(ctx, name, () => {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
-    const existing = ctx.store.load().find((d) => d.name === name);
+    const found = ctx.store.load().find((d) => d.name === name);
+    const existing = found && settleInterrupted(found, now, ctx.settleMs);
     if (existing?.state === "deleting") {
       throw new Error(`${name} is being torn down; run teardown --suffix ${request.suffix} first`);
     }
@@ -128,9 +134,14 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     }
 
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
-    // still appear, and teardown or a later deploy reconciles it.
+    // still appear, and the next command turns that into a settle deadline.
     record = put(ctx, { ...record, uploadStartedAt: ctx.now().toISOString() });
     ctx.cloud.deployWorker(name, hostname, request.configPath);
+    if (!ctx.cloud.workerExists(name)) {
+      throw new Error(
+        `${name}: Wrangler reported success, but the staging account has no such Worker`,
+      );
+    }
     const { uploadStartedAt: _, ...settled } = record;
     record = put(ctx, { ...settled, state: "deployed" });
     ctx.log(`deployed ${name} at https://${hostname} (expires ${expiresAt})`);
@@ -153,7 +164,10 @@ export function teardown(
     }
     if (options.ifExpiredAt && expired([found], options.ifExpiredAt).length === 0) return;
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
-    const record = put(ctx, { ...found, state: "deleting" });
+    const record = put(ctx, {
+      ...settleInterrupted(found, ctx.now(), ctx.settleMs),
+      state: "deleting",
+    });
 
     if (ctx.cloud.workerExists(name)) {
       let failure: unknown;
@@ -169,9 +183,12 @@ export function teardown(
         });
       }
     }
-    if (record.uploadStartedAt !== undefined) {
-      ctx.log(`${name}: an upload was interrupted; checking again in ${ctx.settleMs / 1000}s`);
-      ctx.sleep(ctx.settleMs);
+    const wait = record.settleUntil ? Date.parse(record.settleUntil) - ctx.now().getTime() : 0;
+    if (wait > 0) {
+      ctx.log(
+        `${name}: an interrupted upload may still land; checking again in ${Math.ceil(wait / 1000)}s`,
+      );
+      ctx.sleep(wait);
       if (ctx.cloud.workerExists(name)) {
         throw new Error(
           `${name}: the Worker appeared after an interrupted upload, so its Access application was kept; run teardown again`,

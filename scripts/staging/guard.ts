@@ -25,10 +25,16 @@ export interface Deployment {
   /** Set as soon as the Access application exists. */
   readonly accessAppId?: string;
   /**
-   * Set just before a Worker upload and cleared when it succeeds. While set, the upload's
-   * outcome is unknown, and teardown waits for it to settle before removing Access.
+   * Set just before a Worker upload and cleared when it succeeds. If the next command finds it
+   * still set, that upload was interrupted, and the command turns it into `settleUntil`.
    */
   readonly uploadStartedAt?: string;
+  /**
+   * Until this time an interrupted upload may still take effect at Cloudflare. Teardown waits
+   * for it before removing Access. A later successful upload does not clear it, because it says
+   * nothing about the earlier request.
+   */
+  readonly settleUntil?: string;
 }
 
 export interface StagingConfig {
@@ -59,6 +65,7 @@ export interface DeployConfigView {
   readonly redirected: boolean;
   readonly raw: Readonly<Record<string, unknown>>;
   readonly effective: {
+    readonly account_id?: unknown;
     readonly workers_dev?: unknown;
     readonly preview_urls?: unknown;
     readonly route?: unknown;
@@ -110,13 +117,78 @@ export function expired(deployments: readonly Deployment[], now: Date): Deployme
 }
 
 /**
- * Refuses a Wrangler configuration that could serve the Worker anywhere except the staging
- * hostname. The staging tool adds that hostname with `--domain`, and Wrangler appends it to the
- * configured routes rather than replacing them, so the configuration must have no routes of its
- * own and must disable workers.dev and preview URLs explicitly: both default to on.
+ * Called by every command when it takes a deployment's lock. If the record still shows an upload
+ * in progress, no process is running it any more (the lock proves that), so it was interrupted:
+ * from now on it may land for up to `settleMs`. The latest such deadline wins.
  */
-export function validateDeployConfig(view: DeployConfigView): void {
+export function settleInterrupted(d: Deployment, now: Date, settleMs: number): Deployment {
+  if (d.uploadStartedAt === undefined) return d;
+  const { uploadStartedAt: _, ...rest } = d;
+  const until = now.getTime() + settleMs;
+  const previous = d.settleUntil === undefined ? 0 : Date.parse(d.settleUntil);
+  return { ...rest, settleUntil: new Date(Math.max(until, previous)).toISOString() };
+}
+
+/**
+ * The top-level keys a staging Wrangler configuration may use. Everything else is refused,
+ * because the staging tool records and tears down only the Worker and its Access application:
+ * bindings such as `r2_buckets`, `kv_namespaces`, `d1_databases`, `services`, `queues` or
+ * `containers` would attach existing resources, perhaps outside staging, or provision new ones
+ * that teardown never removes. Support for each comes with its own lifecycle in the tool.
+ */
+export const ALLOWED_CONFIG_KEYS: readonly string[] = [
+  "$schema",
+  "name",
+  "main",
+  "account_id",
+  "compatibility_date",
+  "compatibility_flags",
+  "workers_dev",
+  "preview_urls",
+  "durable_objects",
+  "migrations",
+  "observability",
+  "vars",
+  "limits",
+  "placement",
+  "rules",
+  "find_additional_modules",
+  "base_dir",
+  "no_bundle",
+  "minify",
+  "keep_names",
+  "define",
+  "alias",
+  "tsconfig",
+  "upload_source_maps",
+];
+
+/**
+ * Refuses a Wrangler configuration that could reach outside the staging deployment:
+ *   - Another account. Wrangler prefers the config's `account_id` to CLOUDFLARE_ACCOUNT_ID.
+ *   - Another route. The staging tool adds its hostname with `--domain`, and Wrangler appends
+ *     that to the configured routes rather than replacing them, so the configuration must have
+ *     no routes of its own and must disable workers.dev and preview URLs explicitly: both
+ *     default to on.
+ *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, and Durable Objects that live in
+ *     another Worker.
+ */
+export function validateDeployConfig(view: DeployConfigView, accountId: string): void {
   const problems: string[] = [];
+  if (view.effective.account_id !== undefined && view.effective.account_id !== accountId) {
+    problems.push('"account_id" names another account than the staging account');
+  }
+  const extra = Object.keys(view.raw).filter((key) => !ALLOWED_CONFIG_KEYS.includes(key));
+  if (extra.length > 0) {
+    problems.push(`the staging tool does not manage ${extra.map((k) => `"${k}"`).join(", ")}`);
+  }
+  const objects = (view.raw.durable_objects as { bindings?: unknown } | undefined)?.bindings;
+  if (
+    Array.isArray(objects) &&
+    objects.some((b) => (b as { script_name?: unknown })?.script_name !== undefined)
+  ) {
+    problems.push("a Durable Object binding points at another Worker");
+  }
   if (view.redirected) problems.push("it redirects to another configuration file");
   if ("env" in view.raw) problems.push("it defines environments; use a separate file instead");
   if (view.effective.targetEnvironment !== undefined) {
@@ -229,7 +301,8 @@ export function parseRegistry(json: unknown): Deployment[] {
       !text("expiresAt") ||
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
-      (d.uploadStartedAt !== undefined && !text("uploadStartedAt"))
+      (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
+      (d.settleUntil !== undefined && !text("settleUntil"))
     ) {
       throw new Error("malformed entry in the staging registry");
     }

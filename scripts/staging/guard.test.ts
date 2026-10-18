@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   type AccessApp,
+  ALLOWED_CONFIG_KEYS,
   accessAppBody,
   assertAccount,
   assertManaged,
@@ -15,6 +16,7 @@ import {
   parseRegistry,
   resourceName,
   serializeRegistry,
+  settleInterrupted,
   validateDeployConfig,
 } from "./guard.ts";
 
@@ -113,6 +115,7 @@ const app = (overrides: Partial<AccessApp> = {}): AccessApp => ({
 });
 
 describe("Wrangler configuration check", () => {
+  const ACCOUNT = config.accountId;
   const closed: DeployConfigView = {
     path: "/w/wrangler.jsonc",
     redirected: false,
@@ -123,10 +126,22 @@ describe("Wrangler configuration check", () => {
     ...closed,
     effective: { ...closed.effective, ...extra },
   });
+  const raw = (extra: Record<string, unknown>) => ({ ...closed, raw: { ...closed.raw, ...extra } });
 
-  it("accepts a configuration with alternate URLs off and no routes", () => {
-    expect(() => validateDeployConfig(closed)).not.toThrow();
-    expect(() => validateDeployConfig(effective({ routes: [] }))).not.toThrow();
+  it("accepts a configuration with alternate URLs off, no routes, and only managed keys", () => {
+    expect(() => validateDeployConfig(closed, ACCOUNT)).not.toThrow();
+    expect(() => validateDeployConfig(effective({ routes: [] }), ACCOUNT)).not.toThrow();
+    expect(() => validateDeployConfig(effective({ account_id: ACCOUNT }), ACCOUNT)).not.toThrow();
+    const everyKey = Object.fromEntries(ALLOWED_CONFIG_KEYS.map((key) => [key, null]));
+    expect(() =>
+      validateDeployConfig({ ...closed, raw: { ...everyKey, ...closed.raw } }, ACCOUNT),
+    ).not.toThrow();
+    expect(() =>
+      validateDeployConfig(
+        raw({ durable_objects: { bindings: [{ name: "CONTROL", class_name: "ControlDO" }] } }),
+        ACCOUNT,
+      ),
+    ).not.toThrow();
   });
 
   it("refuses anything that could open a route the Access application does not cover", () => {
@@ -144,14 +159,78 @@ describe("Wrangler configuration check", () => {
       { ...closed, raw: { env: {} } },
       { ...closed, redirected: true },
     ]) {
-      expect(() => validateDeployConfig(view)).toThrow("refusing Wrangler config");
+      expect(() => validateDeployConfig(view, ACCOUNT)).toThrow("refusing Wrangler config");
     }
+  });
+
+  it("refuses another account, which Wrangler would prefer to CLOUDFLARE_ACCOUNT_ID", () => {
+    expect(() => validateDeployConfig(effective({ account_id: "b".repeat(32) }), ACCOUNT)).toThrow(
+      "another account",
+    );
+    expect(() => validateDeployConfig(effective({ account_id: "" }), ACCOUNT)).toThrow(
+      "another account",
+    );
+  });
+
+  it("refuses resources the staging tool does not record or tear down", () => {
+    for (const key of [
+      "r2_buckets",
+      "kv_namespaces",
+      "d1_databases",
+      "services",
+      "queues",
+      "containers",
+      "workflows",
+      "vectorize",
+      "hyperdrive",
+      "analytics_engine_datasets",
+      "dispatch_namespaces",
+      "tail_consumers",
+      "unsafe",
+      "assets",
+      "triggers",
+    ]) {
+      expect(() => validateDeployConfig(raw({ [key]: [] }), ACCOUNT)).toThrow(`"${key}"`);
+    }
+    expect(() =>
+      validateDeployConfig(
+        raw({
+          durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] },
+        }),
+        ACCOUNT,
+      ),
+    ).toThrow("another Worker");
   });
 
   it("names every problem at once", () => {
     expect(() =>
-      validateDeployConfig(effective({ workers_dev: true, preview_urls: true })),
+      validateDeployConfig(effective({ workers_dev: true, preview_urls: true }), ACCOUNT),
     ).toThrow('"workers_dev" must be false; "preview_urls" must be false');
+  });
+});
+
+describe("interrupted uploads", () => {
+  const now = new Date("2026-10-18T12:00:00.000Z");
+  const later = (ms: number) => new Date(now.getTime() + ms).toISOString();
+
+  it("leaves a record without an unfinished upload alone", () => {
+    expect(settleInterrupted(deployment, now, 60_000)).toBe(deployment);
+  });
+
+  it("turns an unfinished upload into a settle deadline", () => {
+    const settled = settleInterrupted({ ...deployment, uploadStartedAt: "x" }, now, 60_000);
+    expect(settled.uploadStartedAt).toBeUndefined();
+    expect(settled.settleUntil).toBe(later(60_000));
+  });
+
+  it("keeps the later of the old and new deadlines", () => {
+    const old = { ...deployment, uploadStartedAt: "x" };
+    expect(settleInterrupted({ ...old, settleUntil: later(90_000) }, now, 60_000).settleUntil).toBe(
+      later(90_000),
+    );
+    expect(settleInterrupted({ ...old, settleUntil: later(10_000) }, now, 60_000).settleUntil).toBe(
+      later(60_000),
+    );
   });
 });
 

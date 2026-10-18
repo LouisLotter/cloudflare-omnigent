@@ -2,8 +2,17 @@
 // Wrangler's own config reader, and the registry file in the staging state directory.
 
 import { type StdioOptions, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   type AccessApp,
@@ -112,9 +121,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${firstLine(result.stderr)}`);
     return resultOf(result.stdout);
   };
-  const wrangler = (args: string[]): void => {
+  const wrangler = (args: string[], cwd: string): void => {
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
-    const result = run(process.execPath, cli, { inherit: true, cwd: workerDir });
+    const result = run(process.execPath, cli, { inherit: true, cwd });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
   return {
@@ -141,14 +150,30 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       if (typeof created?.id !== "string") throw new Error("Access did not return an app ID");
       return created.id;
     },
+    // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
-      cf(["zero-trust", "access", "applications", "delete", id]);
+      cf(["zero-trust", "access", "applications", "delete", id, "--force"]);
     },
     workerExists: (name) =>
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
+    // validateDeployConfig has checked this configuration's account, routes and resources.
     deployWorker: (name, hostname, configPath) =>
-      wrangler(["deploy", "--config", configPath, "--name", name, "--domain", hostname]),
-    deleteWorker: (name) => wrangler(["delete", "--name", name, "--force"]),
+      wrangler(["deploy", "--config", configPath, "--name", name, "--domain", hostname], workerDir),
+    // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
+    // --config it reads whatever configuration its working directory holds. A generated
+    // configuration in an empty directory pins the staging account.
+    deleteWorker: (name) => {
+      const dir = mkdtempSync(join(tmpdir(), "cfo-stg-delete-"));
+      try {
+        const file = join(dir, "wrangler.json");
+        writeFileSync(file, JSON.stringify({ name, account_id: config.accountId }), {
+          mode: 0o600,
+        });
+        wrangler(["delete", "--config", file, "--name", name, "--force"], dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
   };
 }
 

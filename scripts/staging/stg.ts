@@ -37,8 +37,13 @@ const STATE = resolve(
 );
 const CONFIG_FILE = join(STATE, "config.json");
 const REGISTRY_FILE = join(STATE, "resources.json");
-/** A request whose client died may still complete at Cloudflare within this time. */
-const SETTLE_MS = 60_000;
+/**
+ * How long an upload whose Wrangler process has ended may still take effect at Cloudflare.
+ * Cloudflare documents no bound. Its proxy gives up on a response after 100 seconds; three
+ * times that is the assumption here. It costs a wait only when tearing down after an
+ * interrupted upload.
+ */
+const SETTLE_MS = 300_000;
 
 function loadConfig(): StagingConfig {
   if (!existsSync(CONFIG_FILE)) throw new Error(`no staging config at ${CONFIG_FILE}; run init`);

@@ -65,6 +65,19 @@ describe("CLI wiring", () => {
     return ok("{}");
   });
 
+  it("deletes an Access application without waiting for a confirmation nobody can give", () => {
+    cloud.deleteAccessApp("app-1");
+    expect(calls.at(-1)?.args).toEqual([
+      "zero-trust",
+      "access",
+      "applications",
+      "delete",
+      "app-1",
+      "--force",
+    ]);
+    expect(calls.at(-1)?.options.inherit).toBe(false);
+  });
+
   it("asks Access only about the exact hostname", () => {
     cloud.listAccessApps("cfo-stg-a.example.com");
     expect(calls.at(-1)?.args).toEqual([
@@ -98,8 +111,22 @@ describe("CLI wiring", () => {
       ],
       options: { inherit: true, cwd: WORKER },
     });
-    cloud.deleteWorker("cfo-stg-a");
-    expect(calls.at(-1)?.args.slice(2)).toEqual(["delete", "--name", "cfo-stg-a", "--force"]);
+  });
+
+  it("deletes through a generated configuration that pins the staging account", () => {
+    let seen: { cwd: string | undefined; config: unknown } | undefined;
+    const deleting = cliCloud(config, WORKER, (command, args, options) => {
+      const file = args[args.indexOf("--config") + 1] ?? "";
+      seen = { cwd: options.cwd, config: JSON.parse(readFileSync(file, "utf8")) };
+      expect(command).toBe(process.execPath);
+      expect(args.slice(2)).toEqual(["delete", "--config", file, "--name", "cfo-stg-a", "--force"]);
+      expect(dirname(file)).toBe(options.cwd);
+      return ok("");
+    });
+    deleting.deleteWorker("cfo-stg-a");
+    expect(seen?.config).toEqual({ name: "cfo-stg-a", account_id: "a".repeat(32) });
+    // The generated directory is removed afterwards.
+    expect(existsSync(seen?.cwd ?? "/")).toBe(false);
   });
 
   it("passes the held staging locks to every child process", () => {
@@ -142,7 +169,8 @@ describe("Wrangler's own reading of a configuration", () => {
     writeFileSync(path, typeof body === "string" ? body : JSON.stringify({ ...base, ...body }));
     return path;
   };
-  const check = (path: string) => validateDeployConfig(readWranglerConfig(path, WORKER));
+  const ACCOUNT = "a".repeat(32);
+  const check = (path: string) => validateDeployConfig(readWranglerConfig(path, WORKER), ACCOUNT);
   const closed = { workers_dev: false, preview_urls: false };
 
   it("accepts the checked-in Worker configuration", () => {
@@ -160,6 +188,21 @@ describe("Wrangler's own reading of a configuration", () => {
       { ...closed, routes: [{ pattern: "x.example.com", custom_domain: true }] },
     ],
     ["an environment", { ...closed, env: { staging: { workers_dev: true } } }],
+    // Wrangler prefers a config's account_id to CLOUDFLARE_ACCOUNT_ID.
+    ["another account", { ...closed, account_id: "b".repeat(32) }],
+    [
+      "an R2 bucket outside staging",
+      { ...closed, r2_buckets: [{ binding: "DATA", bucket_name: "non-staging-data" }] },
+    ],
+    ["a service binding", { ...closed, services: [{ binding: "S", service: "prod" }] }],
+    ["a KV namespace", { ...closed, kv_namespaces: [{ binding: "K", id: "0".repeat(32) }] }],
+    [
+      "a Durable Object in another Worker",
+      {
+        ...closed,
+        durable_objects: { bindings: [{ name: "D", class_name: "D", script_name: "prod" }] },
+      },
+    ],
   ])("refuses %s", (label, body) => {
     expect(() => check(write(`${label.replaceAll(" ", "-")}.json`, body))).toThrow(
       "refusing Wrangler config",
