@@ -1,10 +1,7 @@
 # python
 
-The Omnigent plugin, published as the `cloudflare-omnigent` distribution. It is installed into the Omnigent server image.
+Python side of the platform. For now: contract tests that check the golden fixtures against the JSON Schema exported from `contracts/`. Later: the computer supervisor (M3) and the Omnigent gateway backend (M5).
 
-Planned contents:
-
-- **Sandbox provider** under `omnigent.community.sandbox.cloudflare`. Omnigent requires community providers to live in that namespace. It starts, resumes and stops cloud workspaces through the control plane.
-- **`cloudflare_omnigent`**: the control-plane client, the MCP gateway backend and the schedule trigger, plus models generated from `contracts`.
-
-The plugin depends on a pinned Omnigent release, or on a branch of the fork while it needs core changes that are not yet released.
+```bash
+uv run --directory python pytest
+```
