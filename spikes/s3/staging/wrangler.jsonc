@@ -1,0 +1,29 @@
+// Spike S3 staging run: the capture measurements that only real Cloudflare
+// Containers can answer (disk throughput, filesystem, cgroupfs, capabilities).
+// No Omnigent server, mock or bucket: the supervisor runs a self-contained
+// bench in the container. Prepared and dry-run only; see
+// docs/verification/spike-s3.md, "What still needs staging".
+//
+//   pnpm stg deploy --suffix s3-capture --owner S3 --config spikes/s3/staging/wrangler.jsonc --days 1
+//   (owner, in a browser) https://<hostname>/probe, then /bench?profile=realistic&runs=5, then /jobs/<id>
+//   pnpm stg teardown --suffix s3-capture
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s3-capture",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "BENCH", "class_name": "Bench" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Bench"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-s3-capture-box",
+      "class_name": "Bench",
+      "image": "../image/Dockerfile",
+      "image_build_context": "../image",
+      "max_instances": 1,
+      "instance_type": "standard-2"
+    }
+  ]
+}
