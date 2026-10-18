@@ -10,7 +10,7 @@
       "!**/worker-configuration.d.ts",
       "!python/.venv",
       "!contracts/schema",
-      "!**/.claude"
+      "!.claude"
     ]
   },
   "formatter": {
