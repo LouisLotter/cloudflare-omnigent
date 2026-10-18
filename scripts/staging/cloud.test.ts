@@ -215,10 +215,9 @@ describe("CLI wiring", () => {
       '{"name":"cfo-stg-a-data"}',
     ]);
     managing.emptyAndDeleteBucket("cfo-stg-a-data");
-    expect(cfCalls.filter((c) => c[2] === "bulk-delete").map((c) => c.at(-1))).toEqual([
-      '["k2"]',
-      '["k1"]',
-    ]);
+    expect(
+      cfCalls.filter((c) => c[2] === "bulk-delete").map((c) => c[c.indexOf("--body") + 1]),
+    ).toEqual(['["k2"]', '["k1"]']);
     expect(cfCalls.at(-1)).toEqual(["r2", "buckets", "delete", "cfo-stg-a-data", "--force"]);
     expect(managing.containerApps("cfo-stg-a-host")).toEqual(["ca-1"]);
     managing.deleteContainerApp("ca-1");
@@ -232,10 +231,11 @@ describe("CLI wiring", () => {
       "cfo-stg-a-host:7",
       "--force",
     ]);
-    // Every delete passes --force: there is no terminal to answer a confirmation.
-    expect(cfCalls.filter((c) => c.includes("delete")).every((c) => c.includes("--force"))).toBe(
-      true,
-    );
+    // Every delete passes --force: there is no terminal to answer a confirmation. That includes
+    // bulk-delete, which a check for an argument equal to "delete" missed until a live teardown.
+    const deletes = cfCalls.filter((c) => c.some((arg) => arg.includes("delete")));
+    expect(deletes.length).toBeGreaterThanOrEqual(5);
+    expect(deletes.every((c) => c.includes("--force"))).toBe(true);
   });
 
   it("returns the created application's ID and fails loudly on a CLI error", () => {

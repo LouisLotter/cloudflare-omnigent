@@ -227,7 +227,16 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
           .map((o) => (o as { key?: unknown }).key)
           .filter((k): k is string => typeof k === "string");
         if (keys.length === 0) break;
-        cf(["r2", "objects", "bulk-delete", "--bucket-name", name, "--body", JSON.stringify(keys)]);
+        cf([
+          "r2",
+          "objects",
+          "bulk-delete",
+          "--bucket-name",
+          name,
+          "--body",
+          JSON.stringify(keys),
+          "--force",
+        ]);
       }
       cf(["r2", "buckets", "delete", name, "--force"]);
     },
