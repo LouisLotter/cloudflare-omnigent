@@ -8,6 +8,7 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "export-schema": "node scripts/export-json-schema.ts"
   },
   "dependencies": {
