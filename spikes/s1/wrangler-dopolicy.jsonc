@@ -1,0 +1,46 @@
+// Spike S1, durable_object scheduling policy variant: the computer container uses the policy
+// the design chooses for cloud computers. The server keeps the default policy, as in the design.
+// Needs staging-tool support for "scheduling_policy" and "images" (requested from the lead).
+//
+//   pnpm stg deploy --suffix s1-dop --owner S1 --config spikes/s1/wrangler-dopolicy.jsonc --days 2
+//   pnpm stg teardown --suffix s1-dop
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s1-dop",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false, "persist": true }
+  },
+  "vars": {
+    "S1_VERSION": "1",
+    "S1_REARM": "1",
+    "S1_INSTANCE": "standard-2",
+    "S1_COMMAND": ""
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "S1Server" },
+      { "name": "COMPUTER", "class_name": "S1Computer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-s1-dop-server",
+      "class_name": "S1Server",
+      "image": "./server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-s1-dop-computer",
+      "class_name": "S1Computer",
+      "scheduling_policy": "durable_object",
+      "images": { "computer": { "dockerfile": "./computer/Dockerfile" } }
+    }
+  ]
+}
