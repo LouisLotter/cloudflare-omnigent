@@ -17,10 +17,12 @@ if [[ "${1:-}" == "extract" ]]; then
   node -e '
     const fs = require("node:fs");
     const out = [];
-    for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
-      if (!line.trim()) continue;
+    // wrangler tail --format json pretty-prints each event, so an event spans many lines; each
+    // one starts with "{" in the first column. A partial event at the end is skipped.
+    for (const chunk of fs.readFileSync(process.argv[1], "utf8").split(/^(?=\{)/m)) {
+      if (!chunk.trim()) continue;
       let event;
-      try { event = JSON.parse(line); } catch { continue; }
+      try { event = JSON.parse(chunk); } catch { continue; }
       for (const log of event.logs ?? []) {
         for (const message of log.message ?? []) {
           if (typeof message !== "string" || !message.startsWith("{\"s7\"")) continue;
