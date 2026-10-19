@@ -33,8 +33,8 @@ function query(windowFrom, windowTo, offset) {
     ...(offset ? { offset } : {}),
     parameters: {
       datasets: ["cloudflare-workers"],
+      // Workers Logs parses each JSON line into `source`; S1's lines are picked out below.
       filters: [{ key: "$workers.scriptName", operation: "eq", type: "string", value: worker }],
-      needle: { value: '"s1":', isRegex: false, matchCase: true },
     },
   };
   const result = spawnSync("cf", ["o11y", "telemetry", "query", "--body", JSON.stringify(body)], {

@@ -1,0 +1,32 @@
+// Local only (wrangler dev); never deployed. The flags match spikes/s1/wrangler.jsonc.
+{
+  "name": "s1-harness",
+  "main": "harness.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
+  "vars": { "S1_VERSION": "dev" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "S1Server" },
+      { "name": "COMPUTER", "class_name": "S1Computer" },
+      { "name": "CONTROL", "class_name": "S1Control" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer", "S1Control"] }],
+  "containers": [
+    {
+      "name": "s1-harness-server",
+      "class_name": "S1Server",
+      "image": "../../server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "s1-harness-computer",
+      "class_name": "S1Computer",
+      "image": "../min/computer/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-2"
+    }
+  ]
+}

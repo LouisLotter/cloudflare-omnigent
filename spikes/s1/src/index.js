@@ -33,6 +33,13 @@ const MAX_ARM_HOURS = 12;
 const INTENT_TTL_MS = 15 * 60_000;
 const CONTROL_NAME = "controls";
 
+// How the host's tunnel upgrade is answered (see "The host's tunnel" below). The tunnel-check
+// phase probes them in this order and keeps the first that works.
+const WS_MODES = ["bare", "fixed", "route-fixed", "bridge", "direct"];
+const DEFAULT_WS_MODE = "bare";
+const WS_MODE_HEADER = "x-s1-ws-mode";
+const TUNNEL_PROBE = "/usr/local/bin/s1-tunnel-probe.py";
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function log(event, data = {}) {
@@ -53,6 +60,132 @@ function parseCommand(text) {
     return { kind: kind.trim(), arg: arg === undefined ? undefined : Number(arg) };
   });
   return { id, phases };
+}
+
+// ---- The host's tunnel ---------------------------------------------------------------
+//
+// The host's tunnel is a WebSocket from the computer container to http://omnigent.internal,
+// which the outbound intercept hands to HostRoute, which passes it to S1Server, which opens a
+// WebSocket to the server container. On staging (2026-10-18) the host never completed that
+// handshake: it retried on its failure back-off (0.5, ~1.4, then 3 s), and workerd saw it drop
+// the connection 3-14 ms after the 101. Locally the same code works.
+//
+// The 101 the Worker returned was not valid for the host if the container egress writes the
+// Response's headers as given: workerd's fetch to the server container sends a key of its own,
+// so the server's Sec-WebSocket-Accept (copied by `bridge`, kept by `direct`) is for that key,
+// not the host's; and with no Sec-WebSocket-Extensions in the Response, workerd echoes the
+// host's raw offer ("permessage-deflate; client_max_window_bits"), which a client must refuse.
+// Locally workerd recomputes both, so neither shows. The host's client (websockets 14.2)
+// rejects each one with exactly the staging back-off.
+//
+// Staging, 2026-10-19 (tunnel-check, all four older modes on both deployments): Cloudflare's
+// container egress writes its own Upgrade, Connection and a correct Sec-WebSocket-Accept, then
+// appends the Response's headers (other than the Accept). Every mode that put Upgrade in the
+// Response sent the host "Upgrade: websocket" twice, which websockets 14.2 refuses ("invalid
+// Upgrade header: websocket, websocket"). The Accept was right in every mode and no extension
+// was sent. So the 101 must carry no Upgrade or Connection header of its own: `bare`.
+//
+// Modes, chosen per deployment by the tunnel-check phase (or per request by the probe's header):
+//   bare         S1Server bridges the server's socket to a new pair and answers 101 with no
+//                headers at all, except a subprotocol the server chose; the runtime (locally,
+//                kj's HttpServer; on Cloudflare, the egress) supplies Upgrade, Connection and the
+//                Accept. The default.
+//   fixed        S1Server bridges the server's socket to a new pair and answers with headers
+//                computed from the host's own key and no extension (compression is off for this
+//                Worker: compatibility flag no_web_socket_compression).
+//   route-fixed  the same answer, but HostRoute bridges again, so the socket returned to the
+//                egress is created in the intercept's own handler.
+//   bridge       76fa418: S1Server bridges, copying the server's 101 headers.
+//   direct       before 76fa418: the server's 101 response is returned as it is.
+
+/** RFC 6455 section 4.2.2: the Sec-WebSocket-Accept value for a client's Sec-WebSocket-Key. */
+export async function websocketAccept(key) {
+  if (!key) throw new TypeError("no Sec-WebSocket-Key");
+  const data = new TextEncoder().encode(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", data));
+  return btoa(String.fromCharCode(...digest));
+}
+
+/**
+ * The 101 headers for the host: Accept computed from the host's own key, nothing copied from
+ * the server's 101, and no extension. A subprotocol the server chose is kept; the host asks for
+ * none.
+ */
+export async function upgradeHeaders(requestHeaders, upstreamHeaders) {
+  const headers = new Headers({ Upgrade: "websocket", Connection: "Upgrade" });
+  headers.set(
+    "Sec-WebSocket-Accept",
+    await websocketAccept(requestHeaders.get("Sec-WebSocket-Key")),
+  );
+  const protocol = upstreamHeaders?.get("Sec-WebSocket-Protocol");
+  if (protocol) headers.set("Sec-WebSocket-Protocol", protocol);
+  return headers;
+}
+
+/**
+ * The 101 headers in `bare` mode: none of the handshake's own (no Upgrade, Connection or
+ * Accept), which the runtime adds; only a subprotocol the server chose.
+ */
+export function bareHeaders(upstreamHeaders) {
+  const headers = new Headers();
+  const protocol = upstreamHeaders?.get("Sec-WebSocket-Protocol");
+  if (protocol) headers.set("Sec-WebSocket-Protocol", protocol);
+  return headers;
+}
+
+/** The mode for one upgrade: the probe's header, else the deployment's chosen mode, else bare. */
+export function resolveWsMode(requestHeaders, props, env) {
+  const asked = requestHeaders.get(WS_MODE_HEADER) ?? props?.wsMode ?? env?.S1_WS_MODE;
+  return WS_MODES.includes(asked) ? asked : DEFAULT_WS_MODE;
+}
+
+/**
+ * Accepts `upstream` and bridges it to a new pair; returns the pair's other end. Logs who
+ * closes, the code and the reason (`at` says which object bridges).
+ */
+function bridgeSocket(upstream, at) {
+  const [client, bridge] = Object.values(new WebSocketPair());
+  upstream.accept();
+  bridge.accept();
+  const closeCode = (code) => (code === 1005 || code === 1006 ? 1000 : code);
+  bridge.addEventListener("message", (event) => {
+    try {
+      upstream.send(event.data);
+    } catch {
+      bridge.close(1011, "failed to forward to the server");
+    }
+  });
+  upstream.addEventListener("message", (event) => {
+    try {
+      bridge.send(event.data);
+    } catch {
+      upstream.close(1011, "failed to forward to the host");
+    }
+  });
+  const opened = Date.now();
+  bridge.addEventListener("close", (event) => {
+    log("ws-close", {
+      at,
+      side: "host",
+      code: event.code,
+      reason: event.reason,
+      ms: Date.now() - opened,
+    });
+    upstream.close(closeCode(event.code), event.reason);
+  });
+  upstream.addEventListener("close", (event) => {
+    log("ws-close", {
+      at,
+      side: "server",
+      code: event.code,
+      reason: event.reason,
+      ms: Date.now() - opened,
+    });
+    bridge.close(closeCode(event.code), event.reason);
+  });
+  bridge.addEventListener("error", () => upstream.close(1011, "host side error"));
+  upstream.addEventListener("error", () => bridge.close(1011, "server side error"));
+  return client;
 }
 
 export class S1Server extends DurableObject {
@@ -121,10 +254,31 @@ export class S1Server extends DurableObject {
     return out;
   }
 
-  /** Proxies a request from the computer (HTTP or a WebSocket upgrade) to the server. */
+  /**
+   * Proxies a request from the computer (HTTP or a WebSocket upgrade) to the server. HostRoute
+   * names the upgrade's mode in the x-s1-ws-mode header: direct, bridge, fixed or bare (see "The
+   * host's tunnel"). The header is not passed on to the server.
+   */
   async fetch(request) {
     if (!this.ctx.container.running) return new Response("server not running", { status: 503 });
-    return this.ctx.container.getTcpPort(SERVER_PORT).fetch(request);
+    const mode = request.headers.get(WS_MODE_HEADER) ?? DEFAULT_WS_MODE;
+    let forward = request;
+    if (request.headers.has(WS_MODE_HEADER)) {
+      const headers = new Headers(request.headers);
+      headers.delete(WS_MODE_HEADER);
+      forward = new Request(request, { headers });
+    }
+    const upstream = await this.ctx.container
+      .getTcpPort(SERVER_PORT)
+      .fetch(request.url.replace(/^https:/, "http:"), forward);
+    if (upstream.webSocket === null || upstream.webSocket === undefined) return upstream;
+    if (mode === "direct") return upstream;
+    const client = bridgeSocket(upstream.webSocket, "server-object");
+    let headers;
+    if (mode === "bare") headers = bareHeaders(upstream.headers);
+    else if (mode === "bridge") headers = upstream.headers;
+    else headers = await upgradeHeaders(request.headers, upstream.headers);
+    return new Response(null, { status: 101, webSocket: client, headers });
   }
 }
 
@@ -143,10 +297,24 @@ export class HostRoute extends WorkerEntrypoint {
     }
     const upgrade = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
     const ev = upgrade ? "ws" : "http";
-    if (upgrade)
-      log("ws-upgrade", { run: props.run, path: url.pathname, version: this.env.S1_VERSION });
     this.ctx.waitUntil(server.mark({ run: props.run, ev, wt, path: url.pathname }, true));
-    return server.fetch(request);
+    if (!upgrade) return server.fetch(request);
+    const mode = resolveWsMode(request.headers, props, this.env);
+    log("ws-upgrade", { run: props.run, path: url.pathname, version: this.env.S1_VERSION, mode });
+    // route-fixed: S1Server bridges as in `bridge`, and this handler bridges once more.
+    const headers = new Headers(request.headers);
+    headers.set(WS_MODE_HEADER, mode === "route-fixed" ? "bridge" : mode);
+    const response = await server.fetch(new Request(request, { headers }));
+    if (response.status !== 101 || !response.webSocket) {
+      log("ws-upgrade-failed", { run: props.run, status: response.status, mode });
+      return response;
+    }
+    if (mode !== "route-fixed") return response;
+    return new Response(null, {
+      status: 101,
+      webSocket: bridgeSocket(response.webSocket, "route"),
+      headers: await upgradeHeaders(request.headers, response.headers),
+    });
   }
 }
 
@@ -160,6 +328,7 @@ const PHASE_DEFAULTS = {
   snapshot: { gapMs: 20_000 },
   backup: { timeoutMs: 600_000 },
   rwake: { runs: 20, gapMs: 20_000, timeoutMs: 600_000 },
+  "tunnel-check": { timeoutMs: 600_000 },
 };
 
 // Restore phases: the workspace directory, the R2 binding and key prefix of its backups, and
@@ -353,25 +522,32 @@ export class S1Computer extends DurableObject {
   }
 
   /**
+   * Points omnigent.internal (and the fallback address) at HostRoute, with the run, the
+   * generation and the deployment's tunnel mode as the route's props.
+   */
+  async intercept(run, gen) {
+    const wsMode = (await this.ctx.storage.get("wsMode")) ?? null;
+    const route = this.ctx.exports.HostRoute({ props: { run, gen, wsMode } });
+    await this.ctx.container.interceptOutboundHttp("omnigent.internal", route);
+    await this.ctx.container.interceptOutboundHttp("10.199.0.1:80", route);
+  }
+
+  /**
    * One wake: start the container and wait until the server reports the host online. With
    * `restore` (a stored backup), the design's order is followed: the entrypoint holds the host,
-   * the workspace is restored, and only then is the host released.
+   * the workspace is restored, and only then is the host released. With `probe`, the host is
+   * held while the tunnel probe runs (tunnel-check), then released.
    */
-  async wake(run, timeoutMs, snapshot = null, restore = null) {
+  async wake(run, timeoutMs, snapshot = null, restore = null, probe = false) {
     const container = this.ctx.container;
     const hostId = await this.ctx.storage.get("hostId");
     const gen = ((await this.ctx.storage.get("gen")) ?? 0) + 1;
     await this.ctx.storage.put("gen", gen);
     await this.ctx.storage.put("currentRun", run);
-    const route = this.ctx.exports.HostRoute({ props: { run, gen } });
     let interceptError = null;
-    const intercept = async () => {
-      await container.interceptOutboundHttp("omnigent.internal", route);
-      await container.interceptOutboundHttp("10.199.0.1:80", route);
-    };
     let interceptedBeforeStart = true;
     try {
-      await intercept();
+      await this.intercept(run, gen);
     } catch (error) {
       interceptedBeforeStart = false;
       interceptError = errorText(error);
@@ -383,7 +559,7 @@ export class S1Computer extends DurableObject {
         OMNIGENT_HOST_NAME: HOST_NAME,
         S1_RUN: run,
         S1_GEN: String(gen),
-        ...(restore ? { S1_HOLD_HOST: "1" } : {}),
+        ...(restore || probe ? { S1_HOLD_HOST: "1" } : {}),
       },
     };
     // Under the durable_object policy the code picks the image (or snapshot) and the size.
@@ -400,14 +576,16 @@ export class S1Computer extends DurableObject {
       return { run, gen, ok: false, error: `start: ${errorText(error)}` };
     }
     const startReturnedMs = Date.now() - t0;
-    if (!interceptedBeforeStart) await intercept();
+    if (!interceptedBeforeStart) await this.intercept(run, gen);
     await this.setTimeoutMs(timeoutMs);
     const restored = restore ? await this.restoreThenRelease(restore, t0) : null;
+    const probed = probe ? await this.probeThenRelease(run, gen, t0) : null;
     const pollFrom = Date.now();
     let status = null;
     let polls = 0;
     let pollError = null;
-    while (Date.now() - pollFrom < WAKE_DEADLINE_MS) {
+    const deadlineMs = Number(this.env.S1_WAKE_DEADLINE_MS ?? WAKE_DEADLINE_MS);
+    while (Date.now() - pollFrom < deadlineMs) {
       try {
         status = await this.server.hostStatus(hostId);
       } catch (error) {
@@ -433,6 +611,14 @@ export class S1Computer extends DurableObject {
           ...(await this.verifyRestore(restore)),
         }
       : {};
+    const probeFields = probed
+      ? {
+          ...probed,
+          hostAfterReleaseMs:
+            status === "online" && probed.releasedMs !== null ? onlineMs - probed.releasedMs : null,
+          releaseMarkMs: rel(marks.release),
+        }
+      : {};
     return {
       run,
       gen,
@@ -456,8 +642,61 @@ export class S1Computer extends DurableObject {
       fromSnapshot: Boolean(image && snapshot),
       interceptedBeforeStart,
       interceptError,
+      wsMode: (await this.ctx.storage.get("wsMode")) ?? null,
       running: container.running,
       ...restoreFields,
+      ...probeFields,
+    };
+  }
+
+  /**
+   * tunnel-check, inside a held wake: once the container runs commands, the tunnel probe tries
+   * each mode through the real intercept and records what the container received. The first
+   * mode that works is kept for this deployment, the route is registered again with it, and
+   * the host is released. With no working mode the host is released anyway, so the wake shows
+   * whether the real host comes online.
+   */
+  async probeThenRelease(run, gen, t0) {
+    let execReadyMs = null;
+    let probeError = null;
+    const results = [];
+    try {
+      await this.execText(["true"]);
+      execReadyMs = Date.now() - t0;
+      // A host ID of its own, so the probe never touches the real host's registration.
+      const url = `ws://omnigent.internal/v1/hosts/${randomHex(16)}/tunnel`;
+      for (const mode of WS_MODES) {
+        const out = await this.execText(["python3", TUNNEL_PROBE, url, mode]);
+        let probe;
+        try {
+          probe = JSON.parse(out.stdout);
+        } catch {
+          probe = { mode, ok: false, error: `probe output not JSON (exit ${out.exitCode})` };
+        }
+        results.push(probe);
+        await this.record("tunnel-probe", { run, ...probe });
+      }
+    } catch (error) {
+      probeError = errorText(error);
+    }
+    const chosen = results.find((probe) => probe.ok)?.mode ?? null;
+    if (chosen) {
+      await this.ctx.storage.put("wsMode", chosen);
+      await this.intercept(run, gen);
+    }
+    let releasedMs = null;
+    try {
+      await this.execText(["touch", "/tmp/s1-host-release"]);
+      releasedMs = Date.now() - t0;
+    } catch (error) {
+      probeError ??= `release: ${errorText(error)}`;
+    }
+    return {
+      execReadyMs,
+      probeError,
+      probesOk: results.filter((probe) => probe.ok).map((probe) => probe.mode),
+      chosenMode: chosen,
+      releasedMs,
     };
   }
 
@@ -557,6 +796,28 @@ export class S1Computer extends DurableObject {
     return { done: true, delayMs: 2000 };
   }
 
+  /**
+   * Run first in a campaign: one wake in which the tunnel probe picks the tunnel mode before
+   * the host is released, then "host online" is timed. If the host does not come online, the
+   * rest of the queue is dropped and the computer stopped, so no hours are spent on wakes that
+   * cannot succeed. The tunnel-probe records show what the container received in each mode.
+   */
+  async phase_tunnel_check(_state, options) {
+    const server = await this.server.ensureUp();
+    await this.record("server-up", { ...server, by: "tunnel-check" });
+    await this.stopComputer();
+    await sleep(Number(this.env.S1_START_GAP_MS ?? 20_000));
+    const run = `t${(await this.ctx.storage.get("gen")) ?? 0}`;
+    const result = await this.wake(run, options.timeoutMs, null, null, true);
+    await this.record("tunnel-check", { version: this.env.S1_VERSION, ...result });
+    if (result.ok) return { done: true, delayMs: 2000 };
+    const dropped = ((await this.ctx.storage.get("queue")) ?? []).map((phase) => phase.kind);
+    await this.ctx.storage.put("queue", []);
+    await this.stopComputer();
+    await this.record("tunnel-check-failed", { dropped });
+    return { done: true };
+  }
+
   /** Repeated wakes from a stopped container: stop, wait the gap, start and time. */
   async phase_wake(state, options, arg) {
     const runs = arg ?? options.runs;
@@ -590,6 +851,11 @@ export class S1Computer extends DurableObject {
       return { incarnation: await this.incarnation(), fresh: false };
     }
     await this.stopComputer();
+    // A start right after a stop failed on staging with "There is no container instance that
+    // can be provided to this Durable Object" (max_instances 1), which lost backup-medium and
+    // backup-large on 2026-10-18. The wake phases wait 20 s between stop and start and never
+    // hit it, so wait the same here.
+    await sleep(Number(this.env.S1_START_GAP_MS ?? 20_000));
     const run = `${kind}${(await this.ctx.storage.get("gen")) ?? 0}`;
     const result = await this.wake(run, timeoutMs);
     await this.record("wake", { index: -1, label: kind, version: this.env.S1_VERSION, ...result });
@@ -940,7 +1206,10 @@ const PAGE_HEADERS = {
   "cache-control": "no-store",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  // Not "no-referrer": under it, browsers send `Origin: null` with the page's own form POST,
+  // which the origin check rightly refuses. "same-origin" keeps the real origin on same-origin
+  // requests and still sends no referrer to other sites.
+  "referrer-policy": "same-origin",
   "content-security-policy":
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };

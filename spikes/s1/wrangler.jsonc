@@ -8,15 +8,22 @@
 // request-intent token, IR-017); that arms the campaign for S1_ARM_HOURS and starts the alarm loop.
 // Later phases are queued by redeploying with a new S1_COMMAND (see src/index.js).
 //
-// c1, about 3 hours: server start; 21 plain wakes; for each workspace size, a backup to R2 and
-// wakes that restore it before the host is released (20 for medium, 5 each for small and large);
-// then the heartbeat, eviction and their controls.
+// c6, about 3 hours: first tunnel-check (picks the host tunnel's mode and checks "host online";
+// if that fails it drops the rest of the queue), then 21 plain wakes, a medium backup to R2 and
+// 20 wakes that restore it before the host is released, the heartbeat, eviction and their
+// controls, then small and large backups with 5 restore wakes each. The redeploy tests (c2, c3,
+// c4) are queued later by redeploying; see the evidence. c1 ran on 2026-10-18 with the host
+// tunnel broken; the deployment's Durable Object remembers that ID. c5 (2026-10-19 09:48Z) found
+// the egress duplicating Upgrade in every older mode and stopped at tunnel-check; hence c6.
+//
+// no_web_socket_compression: the host's tunnel is bridged by this Worker, which must not
+// negotiate permessage-deflate on the host's behalf (see "The host's tunnel" in src/index.js).
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "cfo-stg-s1-life",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
   "workers_dev": false,
   "preview_urls": false,
   "observability": {
@@ -27,7 +34,7 @@
     "S1_VERSION": "1",
     "S1_REARM": "1",
     "S1_ARM_HOURS": "8",
-    "S1_COMMAND": "c1:server-up,wake=21,backup-medium,rwake-medium=20,backup-small,rwake-small=5,backup-large,rwake-large=5,heartbeat,no-heartbeat,eviction,eviction-control"
+    "S1_COMMAND": "c6:tunnel-check,wake=21,backup-medium,rwake-medium=20,heartbeat,no-heartbeat,eviction,eviction-control,backup-small,rwake-small=5,backup-large,rwake-large=5"
   },
   "durable_objects": {
     "bindings": [

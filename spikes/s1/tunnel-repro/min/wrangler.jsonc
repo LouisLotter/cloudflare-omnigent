@@ -1,0 +1,30 @@
+// Local only (wrangler dev); never deployed. See tunnel-repro/run.sh.
+{
+  "name": "s1-tunnel-repro",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "Server" },
+      { "name": "COMPUTER", "class_name": "Computer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Server", "Computer"] }],
+  "containers": [
+    {
+      "name": "s1-tunnel-repro-server",
+      "class_name": "Server",
+      "image": "../../server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "s1-tunnel-repro-computer",
+      "class_name": "Computer",
+      "image": "./computer/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-2"
+    }
+  ]
+}

@@ -36,6 +36,8 @@ ARG S1_IMAGE_SALT=1
 RUN echo "${S1_IMAGE_SALT}" > /etc/s1-image-salt
 COPY s1-entry.sh /usr/local/bin/s1-entry.sh
 COPY s1-workspace.py /usr/local/bin/s1-workspace.py
+# The tunnel-check phase's probe: what the container receives for the host's tunnel upgrade.
+COPY s1-tunnel-probe.py /usr/local/bin/s1-tunnel-probe.py
 RUN chmod 0755 /usr/local/bin/s1-entry.sh
 WORKDIR /root
 CMD ["/usr/local/bin/s1-entry.sh"]

@@ -6,12 +6,16 @@
 //   npm ci --prefix spikes/s1            (once: @cloudflare/sandbox for the restore phases)
 //   pnpm stg deploy --suffix s1-dop --owner S1 --config spikes/s1/wrangler-dopolicy.jsonc --days 2
 //   pnpm stg teardown --suffix s1-dop    (also empties and deletes the backups bucket)
+//
+// d3: tunnel-check first (as in wrangler.jsonc), then wakes, native snapshot wakes and restore
+// wakes for comparison. d1 ran on 2026-10-18 with the host tunnel broken; d2 (2026-10-19)
+// stopped at tunnel-check, before the bare mode existed.
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "cfo-stg-s1-dop",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
   "workers_dev": false,
   "preview_urls": false,
   "observability": {
@@ -23,7 +27,7 @@
     "S1_REARM": "1",
     "S1_ARM_HOURS": "8",
     "S1_INSTANCE": "standard-2",
-    "S1_COMMAND": ""
+    "S1_COMMAND": "d3:tunnel-check,wake=20,snapshot=10,backup-medium,rwake-medium=10,shutdown"
   },
   "durable_objects": {
     "bindings": [
@@ -38,7 +42,7 @@
     {
       "name": "cfo-stg-s1-dop-server",
       "class_name": "S1Server",
-      "image": "./server/Dockerfile",
+      "image": "./server/dop.Dockerfile",
       "max_instances": 1,
       "instance_type": "basic"
     },

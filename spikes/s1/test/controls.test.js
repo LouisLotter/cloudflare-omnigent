@@ -239,6 +239,22 @@ describe("IR-017: refused requests have zero effect", () => {
   });
 });
 
+describe("pages that post keep the Origin header", () => {
+  // Under `Referrer-Policy: no-referrer`, a browser sends `Origin: null` with a page's own
+  // form POST (Fetch, "append a request Origin header"), so Start was refused in the owner's
+  // browser. Every page with a form must use a policy that keeps same-origin origins.
+  for (const path of ["/s1/kickoff", "/s1/stop"]) {
+    it(`${path} uses a referrer policy that keeps the origin on its own POST`, async () => {
+      const t = setup();
+      const response = await worker.fetch(get(path, { "sec-fetch-site": "none" }), t.env);
+      expect(await response.text()).toMatch(/<form method="post"/);
+      const policy = (response.headers.get("referrer-policy") ?? "").toLowerCase();
+      expect(policy.split(",").map((p) => p.trim())).not.toContain("no-referrer");
+      expect(policy).toBe("same-origin");
+    });
+  }
+});
+
 describe("IR-017: valid same-origin controls", () => {
   it("Start arms the campaign once, for a bounded time, and the token is single-use", async () => {
     const t = setup();

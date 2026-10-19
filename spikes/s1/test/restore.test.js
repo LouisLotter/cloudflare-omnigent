@@ -131,6 +131,7 @@ async function setup({ command, armed = true, images, restoreFails = false, meas
   };
   const env = {
     S1_VERSION: "1",
+    S1_START_GAP_MS: "0",
     S1_COMMAND: command,
     SERVER: { idFromName: (name) => name, get: () => server },
   };

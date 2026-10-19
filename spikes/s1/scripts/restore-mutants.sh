@@ -22,7 +22,7 @@ EOF
     echo "killed:   $name"
   fi
 }
-run "host not held" '...(restore ? { S1_HOLD_HOST: "1" } : {}),' ''
+run "host not held" '...(restore || probe ? { S1_HOLD_HOST: "1" } : {}),' '...(probe ? { S1_HOLD_HOST: "1" } : {}),'
 run "no restore" 'await this.makeBackups().restore(stored.record);' ''
 run "release before restore" '      await this.execText(["true"]);
       execReadyMs = Date.now() - t0;
@@ -37,7 +37,9 @@ run "no release after a failed restore" '    } catch (error) {
       return { execReadyMs, restoreMs: null, restoredMs, releasedMs, restoreError };
     }'
 run "restore without waiting for exec" '      await this.execText(["true"]);
-      execReadyMs = Date.now() - t0;' '      execReadyMs = Date.now() - t0;'
+      execReadyMs = Date.now() - t0;
+      await this.makeBackups().restore(stored.record);' '      execReadyMs = Date.now() - t0;
+      await this.makeBackups().restore(stored.record);'
 run "verification always matches" 'restoredMatches: bytes === stored.bytes && files === stored.files,' 'restoredMatches: true,'
 run "rwake without a backup starts anyway" '    if (!stored) {' '    if (false) {'
 run "failed restore counted ok" 'ok: status === "online" && (restored === null || restored.restoreError === null),' 'ok: status === "online",'
