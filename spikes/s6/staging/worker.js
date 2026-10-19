@@ -1071,9 +1071,14 @@ export class S6Computer extends DurableObject {
       }
       const headers = new Headers(request.headers);
       for (const h of STRIP_TO_CONTAINER) headers.delete(h);
+      // The container port speaks plain HTTP. On Cloudflare an https:// URL to it throws
+      // ("Connecting to a container using HTTPS is not currently supported"); wrangler dev
+      // serves http://, so only the deployed Worker hit it. Only GET and HEAD reach here.
+      const target = new URL(request.url);
+      target.protocol = "http:";
       const r = await this.ctx.container
         .getTcpPort(TERM_PORT)
-        .fetch(new Request(request, { headers }));
+        .fetch(new Request(target, { method: request.method, headers }));
       if (r.webSocket) return r;
       const out = new Response(r.body, r);
       out.headers.set("x-frame-options", "DENY");
