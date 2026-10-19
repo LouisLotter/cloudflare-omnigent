@@ -1,11 +1,11 @@
 {
-  "source": "https://cfo-stg-s6-creds.lervent.com/",
+  "source": "https://cfo-stg-s6-creds.<zone>/",
   "capture_method": "Recovered from visible page output after wipe; this is not the site's Download results export",
   "observed_download_error": "403 refused: missing or wrong request-intent token",
   "cookie_metadata_before_wipe": {
     "checked_at": "2026-10-19T09:46:13.164173+00:00",
     "method": "Read-only query of Chrome Default profile cookie metadata; no cookie values selected or decrypted",
-    "domain": "cfo-stg-s6-creds.lervent.com",
+    "domain": "cfo-stg-s6-creds.<zone>",
     "same_site_enum_reference": "https://chromium.googlesource.com/chromium/src/+/HEAD/net/cookies/cookie_constants.h",
     "cookies": [
       {
