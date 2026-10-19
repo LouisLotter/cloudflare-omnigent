@@ -1,0 +1,1111 @@
+{
+  "source": "https://cfo-stg-s6-creds.lervent.com/",
+  "capture_method": "Recovered from visible page output after wipe; this is not the site's Download results export",
+  "observed_download_error": "403 refused: missing or wrong request-intent token",
+  "cookie_metadata_before_wipe": {
+    "checked_at": "2026-10-19T09:46:13.164173+00:00",
+    "method": "Read-only query of Chrome Default profile cookie metadata; no cookie values selected or decrypted",
+    "domain": "cfo-stg-s6-creds.lervent.com",
+    "same_site_enum_reference": "https://chromium.googlesource.com/chromium/src/+/HEAD/net/cookies/cookie_constants.h",
+    "cookies": [
+      {
+        "name": "CF_Authorization",
+        "path": "/",
+        "SameSite": "None",
+        "Secure": true,
+        "HttpOnly": true
+      },
+      {
+        "name": "s6_term",
+        "path": "/term",
+        "SameSite": "Strict",
+        "Secure": true,
+        "HttpOnly": true
+      }
+    ]
+  },
+  "visible_json_records": [
+    {
+      "running": false,
+      "busy": null,
+      "generation": 0,
+      "signed_out_in_checkpoint": true,
+      "unsaved_computer": false,
+      "credentials_may_be_lost": false,
+      "terminal_open": false,
+      "fault_injection": false,
+      "boundary_refusals": 1,
+      "pointers": [],
+      "refusals": [],
+      "objects": 0,
+      "bytes": 0,
+      "container_image": null
+    },
+    {
+      "at": "2026-10-19T09:38:49.836Z",
+      "phase": "selftest",
+      "step": "start computer",
+      "ms": 604,
+      "ok": true,
+      "generation": 2,
+      "ready_after_s": 0
+    },
+    {
+      "at": "2026-10-19T09:39:06.327Z",
+      "phase": "selftest",
+      "step": "file handling in this container (local store)",
+      "ms": 16491,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"store\": \"container-local directory\", \"settle_ms\": 500, \"rounds\": 5, \"checks\": {\"newer_credentials_older_workspace\": {\"workspace_seq\": 1, \"credential_seq\": 17, \"pass\": true}, \"older_credentials_newer_workspace\": {\"workspace_seq\": 2, \"credential_seq\": 18, \"pass\": true}, \"logout_tombstones_hold\": {\"states\": {\".claude/.credentials.json\": \"absent\", \".claude/.device-keys.json\": \"absent\", \".codex/auth.json\": \"absent\", \".omnigent/auth_tokens.json\": \"absent\"}, \"actions\": [\"tombstone-absent\", \"tombstone-absent\", \"tombstone-absent\", \"tombstone-absent\"], \"pass\": true}}, \"latency\": {\"n\": 15, \"errors\": 0, \"change_to_published_ms\": {\"p50\": 543.9, \"p95\": 566.6, \"max\": 568.7}, \"upload_verify_ms\": {\"p50\": 5.4, \"p95\": 9.6}, \"publish_ms\": {\"p50\": 1.7, \"p95\": 2.6}, \"mean_total_ms\": 547.1, \"samples\": [{\"cli\": \"claude\", \"total_ms\": 561.9, \"upload_verify_ms\": 5.0, \"publish_ms\": 1.7}, {\"cli\": \"codex\", \"total_ms\": 525.0, \"upload_verify_ms\": 7.2, \"publish_ms\": 2.7}, {\"cli\": \"omnigent\", \"total_ms\": 568.7, \"upload_verify_ms\": 9.6, \"publish_ms\": 2.6}, {\"cli\": \"claude\", \"total_ms\": 559.7, \"upload_verify_ms\": 4.0, \"publish_ms\": 1.2}, {\"cli\": \"codex\", \"total_ms\": 550.7, \"upload_verify_ms\": 3.8, \"publish_ms\": 1.4}, {\"cli\": \"omnigent\", \"total_ms\": 539.2, \"upload_verify_ms\": 4.1, \"publish_ms\": 1.5}, {\"cli\": \"claude\", \"total_ms\": 543.5, \"upload_verify_ms\": 4.9, \"publish_ms\": 1.5}, {\"cli\": \"codex\", \"total_ms\": 534.2, \"upload_verify_ms\": 4.0, \"publish_ms\": 1.6}, {\"cli\": \"omnigent\", \"total_ms\": 562.9, \"upload_verify_ms\": 9.5, \"publish_ms\": 2.1}, {\"cli\": \"claude\", \"total_ms\": 523.6, \"upload_verify_ms\": 5.0, \"publish_ms\": 1.9}, {\"cli\": \"codex\", \"total_ms\": 565.7, \"upload_verify_ms\": 6.4, \"publish_ms\": 2.5}, {\"cli\": \"omnigent\", \"total_ms\": 543.3, \"upload_verify_ms\": 5.4, \"publish_ms\": 1.7}, {\"cli\": \"claude\", \"total_ms\": 538.4, \"upload_verify_ms\": 5.4, \"publish_ms\": 2.3}, {\"cli\": \"codex\", \"total_ms\": 545.3, \"upload_verify_ms\": 9.7, \"publish_ms\": 2.1}, {\"cli\": \"omnigent\", \"total_ms\": 543.9, \"upload_verify_ms\": 5.6, \"publish_ms\": 1.7}]}, \"refusals\": [], \"pass\": true}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:07.028Z",
+      "phase": "selftest",
+      "step": "new computer: nothing to restore",
+      "ms": 701,
+      "ok": true,
+      "workspace": {
+        "kind": "workspace",
+        "seq": 1,
+        "files": 2
+      },
+      "credential": {
+        "kind": "credential",
+        "seq": 18,
+        "files": [
+          {
+            "path": ".claude/.credentials.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".claude/.device-keys.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".codex/auth.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".omnigent/auth_tokens.json",
+            "action": "tombstone-absent"
+          }
+        ]
+      },
+      "restore_complete": true
+    },
+    {
+      "at": "2026-10-19T09:39:07.550Z",
+      "phase": "selftest",
+      "step": "fake sign-ins",
+      "ms": 522,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"login\": \"ok\"}\n{\"login\": \"ok\"}\n{\"login\": \"ok\"}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:07.928Z",
+      "phase": "selftest",
+      "step": "credential checkpoint",
+      "ms": 378,
+      "ok": true,
+      "kind": "credential",
+      "seq": 19,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:08.308Z",
+      "phase": "selftest",
+      "step": "workspace checkpoint",
+      "ms": 380,
+      "ok": true,
+      "kind": "workspace",
+      "seq": 2,
+      "published": true,
+      "file_count": 2,
+      "bytes": 125
+    },
+    {
+      "at": "2026-10-19T09:39:09.473Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 20,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:11.100Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 21,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:12.717Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 22,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:14.334Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 23,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:15.949Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 24,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:17.561Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 25,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:19.233Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 26,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:20.847Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 27,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:22.458Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 28,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 253,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:24.075Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 29,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 253,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:25.757Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 30,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 253,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:27.375Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 31,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:29.004Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 32,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:30.621Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 33,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:32.531Z",
+      "step": "watcher: checkpoint published",
+      "kind": "credential",
+      "seq": 34,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:40.436Z",
+      "phase": "selftest",
+      "step": "watcher timings (container clock: change to acknowledged publish)",
+      "ms": 392,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"published\": 15, \"fenced\": 0, \"change_to_published_ms\": {\"p50\": 554.5, \"p95\": 562.9, \"max\": 567.7}, \"last_states\": [{\"path\": \".claude/.credentials.json\", \"state\": \"present\", \"size\": 264, \"mode\": \"0600\"}, {\"path\": \".claude/.device-keys.json\", \"state\": \"absent\", \"size\": null, \"mode\": null}, {\"path\": \".codex/auth.json\", \"state\": \"present\", \"size\": 370, \"mode\": \"0600\"}, {\"path\": \".omnigent/auth_tokens.json\", \"state\": \"present\", \"size\": 254, \"mode\": \"0600\"}]}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:41.552Z",
+      "phase": "selftest",
+      "step": "restore into a fresh home",
+      "ms": 1116,
+      "ok": true,
+      "workspace": {
+        "kind": "workspace",
+        "seq": 2,
+        "files": 2
+      },
+      "credential": {
+        "kind": "credential",
+        "seq": 34,
+        "files": [
+          {
+            "path": ".claude/.credentials.json",
+            "action": "installed",
+            "size": 264,
+            "mode": "0600"
+          },
+          {
+            "path": ".claude/.device-keys.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".codex/auth.json",
+            "action": "installed",
+            "size": 370,
+            "mode": "0600"
+          },
+          {
+            "path": ".omnigent/auth_tokens.json",
+            "action": "installed",
+            "size": 254,
+            "mode": "0600"
+          }
+        ]
+      },
+      "restore_complete": true
+    },
+    {
+      "at": "2026-10-19T09:39:42.136Z",
+      "phase": "selftest",
+      "step": "claude status: signed in",
+      "ms": 584,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"claude_logged_in\": \"true\"}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:42.533Z",
+      "phase": "selftest",
+      "step": "codex status: signed in",
+      "ms": 397,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"codex_logged_in\": \"true\"}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:43.155Z",
+      "phase": "selftest",
+      "step": "restored tokens are the rotated ones: refresh works",
+      "ms": 622,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"refresh\": \"ok\"}\n{\"refresh\": \"ok\"}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:43.725Z",
+      "phase": "selftest",
+      "step": "credential checkpoint",
+      "ms": 570,
+      "ok": true,
+      "kind": "credential",
+      "seq": 35,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present",
+          "size": 264,
+          "mode": "0600"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present",
+          "size": 370,
+          "mode": "0600"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "present",
+          "size": 254,
+          "mode": "0600"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:44.716Z",
+      "phase": "selftest",
+      "step": "fake sign-out",
+      "ms": 991,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"logout\": \"ok\", \"rewroteRetainedKeys\": false}\n{\"logout\": \"ok\"}\n{\"signout\": \"ok\"}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:45.253Z",
+      "phase": "selftest",
+      "step": "credential checkpoint after sign-out",
+      "ms": 537,
+      "ok": true,
+      "kind": "credential",
+      "seq": 36,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "absent"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "absent"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "absent"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:39:46.506Z",
+      "phase": "selftest",
+      "step": "restore into another fresh home",
+      "ms": 1253,
+      "ok": true,
+      "workspace": {
+        "kind": "workspace",
+        "seq": 2,
+        "files": 2
+      },
+      "credential": {
+        "kind": "credential",
+        "seq": 36,
+        "files": [
+          {
+            "path": ".claude/.credentials.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".claude/.device-keys.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".codex/auth.json",
+            "action": "tombstone-absent"
+          },
+          {
+            "path": ".omnigent/auth_tokens.json",
+            "action": "tombstone-absent"
+          }
+        ]
+      },
+      "restore_complete": true
+    },
+    {
+      "at": "2026-10-19T09:39:47.250Z",
+      "phase": "selftest",
+      "step": "must be signed out",
+      "ms": 744,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"claude_logged_in\": \"false\", \"codex_logged_in\": \"false\", \"declared_files_present\": []}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:39:47.538Z",
+      "phase": "selftest",
+      "step": "stop computer",
+      "ms": 288,
+      "ok": true,
+      "stopped": true
+    },
+    {
+      "at": "2026-10-19T09:39:47.538Z",
+      "phase": "selftest",
+      "done": true,
+      "state": {
+        "running": false,
+        "busy": "selftest",
+        "generation": 2,
+        "signed_out_in_checkpoint": true,
+        "unsaved_computer": false,
+        "credentials_may_be_lost": false,
+        "terminal_open": false,
+        "fault_injection": false,
+        "boundary_refusals": 0,
+        "pointers": [
+          {
+            "computer": "s6-selftest",
+            "kind": "credential",
+            "seq": 36,
+            "generation": 2,
+            "snap_order": 19
+          },
+          {
+            "computer": "s6-selftest",
+            "kind": "workspace",
+            "seq": 2,
+            "generation": 2,
+            "snap_order": null
+          }
+        ],
+        "refusals": [],
+        "objects": 76,
+        "bytes": 419315
+      }
+    },
+    {
+      "at": "2026-10-19T09:40:04.908Z",
+      "phase": "start",
+      "step": "start computer A",
+      "ms": 636,
+      "ok": true,
+      "generation": 3,
+      "ready_after_s": 0
+    },
+    {
+      "at": "2026-10-19T09:40:04.908Z",
+      "phase": "start",
+      "step": "restore: nothing yet, or a signed-out checkpoint",
+      "ms": 0,
+      "ok": true,
+      "workspace": null,
+      "credential": null,
+      "restore_complete": true
+    },
+    {
+      "at": "2026-10-19T09:40:06.137Z",
+      "phase": "start",
+      "step": "audit",
+      "ms": 1229,
+      "ok": true,
+      "exit": 0,
+      "stdout": "{\"label\": \"A fresh\", \"at\": \"2026-10-19T09:40:05.994+00:00\", \"home\": \"~\", \"files\": [{\"path\": \".claude/.credentials.json\", \"exists\": false}, {\"path\": \".claude/.device-keys.json\", \"exists\": false}, {\"path\": \".codex/auth.json\", \"exists\": false}, {\"path\": \".omnigent/auth_tokens.json\", \"exists\": false}, {\"path\": \".claude.json\", \"exists\": false}, {\"path\": \".claude/.device-keys.json\", \"exists\": false}, {\"path\": \".codex/.credentials.json\", \"exists\": false}], \"inventory\": [], \"inventory_truncated\": false}",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:40:13.182Z",
+      "phase": "start",
+      "step": "versions",
+      "ms": 7045,
+      "ok": true,
+      "exit": 0,
+      "stdout": "2.1.296 (Claude Code)\ncodex-cli 0.162.1\nomnigent 0.17.0 (built 2026-10-05T23:48:34Z)",
+      "stderr_bytes": 0
+    },
+    {
+      "at": "2026-10-19T09:40:13.182Z",
+      "phase": "start",
+      "done": true,
+      "state": {
+        "running": true,
+        "busy": "start",
+        "generation": 3,
+        "signed_out_in_checkpoint": true,
+        "unsaved_computer": false,
+        "credentials_may_be_lost": false,
+        "terminal_open": true,
+        "fault_injection": false,
+        "boundary_refusals": 0,
+        "pointers": [
+          {
+            "computer": "s6-selftest",
+            "kind": "credential",
+            "seq": 36,
+            "generation": 2,
+            "snap_order": 19
+          },
+          {
+            "computer": "s6-selftest",
+            "kind": "workspace",
+            "seq": 2,
+            "generation": 2,
+            "snap_order": null
+          }
+        ],
+        "refusals": [],
+        "objects": 76,
+        "bytes": 419315
+      }
+    },
+    {
+      "terminal_self_check": "refused or failed"
+    },
+    {
+      "qualification_report": {
+        "state": {
+          "running": true,
+          "generation": 3,
+          "objects": 76,
+          "container_image": "registry.cloudflare.com/<account>/cfo-stg-s6-creds-pc@sha256:150bbfb7a91545d6c35afb605a5a90912de4eb30b91c7e24237078c276f5c3e8"
+        },
+        "refused": [
+          {
+            "at": 1792402834.888,
+            "method": "POST",
+            "path": "/api/phase",
+            "case_tag": "null-form-post",
+            "origin": "null origin",
+            "fetch_site": "cross-site",
+            "reason": "null origin"
+          },
+          {
+            "at": 1792402834.888,
+            "method": "POST",
+            "path": "/api/phase",
+            "case_tag": "foreign-form-post",
+            "origin": "foreign origin",
+            "fetch_site": "cross-site",
+            "reason": "foreign origin"
+          },
+          {
+            "at": 1792402834.888,
+            "method": "POST",
+            "path": "/api/phase",
+            "case_tag": "null-fetch-post",
+            "origin": "null origin",
+            "fetch_site": "cross-site",
+            "reason": "null origin"
+          },
+          {
+            "at": 1792402834.902,
+            "method": "GET",
+            "path": "/term/ws",
+            "case_tag": "null-websocket",
+            "origin": "null origin",
+            "fetch_site": null,
+            "reason": "terminal: null origin"
+          },
+          {
+            "at": 1792402834.904,
+            "method": "GET",
+            "path": "/term/ws",
+            "case_tag": "foreign-websocket",
+            "origin": "foreign origin",
+            "fetch_site": null,
+            "reason": "terminal: foreign origin"
+          },
+          {
+            "at": 1792402835.133,
+            "method": "POST",
+            "path": "/api/phase",
+            "case_tag": "foreign-fetch-post",
+            "origin": "foreign origin",
+            "fetch_site": "cross-site",
+            "reason": "foreign origin"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-10-19T09:46:20.221Z",
+      "phase": "stop",
+      "step": "final credential checkpoint",
+      "ok": true,
+      "kind": "credential",
+      "seq": 1,
+      "published": true,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "absent"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "absent"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "absent"
+        },
+        {
+          "path": ".omnigent/auth_tokens.json",
+          "state": "absent"
+        }
+      ]
+    },
+    {
+      "at": "2026-10-19T09:46:20.533Z",
+      "phase": "stop",
+      "step": "stop computer",
+      "ms": 312,
+      "ok": true,
+      "stopped": true
+    },
+    {
+      "at": "2026-10-19T09:46:20.533Z",
+      "phase": "stop",
+      "done": true,
+      "state": {
+        "running": false,
+        "busy": "stop",
+        "generation": 3,
+        "signed_out_in_checkpoint": true,
+        "unsaved_computer": false,
+        "credentials_may_be_lost": false,
+        "terminal_open": false,
+        "fault_injection": false,
+        "boundary_refusals": 6,
+        "pointers": [
+          {
+            "computer": "s6-selftest",
+            "kind": "credential",
+            "seq": 36,
+            "generation": 2,
+            "snap_order": 19
+          },
+          {
+            "computer": "s6-selftest",
+            "kind": "workspace",
+            "seq": 2,
+            "generation": 2,
+            "snap_order": null
+          },
+          {
+            "computer": "s6-pc",
+            "kind": "credential",
+            "seq": 1,
+            "generation": 3,
+            "snap_order": 1
+          }
+        ],
+        "refusals": [],
+        "objects": 78,
+        "bytes": 430073
+      }
+    },
+    {
+      "at": "2026-10-19T09:50:43.913Z",
+      "phase": "wipe",
+      "step": "delete all stored checkpoints and state",
+      "ms": 0,
+      "ok": true,
+      "wiped": true,
+      "objects_left": 0
+    },
+    {
+      "at": "2026-10-19T09:50:43.913Z",
+      "phase": "wipe",
+      "done": true,
+      "state": {
+        "running": false,
+        "busy": "wipe",
+        "generation": 0,
+        "signed_out_in_checkpoint": true,
+        "unsaved_computer": false,
+        "credentials_may_be_lost": false,
+        "terminal_open": false,
+        "fault_injection": false,
+        "boundary_refusals": 0,
+        "pointers": [],
+        "refusals": [],
+        "objects": 0,
+        "bytes": 0
+      }
+    }
+  ],
+  "visible_page_text": "S6: sign-in and credential checkpoints\n\nOwner-only staging page. Output below is masked: fixed text, exit codes, paths, modes, sizes, key names, states and timestamps. The terminal is not recorded. Run the steps in order; each waits until it is done.\n\nIf a step reports an error: stop there, click Recover, then Stop and wipe.\n\n{\"running\":false,\"busy\":null,\"generation\":0,\"signed_out_in_checkpoint\":true,\"unsaved_computer\":false,\"credentials_may_be_lost\":false,\"terminal_open\":false,\"fault_injection\":false,\"boundary_refusals\":1,\"pointers\":[],\"refusals\":[],\"objects\":0,\"bytes\":0,\"container_image\":null}\n\nPart 1: qualification, synthetic credentials only\nQ1 Fake-CLI self-test about 3 minutes.\nQ2 Start a synthetic computer then Q3 Terminal self-check\nQ4: open the attacker page (see the runbook) in another tab and let it finish, then come back.\nQ5 Qualification report\nQ6 Stop the synthetic computer then Q7 Wipe\nPart 2: real accounts\nStart computer A then open the terminal (open for 20 minutes; re-open).\nIn the terminal: claude auth login --claudeai, open the link, sign in, paste the code back. Then codex login --device-auth, open the link, sign in, enter the code. Close the terminal tab.\nAfter sign-in: audit, checkpoints, forced refresh\nComputer B: restore older workspace + newer credentials\nComputer C: restore, then sign out of both\nComputer D: restore; both must stay signed out\nStop and wipe everything stored then Download results\n\nRecover: sign out and verify only if a step failed. Stop Force stop (credentials may be lost)\n\n{\"at\":\"2026-10-19T09:38:49.836Z\",\"phase\":\"selftest\",\"step\":\"start computer\",\"ms\":604,\"ok\":true,\"generation\":2,\"ready_after_s\":0}\n{\"at\":\"2026-10-19T09:39:06.327Z\",\"phase\":\"selftest\",\"step\":\"file handling in this container (local store)\",\"ms\":16491,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"store\\\": \\\"container-local directory\\\", \\\"settle_ms\\\": 500, \\\"rounds\\\": 5, \\\"checks\\\": {\\\"newer_credentials_older_workspace\\\": {\\\"workspace_seq\\\": 1, \\\"credential_seq\\\": 17, \\\"pass\\\": true}, \\\"older_credentials_newer_workspace\\\": {\\\"workspace_seq\\\": 2, \\\"credential_seq\\\": 18, \\\"pass\\\": true}, \\\"logout_tombstones_hold\\\": {\\\"states\\\": {\\\".claude/.credentials.json\\\": \\\"absent\\\", \\\".claude/.device-keys.json\\\": \\\"absent\\\", \\\".codex/auth.json\\\": \\\"absent\\\", \\\".omnigent/auth_tokens.json\\\": \\\"absent\\\"}, \\\"actions\\\": [\\\"tombstone-absent\\\", \\\"tombstone-absent\\\", \\\"tombstone-absent\\\", \\\"tombstone-absent\\\"], \\\"pass\\\": true}}, \\\"latency\\\": {\\\"n\\\": 15, \\\"errors\\\": 0, \\\"change_to_published_ms\\\": {\\\"p50\\\": 543.9, \\\"p95\\\": 566.6, \\\"max\\\": 568.7}, \\\"upload_verify_ms\\\": {\\\"p50\\\": 5.4, \\\"p95\\\": 9.6}, \\\"publish_ms\\\": {\\\"p50\\\": 1.7, \\\"p95\\\": 2.6}, \\\"mean_total_ms\\\": 547.1, \\\"samples\\\": [{\\\"cli\\\": \\\"claude\\\", \\\"total_ms\\\": 561.9, \\\"upload_verify_ms\\\": 5.0, \\\"publish_ms\\\": 1.7}, {\\\"cli\\\": \\\"codex\\\", \\\"total_ms\\\": 525.0, \\\"upload_verify_ms\\\": 7.2, \\\"publish_ms\\\": 2.7}, {\\\"cli\\\": \\\"omnigent\\\", \\\"total_ms\\\": 568.7, \\\"upload_verify_ms\\\": 9.6, \\\"publish_ms\\\": 2.6}, {\\\"cli\\\": \\\"claude\\\", \\\"total_ms\\\": 559.7, \\\"upload_verify_ms\\\": 4.0, \\\"publish_ms\\\": 1.2}, {\\\"cli\\\": \\\"codex\\\", \\\"total_ms\\\": 550.7, \\\"upload_verify_ms\\\": 3.8, \\\"publish_ms\\\": 1.4}, {\\\"cli\\\": \\\"omnigent\\\", \\\"total_ms\\\": 539.2, \\\"upload_verify_ms\\\": 4.1, \\\"publish_ms\\\": 1.5}, {\\\"cli\\\": \\\"claude\\\", \\\"total_ms\\\": 543.5, \\\"upload_verify_ms\\\": 4.9, \\\"publish_ms\\\": 1.5}, {\\\"cli\\\": \\\"codex\\\", \\\"total_ms\\\": 534.2, \\\"upload_verify_ms\\\": 4.0, \\\"publish_ms\\\": 1.6}, {\\\"cli\\\": \\\"omnigent\\\", \\\"total_ms\\\": 562.9, \\\"upload_verify_ms\\\": 9.5, \\\"publish_ms\\\": 2.1}, {\\\"cli\\\": \\\"claude\\\", \\\"total_ms\\\": 523.6, \\\"upload_verify_ms\\\": 5.0, \\\"publish_ms\\\": 1.9}, {\\\"cli\\\": \\\"codex\\\", \\\"total_ms\\\": 565.7, \\\"upload_verify_ms\\\": 6.4, \\\"publish_ms\\\": 2.5}, {\\\"cli\\\": \\\"omnigent\\\", \\\"total_ms\\\": 543.3, \\\"upload_verify_ms\\\": 5.4, \\\"publish_ms\\\": 1.7}, {\\\"cli\\\": \\\"claude\\\", \\\"total_ms\\\": 538.4, \\\"upload_verify_ms\\\": 5.4, \\\"publish_ms\\\": 2.3}, {\\\"cli\\\": \\\"codex\\\", \\\"total_ms\\\": 545.3, \\\"upload_verify_ms\\\": 9.7, \\\"publish_ms\\\": 2.1}, {\\\"cli\\\": \\\"omnigent\\\", \\\"total_ms\\\": 543.9, \\\"upload_verify_ms\\\": 5.6, \\\"publish_ms\\\": 1.7}]}, \\\"refusals\\\": [], \\\"pass\\\": true}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:07.028Z\",\"phase\":\"selftest\",\"step\":\"new computer: nothing to restore\",\"ms\":701,\"ok\":true,\"workspace\":{\"kind\":\"workspace\",\"seq\":1,\"files\":2},\"credential\":{\"kind\":\"credential\",\"seq\":18,\"files\":[{\"path\":\".claude/.credentials.json\",\"action\":\"tombstone-absent\"},{\"path\":\".claude/.device-keys.json\",\"action\":\"tombstone-absent\"},{\"path\":\".codex/auth.json\",\"action\":\"tombstone-absent\"},{\"path\":\".omnigent/auth_tokens.json\",\"action\":\"tombstone-absent\"}]},\"restore_complete\":true}\n{\"at\":\"2026-10-19T09:39:07.550Z\",\"phase\":\"selftest\",\"step\":\"fake sign-ins\",\"ms\":522,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"login\\\": \\\"ok\\\"}\\n{\\\"login\\\": \\\"ok\\\"}\\n{\\\"login\\\": \\\"ok\\\"}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:07.928Z\",\"phase\":\"selftest\",\"step\":\"credential checkpoint\",\"ms\":378,\"ok\":true,\"kind\":\"credential\",\"seq\":19,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:08.308Z\",\"phase\":\"selftest\",\"step\":\"workspace checkpoint\",\"ms\":380,\"ok\":true,\"kind\":\"workspace\",\"seq\":2,\"published\":true,\"file_count\":2,\"bytes\":125}\n{\"at\":\"2026-10-19T09:39:09.473Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":20,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:11.100Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":21,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:12.717Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":22,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:14.334Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":23,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:15.949Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":24,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:17.561Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":25,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:19.233Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":26,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:20.847Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":27,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:22.458Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":28,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":253,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:24.075Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":29,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":253,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:25.757Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":30,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":253,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:27.375Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":31,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:29.004Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":32,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:30.621Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":33,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:32.531Z\",\"step\":\"watcher: checkpoint published\",\"kind\":\"credential\",\"seq\":34,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:40.436Z\",\"phase\":\"selftest\",\"step\":\"watcher timings (container clock: change to acknowledged publish)\",\"ms\":392,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"published\\\": 15, \\\"fenced\\\": 0, \\\"change_to_published_ms\\\": {\\\"p50\\\": 554.5, \\\"p95\\\": 562.9, \\\"max\\\": 567.7}, \\\"last_states\\\": [{\\\"path\\\": \\\".claude/.credentials.json\\\", \\\"state\\\": \\\"present\\\", \\\"size\\\": 264, \\\"mode\\\": \\\"0600\\\"}, {\\\"path\\\": \\\".claude/.device-keys.json\\\", \\\"state\\\": \\\"absent\\\", \\\"size\\\": null, \\\"mode\\\": null}, {\\\"path\\\": \\\".codex/auth.json\\\", \\\"state\\\": \\\"present\\\", \\\"size\\\": 370, \\\"mode\\\": \\\"0600\\\"}, {\\\"path\\\": \\\".omnigent/auth_tokens.json\\\", \\\"state\\\": \\\"present\\\", \\\"size\\\": 254, \\\"mode\\\": \\\"0600\\\"}]}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:41.552Z\",\"phase\":\"selftest\",\"step\":\"restore into a fresh home\",\"ms\":1116,\"ok\":true,\"workspace\":{\"kind\":\"workspace\",\"seq\":2,\"files\":2},\"credential\":{\"kind\":\"credential\",\"seq\":34,\"files\":[{\"path\":\".claude/.credentials.json\",\"action\":\"installed\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"action\":\"tombstone-absent\"},{\"path\":\".codex/auth.json\",\"action\":\"installed\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"action\":\"installed\",\"size\":254,\"mode\":\"0600\"}]},\"restore_complete\":true}\n{\"at\":\"2026-10-19T09:39:42.136Z\",\"phase\":\"selftest\",\"step\":\"claude status: signed in\",\"ms\":584,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"claude_logged_in\\\": \\\"true\\\"}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:42.533Z\",\"phase\":\"selftest\",\"step\":\"codex status: signed in\",\"ms\":397,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"codex_logged_in\\\": \\\"true\\\"}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:43.155Z\",\"phase\":\"selftest\",\"step\":\"restored tokens are the rotated ones: refresh works\",\"ms\":622,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"refresh\\\": \\\"ok\\\"}\\n{\\\"refresh\\\": \\\"ok\\\"}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:43.725Z\",\"phase\":\"selftest\",\"step\":\"credential checkpoint\",\"ms\":570,\"ok\":true,\"kind\":\"credential\",\"seq\":35,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"present\",\"size\":264,\"mode\":\"0600\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"present\",\"size\":370,\"mode\":\"0600\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"present\",\"size\":254,\"mode\":\"0600\"}]}\n{\"at\":\"2026-10-19T09:39:44.716Z\",\"phase\":\"selftest\",\"step\":\"fake sign-out\",\"ms\":991,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"logout\\\": \\\"ok\\\", \\\"rewroteRetainedKeys\\\": false}\\n{\\\"logout\\\": \\\"ok\\\"}\\n{\\\"signout\\\": \\\"ok\\\"}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:45.253Z\",\"phase\":\"selftest\",\"step\":\"credential checkpoint after sign-out\",\"ms\":537,\"ok\":true,\"kind\":\"credential\",\"seq\":36,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"absent\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"absent\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"absent\"}]}\n{\"at\":\"2026-10-19T09:39:46.506Z\",\"phase\":\"selftest\",\"step\":\"restore into another fresh home\",\"ms\":1253,\"ok\":true,\"workspace\":{\"kind\":\"workspace\",\"seq\":2,\"files\":2},\"credential\":{\"kind\":\"credential\",\"seq\":36,\"files\":[{\"path\":\".claude/.credentials.json\",\"action\":\"tombstone-absent\"},{\"path\":\".claude/.device-keys.json\",\"action\":\"tombstone-absent\"},{\"path\":\".codex/auth.json\",\"action\":\"tombstone-absent\"},{\"path\":\".omnigent/auth_tokens.json\",\"action\":\"tombstone-absent\"}]},\"restore_complete\":true}\n{\"at\":\"2026-10-19T09:39:47.250Z\",\"phase\":\"selftest\",\"step\":\"must be signed out\",\"ms\":744,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"claude_logged_in\\\": \\\"false\\\", \\\"codex_logged_in\\\": \\\"false\\\", \\\"declared_files_present\\\": []}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:39:47.538Z\",\"phase\":\"selftest\",\"step\":\"stop computer\",\"ms\":288,\"ok\":true,\"stopped\":true}\n{\"at\":\"2026-10-19T09:39:47.538Z\",\"phase\":\"selftest\",\"done\":true,\"state\":{\"running\":false,\"busy\":\"selftest\",\"generation\":2,\"signed_out_in_checkpoint\":true,\"unsaved_computer\":false,\"credentials_may_be_lost\":false,\"terminal_open\":false,\"fault_injection\":false,\"boundary_refusals\":0,\"pointers\":[{\"computer\":\"s6-selftest\",\"kind\":\"credential\",\"seq\":36,\"generation\":2,\"snap_order\":19},{\"computer\":\"s6-selftest\",\"kind\":\"workspace\",\"seq\":2,\"generation\":2,\"snap_order\":null}],\"refusals\":[],\"objects\":76,\"bytes\":419315}}\n{\"at\":\"2026-10-19T09:40:04.908Z\",\"phase\":\"start\",\"step\":\"start computer A\",\"ms\":636,\"ok\":true,\"generation\":3,\"ready_after_s\":0}\n{\"at\":\"2026-10-19T09:40:04.908Z\",\"phase\":\"start\",\"step\":\"restore: nothing yet, or a signed-out checkpoint\",\"ms\":0,\"ok\":true,\"workspace\":null,\"credential\":null,\"restore_complete\":true}\n{\"at\":\"2026-10-19T09:40:06.137Z\",\"phase\":\"start\",\"step\":\"audit\",\"ms\":1229,\"ok\":true,\"exit\":0,\"stdout\":\"{\\\"label\\\": \\\"A fresh\\\", \\\"at\\\": \\\"2026-10-19T09:40:05.994+00:00\\\", \\\"home\\\": \\\"~\\\", \\\"files\\\": [{\\\"path\\\": \\\".claude/.credentials.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".claude/.device-keys.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".codex/auth.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".omnigent/auth_tokens.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".claude.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".claude/.device-keys.json\\\", \\\"exists\\\": false}, {\\\"path\\\": \\\".codex/.credentials.json\\\", \\\"exists\\\": false}], \\\"inventory\\\": [], \\\"inventory_truncated\\\": false}\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:40:13.182Z\",\"phase\":\"start\",\"step\":\"versions\",\"ms\":7045,\"ok\":true,\"exit\":0,\"stdout\":\"2.1.296 (Claude Code)\\ncodex-cli 0.162.1\\nomnigent 0.17.0 (built 2026-10-05T23:48:34Z)\",\"stderr_bytes\":0}\n{\"at\":\"2026-10-19T09:40:13.182Z\",\"phase\":\"start\",\"done\":true,\"state\":{\"running\":true,\"busy\":\"start\",\"generation\":3,\"signed_out_in_checkpoint\":true,\"unsaved_computer\":false,\"credentials_may_be_lost\":false,\"terminal_open\":true,\"fault_injection\":false,\"boundary_refusals\":0,\"pointers\":[{\"computer\":\"s6-selftest\",\"kind\":\"credential\",\"seq\":36,\"generation\":2,\"snap_order\":19},{\"computer\":\"s6-selftest\",\"kind\":\"workspace\",\"seq\":2,\"generation\":2,\"snap_order\":null}],\"refusals\":[],\"objects\":76,\"bytes\":419315}}\n{\"terminal_self_check\":\"refused or failed\"}\n{\"qualification_report\":{\"state\":{\"running\":true,\"generation\":3,\"objects\":76,\"container_image\":\"registry.cloudflare.com/<account>/cfo-stg-s6-creds-pc@sha256:150bbfb7a91545d6c35afb605a5a90912de4eb30b91c7e24237078c276f5c3e8\"},\"refused\":[{\"at\":1792402834.888,\"method\":\"POST\",\"path\":\"/api/phase\",\"case_tag\":\"null-form-post\",\"origin\":\"null origin\",\"fetch_site\":\"cross-site\",\"reason\":\"null origin\"},{\"at\":1792402834.888,\"method\":\"POST\",\"path\":\"/api/phase\",\"case_tag\":\"foreign-form-post\",\"origin\":\"foreign origin\",\"fetch_site\":\"cross-site\",\"reason\":\"foreign origin\"},{\"at\":1792402834.888,\"method\":\"POST\",\"path\":\"/api/phase\",\"case_tag\":\"null-fetch-post\",\"origin\":\"null origin\",\"fetch_site\":\"cross-site\",\"reason\":\"null origin\"},{\"at\":1792402834.902,\"method\":\"GET\",\"path\":\"/term/ws\",\"case_tag\":\"null-websocket\",\"origin\":\"null origin\",\"fetch_site\":null,\"reason\":\"terminal: null origin\"},{\"at\":1792402834.904,\"method\":\"GET\",\"path\":\"/term/ws\",\"case_tag\":\"foreign-websocket\",\"origin\":\"foreign origin\",\"fetch_site\":null,\"reason\":\"terminal: foreign origin\"},{\"at\":1792402835.133,\"method\":\"POST\",\"path\":\"/api/phase\",\"case_tag\":\"foreign-fetch-post\",\"origin\":\"foreign origin\",\"fetch_site\":\"cross-site\",\"reason\":\"foreign origin\"}]}}\n{\"at\":\"2026-10-19T09:46:20.221Z\",\"phase\":\"stop\",\"step\":\"final credential checkpoint\",\"ok\":true,\"kind\":\"credential\",\"seq\":1,\"published\":true,\"files\":[{\"path\":\".claude/.credentials.json\",\"state\":\"absent\"},{\"path\":\".claude/.device-keys.json\",\"state\":\"absent\"},{\"path\":\".codex/auth.json\",\"state\":\"absent\"},{\"path\":\".omnigent/auth_tokens.json\",\"state\":\"absent\"}]}\n{\"at\":\"2026-10-19T09:46:20.533Z\",\"phase\":\"stop\",\"step\":\"stop computer\",\"ms\":312,\"ok\":true,\"stopped\":true}\n{\"at\":\"2026-10-19T09:46:20.533Z\",\"phase\":\"stop\",\"done\":true,\"state\":{\"running\":false,\"busy\":\"stop\",\"generation\":3,\"signed_out_in_checkpoint\":true,\"unsaved_computer\":false,\"credentials_may_be_lost\":false,\"terminal_open\":false,\"fault_injection\":false,\"boundary_refusals\":6,\"pointers\":[{\"computer\":\"s6-selftest\",\"kind\":\"credential\",\"seq\":36,\"generation\":2,\"snap_order\":19},{\"computer\":\"s6-selftest\",\"kind\":\"workspace\",\"seq\":2,\"generation\":2,\"snap_order\":null},{\"computer\":\"s6-pc\",\"kind\":\"credential\",\"seq\":1,\"generation\":3,\"snap_order\":1}],\"refusals\":[],\"objects\":78,\"bytes\":430073}}\n{\"at\":\"2026-10-19T09:50:43.913Z\",\"phase\":\"wipe\",\"step\":\"delete all stored checkpoints and state\",\"ms\":0,\"ok\":true,\"wiped\":true,\"objects_left\":0}\n{\"at\":\"2026-10-19T09:50:43.913Z\",\"phase\":\"wipe\",\"done\":true,\"state\":{\"running\":false,\"busy\":\"wipe\",\"generation\":0,\"signed_out_in_checkpoint\":true,\"unsaved_computer\":false,\"credentials_may_be_lost\":false,\"terminal_open\":false,\"fault_injection\":false,\"boundary_refusals\":0,\"pointers\":[],\"refusals\":[],\"objects\":0,\"bytes\":0}}\n403 refused: missing or wrong request-intent token\n"
+}
