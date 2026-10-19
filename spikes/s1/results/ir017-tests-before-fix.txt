@@ -1,0 +1,459 @@
+
+ RUN  v5.0.3 /home/decay/Lervent/cloudflare-omnigent/.claude/worktrees/agent-ac4d9e8a4b3562363/spikes/s1
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"computer-constructed","wt":1792348714454,"instance":"478a0a20","version":"1","at":1792348714454,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"command","seq":1,"wt":1792348714455,"instance":"478a0a20","id":"c1","phases":[{"kind":"server-up"},{"kind":"wake","arg":1}]}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"phase-start","seq":2,"wt":1792348714455,"instance":"478a0a20","kind":"server-up"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"server-up","seq":3,"wt":1792348714455,"instance":"478a0a20","ok":true}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"phase-end","seq":4,"wt":1792348714455,"instance":"478a0a20","kind":"server-up"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop
+{"s1":"computer-constructed","wt":1792348714456,"instance":"98fbd379","version":"1","at":1792348714456,"running":true,"rearmed":true,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop
+{"s1":"heartbeat","seq":1,"wt":1792348714456,"instance":"98fbd379","running":true,"incarnation":"exec-error: TypeError: container.exec is not a function","bootCount":0,"sameIncarnation":false,"hostStatus":"offline","instanceChanged":false,"sinceStartMs":60000,"renewed":true}
+
+ ❯ test/controls.test.js (24 tests | 23 failed) 31ms
+   ❯ IR-017: refused requests have zero effect (17)
+     ❯ /s1/kickoff (8)
+       × refuses a foreign Origin with 403, and the token stays unused 18ms
+       × refuses Origin: null with 403 1ms
+       × refuses a missing Origin with 403 0ms
+       × refuses a simple cross-site form post with 403 1ms
+       × refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 0ms
+       × treats a cross-site top-level GET as a confirmation page only 0ms
+       × refuses a same-origin post without a token, or with a wrong one 0ms
+       × ignores HEAD 1ms
+     ❯ /s1/stop (8)
+       × refuses a foreign Origin with 403, and the token stays unused 0ms
+       × refuses Origin: null with 403 0ms
+       × refuses a missing Origin with 403 0ms
+       × refuses a simple cross-site form post with 403 0ms
+       × refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 0ms
+       × treats a cross-site top-level GET as a confirmation page only 0ms
+       × refuses a same-origin post without a token, or with a wrong one 0ms
+       × ignores HEAD 0ms
+     × serves no read route that wakes the experiment's Durable Objects 0ms
+   ❯ IR-017: valid same-origin controls (4)
+     × Start arms the campaign once, for a bounded time, and the token is single-use 0ms
+     × Start works without Sec-Fetch-Site, from an older browser 0ms
+     × Stop disarms the campaign 0ms
+     × a Start token does not work for Stop 0ms
+   ❯ IR-017: the campaign runs only while armed (3)
+     × an alarm on a campaign that was never armed starts nothing and ends the alarm loop 2ms
+     × an expired arming stops the running campaign, its containers and the alarm loop 1ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 23 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a foreign Origin with 403, and the token stays unused
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:134:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses Origin: null with 403
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:144:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a missing Origin with 403
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:154:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a simple cross-site form post with 403
+AssertionError: expected 200 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 200
+
+ ❯ test/controls.test.js:168:33
+    166|           t.env,
+    167|         );
+    168|         expect(response.status).toBe(403);
+       |                                 ^
+    169|         expectNoExperimentEffect(t);
+    170|       });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:174:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > treats a cross-site top-level GET as a confirmation page only
+AssertionError: expected 'application/json' to match /text\/html/html
+
+- Expected:
+/text\/html/
+
++ Received:
+"application/json"
+
+ ❯ test/controls.test.js:196:54
+    194|         );
+    195|         expect(response.status).toBe(200);
+    196|         expect(response.headers.get("content-type")).toMatch(/text\/ht…
+       |                                                      ^
+    197|         const html = await response.text();
+    198|         expect(html).toMatch(/<form method="post" action="\/s1\/(kicko…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin post without a token, or with a wrong one
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:204:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > ignores HEAD
+AssertionError: no call into S1Computer: expected [ { name: 'kickoff', args: [] } ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   {
++     "args": [],
++     "name": "kickoff",
++   },
++ ]
+
+ ❯ expectNoExperimentEffect test/controls.test.js:125:55
+    123| /** Asserts that nothing reached the experiment's Durable Objects. */
+    124| function expectNoExperimentEffect(t) {
+    125|   expect(t.computer.calls, "no call into S1Computer").toEqual([]);
+       |                                                       ^
+    126|   expect(t.server.calls, "no call into S1Server").toEqual([]);
+    127| }
+ ❯ test/controls.test.js:221:9
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a foreign Origin with 403, and the token stays unused
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:134:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses Origin: null with 403
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:144:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a missing Origin with 403
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:154:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a simple cross-site form post with 403
+AssertionError: expected 404 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 404
+
+ ❯ test/controls.test.js:168:33
+    166|           t.env,
+    167|         );
+    168|         expect(response.status).toBe(403);
+       |                                 ^
+    169|         expectNoExperimentEffect(t);
+    170|       });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:174:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > treats a cross-site top-level GET as a confirmation page only
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ test/controls.test.js:195:33
+    193|           t.env,
+    194|         );
+    195|         expect(response.status).toBe(200);
+       |                                 ^
+    196|         expect(response.headers.get("content-type")).toMatch(/text\/ht…
+    197|         const html = await response.text();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin post without a token, or with a wrong one
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:204:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > ignores HEAD
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ test/controls.test.js:220:33
+    218|         const t = setup();
+    219|         const response = await worker.fetch(new Request(`${ORIGIN}${pa…
+    220|         expect(response.status).toBe(200);
+       |                                 ^
+    221|         expectNoExperimentEffect(t);
+    222|       });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: refused requests have zero effect > serves no read route that wakes the experiment's Durable Objects
+AssertionError: no call into S1Computer: expected [ { name: 'status', args: [] }, …(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   {
++     "args": [],
++     "name": "status",
++   },
++   {
++     "args": [],
++     "name": "results",
++   },
++ ]
+
+ ❯ expectNoExperimentEffect test/controls.test.js:125:55
+    123| /** Asserts that nothing reached the experiment's Durable Objects. */
+    124| function expectNoExperimentEffect(t) {
+    125|   expect(t.computer.calls, "no call into S1Computer").toEqual([]);
+       |                                                       ^
+    126|   expect(t.server.calls, "no call into S1Server").toEqual([]);
+    127| }
+ ❯ test/controls.test.js:231:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: valid same-origin controls > Start arms the campaign once, for a bounded time, and the token is single-use
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:238:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: valid same-origin controls > Start works without Sec-Fetch-Site, from an older browser
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:260:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: valid same-origin controls > Stop disarms the campaign
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ ❯ confirmationToken test/controls.test.js:112:27
+    110| async function confirmationToken(env, path) {
+    111|   const response = await worker.fetch(get(path, { "sec-fetch-site": "n…
+    112|   expect(response.status).toBe(200);
+       |                           ^
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+ ❯ test/controls.test.js:268:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: valid same-origin controls > a Start token does not work for Stop
+AssertionError: the confirmation page embeds a request-intent token: expected null not to be null
+ ❯ confirmationToken test/controls.test.js:115:76
+    113|   const html = await response.text();
+    114|   const match = html.match(/name="intent" value="([0-9a-f]{64})"/);
+    115|   expect(match, "the confirmation page embeds a request-intent token")…
+       |                                                                            ^
+    116|   return match?.[1];
+    117| }
+ ❯ test/controls.test.js:279:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+AssertionError: expected [ 'keepAlive', 'ensureUp' ] to not include 'ensureUp'
+ ❯ test/controls.test.js:332:51
+    330|     const t = await computerWith({ running: false, command: "c1:server…
+    331|     await t.computer.alarm();
+    332|     expect(t.server.calls.map((c) => c.name)).not.toContain("ensureUp"…
+       |                                                   ^
+    333|     expect(t.container.calls.filter((c) => c.name === "start")).toEqua…
+    334|     expect(await t.state.storage.getAlarm()).toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/23]⎯
+
+ FAIL  test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop
+AssertionError: expected [ 'setInactivityTimeout', …(1) ] to include 'destroy'
+ ❯ test/controls.test.js:345:50
+    343|     });
+    344|     await t.computer.alarm();
+    345|     expect(t.container.calls.map((c) => c.name)).toContain("destroy");
+       |                                                  ^
+    346|     expect(t.container.calls.filter((c) => c.name === "start")).toEqua…
+    347|     expect(t.server.calls.map((c) => c.name)).toContain("stop");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/23]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  23 failed | 1 passed (24)
+   Start at  20:38:34
+   Duration  142ms (tests 48%, transform 35%, import 13%, worker 4%)
+

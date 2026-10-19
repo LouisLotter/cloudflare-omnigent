@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake claude for spike S6; see ../fake_cli.py.
+exec python3 -I "$(dirname "$(readlink -f "$0")")/../fake_cli.py" claude "$@"

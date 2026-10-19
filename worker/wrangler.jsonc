@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Deployed names come from scripts/deploy.ts, which enforces the cfo-stg- prefix for staging.
+  "name": "cloudflare-omnigent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Closed by default: only explicitly routed hostnames, protected by Access, reach the Worker.
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "CONTROL", "class_name": "ControlDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlDO"] }],
+  "observability": { "enabled": true }
+}

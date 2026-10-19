@@ -1,0 +1,37 @@
+{
+ "label": "A fresh",
+ "at": "2026-10-18T19:06:49.447+00:00",
+ "home": "~",
+ "files": [
+  {
+   "path": ".claude/.credentials.json",
+   "exists": false
+  },
+  {
+   "path": ".claude/.device-keys.json",
+   "exists": false
+  },
+  {
+   "path": ".codex/auth.json",
+   "exists": false
+  },
+  {
+   "path": ".omnigent/auth_tokens.json",
+   "exists": false
+  },
+  {
+   "path": ".claude.json",
+   "exists": false
+  },
+  {
+   "path": ".claude/.device-keys.json",
+   "exists": false
+  },
+  {
+   "path": ".codex/.credentials.json",
+   "exists": false
+  }
+ ],
+ "inventory": [],
+ "inventory_truncated": false
+}

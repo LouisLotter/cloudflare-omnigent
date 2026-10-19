@@ -1,0 +1,47 @@
+### step 19: restore --sizes 10 100 1000 --wan 40 50000 (exit 1, 198.8s)
+{"size_mb": 10, "replica_bytes": 7088419, "replica_layout": {"0000": {"files": 8, "bytes": 7079763}, "0009": {"files": 1, "bytes": 8656}}}
+{"plain": 0.117, "replace": {"health_s": 4.053, "litestream_restore": {"events": ["attempt", "done"], "restore_s": 0.133}}, "wan": 1.574, "marker": true, "filler": true}
+{"size_mb": 100, "replica_bytes": 71367807, "replica_layout": {"0000": {"files": 12, "bytes": 71351597}, "0001": {"files": 1, "bytes": 8105}, "0009": {"files": 1, "bytes": 8105}}}
+{"plain": 0.686, "replace": {"health_s": 4.803, "litestream_restore": {"events": ["attempt", "done"], "restore_s": 0.745}}, "wan": 3.351, "marker": true, "filler": true}
+
+[stderr tail]
+Traceback (most recent call last):
+  File "<repo>/spikes/s4/scripts/s4.py", line 906, in <module>
+    args.fn(args)
+    ^^^^^^
+  File "<repo>/spikes/s4/scripts/s4.py", line 902, in main
+    p.add_argument("--repeat", type=int, default=3)
+    ^^^^^^^^^^^^^
+  File "<repo>/spikes/s4/scripts/s4.py", line 665, in restore
+    st.latency(int(lat), rate_kbps=int(rate))
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/spikes/s4/scripts/s4lib.py", line 199, in latency
+    "attributes": {"latency": latency_ms // 2, "jitter": jitter_ms}}).raise_for_status()
+                                                                      ~~~~~~~~~~~~~~~~^^
+  File "~/.cache/uv/archive-v0/Jtvskbc9T0eYXfyb/lib/python3.13/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://127.0.0.1:18474/proxies/r2/toxics'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+
+
+### step 20: window (exit 0, 162.9s)
+{"delay_s": 0.0, "kill_returned_after_ack_ms": 1637.0, "ack": 200, "survived": false}
+{"delay_s": 0.25, "kill_returned_after_ack_ms": 1523.6, "ack": 200, "survived": false}
+{"delay_s": 0.5, "kill_returned_after_ack_ms": 1705.8, "ack": 200, "survived": false}
+{"delay_s": 1.0, "kill_returned_after_ack_ms": 4417.6, "ack": 200, "survived": true}
+{"delay_s": 1.5, "kill_returned_after_ack_ms": 1818.1, "ack": 200, "survived": true}
+{"delay_s": 2.5, "kill_returned_after_ack_ms": 2765.5, "ack": 200, "survived": true}
+{"delay_s": 0.0, "kill_returned_after_ack_ms": 252.7, "ack": 200, "survived": false}
+{"delay_s": 0.25, "kill_returned_after_ack_ms": 513.3, "ack": 200, "survived": false}
+{"delay_s": 0.5, "kill_returned_after_ack_ms": 748.8, "ack": 200, "survived": false}
+{"delay_s": 1.0, "kill_returned_after_ack_ms": 2061.5, "ack": 200, "survived": false}
+{"delay_s": 1.5, "kill_returned_after_ack_ms": 2734.1, "ack": 200, "survived": true}
+{"delay_s": 2.5, "kill_returned_after_ack_ms": 2812.4, "ack": 200, "survived": true}
+{"delay_s": 0.0, "kill_returned_after_ack_ms": 1596.3, "ack": 200, "survived": false}
+{"delay_s": 0.25, "kill_returned_after_ack_ms": 530.1, "ack": 200, "survived": false}
+{"delay_s": 0.5, "kill_returned_after_ack_ms": 969.4, "ack": 200, "survived": false}
+{"delay_s": 1.0, "kill_returned_after_ack_ms": 1311.9, "ack": 200, "survived": true}
+{"delay_s": 1.5, "kill_returned_after_ack_ms": 1796.8, "ack": 200, "survived": true}
+{"delay_s": 2.5, "kill_returned_after_ack_ms": 2816.8, "ack": 200, "survived": true}
+{"0.0": "0/3", "0.25": "0/3", "0.5": "0/3", "1.0": "2/3", "1.5": "3/3", "2.5": "3/3"}
+saved <repo>/spikes/s4/results/window-20261018T161336Z.json

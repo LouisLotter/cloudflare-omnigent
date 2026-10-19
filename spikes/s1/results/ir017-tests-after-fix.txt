@@ -1,0 +1,28 @@
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a foreign Origin with 403, and the token stays unused 15ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses Origin: null with 403 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a missing Origin with 403 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a simple cross-site form post with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > treats a cross-site top-level GET as a confirmation page only 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin post without a token, or with a wrong one 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > ignores HEAD 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a foreign Origin with 403, and the token stays unused 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses Origin: null with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a missing Origin with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a simple cross-site form post with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > treats a cross-site top-level GET as a confirmation page only 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin post without a token, or with a wrong one 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > ignores HEAD 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > serves no read route that wakes the experiment's Durable Objects 0ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Start arms the campaign once, for a bounded time, and the token is single-use 2ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Start works without Sec-Fetch-Site, from an older browser 1ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Stop disarms the campaign 0ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > an expired token is refused with zero effect 1ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > a Start token does not work for Stop 0ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop 1ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop 1ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > kickoff needs an arming time and caps it at 12 hours 1ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > disarm stops a running campaign at the next alarm 0ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases 1ms
+      Tests  27 passed (27)

@@ -1,0 +1,24 @@
+# Litestream 0.5.17 configuration for the S4 spike server.
+# Credentials come from LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY,
+# generated at run time. The endpoint is Toxiproxy in front of MinIO, so the
+# spike can block or slow the "R2" link.
+socket:
+  enabled: true
+  path: /run/litestream/litestream.sock
+  permissions: 0600
+
+logging:
+  level: ${S4_LITESTREAM_LOG_LEVEL}
+
+shutdown-sync-timeout: ${S4_SHUTDOWN_SYNC_TIMEOUT}
+
+dbs:
+  - path: /data/db/omnigent.db
+    replica:
+      type: s3
+      bucket: ${S4_BUCKET}
+      path: ${S4_REPLICA_PATH}
+      endpoint: ${S4_S3_ENDPOINT}
+      region: us-east-1
+      force-path-style: true
+      sync-interval: ${S4_SYNC_INTERVAL}

@@ -1,0 +1,27 @@
+campaign armed until 2026-10-18T19:12:12.318Z
+server start: {"kind":"start","state":"done","startedAt":1792348932469,"result":{"readyMs":8415},"finishedAt":1792348940917}
+before-replacement before variants: server settings managed=true, override files=[]
+before-replacement browser variants: 80/80 pass
+before-replacement after browser variants: server settings managed=true, override files=[]
+before-replacement computer variants: {"label":"before-replacement","state":"failed","startedAt":1792348945303,"error":"the computer did not report results in time","finishedAt":1792348969123}
+before-replacement after computer variants: server settings managed=true, override files=[]
+before-replacement interface: {"title":true,"modeBanner":true,"publicNote":true,"ceilingNote":true,"radios":7,"radiosDisabled":7,"switches":1,"switchesDisabled":1,"selects":1,"selectsDisabled":1,"fieldsets":2,"fieldsetsDisabled":2}
+during replacement: 10/10 PUTs refused
+replacement: {"kind":"replace","state":"done","startedAt":1792348972117,"result":{"destroyMs":1969,"readyMs":5197},"finishedAt":1792348979309}
+after-replacement before variants: server settings managed=true, override files=[]
+after-replacement browser variants: 80/80 pass
+after-replacement after browser variants: server settings managed=true, override files=[]
+after-replacement computer variants: {"label":"after-replacement","state":"failed","startedAt":1792348989148,"error":"the computer did not report results in time","finishedAt":1792349009529}
+after-replacement after computer variants: server settings managed=true, override files=[]
+after-replacement interface: {"title":true,"modeBanner":true,"publicNote":true,"ceilingNote":true,"radios":7,"radiosDisabled":7,"switches":1,"switchesDisabled":1,"selects":1,"selectsDisabled":1,"fieldsets":2,"fieldsetsDisabled":2}
+campaign disarmed; containers stopped
+finished
+
+--- log ---
+2026-10-18T18:42:12.395Z starting the server
+2026-10-18T18:42:21.621Z phase before-replacement
+2026-10-18T18:42:25.114Z computer run before-replacement
+2026-10-18T18:42:52.105Z replacing the server
+2026-10-18T18:43:07.237Z phase after-replacement
+2026-10-18T18:43:09.142Z computer run after-replacement
+

@@ -1,0 +1,1000 @@
+{
+ "meta": {
+  "date": "2026-10-18T19:32:26Z",
+  "spike_commit": "3febaced1b98d371575dd810797df63869acc7e5",
+  "computer_image": "sha256:33c67516ca81ece5bb85026ee2d74cfa7efe921c9fa4c355a036a89e64091de3",
+  "host_cpus": 16,
+  "docker": "29.7.2",
+  "kernel": "7.2.5-3-omarchy"
+ },
+ "script": "spikes/s3/bench/lease_tests.py",
+ "argv": [
+  "--runs",
+  "3"
+ ],
+ "data": {
+  "summary": {
+   "release": {
+    "budget_s": 20,
+    "outcomes": [
+     "snapshot_ready"
+    ],
+    "guard_outcomes": [
+     "released"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 2.097,
+     "worst": 3.996,
+     "best": 1.646
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "worker_killed": {
+    "budget_s": 20,
+    "outcomes": [
+     "worker_died"
+    ],
+    "guard_outcomes": [
+     "controller_lost"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 0.01,
+     "worst": 0.011,
+     "best": 0.01
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "worker_wedged": {
+    "budget_s": 10,
+    "outcomes": [
+     "worker_died"
+    ],
+    "guard_outcomes": [
+     "expired"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 10.011,
+     "worst": 10.012,
+     "best": 10.011
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "copy_overrun": {
+    "budget_s": 5,
+    "outcomes": [
+     "discarded_lease_expired"
+    ],
+    "guard_outcomes": [
+     "expired"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 5.009,
+     "worst": 5.013,
+     "best": 5.007
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "copy_overrun_real": {
+    "budget_s": 0.5,
+    "outcomes": [
+     "discarded_lease_expired"
+    ],
+    "guard_outcomes": [
+     "expired"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 0.509,
+     "worst": 0.51,
+     "best": 0.502
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "expire_during_freeze": {
+    "budget_s": 0.002,
+    "outcomes": [
+     "discarded_lease_expired"
+    ],
+    "guard_outcomes": [
+     "expired"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 0.011,
+     "worst": 0.012,
+     "best": 0.011
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   },
+   "client_gone": {
+    "budget_s": 20,
+    "outcomes": [
+     "snapshot_ready"
+    ],
+    "guard_outcomes": [
+     "released"
+    ],
+    "writer_max_gap_s": {
+     "n": 3,
+     "median": 2.447,
+     "worst": 2.765,
+     "best": 1.472
+    },
+    "never_left_stopped": true,
+    "host_always_online": true,
+    "turns_ok": true,
+    "snapshot_area_clean": true
+   }
+  },
+  "rows": [
+   {
+    "case": "release",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 0.6826,
+      "mono": 28860.334404262,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.001
+     },
+     {
+      "t": 0.6828,
+      "mono": 28860.334531414,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.6826,
+    "writer_max_gap_s": 2.097,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "777bfe295e00"
+    ],
+    "wall_s": 9.03
+   },
+   {
+    "case": "worker_killed",
+    "budget_s": 20,
+    "outcome": "worker_died",
+    "guard_outcome": "controller_lost",
+    "guard_resume": [
+     {
+      "t": 0.0039,
+      "mono": 28862.410663688,
+      "event": "resumed",
+      "reason": "controller_lost",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 0.011,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.3,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.37
+   },
+   {
+    "case": "worker_wedged",
+    "budget_s": 10,
+    "outcome": "worker_died",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 10.0095,
+      "mono": 28873.69647589,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0004
+     },
+     {
+      "t": 69.6453,
+      "mono": 28933.332239805,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 10.011,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 70.05
+   },
+   {
+    "case": "copy_overrun",
+    "budget_s": 5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 5.0045,
+      "mono": 28939.583888404,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 30.0235,
+      "mono": 28964.602978787,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 30.0233,
+    "writer_max_gap_s": 5.009,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 30.36
+   },
+   {
+    "case": "copy_overrun_real",
+    "budget_s": 0.5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.5011,
+      "mono": 28966.338696005,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 0.5015,
+      "mono": 28966.339115375,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.501,
+    "writer_max_gap_s": 0.502,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.87
+   },
+   {
+    "case": "expire_during_freeze",
+    "budget_s": 0.002,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.0024,
+      "mono": 28967.56919835,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     },
+     {
+      "t": 0.0225,
+      "mono": 28967.589302922,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.0224,
+    "writer_max_gap_s": 0.012,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.81,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.37
+   },
+   {
+    "case": "client_gone",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 0.6802,
+      "mono": 28976.70062477,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0004
+     },
+     {
+      "t": 0.6803,
+      "mono": 28976.70069786,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.6802,
+    "writer_max_gap_s": 2.765,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "a5483a10e380"
+    ],
+    "wall_s": 8.57
+   },
+   {
+    "case": "release",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 3.1361,
+      "mono": 28993.006332215,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0004
+     },
+     {
+      "t": 3.1361,
+      "mono": 28993.006369146,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 3.136,
+    "writer_max_gap_s": 3.996,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "e13ee352e1da"
+    ],
+    "wall_s": 14.64
+   },
+   {
+    "case": "worker_killed",
+    "budget_s": 20,
+    "outcome": "worker_died",
+    "guard_outcome": "controller_lost",
+    "guard_resume": [
+     {
+      "t": 0.0039,
+      "mono": 28994.946411355,
+      "event": "resumed",
+      "reason": "controller_lost",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 0.01,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.32
+   },
+   {
+    "case": "worker_wedged",
+    "budget_s": 10,
+    "outcome": "worker_died",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 10.0106,
+      "mono": 29006.162568683,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 69.6814,
+      "mono": 29065.833406151,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 10.012,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 70.05
+   },
+   {
+    "case": "copy_overrun",
+    "budget_s": 5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 5.0052,
+      "mono": 29072.088479325,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0004
+     },
+     {
+      "t": 30.0288,
+      "mono": 29097.112132671,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 30.0286,
+    "writer_max_gap_s": 5.013,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 30.36
+   },
+   {
+    "case": "copy_overrun_real",
+    "budget_s": 0.5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.5033,
+      "mono": 29098.854944699,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 0.5038,
+      "mono": 29098.855443321,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.5032,
+    "writer_max_gap_s": 0.51,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.87
+   },
+   {
+    "case": "expire_during_freeze",
+    "budget_s": 0.002,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.0024,
+      "mono": 29100.103413421,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     },
+     {
+      "t": 0.0245,
+      "mono": 29100.125461949,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.0243,
+    "writer_max_gap_s": 0.011,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.37
+   },
+   {
+    "case": "client_gone",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 0.7762,
+      "mono": 29107.506875568,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0004
+     },
+     {
+      "t": 0.7763,
+      "mono": 29107.506927076,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.7762,
+    "writer_max_gap_s": 1.472,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "c56e71c5ba78"
+    ],
+    "wall_s": 7.06
+   },
+   {
+    "case": "release",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 0.6588,
+      "mono": 29114.222884946,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 0.6588,
+      "mono": 29114.22292906,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.6587,
+    "writer_max_gap_s": 1.646,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "696287059c81"
+    ],
+    "wall_s": 5.4
+   },
+   {
+    "case": "worker_killed",
+    "budget_s": 20,
+    "outcome": "worker_died",
+    "guard_outcome": "controller_lost",
+    "guard_resume": [
+     {
+      "t": 0.0034,
+      "mono": 29116.233161675,
+      "event": "resumed",
+      "reason": "controller_lost",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 0.01,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.32
+   },
+   {
+    "case": "worker_wedged",
+    "budget_s": 10,
+    "outcome": "worker_died",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 10.0063,
+      "mono": 29127.440432347,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 69.6922,
+      "mono": 29187.126372117,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": null,
+    "writer_max_gap_s": 10.011,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.29,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 70.05
+   },
+   {
+    "case": "copy_overrun",
+    "budget_s": 5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 5.0038,
+      "mono": 29193.385527797,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 30.0242,
+      "mono": 29218.405899315,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 30.024,
+    "writer_max_gap_s": 5.007,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.3,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 30.36
+   },
+   {
+    "case": "copy_overrun_real",
+    "budget_s": 0.5,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.5011,
+      "mono": 29220.216184499,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 0.5016,
+      "mono": 29220.2166884,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.501,
+    "writer_max_gap_s": 0.509,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.3,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.92
+   },
+   {
+    "case": "expire_during_freeze",
+    "budget_s": 0.002,
+    "outcome": "discarded_lease_expired",
+    "guard_outcome": "expired",
+    "guard_resume": [
+     {
+      "t": 0.0025,
+      "mono": 29221.523657644,
+      "event": "resumed",
+      "reason": "lease_expired",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0003
+     },
+     {
+      "t": 0.0026,
+      "mono": 29221.523696378,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.0023,
+    "writer_max_gap_s": 0.011,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.45,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [],
+    "wall_s": 0.42
+   },
+   {
+    "case": "client_gone",
+    "budget_s": 20,
+    "outcome": "snapshot_ready",
+    "guard_outcome": "released",
+    "guard_resume": [
+     {
+      "t": 0.6399,
+      "mono": 29232.64272884,
+      "event": "resumed",
+      "reason": "released",
+      "resumed": 18,
+      "cgroups": 0,
+      "thaw_s": 0.0005
+     },
+     {
+      "t": 0.6399,
+      "mono": 29232.642771251,
+      "event": "resumed",
+      "reason": "final_sweep",
+      "resumed": 0,
+      "cgroups": 0,
+      "thaw_s": 0.0
+     }
+    ],
+    "pause_s_reported": 0.6398,
+    "writer_max_gap_s": 2.447,
+    "stopped_after": [],
+    "host_states": [
+     "online"
+    ],
+    "turn_after": {
+     "ok": true,
+     "s": 0.3,
+     "status": "idle",
+     "reply": "ok from mock",
+     "send_attempts": 1
+    },
+    "snap_left": [
+     "e52c7b4069bd"
+    ],
+    "wall_s": 10.57
+   }
+  ]
+ }
+}

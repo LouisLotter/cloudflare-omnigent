@@ -1,0 +1,11 @@
+FAIL startup with an earlier session's store configuration refuses
+FAIL and writes no marker
+PASS and leaves that configuration as it was
+FAIL --cleanup keeps it as unknown and says to revoke
+PASS a session that cannot sign out stops and keeps its computer (cfo-s6-owner-pc-c)
+PASS that computer is now stopped, not removed
+  cleanup: {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
+FAIL --cleanup started the stopped computer again
+FAIL and signed out in it
+PASS then verified the sign-out in a fresh computer and removed everything
+status: 1

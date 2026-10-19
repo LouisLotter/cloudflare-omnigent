@@ -1,0 +1,422 @@
+{
+  "after": "kill",
+  "after_restore": {
+    "counts": {
+      "conversations": 0,
+      "device_grants": 3,
+      "hosts": 0,
+      "scheduled_tasks": 1,
+      "users": 2
+    },
+    "login_new_password": 401,
+    "login_old_password": 200,
+    "revoked_grant_refresh_status": 200,
+    "schedule_create_present": false,
+    "schedule_edit_name": "s4-blocked-edit"
+  },
+  "applied_locally": {
+    "grant_revoke": true,
+    "login_refresh_grant_rows_delta": 1,
+    "old_access_token_after_password_change": 401,
+    "password_change": true,
+    "schedule_create": true,
+    "schedule_edit": true
+  },
+  "barrier_events": [
+    {
+      "event": "hooks_installed",
+      "mode": "response",
+      "t": 1792337512.5023,
+      "tables": [
+        "account_tokens",
+        "device_grants",
+        "hosts",
+        "scheduled_tasks",
+        "users"
+      ],
+      "timeout_s": 5.0
+    },
+    {
+      "event": "security_commit_outside_request",
+      "t": 1792337513.4342,
+      "tables": [
+        "users"
+      ]
+    },
+    {
+      "event": "security_commit_outside_request",
+      "t": 1792337515.031,
+      "tables": [
+        "users"
+      ]
+    },
+    {
+      "event": "app_installed",
+      "mode": "response",
+      "t": 1792337515.3042
+    },
+    {
+      "commits": 1,
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": true,
+      "path": "/auth/login",
+      "polls": 8,
+      "replicated_txid": 5,
+      "status": 200,
+      "t": 1792337516.754,
+      "tables": [
+        "device_grants"
+      ],
+      "target_txid": 5,
+      "wait_ms": 754.0,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": true,
+      "path": "/v1/scheduled-tasks",
+      "polls": 9,
+      "replicated_txid": 6,
+      "status": 200,
+      "t": 1792337517.7526,
+      "tables": [
+        "scheduled_tasks"
+      ],
+      "target_txid": 6,
+      "wait_ms": 817.6,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": true,
+      "path": "/auth/login",
+      "polls": 10,
+      "replicated_txid": 7,
+      "status": 200,
+      "t": 1792337518.6978,
+      "tables": [
+        "device_grants"
+      ],
+      "target_txid": 7,
+      "wait_ms": 918.5,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": true,
+      "path": "/auth/login",
+      "polls": 11,
+      "replicated_txid": 8,
+      "status": 200,
+      "t": 1792337519.7472,
+      "tables": [
+        "device_grants"
+      ],
+      "target_txid": 8,
+      "wait_ms": 1020.3,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "error": "timeout",
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": false,
+      "path": "/auth/login",
+      "polls": 51,
+      "replicated_txid": 8,
+      "status": 200,
+      "t": 1792337526.9196,
+      "tables": [
+        "device_grants"
+      ],
+      "target_txid": 9,
+      "wait_ms": 5000.5,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "error": "timeout",
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": false,
+      "path": "/v1/scheduled-tasks",
+      "polls": 51,
+      "replicated_txid": 8,
+      "status": 200,
+      "t": 1792337532.9572,
+      "tables": [
+        "scheduled_tasks"
+      ],
+      "target_txid": 11,
+      "wait_ms": 5001.7,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "error": "timeout",
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "PATCH",
+      "mode": "response",
+      "ok": false,
+      "path": "/v1/scheduled-tasks/44b4f7809dd546cabf25c48ec97426ad",
+      "polls": 51,
+      "replicated_txid": 8,
+      "status": 200,
+      "t": 1792337538.4713,
+      "tables": [
+        "scheduled_tasks"
+      ],
+      "target_txid": 12,
+      "wait_ms": 5000.9,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "error": "timeout",
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": false,
+      "path": "/oauth/revoke",
+      "polls": 50,
+      "replicated_txid": 8,
+      "status": 200,
+      "t": 1792337543.9772,
+      "tables": [
+        "device_grants"
+      ],
+      "target_txid": 13,
+      "wait_ms": 5001.0,
+      "why": "request"
+    },
+    {
+      "commits": 1,
+      "error": "timeout",
+      "event": "barrier",
+      "first_status": "synced_local",
+      "method": "POST",
+      "mode": "response",
+      "ok": false,
+      "path": "/auth/users/me/password",
+      "polls": 51,
+      "replicated_txid": 8,
+      "status": 204,
+      "t": 1792337550.0375,
+      "tables": [
+        "scheduled_tasks",
+        "users"
+      ],
+      "target_txid": 14,
+      "wait_ms": 5001.1,
+      "why": "request"
+    }
+  ],
+  "barrier_timeout_s": 5.0,
+  "block": "blackhole",
+  "block_phase_s": 29.14,
+  "blocked_for_s": 29.8,
+  "counts_before": {
+    "conversations": 0,
+    "device_grants": 3,
+    "hosts": 0,
+    "scheduled_tasks": 1,
+    "users": 2
+  },
+  "counts_during_block": {
+    "conversations": 0,
+    "device_grants": 4,
+    "hosts": 0,
+    "scheduled_tasks": 2,
+    "users": 2
+  },
+  "first_boot": {
+    "health_s": 4.542,
+    "healthy": true,
+    "up_cmd_s": 0.276
+  },
+  "health_before_block": {
+    "errors": 0,
+    "max_ms": 1.8,
+    "n": 10,
+    "p50_ms": 1.6
+  },
+  "health_overall": {
+    "errors": 43,
+    "max_ms": 5.3,
+    "n": 296,
+    "p50_ms": 1.4
+  },
+  "litestream_errors_sample": [],
+  "mode": "response",
+  "pos_after_block": {
+    "caught_up": true,
+    "elapsed_s": 0.054,
+    "path": "/data/db/omnigent.db",
+    "replicated_txid": 8,
+    "status": "no_change",
+    "target_txid": 8,
+    "txid": 8
+  },
+  "pos_during_block": {
+    "caught_up": false,
+    "elapsed_s": 0.056,
+    "path": "/data/db/omnigent.db",
+    "replicated_txid": 8,
+    "status": "no_change",
+    "target_txid": 15,
+    "txid": 15
+  },
+  "replica_path": "blocked-response-blackhole-kill-20261018T153149Z",
+  "restart": {
+    "health_s": 3.923,
+    "restore": {
+      "events": [
+        "attempt",
+        "done"
+      ],
+      "restore_s": 0.04
+    }
+  },
+  "routes": {
+    "grant_revoke": {
+      "body_keys": [
+        "applied",
+        "code",
+        "error"
+      ],
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "health_during": {
+        "errors": 0,
+        "max_ms": 2.4,
+        "n": 49,
+        "p50_ms": 1.3
+      },
+      "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+      "ms": 5006.1,
+      "status": 424
+    },
+    "login_browser_no_refresh": {
+      "body_keys": [
+        "expires_in",
+        "token",
+        "user"
+      ],
+      "code": null,
+      "durability": null,
+      "health_during": {
+        "errors": 0,
+        "n": 0
+      },
+      "ms": 26.2,
+      "status": 200
+    },
+    "login_refresh": {
+      "body_keys": [
+        "applied",
+        "code",
+        "error"
+      ],
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "health_during": {
+        "errors": 0,
+        "max_ms": 5.3,
+        "n": 50,
+        "p50_ms": 1.3
+      },
+      "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+      "ms": 5028.3,
+      "refresh_token_returned": false,
+      "status": 424
+    },
+    "password_change": {
+      "body_keys": [
+        "applied",
+        "code",
+        "error"
+      ],
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "health_during": {
+        "errors": 0,
+        "max_ms": 1.9,
+        "n": 50,
+        "p50_ms": 1.4
+      },
+      "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+      "ms": 5049.6,
+      "status": 424
+    },
+    "read_only_list": {
+      "body_keys": [
+        "scheduled_tasks"
+      ],
+      "code": null,
+      "durability": null,
+      "health_during": {
+        "errors": 0,
+        "n": 0
+      },
+      "ms": 6.0,
+      "status": 200
+    },
+    "schedule_create": {
+      "body_keys": [
+        "applied",
+        "error"
+      ],
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "health_during": {
+        "errors": 0,
+        "max_ms": 2.8,
+        "n": 49,
+        "p50_ms": 1.5
+      },
+      "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+      "ms": 5006.3,
+      "status": 424
+    },
+    "schedule_edit": {
+      "body_keys": [
+        "applied",
+        "error"
+      ],
+      "code": "durability_unconfirmed",
+      "durability": "unconfirmed",
+      "health_during": {
+        "errors": 0,
+        "max_ms": 1.8,
+        "n": 50,
+        "p50_ms": 1.4
+      },
+      "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it.",
+      "ms": 5008.9,
+      "status": 424
+    }
+  },
+  "scenario": "blocked"
+}

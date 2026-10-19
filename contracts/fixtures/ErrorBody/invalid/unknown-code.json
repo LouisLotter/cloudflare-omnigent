@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "teapot",
+    "message": "Unknown codes are rejected.",
+    "retryable": false
+  }
+}

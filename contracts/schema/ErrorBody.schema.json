@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "bad_request",
+            "unauthorized",
+            "forbidden",
+            "not_found",
+            "conflict",
+            "stale_generation",
+            "unsupported_version",
+            "unavailable",
+            "internal"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "ErrorBody",
+  "type": "object"
+}

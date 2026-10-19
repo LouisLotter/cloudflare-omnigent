@@ -1,0 +1,19 @@
+# spike S3 tests, label after-ir011
+# 2026-10-18T18:54:02Z
+# image sha256:07a44a09e01406d365644f5ed90776e69b30e1c487107c5a050ab65e3c944968
+# S6 policy sha256 a4bd281c5924166c0ad06aa55bccfb1aac04e4ad89cf2b0dfb98879e8a458f01
+# exit 0
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.7.0
+rootdir: /opt/s3/tests
+collected 32 items / 28 deselected / 4 selected
+
+../opt/s3/tests/test_ir011_content.py ....                               [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../opt/s3/tests/test_ir011_content.py::test_two_phase_final_pass_is_content_correct
+PASSED ../opt/s3/tests/test_ir011_content.py::test_incremental_reused_snapshot_is_content_correct
+PASSED ../opt/s3/tests/test_ir011_content.py::test_full_copy_equals_source
+PASSED ../opt/s3/tests/test_ir011_content.py::test_lease_expiry_during_final_pass_discards
+======================= 4 passed, 28 deselected in 2.38s =======================

@@ -1,0 +1,247 @@
+{
+ "meta": {
+  "date": "2026-10-18T19:43:07Z",
+  "spike_commit": "3febaced1b98d371575dd810797df63869acc7e5",
+  "computer_image": "sha256:3e329e619c86ab02dba28e5755c19e172d5ebd137ada6c335d2bd297c250429a",
+  "host_cpus": 16,
+  "docker": "29.7.2",
+  "kernel": "7.2.5-3-omarchy"
+ },
+ "script": "spikes/s3/bench/restore_sessions.py",
+ "argv": [
+  "--runs",
+  "3"
+ ],
+ "data": {
+  "summary": {
+   "runs": 3,
+   "claude_reopened": 3,
+   "codex_reopened": 3,
+   "controls_failed_to_resume": 3,
+   "restore_s": [
+    0.147,
+    0.146,
+    0.147
+   ],
+   "archive_canary_scan_exits": [
+    0,
+    0,
+    0
+   ],
+   "control_canary_scan_exits": [
+    1,
+    1,
+    1
+   ]
+  },
+  "rows": [
+   {
+    "run": 1,
+    "restore": {
+     "outcome": "restored",
+     "capture_id": "714732e7b9d2",
+     "size": 79050,
+     "removed_credential_members": [],
+     "restore_s": 0.147
+    },
+    "claude": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "t_ms\":71,\"type\":\"result\",\"duration_ms\":75,\"uuid\":\"1c5ac1b8-62da-40fd-a174-8defc091af60\",\"ttft_stream_ms\":70,\"time_to_request_ms\":34,\"first_content_frame_ms\":71,\"queued_turn_count\":0,\"result_index\":0}\n"
+    },
+    "codex": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "bblewrap in the meantime.\nwarning: Model metadata for `codex-s3-mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\ncodex\nMock LLM response\ntokens used\n30\n"
+    },
+    "credential_files_after_restore": [
+     "ls: cannot access '/home/agent/.claude/.credentials.json': No such file or directory",
+     "ls: cannot access '/home/agent/.codex/auth.json': No such file or directory",
+     "done"
+    ],
+    "control_without_restore": {
+     "claude_rc": 1,
+     "codex_rc": 1,
+     "claude_out": "No conversation found with session ID: 26319be3-e117-455d-923a-414b88a8a72d\n",
+     "codex_out": "Error: thread/resume: thread/resume failed: no rollout found for thread id 01a15089-c242-7341-b7e9-fef5b064bfaa (code -32600)\n"
+    },
+    "checkpoint_files": [
+     ".claude/.claude.json",
+     ".claude/backups/.claude.json.backup.1792352567536",
+     ".claude/projects/-home-agent-work-cli-project/26319be3-e117-455d-923a-414b88a8a72d.jsonl",
+     ".codex/.sandbox_migration",
+     ".codex/.tmp/git-yhfV8y/HEAD",
+     ".codex/.tmp/plugins.sync.lock",
+     ".codex/config.toml",
+     ".codex/goals_1.sqlite",
+     ".codex/goals_1.sqlite-shm",
+     ".codex/goals_1.sqlite-wal",
+     ".codex/installation_id",
+     ".codex/logs_2.sqlite",
+     ".codex/logs_2.sqlite-shm",
+     ".codex/logs_2.sqlite-wal",
+     ".codex/memories_1.sqlite",
+     ".codex/memories_1.sqlite-shm",
+     ".codex/memories_1.sqlite-wal",
+     ".codex/queue_1.sqlite",
+     ".codex/queue_1.sqlite-shm",
+     ".codex/queue_1.sqlite-wal",
+     ".codex/sessions/2026/10/18/rollout-2026-10-18T19-42-47-01a15089-c242-7341-b7e9-fef5b064bfaa.jsonl",
+     ".codex/state_5.sqlite",
+     ".codex/state_5.sqlite-shm",
+     ".codex/state_5.sqlite-wal",
+     ".codex/thread-writer-locks/.coordination.lock",
+     ".codex/thread_history_1.sqlite",
+     ".codex/thread_history_1.sqlite-shm",
+     ".codex/thread_history_1.sqlite-wal"
+    ],
+    "canary_scan_of_uploaded_checkpoint": {
+     "archive_bytes": 79050,
+     "archive_scan_exit": 0,
+     "archive_scan_report": "canary-scan: 0 canary occurrence(s) in 0 path(s); scanned 1 file(s), decoded 1 compressed layer(s), skipped 0 symbolic link(s); 0 problem(s); 1 exact value(s) configured\n",
+     "control_scan_exit": 1
+    }
+   },
+   {
+    "run": 2,
+    "restore": {
+     "outcome": "restored",
+     "capture_id": "1fba10f3cc94",
+     "size": 79139,
+     "removed_credential_members": [],
+     "restore_s": 0.146
+    },
+    "claude": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "t_ms\":72,\"type\":\"result\",\"duration_ms\":75,\"uuid\":\"b820c81f-6997-4f40-ab5c-061ab201832e\",\"ttft_stream_ms\":71,\"time_to_request_ms\":35,\"first_content_frame_ms\":71,\"queued_turn_count\":0,\"result_index\":0}\n"
+    },
+    "codex": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "bblewrap in the meantime.\nwarning: Model metadata for `codex-s3-mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\ncodex\nMock LLM response\ntokens used\n30\n"
+    },
+    "credential_files_after_restore": [
+     "ls: cannot access '/home/agent/.claude/.credentials.json': No such file or directory",
+     "ls: cannot access '/home/agent/.codex/auth.json': No such file or directory",
+     "done"
+    ],
+    "control_without_restore": {
+     "claude_rc": 1,
+     "codex_rc": 1,
+     "claude_out": "No conversation found with session ID: 4465a247-da24-4430-a0ac-8dc0987fcf5f\n",
+     "codex_out": "Error: thread/resume: thread/resume failed: no rollout found for thread id 01a15089-dbe4-78b2-99ab-4899dc4d2796 (code -32600)\n"
+    },
+    "checkpoint_files": [
+     ".claude/.claude.json",
+     ".claude/backups/.claude.json.backup.1792352573714",
+     ".claude/projects/-home-agent-work-cli-project/4465a247-da24-4430-a0ac-8dc0987fcf5f.jsonl",
+     ".codex/.sandbox_migration",
+     ".codex/.tmp/git-k0XpO2/HEAD",
+     ".codex/.tmp/plugins.sync.lock",
+     ".codex/config.toml",
+     ".codex/goals_1.sqlite",
+     ".codex/goals_1.sqlite-shm",
+     ".codex/goals_1.sqlite-wal",
+     ".codex/installation_id",
+     ".codex/logs_2.sqlite",
+     ".codex/logs_2.sqlite-shm",
+     ".codex/logs_2.sqlite-wal",
+     ".codex/memories_1.sqlite",
+     ".codex/memories_1.sqlite-shm",
+     ".codex/memories_1.sqlite-wal",
+     ".codex/queue_1.sqlite",
+     ".codex/queue_1.sqlite-shm",
+     ".codex/queue_1.sqlite-wal",
+     ".codex/sessions/2026/10/18/rollout-2026-10-18T19-42-54-01a15089-dbe4-78b2-99ab-4899dc4d2796.jsonl",
+     ".codex/state_5.sqlite",
+     ".codex/state_5.sqlite-shm",
+     ".codex/state_5.sqlite-wal",
+     ".codex/thread-writer-locks/.coordination.lock",
+     ".codex/thread_history_1.sqlite",
+     ".codex/thread_history_1.sqlite-shm",
+     ".codex/thread_history_1.sqlite-wal"
+    ],
+    "canary_scan_of_uploaded_checkpoint": {
+     "archive_bytes": 79139,
+     "archive_scan_exit": 0,
+     "archive_scan_report": "canary-scan: 0 canary occurrence(s) in 0 path(s); scanned 1 file(s), decoded 1 compressed layer(s), skipped 0 symbolic link(s); 0 problem(s); 1 exact value(s) configured\n",
+     "control_scan_exit": 1
+    }
+   },
+   {
+    "run": 3,
+    "restore": {
+     "outcome": "restored",
+     "capture_id": "d53effa61d5c",
+     "size": 79081,
+     "removed_credential_members": [],
+     "restore_s": 0.147
+    },
+    "claude": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "t_ms\":72,\"type\":\"result\",\"duration_ms\":76,\"uuid\":\"2476cd98-1b5e-4883-9735-ba1e34e9275a\",\"ttft_stream_ms\":72,\"time_to_request_ms\":33,\"first_content_frame_ms\":72,\"queued_turn_count\":0,\"result_index\":0}\n"
+    },
+    "codex": {
+     "rc": 0,
+     "history_in_resumed_request": true,
+     "requests": 1,
+     "out": "bblewrap in the meantime.\nwarning: Model metadata for `codex-s3-mock` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\ncodex\nMock LLM response\ntokens used\n30\n"
+    },
+    "credential_files_after_restore": [
+     "ls: cannot access '/home/agent/.claude/.credentials.json': No such file or directory",
+     "ls: cannot access '/home/agent/.codex/auth.json': No such file or directory",
+     "done"
+    ],
+    "control_without_restore": {
+     "claude_rc": 1,
+     "codex_rc": 1,
+     "claude_out": "No conversation found with session ID: dbf1b471-df83-4b8e-b754-c8a1a02ee15a\n",
+     "codex_out": "Error: thread/resume: thread/resume failed: no rollout found for thread id 01a15089-f727-7012-8545-43db18efee14 (code -32600)\n"
+    },
+    "checkpoint_files": [
+     ".claude/.claude.json",
+     ".claude/backups/.claude.json.backup.1792352580810",
+     ".claude/projects/-home-agent-work-cli-project/dbf1b471-df83-4b8e-b754-c8a1a02ee15a.jsonl",
+     ".codex/.sandbox_migration",
+     ".codex/.tmp/git-2ogax8/HEAD",
+     ".codex/.tmp/plugins.sync.lock",
+     ".codex/config.toml",
+     ".codex/goals_1.sqlite",
+     ".codex/goals_1.sqlite-shm",
+     ".codex/goals_1.sqlite-wal",
+     ".codex/installation_id",
+     ".codex/logs_2.sqlite",
+     ".codex/logs_2.sqlite-shm",
+     ".codex/logs_2.sqlite-wal",
+     ".codex/memories_1.sqlite",
+     ".codex/memories_1.sqlite-shm",
+     ".codex/memories_1.sqlite-wal",
+     ".codex/queue_1.sqlite",
+     ".codex/queue_1.sqlite-shm",
+     ".codex/queue_1.sqlite-wal",
+     ".codex/sessions/2026/10/18/rollout-2026-10-18T19-43-01-01a15089-f727-7012-8545-43db18efee14.jsonl",
+     ".codex/state_5.sqlite",
+     ".codex/state_5.sqlite-shm",
+     ".codex/state_5.sqlite-wal",
+     ".codex/thread-writer-locks/.coordination.lock",
+     ".codex/thread_history_1.sqlite",
+     ".codex/thread_history_1.sqlite-shm",
+     ".codex/thread_history_1.sqlite-wal"
+    ],
+    "canary_scan_of_uploaded_checkpoint": {
+     "archive_bytes": 79081,
+     "archive_scan_exit": 0,
+     "archive_scan_report": "canary-scan: 0 canary occurrence(s) in 0 path(s); scanned 1 file(s), decoded 1 compressed layer(s), skipped 0 symbolic link(s); 0 problem(s); 1 exact value(s) configured\n",
+     "control_scan_exit": 1
+    }
+   }
+  ]
+ }
+}

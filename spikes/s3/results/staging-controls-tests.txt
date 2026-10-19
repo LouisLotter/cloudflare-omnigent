@@ -1,0 +1,19 @@
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a foreign origin 14ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a null origin 0ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a missing origin 0ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with same-site but not same-origin 0ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with cross-site fetch metadata 0ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a missing token 1ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a wrong token 0ms
+ ✓ controls.test.js > refusals have zero effect > POST /arm with a short token 0ms
+ ✓ controls.test.js > refusals have zero effect > a simple cross-site form posting to /probe and /bench 0ms
+ ✓ controls.test.js > refusals have zero effect > a cross-site top-level GET of every control URL only shows the page 1ms
+ ✓ controls.test.js > refusals have zero effect > HEAD never acts 0ms
+ ✓ controls.test.js > refusals have zero effect > GET /jobs/<id> does not start a stopped container 0ms
+ ✓ controls.test.js > refusals have zero effect > a valid POST to /probe while disarmed 0ms
+ ✓ controls.test.js > refusals have zero effect > other methods 1ms
+ ✓ controls.test.js > valid same-origin controls > arm, probe, bench, then the campaign disarms itself 1ms
+ ✓ controls.test.js > valid same-origin controls > the token may also come in X-Intent 0ms
+ ✓ controls.test.js > valid same-origin controls > rejects bench parameters outside the allowed set 1ms
+ ✓ controls.test.js > valid same-origin controls > disarm stops the campaign 0ms
+ ✓ controls.test.js > sameToken > compares exactly 0ms

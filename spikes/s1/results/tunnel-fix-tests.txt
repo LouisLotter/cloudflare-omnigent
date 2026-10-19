@@ -1,0 +1,344 @@
+
+ RUN  v5.0.3 spikes/s1
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"computer-constructed","wt":1792402352958,"instance":"44dc04b6","version":"1","at":1792402352958,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"armed","seq":1,"wt":1792402352958,"instance":"44dc04b6","armedUntil":1792405952958,"version":"1"}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"command","seq":2,"wt":1792402352959,"instance":"44dc04b6","id":"t","phases":[{"kind":"backup-medium"}]}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"phase-start","seq":3,"wt":1792402352959,"instance":"44dc04b6","kind":"backup-medium"}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"wake","seq":4,"wt":1792402352960,"instance":"44dc04b6","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"backup","seq":5,"wt":1792402352961,"instance":"44dc04b6","size":"medium","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record
+{"s1":"phase-end","seq":6,"wt":1792402352961,"instance":"44dc04b6","kind":"backup-medium"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"computer-constructed","wt":1792402352962,"instance":"72c9b793","version":"1","at":1792402352962,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"armed","seq":1,"wt":1792402352962,"instance":"72c9b793","armedUntil":1792405952962,"version":"1"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"command","seq":2,"wt":1792402352962,"instance":"72c9b793","id":"t","phases":[{"kind":"backup-medium"},{"kind":"rwake-medium","arg":2}]}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"phase-start","seq":3,"wt":1792402352962,"instance":"72c9b793","kind":"backup-medium"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"wake","seq":4,"wt":1792402352963,"instance":"72c9b793","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"backup","seq":5,"wt":1792402352964,"instance":"72c9b793","size":"medium","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"phase-end","seq":6,"wt":1792402352964,"instance":"72c9b793","kind":"backup-medium"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"phase-start","seq":7,"wt":1792402352964,"instance":"72c9b793","kind":"rwake-medium","arg":2}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"wake-stop","seq":8,"wt":1792402352964,"instance":"72c9b793","index":0,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"wake","seq":9,"wt":1792402352964,"instance":"72c9b793","index":0,"label":"restore-medium","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r1","gen":2,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"wake-stop","seq":10,"wt":1792402352964,"instance":"72c9b793","index":1,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"wake","seq":11,"wt":1792402352964,"instance":"72c9b793","index":1,"label":"restore-medium","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r2","gen":3,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake
+{"s1":"phase-end","seq":12,"wt":1792402352964,"instance":"72c9b793","kind":"rwake-medium"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"computer-constructed","wt":1792402352965,"instance":"a937aabf","version":"1","at":1792402352965,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"armed","seq":1,"wt":1792402352965,"instance":"a937aabf","armedUntil":1792405952965,"version":"1"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"command","seq":2,"wt":1792402352965,"instance":"a937aabf","id":"t","phases":[{"kind":"backup-small"},{"kind":"rwake-small","arg":2}]}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"phase-start","seq":3,"wt":1792402352965,"instance":"a937aabf","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"wake","seq":4,"wt":1792402352966,"instance":"a937aabf","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"backup","seq":5,"wt":1792402352966,"instance":"a937aabf","size":"small","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"phase-end","seq":6,"wt":1792402352966,"instance":"a937aabf","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"phase-start","seq":7,"wt":1792402352966,"instance":"a937aabf","kind":"rwake-small","arg":2}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"wake-stop","seq":8,"wt":1792402352966,"instance":"a937aabf","index":0,"label":"restore-small","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"wake","seq":9,"wt":1792402352966,"instance":"a937aabf","index":0,"label":"restore-small","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r1","gen":2,"ok":false,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":null,"restoredMs":null,"releasedMs":0,"restoreError":"Error: BACKUP_TRANSFER: synthetic failure","hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"wake-stop","seq":10,"wt":1792402352966,"instance":"a937aabf","index":1,"label":"restore-small","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"wake","seq":11,"wt":1792402352966,"instance":"a937aabf","index":1,"label":"restore-small","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r2","gen":3,"ok":false,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":null,"restoredMs":null,"releasedMs":0,"restoreError":"Error: BACKUP_TRANSFER: synthetic failure","hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on
+{"s1":"phase-end","seq":12,"wt":1792402352966,"instance":"a937aabf","kind":"rwake-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"computer-constructed","wt":1792402352967,"instance":"7973b92e","version":"1","at":1792402352967,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"armed","seq":1,"wt":1792402352967,"instance":"7973b92e","armedUntil":1792405952967,"version":"1"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"command","seq":2,"wt":1792402352967,"instance":"7973b92e","id":"t","phases":[{"kind":"backup-small"},{"kind":"rwake-small","arg":1}]}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"phase-start","seq":3,"wt":1792402352967,"instance":"7973b92e","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"wake","seq":4,"wt":1792402352968,"instance":"7973b92e","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"backup","seq":5,"wt":1792402352968,"instance":"7973b92e","size":"small","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"phase-end","seq":6,"wt":1792402352968,"instance":"7973b92e","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"phase-start","seq":7,"wt":1792402352968,"instance":"7973b92e","kind":"rwake-small","arg":1}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"wake-stop","seq":8,"wt":1792402352968,"instance":"7973b92e","index":0,"label":"restore-small","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"wake","seq":9,"wt":1792402352969,"instance":"7973b92e","index":0,"label":"restore-small","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r1","gen":2,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237643,"restoredFiles":11222,"restoredMatches":false}
+
+stdout | test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup
+{"s1":"phase-end","seq":10,"wt":1792402352969,"instance":"7973b92e","kind":"rwake-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"computer-constructed","wt":1792402352969,"instance":"9014c9c4","version":"1","at":1792402352969,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"armed","seq":1,"wt":1792402352969,"instance":"9014c9c4","armedUntil":1792405952969,"version":"1"}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"command","seq":2,"wt":1792402352969,"instance":"9014c9c4","id":"t","phases":[{"kind":"rwake-large","arg":3}]}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"phase-start","seq":3,"wt":1792402352969,"instance":"9014c9c4","kind":"rwake-large","arg":3}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"rwake-skipped","seq":4,"wt":1792402352969,"instance":"9014c9c4","size":"large","reason":"no backup; queue backup-large first"}
+
+stdout | test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup
+{"s1":"phase-end","seq":5,"wt":1792402352969,"instance":"9014c9c4","kind":"rwake-large"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"computer-constructed","wt":1792402352969,"instance":"67cb23f7","version":"1","at":1792402352969,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"armed","seq":1,"wt":1792402352969,"instance":"67cb23f7","armedUntil":1792405952969,"version":"1"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"command","seq":2,"wt":1792402352969,"instance":"67cb23f7","id":"t","phases":[{"kind":"backup-small"},{"kind":"rwake-small","arg":1}]}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"phase-start","seq":3,"wt":1792402352969,"instance":"67cb23f7","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"wake","seq":4,"wt":1792402352970,"instance":"67cb23f7","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"durable_object","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"backup","seq":5,"wt":1792402352970,"instance":"67cb23f7","size":"small","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"phase-end","seq":6,"wt":1792402352970,"instance":"67cb23f7","kind":"backup-small"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"phase-start","seq":7,"wt":1792402352970,"instance":"67cb23f7","kind":"rwake-small","arg":1}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"wake-stop","seq":8,"wt":1792402352970,"instance":"67cb23f7","index":0,"label":"restore-small","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"wake","seq":9,"wt":1792402352970,"instance":"67cb23f7","index":0,"label":"restore-small","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r1","gen":2,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"durable_object","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy
+{"s1":"phase-end","seq":10,"wt":1792402352970,"instance":"67cb23f7","kind":"rwake-small"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an unarmed alarm builds, backs up and restores nothing
+{"s1":"computer-constructed","wt":1792402352970,"instance":"ccd7f5d9","version":"1","at":1792402352970,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"computer-constructed","wt":1792402352971,"instance":"6fa3db59","version":"1","at":1792402352971,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"armed","seq":1,"wt":1792402352971,"instance":"6fa3db59","armedUntil":1792405952971,"version":"1"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"command","seq":2,"wt":1792402352971,"instance":"6fa3db59","id":"t","phases":[{"kind":"backup-medium"},{"kind":"rwake-medium","arg":20}]}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"phase-start","seq":3,"wt":1792402352971,"instance":"6fa3db59","kind":"backup-medium"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake","seq":4,"wt":1792402352972,"instance":"6fa3db59","index":-1,"label":"bk","version":"1","run":"bk0","gen":1,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"backup","seq":5,"wt":1792402352972,"instance":"6fa3db59","size":"medium","ok":true,"makeMs":0,"backupMs":0,"rawBytes":663237644,"files":11222,"archiveBytes":410000000,"backupId":"00000000-0000-4000-8000-000000000001"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"phase-end","seq":6,"wt":1792402352972,"instance":"6fa3db59","kind":"backup-medium"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"phase-start","seq":7,"wt":1792402352972,"instance":"6fa3db59","kind":"rwake-medium","arg":20}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake-stop","seq":8,"wt":1792402352972,"instance":"6fa3db59","index":0,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake","seq":9,"wt":1792402352972,"instance":"6fa3db59","index":0,"label":"restore-medium","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r1","gen":2,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake-stop","seq":10,"wt":1792402352972,"instance":"6fa3db59","index":1,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake","seq":11,"wt":1792402352973,"instance":"6fa3db59","index":1,"label":"restore-medium","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r2","gen":3,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake-stop","seq":12,"wt":1792402352973,"instance":"6fa3db59","index":2,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake","seq":13,"wt":1792402352973,"instance":"6fa3db59","index":2,"label":"restore-medium","version":"1","rawBytes":663237644,"files":11222,"archiveBytes":410000000,"run":"r3","gen":4,"ok":true,"status":"online","onlineMs":0,"elapsedMs":0,"startReturnedMs":0,"bootMarkMs":null,"firstHttpMs":null,"wsUpgradeMs":null,"containerClockSkewMs":null,"bootToMarkMs":null,"dns":null,"location":null,"region":null,"country":null,"polls":1,"pollError":null,"policy":"default","fromSnapshot":false,"interceptedBeforeStart":true,"interceptError":null,"wsMode":null,"running":true,"execReadyMs":0,"restoreMs":0,"restoredMs":0,"releasedMs":0,"restoreError":null,"hostAfterReleaseMs":0,"releaseMarkMs":null,"restoredBytes":663237644,"restoredFiles":11222,"restoredMatches":true}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"wake-stop","seq":14,"wt":1792402352973,"instance":"6fa3db59","index":3,"label":"restore-medium","wasRunning":true,"stoppedMs":0,"offlineMs":0,"status":"offline"}
+
+stdout | test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores
+{"s1":"disarmed","seq":15,"wt":1792402352973,"instance":"6fa3db59","armedUntil":1792402352972,"phase":"rwake-medium","wasRunning":false}
+
+ ✓ test/restore.test.js > backup-<size> > builds the workspace on a running computer, backs it up and keeps the record 6ms
+ ✓ test/restore.test.js > rwake-<size>=N > restores before the host is released, on every wake 3ms
+ ✓ test/restore.test.js > rwake-<size>=N > records a failed restore, still releases the host, and goes on 1ms
+ ✓ test/restore.test.js > rwake-<size>=N > flags a restored tree that does not match the backup 2ms
+ ✓ test/restore.test.js > rwake-<size>=N > is skipped, with no container started, when the size has no backup 0ms
+ ✓ test/restore.test.js > rwake-<size>=N > passes the image and size under the durable_object policy 1ms
+ ✓ test/restore.test.js > IR-017: the restore phases run only while armed > an unarmed alarm builds, backs up and restores nothing 0ms
+ ✓ test/restore.test.js > IR-017: the restore phases run only while armed > an arming that ends mid-phase stops the computer and the restores 3ms
+stdout | test/controls.test.js > IR-017: valid same-origin controls > Start arms the campaign once, for a bounded time, and the token is single-use
+{"s1":"control","wt":1792402352981,"action":"start","armedUntil":1792423952981}
+
+stdout | test/controls.test.js > IR-017: valid same-origin controls > Start works without Sec-Fetch-Site, from an older browser
+{"s1":"control","wt":1792402352983,"action":"start","armedUntil":1792423952983}
+
+stdout | test/controls.test.js > IR-017: valid same-origin controls > Stop disarms the campaign
+{"s1":"control","wt":1792402352983,"action":"stop"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop
+{"s1":"computer-constructed","wt":1792402352985,"instance":"4d1512d2","version":"1","at":1792402352985,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop
+{"s1":"computer-constructed","wt":1792402352985,"instance":"a193e666","version":"1","at":1792402352985,"running":true,"rearmed":true,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop
+{"s1":"disarmed","seq":1,"wt":1792402352986,"instance":"a193e666","armedUntil":1792402351985,"phase":"heartbeat","wasRunning":true}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > kickoff needs an arming time and caps it at 12 hours
+{"s1":"computer-constructed","wt":1792402352986,"instance":"6493d87f","version":"1","at":1792402352986,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > kickoff needs an arming time and caps it at 12 hours
+{"s1":"armed","seq":1,"wt":1792402352986,"instance":"6493d87f","armedUntil":1792445552986,"version":"1"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > disarm stops a running campaign at the next alarm
+{"s1":"computer-constructed","wt":1792402352987,"instance":"dccbd43b","version":"1","at":1792402352987,"running":true,"rearmed":true,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > disarm stops a running campaign at the next alarm
+{"s1":"disarm-requested","seq":1,"wt":1792402352987,"instance":"dccbd43b"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > disarm stops a running campaign at the next alarm
+{"s1":"disarmed","seq":2,"wt":1792402352987,"instance":"dccbd43b","armedUntil":1792402352987,"phase":"heartbeat","wasRunning":true}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases
+{"s1":"computer-constructed","wt":1792402352987,"instance":"9c1ea0a0","version":"1","at":1792402352987,"running":false,"rearmed":false,"timeoutMs":180000}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases
+{"s1":"command","seq":1,"wt":1792402352987,"instance":"9c1ea0a0","id":"c1","phases":[{"kind":"server-up"}]}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases
+{"s1":"phase-start","seq":2,"wt":1792402352987,"instance":"9c1ea0a0","kind":"server-up"}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases
+{"s1":"server-up","seq":3,"wt":1792402352987,"instance":"9c1ea0a0","ok":true}
+
+stdout | test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases
+{"s1":"phase-end","seq":4,"wt":1792402352987,"instance":"9c1ea0a0","kind":"server-up"}
+
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a foreign Origin with 403, and the token stays unused 15ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses Origin: null with 403 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a missing Origin with 403 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a simple cross-site form post with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > treats a cross-site top-level GET as a confirmation page only 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > refuses a same-origin post without a token, or with a wrong one 2ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/kickoff > ignores HEAD 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a foreign Origin with 403, and the token stays unused 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses Origin: null with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a missing Origin with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a simple cross-site form post with 403 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin Origin header when Sec-Fetch-Site says otherwise 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > treats a cross-site top-level GET as a confirmation page only 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > refuses a same-origin post without a token, or with a wrong one 1ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > /s1/stop > ignores HEAD 0ms
+ ✓ test/controls.test.js > IR-017: refused requests have zero effect > serves no read route that wakes the experiment's Durable Objects 0ms
+ ✓ test/controls.test.js > pages that post keep the Origin header > /s1/kickoff uses a referrer policy that keeps the origin on its own POST 1ms
+ ✓ test/controls.test.js > pages that post keep the Origin header > /s1/stop uses a referrer policy that keeps the origin on its own POST 0ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Start arms the campaign once, for a bounded time, and the token is single-use 1ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Start works without Sec-Fetch-Site, from an older browser 0ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > Stop disarms the campaign 0ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > an expired token is refused with zero effect 1ms
+ ✓ test/controls.test.js > IR-017: valid same-origin controls > a Start token does not work for Stop 0ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an alarm on a campaign that was never armed starts nothing and ends the alarm loop 1ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an expired arming stops the running campaign, its containers and the alarm loop 0ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > kickoff needs an arming time and caps it at 12 hours 1ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > disarm stops a running campaign at the next alarm 0ms
+ ✓ test/controls.test.js > IR-017: the campaign runs only while armed > an armed campaign runs its queued phases 1ms
+ ✓ test/tunnel.test.js > the 101 headers for the host > computes Sec-WebSocket-Accept as RFC 6455 does 3ms
+ ✓ test/tunnel.test.js > the 101 headers for the host > uses the host's key, copies nothing from the server's 101 and offers no extension 11ms
+ ✓ test/tunnel.test.js > the 101 headers for the host > keeps a subprotocol the server chose 0ms
+ ✓ test/tunnel.test.js > the mode for one upgrade > takes the probe's header, then the deployment's choice, then S1_WS_MODE, else fixed 0ms
+ ✓ test/tunnel.test.js > S1Server answers the upgrade in the mode HostRoute names > fixed: bridges, answers with the host's Accept, and does not pass the mode header on 2ms
+ ✓ test/tunnel.test.js > S1Server answers the upgrade in the mode HostRoute names > fixed is the default when no mode is named 0ms
+ ✓ test/tunnel.test.js > S1Server answers the upgrade in the mode HostRoute names > bridge: copies the server's headers, as 76fa418 did 0ms
+ ✓ test/tunnel.test.js > S1Server answers the upgrade in the mode HostRoute names > direct: returns the server's 101 response as it is 0ms
+ ✓ test/tunnel.test.js > HostRoute names the mode for S1Server > passes the deployment's chosen mode, and returns S1Server's 101 1ms
+ ✓ test/tunnel.test.js > HostRoute names the mode for S1Server > route-fixed: asks S1Server to bridge, bridges again and answers with the host's Accept 1ms
+ ✓ test/tunnel.test.js > HostRoute names the mode for S1Server > logs a failed upgrade and returns the failure 1ms
+ ✓ test/tunnel.test.js > HostRoute names the mode for S1Server > passes plain HTTP through untouched 0ms
+ ✓ test/tunnel.test.js > tunnel-check > probes every mode on a held host, keeps the first that works, then releases the host 4ms
+ ✓ test/tunnel.test.js > tunnel-check > drops the rest of the queue and stops the computer when the host does not come online 503ms
+ ✓ test/tunnel.test.js > tunnel-check > keeps the default mode when no probe passes but the host still comes online 2ms
+ ✓ test/tunnel.test.js > tunnel-check > records unreadable probe output as a failed mode 1ms
+
+ Test Files  3 passed (3)
+      Tests  53 passed (53)
+   Start at  11:32:32
+   Duration  688ms (tests 67%, transform 17%, import 14%, worker 1%)
+

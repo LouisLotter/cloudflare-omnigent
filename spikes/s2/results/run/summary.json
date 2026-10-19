@@ -1,0 +1,489 @@
+{
+  "soak": {
+    "fromMs": 1792405383376,
+    "toMs": 1792412583379,
+    "hours": 2.0,
+    "echo": {
+      "connects": 12,
+      "drops": 11,
+      "pings": 1252,
+      "lost": 12,
+      "minutesConnected": 110,
+      "minutes": 110,
+      "rttMinuteP50Median": 10.0,
+      "rttMinuteP95Max": 860.9,
+      "rttMax": 860.9
+    },
+    "host": {
+      "hellos": 0,
+      "downs": 0,
+      "runnerDowns": 12,
+      "serverViewChanges": [
+        [
+          1792405887953,
+          "unreachable",
+          "RemoteProtocolError"
+        ],
+        [
+          1792405893026,
+          false,
+          false
+        ],
+        [
+          1792405903170,
+          false,
+          true
+        ],
+        [
+          1792406493474,
+          false,
+          false
+        ],
+        [
+          1792406518893,
+          false,
+          true
+        ],
+        [
+          1792407129253,
+          false,
+          false
+        ],
+        [
+          1792407149602,
+          false,
+          true
+        ],
+        [
+          1792407857454,
+          false,
+          false
+        ],
+        [
+          1792407888030,
+          false,
+          true
+        ],
+        [
+          1792409632354,
+          false,
+          true
+        ],
+        [
+          1792409982456,
+          false,
+          false
+        ],
+        [
+          1792410007817,
+          false,
+          true
+        ],
+        [
+          1792410134871,
+          false,
+          false
+        ],
+        [
+          1792410155138,
+          false,
+          true
+        ],
+        [
+          1792410769821,
+          false,
+          false
+        ],
+        [
+          1792410790105,
+          false,
+          true
+        ],
+        [
+          1792411389155,
+          false,
+          true
+        ],
+        [
+          1792411626784,
+          false,
+          false
+        ],
+        [
+          1792411647175,
+          false,
+          true
+        ],
+        [
+          1792411845135,
+          false,
+          false
+        ],
+        [
+          1792411860414,
+          false,
+          true
+        ],
+        [
+          1792412238137,
+          false,
+          false
+        ],
+        [
+          1792412263893,
+          false,
+          true
+        ]
+      ]
+    },
+    "conversation": {
+      "turns": 58,
+      "ok": 42,
+      "failed": 16,
+      "replyMsP50": 1216,
+      "replyMsP95": 1311,
+      "replyMsMax": 1338
+    },
+    "computerBoots": [
+      "4e242c73"
+    ],
+    "serverStarts": 0,
+    "computerStarts": 0
+  },
+  "redeploys": [
+    {
+      "build": "r1-122303",
+      "reregister": true,
+      "liveMs": 1792412598511,
+      "deployEndMs": 1792412609539,
+      "echoDownAfterLiveMs": null,
+      "echoUpAfterLiveMs": null,
+      "echoOutageMs": null,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 69,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "computer-wake",
+          "r1-122303",
+          true,
+          306580
+        ]
+      ],
+      "interceptsAfterLiveMs": [
+        [
+          "r1-122303",
+          306586,
+          1
+        ]
+      ],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 776,
+        "path": "/health",
+        "registeredBy": "init-100036"
+      },
+      "routeRegisteredBy": [
+        "init-100036",
+        "r1-122303"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    },
+    {
+      "build": "r2-122829",
+      "reregister": true,
+      "liveMs": 1792412926019,
+      "deployEndMs": 1792412936462,
+      "echoDownAfterLiveMs": -2777,
+      "echoUpAfterLiveMs": -2250,
+      "echoOutageMs": 527,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 70,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "server-wake",
+          "r2-122829",
+          true,
+          300610
+        ],
+        [
+          "computer-wake",
+          "r2-122829",
+          true,
+          309172
+        ]
+      ],
+      "interceptsAfterLiveMs": [
+        [
+          "r2-122829",
+          309179,
+          1
+        ]
+      ],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 695,
+        "path": "/v1/sessions/efeb99db7cc4427fbb64ed6ac3d5dc1e",
+        "registeredBy": "r1-122303"
+      },
+      "routeRegisteredBy": [
+        "r1-122303",
+        "r2-122829"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    },
+    {
+      "build": "r3-123356",
+      "reregister": true,
+      "liveMs": 1792413250917,
+      "deployEndMs": 1792413261433,
+      "echoDownAfterLiveMs": -3253,
+      "echoUpAfterLiveMs": -2731,
+      "echoOutageMs": 522,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 71,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        },
+        {
+          "n": 72,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "server-wake",
+          "r3-123356",
+          true,
+          100689
+        ],
+        [
+          "server-wake",
+          "r3-123356",
+          true,
+          139201
+        ]
+      ],
+      "interceptsAfterLiveMs": [],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 2030,
+        "path": "/v1/sessions/efeb99db7cc4427fbb64ed6ac3d5dc1e",
+        "registeredBy": "r2-122829"
+      },
+      "routeRegisteredBy": [
+        "r2-122829",
+        "r3-123356"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    },
+    {
+      "build": "r4-123921",
+      "reregister": true,
+      "liveMs": 1792413577333,
+      "deployEndMs": 1792413588962,
+      "echoDownAfterLiveMs": null,
+      "echoUpAfterLiveMs": null,
+      "echoOutageMs": null,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 73,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "server-wake",
+          "r4-123921",
+          true,
+          301089
+        ],
+        [
+          "computer-wake",
+          "r4-123921",
+          true,
+          308064
+        ]
+      ],
+      "interceptsAfterLiveMs": [
+        [
+          "r4-123921",
+          308072,
+          1
+        ]
+      ],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 983,
+        "path": "/v1/sessions/efeb99db7cc4427fbb64ed6ac3d5dc1e",
+        "registeredBy": "r3-123356"
+      },
+      "routeRegisteredBy": [
+        "r3-123356",
+        "r4-123921"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    },
+    {
+      "build": "r5-noreregister-124448",
+      "reregister": false,
+      "liveMs": 1792413904695,
+      "deployEndMs": 1792413915675,
+      "echoDownAfterLiveMs": -5892,
+      "echoUpAfterLiveMs": -5341,
+      "echoOutageMs": 551,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 74,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "computer-wake",
+          "r5-noreregister-124448",
+          true,
+          30759
+        ],
+        [
+          "server-wake",
+          "r5-noreregister-124448",
+          true,
+          300060
+        ]
+      ],
+      "interceptsAfterLiveMs": [],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 39,
+        "path": "/v1/runners/runner_token_ec969b6b190d83aae0bc6781e7e5d3d8/tunnel",
+        "registeredBy": "r4-123921"
+      },
+      "routeRegisteredBy": [
+        "r4-123921"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    },
+    {
+      "build": "r6-125015",
+      "reregister": true,
+      "liveMs": 1792414231232,
+      "deployEndMs": 1792414241389,
+      "echoDownAfterLiveMs": -1996,
+      "echoUpAfterLiveMs": -1436,
+      "echoOutageMs": 560,
+      "hostDownAfterLiveMs": null,
+      "hostDownDetail": null,
+      "hostHelloAfterLiveMs": null,
+      "hostOutageMs": null,
+      "serverViewOnlineAfterLiveMs": null,
+      "firstOkTurnAfterLiveMs": null,
+      "firstOkTurn": null,
+      "failedTurnsAround": [
+        {
+          "n": 76,
+          "trigger": "scheduled",
+          "error": "TimeoutError: no reply within 180 s"
+        }
+      ],
+      "wakes": [
+        [
+          "server-wake",
+          "r6-125015",
+          true,
+          303292
+        ],
+        [
+          "computer-wake",
+          "r6-125015",
+          true,
+          304467
+        ]
+      ],
+      "interceptsAfterLiveMs": [
+        [
+          "r6-125015",
+          304478,
+          1
+        ]
+      ],
+      "firstRouteOnNewBuild": {
+        "afterLiveMs": 1259,
+        "path": "/v1/sessions/efeb99db7cc4427fbb64ed6ac3d5dc1e",
+        "registeredBy": "r4-123921"
+      },
+      "routeRegisteredBy": [
+        "r4-123921",
+        "r6-125015"
+      ],
+      "serverStarts": 0,
+      "computerStarts": 0,
+      "computerBoots": [
+        "4e242c73"
+      ]
+    }
+  ]
+}

@@ -1,10 +1,16 @@
 # python
 
-The Omnigent plugin, published as the `cloudflare-omnigent` distribution. It is installed into the Omnigent server image.
+The Python side of the platform: the distribution `cloudflare-omnigent`, managed with uv.
 
-Planned contents:
+| When | Contents |
+|---|---|
+| Now (M0) | Contract tests. `tests/test_contracts.py` validates every golden fixture in `contracts/fixtures/` against the JSON Schema exported to `contracts/schema/`. |
+| M3 | The computer supervisor (WP3.4), installed into the `images/computer` image |
+| M5 | The Omnigent MCP gateway backend and connection service (WP5.4) |
 
-- **Sandbox provider** under `omnigent.community.sandbox.cloudflare`. Omnigent requires community providers to live in that namespace. It starts, resumes and stops cloud workspaces through the control plane.
-- **`cloudflare_omnigent`**: the control-plane client, the MCP gateway backend and the schedule trigger, plus models generated from `contracts`.
+```bash
+uv run --directory python pytest
+uv run --directory python ruff check
+```
 
-The plugin depends on a pinned Omnigent release, or on a branch of the fork while it needs core changes that are not yet released.
+Dependencies observe the same seven-day release cooldown as the TypeScript workspace (`exclude-newer` in `pyproject.toml`).

@@ -1,0 +1,47 @@
+// Spike S2, the private host route: a computer container reaches the Omnigent server through
+// an intercept for omnigent.internal. Each container runs with the scheduling policy the design
+// gives it:
+//   - the server keeps the default policy: `basic`, one instance;
+//   - the computer uses the `durable_object` policy (public beta). ComputerDO starts it as
+//     `standard-1`, under one fixed Durable Object name, so only one instance ever runs.
+// Deploy only through the guarded tool, with scripts/deploy.sh (which also stamps the build):
+//
+//   spikes/s2/scripts/deploy.sh <label> [reregister]
+//   pnpm stg teardown --suffix s2-route
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s2-route",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "ServerDO" },
+      { "name": "COMPUTER", "class_name": "ComputerDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ServerDO", "ComputerDO"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-s2-route-server",
+      "class_name": "ServerDO",
+      "image": "./server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-s2-route-computer",
+      "class_name": "ComputerDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "computer": { "dockerfile": "./computer/Dockerfile", "build_context": "./computer" }
+      }
+    }
+  ]
+}

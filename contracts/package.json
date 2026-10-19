@@ -1,0 +1,22 @@
+{
+  "name": "@cfo/contracts",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "export-schema": "node scripts/export-json-schema.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@vitest/coverage-istanbul": "5.0.3",
+    "fast-check": "4.10.2",
+    "vitest": "5.0.3"
+  }
+}

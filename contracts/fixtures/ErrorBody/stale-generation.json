@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "stale_generation",
+    "message": "This computer was restarted; the request came from an older start.",
+    "retryable": false
+  }
+}

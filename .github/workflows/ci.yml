@@ -1,0 +1,168 @@
+# Continuous integration for cloudflare-omnigent.
+#
+# Runs on every pull request and on every push to main, and never deploys: deployments run from
+# the owner's laptop only (implementation plan, "Environment decisions"). Nothing here references
+# a secret, the token can only read the repository, and the trigger is `pull_request`, never
+# `pull_request_target`, so code from a fork runs without any privileges. Every action is pinned
+# to a full commit SHA; the comment names the release that SHA belongs to.
+#
+# Jobs:
+#   node    Biome lint; typecheck, including `wrangler types --check`; the Vitest suites
+#           (contracts, worker unit tests in Node, worker tests inside workerd); contract drift,
+#           so the committed JSON Schemas must match the zod source; coverage thresholds, set in
+#           the vitest configs (90% per pure module); and `wrangler deploy --dry-run`, which
+#           bundles the Worker without a Cloudflare account.
+#   python  The uv project in python/: locked install, ruff lint and format check, and pytest,
+#           which validates the golden fixtures against the exported JSON Schemas.
+#   canary  The canary-secret scanner (scripts/canary-scan.ts). Its self-test proves it still
+#           finds planted canaries in text, NUL-prefixed, binary, gzip and tar.gz files, and that
+#           a zip or an empty directory counts as incomplete; then it scans the contracts, Worker
+#           source, Python tests and docs. Any non-zero exit fails the step: 1 means a canary was
+#           found, 2 a usage error, and 3 an incomplete scan (undecodable data, an unreadable
+#           file, or a path with no files), which is never treated as clean.
+#   images  Not yet: see the placeholder at the end.
+#
+# Still to come, as the work packages that need them land: deterministic simulation tests (M3)
+# and Stryker mutation thresholds (75%) for the state machines and the schedule cache.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels that pull request's older run. Pushes to main are
+  # grouped by commit, so every commit on main keeps its own complete result.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  # No usage metrics from CI.
+  WRANGLER_SEND_METRICS: "false"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  node:
+    name: Node (lint, typecheck, tests, contract drift, coverage, dry run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm (version from package.json "packageManager")
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js (version from .node-version)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Contract drift
+        run: |
+          pnpm contracts:export
+          if ! git diff --exit-code -- contracts/schema; then
+            echo "::error::contracts/schema is out of date. Run 'pnpm contracts:export' and commit the result."
+            exit 1
+          fi
+          untracked="$(git ls-files --others --exclude-standard -- contracts/schema)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo "::error::New files in contracts/schema are not committed. Run 'pnpm contracts:export' and commit the result."
+            exit 1
+          fi
+
+      - name: Coverage thresholds
+        run: pnpm coverage
+
+      - name: Wrangler dry run
+        run: pnpm --filter @cfo/worker dry-run
+
+      # Every built artefact is scanned too, not only the sources. A path given explicitly is
+      # scanned even though it is named dist, and an empty bundle directory exits 3, not 0.
+      - name: Canary scan of the built Worker bundle
+        run: node scripts/canary-scan.ts worker/dist
+
+  python:
+    name: Python (ruff, pytest)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.10"
+          cache-dependency-glob: python/uv.lock
+
+      - name: Install the locked environment
+        run: uv sync --locked --directory python
+
+      - name: Ruff lint
+        run: uv run --locked --directory python ruff check
+
+      - name: Ruff format
+        run: uv run --locked --directory python ruff format --check
+
+      - name: Pytest
+        run: uv run --locked --directory python pytest
+
+  canary:
+    name: Canary-secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The scanner runs on Node's built-in TypeScript support. Dependencies are deliberately not
+      # installed, so the scan sees exactly the checked-out tree and no node_modules.
+      - name: Set up Node.js (version from .node-version)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      # With no paths, --self-test runs alone: it plants canaries in a temporary directory and
+      # exits 0 only if every planted case is detected and every incomplete case is reported.
+      - name: Scanner self-test (finds planted canaries, rejects incomplete scans)
+        run: node scripts/canary-scan.ts --self-test
+
+      # Each path must hold at least one file; binary files are scanned, not skipped.
+      - name: Scan contracts, Worker source, Python tests and docs
+        run: node scripts/canary-scan.ts contracts worker/src python/tests docs
+
+  # images: placeholder, added with the first Dockerfile under images/ (server, computer,
+  # linkedin). It will build each image with `docker build` on the runner, never push it, pin
+  # every base image by digest, run the container smoke tests, and scan the built image with the
+  # canary scanner. Like the rest of this workflow it will use no registry or Cloudflare
+  # credentials.

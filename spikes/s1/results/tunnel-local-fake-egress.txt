@@ -1,0 +1,65 @@
+=== scenario bad-accept
+fake egress on 127.0.0.1:18090, scenario bad-accept
+upgrade gap=Nones answered=101(bad-accept) client closed after 0 ms
+upgrade gap=0.5s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=1.11s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=2.83s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-accept) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-accept) client closed after 0 ms
+host's reasons:
+      1 invalid Sec-WebSocket-Accept header: ptropN9RIROrmM0P2HUY3cdrKJ8=. Reconnecting in 0.5s
+      1 invalid Sec-WebSocket-Accept header: ptropN9RIROrmM0P2HUY3cdrKJ8=. Reconnecting in 1.1s
+      1 invalid Sec-WebSocket-Accept header: ptropN9RIROrmM0P2HUY3cdrKJ8=. Reconnecting in 2.8s
+      6 invalid Sec-WebSocket-Accept header: ptropN9RIROrmM0P2HUY3cdrKJ8=. Reconnecting in 3.0s
+=== scenario bad-extension
+fake egress on 127.0.0.1:18090, scenario bad-extension
+upgrade gap=Nones answered=101(bad-extension) client closed after 0 ms
+upgrade gap=0.51s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=1.13s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=2.63s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-extension) client closed after 0 ms
+upgrade gap=3.0s answered=101(bad-extension) client closed after 0 ms
+host's reasons:
+      1 Unsupported extension: name = permessage-deflate, params = [('client_max_window_bits', None)]. Reconnecting in 0.5s
+      1 Unsupported extension: name = permessage-deflate, params = [('client_max_window_bits', None)]. Reconnecting in 1.1s
+      1 Unsupported extension: name = permessage-deflate, params = [('client_max_window_bits', None)]. Reconnecting in 2.6s
+      6 Unsupported extension: name = permessage-deflate, params = [('client_max_window_bits', None)]. Reconnecting in 3.0s
+=== scenario drop-after-101
+fake egress on 127.0.0.1:18090, scenario drop-after-101
+upgrade gap=Nones answered=101-then-close
+upgrade gap=2.12s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+upgrade gap=0.5s answered=101-then-close
+host's reasons:
+      1 no close frame received or sent. Reconnecting in 0.5s
+      9 no close frame received or sent. Reconnecting in 0.5s (recycle — prompt reconnect)
+      1 no close frame received or sent. Reconnecting in 1.4s
+      5 no close frame received or sent. Reconnecting in 3.0s
+=== scenario close-at-once
+fake egress on 127.0.0.1:18090, scenario close-at-once
+upgrade gap=Nones answered=close
+upgrade gap=0.51s answered=close
+upgrade gap=1.31s answered=close
+upgrade gap=3.0s answered=close
+upgrade gap=3.0s answered=close
+upgrade gap=3.0s answered=close
+upgrade gap=3.0s answered=close
+upgrade gap=3.0s answered=close
+upgrade gap=3.0s answered=close
+host's reasons:
+      1 did not receive a valid HTTP response. Reconnecting in 0.5s
+      1 did not receive a valid HTTP response. Reconnecting in 1.3s
+      7 did not receive a valid HTTP response. Reconnecting in 3.0s

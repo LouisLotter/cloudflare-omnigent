@@ -25,3 +25,18 @@ build/
 .idea/
 .vscode/
 .DS_Store
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/
+
+# Local staging state: account, owner email and resource registry (never committed)
+.staging/
+
+# Process documents: reviews (including the Codex active review), plans, the tracker and
+# evidence live outside this repository and are never committed. These are the paths the
+# reviewers and older tools write to inside a checkout.
+docs/ACTIVE_REVIEW*.md
+docs/WORKPLAN.md
+docs/verification/
+docs/reviews/
+spikes/*/reviews/

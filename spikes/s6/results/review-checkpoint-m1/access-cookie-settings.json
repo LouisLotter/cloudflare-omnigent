@@ -1,0 +1,24 @@
+{
+  "applications_found": 1,
+  "settings": {
+    "same_site_cookie_attribute": "<not set: Cloudflare default>",
+    "http_only_cookie_attribute": true,
+    "path_cookie_attribute": "<not set: Cloudflare default>",
+    "enable_binding_cookie": false,
+    "session_duration": "24h",
+    "options_preflight_bypass": false,
+    "cors_headers": "<not set: Cloudflare default>",
+    "skip_interstitial": "<not set: Cloudflare default>",
+    "app_launcher_visible": false,
+    "auto_redirect_to_identity": true,
+    "type": "self_hosted"
+  },
+  "policies": [
+    {
+      "decision": "allow",
+      "include_kinds": [
+        "email"
+      ]
+    }
+  ]
+}

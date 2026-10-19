@@ -1,0 +1,128 @@
+1792413561659 $ node scripts/staging/stg.ts deploy --suffix s2-route --owner S2 --config spikes/s2/wrangler.jsonc --days 2
+1792413564478 
+1792413564478  ⛅️ wrangler 4.149.0 (update available 4.151.2)
+1792413564479 ───────────────────────────────────────────────
+1792413564545 Building image cfo-stg-s2-route-server:wrangler-7dcb48f6-fffc-491f-b89d-1a408e326819
+1792413564633 #0 building with "default" instance using docker driver
+1792413564634 
+1792413564635 #1 [internal] load build definition from Dockerfile
+1792413564636 #1 DONE 0.0s
+1792413564740 
+1792413564741 #1 [internal] load build definition from Dockerfile
+1792413564741 #1 transferring dockerfile: 735B done
+1792413564742 #1 DONE 0.0s
+1792413564743 
+1792413564744 #2 [internal] load metadata for ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3
+1792413564744 #2 DONE 0.0s
+1792413564745 
+1792413564746 #3 [internal] load .dockerignore
+1792413564746 #3 transferring context: 2B done
+1792413564747 #3 DONE 0.0s
+1792413564842 
+1792413564843 #4 [1/1] FROM ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3
+1792413564844 #4 resolve ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3 0.0s done
+1792413564845 #4 CACHED
+1792413564846 
+1792413564847 #5 exporting to image
+1792413564847 #5 exporting layers done
+1792413564848 #5 exporting manifest sha256:181609258876aaad44f839da109b782847d008fa7e2a69c0687e7d0bcdeebcf8 done
+1792413564849 #5 exporting config sha256:f1508b95f16d0114e68e946818bc5346c0f5ee4f15ce9ba16049e2cf73bc601a done
+1792413564849 #5 naming to docker.io/library/cfo-stg-s2-route-server:wrangler-7dcb48f6-fffc-491f-b89d-1a408e326819 done
+1792413564850 #5 unpacking to docker.io/library/cfo-stg-s2-route-server:wrangler-7dcb48f6-fffc-491f-b89d-1a408e326819 0.0s done
+1792413564851 #5 DONE 0.0s
+1792413565310 #0 building with "default" instance using docker driver
+1792413565311 
+1792413565311 #1 [internal] load build definition from Dockerfile
+1792413565312 #1 transferring dockerfile: 1.27kB done
+1792413565313 #1 DONE 0.0s
+1792413565314 
+1792413565314 #2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+1792413565712 #2 DONE 0.6s
+1792413565894 
+1792413565895 #3 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+1792413565896 #3 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e 0.1s done
+1792413565896 #3 CACHED
+1792413565897 
+1792413565898 #4 [internal] load metadata for ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3
+1792413566130 #4 DONE 0.1s
+1792413566131 
+1792413566132 #5 [internal] load .dockerignore
+1792413566132 #5 transferring context: 2B done
+1792413566133 #5 DONE 0.0s
+1792413566555 
+1792413566556 #6 [2/5] ADD --checksum=sha256:bcc0ddaceadc9af72694a2d0a8c76930a5f9e9c9472dd8847ebc4d148d3a2fda     https://raw.githubusercontent.com/omnigent-ai/omnigent/12b5f67d2529b43eab7366a7288fb89f7587e48b/tests/server/integration/mock_llm_server.py     /s2/mock_llm_server.py
+1792413566557 #6 DONE 0.0s
+1792413566558 
+1792413566559 #7 [1/5] FROM ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3
+1792413566560 #7 resolve ghcr.io/omnigent-ai/omnigent-server:v0.17.0@sha256:101474ecb299d45aacf49cb01051cc2cc5392ee6a6d30879d72c55bf346af3c3 0.0s done
+1792413566561 #7 DONE 0.0s
+1792413566561 
+1792413566562 #8 [internal] load build context
+1792413566563 #8 transferring context: 160B done
+1792413566564 #8 DONE 0.0s
+1792413566564 
+1792413566565 #9 [2/5] ADD --checksum=sha256:bcc0ddaceadc9af72694a2d0a8c76930a5f9e9c9472dd8847ebc4d148d3a2fda     https://raw.githubusercontent.com/omnigent-ai/omnigent/12b5f67d2529b43eab7366a7288fb89f7587e48b/tests/server/integration/mock_llm_server.py     /s2/mock_llm_server.py
+1792413566566 #9 CACHED
+1792413566567 
+1792413566568 #10 [3/5] COPY *.py /s2/
+1792413566568 #10 CACHED
+1792413566569 
+1792413566570 #11 [4/5] RUN mkdir -p /s2/ws
+1792413566571 #11 CACHED
+1792413566572 
+1792413566573 #12 [5/5] WORKDIR /s2
+1792413566573 #12 CACHED
+1792413566574 
+1792413566575 #13 exporting to image
+1792413566576 #13 exporting layers done
+1792413566576 #13 exporting manifest sha256:c0fcd1bda5a60cfd0fcc26aea15ce9ade95f96b769dfc0bfe2c8eb5dbd726eb9 done
+1792413566577 #13 exporting config sha256:dc0125fd3903b04456b87fb4be2938851e50d7d03e047331ac5dfe970b6dff17 done
+1792413566578 #13 naming to docker.io/library/cfo-stg-s2-route-computerdo-computer:wrangler-mvf8ra6g done
+1792413566579 #13 unpacking to docker.io/library/cfo-stg-s2-route-computerdo-computer:wrangler-mvf8ra6g 0.0s done
+1792413566580 #13 DONE 0.0s
+1792413571514 
+1792413571515 WARNING! Your credentials are stored unencrypted in '~/.docker/config.json'.
+1792413571516 Configure a credential helper to remove this warning. See
+1792413571517 https://docs.docker.com/go/credential-store/
+1792413571517 
+1792413571518 Login Succeeded
+1792413573025 Image already exists remotely, skipping push
+1792413573037 Untagged: cfo-stg-s2-route-computerdo-computer:wrangler-mvf8ra6g
+1792413573038 ├ Preparing computer for Cloudflare Containers
+1792413573038 │   registry.cloudflare.com/<account>/cfo-stg-s2-route-computerdo-computer@sha256:c0fcd1bda5a60cfd0fcc26aea15ce9ade95f96b769dfc0bfe2c8eb5dbd726eb9
+1792413573039 │
+1792413573902 ├ computer is ready to run
+1792413573903 │   registry.cloudflare.com/<account>/cfo-stg-s2-route-computerdo-computer@sha256:c0fcd1bda5a60cfd0fcc26aea15ce9ade95f96b769dfc0bfe2c8eb5dbd726eb9
+1792413573904 │
+1792413574976 Total Upload: 16.37 KiB / gzip: 5.07 KiB
+1792413577324 Worker Startup Time: 1 ms
+1792413577325 Your Worker has access to the following bindings:
+1792413577326 Binding                        Resource            
+1792413577327 env.SERVER (ServerDO)          Durable Object      
+1792413577328 env.COMPUTER (ComputerDO)      Durable Object      
+1792413577329 
+1792413577329 The following containers are available:
+1792413577330 - cfo-stg-s2-route-server (~/Lervent/cloudflare-omnigent/.claude/worktrees/lead-wp04/spikes/s2/server/Dockerfile)
+1792413577331 - ComputerDO (durable_object)
+1792413577332 
+1792413577333 Uploaded cfo-stg-s2-route (8.43 sec)
+1792413579531 
+1792413579532 WARNING! Your credentials are stored unencrypted in '~/.docker/config.json'.
+1792413579532 Configure a credential helper to remove this warning. See
+1792413579533 https://docs.docker.com/go/credential-store/
+1792413579534 
+1792413579535 Login Succeeded
+1792413579811 Image already exists remotely, skipping push
+1792413579824 Untagged: cfo-stg-s2-route-server:wrangler-7dcb48f6-fffc-491f-b89d-1a408e326819
+1792413580808 ╭ Deploy a container application deploy changes to your application
+1792413580809 │
+1792413581300 │ Container application changes
+1792413581300 │
+1792413581301 ├ no changes cfo-stg-s2-route-server
+1792413581302 │
+1792413581303 ╰ No changes to be made 
+1792413581304 
+1792413587128 Deployed cfo-stg-s2-route triggers (4.42 sec)
+1792413587129   cfo-stg-s2-route.<zone> (custom domain)
+1792413587130 Current Version ID: a8925108-0877-45f5-a228-345586dfc8f5
+1792413588927 deployed cfo-stg-s2-route at https://cfo-stg-s2-route.<zone> (expires 2026-10-21T12:39:22.074Z)

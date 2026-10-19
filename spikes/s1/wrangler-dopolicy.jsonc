@@ -1,0 +1,56 @@
+// Spike S1, durable_object scheduling policy variant: the computer container uses the policy
+// the design chooses for cloud computers. The server keeps the default policy, as in the design.
+// The staging tool supports "scheduling_policy" and "images" since f860ef2. After a deploy, the
+// owner opens /s1/kickoff and clicks Start (IR-017); with an empty S1_COMMAND the campaign idles.
+//
+//   npm ci --prefix spikes/s1            (once: @cloudflare/sandbox for the restore phases)
+//   pnpm stg deploy --suffix s1-dop --owner S1 --config spikes/s1/wrangler-dopolicy.jsonc --days 2
+//   pnpm stg teardown --suffix s1-dop    (also empties and deletes the backups bucket)
+//
+// d3: tunnel-check first (as in wrangler.jsonc), then wakes, native snapshot wakes and restore
+// wakes for comparison. d1 ran on 2026-10-18 with the host tunnel broken; d2 (2026-10-19)
+// stopped at tunnel-check, before the bare mode existed.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s1-dop",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false, "persist": true }
+  },
+  "vars": {
+    "S1_VERSION": "1",
+    "S1_REARM": "1",
+    "S1_ARM_HOURS": "8",
+    "S1_INSTANCE": "standard-2",
+    "S1_COMMAND": "d3:tunnel-check,wake=20,snapshot=10,backup-medium,rwake-medium=10,shutdown"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "S1Server" },
+      { "name": "COMPUTER", "class_name": "S1Computer" },
+      { "name": "CONTROL", "class_name": "S1Control" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer", "S1Control"] }],
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "cfo-stg-s1-dop-backups" }],
+  "containers": [
+    {
+      "name": "cfo-stg-s1-dop-server",
+      "class_name": "S1Server",
+      "image": "./server/dop.Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-s1-dop-computer",
+      "class_name": "S1Computer",
+      "scheduling_policy": "durable_object",
+      "images": { "computer": { "dockerfile": "./computer/Dockerfile" } }
+    }
+  ]
+}

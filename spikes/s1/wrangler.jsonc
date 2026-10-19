@@ -1,0 +1,64 @@
+// Spike S1: lifecycle and wake time. Deploy only with the guarded staging tool:
+//
+//   npm ci --prefix spikes/s1            (once: @cloudflare/sandbox for the restore phases)
+//   pnpm stg deploy --suffix s1-life --owner S1 --config spikes/s1/wrangler.jsonc --days 2
+//   pnpm stg teardown --suffix s1-life   (also empties and deletes the backups bucket)
+//
+// After the first deploy, the owner opens /s1/kickoff and clicks Start (a same-origin POST with a
+// request-intent token, IR-017); that arms the campaign for S1_ARM_HOURS and starts the alarm loop.
+// Later phases are queued by redeploying with a new S1_COMMAND (see src/index.js).
+//
+// c6, about 3 hours: first tunnel-check (picks the host tunnel's mode and checks "host online";
+// if that fails it drops the rest of the queue), then 21 plain wakes, a medium backup to R2 and
+// 20 wakes that restore it before the host is released, the heartbeat, eviction and their
+// controls, then small and large backups with 5 restore wakes each. The redeploy tests (c2, c3,
+// c4) are queued later by redeploying; see the evidence. c1 ran on 2026-10-18 with the host
+// tunnel broken; the deployment's Durable Object remembers that ID. c5 (2026-10-19 09:48Z) found
+// the egress duplicating Upgrade in every older mode and stopped at tunnel-check; hence c6.
+//
+// no_web_socket_compression: the host's tunnel is bridged by this Worker, which must not
+// negotiate permessage-deflate on the host's behalf (see "The host's tunnel" in src/index.js).
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-s1-life",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false, "persist": true }
+  },
+  "vars": {
+    "S1_VERSION": "1",
+    "S1_REARM": "1",
+    "S1_ARM_HOURS": "8",
+    "S1_COMMAND": "c6:tunnel-check,wake=21,backup-medium,rwake-medium=20,heartbeat,no-heartbeat,eviction,eviction-control,backup-small,rwake-small=5,backup-large,rwake-large=5"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "S1Server" },
+      { "name": "COMPUTER", "class_name": "S1Computer" },
+      { "name": "CONTROL", "class_name": "S1Control" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer", "S1Control"] }],
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "cfo-stg-s1-life-backups" }],
+  "containers": [
+    {
+      "name": "cfo-stg-s1-life-server",
+      "class_name": "S1Server",
+      "image": "./server/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-s1-life-computer",
+      "class_name": "S1Computer",
+      "image": "./computer/Dockerfile",
+      "max_instances": 1,
+      "instance_type": "standard-2"
+    }
+  ]
+}

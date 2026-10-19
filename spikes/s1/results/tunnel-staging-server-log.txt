@@ -1,0 +1,15 @@
+2026-10-18T19:52:39.989Z WARNI [omnigent.server.routes.host_tunnel] Host 47f611eaf713401582c4e1824dfb85e1 disconnected
+2026-10-18T19:52:39.989Z INFO:     connection open
+2026-10-18T19:52:39.989Z INFO:     10.1.0.0:17288 - "WebSocket /v1/hosts/47f611eaf713401582c4e1824dfb85e1/tunnel" [accepted]
+2026-10-18T19:52:40.789Z INFO:     connection open
+2026-10-18T19:52:40.789Z INFO:     10.1.0.0:17320 - "WebSocket /v1/hosts/47f611eaf713401582c4e1824dfb85e1/tunnel" [accepted]
+2026-10-18T19:52:40.889Z WARNI [omnigent.server.routes.host_tunnel] Host 47f611eaf713401582c4e1824dfb85e1 disconnected
+2026-10-18T19:52:42.089Z WARNI [omnigent.server.routes.host_tunnel] Host 47f611eaf713401582c4e1824dfb85e1 disconnected
+2026-10-18T19:52:42.089Z INFO:     connection open
+2026-10-18T19:52:42.089Z INFO:     10.1.0.0:17370 - "WebSocket /v1/hosts/47f611eaf713401582c4e1824dfb85e1/tunnel" [accepted]
+2026-10-18T19:52:44.289Z INFO:     connection open
+2026-10-18T19:52:44.289Z INFO:     10.1.0.0:17446 - "WebSocket /v1/hosts/47f611eaf713401582c4e1824dfb85e1/tunnel" [accepted]
+2026-10-18T19:52:44.388Z WARNI [omnigent.server.routes.host_tunnel] Host 47f611eaf713401582c4e1824dfb85e1 disconnected
+2026-10-18T19:52:47.389Z INFO:     connection open
+2026-10-18T19:52:47.389Z INFO:     10.1.0.0:17536 - "WebSocket /v1/hosts/47f611eaf713401582c4e1824dfb85e1/tunnel" [accepted]
+2026-10-18T19:52:47.489Z WARNI [omnigent.server.routes.host_tunnel] Host 47f611eaf713401582c4e1824dfb85e1 disconnected

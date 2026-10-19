@@ -1,0 +1,30 @@
+{
+  "name": "cloudflare-omnigent",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "typecheck": "pnpm -r --if-present typecheck && pnpm typecheck:scripts",
+    "typecheck:scripts": "tsc -p scripts",
+    "test": "pnpm -r --if-present test && pnpm test:scripts",
+    "test:scripts": "vitest run --config scripts/vitest.config.ts",
+    "coverage": "pnpm -r --if-present coverage && pnpm coverage:scripts",
+    "coverage:scripts": "vitest run --config scripts/vitest.config.ts --coverage",
+    "contracts:export": "pnpm --filter @cfo/contracts export-schema",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "stg": "node scripts/staging/stg.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "26.6.5",
+    "@vitest/coverage-istanbul": "5.0.3",
+    "fast-check": "4.10.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}

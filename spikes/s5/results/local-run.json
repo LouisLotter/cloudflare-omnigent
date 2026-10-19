@@ -1,0 +1,1396 @@
+{
+  "started": "2026-10-18T18:50:24.373Z",
+  "finished": "2026-10-18T18:50:58.343Z",
+  "image": "ghcr.io/omnigent-ai/omnigent-server@sha256:dba491573ba16b42da7447a7ab6e978bfeb6f49876093cc925f8340abd010df6",
+  "node": "v26.8.1",
+  "passed": 198,
+  "failed": 0,
+  "steps": [
+    {
+      "section": "setup",
+      "step": "Omnigent container, ms to healthy",
+      "expect": "(measurement)",
+      "got": "4538",
+      "pass": true
+    },
+    {
+      "section": "setup",
+      "step": "wrangler dev, ms to ready",
+      "expect": "(measurement)",
+      "got": "1006",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "no assertion on /",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "assertion only in the CF_Authorization cookie on /",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "empty assertion on /",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "oversized on /",
+      "expect": "403 oversized",
+      "got": "403 oversized",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "malformed on /",
+      "expect": "403 malformed",
+      "got": "403 malformed",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "forged signature under the genuine kid on /",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "payload edited after signing on /",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg none on /",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg HS256 on /",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "unknown kid on /",
+      "expect": "403 unknown_kid",
+      "got": "403 unknown_kid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "wrong issuer on /",
+      "expect": "403 wrong_issuer",
+      "got": "403 wrong_issuer",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another application (other AUD) on /",
+      "expect": "403 wrong_audience",
+      "got": "403 wrong_audience",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "expired on /",
+      "expect": "403 expired",
+      "got": "403 expired",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "not yet valid on /",
+      "expect": "403 not_yet_valid",
+      "got": "403 not_yet_valid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "org session token on /",
+      "expect": "403 wrong_token_type",
+      "got": "403 wrong_token_type",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another identity on /",
+      "expect": "403 not_owner",
+      "got": "403 not_owner",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "no assertion on /v1/scheduled-tasks",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "assertion only in the CF_Authorization cookie on /v1/scheduled-tasks",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "empty assertion on /v1/scheduled-tasks",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "oversized on /v1/scheduled-tasks",
+      "expect": "403 oversized",
+      "got": "403 oversized",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "malformed on /v1/scheduled-tasks",
+      "expect": "403 malformed",
+      "got": "403 malformed",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "forged signature under the genuine kid on /v1/scheduled-tasks",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "payload edited after signing on /v1/scheduled-tasks",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg none on /v1/scheduled-tasks",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg HS256 on /v1/scheduled-tasks",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "unknown kid on /v1/scheduled-tasks",
+      "expect": "403 unknown_kid",
+      "got": "403 unknown_kid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "wrong issuer on /v1/scheduled-tasks",
+      "expect": "403 wrong_issuer",
+      "got": "403 wrong_issuer",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another application (other AUD) on /v1/scheduled-tasks",
+      "expect": "403 wrong_audience",
+      "got": "403 wrong_audience",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "expired on /v1/scheduled-tasks",
+      "expect": "403 expired",
+      "got": "403 expired",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "not yet valid on /v1/scheduled-tasks",
+      "expect": "403 not_yet_valid",
+      "got": "403 not_yet_valid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "org session token on /v1/scheduled-tasks",
+      "expect": "403 wrong_token_type",
+      "got": "403 wrong_token_type",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another identity on /v1/scheduled-tasks",
+      "expect": "403 not_owner",
+      "got": "403 not_owner",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "no assertion on /platform/login",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "assertion only in the CF_Authorization cookie on /platform/login",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "empty assertion on /platform/login",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "oversized on /platform/login",
+      "expect": "403 oversized",
+      "got": "403 oversized",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "malformed on /platform/login",
+      "expect": "403 malformed",
+      "got": "403 malformed",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "forged signature under the genuine kid on /platform/login",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "payload edited after signing on /platform/login",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg none on /platform/login",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg HS256 on /platform/login",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "unknown kid on /platform/login",
+      "expect": "403 unknown_kid",
+      "got": "403 unknown_kid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "wrong issuer on /platform/login",
+      "expect": "403 wrong_issuer",
+      "got": "403 wrong_issuer",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another application (other AUD) on /platform/login",
+      "expect": "403 wrong_audience",
+      "got": "403 wrong_audience",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "expired on /platform/login",
+      "expect": "403 expired",
+      "got": "403 expired",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "not yet valid on /platform/login",
+      "expect": "403 not_yet_valid",
+      "got": "403 not_yet_valid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "org session token on /platform/login",
+      "expect": "403 wrong_token_type",
+      "got": "403 wrong_token_type",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another identity on /platform/login",
+      "expect": "403 not_owner",
+      "got": "403 not_owner",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "no assertion on /__s5/whoami",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "assertion only in the CF_Authorization cookie on /__s5/whoami",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "empty assertion on /__s5/whoami",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "oversized on /__s5/whoami",
+      "expect": "403 oversized",
+      "got": "403 oversized",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "malformed on /__s5/whoami",
+      "expect": "403 malformed",
+      "got": "403 malformed",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "forged signature under the genuine kid on /__s5/whoami",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "payload edited after signing on /__s5/whoami",
+      "expect": "403 bad_signature",
+      "got": "403 bad_signature",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg none on /__s5/whoami",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "alg HS256 on /__s5/whoami",
+      "expect": "403 unsupported_alg",
+      "got": "403 unsupported_alg",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "unknown kid on /__s5/whoami",
+      "expect": "403 unknown_kid",
+      "got": "403 unknown_kid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "wrong issuer on /__s5/whoami",
+      "expect": "403 wrong_issuer",
+      "got": "403 wrong_issuer",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another application (other AUD) on /__s5/whoami",
+      "expect": "403 wrong_audience",
+      "got": "403 wrong_audience",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "expired on /__s5/whoami",
+      "expect": "403 expired",
+      "got": "403 expired",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "not yet valid on /__s5/whoami",
+      "expect": "403 not_yet_valid",
+      "got": "403 not_yet_valid",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "org session token on /__s5/whoami",
+      "expect": "403 wrong_token_type",
+      "got": "403 wrong_token_type",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "another identity on /__s5/whoami",
+      "expect": "403 not_owner",
+      "got": "403 not_owner",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "POST /auth/login without an assertion",
+      "expect": "403 missing_assertion",
+      "got": "403 missing_assertion",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "valid assertion, unknown Host header",
+      "expect": "404 unknown_host",
+      "got": "404 unknown_host",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "token from the previous key (rotation)",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "genuine assertion",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "rejected requests that reached Omnigent",
+      "expect": "0",
+      "got": "0",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "certs fetches caused by 40 unknown-kid tokens",
+      "expect": "at most 1",
+      "got": "at most 1",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "derived negative cases in workerd (self-test)",
+      "expect": "0 failed",
+      "got": "0 failed",
+      "pass": true
+    },
+    {
+      "section": "ingress",
+      "step": "derived cases passed",
+      "expect": "(measurement)",
+      "got": "18",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/run",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/run: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "GET shows a confirmation page whose button POSTs",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the page carries a request-intent token",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "HEAD /__s5/run",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "HEAD /__s5/run: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/fault/revoke-grant",
+      "expect": "200 none",
+      "got": "200 none",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site top-level GET /__s5/fault/revoke-grant: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "simple cross-site form POST /__s5/arm",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "simple cross-site form POST /__s5/arm: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site form even with a valid token",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "cross-site form even with a valid token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "Origin: null",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "Origin: null: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "missing Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "missing Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin but Sec-Fetch-Site cross-site",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin but Sec-Fetch-Site cross-site: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, wrong token",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, wrong token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, no token",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "same Origin, no token: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on a fault route while disarmed",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on a fault route while disarmed: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on the scenario route while disarmed",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid control on the scenario route while disarmed: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform bootstrap without Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform bootstrap without Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform schedules read with a foreign Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "platform schedules read with a foreign Origin: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid same-origin arm",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "campaign armed",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "token rotated when armed",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the previous token after rotation",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "the previous token after rotation: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "valid fault control while armed",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "disarmed itself after its bound",
+      "expect": "false",
+      "got": "false",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after the bound",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after the bound: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "arm again",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "explicit disarm",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after disarm",
+      "expect": "403 not_armed",
+      "got": "403 not_armed",
+      "pass": true
+    },
+    {
+      "section": "campaign controls (IR-017)",
+      "step": "fault control after disarm: zero effect",
+      "expect": "unchanged",
+      "got": "unchanged",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "GET /health through the Worker",
+      "expect": "200 1",
+      "got": "200 1",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "Access alone does not sign in to Omnigent",
+      "expect": "401",
+      "got": "401",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "first-visitor setup is closed (owner pre-provisioned)",
+      "expect": "409",
+      "got": "409",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "owner signs in to Omnigent through the Worker",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "identity and Access headers stripped before Omnigent",
+      "expect": "none",
+      "got": "none",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "only the Access cookie removed",
+      "expect": "theme",
+      "got": "theme",
+      "pass": true
+    },
+    {
+      "section": "omnigent behind the Worker",
+      "step": "Omnigent session works through the Worker",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "before bootstrap",
+      "expect": "bootstrap_pending false",
+      "got": "bootstrap_pending false",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "bootstrap",
+      "expect": "stored true",
+      "got": "stored true",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "platform reads /v1/scheduled-tasks with its own grant",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "platform reads carry a bearer token (its own grant)",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "Worker restarted without the bootstrap secret, ms to ready",
+      "expect": "(measurement)",
+      "got": "1007",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "reads after the secret is gone",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "bootstrap without the secret, after a stored grant",
+      "expect": "already_stored",
+      "got": "already_stored",
+      "pass": true
+    },
+    {
+      "section": "bootstrap and secret removal",
+      "step": "no login attempted",
+      "expect": "0",
+      "got": "0",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "read after revocation",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "card asks for the password",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "card framing protection",
+      "expect": "DENY",
+      "got": "DENY",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "card CSP frame-ancestors",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "no Origin header",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "foreign Origin",
+      "expect": "403 bad_origin",
+      "got": "403 bad_origin",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "no request-intent token",
+      "expect": "403 bad_intent",
+      "got": "403 bad_intent",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "bad form token",
+      "expect": "403 bad_form_token",
+      "got": "403 bad_form_token",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "form token from another Access identity",
+      "expect": "403 bad_form_token",
+      "got": "403 bad_form_token",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "wrong password",
+      "expect": "400 wrong_password",
+      "got": "400 wrong_password",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "right password",
+      "expect": "200 repaired",
+      "got": "200 repaired",
+      "pass": true
+    },
+    {
+      "section": "repair card over HTTP",
+      "step": "read after repair",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "transient outage",
+      "step": "read while Omnigent is down",
+      "expect": "transient",
+      "got": "transient",
+      "pass": true
+    },
+    {
+      "section": "transient outage",
+      "step": "state while Omnigent is down",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "transient outage",
+      "step": "Omnigent restart, ms to healthy",
+      "expect": "(measurement)",
+      "got": "4016",
+      "pass": true
+    },
+    {
+      "section": "transient outage",
+      "step": "read after Omnigent is back",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "absolute expiry after the purge",
+      "step": "read after expiry and purge",
+      "expect": "needs_reauthentication",
+      "got": "needs_reauthentication",
+      "pass": true
+    },
+    {
+      "section": "absolute expiry after the purge",
+      "step": "reason and server answer (platform clock is not past the lifetime here)",
+      "expect": "(measurement)",
+      "got": "grant_rejected invalid_grant",
+      "pass": true
+    },
+    {
+      "section": "absolute expiry after the purge",
+      "step": "repair after expiry",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "arm the campaign",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "/__s5/run: derived assertion cases",
+      "expect": "0 failed",
+      "got": "0 failed",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "/__s5/run: health via proxy",
+      "expect": "200 via worker",
+      "got": "200 via worker",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "/__s5/run: /v1/scheduled-tasks without an Omnigent login",
+      "expect": "401 via worker",
+      "got": "401 via worker",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "/__s5/run: first-visitor setup",
+      "expect": "409 via worker",
+      "got": "409 via worker",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "/__s5/run: Omnigent web page",
+      "expect": "200 via worker",
+      "got": "200 via worker",
+      "pass": true
+    },
+    {
+      "section": "scenarios",
+      "step": "scenario runner finished",
+      "expect": "done",
+      "got": "done",
+      "pass": true
+    },
+    {
+      "section": "scenario: setup",
+      "step": "owner creates a schedule",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "scenario: bootstrap",
+      "step": "before bootstrap",
+      "expect": "bootstrap_pending false",
+      "got": "bootstrap_pending false",
+      "pass": true
+    },
+    {
+      "section": "scenario: bootstrap",
+      "step": "bootstrap",
+      "expect": "stored ok true",
+      "got": "stored ok true",
+      "pass": true
+    },
+    {
+      "section": "scenario: bootstrap",
+      "step": "platform reads /v1/scheduled-tasks with its own grant",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "scenario: bootstrap",
+      "step": "bootstrap again does not log in again",
+      "expect": "already_stored true",
+      "got": "already_stored true",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "bootstrap gets HTTP 200 without refresh_token",
+      "expect": "no_refresh needs_reauthentication false",
+      "got": "no_refresh needs_reauthentication false",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "reason",
+      "expect": "login_without_refresh",
+      "got": "login_without_refresh",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "repair card",
+      "expect": "needs_reauthentication login_without_refresh form",
+      "got": "needs_reauthentication login_without_refresh form",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "repair while the fault holds",
+      "expect": "no_refresh",
+      "got": "no_refresh",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "still not removable",
+      "expect": "false",
+      "got": "false",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "bootstrap retried after the fault",
+      "expect": "stored ok true",
+      "got": "stored ok true",
+      "pass": true
+    },
+    {
+      "section": "scenario: login without refresh",
+      "step": "reads after retry",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "read after revocation",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "server said",
+      "expect": "invalid_grant",
+      "got": "invalid_grant",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "repair card",
+      "expect": "needs_reauthentication grant_rejected form",
+      "got": "needs_reauthentication grant_rejected form",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "bootstrap secret still not needed",
+      "expect": "true",
+      "got": "true",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "repair with a wrong password",
+      "expect": "rejected",
+      "got": "rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "reason kept after a wrong password",
+      "expect": "grant_rejected",
+      "got": "grant_rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "repair with the password",
+      "expect": "stored",
+      "got": "stored",
+      "pass": true
+    },
+    {
+      "section": "scenario: revocation",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "owner resets the password",
+      "expect": "200",
+      "got": "200",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "read after reset",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "repair card",
+      "expect": "needs_reauthentication grant_rejected form",
+      "got": "needs_reauthentication grant_rejected form",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "repair with the old password",
+      "expect": "rejected",
+      "got": "rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "repair with the new password",
+      "expect": "stored",
+      "got": "stored",
+      "pass": true
+    },
+    {
+      "section": "scenario: password reset",
+      "step": "schedule survives the reset",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "scenario: password change",
+      "step": "owner changes the password",
+      "expect": "204",
+      "got": "204",
+      "pass": true
+    },
+    {
+      "section": "scenario: password change",
+      "step": "read after change",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected",
+      "pass": true
+    },
+    {
+      "section": "scenario: password change",
+      "step": "repair with the new password",
+      "expect": "stored",
+      "got": "stored",
+      "pass": true
+    },
+    {
+      "section": "scenario: password change",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "lifetime known to the platform",
+      "expect": "86400",
+      "got": "86400",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "expiry warning on the card (lifetime under 7 days)",
+      "expect": "ok none form expiry-warning",
+      "got": "ok none form expiry-warning",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "cached access token after the grant aged",
+      "expect": "ok",
+      "got": "ok",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "read once the access token must be refreshed",
+      "expect": "needs_reauthentication",
+      "got": "needs_reauthentication",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "reason and server answer",
+      "expect": "grant_expired expired_token | grant_rejected invalid_grant (purged)",
+      "got": "grant_expired expired_token",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "repair card",
+      "expect": "needs_reauthentication form",
+      "got": "needs_reauthentication form",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "repair with the password",
+      "expect": "stored",
+      "got": "stored",
+      "pass": true
+    },
+    {
+      "section": "scenario: absolute expiry",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed",
+      "pass": true
+    },
+    {
+      "section": "server log",
+      "step": "login handler logged 'refresh grant issuance failed'",
+      "expect": "(measurement)",
+      "got": "2 time(s)",
+      "pass": true
+    },
+    {
+      "section": "secrets scan",
+      "step": "synthetic secrets or JWTs in 6 output files",
+      "expect": "0",
+      "got": "0",
+      "pass": true
+    }
+  ]
+}

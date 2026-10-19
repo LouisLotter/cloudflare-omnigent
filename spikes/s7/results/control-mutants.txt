@@ -1,0 +1,6 @@
+no origin check: killed (4 failed | 50 passed (54))
+no request-intent check: killed (1 failed | 53 passed (54))
+no arming check: killed (3 failed | 51 passed (54))
+forwarded GET starts the server: killed (1 failed | 53 passed (54))
+GET to a control URL performs it: killed (1 failed | 53 passed (54))
+no self-disarm: killed (1 failed | 53 passed (54))

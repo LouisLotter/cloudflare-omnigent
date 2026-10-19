@@ -1,0 +1,23 @@
+# spike S3 tests, label after-ir016
+# 2026-10-18T18:53:34Z
+# image sha256:9ee055f69f623577a260540b6fdde52c6d0389db699d1a5d8d08cb19eccf127b
+# S6 policy sha256 a4bd281c5924166c0ad06aa55bccfb1aac04e4ad89cf2b0dfb98879e8a458f01
+# exit 0
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.7.0
+rootdir: /opt/s3/tests
+collected 32 items / 24 deselected / 8 selected
+
+../opt/s3/tests/test_ir016_copy_failures.py ........                     [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_success_control
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_root_failure_is_not_hidden[first]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_root_failure_is_not_hidden[middle]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_unsupported_snapshot_filesystem
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[rsync]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[rsync-2phase]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[reflink]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_failed_prune_rejects_the_snapshot
+======================= 8 passed, 24 deselected in 1.67s =======================

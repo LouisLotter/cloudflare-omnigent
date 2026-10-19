@@ -1,0 +1,4 @@
+# Generated configuration (team domain, AUD tag, synthetic secrets) and local run state.
+generated/
+.work/
+.wrangler/

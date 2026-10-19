@@ -1,0 +1,340 @@
+...................................FFFFFFF.FFFF.                         [100%]
+=================================== FAILURES ===================================
+_ test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first[checkpoint0-a sign-in that was never checkpointed] _
+
+world = <function world.<locals>.setup at 0x748b5a1b2b60>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b5a1d6e40>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b5a1d6870>
+checkpoint = (), why = 'a sign-in that was never checkpointed'
+
+    @pytest.mark.parametrize("checkpoint, why", [
+        ((), "a sign-in that was never checkpointed"),
+        (("claude-1", "codex-1"), "a refresh newer than the checkpoint (the checkpoint's tokens were rotated away)"),
+    ])
+    def test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first(
+            world, monkeypatch, capsys, checkpoint, why):
+        """Finding 2: a stopped computer keeps its files. Cleanup must sign out in it before removing
+        it, and may report a verified sign-out only if no login is left active."""
+        d = LoginDocker(computers={B: (False, NEWER)}, checkpoint=checkpoint, active=NEWER)
+        shm, _ = world(d, s3="ok", marker="signin-attempted")
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert not d.active, f"{why}: the logins {sorted(d.active)} are still active at the provider"
+E       AssertionError: a sign-in that was never checkpointed: the logins ['claude-2', 'codex-2'] are still active at the provider
+E       assert not {'claude-2', 'codex-2'}
+E        +  where {'claude-2', 'codex-2'} = <test_session_cleanup.LoginDocker object at 0x748b58f19bb0>.active
+
+../spikes/s6/tests/test_session_cleanup.py:286: AssertionError
+_ test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first[checkpoint1-a refresh newer than the checkpoint (the checkpoint's tokens were rotated away)] _
+
+world = <function world.<locals>.setup at 0x748b5a1b1ee0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b5a1d7e90>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b5a1d6e10>
+checkpoint = ('claude-1', 'codex-1')
+why = "a refresh newer than the checkpoint (the checkpoint's tokens were rotated away)"
+
+    @pytest.mark.parametrize("checkpoint, why", [
+        ((), "a sign-in that was never checkpointed"),
+        (("claude-1", "codex-1"), "a refresh newer than the checkpoint (the checkpoint's tokens were rotated away)"),
+    ])
+    def test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first(
+            world, monkeypatch, capsys, checkpoint, why):
+        """Finding 2: a stopped computer keeps its files. Cleanup must sign out in it before removing
+        it, and may report a verified sign-out only if no login is left active."""
+        d = LoginDocker(computers={B: (False, NEWER)}, checkpoint=checkpoint, active=NEWER)
+        shm, _ = world(d, s3="ok", marker="signin-attempted")
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert not d.active, f"{why}: the logins {sorted(d.active)} are still active at the provider"
+E       AssertionError: a refresh newer than the checkpoint (the checkpoint's tokens were rotated away): the logins ['claude-2', 'codex-2'] are still active at the provider
+E       assert not {'claude-2', 'codex-2'}
+E        +  where {'claude-2', 'codex-2'} = <test_session_cleanup.LoginDocker object at 0x748b5a1d7b30>.active
+
+../spikes/s6/tests/test_session_cleanup.py:286: AssertionError
+________ test_stopped_computer_that_cannot_start_is_kept_and_unresolved ________
+
+world = <function world.<locals>.setup at 0x748b5a1b1800>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f1b800>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1a7b0>
+
+    def test_stopped_computer_that_cannot_start_is_kept_and_unresolved(world, monkeypatch, capsys):
+        """Finding 2: if the stopped computer cannot be brought back, nothing is removed, the exit
+        status is non-zero and the owner is told to revoke the sessions."""
+        d = LoginDocker(computers={B: (False, NEWER)}, checkpoint=(), active=NEWER, start_fails=True)
+        shm, _ = world(d, s3="ok", marker="signin-attempted")
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert rc != 0
+E       assert 0 != 0
+
+../spikes/s6/tests/test_session_cleanup.py:297: AssertionError
+_ test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[store configuration] _
+
+world = <function world.<locals>.setup at 0x748b5a1b2840>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f1b830>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1be00>
+leftover = 'store configuration'
+
+    @pytest.mark.parametrize("leftover", [
+        "store configuration", "controller state only", "stopped store", "running store", "stopped computer",
+    ])
+    def test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session(world, monkeypatch, capsys, leftover):
+        """Finding 3: the review's isolated probe. No marker, but an earlier session's recovery
+        material is there. Starting must refuse before writing a marker, and the following cleanup
+        must keep the material and report the state as unknown."""
+        d = LoginDocker(store="absent", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3=None, marker=None, session=None)
+        if leftover == "store configuration":
+            (shm / "s3.json").write_text(json.dumps({"user": "earlier", "password": "earlier-session"}))
+        elif leftover == "controller state only":
+            (shm / "controller.sqlite").write_bytes(b"earlier session")
+        else:
+            shm.rmdir()
+            if leftover == "stopped store":
+                d.store = "stopped"
+            elif leftover == "running store":
+                d.store = "running"
+            else:
+                d.computers[B], d.homes[B] = False, set(NEWER)
+                d.active |= NEWER
+        before = (sorted(p.name for p in shm.iterdir()) if shm.exists() else None, d.store, dict(d.computers))
+        result, _ = run_startup(monkeypatch, capsys)
+>       assert isinstance(result, SystemExit) and result.code not in (0, None), \
+            f"{leftover}: startup did not refuse ({result!r})"
+E       AssertionError: store configuration: startup did not refuse (FileExistsError(17, 'File exists'))
+E       assert (False)
+E        +  where False = isinstance(FileExistsError(17, 'File exists'), SystemExit)
+
+../spikes/s6/tests/test_session_cleanup.py:336: AssertionError
+_ test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[controller state only] _
+
+world = <function world.<locals>.setup at 0x748b58f26160>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f18530>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1a2d0>
+leftover = 'controller state only'
+
+    @pytest.mark.parametrize("leftover", [
+        "store configuration", "controller state only", "stopped store", "running store", "stopped computer",
+    ])
+    def test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session(world, monkeypatch, capsys, leftover):
+        """Finding 3: the review's isolated probe. No marker, but an earlier session's recovery
+        material is there. Starting must refuse before writing a marker, and the following cleanup
+        must keep the material and report the state as unknown."""
+        d = LoginDocker(store="absent", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3=None, marker=None, session=None)
+        if leftover == "store configuration":
+            (shm / "s3.json").write_text(json.dumps({"user": "earlier", "password": "earlier-session"}))
+        elif leftover == "controller state only":
+            (shm / "controller.sqlite").write_bytes(b"earlier session")
+        else:
+            shm.rmdir()
+            if leftover == "stopped store":
+                d.store = "stopped"
+            elif leftover == "running store":
+                d.store = "running"
+            else:
+                d.computers[B], d.homes[B] = False, set(NEWER)
+                d.active |= NEWER
+        before = (sorted(p.name for p in shm.iterdir()) if shm.exists() else None, d.store, dict(d.computers))
+        result, _ = run_startup(monkeypatch, capsys)
+>       assert isinstance(result, SystemExit) and result.code not in (0, None), \
+            f"{leftover}: startup did not refuse ({result!r})"
+E       AssertionError: controller state only: startup did not refuse (1)
+E       assert (False)
+E        +  where False = isinstance(1, SystemExit)
+
+../spikes/s6/tests/test_session_cleanup.py:336: AssertionError
+_ test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[stopped store] _
+
+world = <function world.<locals>.setup at 0x748b58f26a20>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f1aae0>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1bdd0>
+leftover = 'stopped store'
+
+    @pytest.mark.parametrize("leftover", [
+        "store configuration", "controller state only", "stopped store", "running store", "stopped computer",
+    ])
+    def test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session(world, monkeypatch, capsys, leftover):
+        """Finding 3: the review's isolated probe. No marker, but an earlier session's recovery
+        material is there. Starting must refuse before writing a marker, and the following cleanup
+        must keep the material and report the state as unknown."""
+        d = LoginDocker(store="absent", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3=None, marker=None, session=None)
+        if leftover == "store configuration":
+            (shm / "s3.json").write_text(json.dumps({"user": "earlier", "password": "earlier-session"}))
+        elif leftover == "controller state only":
+            (shm / "controller.sqlite").write_bytes(b"earlier session")
+        else:
+            shm.rmdir()
+            if leftover == "stopped store":
+                d.store = "stopped"
+            elif leftover == "running store":
+                d.store = "running"
+            else:
+                d.computers[B], d.homes[B] = False, set(NEWER)
+                d.active |= NEWER
+        before = (sorted(p.name for p in shm.iterdir()) if shm.exists() else None, d.store, dict(d.computers))
+        result, _ = run_startup(monkeypatch, capsys)
+>       assert isinstance(result, SystemExit) and result.code not in (0, None), \
+            f"{leftover}: startup did not refuse ({result!r})"
+E       AssertionError: stopped store: startup did not refuse (1)
+E       assert (False)
+E        +  where False = isinstance(1, SystemExit)
+
+../spikes/s6/tests/test_session_cleanup.py:336: AssertionError
+_ test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[running store] _
+
+world = <function world.<locals>.setup at 0x748b58f27a60>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f19880>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1b260>
+leftover = 'running store'
+
+    @pytest.mark.parametrize("leftover", [
+        "store configuration", "controller state only", "stopped store", "running store", "stopped computer",
+    ])
+    def test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session(world, monkeypatch, capsys, leftover):
+        """Finding 3: the review's isolated probe. No marker, but an earlier session's recovery
+        material is there. Starting must refuse before writing a marker, and the following cleanup
+        must keep the material and report the state as unknown."""
+        d = LoginDocker(store="absent", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3=None, marker=None, session=None)
+        if leftover == "store configuration":
+            (shm / "s3.json").write_text(json.dumps({"user": "earlier", "password": "earlier-session"}))
+        elif leftover == "controller state only":
+            (shm / "controller.sqlite").write_bytes(b"earlier session")
+        else:
+            shm.rmdir()
+            if leftover == "stopped store":
+                d.store = "stopped"
+            elif leftover == "running store":
+                d.store = "running"
+            else:
+                d.computers[B], d.homes[B] = False, set(NEWER)
+                d.active |= NEWER
+        before = (sorted(p.name for p in shm.iterdir()) if shm.exists() else None, d.store, dict(d.computers))
+        result, _ = run_startup(monkeypatch, capsys)
+>       assert isinstance(result, SystemExit) and result.code not in (0, None), \
+            f"{leftover}: startup did not refuse ({result!r})"
+E       AssertionError: running store: startup did not refuse (1)
+E       assert (False)
+E        +  where False = isinstance(1, SystemExit)
+
+../spikes/s6/tests/test_session_cleanup.py:336: AssertionError
+_ test_a_marker_from_another_session_does_not_account_for_recovery_material[signed-out-verified-None] _
+
+world = <function world.<locals>.setup at 0x748b58f26d40>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f18e00>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1ad20>
+marker = 'signed-out-verified', marker_session = None
+
+    @pytest.mark.parametrize("marker, marker_session", [
+        ("signed-out-verified", None),  # as the committed dry-run marker: no session id
+        ("signed-out-verified", "sess-other"),
+        ("closed-never-signed-in", "sess-other"),
+        ("started", "sess-other"),
+    ])
+    def test_a_marker_from_another_session_does_not_account_for_recovery_material(
+            world, monkeypatch, capsys, marker, marker_session):
+        """Finding 3: a marker is evidence about its own session only. The real and dry-run sessions
+        keep separate markers but share the store, /dev/shm and computer names; another session's
+        closed or never-signed-in marker must not let cleanup remove this material unverified."""
+        d = LoginDocker(store="running", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3="ok", marker=None, session="sess-1")
+        (out_dir / "session-state.json").write_text(json.dumps({"phase": marker, "session": marker_session}))
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert rc != 0, f"{marker}: reported closed"
+E       AssertionError: signed-out-verified: reported closed
+E       assert 0 != 0
+
+../spikes/s6/tests/test_session_cleanup.py:362: AssertionError
+_ test_a_marker_from_another_session_does_not_account_for_recovery_material[signed-out-verified-sess-other] _
+
+world = <function world.<locals>.setup at 0x748b58f26160>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f18860>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f18500>
+marker = 'signed-out-verified', marker_session = 'sess-other'
+
+    @pytest.mark.parametrize("marker, marker_session", [
+        ("signed-out-verified", None),  # as the committed dry-run marker: no session id
+        ("signed-out-verified", "sess-other"),
+        ("closed-never-signed-in", "sess-other"),
+        ("started", "sess-other"),
+    ])
+    def test_a_marker_from_another_session_does_not_account_for_recovery_material(
+            world, monkeypatch, capsys, marker, marker_session):
+        """Finding 3: a marker is evidence about its own session only. The real and dry-run sessions
+        keep separate markers but share the store, /dev/shm and computer names; another session's
+        closed or never-signed-in marker must not let cleanup remove this material unverified."""
+        d = LoginDocker(store="running", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3="ok", marker=None, session="sess-1")
+        (out_dir / "session-state.json").write_text(json.dumps({"phase": marker, "session": marker_session}))
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert rc != 0, f"{marker}: reported closed"
+E       AssertionError: signed-out-verified: reported closed
+E       assert 0 != 0
+
+../spikes/s6/tests/test_session_cleanup.py:362: AssertionError
+_ test_a_marker_from_another_session_does_not_account_for_recovery_material[closed-never-signed-in-sess-other] _
+
+world = <function world.<locals>.setup at 0x748b58f26200>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f19b50>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f1ac30>
+marker = 'closed-never-signed-in', marker_session = 'sess-other'
+
+    @pytest.mark.parametrize("marker, marker_session", [
+        ("signed-out-verified", None),  # as the committed dry-run marker: no session id
+        ("signed-out-verified", "sess-other"),
+        ("closed-never-signed-in", "sess-other"),
+        ("started", "sess-other"),
+    ])
+    def test_a_marker_from_another_session_does_not_account_for_recovery_material(
+            world, monkeypatch, capsys, marker, marker_session):
+        """Finding 3: a marker is evidence about its own session only. The real and dry-run sessions
+        keep separate markers but share the store, /dev/shm and computer names; another session's
+        closed or never-signed-in marker must not let cleanup remove this material unverified."""
+        d = LoginDocker(store="running", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3="ok", marker=None, session="sess-1")
+        (out_dir / "session-state.json").write_text(json.dumps({"phase": marker, "session": marker_session}))
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert rc != 0, f"{marker}: reported closed"
+E       AssertionError: closed-never-signed-in: reported closed
+E       assert 0 != 0
+
+../spikes/s6/tests/test_session_cleanup.py:362: AssertionError
+_ test_a_marker_from_another_session_does_not_account_for_recovery_material[started-sess-other] _
+
+world = <function world.<locals>.setup at 0x748b58f27060>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x748b58f18890>
+capsys = <_pytest.capture.CaptureFixture object at 0x748b58f190d0>
+marker = 'started', marker_session = 'sess-other'
+
+    @pytest.mark.parametrize("marker, marker_session", [
+        ("signed-out-verified", None),  # as the committed dry-run marker: no session id
+        ("signed-out-verified", "sess-other"),
+        ("closed-never-signed-in", "sess-other"),
+        ("started", "sess-other"),
+    ])
+    def test_a_marker_from_another_session_does_not_account_for_recovery_material(
+            world, monkeypatch, capsys, marker, marker_session):
+        """Finding 3: a marker is evidence about its own session only. The real and dry-run sessions
+        keep separate markers but share the store, /dev/shm and computer names; another session's
+        closed or never-signed-in marker must not let cleanup remove this material unverified."""
+        d = LoginDocker(store="running", checkpoint={"claude-1", "codex-1"}, active={"claude-1", "codex-1"})
+        shm, out_dir = world(d, s3="ok", marker=None, session="sess-1")
+        (out_dir / "session-state.json").write_text(json.dumps({"phase": marker, "session": marker_session}))
+        rc, out = run_cleanup(monkeypatch, capsys)
+>       assert rc != 0, f"{marker}: reported closed"
+E       AssertionError: started: reported closed
+E       assert 0 != 0
+
+../spikes/s6/tests/test_session_cleanup.py:362: AssertionError
+=========================== short test summary info ============================
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first[checkpoint0-a sign-in that was never checkpointed]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_stopped_computer_with_credentials_newer_than_its_checkpoint_is_signed_out_first[checkpoint1-a refresh newer than the checkpoint (the checkpoint's tokens were rotated away)]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_stopped_computer_that_cannot_start_is_kept_and_unresolved
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[store configuration]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[controller state only]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[stopped store]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_startup_then_cleanup_never_overwrites_an_unknown_earlier_session[running store]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_a_marker_from_another_session_does_not_account_for_recovery_material[signed-out-verified-None]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_a_marker_from_another_session_does_not_account_for_recovery_material[signed-out-verified-sess-other]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_a_marker_from_another_session_does_not_account_for_recovery_material[closed-never-signed-in-sess-other]
+FAILED ../spikes/s6/tests/test_session_cleanup.py::test_a_marker_from_another_session_does_not_account_for_recovery_material[started-sess-other]
+11 failed, 37 passed in 19.91s

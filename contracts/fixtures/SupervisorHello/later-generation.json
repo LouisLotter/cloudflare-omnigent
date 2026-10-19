@@ -1,0 +1,8 @@
+{
+  "type": "hello",
+  "protocolVersion": 1,
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 42,
+  "hostId": "7f3c2a9e-4b1d-4e8a-9c2f-1a2b3c4d5e6f",
+  "supervisorVersion": "0.1.0+build.7"
+}

@@ -1,0 +1,69 @@
+{
+  "target": "http://127.0.0.1:8790",
+  "foreign": "http://localhost:8790",
+  "checkedAt": "2026-10-18T18:42:01.039Z",
+  "before": [],
+  "after": [],
+  "results": [
+    {
+      "attack": "cross-site form from data: URL",
+      "route": "/__s7/api/arm",
+      "page": "{\n  \"error\": \"refused: null-origin\"\n}"
+    },
+    {
+      "attack": "no-cors fetch from http://localhost:8790",
+      "route": "/__s7/api/arm",
+      "result": "opaque 0"
+    },
+    {
+      "attack": "top-level GET",
+      "route": "/__s7/api/arm",
+      "page": "Confirm an S7 action\n\nThis link asks for POST /__s7/api/arm. Nothing has happened yet.\n\nCampaign actions run only while "
+    },
+    {
+      "attack": "cross-site form from data: URL",
+      "route": "/__s7/api/start",
+      "page": "{\n  \"error\": \"refused: null-origin\"\n}"
+    },
+    {
+      "attack": "no-cors fetch from http://localhost:8790",
+      "route": "/__s7/api/start",
+      "result": "opaque 0"
+    },
+    {
+      "attack": "top-level GET",
+      "route": "/__s7/api/start",
+      "page": "Confirm an S7 action\n\nThis link asks for POST /__s7/api/start. Nothing has happened yet.\n\nCampaign actions run only whil"
+    },
+    {
+      "attack": "cross-site form from data: URL",
+      "route": "/__s7/api/replace",
+      "page": "{\n  \"error\": \"refused: null-origin\"\n}"
+    },
+    {
+      "attack": "no-cors fetch from http://localhost:8790",
+      "route": "/__s7/api/replace",
+      "result": "opaque 0"
+    },
+    {
+      "attack": "top-level GET",
+      "route": "/__s7/api/replace",
+      "page": "Confirm an S7 action\n\nThis link asks for POST /__s7/api/replace. Nothing has happened yet.\n\nCampaign actions run only wh"
+    },
+    {
+      "attack": "cross-site form from data: URL",
+      "route": "/__s7/api/computer-run",
+      "page": "{\n  \"error\": \"refused: null-origin\"\n}"
+    },
+    {
+      "attack": "no-cors fetch from http://localhost:8790",
+      "route": "/__s7/api/computer-run",
+      "result": "opaque 0"
+    },
+    {
+      "attack": "top-level GET",
+      "route": "/__s7/api/computer-run",
+      "page": "Confirm an S7 action\n\nThis link asks for POST /__s7/api/computer-run. Nothing has happened yet.\n\nCampaign actions run on"
+    }
+  ]
+}

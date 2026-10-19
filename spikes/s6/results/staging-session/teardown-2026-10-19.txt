@@ -1,0 +1,19 @@
+checked 2026-10-19T12:21:41Z
+-- Worker: cf workers get cfo-stg-s6-creds
+
+┌ APIError
+│ [10007] This Worker does not exist on your account.
+-- container application cfo-stg-s6-creds-server: cf containers applications list --name cfo-stg-s6-creds-server
+[]
+-- container application cfo-stg-s6-creds-computer: cf containers applications list --name cfo-stg-s6-creds-computer
+[]
+-- registry images: cf containers images list (total entries, then entries matching cfo-stg-s6-creds)
+valid listing: 6 entries; 0 matching
+-- Access applications on cfo-stg-s6-creds.<zone>: cf zero-trust access applications list --domain … --exact
+[]
+-- staging registry record: pnpm stg list | grep cfo-stg-s6-creds
+0
+-- hostname: curl https://cfo-stg-s6-creds.<zone>/
+530
+-- container application cfo-stg-s6-creds-pc: cf containers applications list --name cfo-stg-s6-creds-pc
+[]

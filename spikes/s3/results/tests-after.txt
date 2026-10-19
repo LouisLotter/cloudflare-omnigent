@@ -1,0 +1,56 @@
+# spike S3 tests, label after
+# 2026-10-18T18:59:17Z
+# image sha256:cf808f4b7fd0b5b1af48110c8e107d36fde8ef24b2fe52095df94d463268a9a6
+# S6 policy sha256 a4bd281c5924166c0ad06aa55bccfb1aac04e4ad89cf2b0dfb98879e8a458f01
+# exit 0
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.7.0
+rootdir: /opt/s3/tests
+collected 37 items
+
+../opt/s3/tests/test_ir008_archive.py .......                            [ 18%]
+../opt/s3/tests/test_ir011_content.py ....                               [ 29%]
+../opt/s3/tests/test_ir012_lease_race.py .........                       [ 54%]
+../opt/s3/tests/test_ir015_credentials.py ........                       [ 75%]
+../opt/s3/tests/test_ir016_copy_failures.py .........                    [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_partial_producer_failure_does_not_publish
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_compressor_failure_does_not_publish
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_failure_after_a_part_was_uploaded_aborts
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_success_control_publishes_the_whole_snapshot
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_restore_decompressor_failure_leaves_target_unchanged
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_restore_extractor_failure_leaves_target_unchanged
+PASSED ../opt/s3/tests/test_ir008_archive.py::test_restore_success_control
+PASSED ../opt/s3/tests/test_ir011_content.py::test_two_phase_final_pass_is_content_correct
+PASSED ../opt/s3/tests/test_ir011_content.py::test_incremental_reused_snapshot_is_content_correct
+PASSED ../opt/s3/tests/test_ir011_content.py::test_full_copy_equals_source
+PASSED ../opt/s3/tests/test_ir011_content.py::test_lease_expiry_during_final_pass_discards
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_late_stop_then_controller_death_pid_path
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_delayed_live_controller_publishes_nothing
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_prestopped_process_stays_stopped
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_reused_pid_is_never_resumed
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_late_freeze_then_controller_death_cgroup_path
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_refuses_a_stop_after_expiry
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_resumes_on_controller_loss
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_refuses_a_reused_pid
+PASSED ../opt/s3/tests/test_ir012_lease_race.py::test_guard_leaves_a_prestopped_process_alone
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_policy_copy_matches_s6_source
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_every_family_is_covered_by_the_policy
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_rsync_globs_cover_every_family
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_snapshot_archive_and_restore_hold_no_credentials[rsync]
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_snapshot_archive_and_restore_hold_no_credentials[rsync-2phase]
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_snapshot_archive_and_restore_hold_no_credentials[rsync-incremental]
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_snapshot_archive_and_restore_hold_no_credentials[reflink]
+PASSED ../opt/s3/tests/test_ir015_credentials.py::test_older_archive_with_credentials_is_not_installed
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_success_control
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_root_failure_is_not_hidden[first]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_root_failure_is_not_hidden[middle]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_reflink_unsupported_snapshot_filesystem
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[rsync]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[rsync-2phase]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_enospc_part_way[reflink]
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_failed_prune_rejects_the_snapshot
+PASSED ../opt/s3/tests/test_ir016_copy_failures.py::test_rsync_success_control_has_no_forbidden_members
+============================= 37 passed in 12.73s ==============================

@@ -1,0 +1,6 @@
+# Terminal WebSocket through the Worker (wrangler dev), revision a6aee54
+{"origin_matches":true,"upgraded":true,"command_ran":true}
+{"origin_matches":false,"upgraded":false,"status":403}
+# ttyd directly (image built from a6aee54, --check-origin)
+{"origin_matches":true,"upgraded":true,"command_ran":true}
+{"origin_matches":false,"error":"ECONNRESET"}

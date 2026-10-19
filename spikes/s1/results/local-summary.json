@@ -1,0 +1,170 @@
+{
+  "file": "/tmp/s1-local-all.jsonl",
+  "total": 0,
+  "failed": 0,
+  "groups": {},
+  "series": {
+    "onlineMs": {
+      "n": 0
+    },
+    "bootMarkMs": {
+      "n": 0
+    },
+    "firstHttpMs": {
+      "n": 0
+    },
+    "wsUpgradeMs": {
+      "n": 0
+    },
+    "startReturnedMs": {
+      "n": 0
+    }
+  },
+  "seriesWithoutFirst": {
+    "onlineMs": {
+      "n": 0
+    },
+    "bootMarkMs": {
+      "n": 0
+    },
+    "firstHttpMs": {
+      "n": 0
+    },
+    "wsUpgradeMs": {
+      "n": 0
+    },
+    "startReturnedMs": {
+      "n": 0
+    }
+  },
+  "local": {
+    "wake cfo-s1/computer:local restore=none": {
+      "n": 10,
+      "min": 4567,
+      "p50": 5557,
+      "p95": 6994,
+      "max": 6994,
+      "mean": 5639
+    },
+    "wake ghcr.io/omnigent-ai/omnigent-host:v0.17.0 restore=none": {
+      "n": 5,
+      "min": 4804,
+      "p50": 5764,
+      "p95": 6239,
+      "max": 6239,
+      "mean": 5671
+    },
+    "wake cfo-s1/restore-bench:local restore=small": {
+      "n": 5,
+      "min": 6050,
+      "p50": 7452,
+      "p95": 8378,
+      "max": 8378,
+      "mean": 7289
+    },
+    "wake cfo-s1/restore-bench:local restore=medium": {
+      "n": 5,
+      "min": 11377,
+      "p50": 12956,
+      "p95": 19213,
+      "max": 19213,
+      "mean": 14014
+    },
+    "restore small (130918148 B raw, 45259967 B archive) downloadMs": {
+      "n": 5,
+      "min": 37,
+      "p50": 39,
+      "p95": 40,
+      "max": 40,
+      "mean": 39
+    },
+    "restore small (130918148 B raw, 45259967 B archive) verifyMs": {
+      "n": 5,
+      "min": 25,
+      "p50": 25,
+      "p95": 27,
+      "max": 27,
+      "mean": 25
+    },
+    "restore small (130918148 B raw, 45259967 B archive) extractMs": {
+      "n": 5,
+      "min": 449,
+      "p50": 473,
+      "p95": 486,
+      "max": 486,
+      "mean": 470
+    },
+    "restore small (130918148 B raw, 45259967 B archive) totalMs": {
+      "n": 5,
+      "min": 512,
+      "p50": 535,
+      "p95": 550,
+      "max": 550,
+      "mean": 534
+    },
+    "restore medium (639212273 B raw, 438448577 B archive) downloadMs": {
+      "n": 5,
+      "min": 3236,
+      "p50": 5236,
+      "p95": 7626,
+      "max": 7626,
+      "mean": 5004
+    },
+    "restore medium (639212273 B raw, 438448577 B archive) verifyMs": {
+      "n": 5,
+      "min": 239,
+      "p50": 240,
+      "p95": 246,
+      "max": 246,
+      "mean": 241
+    },
+    "restore medium (639212273 B raw, 438448577 B archive) extractMs": {
+      "n": 5,
+      "min": 3561,
+      "p50": 9976,
+      "p95": 14887,
+      "max": 14887,
+      "mean": 9072
+    },
+    "restore medium (639212273 B raw, 438448577 B archive) totalMs": {
+      "n": 5,
+      "min": 9043,
+      "p50": 13567,
+      "p95": 22752,
+      "max": 22752,
+      "mean": 14317
+    },
+    "restore large (1427827095 B raw, 1054352126 B archive) downloadMs": {
+      "n": 5,
+      "min": 13621,
+      "p50": 22653,
+      "p95": 29556,
+      "max": 29556,
+      "mean": 21601
+    },
+    "restore large (1427827095 B raw, 1054352126 B archive) verifyMs": {
+      "n": 5,
+      "min": 550,
+      "p50": 574,
+      "p95": 586,
+      "max": 586,
+      "mean": 570
+    },
+    "restore large (1427827095 B raw, 1054352126 B archive) extractMs": {
+      "n": 5,
+      "min": 16287,
+      "p50": 18528,
+      "p95": 26442,
+      "max": 26442,
+      "mean": 20744
+    },
+    "restore large (1427827095 B raw, 1054352126 B archive) totalMs": {
+      "n": 5,
+      "min": 31119,
+      "p50": 45256,
+      "p95": 49645,
+      "max": 49645,
+      "mean": 42916
+    }
+  }
+}

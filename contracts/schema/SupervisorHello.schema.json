@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "computerId": {
+      "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+      "type": "string"
+    },
+    "generation": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "hostId": {
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+      "type": "string"
+    },
+    "protocolVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "supervisorVersion": {
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "type": {
+      "const": "hello",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "protocolVersion",
+    "computerId",
+    "generation",
+    "hostId",
+    "supervisorVersion"
+  ],
+  "title": "SupervisorHello",
+  "type": "object"
+}

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>S6 qualification: attacker page (synthetic)</title>
+<style>
+body{font:15px/1.45 system-ui,sans-serif;margin:24px auto;max-width:860px;padding:0 16px}
+code{background:#eee;padding:1px 4px;border-radius:3px}li{margin:6px 0}#log li{font-family:monospace;font-size:13px}
+</style>
+</head>
+<body>
+<h1>S6 qualification: attacker page</h1>
+<p>This page stands in for a malicious site, for spike S6's IR-010 qualification. It sends the requests a hostile page could send to the S6 staging page, in your logged-in browser:
+from another origin (this page), from a <code>null</code> origin (a sandboxed frame), as a simple form, as a WebSocket to the terminal, and as a top-level link.
+It cannot see the answers. Every attempt carries a <code>case=</code> tag, so the S6 page's <b>Q5 Qualification report</b> shows which ones reached the Worker and why each was refused.</p>
+<p>Target: <code id="target"></code></p>
+<ol>
+<li>Start the synthetic computer first (S6 page, <b>Q2</b>).</li>
+<li>This page runs its automatic attempts on load (below).</li>
+<li>Then click this link once; it must show a page that says <i>"This page changes nothing"</i>. <b>Do not press its button.</b> Close that tab:
+  <a id="toplink" href="about:blank" target="_blank" rel="noopener">top-level cross-site GET of a control URL</a></li>
+<li>Go back to the S6 page and click <b>Q5 Qualification report</b>. The synthetic computer must still be running, with the same generation.</li>
+</ol>
+<h2>Attempts</h2>
+<ul id="log"></ul>
+<iframe id="nullframe" title="null-origin fetch attempts" sandbox="allow-scripts allow-forms" style="display:none"></iframe>
+<iframe id="nullform" title="null-origin form attempt" sandbox="allow-scripts allow-forms" style="display:none"></iframe>
+<iframe name="sink" title="form response sink" style="display:none"></iframe>
+<script>
+const target = decodeURIComponent(location.hash.slice(1)).replace(/\/$/, "");
+document.getElementById("target").textContent = target || "(missing: open this page as http://127.0.0.1:8086/#https://cfo-stg-s6-creds.<zone>)";
+const log = (t) => { const li = document.createElement("li"); li.textContent = t; document.getElementById("log").appendChild(li); };
+const guess = "0".repeat(64); // a hostile page cannot read the real request-intent token
+const END = "<" + "/script>"; // a literal closing tag inside a template would end this script
+if (target) {
+  document.getElementById("toplink").href = `${target}/api/phase?name=stop&fake=1&case=foreign-top-level-get`;
+  // 1. Fetch POST with cookies, no custom header (a "simple" request: no preflight).
+  fetch(`${target}/api/phase?name=stop&fake=1&case=foreign-fetch-post`, { method: "POST", mode: "no-cors", credentials: "include" })
+    .then(() => log("sent: foreign-fetch-post (no-cors POST with cookies)"), (e) => log(`blocked by the browser: foreign-fetch-post (${e.name})`));
+  // 2. Fetch POST with a guessed token header (needs a CORS preflight, which the Worker never grants).
+  fetch(`${target}/api/phase?name=stop&fake=1&case=foreign-fetch-header`, { method: "POST", credentials: "include", headers: { "X-S6-Intent": guess } })
+    .then(() => log("sent: foreign-fetch-header"), (e) => log(`blocked by the browser: foreign-fetch-header (${e.name})`));
+  // 3. A simple cross-site form POST into a hidden frame.
+  const f = document.createElement("form");
+  f.method = "POST"; f.target = "sink"; f.action = `${target}/api/phase?name=stop&fake=1&case=foreign-form-post`;
+  const i = document.createElement("input"); i.name = "x-s6-intent"; i.value = guess; f.appendChild(i);
+  document.body.appendChild(f); f.submit(); log("sent: foreign-form-post (simple form)");
+  // 4. The terminal's WebSocket.
+  const wsUrl = target.replace(/^http/, "ws");
+  try {
+    const ws = new WebSocket(`${wsUrl}/term/ws?case=foreign-websocket`, ["tty"]);
+    ws.onopen = () => { log("!! foreign-websocket OPENED: report this"); ws.close(); };
+    ws.onerror = () => log("refused or blocked: foreign-websocket");
+  } catch (e) { log(`blocked by the browser: foreign-websocket (${e.name})`); }
+  // 5. The same from a null origin: a sandboxed frame without allow-same-origin.
+  const T = JSON.stringify(target);
+  document.getElementById("nullframe").srcdoc = `<script>
+    const t = ${T}; const p = (m) => parent.postMessage(m, "*");
+    fetch(t + "/api/phase?name=stop&fake=1&case=null-fetch-post", {method: "POST", mode: "no-cors", credentials: "include"})
+      .then(() => p("sent: null-fetch-post"), (e) => p("blocked by the browser: null-fetch-post (" + e.name + ")"));
+    try {
+      const w = new WebSocket(t.replace(/^http/, "ws") + "/term/ws?case=null-websocket", ["tty"]);
+      w.onopen = () => { p("!! null-websocket OPENED: report this"); w.close(); };
+      w.onerror = () => p("refused or blocked: null-websocket");
+    } catch (e) { p("blocked by the browser: null-websocket (" + e.name + ")"); }
+  ${END}`;
+  // A simple form POST from a null origin, in its own sandboxed frame (the submit navigates it).
+  document.getElementById("nullform").srcdoc = `<form method="POST" action="${target}/api/phase?name=stop&fake=1&case=null-form-post">
+    <input name="x-s6-intent" value="${guess}"></form><script>parent.postMessage("sent: null-form-post", "*");
+    document.forms[0].submit();${END}`;
+  window.addEventListener("message", (e) => log(String(e.data)));
+  setTimeout(() => {
+    log("done: now click the top-level link above, then go back to the S6 page and click Q5");
+  }, 1500);
+}
+</script>
+</body>
+</html>

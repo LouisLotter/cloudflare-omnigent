@@ -1,0 +1,19 @@
+// Local only, never deployed: the S1 Worker without containers or buckets, for the real-browser
+// check of the campaign controls (browser-check.mjs). The control path needs no container.
+{
+  "name": "s1-browser-check",
+  "main": "../../src/index.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "S1_VERSION": "browser-check", "S1_ARM_HOURS": "1", "S1_COMMAND": "" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "S1Server" },
+      { "name": "COMPUTER", "class_name": "S1Computer" },
+      { "name": "CONTROL", "class_name": "S1Control" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["S1Server", "S1Computer", "S1Control"] }]
+}
