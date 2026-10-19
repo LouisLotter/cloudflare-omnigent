@@ -1,0 +1,16 @@
+{
+ "q2_start": true,
+ "q3_terminal_self_check": true,
+ "q5_report_shows_running": true,
+ "q6_stop": true,
+ "q7_wipe": true,
+ "r3_start": true,
+ "r3_confirmation_keeps_fake": false,
+ "r3_confirmation_keeps_failure_option": false,
+ "r3_confirmation_keeps_force_stop_confirmation": false,
+ "r3_page_shows_revocation_instruction": false,
+ "r3_wipe_refused_while_unresolved": false,
+ "r3_revocation_recorded": false,
+ "r3_wipe_after_the_record": false,
+ "ok": false
+}

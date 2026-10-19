@@ -3,7 +3,9 @@
 # checkpoint failed. With the fake CLIs, signed in, inject each failure into Stop's final
 # checkpoint (before export, export, upload, publication) and check that the phase fails, the
 # computer keeps running and the state says what to do. Then the controls: a Stop without a
-# failure stops; a force-stop stops but records that credentials may be lost.
+# failure stops; a force-stop stops but records that credentials may be lost. Since review s6-r3
+# (finding 1), the force-stopped credentials stay unresolved through Recover, Wipe and Start until
+# the owner's revocation is recorded.
 #
 #   bash spikes/s6/staging/stop-capture-check.sh http://127.0.0.1:18786 spikes/s6/results/ir013-stop-check.jsonl
 set -uo pipefail
@@ -45,7 +47,19 @@ check "force-stop stops the computer" 'echo "$r" | done_ok && ! running'
 check "force-stop records that credentials may be lost" '[ "$(state_field credentials_may_be_lost)" = "True" ]'
 r=$(phase force-stop "")
 check "force-stop without its confirmation is refused" '! echo "$r" | done_ok'
-phase recover "" > /dev/null
-phase wipe "" > /dev/null
+# Review s6-r3 finding 1: the force-stopped login was never checkpointed. Recover must not report
+# it signed out, and Wipe and Start refuse until the owner records the revocation.
+r=$(phase recover "")
+check "after a force-stop, Recover reports unresolved credentials, not a verified sign-out" '! echo "$r" | done_ok && echo "$r" | grep -q unresolved'
+r=$(phase wipe "")
+check "Wipe refuses while the credentials are unresolved" '! echo "$r" | done_ok'
+r=$(phase start "")
+check "Start refuses while the credentials are unresolved" '! echo "$r" | done_ok && ! running'
+r=$(phase confirm-revoked "")
+check "the revocation record needs its explicit confirmation" '! echo "$r" | done_ok'
+r=$(phase confirm-revoked "&confirm=revoked-at-providers")
+check "the owner's revocation is recorded" 'echo "$r" | done_ok && [ "$(state_field credentials_may_be_lost)" = "False" ]'
+r=$(phase wipe "")
+check "Wipe works once the revocation is recorded" 'echo "$r" | done_ok'
 echo "failures: $failures"
 [ "$failures" = 0 ]

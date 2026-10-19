@@ -1,0 +1,311 @@
+{
+ "base": "http://127.0.0.1:18797",
+ "failures": 0,
+ "results": [
+  {
+   "name": "the page carries a request-intent token and a Strict terminal cookie",
+   "ok": true,
+   "cookie_attributes": "s6_term=<token>; Path=/term; Secure; HttpOnly; SameSite=Strict"
+  },
+  {
+   "name": "the page cannot be framed",
+   "ok": true
+  },
+  {
+   "name": "POST start refused: foreign origin",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: null origin",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: missing origin",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: same origin but Sec-Fetch-Site cross-site",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: same origin without the token",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: same origin with a wrong token",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: simple cross-site form (no custom header)",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "POST start refused: fault injection asked for while it is off",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "PUT refused",
+   "ok": true,
+   "status": 405
+  },
+  {
+   "name": "DELETE refused",
+   "ok": true,
+   "status": 405
+  },
+  {
+   "name": "PATCH refused",
+   "ok": true,
+   "status": 405
+  },
+  {
+   "name": "a cross-site top-level GET of a control URL shows a confirmation page",
+   "ok": true
+  },
+  {
+   "name": "HEAD of a control URL changes nothing",
+   "ok": true
+  },
+  {
+   "name": "no refusal or GET had any effect",
+   "ok": true
+  },
+  {
+   "name": "valid same-origin POST start works",
+   "ok": true
+  },
+  {
+   "name": "terminal refused: foreign origin",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "terminal refused: null origin",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "terminal refused: missing origin",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "terminal refused: same origin, Sec-Fetch-Site cross-site",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "terminal refused: same origin without the terminal cookie",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "terminal refused: same origin with a wrong cookie",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "valid same-origin terminal runs a command",
+   "ok": true,
+   "upgraded": true,
+   "command_ran": true
+  },
+  {
+   "name": "terminal refusals had no effect",
+   "ok": true
+  },
+  {
+   "name": "terminal refused once its window is closed (after sign-in)",
+   "ok": true,
+   "upgraded": false,
+   "status": 403
+  },
+  {
+   "name": "every refusal reached the boundary log",
+   "ok": true,
+   "refusals_logged": 18
+  },
+  {
+   "name": "cleanup: recover and wipe",
+   "ok": true
+  }
+ ],
+ "boundary_log": [
+  {
+   "at": 1792407258.897,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "foreign origin",
+   "fetch_site": null,
+   "reason": "foreign origin"
+  },
+  {
+   "at": 1792407258.901,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "null origin",
+   "fetch_site": null,
+   "reason": "null origin"
+  },
+  {
+   "at": 1792407258.905,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "missing origin",
+   "fetch_site": null,
+   "reason": "missing origin"
+  },
+  {
+   "at": 1792407258.909,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": "cross-site",
+   "reason": "sec-fetch-site cross-site"
+  },
+  {
+   "at": 1792407258.912,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "missing or wrong request-intent token"
+  },
+  {
+   "at": 1792407258.915,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "missing or wrong request-intent token"
+  },
+  {
+   "at": 1792407258.92,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "foreign origin",
+   "fetch_site": null,
+   "reason": "foreign origin"
+  },
+  {
+   "at": 1792407258.923,
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "fault injection is off"
+  },
+  {
+   "at": 1792407258.927,
+   "method": "PUT",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "method"
+  },
+  {
+   "at": 1792407258.929,
+   "method": "DELETE",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "method"
+  },
+  {
+   "at": 1792407258.932,
+   "method": "PATCH",
+   "path": "/api/phase",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "method"
+  },
+  {
+   "at": 1792407260.478,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "foreign origin",
+   "fetch_site": null,
+   "reason": "terminal: foreign origin"
+  },
+  {
+   "at": 1792407260.481,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "null origin",
+   "fetch_site": null,
+   "reason": "terminal: null origin"
+  },
+  {
+   "at": 1792407260.483,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "missing origin",
+   "fetch_site": null,
+   "reason": "terminal: missing origin"
+  },
+  {
+   "at": 1792407260.484,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": "cross-site",
+   "reason": "terminal: sec-fetch-site cross-site"
+  },
+  {
+   "at": 1792407260.486,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "terminal: no terminal cookie"
+  },
+  {
+   "at": 1792407260.487,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "terminal: no terminal cookie"
+  },
+  {
+   "at": 1792407269.035,
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "",
+   "origin": "same origin",
+   "fetch_site": null,
+   "reason": "terminal: window closed"
+  }
+ ]
+}

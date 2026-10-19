@@ -92,30 +92,77 @@ def store_state() -> str:
 
 
 # The session's durable marker, in the results directory (no secrets): the positive evidence of
-# how far the session got. "started" is written before anything else, "signin-attempted" before
-# the first sign-in command runs, and "signed-out-verified" or "closed-never-signed-in" at the end.
+# how far the session got. "started" is written once nothing of an earlier session is left,
+# "signin-attempted" before the first sign-in command runs, and "signed-out-verified" or
+# "closed-never-signed-in" at the end. It carries a random session id, which the session also
+# writes into its /dev/shm material: the real and dry-run sessions keep separate markers but share
+# the store, /dev/shm and computer names, so a marker speaks only for material with its own id.
+CLOSED = ("signed-out-verified", "closed-never-signed-in", "abandoned-after-manual-revocation")
+
+
 def state_file() -> Path:
     return OUT / "session-state.json"
 
 
-def write_state(phase: str) -> None:
+def write_state(phase: str, session: str | None = None) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     tmp = state_file().with_suffix(".tmp")
     with open(tmp, "w") as f:
-        json.dump({"phase": phase, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
+        json.dump({"phase": phase, "session": session,
+                   "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, state_file())
 
 
-def read_state() -> str | None:
-    """The marker's phase; None when there is no marker; 'unreadable' when it cannot be read."""
+def read_marker() -> tuple[str | None, str | None]:
+    """The marker's phase and session id: (None, None) when there is no marker, and
+    ('unreadable', None) when it cannot be read."""
     try:
-        return json.loads(state_file().read_text())["phase"]
+        d = json.loads(state_file().read_text())
+        return d["phase"], d.get("session")
     except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return "unreadable", None
+
+
+def read_state() -> str | None:
+    return read_marker()[0]
+
+
+def shm_session() -> str | None:
+    try:
+        return (SHM / "session-id").read_text().strip() or None
+    except OSError:
         return None
-    except (OSError, ValueError, KeyError, TypeError):
-        return "unreadable"
+
+
+def recovery_material() -> dict:
+    """What a session may have left that holds, or leads to, a login: computers (running or
+    stopped), the store (running or stopped) and the /dev/shm material (store configuration,
+    controller database). Raises LookupFailed when Docker cannot tell."""
+    found: dict = {}
+    names = computers()
+    if names:
+        found["computers"] = names
+    store = store_state()
+    if store != "absent":
+        found["store"] = store
+    if SHM.exists():
+        try:
+            found["shm"] = sorted(p.name for p in SHM.iterdir())
+        except OSError:
+            found["shm"] = "unreadable"
+    return found
+
+
+def write_new(path: Path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, text.encode())
+    finally:
+        os.close(fd)
 
 
 def wait_until_no_computer(timeout_s: float = 90) -> bool:
@@ -191,6 +238,16 @@ def is_running(name: str) -> bool:
     raise LookupFailed(f"cannot tell whether {name} runs")
 
 
+def restart(name: str) -> bool:
+    """Start a stopped computer again, with its files; True when it runs."""
+    r = subprocess.run(["docker", "start", name], capture_output=True, text=True)
+    record("computer-restarted", computer=name, exit=r.returncode)
+    try:
+        return r.returncode == 0 and is_running(name)
+    except LookupFailed:
+        return False
+
+
 def read_store_config() -> dict:
     try:
         cfg = json.loads((SHM / "s3.json").read_text())
@@ -207,7 +264,7 @@ def cleanup() -> dict:
     The outcome is "verified" only on positive evidence:
     - the session's marker shows it never reached a sign-in; or
     - the latest checkpoints, restored into a fresh computer, are signed out, after signing out
-      in any computer still running.
+      in every computer that still exists, running or stopped (a stopped one is started again).
     Anything else is unknown: a stopped or missing store, a failing Docker lookup, missing or
     unreadable store configuration, an unreadable marker, recovery material without a marker.
     Then nothing is removed, the exit status is non-zero, and the owner is told to revoke the
@@ -216,16 +273,24 @@ def cleanup() -> dict:
     say("Cleanup: sign out, verify in a fresh computer, remove everything")
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not abandon the sign-out
     outcome: dict = {"signed_out_verified": None, "basis": None}
-    marker = read_state()
+    marker, session = read_marker()
     outcome["session_marker"] = marker
     try:
-        if marker == "started":
-            outcome.update(signed_out_verified=True, basis="never signed in: the session stopped before any sign-in")
-        elif marker in ("signed-out-verified", "closed-never-signed-in", "abandoned-after-manual-revocation"):
-            outcome.update(signed_out_verified=True, basis=f"already closed ({marker})")
+        if marker == "started" or marker in CLOSED:
+            # Evidence about this marker's own session only (review s6-r3, finding 3): anything
+            # left must carry its session id, or it may be another session's, which no
+            # verification here has covered.
+            found = recovery_material()
+            if found and not (session and shm_session() == session):
+                raise StepFailed(f"recovery material that this session's marker does not account "
+                                 f"for: {sorted(found)}")
+            if marker == "started":
+                outcome.update(signed_out_verified=True,
+                               basis="never signed in: the session stopped before any sign-in")
+            else:
+                outcome.update(signed_out_verified=True, basis=f"already closed ({marker})")
         elif marker is None:
-            leftovers = computers() or store_state() != "absent" or SHM.exists()
-            if leftovers:
+            if recovery_material():
                 raise StepFailed("recovery material exists without a session marker")
             outcome.update(signed_out_verified=True, basis="no session: no marker and nothing left")
         else:  # "signin-attempted", or a marker that cannot be read
@@ -235,17 +300,24 @@ def cleanup() -> dict:
             store = store_state()
             if store != "running":
                 raise StepFailed(f"the checkpoint store is {store}")
-            # 1. A computer that still runs may hold a login newer than any checkpoint: sign out
-            #    in it, check, and checkpoint the sign-out. If any of that fails, keep it.
+            # 1. A computer that still exists, running or stopped, keeps its files, so it may hold a
+            #    login newer than any checkpoint (a sign-in, or a refresh). Sign out in it, check,
+            #    and checkpoint the sign-out. A stopped one is started again for that (review
+            #    s6-r3, finding 2). If any of it fails, keep the computer: the state is unknown.
             for name in computers():
-                if is_running(name):
-                    inner(name, "watch-stop", must=False)
-                    inner(name, "claude-logout")
-                    inner(name, "codex-logout")
-                    inner(name, "signed-out-check")
-                    rc, _ = inner(name, "capture", "credential", must=False)
-                    if rc not in (0, 3):  # 3: its restore never finished, so the checkpoint is current
-                        raise StepFailed(f"capture failed in {name}")
+                if not is_running(name):
+                    if name not in computers():
+                        continue  # an interrupted removal has completed
+                    if not restart(name):
+                        raise StepFailed(f"{name} is stopped and could not be started again to sign "
+                                         "out in it; it is kept")
+                inner(name, "watch-stop", must=False)
+                inner(name, "claude-logout")
+                inner(name, "codex-logout")
+                inner(name, "signed-out-check")
+                rc, _ = inner(name, "capture", "credential", must=False)
+                if rc not in (0, 3):  # 3: its restore never finished, so the checkpoint is current
+                    raise StepFailed(f"capture failed in {name}")
                 sh("docker", "rm", "-f", name, check=False)  # verified just below
             if not wait_until_no_computer():
                 raise StepFailed("a computer could not be removed")
@@ -276,10 +348,8 @@ def cleanup() -> dict:
         sh("docker", "rm", "-f", MINIO, check=False)
         sh("docker", "network", "rm", NET, check=False)
         shutil.rmtree(SHM, ignore_errors=True)
-        if marker in (None, "signed-out-verified", "closed-never-signed-in", "abandoned-after-manual-revocation"):
-            pass
-        else:
-            write_state("closed-never-signed-in" if marker == "started" else "signed-out-verified")
+        if marker is not None and marker not in CLOSED:
+            write_state("closed-never-signed-in" if marker == "started" else "signed-out-verified", session)
     if OUT.exists():  # results were written by root in the container; hand them back
         sh("docker", "run", "--rm", "-v", f"{OUT}:/out", "--entrypoint", "chown", IMAGE, "-R",
            f"{os.getuid()}:{os.getgid()}", "/out", check=False)
@@ -313,7 +383,7 @@ def abandon() -> int:
     sh("docker", "rm", "-f", MINIO, check=False)
     sh("docker", "network", "rm", NET, check=False)
     shutil.rmtree(SHM, ignore_errors=True)
-    write_state("abandoned-after-manual-revocation")
+    write_state("abandoned-after-manual-revocation", read_marker()[1])
     record("abandoned", removed_computers=names, basis="owner revoked the sessions in the account settings")
     print(f"   removed: computers {names}, the store, the network and {SHM}")
     return 0
@@ -420,12 +490,22 @@ def main() -> int:
         return 0 if cleanup().get("signed_out_verified") is True else 1
     if a.abandon_after_revoking:
         return abandon()
-    if computers() or read_state() not in (None, "signed-out-verified", "closed-never-signed-in",
-                                           "abandoned-after-manual-revocation"):
-        raise SystemExit("a previous session is still open; run with --cleanup first")
+    # Review s6-r3, finding 3: before a new marker is written, nothing of an earlier session may be
+    # left, whatever the markers say. Its material stays as it is, for --cleanup to judge.
+    marker = read_state()
+    try:
+        found = recovery_material()
+    except LookupFailed as e:
+        raise SystemExit(f"Docker cannot tell whether an earlier session left anything ({e}). "
+                         "Nothing was started or changed.") from None
+    if found or (marker is not None and marker not in CLOSED):
+        raise SystemExit(f"An earlier session is not closed (marker: {marker}; left: {found or 'nothing'}). "
+                         "Nothing was started or changed. Run with --cleanup (add --fake if that session "
+                         "was a dry run): it signs out and verifies, or keeps everything and says what to do.")
 
+    session_id = secrets.token_hex(8)
     OUT.mkdir(parents=True, exist_ok=True)
-    write_state("started")
+    write_state("started", session_id)
     revision = sh("git", "-C", str(REPO), "rev-parse", "HEAD", check=False)
     # Uncommitted code changes, not results (results are written while the session runs).
     dirty = bool(sh("git", "-C", str(REPO), "status", "--porcelain", "--", "spikes/s6", ":!spikes/s6/results", check=False))
@@ -435,16 +515,16 @@ def main() -> int:
            approval=None if FAKE else "standing owner approval for real-account S6 runs (AGENTS.md, 18 Oct 2026)")
 
     say("Preparing: network, MinIO in memory, controller database in /dev/shm")
-    SHM.mkdir(mode=0o700, parents=True, exist_ok=True)
     s3 = {"user": "s6owner", "password": secrets.token_hex(16)}  # local, in-memory MinIO only
-    fd = os.open(SHM / "s3.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    os.write(fd, json.dumps(s3).encode())
-    os.close(fd)
-    if a.inject_failure:
-        (SHM / f"fail-always-{a.inject_failure}").write_text("injected\n")
-        record("failure-injected", action=a.inject_failure)
     ok = False
     try:
+        # All new: anything already there belongs to another session, and stays unknown.
+        SHM.mkdir(mode=0o700, parents=True)
+        write_new(SHM / "session-id", session_id)
+        write_new(SHM / "s3.json", json.dumps(s3))
+        if a.inject_failure:
+            (SHM / f"fail-always-{a.inject_failure}").write_text("injected\n")
+            record("failure-injected", action=a.inject_failure)
         sh("docker", "network", "create", NET)
         sh("docker", "run", "-d", "--name", MINIO, "--network", NET, "--tmpfs", "/data:rw,size=256m",
            "-e", f"MINIO_ROOT_USER={s3['user']}", "-e", f"MINIO_ROOT_PASSWORD={s3['password']}", MINIO_IMAGE, "server", "/data")
@@ -453,7 +533,7 @@ def main() -> int:
            "import sys; sys.path.insert(0,'/opt/s6/credsync'); from objstore import S3Store; S3Store.from_env().create_bucket()")
         session(s3)
         ok = True
-    except (StepFailed, KeyboardInterrupt) as e:
+    except (StepFailed, KeyboardInterrupt, OSError) as e:
         record("session-stopped", reason=type(e).__name__, detail=str(e)[:200])
         print(f"\nThe session stopped: {e}")
     finally:

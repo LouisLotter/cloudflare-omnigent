@@ -1,0 +1,15 @@
+revision 4c87307, tree clean: yes
+pytest exit 0 (48 passed in 19.81s)
+node --test exit 0 (ℹ pass 24 ℹ fail 0 )
+pnpm lint exit 0
+node --check worker.js exit 0
+bash -n of the shell checks done
+revision 4c87307, worker.js 0 uncommitted
+terminal-close-check exit 0
+page-check exit 0
+stop-capture-check exit 0
+recover-check exit 0
+dryrun exit 0
+revision 4c87307
+boundary-check exit 0
+attacker-local-check exit 0

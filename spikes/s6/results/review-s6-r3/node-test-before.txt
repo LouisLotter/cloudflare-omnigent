@@ -1,0 +1,106 @@
+✖ force stop with an unpublished login: Recover does not claim a verified sign-out, Wipe and Start refuse until revocation is recorded (11.349888ms)
+✖ a computer that stops unexpectedly with an unpublished login is unresolved, not signed out (2.569316ms)
+✔ control: a published checkpoint, then Stop: Recover verifies the sign-out and Wipe works (19.541514ms)
+✖ the owner page carries the revocation instructions and the confirmation control (0.483696ms)
+✖ an already-connected terminal is closed before after-sign-in takes any step (20.819509ms)
+✖ an already-connected terminal is closed before recover takes any step (14.469037ms)
+✖ an already-connected terminal is closed before stop takes any step (12.117026ms)
+✖ an already-connected terminal is closed before force-stop takes any step (10.872125ms)
+✖ an already-connected terminal is closed before wipe takes any step (12.181811ms)
+✖ the terminal is closed when its window expires, with no further traffic (6532.878132ms)
+✖ input that arrives after the window has closed is not forwarded (22.081782ms)
+✖ the terminal WebSocket: 101 with the tty subprotocol, no handshake headers of its own, no owner material to the computer (1.459883ms)
+✖ the window_s test knob is refused when fault injection is off (as deployed) (0.746058ms)
+✖ the confirmation button sends every option: name=fake-sign-in&fake=1 (1.913361ms)
+✖ the confirmation button sends every option: name=stop&fake=1&fail=capture (0.886146ms)
+✖ the confirmation button sends every option: name=force-stop&confirm=credentials-may-be-lost&fake=1 (0.845328ms)
+✖ the confirmation button sends every option: name=recover&fake=1&case=a%26b%22%3Cx%3E (0.749555ms)
+✖ the confirmation button really runs a dry-run phase (fake=1) (1.409477ms)
+✖ the confirmation button keeps a failure option (fail=capture) (3.495589ms)
+✖ the confirmation button keeps the force-stop confirmation (1.694553ms)
+✔ harness sanity: refusals still happen before any effect (1.902671ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 2
+ℹ fail 19
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6729.943602
+✖ failing tests:
+✖ force stop with an unpublished login: Recover does not claim a verified sign-out, Wipe and Start refuse until revocation is recorded (11.349888ms)
+  AssertionError [ERR_ASSERTION]: Recover must not complete as if the sign-out were verified
+    actual: false,
+    expected: true,
+✖ a computer that stops unexpectedly with an unpublished login is unresolved, not signed out (2.569316ms)
+  AssertionError [ERR_ASSERTION]: Recover must not complete as if the sign-out were verified
+    actual: false,
+    expected: true,
+✖ the owner page carries the revocation instructions and the confirmation control (0.483696ms)
+  AssertionError [ERR_ASSERTION]: a warning element driven by the state
+    actual: false,
+    expected: true,
+✖ an already-connected terminal is closed before after-sign-in takes any step (20.819509ms)
+  AssertionError [ERR_ASSERTION]: after-sign-in: the computer's end of the terminal was never closed
+    actual: false,
+    expected: true,
+✖ an already-connected terminal is closed before recover takes any step (14.469037ms)
+  AssertionError [ERR_ASSERTION]: recover: the terminal was still open at the phase's first step (bash /opt/s6/owner/inner.sh claude-logout)
+    actual: false,
+    expected: true,
+✖ an already-connected terminal is closed before stop takes any step (12.117026ms)
+  AssertionError [ERR_ASSERTION]: stop: the terminal was still open at the phase's first step (python3 -I /opt/s6/credsync/cli.py export --kind credential --home /root)
+    actual: false,
+    expected: true,
+✖ an already-connected terminal is closed before force-stop takes any step (10.872125ms)
+  AssertionError [ERR_ASSERTION]: force-stop: the terminal was still open at the phase's first step ()
+    actual: false,
+    expected: true,
+✖ an already-connected terminal is closed before wipe takes any step (12.181811ms)
+  AssertionError [ERR_ASSERTION]: wipe: the computer's end of the terminal was never closed
+    actual: false,
+    expected: true,
+✖ the terminal is closed when its window expires, with no further traffic (6532.878132ms)
+  AssertionError [ERR_ASSERTION]: the open terminal was not closed at expiry
+    actual: false,
+    expected: true,
+✖ input that arrives after the window has closed is not forwarded (22.081782ms)
+  AssertionError [ERR_ASSERTION]: input reached the shell after the window closed
+    actual: 2,
+    expected: 1,
+✖ the terminal WebSocket: 101 with the tty subprotocol, no handshake headers of its own, no owner material to the computer (1.459883ms)
+  AssertionError [ERR_ASSERTION]: x-s6-intent reached the computer
+    actual: '<token>',
+    expected: null,
+✖ the window_s test knob is refused when fault injection is off (as deployed) (0.746058ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    actual: 200,
+    expected: 403,
+✖ the confirmation button sends every option: name=fake-sign-in&fake=1 (1.913361ms)
+  AssertionError [ERR_ASSERTION]: sent /api/phase?name=fake-sign-in&#38;fake=1
+    actual: [ [ 'name', 'fake-sign-in' ] ],
+    expected: [ [ 'fake', '1' ], [ 'name', 'fake-sign-in' ] ],
+✖ the confirmation button sends every option: name=stop&fake=1&fail=capture (0.886146ms)
+  AssertionError [ERR_ASSERTION]: sent /api/phase?name=stop&#38;fake=1&#38;fail=capture
+    actual: [ [ 'name', 'stop' ] ],
+    expected: [ [ 'fail', 'capture' ], [ 'fake', '1' ], [ 'name', 'stop' ] ],
+✖ the confirmation button sends every option: name=force-stop&confirm=credentials-may-be-lost&fake=1 (0.845328ms)
+  AssertionError [ERR_ASSERTION]: sent /api/phase?name=force-stop&#38;confirm=credentials-may-be-lost&#38;fake=1
+    actual: [ [ 'name', 'force-stop' ] ],
+    expected: [ [ 'confirm', 'credentials-may-be-lost' ], [ 'fake', '1' ], [ 'name', 'force-stop' ] ],
+✖ the confirmation button sends every option: name=recover&fake=1&case=a%26b%22%3Cx%3E (0.749555ms)
+  AssertionError [ERR_ASSERTION]: sent /api/phase?name=recover&#38;fake=1&#38;case=a%26b%22%3Cx%3E
+    actual: [ [ 'name', 'recover' ] ],
+    expected: [ [ 'case', 'a&b"<x>' ], [ 'fake', '1' ], [ 'name', 'recover' ] ],
+✖ the confirmation button really runs a dry-run phase (fake=1) (1.409477ms)
+  AssertionError [ERR_ASSERTION]: fake-sign-in through the confirmation page: {"at":"2026-10-19T10:21:08.795Z","phase":"fake-sign-in","error":"fake-sign-in is for dry runs only (fake=1)","advice":"Stop here. Run Recover (sign out and verify), then Stop and wipe.","state":{"running":true,"busy":"fake-sign-in","generation":1,"signed_out_in_checkpoint":true,"unsaved_computer":fa
+    actual: false,
+    expected: true,
+✖ the confirmation button keeps a failure option (fail=capture) (3.495589ms)
+  AssertionError [ERR_ASSERTION]: the injected capture failure must stop the Stop
+    actual: false,
+    expected: true,
+✖ the confirmation button keeps the force-stop confirmation (1.694553ms)
+  AssertionError [ERR_ASSERTION]: force-stop through the confirmation page: {"at":"2026-10-19T10:21:08.800Z","phase":"force-stop","error":"force-stop needs confirm=credentials-may-be-lost","advice":"Stop here. Run Recover (sign out and verify), then Stop and wipe.","state":{"running":true,"busy":"force-stop","generation":1,"signed_out_in_checkpoint":true,"unsaved_computer":
+    actual: false,
+    expected: true,

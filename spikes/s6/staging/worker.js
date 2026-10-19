@@ -13,8 +13,10 @@
 //   opened with GET shows a confirmation page. A change is a POST with this deployment's exact
 //   Origin, Sec-Fetch-Site same-origin when present, and the stored request-intent token. The
 //   terminal's WebSocket needs the exact Origin, a SameSite=Strict cookie holding the same token,
-//   and a terminal window opened by a POST (Start, or Re-open). Fault injection exists only when
-//   the S6_ALLOW_INJECTION variable is "1", which only local `wrangler dev` runs set.
+//   and a terminal window opened by a POST (Start, or Re-open). Every terminal is bridged through
+//   the Durable Object, which closes it when the window expires and before any other phase's
+//   first step. Fault injection exists only when the S6_ALLOW_INJECTION variable is "1", which
+//   only local `wrangler dev` runs set.
 //   Refusals change nothing but an audit row in boundary_log, so the deployed qualification can
 //   tell which attempts reached the Worker.
 import { DurableObject } from "cloudflare:workers";
@@ -27,7 +29,8 @@ const CLI = "/opt/s6/credsync/cli.py";
 const OUT = "/var/lib/s6/out";
 const FAKE_PROVIDER = "/tmp/s6-selftest-provider.json";
 const LOGIN_FILES = [".claude/.credentials.json", ".codex/auth.json", ".omnigent/auth_tokens.json"];
-// Headers that identify the owner to Access; they never go into the computer.
+// Headers that identify the owner to Access, or carry the request-intent token; they never go
+// into the computer.
 const STRIP_TO_CONTAINER = [
   "cookie",
   "authorization",
@@ -35,9 +38,42 @@ const STRIP_TO_CONTAINER = [
   "cf-access-authenticated-user-email",
   "cf-access-client-id",
   "cf-access-client-secret",
+  "x-s6-intent",
 ];
 const TERMINAL_WINDOW_MS = 20 * 60 * 1000;
+const TERMINAL_CLOSE_CODE = 4001; // this Worker closed the terminal (window, or a phase began)
+// Every phase but these closes the terminal before its first step (review s6-r3, finding 4).
+const KEEPS_TERMINAL = new Set(["reopen-terminal", "fake-sign-in"]);
 const BOUNDARY_LOG_MAX = 500;
+const PHASES = new Set([
+  "selftest",
+  "start",
+  "fake-sign-in",
+  "after-sign-in",
+  "restore-b",
+  "restore-c-sign-out",
+  "restore-d",
+  "recover",
+  "stop",
+  "force-stop",
+  "reopen-terminal",
+  "close-terminal",
+  "confirm-revoked",
+  "wipe",
+]);
+// Review s6-r3, finding 1. A login that was lost before it was checkpointed (Force stop, or a
+// computer that stopped by itself) can still be valid at the provider, and no restore can sign it
+// out: a signed-out checkpoint says nothing about it. Until the owner records that the sessions
+// were revoked at the providers, only these phases run.
+const WHILE_UNRESOLVED = new Set([
+  "recover",
+  "stop",
+  "force-stop",
+  "confirm-revoked",
+  "close-terminal",
+]);
+const REVOKE_ADVICE =
+  "Revoke the sessions in the Claude and ChatGPT account settings (sign out of all devices or sessions there), then record it on this page with 'I revoked both sessions'. Start and Wipe refuse until then.";
 // HTML from this Worker, and the terminal it proxies, is never framed (clickjacking).
 const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
@@ -127,6 +163,8 @@ export class S6Computer extends DurableObject {
     this.env = env;
     this.sql = ctx.storage.sql;
     this.busy = null;
+    this.terminals = new Set(); // connected terminals, each { browser, computer } (finding 4)
+    this.terminalTimer = null;
     this.schema();
   }
 
@@ -140,6 +178,7 @@ export class S6Computer extends DurableObject {
       CREATE TABLE IF NOT EXISTS blobs (key TEXT, part INTEGER, data BLOB, PRIMARY KEY (key, part));
       CREATE TABLE IF NOT EXISTS boundary_log (at REAL, method TEXT, path TEXT, case_tag TEXT, origin TEXT,
         fetch_site TEXT, reason TEXT);
+      CREATE TABLE IF NOT EXISTS owner_confirmations (at TEXT, what TEXT, cleared TEXT, lost_since TEXT);
     `);
     // The request-intent token: created once with the storage it protects (here, or after a
     // wipe), never by a request.
@@ -175,8 +214,162 @@ export class S6Computer extends DurableObject {
     return row ? row.v : null;
   }
 
+  deleteMeta(k) {
+    this.sql.exec("DELETE FROM meta WHERE k = ?", k);
+  }
+
   generation() {
     return Number(this.meta("generation") ?? 0);
+  }
+
+  // ---------------------------------------------------------------- lost credentials (finding 1)
+  lostCredentials() {
+    const v = this.meta("credentials_lost");
+    if (v) return JSON.parse(v);
+    // The flag an earlier revision's force-stop set (cleared by a wipe then): still unresolved.
+    if (this.meta("credentials_may_be_lost") === "1") {
+      return { reason: "force stop (recorded by an earlier revision)", since: null };
+    }
+    return null;
+  }
+
+  markCredentialsLost(reason) {
+    const prev = this.lostCredentials();
+    this.meta(
+      "credentials_lost",
+      JSON.stringify(
+        prev
+          ? { ...prev, reason: `${prev.reason}; then ${reason}` }
+          : { reason, since: new Date().toISOString(), generation: this.generation() },
+      ),
+    );
+  }
+
+  // A computer this Worker started, and has not stopped itself, that no longer runs: it took any
+  // login it held, checkpointed or not, with it.
+  computerMissing() {
+    return this.meta("computer_live") === "1" && !this.ctx.container.running;
+  }
+
+  // ---------------------------------------------------------------- terminal lifetime (finding 4)
+  // The window bounds the terminal's whole life, not only new connections: every connected
+  // terminal passes through this object, and is closed here when the window expires or closes.
+  terminalOpen() {
+    return Number(this.meta("terminal_open_until") ?? 0) > Date.now();
+  }
+
+  // Opens the window until `until` (ms since the epoch), or closes it (0). Closing persists the
+  // closed window first, then closes every connected terminal.
+  setTerminalWindow(until, why) {
+    this.meta("terminal_open_until", until);
+    if (until > Date.now()) this.armTerminalTimer();
+    else this.closeTerminals(why);
+  }
+
+  armTerminalTimer() {
+    if (this.terminalTimer) clearTimeout(this.terminalTimer);
+    this.terminalTimer = null;
+    if (!this.terminals.size) return;
+    const left = Number(this.meta("terminal_open_until") ?? 0) - Date.now();
+    if (left <= 0) {
+      this.closeTerminals("its window has closed");
+      return;
+    }
+    this.terminalTimer = setTimeout(() => {
+      this.terminalTimer = null;
+      this.enforceTerminalWindow();
+    }, left + 50);
+  }
+
+  enforceTerminalWindow() {
+    if (this.terminalOpen()) this.armTerminalTimer();
+    else this.closeTerminals("its window has closed");
+  }
+
+  closeTerminals(why) {
+    if (this.terminalTimer) clearTimeout(this.terminalTimer);
+    this.terminalTimer = null;
+    for (const t of [...this.terminals]) this.endTerminal(t, why);
+  }
+
+  // Closes both ends: the browser's with this Worker's code, and the computer's, which makes
+  // ttyd end the shell.
+  endTerminal(t, why) {
+    if (!this.terminals.delete(t)) return;
+    const reason = `terminal closed: ${why}`.slice(0, 120);
+    try {
+      t.browser.close(TERMINAL_CLOSE_CODE, reason);
+    } catch {}
+    try {
+      t.computer.close(1000, reason);
+    } catch {}
+  }
+
+  // Bridges the browser's WebSocket to ttyd's through this object, so it can be closed from
+  // here. Every message is checked against the window. The response is a 101 with the WebSocket
+  // and, when the browser offered it, the tty subprotocol; the runtime writes the other handshake
+  // headers (Upgrade, Connection, Sec-WebSocket-Accept), so none are set here.
+  bridgeTerminal(upstream, request) {
+    const computer = upstream.webSocket;
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const browser = pair[1];
+    computer.accept();
+    browser.accept();
+    // ttyd and its browser client speak binary frames. With the standard binary type, workerd
+    // delivers them as Blobs, which send() would write as the text "[object Blob]".
+    computer.binaryType = "arraybuffer";
+    browser.binaryType = "arraybuffer";
+    const t = { browser, computer };
+    this.terminals.add(t);
+    const forward = (to, data) => {
+      if (!this.terminals.has(t)) return;
+      if (!this.terminalOpen()) {
+        this.closeTerminals("its window has closed");
+        return;
+      }
+      try {
+        to.send(data);
+      } catch {
+        this.endTerminal(t, "a send failed");
+      }
+    };
+    // Messages in order; a Blob (a runtime that ignores binaryType) is read first, then checked.
+    const pass = (to) => {
+      let queue = Promise.resolve();
+      return (e) => {
+        const data =
+          typeof Blob !== "undefined" && e.data instanceof Blob ? e.data.arrayBuffer() : e.data;
+        queue = queue
+          .then(async () => forward(to, await data))
+          .catch(() => this.endTerminal(t, "forwarding failed"));
+      };
+    };
+    browser.addEventListener("message", pass(computer));
+    computer.addEventListener("message", pass(browser));
+    browser.addEventListener("close", () => this.endTerminal(t, "closed by the browser"));
+    computer.addEventListener("close", () => this.endTerminal(t, "closed by the computer"));
+    browser.addEventListener("error", () => this.endTerminal(t, "browser side error"));
+    computer.addEventListener("error", () => this.endTerminal(t, "computer side error"));
+    this.armTerminalTimer();
+    const offered = (request.headers.get("sec-websocket-protocol") ?? "")
+      .split(",")
+      .map((p) => p.trim());
+    const answered = upstream.headers?.get?.("sec-websocket-protocol");
+    const chosen = offered.includes(answered) ? answered : offered.includes("tty") ? "tty" : null;
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      ...(chosen ? { headers: { "sec-websocket-protocol": chosen } } : {}),
+    });
+  }
+
+  noteUnplannedStop() {
+    if (!this.computerMissing()) return;
+    this.markCredentialsLost(
+      "the computer stopped unexpectedly, without a final credential checkpoint",
+    );
+    this.meta("computer_live", "0");
   }
 
   // ---------------------------------------------------------------- store and pointers
@@ -363,6 +556,7 @@ export class S6Computer extends DurableObject {
     const generation = this.generation() + 1;
     this.meta("generation", generation); // persisted before the container starts
     this.meta("started_at", Date.now());
+    this.meta("computer_live", "1"); // until stop() confirms it stopped
     this.ctx.container.start({ enableInternet: true });
     await this.ctx.container.setInactivityTimeout(30 * 60 * 1000);
     await this.ctx.storage.setAlarm(Date.now() + 60_000);
@@ -379,10 +573,13 @@ export class S6Computer extends DurableObject {
   async stop() {
     if (this.ctx.container.running) await this.ctx.container.destroy();
     for (let i = 0; i < 60 && this.ctx.container.running; i++) await sleep(1000);
+    if (!this.ctx.container.running) this.meta("computer_live", "0");
     return { stopped: !this.ctx.container.running };
   }
 
   async alarm() {
+    if (this.terminals.size) this.enforceTerminalWindow(); // backs up the window's own timer
+    if (!this.busy) this.noteUnplannedStop();
     if (!this.ctx.container.running) return;
     if (Date.now() - Number(this.meta("started_at") ?? 0) > MAX_AWAKE_MS && !this.busy) {
       // Awake too long: sign out and verify, then stop. Keeps cost small and never leaves a
@@ -607,6 +804,14 @@ export class S6Computer extends DurableObject {
 
   // ---------------------------------------------------------------- phases
   async phase(name, emit, o = {}) {
+    if (!PHASES.has(name)) throw new Error(`unknown phase ${name}`);
+    // Finding 4: the terminal is closed, server-side, before the phase's first step.
+    if (!KEEPS_TERMINAL.has(name)) this.setTerminalWindow(0, `${name} began`);
+    this.noteUnplannedStop();
+    const lost = this.lostCredentials();
+    if (lost && !WHILE_UNRESOLVED.has(name)) {
+      throw new Error(`refused: credentials are unresolved (${lost.reason}). ${REVOKE_ADVICE}`);
+    }
     const step = async (label, fn, ok = () => true) => {
       const t0 = Date.now();
       const r = await fn();
@@ -616,6 +821,8 @@ export class S6Computer extends DurableObject {
       return r;
     };
     const exit0 = (r) => r.exit === 0;
+    // Dry runs with fault injection on may shorten the window, to test its expiry.
+    const windowMs = o.windowS ? o.windowS * 1000 : TERMINAL_WINDOW_MS;
     const published = (r) => r.published === true;
     const restored = (r) => r.restore_complete === true;
     const isIn = (who) => (r) => r.exit === 0 && r.stdout.includes(`"${who}_logged_in": "true"`);
@@ -776,7 +983,7 @@ export class S6Computer extends DurableObject {
           restored,
         );
         await step("audit", () => this.s6(["audit-json", "A fresh"], o), exit0);
-        this.meta("terminal_open_until", Date.now() + TERMINAL_WINDOW_MS);
+        this.setTerminalWindow(Date.now() + windowMs);
         await step("versions", () =>
           this.run([
             "bash",
@@ -799,7 +1006,7 @@ export class S6Computer extends DurableObject {
         break;
       case "after-sign-in": {
         if (!this.ctx.container.running) throw new Error("no computer is running");
-        this.meta("terminal_open_until", 0); // the sign-ins are done: close the terminal
+        // The sign-ins are done: the terminal was closed on entry (KEEPS_TERMINAL).
         await loggedIn();
         await step(
           "credential checkpoint C1, right after sign-in",
@@ -873,7 +1080,6 @@ export class S6Computer extends DurableObject {
         );
         break;
       case "recover": {
-        this.meta("terminal_open_until", 0);
         // Sign out from whatever state the session stopped in, and verify it in a fresh computer.
         // A running computer may hold a login newer than any checkpoint: sign out there first,
         // and checkpoint the sign-out before the computer is destroyed.
@@ -917,8 +1123,13 @@ export class S6Computer extends DurableObject {
           (r) => r.stopped,
         );
         await stopAndStart("R2");
+        // Finding 1: a signed-out checkpoint verifies only what was checkpointed. Lost
+        // credentials stay unresolved, however the fresh computer looks.
+        const unresolved = this.lostCredentials();
         await step(
-          "verified signed out in a fresh computer",
+          unresolved
+            ? "the latest checkpoint is signed out in a fresh computer (this cannot cover the lost credentials)"
+            : "verified signed out in a fresh computer",
           () => this.s6(["signed-out-check"], o),
           exit0,
         );
@@ -928,6 +1139,17 @@ export class S6Computer extends DurableObject {
           () => this.stop(),
           (r) => r.stopped,
         );
+        if (unresolved) {
+          await emit({
+            phase: name,
+            unresolved: unresolved.reason,
+            since: unresolved.since,
+            action: REVOKE_ADVICE,
+          });
+          throw new Error(
+            `unresolved: credentials were lost (${unresolved.reason}), so the sign-out cannot be verified here. ${REVOKE_ADVICE}`,
+          );
+        }
         break;
       }
       case "stop": {
@@ -947,7 +1169,6 @@ export class S6Computer extends DurableObject {
             );
           }
         }
-        this.meta("terminal_open_until", 0);
         await step(
           "stop computer",
           () => this.stop(),
@@ -957,13 +1178,16 @@ export class S6Computer extends DurableObject {
         break;
       }
       case "force-stop":
-        // Stops without the final checkpoint. Logins refreshed since the last checkpoint are lost,
-        // and their provider sessions may stay valid: say so, and keep saying so until a wipe.
+        // Stops without the final checkpoint. A login not yet checkpointed (a sign-in, or a
+        // refresh) is lost, and its provider session stays valid: the credentials are unresolved
+        // until the owner records that the sessions were revoked at the providers (finding 1).
         if (o.confirm !== "credentials-may-be-lost") {
           throw new Error("force-stop needs confirm=credentials-may-be-lost");
         }
-        this.meta("credentials_may_be_lost", "1");
-        this.meta("terminal_open_until", 0);
+        if (!this.ctx.container.running) throw new Error("no computer is running");
+        this.markCredentialsLost(
+          "force stop: the computer was stopped without a final credential checkpoint",
+        );
         await step(
           "stop computer without a final checkpoint",
           () => this.stop(),
@@ -972,14 +1196,56 @@ export class S6Computer extends DurableObject {
         this.meta("unsaved_computer", "0");
         await emit({
           phase: name,
-          warning:
-            "Stopped without a final credential checkpoint. Credentials may be lost. Run Recover; if it cannot verify the sign-out, revoke the sessions in the Claude and ChatGPT account settings.",
+          warning: `Stopped without a final credential checkpoint. A login it held that was not checkpointed is lost, and stays valid at the provider until revoked. Run Recover to sign out what was checkpointed. ${REVOKE_ADVICE}`,
         });
+        break;
+      case "confirm-revoked": {
+        // The only way to clear lost credentials: the owner's explicit, recorded statement that
+        // the sessions were revoked at the providers. The record survives a wipe.
+        if (o.confirm !== "revoked-at-providers") {
+          throw new Error(
+            "confirm-revoked needs confirm=revoked-at-providers, and only after revoking the sessions in the Claude and ChatGPT account settings",
+          );
+        }
+        const unresolved = this.lostCredentials();
+        if (!unresolved) throw new Error("nothing to record: no credentials are recorded as lost");
+        if (this.ctx.container.running)
+          throw new Error("stop the computer first (Stop or Recover)");
+        const at = new Date().toISOString();
+        this.sql.exec(
+          "INSERT INTO owner_confirmations VALUES (?, ?, ?, ?)",
+          at,
+          "revoked-at-providers",
+          unresolved.reason,
+          unresolved.since,
+        );
+        this.deleteMeta("credentials_lost");
+        this.deleteMeta("credentials_may_be_lost");
+        await emit({
+          phase: name,
+          recorded: {
+            at,
+            what: "the owner revoked the Claude and ChatGPT sessions in the account settings",
+            cleared: unresolved.reason,
+            lost_since: unresolved.since,
+          },
+        });
+        break;
+      }
+      case "close-terminal":
+        // Closes the window and every connected terminal (done on entry), and nothing else: the
+        // owner's "close the terminal now", and the qualification's closure check (Q3b).
+        await emit({ phase: name, terminal: "closed", terminal_open: this.terminalOpen() });
         break;
       case "reopen-terminal":
         if (!this.ctx.container.running) throw new Error("no computer is running");
-        this.meta("terminal_open_until", Date.now() + TERMINAL_WINDOW_MS);
-        await emit({ phase: name, terminal_open_for_s: TERMINAL_WINDOW_MS / 1000 });
+        // Only a computer whose restore finished: its credential checkpoints work, so a login
+        // made in the terminal can be checkpointed before the computer stops.
+        if (this.restoredGeneration(PC) !== this.generation()) {
+          throw new Error("this computer's restore has not finished: no terminal");
+        }
+        this.setTerminalWindow(Date.now() + windowMs);
+        await emit({ phase: name, terminal_open_for_s: windowMs / 1000 });
         break;
       case "wipe":
         if (this.ctx.container.running) throw new Error("stop the computer first (or run Recover)");
@@ -989,16 +1255,29 @@ export class S6Computer extends DurableObject {
         await step(
           "delete all stored checkpoints and state",
           async () => {
+            // The owner's revocation records are evidence, not state: they are kept.
+            const kept = this.sql.exec("SELECT * FROM owner_confirmations").toArray();
             await this.ctx.storage.deleteAlarm();
             await this.ctx.storage.deleteAll();
             this.schema(); // new storage, new request-intent token: reload the page
-            return { wiped: true, objects_left: this.state().objects };
+            for (const c of kept) {
+              this.sql.exec(
+                "INSERT INTO owner_confirmations VALUES (?, ?, ?, ?)",
+                c.at,
+                c.what,
+                c.cleared,
+                c.lost_since,
+              );
+            }
+            return {
+              wiped: true,
+              objects_left: this.state().objects,
+              revocation_records_kept: kept.length,
+            };
           },
           (r) => r.objects_left === 0,
         );
         break;
-      default:
-        throw new Error(`unknown phase ${name}`);
     }
   }
 
@@ -1013,14 +1292,25 @@ export class S6Computer extends DurableObject {
       .exec("SELECT COUNT(DISTINCT key) AS n, COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM blobs")
       .toArray()[0];
     const boundary = this.sql.exec("SELECT COUNT(*) AS n FROM boundary_log").toArray()[0];
+    // Read-only: a computer found missing is reported here, and recorded by the next phase.
+    const lost =
+      this.lostCredentials() ??
+      (this.computerMissing() && !this.busy
+        ? { reason: "the computer stopped unexpectedly (recorded by the next step)", since: null }
+        : null);
     return {
       running: this.ctx.container.running,
       busy: this.busy,
       generation: this.generation(),
       signed_out_in_checkpoint: this.signedOutInCheckpoint(),
       unsaved_computer: this.ctx.container.running && this.meta("unsaved_computer") === "1",
-      credentials_may_be_lost: this.meta("credentials_may_be_lost") === "1",
-      terminal_open: Number(this.meta("terminal_open_until") ?? 0) > Date.now(),
+      credentials_may_be_lost: Boolean(lost),
+      credentials_lost: lost,
+      revocations_confirmed: this.sql
+        .exec("SELECT at, what, cleared, lost_since FROM owner_confirmations ORDER BY at")
+        .toArray(),
+      terminal_open: this.terminalOpen(),
+      terminals_connected: this.terminals.size,
       fault_injection: this.env?.S6_ALLOW_INJECTION === "1",
       boundary_refusals: boundary.n,
       pointers,
@@ -1061,13 +1351,13 @@ export class S6Computer extends DurableObject {
       if (!readOnly) return refuse(405, "method");
       if (!this.ctx.container.running)
         return new Response("The computer is not running.", { status: 503 });
-      if ((request.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+      const wantsSocket = /websocket/i.test(request.headers.get("upgrade") ?? "");
+      if (wantsSocket) {
         const bad = crossSite();
         if (bad) return refuse(403, `terminal: ${bad}`);
         if (!constantTimeEqual(cookieValue(request, "s6_term"), token))
           return refuse(403, "terminal: no terminal cookie");
-        if (Number(this.meta("terminal_open_until") ?? 0) <= Date.now())
-          return refuse(403, "terminal: window closed");
+        if (!this.terminalOpen()) return refuse(403, "terminal: window closed");
       }
       const headers = new Headers(request.headers);
       for (const h of STRIP_TO_CONTAINER) headers.delete(h);
@@ -1079,7 +1369,17 @@ export class S6Computer extends DurableObject {
       const r = await this.ctx.container
         .getTcpPort(TERM_PORT)
         .fetch(new Request(target, { method: request.method, headers }));
-      if (r.webSocket) return r;
+      if (r.webSocket) {
+        // Checked again: a phase may have closed the window while ttyd answered.
+        if (!wantsSocket || !this.terminalOpen()) {
+          try {
+            r.webSocket.accept();
+            r.webSocket.close(1000, "refused");
+          } catch {}
+          return refuse(403, "terminal: window closed");
+        }
+        return this.bridgeTerminal(r, request);
+      }
       const out = new Response(r.body, r);
       out.headers.set("x-frame-options", "DENY");
       out.headers.set("content-security-policy", "frame-ancestors 'none'");
@@ -1119,6 +1419,12 @@ export class S6Computer extends DurableObject {
           return refuse(403, "fault injection is off");
         opts.fail = url.searchParams.get("fail");
       }
+      // A shorter terminal window, to test its expiry: a dry-run knob like `fail`.
+      if (url.searchParams.get("window_s")) {
+        if (!(opts.fake && this.env?.S6_ALLOW_INJECTION === "1"))
+          return refuse(403, "fault injection is off");
+        opts.windowS = Math.min(Math.max(Number(url.searchParams.get("window_s")) || 1, 1), 3600);
+      }
       if (url.searchParams.get("confirm")) opts.confirm = url.searchParams.get("confirm");
       if (this.busy) return new Response(`busy: ${this.busy}`, { status: 409 });
       this.busy = name;
@@ -1136,8 +1442,10 @@ export class S6Computer extends DurableObject {
         } catch (e) {
           await emit({
             phase: name,
-            error: String(e?.message ?? e).slice(0, 300),
-            advice: "Stop here. Run Recover (sign out and verify), then Stop and wipe.",
+            error: String(e?.message ?? e).slice(0, 600),
+            advice: this.lostCredentials()
+              ? REVOKE_ADVICE
+              : "Stop here. Run Recover (sign out and verify), then Stop and wipe.",
             state: this.state(),
           });
         } finally {
@@ -1161,14 +1469,22 @@ export class S6Computer extends DurableObject {
   }
 }
 
+// The query travels as data, never as script text (review s6-r3, finding 5): it is JSON in an
+// HTML attribute, escaped for that attribute, which the browser decodes and the handler parses.
+// The page lists every option, so the owner sees exactly what the button sends.
 function confirmPage(name, search, token) {
-  const q = escapeHtml(search);
+  const query = search.startsWith("?") ? search : "";
+  const options = [...new URLSearchParams(query)]
+    .map(([k, v]) => `<li><code>${escapeHtml(k)}</code> = <code>${escapeHtml(v)}</code></li>`)
+    .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>S6: confirm</title></head>
-<body style="font:15px system-ui;margin:24px" data-intent="${token}">
-<p>This page changes nothing. Run the phase <b>${escapeHtml(name)}</b>?</p>
+<body style="font:15px system-ui;margin:24px" data-intent="${token}" data-query="${escapeHtml(JSON.stringify(query))}">
+<p>This page changes nothing. Run the phase <b>${escapeHtml(name)}</b> with these options?</p>
+<ul>${options}</ul>
 <p><button id="go">Run ${escapeHtml(name)}</button> <a href="/">Back to the S6 page</a></p><pre id="out"></pre>
-<script>document.getElementById("go").onclick=async()=>{const r=await fetch("/api/phase${q}",{method:"POST",
-headers:{"X-S6-Intent":document.body.dataset.intent}});document.getElementById("out").textContent=await r.text();};</script>
+<script>document.getElementById("go").onclick=async()=>{const q=JSON.parse(document.body.dataset.query);
+const r=await fetch("/api/phase"+q,{method:"POST",headers:{"X-S6-Intent":document.body.dataset.intent}});
+document.getElementById("out").textContent=await r.text();};</script>
 </body></html>`;
 }
 
@@ -1182,18 +1498,22 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 <h1>S6: sign-in and credential checkpoints</h1>
 <p class="note">Owner-only staging page. Output below is masked: fixed text, exit codes, paths, modes, sizes, key names, states and timestamps. The terminal is not recorded. Run the steps in order; each waits until it is done.</p>
 <p class="warn">If a step reports an error: stop there, click <b>Recover</b>, then <b>Stop and wipe</b>.</p>
+<p id="unresolved" class="warn" hidden></p>
 <p id="state"></p>
 <h2>Part 1: qualification, synthetic credentials only</h2>
 <ol>
 <li><button data-phase="selftest" data-fake="1">Q1 Fake-CLI self-test</button> about 3 minutes.</li>
-<li><button data-phase="start" data-fake="1">Q2 Start a synthetic computer</button> then <button id="termcheck">Q3 Terminal self-check</button></li>
+<li><button data-phase="start" data-fake="1">Q2 Start a synthetic computer</button> then <button id="termcheck">Q3 Terminal self-check</button> then <button id="closecheck">Q3b Terminal closure check</button></li>
 <li>Q4: open the attacker page (see the runbook) in another tab and let it finish, then come back.</li>
 <li><button id="report">Q5 Qualification report</button></li>
 <li><button data-phase="stop" data-fake="1">Q6 Stop the synthetic computer</button> then <button data-phase="wipe">Q7 Wipe</button></li>
+<li>Q8 lost credentials, synthetic: <button data-phase="start" data-fake="1">Q8a Start</button> <button data-phase="fake-sign-in" data-fake="1">Q8b Synthetic sign-in</button>
+ <button data-phase="force-stop" data-fake="1" data-confirm="credentials-may-be-lost" data-question="Q8: force-stop the synthetic computer?">Q8c Force stop</button>
+ <button data-phase="recover" data-fake="1">Q8d Recover</button> (must end unresolved), then Q7 Wipe (must refuse), then I revoked both sessions (below), then Q7 Wipe.</li>
 </ol>
 <h2>Part 2: real accounts</h2>
 <ol>
-<li><button data-phase="start">Start computer A</button> then <a href="/term/" target="_blank">open the terminal</a> (open for 20 minutes; <button data-phase="reopen-terminal">re-open</button>).</li>
+<li><button data-phase="start">Start computer A</button> then <a href="/term/" target="_blank">open the terminal</a> (open for 20 minutes; <button data-phase="reopen-terminal">re-open</button>; <button data-phase="close-terminal">close it now</button>). Any other step closes it first.</li>
 <li>In the terminal: <code>claude auth login --claudeai</code>, open the link, sign in, paste the code back.
  Then <code>codex login --device-auth</code>, open the link, sign in, enter the code. Close the terminal tab.</li>
 <li><button data-phase="after-sign-in">After sign-in: audit, checkpoints, forced refresh</button></li>
@@ -1203,15 +1523,20 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 <li><button data-phase="wipe">Stop and wipe everything stored</button> then <button id="save">Download results</button></li>
 </ol>
 <p><button data-phase="recover">Recover: sign out and verify</button> only if a step failed.
- <button data-phase="stop">Stop</button> <button data-phase="force-stop" data-confirm="credentials-may-be-lost">Force stop (credentials may be lost)</button></p>
+ <button data-phase="stop">Stop</button> <button data-phase="force-stop" data-confirm="credentials-may-be-lost" data-question="Stop without a final checkpoint? A login not yet checkpointed is lost, and you will have to revoke the sessions in the Claude and ChatGPT account settings.">Force stop (credentials may be lost)</button></p>
+<p>If the page says credentials are unresolved: revoke the sessions in the Claude and ChatGPT account settings (sign out of all devices or sessions there), then
+ <button data-phase="confirm-revoked" data-confirm="revoked-at-providers" data-question="Have you revoked the sessions in both the Claude and the ChatGPT account settings? This is recorded.">I revoked both sessions</button></p>
 <pre id="out"></pre>
 <script>
 const out=document.getElementById("out");const lines=[];const intent=document.body.dataset.intent;
 const log=(l)=>{lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;};
-async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);return s;}
+async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);
+ const u=document.getElementById("unresolved");u.hidden=!s.credentials_may_be_lost;
+ u.textContent=s.credentials_may_be_lost?"Credentials are unresolved: "+((s.credentials_lost&&s.credentials_lost.reason)||"lost")+". A signed-out checkpoint does not cover them. Revoke the sessions in the Claude and ChatGPT account settings, then click 'I revoked both sessions'. Start and Wipe refuse until then.":"";
+ return s;}
 for(const b of document.querySelectorAll("button[data-phase]")){b.onclick=async()=>{
  if(b.dataset.phase==="wipe"&&!confirm("Delete every stored checkpoint?"))return;
- if(b.dataset.confirm&&!confirm("Stop without a final checkpoint? Credentials may be lost."))return;
+ if(b.dataset.confirm&&!confirm(b.dataset.question||"Are you sure?"))return;
  for(const x of document.querySelectorAll("button"))x.disabled=true;
  const q="name="+b.dataset.phase+(b.dataset.fake?"&fake=1":"")+(b.dataset.confirm?"&confirm="+b.dataset.confirm:"");
  try{const r=await fetch("/api/phase?"+q,{method:"POST",headers:{"X-S6-Intent":intent}});
@@ -1226,6 +1551,18 @@ document.getElementById("termcheck").onclick=()=>{
  ws.onmessage=(e)=>{const b=new Uint8Array(e.data);if(b[0]===0x30)seen+=new TextDecoder().decode(b.slice(1));
   if(seen.includes("S6TERM42OK")){clearTimeout(t);log(JSON.stringify({terminal_self_check:"command ran"}));ws.close();}};
  ws.onerror=()=>{clearTimeout(t);log(JSON.stringify({terminal_self_check:"refused or failed"}));};};
+document.getElementById("closecheck").onclick=()=>{
+ const url=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/term/ws?case=closure-check";
+ const ws=new WebSocket(url,["tty"]);ws.binaryType="arraybuffer";let seen="";let asked=false;
+ const t=setTimeout(()=>{log(JSON.stringify({terminal_closure_check:"not closed within 20 s"}));ws.close();},20000);
+ ws.onopen=()=>{ws.send(JSON.stringify({AuthToken:"",columns:80,rows:24}));setTimeout(()=>ws.send("0echo S6TERM$((40+2))OK\\r"),800);};
+ ws.onmessage=(e)=>{const b=new Uint8Array(e.data);if(b[0]===0x30)seen+=new TextDecoder().decode(b.slice(1));
+  if(!asked&&seen.includes("S6TERM42OK")){asked=true;fetch("/api/phase?name=close-terminal",{method:"POST",headers:{"X-S6-Intent":intent}}).then((r)=>r.text());}};
+ ws.onclose=(e)=>{clearTimeout(t);
+  log(JSON.stringify({terminal_closure_check:asked&&e.code===4001?"closed by the Worker":"not closed by the Worker",ran_first:asked,code:e.code,reason:e.reason}));
+  const again=new WebSocket(url,["tty"]);
+  again.onopen=()=>{log(JSON.stringify({terminal_after_closure:"accepted (wrong)"}));again.close();};
+  again.onerror=()=>log(JSON.stringify({terminal_after_closure:"refused"}));};};
 document.getElementById("report").onclick=async()=>{
  const b=await (await fetch("/api/boundary")).json();const s=await state();
  log(JSON.stringify({qualification_report:{state:{running:s.running,generation:s.generation,objects:s.objects,container_image:s.container_image},refused:b}}));};

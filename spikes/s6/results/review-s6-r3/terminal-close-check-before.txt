@@ -1,0 +1,33 @@
+PASS setup: start with a 4-second terminal window
+PASS the terminal answers the tty subprotocol
+PASS one Upgrade header in the handshake
+PASS a terminal opened inside the window runs a command
+FAIL the Worker closed the open terminal when its window expired
+FAIL nothing typed after the expiry runs
+FAIL a new terminal is refused after the expiry
+PASS after-sign-in: a connected terminal runs a command first
+PASS after-sign-in: still usable after 30 s idle
+FAIL after-sign-in: the Worker closed the terminal before the phase's first step
+FAIL after-sign-in: nothing typed afterwards runs
+PASS setup: after-sign-in completed
+PASS recover: a connected terminal runs a command first
+FAIL recover: the Worker closed the terminal before the phase's first step
+PASS recover: nothing typed afterwards runs
+PASS setup: recover completed
+PASS setup: start
+PASS stop: a connected terminal runs a command first
+FAIL stop: the Worker closed the terminal before the phase's first step
+PASS stop: nothing typed afterwards runs
+PASS setup: stop completed
+PASS setup: recover after stop
+PASS setup: start
+PASS wipe: a connected terminal runs a command first
+FAIL wipe: the Worker closed the terminal before the phase's first step
+FAIL wipe: nothing typed afterwards runs
+PASS wipe was refused while the computer runs
+PASS force-stop: a connected terminal runs a command first
+FAIL force-stop: the Worker closed the terminal before the phase's first step
+PASS force-stop: nothing typed afterwards runs
+PASS setup: force-stop completed
+PASS cleanup: wiped
+failures: 10
