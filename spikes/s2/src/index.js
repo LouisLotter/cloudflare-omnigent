@@ -2,7 +2,8 @@
 // a plain-HTTP intercept for the virtual host omnigent.internal. The intercept hands each
 // request to the PrivateRoute entrypoint, which strips trust headers, adds the computer's
 // identity from its props, and forwards to the ServerDO, which proxies to the server
-// container. WebSocket upgrades pass through unchanged.
+// container. A WebSocket upgrade is bridged and answered with no handshake headers of its own
+// (see bareHeaders).
 //
 // Everything is logged as one JSON object per line with an "s2" key, read back from Workers
 // Logs by scripts/collect.sh. Throwaway spike code: lessons go into the design, not this file.
@@ -49,6 +50,53 @@ function stripTrust(headers) {
       headers.delete(name);
     }
   }
+}
+
+/**
+ * The 101 headers for a WebSocket answered through the container egress: none of the
+ * handshake's own (no Upgrade, Connection, Accept or extension), which the egress adds; only a
+ * subprotocol the server chose. The same rule as S1's `bare` mode, which brought the host online
+ * on Cloudflare.
+ */
+export function bareHeaders(upstreamHeaders) {
+  const headers = new Headers();
+  const protocol = upstreamHeaders?.get("Sec-WebSocket-Protocol");
+  if (protocol) headers.set("Sec-WebSocket-Protocol", protocol);
+  return headers;
+}
+
+/** Relays an accepted upstream socket through a new pair and returns the pair's client end. */
+function bridgeSocket(upstream) {
+  const [client, bridge] = Object.values(new WebSocketPair());
+  upstream.accept();
+  bridge.accept();
+  const closeCode = (code) => (code === 1005 || code === 1006 ? 1000 : code);
+  bridge.addEventListener("message", (event) => {
+    try {
+      upstream.send(event.data);
+    } catch {
+      bridge.close(1011, "failed to forward to the server");
+    }
+  });
+  upstream.addEventListener("message", (event) => {
+    try {
+      bridge.send(event.data);
+    } catch {
+      upstream.close(1011, "failed to forward to the host");
+    }
+  });
+  const opened = Date.now();
+  bridge.addEventListener("close", (event) => {
+    log("ws-close", { side: "host", code: event.code, ms: Date.now() - opened });
+    upstream.close(closeCode(event.code), event.reason);
+  });
+  upstream.addEventListener("close", (event) => {
+    log("ws-close", { side: "server", code: event.code, ms: Date.now() - opened });
+    bridge.close(closeCode(event.code), event.reason);
+  });
+  bridge.addEventListener("error", () => upstream.close(1011, "host side error"));
+  upstream.addEventListener("error", () => bridge.close(1011, "server side error"));
+  return client;
 }
 
 /** The handler behind the omnigent.internal intercept. Never on the public route table. */
@@ -212,7 +260,17 @@ export class ServerDO extends Keeper {
     await this.ensure();
     try {
       await this.waitReady();
-      return await this.ctx.container.getTcpPort(SERVER_PORT).fetch(request);
+      const upstream = await this.ctx.container.getTcpPort(SERVER_PORT).fetch(request);
+      if (!upstream.webSocket) return upstream;
+      // The host's tunnel. Cloudflare's container egress writes its own Upgrade, Connection and
+      // Sec-WebSocket-Accept, then appends the Response's headers, so returning the server's 101
+      // as it is gives the host "Upgrade: websocket" twice, which its client refuses (S1
+      // tunnel-check, 19 Oct 2026). Bridge the socket and answer with no handshake headers.
+      return new Response(null, {
+        status: 101,
+        webSocket: bridgeSocket(upstream.webSocket),
+        headers: bareHeaders(upstream.headers),
+      });
     } catch (error) {
       this.ready = false;
       log("server-proxy-error", { path: url.pathname, error: String(error) });

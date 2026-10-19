@@ -2,7 +2,7 @@
 // its real ServerDO and ComputerDO classes. Only the platform is faked: Durable Object storage
 // and the container record every call as an effect, so a refusal can be shown to have none.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import worker, { ComputerDO, ServerDO } from "../src/index.js";
+import worker, { bareHeaders, ComputerDO, ServerDO } from "../src/index.js";
 
 const ORIGIN = "https://cfo-stg-s2-route.example.test";
 const EVIL = "https://evil.example";
@@ -327,5 +327,26 @@ describe("a valid same-origin control works", () => {
     );
     expect(res.status).toBe(200);
     expect(h.effects).toContain("computer:start");
+  });
+});
+
+// Cloudflare's container egress writes its own Upgrade, Connection and Sec-WebSocket-Accept and
+// then appends the Response's headers; any of them in the 101 reaches the host twice, and its
+// client refuses the handshake (S1 tunnel-check on staging, 19 Oct 2026).
+describe("the host's tunnel is answered with no handshake headers of its own", () => {
+  it("drops Upgrade, Connection, Accept and extensions from the server's 101", () => {
+    const upstream = new Headers({
+      Upgrade: "websocket",
+      Connection: "Upgrade",
+      "Sec-WebSocket-Accept": "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+      "Sec-WebSocket-Extensions": "permessage-deflate",
+      Server: "uvicorn",
+    });
+    expect([...bareHeaders(upstream).keys()]).toEqual([]);
+  });
+
+  it("keeps a subprotocol the server chose", () => {
+    const upstream = new Headers({ Upgrade: "websocket", "Sec-WebSocket-Protocol": "tty" });
+    expect([...bareHeaders(upstream).entries()]).toEqual([["sec-websocket-protocol", "tty"]]);
   });
 });

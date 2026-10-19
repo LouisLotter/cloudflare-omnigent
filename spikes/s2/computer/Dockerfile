@@ -13,3 +13,7 @@ RUN mkdir -p /s2/ws
 WORKDIR /s2
 ENV PYTHONPATH=/s2 HOME=/root
 CMD ["python", "/s2/run.py"]
+# Changed for each staging redeploy after a teardown. Docker remembers that the old image was
+# pushed, the registry still serves its manifest after deletion, so Wrangler skips the push and
+# creating the application fails with IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE.
+LABEL cloudflare-omnigent.staging-build="2026-10-19"
