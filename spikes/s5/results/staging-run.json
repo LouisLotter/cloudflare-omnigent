@@ -1,0 +1,573 @@
+[
+  {
+    "at": 1792400887494,
+    "data": {
+      "s5": "campaign_armed",
+      "until": "2026-10-19T09:28:07.464Z"
+    }
+  },
+  {
+    "at": 1792400906627,
+    "data": {
+      "cases": [
+        {
+          "pass": true,
+          "name": "genuine assertion",
+          "expected": "ok",
+          "got": "ok"
+        },
+        {
+          "pass": true,
+          "name": "missing assertion",
+          "expected": "missing_assertion",
+          "got": "missing_assertion"
+        },
+        {
+          "pass": true,
+          "name": "empty assertion",
+          "expected": "missing_assertion",
+          "got": "missing_assertion"
+        },
+        {
+          "pass": true,
+          "name": "truncated",
+          "expected": "malformed",
+          "got": "malformed"
+        },
+        {
+          "pass": true,
+          "name": "oversized",
+          "expected": "oversized",
+          "got": "oversized"
+        },
+        {
+          "pass": true,
+          "name": "signature byte flipped",
+          "expected": "bad_signature",
+          "got": "bad_signature"
+        },
+        {
+          "pass": true,
+          "name": "payload edited after signing (aud swapped)",
+          "expected": "bad_signature",
+          "got": "bad_signature"
+        },
+        {
+          "pass": true,
+          "name": "payload edited after signing (exp extended)",
+          "expected": "bad_signature",
+          "got": "bad_signature"
+        },
+        {
+          "pass": true,
+          "name": "alg none",
+          "expected": "unsupported_alg",
+          "got": "unsupported_alg"
+        },
+        {
+          "pass": true,
+          "name": "alg HS256 (key confusion)",
+          "expected": "unsupported_alg",
+          "got": "unsupported_alg"
+        },
+        {
+          "pass": true,
+          "name": "unknown key id",
+          "expected": "unknown_kid",
+          "got": "unknown_kid"
+        },
+        {
+          "pass": true,
+          "name": "another application (other AUD)",
+          "expected": "wrong_audience",
+          "got": "wrong_audience"
+        },
+        {
+          "pass": true,
+          "name": "another team (other issuer)",
+          "expected": "wrong_issuer",
+          "got": "wrong_issuer"
+        },
+        {
+          "pass": true,
+          "name": "expired (clock past exp)",
+          "expected": "expired",
+          "got": "expired"
+        },
+        {
+          "pass": true,
+          "name": "not yet valid (clock before nbf)",
+          "expected": "not_yet_valid",
+          "got": "not_yet_valid"
+        },
+        {
+          "pass": true,
+          "name": "another identity (owner pin)",
+          "expected": "not_owner",
+          "got": "not_owner"
+        },
+        {
+          "pass": true,
+          "name": "unknown hostname",
+          "expected": "unknown_host",
+          "got": "unknown_host"
+        },
+        {
+          "pass": true,
+          "name": "this hostname",
+          "expected": "ok",
+          "got": "ok"
+        }
+      ],
+      "s5": "selftest",
+      "passed": 18,
+      "failed": 0,
+      "keyFetches": 2
+    }
+  },
+  {
+    "at": 1792400915332,
+    "data": {
+      "s5": "container_ready",
+      "ms": 7275
+    }
+  },
+  {
+    "at": 1792400915645,
+    "data": {
+      "s5": "behind_access",
+      "serverStart": "started",
+      "health": "200 via worker",
+      "scheduledTasksWithoutOmnigentLogin": "401 via worker",
+      "firstVisitorSetup": "409 via worker",
+      "loginPage": "200 via worker",
+      "coldStartMs": 8756
+    }
+  },
+  {
+    "at": 1792400916147,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "bootstrap",
+      "step": "before bootstrap",
+      "expect": "bootstrap_pending false",
+      "got": "bootstrap_pending false"
+    }
+  },
+  {
+    "at": 1792400916147,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "setup",
+      "step": "owner creates a schedule",
+      "expect": "200",
+      "got": "200"
+    }
+  },
+  {
+    "at": 1792400916446,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "bootstrap",
+      "step": "bootstrap",
+      "expect": "stored ok true",
+      "got": "stored ok true"
+    }
+  },
+  {
+    "at": 1792400916489,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "bootstrap",
+      "step": "bootstrap again does not log in again",
+      "expect": "already_stored true",
+      "got": "already_stored true"
+    }
+  },
+  {
+    "at": 1792400916489,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "bootstrap",
+      "step": "platform reads /v1/scheduled-tasks with its own grant",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  },
+  {
+    "at": 1792400916964,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "repair card",
+      "expect": "needs_reauthentication login_without_refresh form",
+      "got": "needs_reauthentication login_without_refresh form"
+    }
+  },
+  {
+    "at": 1792400916964,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "reason",
+      "expect": "login_without_refresh",
+      "got": "login_without_refresh"
+    }
+  },
+  {
+    "at": 1792400916964,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "bootstrap gets HTTP 200 without refresh_token",
+      "expect": "no_refresh needs_reauthentication false",
+      "got": "no_refresh needs_reauthentication false"
+    }
+  },
+  {
+    "at": 1792400917166,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "still not removable",
+      "expect": "false",
+      "got": "false"
+    }
+  },
+  {
+    "at": 1792400917166,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "repair while the fault holds",
+      "expect": "no_refresh",
+      "got": "no_refresh"
+    }
+  },
+  {
+    "at": 1792400918002,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "bootstrap retried after the fault",
+      "expect": "stored ok true",
+      "got": "stored ok true"
+    }
+  },
+  {
+    "at": 1792400918050,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "login without refresh",
+      "step": "reads after retry",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  },
+  {
+    "at": 1792400918253,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "bootstrap secret still not needed",
+      "expect": "true",
+      "got": "true"
+    }
+  },
+  {
+    "at": 1792400918253,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "repair card",
+      "expect": "needs_reauthentication grant_rejected form",
+      "got": "needs_reauthentication grant_rejected form"
+    }
+  },
+  {
+    "at": 1792400918253,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "server said",
+      "expect": "invalid_grant",
+      "got": "invalid_grant"
+    }
+  },
+  {
+    "at": 1792400918253,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "read after revocation",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected"
+    }
+  },
+  {
+    "at": 1792400918870,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "reason kept after a wrong password",
+      "expect": "grant_rejected",
+      "got": "grant_rejected"
+    }
+  },
+  {
+    "at": 1792400918870,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "repair with a wrong password",
+      "expect": "rejected",
+      "got": "rejected"
+    }
+  },
+  {
+    "at": 1792400919783,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "repair with the password",
+      "expect": "stored",
+      "got": "stored"
+    }
+  },
+  {
+    "at": 1792400919838,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "revocation",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  },
+  {
+    "at": 1792400921662,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "owner resets the password",
+      "expect": "200",
+      "got": "200"
+    }
+  },
+  {
+    "at": 1792400921757,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "repair card",
+      "expect": "needs_reauthentication grant_rejected form",
+      "got": "needs_reauthentication grant_rejected form"
+    }
+  },
+  {
+    "at": 1792400921757,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "read after reset",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected"
+    }
+  },
+  {
+    "at": 1792400922181,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "repair with the old password",
+      "expect": "rejected",
+      "got": "rejected"
+    }
+  },
+  {
+    "at": 1792400923122,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "repair with the new password",
+      "expect": "stored",
+      "got": "stored"
+    }
+  },
+  {
+    "at": 1792400923198,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password reset",
+      "step": "schedule survives the reset",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  },
+  {
+    "at": 1792400925170,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password change",
+      "step": "owner changes the password",
+      "expect": "204",
+      "got": "204"
+    }
+  },
+  {
+    "at": 1792400925364,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password change",
+      "step": "read after change",
+      "expect": "needs_reauthentication grant_rejected",
+      "got": "needs_reauthentication grant_rejected"
+    }
+  },
+  {
+    "at": 1792400926123,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password change",
+      "step": "repair with the new password",
+      "expect": "stored",
+      "got": "stored"
+    }
+  },
+  {
+    "at": 1792400926204,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "expiry warning on the card (lifetime under 7 days)",
+      "expect": "ok none form expiry-warning",
+      "got": "ok none form expiry-warning"
+    }
+  },
+  {
+    "at": 1792400926204,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "lifetime known to the platform",
+      "expect": "86400",
+      "got": "86400"
+    }
+  },
+  {
+    "at": 1792400926204,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "password change",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  },
+  {
+    "at": 1792400926342,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "cached access token after the grant aged",
+      "expect": "ok",
+      "got": "ok"
+    }
+  },
+  {
+    "at": 1792400926399,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "repair card",
+      "expect": "needs_reauthentication form",
+      "got": "needs_reauthentication form"
+    }
+  },
+  {
+    "at": 1792400926399,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "reason and server answer",
+      "expect": "grant_expired expired_token | grant_rejected invalid_grant (purged)",
+      "got": "grant_expired expired_token"
+    }
+  },
+  {
+    "at": 1792400926399,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "read once the access token must be refreshed",
+      "expect": "needs_reauthentication",
+      "got": "needs_reauthentication"
+    }
+  },
+  {
+    "at": 1792400927143,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "repair with the password",
+      "expect": "stored",
+      "got": "stored"
+    }
+  },
+  {
+    "at": 1792400927194,
+    "data": {
+      "s5": "scenario_done",
+      "passed": 38,
+      "failed": 0
+    }
+  },
+  {
+    "at": 1792400927194,
+    "data": {
+      "pass": true,
+      "s5": "scenario_step",
+      "scenario": "absolute expiry",
+      "step": "read after repair",
+      "expect": "ok, schedule listed",
+      "got": "ok, schedule listed"
+    }
+  }
+]

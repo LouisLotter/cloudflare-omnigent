@@ -48,8 +48,13 @@ function query(offset?: string): { events: unknown[]; last?: string } {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
   });
-  const parsed = JSON.parse(out) as { result?: { events?: { events?: unknown[] } } };
-  const events = parsed.result?.events?.events ?? [];
+  // cf 1.0.0-beta.18 prints the query result itself ({ run, events, statistics }); older output
+  // wrapped it in `result`. Accept both.
+  const parsed = JSON.parse(out) as {
+    result?: { events?: { events?: unknown[] } };
+    events?: { events?: unknown[] };
+  };
+  const events = parsed.result?.events?.events ?? parsed.events?.events ?? [];
   const last = (events.at(-1) as { $metadata?: { id?: string } } | undefined)?.$metadata?.id;
   return { events, ...(last ? { last } : {}) };
 }
@@ -65,7 +70,11 @@ for (let page = 0; page < 20; page++) {
       source?: unknown;
     };
     if (event.$workers?.scriptName !== "cfo-stg-s5-access") continue;
-    const source = event.source;
+    // Workers Logs parses a JSON log line into `source`; it may also arrive as { level, message }
+    // with the line as the message string.
+    const raw = event.source as { message?: unknown } | string | undefined;
+    const source =
+      raw && typeof raw === "object" && typeof raw.message === "string" ? raw.message : raw;
     const data =
       typeof source === "string"
         ? (() => {
