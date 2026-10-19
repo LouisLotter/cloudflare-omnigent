@@ -1,0 +1,13 @@
+2026-10-19T11:55:28Z deploy c2-start exit=0 (deployed cfo-stg-s1-life at https://cfo-stg-s1-life.lervent.com )
+2026-10-19T11:58:03Z seen: {"s1":"redeploy-start","instance":"d677280b","incarnation":"857614c8-06fd-43cb-9c1d-57c6fc5256d3","run":"rd91","version":"1","rearmEnv":"1","seq":282,"wt":1792411055746}
+2026-10-19T11:58:28Z deploy c2-v2 exit=0 (deployed cfo-stg-s1-life at https://cfo-stg-s1-life.lervent.com )
+2026-10-19T12:13:58Z timeout waiting for "s1":"redeploy-check".*"redeployed":true
+2026-10-19T12:13:59Z seen: {"s1":"phase-end","instance":"b607a19a","kind":"redeploy","seq":294,"wt":1792411727381}
+2026-10-19T12:14:24Z deploy c3-start exit=0 (deployed cfo-stg-s1-life at https://cfo-stg-s1-life.lervent.com )
+2026-10-19T12:16:28Z seen: {"s1":"redeploy-start","instance":"b27d93d3","incarnation":"39022d6c-7f8d-4ac3-ab8b-b59b59a6c97a","run":"rd92","version":"2","rearmEnv":"1","seq":298,"wt":1792412141966}
+2026-10-19T12:16:55Z deploy c3-v3 exit=0 (deployed cfo-stg-s1-life at https://cfo-stg-s1-life.lervent.com )
+2026-10-19T12:31:58Z timeout waiting for "s1":"redeploy-check".*"redeployed":true
+2026-10-19T12:31:59Z seen: {"s1":"phase-end","instance":"0db8c256","kind":"redeploy","seq":302,"wt":1792412323545}
+2026-10-19T12:32:24Z deploy c4 exit=0 (deployed cfo-stg-s1-life at https://cfo-stg-s1-life.lervent.com )
+2026-10-19T12:33:27Z seen: {"s1":"phase-end","instance":"34f25ec3","kind":"shutdown","seq":306,"wt":1792413169682}
+2026-10-19T12:33:27Z restored spikes/s1/wrangler.jsonc; done
