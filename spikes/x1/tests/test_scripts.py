@@ -220,6 +220,7 @@ def fake_ports(
             },
         }
 
+    steps: list[tuple[str, dict]] = []
     ports = campaign.Ports(
         now_ms=lambda: clock.now,
         sleep=clock.sleep,
@@ -228,8 +229,11 @@ def fake_ports(
         fingerprint=lambda: fingerprint or {"server": ["a"]},
         record_created_at=lambda: created,
         last_transport=lambda: last,
+        clock=lambda: {"at": clock.now, "synchronized": True, "skewMs": 120.0},
+        save=lambda name, detail: steps.append((name, json.loads(json.dumps(detail)))),
         say=said.append,
     )
+    ports.steps = steps  # type: ignore[attr-defined]
     return ports, current, calls, said
 
 
