@@ -506,6 +506,20 @@ def test_http_helpers_against_the_recorder_and_the_echo_server(tmp_path):
     assert probe.http_get("http://127.0.0.1:1/", {}, 1.0) == (None, None, "URLError")
 
 
+def test_block_list_checks_send_their_own_user_agent(monkeypatch):
+    # The zone answers urllib's default User-Agent with 403 before Access (X1 preflight).
+    seen = []
+
+    def urlopen(request, timeout):
+        seen.append(dict(request.header_items()))
+        raise OSError("not sent")
+
+    monkeypatch.setattr(probe.urllib.request, "urlopen", urlopen)
+    probe.http_get("https://example.invalid/x1/blocked", {"CF-Access-Client-Id": "id"}, 1.0)
+    assert seen[0]["User-agent"] == probe.CHECK_USER_AGENT
+    assert seen[0]["Cf-access-client-id"] == "id"
+
+
 def test_config_from_the_environment():
     env = {
         "X1_RUN_ID": "run-20270115T080000Z",

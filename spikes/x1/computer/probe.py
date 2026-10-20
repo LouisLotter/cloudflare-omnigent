@@ -53,6 +53,10 @@ ROUTES = ("p1", "p2", "p3", "p4", "p5", "p6")
 INTERNAL_HOSTS = {r: f"{r}.x1.internal" for r in ("p1", "p2", "p3", "p6")}
 RECORDER = "http://rec.x1.internal"
 CREDENTIAL_HEADER = "x-x1-route-credential"
+# The block-list checks' own User-Agent. The zone's filtering answers urllib's default
+# ("Python-urllib/…") with 403 before Access or the route sees the request (X1 preflight,
+# 20 Oct 2026), which hid P5's policy point.
+CHECK_USER_AGENT = "x1-probe/1"
 SKEW_ROUTE = "p3"
 IDENTITY_KEYS = (
     "by",
@@ -794,7 +798,9 @@ def http_get(
     url: str, headers: dict[str, str], timeout: float
 ) -> tuple[int | None, str | None, str | None]:
     """Status and the refusing hop's header of one GET, or the error type."""
-    request = urllib.request.Request(url, method="GET", headers=headers)
+    request = urllib.request.Request(
+        url, method="GET", headers={"User-Agent": CHECK_USER_AGENT, **headers}
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed schemes
             return response.status, response.headers.get("x-x1-refused-by"), None
