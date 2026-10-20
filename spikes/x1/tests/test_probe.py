@@ -175,7 +175,9 @@ def test_happy_path_batches_and_manifest(tmp_path):
         strict=True,
     ):
         lines = [json.loads(line) for line in rec.stored[path].decode().splitlines()[1:]]
-        assert all(header["fromMono"] <= e["mono"] <= header["cutMono"] for e in lines)
+        assert all(
+            header["fromMono"] <= e.get("loggedMono", e["mono"]) <= header["cutMono"] for e in lines
+        )
     for route in ("p1", "p6"):
         sends, replies = of(events, "send", route), of(events, "reply", route)
         assert len(sends) >= 3 and len(replies) == len(sends)
@@ -425,7 +427,7 @@ def test_pong_missing_is_recorded():
     log_events = []
 
     class FakeLog:
-        def event(self, ev, **fields):
+        def event(self, ev, at_mono=None, **fields):
             log_events.append({"ev": ev, **fields})
 
     async def scenario():
@@ -447,7 +449,9 @@ def test_late_start_writes_only_the_manifest(tmp_path):
     cfg = config(tmp_path, rec, {"p1": "ws://127.0.0.1:1/x1/echo"}, -1.0)
     manifest = run(cfg)
     rec.close()
-    assert [e["ev"] for e in rec.events()] == ["probe-start", "late-start", "end"]
+    events = [e["ev"] for e in rec.events()]
+    assert [e for e in events if e not in ("clock", "skew")] == ["probe-start", "late-start", "end"]
+    assert events.count("clock") >= 1 and events.count("skew") >= 1
     assert manifest["batches"] == 1
 
 
