@@ -14,6 +14,7 @@ import {
   batchKey,
   computerEnv,
   echoReply,
+  failureKey,
   issueCredential,
   manifestKey,
   nextEventAt,
@@ -596,6 +597,16 @@ describe("the recorder (rec.x1.internal)", () => {
     expect(h.bucket.json(manifestKey(run, instance))).toEqual({ batches: 1 });
   });
 
+  it("stores the probe's failure record create-only, like a manifest (review r2, finding 3)", async () => {
+    const body = '{"failure":"manifest conflict","conflicts":[]}';
+    expect(await (await post(`/x1/failure/${run}/${instance}`, body)).json()).toEqual({
+      stored: true,
+      existed: false,
+    });
+    expect(h.bucket.objects.get(failureKey(run, instance)).body).toBe(body);
+    expect((await post(`/x1/failure/${run}/${instance}`, "{}")).status).toBe(409);
+  });
+
   it("refuses other paths, methods and oversized bodies", async () => {
     for (const path of [
       "/x1/batch/bad/g1-0a1b2c3d-00a1b2/1",
@@ -755,6 +766,19 @@ describe("RunDO: forced resets and the end", () => {
     h.effects.length = 0;
     await h.env.RUN.get("run").alarm();
     expect(h.effects).toEqual([]);
+  });
+
+  it("ends on the failure record that replaces a conflicting manifest", async () => {
+    await begin("preflight");
+    const run = h.env.RUN.state("run").store.get("run");
+    vi.spyOn(Date, "now").mockReturnValue(run.tailEnd + 1);
+    await h.bucket.put(failureKey(run.runId, "g1-0a1b2c3d-00a1b2"), "{}");
+    await h.env.RUN.get("run").alarm();
+    const end = h.bucket.json(`runs/${run.runId}/end.json`);
+    expect(end).toMatchObject({
+      reason: "end",
+      manifests: [failureKey(run.runId, "g1-0a1b2c3d-00a1b2")],
+    });
   });
 
   it("finishes without a manifest after the grace period", async () => {

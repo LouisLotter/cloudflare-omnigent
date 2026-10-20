@@ -122,6 +122,11 @@ export function manifestKey(runId, instance) {
   return `runs/${runId}/probe/${instance}/manifest.json`;
 }
 
+/** Where the probe records that its manifest could not be stored (a conflict). */
+export function failureKey(runId, instance) {
+  return `runs/${runId}/probe/${instance}/failure.json`;
+}
+
 export function lifecycleKey(runId, t, role, nonce) {
   return `runs/${runId}/lifecycle/${String(t).padStart(13, "0")}-${role}-${nonce}.json`;
 }
@@ -134,6 +139,7 @@ export function logChunkKey(runId, logId, offset) {
  * The recorder's two paths, or null for anything else:
  *   POST /x1/batch/<run>/<instance>/<n>   one numbered batch of the probe's log
  *   POST /x1/manifest/<run>/<instance>    the probe's final manifest (its completion marker)
+ *   POST /x1/failure/<run>/<instance>     its failure record, if the manifest conflicted
  */
 export function parseRecorderPath(pathname) {
   const parts = pathname.split("/");
@@ -146,10 +152,11 @@ export function parseRecorderPath(pathname) {
     if (number > MAX_BATCH) return null;
     return { kind: "batch", runId, instance, n: number, key: batchKey(runId, instance, number) };
   }
-  if (parts.length === 5 && parts[1] === "x1" && parts[2] === "manifest") {
-    const [, , , runId, instance] = parts;
+  if (parts.length === 5 && parts[1] === "x1" && ["manifest", "failure"].includes(parts[2])) {
+    const [, , kind, runId, instance] = parts;
     if (!RUN_ID.test(runId) || !INSTANCE_ID.test(instance)) return null;
-    return { kind: "manifest", runId, instance, key: manifestKey(runId, instance) };
+    const key = kind === "manifest" ? manifestKey(runId, instance) : failureKey(runId, instance);
+    return { kind, runId, instance, key };
   }
   return null;
 }

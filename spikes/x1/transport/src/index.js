@@ -846,7 +846,8 @@ export class RunDO extends DurableObject {
     do {
       const page = await this.env.RESULTS.list({ prefix: `runs/${runId}/probe/`, cursor });
       for (const object of page.objects) {
-        if (object.key.endsWith("/manifest.json")) keys.push(object.key);
+        // A manifest, or the failure record that replaces one, ends the probe's run.
+        if (/\/(manifest|failure)\.json$/.test(object.key)) keys.push(object.key);
       }
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
