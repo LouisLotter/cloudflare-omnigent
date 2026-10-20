@@ -4,11 +4,23 @@ import {
   type AccessApp,
   type DeployConfigView,
   type Deployment,
+  type DnsRecordInfo,
   declaredResources,
+  type IngressRule,
   parseRegistry,
   serializeRegistry,
+  type TunnelInfo,
+  type VpcServiceInfo,
 } from "./guard.ts";
-import { type Cloud, type Context, deploy, type Store, sweep, teardown } from "./ops.ts";
+import {
+  type Cloud,
+  type Context,
+  deploy,
+  type NameFilter,
+  type Store,
+  sweep,
+  teardown,
+} from "./ops.ts";
 
 const ACCOUNT = "a".repeat(32);
 const OWNER = "owner@example.com";
@@ -90,8 +102,13 @@ class FakeCloud implements Cloud {
   /** Each repository's current image digest, and the repositories whose image changed. */
   readonly current = new Map<string, string>();
   readonly rollouts: string[] = [];
-  /** The build epoch of every upload. */
+  /** The build epoch of every upload, and what each upload was given. */
   readonly epochs: number[] = [];
+  readonly uploads: {
+    name: string;
+    configPath: string;
+    secrets: Readonly<Record<string, string>> | undefined;
+  }[] = [];
   /** The version of the image sources; a change gives new digests. */
   sources = 1;
   /** An Access update that reports success but changes nothing. */
@@ -100,6 +117,18 @@ class FakeCloud implements Cloud {
   accessUpdateWidens = false;
   /** Listings that no longer show an application, as if it were deleted meanwhile. */
   hideAccessApps = false;
+  /** Tunnels, DNS records and VPC services by ID. A Tunnel's token is its secret. */
+  readonly tunnels_ = new Map<string, { name: string; ingress: IngressRule[]; token: string }>();
+  readonly dns = new Map<string, DnsRecordInfo>();
+  readonly vpc = new Map<string, VpcServiceInfo>();
+  /** The secrets each Worker holds, as uploads set them. */
+  readonly secrets = new Map<string, Record<string, string>>();
+  /** The process dies right after the call that starts with this takes effect. */
+  crashAfter: string | undefined;
+  /** Deletes that report success but leave the resource in place. */
+  tunnelDeleteKeeps = false;
+  dnsDeleteKeeps = false;
+  vpcDeleteKeeps = false;
   private nextAppId = 1;
   private nextTag = 1;
   private nextId = 1;
@@ -114,18 +143,35 @@ class FakeCloud implements Cloud {
     throw new ProcessLost("process lost");
   }
 
+  /** Records a call, and dies after it if the test says so. */
+  private did(call: string): void {
+    this.calls.push(call);
+    this.check();
+    if (this.crashAfter !== undefined && call.startsWith(this.crashAfter)) this.die();
+  }
+
+  private protectedByOwner(hostname: string): boolean {
+    return [...this.apps.values()].some(
+      (app) =>
+        app.domain === hostname &&
+        app.policies?.every(
+          (p) =>
+            p.decision === "allow" &&
+            JSON.stringify(p.include) === JSON.stringify([{ email: { email: OWNER } }]),
+        ),
+    );
+  }
+
   private check(): void {
     for (const [name, hostname] of this.workers) {
-      const protectedByOwner = [...this.apps.values()].some(
-        (app) =>
-          app.domain === hostname &&
-          app.policies?.every(
-            (p) =>
-              p.decision === "allow" &&
-              JSON.stringify(p.include) === JSON.stringify([{ email: { email: OWNER } }]),
-          ),
-      );
-      if (!protectedByOwner) this.violations.push(`${name} reachable without Access`);
+      if (!this.protectedByOwner(hostname))
+        this.violations.push(`${name} reachable without Access`);
+    }
+    // A DNS record makes the Tunnel hostname reachable, through the Worker route or not.
+    for (const record of this.dns.values()) {
+      if (!this.protectedByOwner(record.name)) {
+        this.violations.push(`${record.name} reachable without Access`);
+      }
     }
   }
 
@@ -154,7 +200,7 @@ class FakeCloud implements Cloud {
     this.tick();
     const id = `app-${this.nextId++}`;
     this.apps.set(id, { ...(body as unknown as AccessApp), id });
-    this.calls.push(`access.create ${String(body.name)}`);
+    this.did(`access.create ${String(body.name)}`);
     if (this.deployFault === "crash-after-access") this.die();
     return id;
   }
@@ -188,9 +234,16 @@ class FakeCloud implements Cloud {
     this.tick();
     return answer;
   }
-  deployWorker(name: string, hostname: string, configPath: string, buildEpoch: number): void {
+  deployWorker(
+    name: string,
+    hostname: string,
+    configPath: string,
+    buildEpoch: number,
+    secrets?: Readonly<Record<string, string>>,
+  ): void {
     this.tick();
     this.calls.push(`worker.deploy ${name} ${configPath}`);
+    this.uploads.push({ name, configPath, secrets });
     this.epochs.push(buildEpoch);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
@@ -231,6 +284,8 @@ class FakeCloud implements Cloud {
       throw new Error("wrangler deploy exited with 1");
     }
     this.workers.set(name, hostname);
+    // Like Wrangler's --secrets-file: added to the secrets the Worker had.
+    this.secrets.set(name, { ...this.secrets.get(name), ...secrets });
     this.check();
     if (this.deployFault === "after-upload") throw new Error("wrangler deploy exited with 1");
     if (this.deployFault === "crash-after-upload") this.die();
@@ -280,7 +335,81 @@ class FakeCloud implements Cloud {
     this.calls.push(`image.delete ${reference}`);
     if (!this.imageDeleteKeeps) this.images.delete(reference);
   }
-  /** Every bucket, container application and image is recorded for some deployment. */
+  tunnels(filter: NameFilter): TunnelInfo[] {
+    this.tick();
+    this.calls.push("tunnel.list");
+    return [...this.tunnels_]
+      .map(([id, t]) => ({ id, name: t.name }))
+      .filter((t) => matches(t.name, filter));
+  }
+  createTunnel(name: string): string {
+    this.tick();
+    const id = `tunnel-${this.nextId++}`;
+    this.tunnels_.set(id, { name, ingress: [], token: `${TOKEN}-${id}` });
+    this.did(`tunnel.create ${name}`);
+    return id;
+  }
+  tunnelIngress(id: string): IngressRule[] {
+    this.tick();
+    this.calls.push("tunnel.config");
+    return [...(this.tunnels_.get(id)?.ingress ?? [])];
+  }
+  putTunnelIngress(id: string, ingress: readonly IngressRule[]): void {
+    this.tick();
+    const tunnel = this.tunnels_.get(id);
+    if (tunnel) tunnel.ingress = [...ingress];
+    this.did(`tunnel.put ${tunnel?.name}`);
+  }
+  tunnelToken(id: string): string {
+    this.tick();
+    this.calls.push("tunnel.token");
+    const token = this.tunnels_.get(id)?.token;
+    if (!token) throw new Error("Tunnel not found");
+    return token;
+  }
+  deleteTunnel(id: string): void {
+    this.tick();
+    const name = this.tunnels_.get(id)?.name;
+    if (!this.tunnelDeleteKeeps) this.tunnels_.delete(id);
+    this.did(`tunnel.delete ${name}`);
+  }
+  dnsRecords(filter: NameFilter): DnsRecordInfo[] {
+    this.tick();
+    this.calls.push("dns.list");
+    return [...this.dns.values()].filter((r) => matches(r.name, filter));
+  }
+  createDnsRecord(name: string, target: string, _comment: string): string {
+    this.tick();
+    const id = `dns-${this.nextId++}`;
+    this.dns.set(id, { id, name, type: "CNAME", content: target, proxied: true });
+    this.did(`dns.create ${name}`);
+    return id;
+  }
+  deleteDnsRecord(id: string): void {
+    this.tick();
+    const name = this.dns.get(id)?.name;
+    if (!this.dnsDeleteKeeps) this.dns.delete(id);
+    this.did(`dns.delete ${name}`);
+  }
+  vpcServices(): VpcServiceInfo[] {
+    this.tick();
+    this.calls.push("vpc.list");
+    return [...this.vpc.values()];
+  }
+  createVpcService(name: string, tunnelId: string, port: number): string {
+    this.tick();
+    const id = `vpc-${this.nextId++}`;
+    this.vpc.set(id, { id, name, type: "http", ipv4: "127.0.0.1", tunnelId, httpPort: port });
+    this.did(`vpc.create ${name}`);
+    return id;
+  }
+  deleteVpcService(id: string): void {
+    this.tick();
+    const name = this.vpc.get(id)?.name;
+    if (!this.vpcDeleteKeeps) this.vpc.delete(id);
+    this.did(`vpc.delete ${name}`);
+  }
+  /** Every bucket, container application, image, Tunnel, DNS and VPC service is recorded. */
   unrecorded(deployments: readonly Deployment[]): string[] {
     const containers = new Set(deployments.flatMap((d) => d.containers ?? []));
     const buckets = new Set(deployments.flatMap((d) => d.buckets ?? []));
@@ -288,12 +417,29 @@ class FakeCloud implements Cloud {
       ...containers,
       ...deployments.flatMap((d) => d.repositories ?? []),
     ]);
+    const tunnels = new Set(deployments.flatMap((d) => (d.tunnel ? [d.tunnel.name] : [])));
+    const hosts = new Set(deployments.flatMap((d) => d.tunnel?.hostname ?? []));
+    const services = new Set(deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => s.name)));
     return [
       ...[...this.buckets].filter((b) => !buckets.has(b)),
       ...[...this.containerApps_.values()].filter((c) => !containers.has(c)),
       ...[...this.images].filter((i) => !repositories.has(i.slice(0, i.lastIndexOf(":")))),
+      ...[...this.tunnels_.values()].map((t) => t.name).filter((n) => !tunnels.has(n)),
+      ...[...this.dns.values()].map((r) => r.name).filter((n) => !hosts.has(n)),
+      ...[...this.vpc.values()].map((s) => s.name).filter((n) => !services.has(n)),
     ];
   }
+  /** How many Tunnels, DNS records and VPC services exist. */
+  tunnelResources(): number {
+    return this.tunnels_.size + this.dns.size + this.vpc.size;
+  }
+}
+
+/** A synthetic secret: the tests check that no command, log line or record ever holds it. */
+const TOKEN = "synthetic-tunnel-token";
+
+function matches(name: string, filter: NameFilter): boolean {
+  return "name" in filter ? name === filter.name : name.startsWith(filter.prefix);
 }
 
 const GOOD: DeployConfigView = {
@@ -338,9 +484,26 @@ function elapse(ms: number): void {
   real += ms;
 }
 let views: Record<string, DeployConfigView>;
+/** Staging manifests by the configuration they sit next to. */
+let manifests: Record<string, unknown>;
+/** Files the tool wrote and has not removed, and everything it ever wrote. */
+let files: Map<string, string>;
+let written: { path: string; text: string }[];
+let logs: string[];
 let locks: FakeLocks;
 let ctx: Context;
 const SETTLE = 60_000;
+
+/** Reads a rendered configuration back as Wrangler would, for the fields the tool checks. */
+function viewOf(path: string, text: string): DeployConfigView {
+  const raw = JSON.parse(text) as Record<string, unknown>;
+  const effective = Object.fromEntries(
+    ["account_id", "workers_dev", "preview_urls", "route", "routes"]
+      .filter((key) => raw[key] !== undefined)
+      .map((key) => [key, raw[key]]),
+  );
+  return { path, redirected: false, raw, effective };
+}
 
 function newContext(): Context {
   store = new FakeStore();
@@ -348,6 +511,9 @@ function newContext(): Context {
   locks = new FakeLocks();
   clock = T0;
   real = 0;
+  files = new Map();
+  written = [];
+  logs = [];
   return {
     config,
     cloud,
@@ -357,6 +523,19 @@ function newContext(): Context {
       if (!view) throw new Error(`no config at ${path}`);
       return view;
     },
+    readManifest: (path) =>
+      manifests[path] === undefined
+        ? undefined
+        : { path: `${path}/../staging.jsonc`, json: manifests[path] },
+    writeFile: (path, text) => {
+      files.set(path, text);
+      written.push({ path, text });
+      views[path] = viewOf(path, text);
+    },
+    removeFile: (path) => {
+      files.delete(path);
+      delete views[path];
+    },
     lock: (name) => locks.lock(name),
     sleep: (ms) => {
       elapse(ms);
@@ -365,12 +544,13 @@ function newContext(): Context {
     },
     settleMs: SETTLE,
     now: () => new Date(clock),
-    log: () => {},
+    log: (message) => logs.push(message),
   };
 }
 
 beforeEach(() => {
   views = { [GOOD.path]: GOOD };
+  manifests = {};
   ctx = newContext();
 });
 
@@ -386,6 +566,25 @@ function restart(): void {
   cloud.bucketDeleteKeeps = false;
   cloud.imageDeleteKeeps = false;
   cloud.containerDeleteKeeps = false;
+  cloud.crashAfter = undefined;
+  cloud.tunnelDeleteKeeps = false;
+  cloud.dnsDeleteKeeps = false;
+  cloud.vpcDeleteKeeps = false;
+}
+
+/** X1's transport manifest: a Tunnel with a public hostname, and one VPC service. */
+const TUNNEL_MANIFEST = {
+  tunnel: { origin: "http://localhost:8081", publicHostname: true, tokenSecret: "X1_TUNNEL_TOKEN" },
+  vpcServices: [{ binding: "X1_VPC", port: 8081 }],
+};
+
+/** Registers a configuration with a staging manifest next to it. */
+function withManifest(suffix: string, manifest: unknown = TUNNEL_MANIFEST, resources = false) {
+  const base = resources ? views[withResources(suffix)] : GOOD;
+  const path = `/w/m${resources ? "r" : ""}-${suffix}.jsonc`;
+  views[path] = { ...(base ?? GOOD), path };
+  manifests[path] = manifest;
+  return path;
 }
 
 const request = (suffix = "a", days = 7, configPath = GOOD.path) => ({
@@ -907,6 +1106,462 @@ describe("containers and buckets", () => {
   });
 });
 
+describe("staging manifest: a Tunnel, its public hostname and Workers VPC services", () => {
+  const HOST = "cfo-stg-a-tunnel.example.com";
+  const RENDERED = "/w/.stg-rendered.cfo-stg-a.jsonc";
+  const everything = () =>
+    cloud.tunnelResources() +
+    cloud.apps.size +
+    cloud.workers.size +
+    cloud.buckets.size +
+    cloud.containerApps_.size +
+    cloud.images.size;
+  const creates = () => cloud.calls.filter((c) => /\.(create|put|update)\b/.test(c));
+  const uploaded = () => cloud.calls.some((c) => c.startsWith("worker.deploy"));
+
+  it("creates Access for both hostnames, then buckets, the Tunnel, DNS and VPC, then the Worker", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TUNNEL_MANIFEST, true)));
+    const steps = order(
+      "access.create cfo-stg-a",
+      "access.create cfo-stg-a-tunnel",
+      "bucket.create",
+      "tunnel.create",
+      "tunnel.put",
+      "dns.create",
+      "vpc.create",
+      "worker.deploy",
+    );
+    expect(steps.every((step) => step >= 0)).toBe(true);
+    expect([...steps].sort((x, y) => x - y)).toEqual(steps);
+    expect(record()).toMatchObject({
+      state: "deployed",
+      accessAppId: "app-1",
+      tunnel: {
+        name: "cfo-stg-a",
+        id: "tunnel-3",
+        hostname: HOST,
+        accessAppId: "app-2",
+        dnsRecordId: "dns-4",
+      },
+      vpcServices: [{ name: "cfo-stg-a-x1-vpc", binding: "X1_VPC", port: 8081, id: "vpc-5" }],
+    });
+    expect(cloud.apps.get("app-2")).toMatchObject({
+      name: "cfo-stg-a-tunnel",
+      domain: HOST,
+      same_site_cookie_attribute: "lax",
+    });
+    expect(cloud.tunnels_.get("tunnel-3")?.ingress).toEqual([
+      { hostname: HOST, service: "http://localhost:8081" },
+      { service: "http_status:404" },
+    ]);
+    expect(cloud.dns.get("dns-4")).toMatchObject({
+      name: HOST,
+      type: "CNAME",
+      content: "tunnel-3.cfargotunnel.com",
+      proxied: true,
+    });
+    expect(cloud.vpc.get("vpc-5")).toMatchObject({
+      tunnelId: "tunnel-3",
+      ipv4: "127.0.0.1",
+      httpPort: 8081,
+    });
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({ X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-3` });
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("deploys a rendered copy next to the configuration, with the route and VPC bindings, and removes it", () => {
+    const path = withManifest("a", TUNNEL_MANIFEST, true);
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.uploads.at(-1)?.configPath).toBe(RENDERED);
+    expect(written.map((w) => w.path)).toEqual([RENDERED]);
+    const raw = JSON.parse(written[0]?.text ?? "{}");
+    expect(raw).toEqual({
+      ...views[path]?.raw,
+      routes: [{ pattern: `${HOST}/*`, zone_name: "example.com" }],
+      vpc_services: [{ binding: "X1_VPC", service_id: "vpc-5" }],
+    });
+    expect(files.size).toBe(0);
+    // The checked configuration itself is never written.
+    expect(views[path]?.raw).not.toHaveProperty("routes");
+  });
+
+  it("removes the rendered copy when the upload fails", () => {
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("wrangler deploy");
+    expect(written).toHaveLength(1);
+    expect(files.size).toBe(0);
+  });
+
+  it("refuses to upload a rendered copy that Wrangler reads differently", () => {
+    const path = withManifest("a");
+    const write = ctx.writeFile;
+    ctx = {
+      ...ctx,
+      writeFile: (file, text) => {
+        write(file, text);
+        const view = views[file];
+        if (view) {
+          views[file] = {
+            ...view,
+            effective: { ...view.effective, routes: ["elsewhere.example.com/*"] },
+          };
+        }
+      },
+    };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow('"routes" differs');
+    expect(uploaded()).toBe(false);
+    expect(files.size).toBe(0);
+  });
+
+  it("redeploys without creating anything, rewriting the ingress or changing the token", () => {
+    const path = withManifest("a", TUNNEL_MANIFEST, true);
+    deploy(ctx, request("a", 7, path));
+    const first = record();
+    cloud.calls.length = 0;
+    elapse(HOUR);
+    deploy(ctx, request("a", 7, path));
+    expect(creates()).toEqual([]);
+    expect(cloud.calls.filter((c) => c.startsWith("tunnel.put"))).toEqual([]);
+    expect(record()).toEqual({ ...first, expiresAt: new Date(clock + 7 * DAY).toISOString() });
+    expect(cloud.uploads.map((u) => u.secrets)).toEqual([
+      { X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-3` },
+      { X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-3` },
+    ]);
+    expect(cloud.rollouts).toEqual([]);
+  });
+
+  it("puts the Tunnel token only into the upload: never a command, log line, record or file", () => {
+    deploy(ctx, request("a", 7, withManifest("a")));
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.uploads[0]?.secrets).toEqual({ X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-3` });
+    for (const text of [...cloud.calls, ...logs, store.text, ...written.map((w) => w.text)]) {
+      expect(text).not.toContain(TOKEN);
+    }
+  });
+
+  it("resets the ingress when it was changed", () => {
+    const path = withManifest("a");
+    deploy(ctx, request("a", 7, path));
+    const tunnel = cloud.tunnels_.get("tunnel-3");
+    if (!tunnel) throw new Error("missing Tunnel");
+    tunnel.ingress = [{ service: "http://localhost:22" }];
+    deploy(ctx, request("a", 7, path));
+    expect(tunnel.ingress).toEqual([
+      { hostname: HOST, service: "http://localhost:8081" },
+      { service: "http_status:404" },
+    ]);
+  });
+
+  it("refuses to upload when the Tunnel does not hold the ingress written", () => {
+    const path = withManifest("a");
+    cloud.putTunnelIngress = function (this: FakeCloud) {
+      this.calls.push("tunnel.put (ignored)");
+    };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("does not hold the ingress");
+    expect(uploaded()).toBe(false);
+  });
+
+  it("makes a private Tunnel with VPC services and no public hostname", () => {
+    const manifest = {
+      tunnel: { tokenSecret: "X1_TUNNEL_TOKEN" },
+      vpcServices: [{ binding: "X1_VPC", port: 8081 }],
+    };
+    deploy(ctx, request("a", 7, withManifest("a", manifest)));
+    expect(cloud.apps.size).toBe(1);
+    expect(cloud.dns.size).toBe(0);
+    expect(cloud.tunnels_.get("tunnel-2")?.ingress).toEqual([{ service: "http_status:404" }]);
+    const raw = JSON.parse(written[0]?.text ?? "{}");
+    expect(raw).not.toHaveProperty("routes");
+    expect(raw.vpc_services).toEqual([{ binding: "X1_VPC", service_id: "vpc-3" }]);
+    expect(record()?.tunnel).toEqual({ name: "cfo-stg-a", id: "tunnel-2" });
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it("deploys a Tunnel without VPC services, and renders nothing without a route", () => {
+    deploy(ctx, request("a", 7, withManifest("a", { tunnel: { tokenSecret: "T" } })));
+    expect(written).toEqual([]);
+    expect(cloud.uploads[0]).toMatchObject({
+      configPath: "/w/m-a.jsonc",
+      secrets: { T: `${TOKEN}-tunnel-2` },
+    });
+    expect(record()).not.toHaveProperty("vpcServices");
+  });
+
+  it("without a manifest, makes no Tunnel calls and uploads the checked file without secrets", () => {
+    deploy(ctx, request());
+    expect(cloud.calls.filter((c) => /^(tunnel|dns|vpc)\./.test(c))).toEqual([]);
+    expect(cloud.uploads).toEqual([
+      { name: "cfo-stg-a", configPath: GOOD.path, secrets: undefined },
+    ]);
+    expect(written).toEqual([]);
+    expect(record()).not.toHaveProperty("tunnel");
+  });
+
+  it("refuses a manifest the tool does not understand before any cloud call", () => {
+    const path = withManifest("a", { tunnel: { tokenSecret: "T" }, serviceToken: {} });
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("refusing staging manifest");
+    expect(cloud.calls).toEqual([]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("removes the VPC services, DNS record and Tunnel after the Worker, and Access last", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TUNNEL_MANIFEST, true)));
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    const steps = order(
+      "worker.delete",
+      "container.delete",
+      "image.delete",
+      "vpc.delete",
+      "dns.delete",
+      "tunnel.delete",
+      "bucket.delete",
+      "access.delete cfo-stg-a-tunnel",
+      "access.delete cfo-stg-a",
+    );
+    expect(steps.every((step) => step >= 0)).toBe(true);
+    expect([...steps].sort((x, y) => x - y)).toEqual(steps);
+    expect(everything()).toBe(0);
+    expect(store.load()).toEqual([]);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it.each([
+    "access.create cfo-stg-a-tunnel",
+    "tunnel.create",
+    "tunnel.put",
+    "dns.create",
+    "vpc.create",
+  ])(
+    "recovers when the process dies right after %s: a rerun finishes without duplicates",
+    (point) => {
+      const path = withManifest("a", TUNNEL_MANIFEST, true);
+      cloud.crashAfter = point;
+      expect(() => deploy(ctx, request("a", 7, path))).toThrow(ProcessLost);
+      restart();
+      expect(cloud.unrecorded(store.load())).toEqual([]);
+      expect(cloud.violations).toEqual([]);
+      deploy(ctx, request("a", 7, path));
+      expect([cloud.apps.size, cloud.tunnels_.size, cloud.dns.size, cloud.vpc.size]).toEqual([
+        2, 1, 1, 1,
+      ]);
+      expect(record()?.state).toBe("deployed");
+      teardown(ctx, "cfo-stg-a");
+      expect(everything()).toBe(0);
+      expect(cloud.violations).toEqual([]);
+    },
+  );
+
+  it.each([
+    "access.create cfo-stg-a-tunnel",
+    "tunnel.create",
+    "tunnel.put",
+    "dns.create",
+    "vpc.create",
+  ])("tears down everything after the process died right after %s", (point) => {
+    cloud.crashAfter = point;
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+    expect(store.load()).toEqual([]);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("resumes a teardown that died after removing the DNS record", () => {
+    deploy(ctx, request("a", 7, withManifest("a")));
+    cloud.crashAfter = "dns.delete";
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(ProcessLost);
+    restart();
+    expect(cloud.apps.size).toBe(2);
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it.each([
+    ["the Tunnel", "tunnelDeleteKeeps", "Cloudflare Tunnel cfo-stg-a still exists"],
+    ["the DNS record", "dnsDeleteKeeps", `DNS record ${HOST} still exists`],
+    ["a VPC service", "vpcDeleteKeeps", "a Workers VPC service still exists"],
+  ] as const)("keeps Access and the record while %s survives its delete", (_, fault, message) => {
+    deploy(ctx, request("a", 7, withManifest("a")));
+    cloud[fault] = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(message);
+    expect(cloud.apps.size).toBe(2);
+    expect(record()?.state).toBe("deleting");
+    expect(cloud.violations).toEqual([]);
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it("remembers the Tunnel of an earlier deploy and keeps its hostname behind Access", () => {
+    deploy(ctx, request("a", 7, withManifest("a")));
+    deploy(ctx, request("a")); // no manifest
+    expect(record()?.tunnel?.hostname).toBe(HOST);
+    expect(cloud.uploads.at(-1)).toMatchObject({ configPath: GOOD.path, secrets: undefined });
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  describe("refuses what it did not create", () => {
+    it("a Tunnel under the deployment's name, before recording anything", () => {
+      cloud.tunnels_.set("theirs", { name: "cfo-stg-a", ingress: [], token: "x" });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "Cloudflare Tunnel cfo-stg-a exists but this deployment did not create it",
+      );
+      expect(store.load()).toEqual([]);
+      expect(creates()).toEqual([]);
+    });
+
+    it("a DNS record on the Tunnel hostname", () => {
+      cloud.dns.set("theirs", {
+        id: "theirs",
+        name: HOST,
+        type: "A",
+        content: "192.0.2.1",
+        proxied: true,
+      });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "DNS records this deployment did not create",
+      );
+      expect(store.load()).toEqual([]);
+    });
+
+    it("a VPC service under the name the tool would give", () => {
+      cloud.vpc.set("theirs", { id: "theirs", name: "cfo-stg-a-x1-vpc" });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "Workers VPC service cfo-stg-a-x1-vpc exists but this deployment did not create it",
+      );
+      expect(store.load()).toEqual([]);
+    });
+
+    it("an Access application on the Tunnel hostname with another name", () => {
+      cloud.apps.set("theirs", {
+        id: "theirs",
+        name: "someone-else",
+        domain: HOST,
+        type: "self_hosted",
+        policies: [{ decision: "allow", include: [{ email: { email: OWNER } }] }],
+      });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("did not record");
+      expect(
+        cloud.calls.some((c) => c.startsWith("tunnel.create") || c.startsWith("dns.create")),
+      ).toBe(false);
+    });
+
+    it("a Tunnel hostname whose Access application was widened, before its DNS record", () => {
+      const path = withManifest("a");
+      cloud.crashAfter = "access.create cfo-stg-a-tunnel";
+      expect(() => deploy(ctx, request("a", 7, path))).toThrow(ProcessLost);
+      restart();
+      const app = cloud.apps.get("app-2");
+      if (!app) throw new Error("missing app");
+      cloud.apps.set("app-2", {
+        ...app,
+        policies: [{ decision: "allow", include: [{ everyone: {} }] }],
+      });
+      expect(() => deploy(ctx, request("a", 7, path))).toThrow("not owner-only");
+      expect(cloud.dns.size).toBe(0);
+      expect(uploaded()).toBe(false);
+    });
+
+    it("a Tunnel that replaced the recorded one, in deploy and in teardown", () => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      cloud.tunnels_.delete("tunnel-3");
+      cloud.tunnels_.set("theirs", { name: "cfo-stg-a", ingress: [], token: "x" });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("did not record it");
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("did not record it");
+      expect(cloud.tunnels_.has("theirs")).toBe(true);
+      expect(cloud.apps.size).toBe(2);
+      expect(record()?.state).toBe("deleting");
+    });
+
+    it("a recorded Tunnel that is gone", () => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      cloud.tunnels_.clear();
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("recorded but gone");
+      teardown(ctx, "cfo-stg-a");
+      expect(everything()).toBe(0);
+    });
+
+    it("a DNS record that no longer points to the Tunnel, which teardown leaves alone", () => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      const dns = cloud.dns.get("dns-4");
+      if (!dns) throw new Error("missing record");
+      cloud.dns.set("dns-4", { ...dns, content: "elsewhere.example.net" });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("no longer points");
+      // Recorded by ID, so teardown still owns it.
+      teardown(ctx, "cfo-stg-a");
+      expect(everything()).toBe(0);
+    });
+
+    it("an unrecorded DNS record that replaced ours, which teardown refuses to delete", () => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      cloud.dns.delete("dns-4");
+      cloud.dns.set("theirs", {
+        id: "theirs",
+        name: HOST,
+        type: "CNAME",
+        content: "x",
+        proxied: true,
+      });
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("DNS record");
+      expect(cloud.dns.has("theirs")).toBe(true);
+      expect(cloud.apps.size).toBe(2);
+    });
+
+    it("a VPC service that changed, and a manifest that changes a recorded port", () => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      const service = cloud.vpc.get("vpc-5");
+      if (!service) throw new Error("missing service");
+      cloud.vpc.set("vpc-5", { ...service, httpPort: 22 });
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("no longer points");
+      cloud.vpc.set("vpc-5", service);
+      const moved = { ...TUNNEL_MANIFEST, vpcServices: [{ binding: "X1_VPC", port: 9000 }] };
+      expect(() => deploy(ctx, request("a", 7, withManifest("a", moved)))).toThrow(
+        "recorded with port 8081",
+      );
+    });
+
+    it("an unrecorded VPC service on another Tunnel, in teardown", () => {
+      cloud.crashAfter = "tunnel.put";
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+      restart();
+      cloud.vpc.set("theirs", { id: "theirs", name: "cfo-stg-a-x1-vpc", tunnelId: "other" });
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("Workers VPC service cfo-stg-a-x1-vpc");
+      expect(cloud.vpc.has("theirs")).toBe(true);
+    });
+  });
+
+  it("never records the Tunnel hostname for two deployments", () => {
+    deploy(ctx, request("a-tunnel"));
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+      `the hostname ${HOST} is recorded for the deployment cfo-stg-a-tunnel`,
+    );
+    teardown(ctx, "cfo-stg-a-tunnel");
+    deploy(ctx, request("a", 7, withManifest("a")));
+    expect(() => deploy(ctx, request("a-tunnel"))).toThrow(
+      `the hostname ${HOST} is recorded for the deployment cfo-stg-a`,
+    );
+  });
+
+  it("never records one VPC service for two deployments whose names nest", () => {
+    // cfo-stg-a's X_VPC and cfo-stg-a-x's VPC are both cfo-stg-a-x-vpc. Recorded, not created:
+    const nested = { tunnel: { tokenSecret: "T" }, vpcServices: [{ binding: "X_VPC", port: 1 }] };
+    cloud.crashAfter = "tunnel.create";
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", nested)))).toThrow(ProcessLost);
+    restart();
+    expect(cloud.vpc.size).toBe(0);
+    const inner = { tunnel: { tokenSecret: "T" }, vpcServices: [{ binding: "VPC", port: 1 }] };
+    expect(() => deploy(ctx, request("a-x", 7, withManifest("a-x", inner)))).toThrow(
+      "Workers VPC service cfo-stg-a-x-vpc is recorded for the deployment cfo-stg-a",
+    );
+    expect(record("cfo-stg-a-x")).toBeUndefined();
+  });
+});
+
 describe("IR-002: only closed Wrangler configurations deploy", () => {
   const open: Record<string, Partial<DeployConfigView>> = {
     "workers.dev enabled": { effective: { workers_dev: true, preview_urls: false } },
@@ -1221,6 +1876,16 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       ),
       lateDelay: fc.integer({ min: 0, max: SETTLE }),
       resources: fc.boolean(),
+      manifest: fc.boolean(),
+      // The process dies right after one of the manifest's creations.
+      crash: fc.constantFrom(
+        "none",
+        "tunnel-app",
+        "tunnel.create",
+        "tunnel.put",
+        "dns.create",
+        "vpc.create",
+      ),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
@@ -1232,6 +1897,8 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       wallJump: fc.integer({ min: 0, max: 30 * 60_000 }),
       bucketFails: fc.boolean(),
       containerKeeps: fc.boolean(),
+      tunnelKeeps: fc.boolean(),
+      crash: fc.constantFrom("none", "vpc.delete", "dns.delete", "tunnel.delete"),
     }),
     fc.record({
       kind: fc.constant("sweep" as const),
@@ -1262,7 +1929,14 @@ describe("model check: no Worker is ever reachable without its Access applicatio
                   // Refused or failed; the invariants decide whether that was safe.
                 }
               };
-              const path = op.resources ? withResources(op.suffix) : GOOD.path;
+              const crash =
+                op.crash === "tunnel-app" ? `access.create cfo-stg-${op.suffix}-tunnel` : op.crash;
+              cloud.crashAfter = op.crash === "none" ? undefined : crash;
+              const path = op.manifest
+                ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
+                : op.resources
+                  ? withResources(op.suffix)
+                  : GOOD.path;
               deploy(ctx, request(op.suffix, op.days, path));
             } else if (op.kind === "teardown") {
               clock += op.wallJump; // the wall clock only
@@ -1271,6 +1945,8 @@ describe("model check: no Worker is ever reachable without its Access applicatio
               cloud.lookupDelay = op.lookupDelay;
               cloud.bucketDeleteFails = op.bucketFails;
               cloud.containerDeleteKeeps = op.containerKeeps;
+              cloud.tunnelDeleteKeeps = op.tunnelKeeps;
+              cloud.crashAfter = op.crash === "none" ? undefined : op.crash;
               teardown(ctx, `cfo-stg-${op.suffix}`);
             } else if (op.kind === "sweep") {
               elapse(op.hours * HOUR);
@@ -1288,8 +1964,13 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           expect(cloud.violations).toEqual([]);
           // Nothing exists in the cloud without a record to clean it up.
           const recorded = new Set(store.load().map((d) => d.name));
+          const appNames = new Set(
+            store
+              .load()
+              .flatMap((d) => [d.name, ...(d.tunnel?.hostname ? [`${d.name}-tunnel`] : [])]),
+          );
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
-          for (const app of cloud.apps.values()) expect(recorded.has(app.name)).toBe(true);
+          for (const app of cloud.apps.values()) expect(appNames.has(app.name)).toBe(true);
           expect(cloud.unrecorded(store.load())).toEqual([]);
         }
         // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
@@ -1311,6 +1992,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         cloud.tick();
         expect(cloud.workers.size).toBe(0);
         expect(cloud.buckets.size + cloud.containerApps_.size + cloud.images.size).toBe(0);
+        expect(cloud.tunnelResources()).toBe(0);
         expect(cloud.violations).toEqual([]);
       }),
       { numRuns: 300 },

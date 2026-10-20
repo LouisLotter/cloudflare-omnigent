@@ -15,12 +15,18 @@
 // It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it
 // is ever committed.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { cliCloud, fileStore, readWranglerConfig } from "./cloud.ts";
+import {
+  cliCloud,
+  fileStore,
+  readStagingManifest,
+  readWranglerConfig,
+  writePrivateFile,
+} from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
 import { type Context, deploy, sweep, teardown } from "./ops.ts";
@@ -57,6 +63,9 @@ function context(config: StagingConfig, command: string): Context {
     cloud: cliCloud(config, WORKER),
     store: fileStore(REGISTRY_FILE, holder),
     readConfig: (path) => readWranglerConfig(path, WORKER),
+    readManifest: readStagingManifest,
+    writeFile: writePrivateFile,
+    removeFile: (path) => rmSync(path, { force: true }),
     lock: (name) => acquireLock(join(STATE, "locks", `${name}.lock`), 0, holder),
     sleep: sleepSync,
     settleMs: SETTLE_MS,

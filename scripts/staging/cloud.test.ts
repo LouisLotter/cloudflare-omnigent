@@ -9,14 +9,21 @@ import {
   childEnv,
   childStdio,
   cliCloud,
+  dnsRecordsOf,
   fileStore,
   imagesOf,
+  ingressOf,
   type RunOptions,
+  readStagingManifest,
   readWranglerConfig,
+  tunnelsOf,
+  vpcServicesOf,
+  withSecretsFile,
   workerLookup,
   wranglerCli,
+  writePrivateFile,
 } from "./cloud.ts";
-import { type Deployment, validateDeployConfig } from "./guard.ts";
+import { type Deployment, tunnelRoute, validateDeployConfig } from "./guard.ts";
 import { acquireLock, heldLockFds } from "./lock.ts";
 
 const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
@@ -89,6 +96,162 @@ describe("R2 bucket lookup and image listings", () => {
     expect(imagesOf([], "cfo-stg-a-host")).toEqual([]);
     expect(() => imagesOf({ images: [] }, "x")).toThrow();
     expect(() => imagesOf([{ name: "x" }], "x")).toThrow();
+  });
+});
+
+describe("Tunnel, DNS and VPC answers", () => {
+  it("lists only Tunnels that exist and run cloudflared", () => {
+    expect(
+      tunnelsOf([
+        { id: "t1", name: "cfo-stg-a", deleted_at: null, tun_type: "cfd_tunnel", token: "x" },
+        { id: "t2", name: "cfo-stg-a" },
+        { id: "t3", name: "cfo-stg-a", deleted_at: "2026-10-20T00:00:00Z" },
+        { id: "t4", name: "cfo-stg-a", tun_type: "warp_connector" },
+      ]),
+    ).toEqual([
+      { id: "t1", name: "cfo-stg-a" },
+      { id: "t2", name: "cfo-stg-a" },
+    ]);
+    for (const bad of [{}, [{ name: "x" }], [{ id: "t" }], [null], [[]]]) {
+      expect(() => tunnelsOf(bad)).toThrow();
+    }
+  });
+
+  it("reads a Tunnel's ingress, and none before it has a configuration", () => {
+    const rules = [
+      { hostname: "h.example.com", service: "http://localhost:8081", originRequest: {} },
+      { hostname: "h.example.com", path: "/x", service: "http://localhost:1" },
+      { service: "http_status:404" },
+    ];
+    expect(ingressOf({ config: { ingress: rules } })).toEqual([
+      { hostname: "h.example.com", service: "http://localhost:8081" },
+      { hostname: "h.example.com", path: "/x", service: "http://localhost:1" },
+      { service: "http_status:404" },
+    ]);
+    for (const empty of [
+      {},
+      { config: null },
+      { config: {} },
+      { config: { ingress: null } },
+      null,
+    ]) {
+      expect(ingressOf(empty)).toEqual([]);
+    }
+    expect(() => ingressOf({ config: { ingress: {} } })).toThrow();
+    expect(() => ingressOf({ config: { ingress: [{ hostname: "h" }] } })).toThrow("service");
+  });
+
+  it("flattens DNS records and VPC services, refusing entries without IDs", () => {
+    expect(
+      dnsRecordsOf([
+        {
+          id: "d",
+          name: "h.example.com",
+          type: "CNAME",
+          content: "t.cfargotunnel.com",
+          proxied: true,
+        },
+        { id: "e", name: "h.example.com", type: "TXT" },
+      ]),
+    ).toEqual([
+      {
+        id: "d",
+        name: "h.example.com",
+        type: "CNAME",
+        content: "t.cfargotunnel.com",
+        proxied: true,
+      },
+      { id: "e", name: "h.example.com", type: "TXT", content: "", proxied: false },
+    ]);
+    expect(() => dnsRecordsOf([{ name: "h", type: "A" }])).toThrow("id");
+    expect(
+      vpcServicesOf([
+        {
+          service_id: "v",
+          name: "cfo-stg-a-x1-vpc",
+          type: "http",
+          http_port: 8081,
+          https_port: 443,
+          host: { ipv4: "127.0.0.1", network: { tunnel_id: "t" } },
+        },
+        { service_id: "w", name: "other", type: "tcp", host: { hostname: "db" } },
+      ]),
+    ).toEqual([
+      {
+        id: "v",
+        name: "cfo-stg-a-x1-vpc",
+        type: "http",
+        ipv4: "127.0.0.1",
+        tunnelId: "t",
+        httpPort: 8081,
+        httpsPort: 443,
+      },
+      { id: "w", name: "other", type: "tcp" },
+    ]);
+    expect(() => vpcServicesOf([{ id: "v", name: "x" }])).toThrow("service_id");
+    expect(() => vpcServicesOf({ services: [] })).toThrow();
+  });
+});
+
+describe("secrets for an upload", () => {
+  it("live in a private file only while the upload runs, and never in argv", () => {
+    let seen: { args: readonly string[]; mode: number; dirMode: number; text: string } | undefined;
+    const cloud = cliCloud(
+      { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" },
+      WORKER,
+      (_command, args) => {
+        const file = args[args.indexOf("--secrets-file") + 1] ?? "";
+        seen = {
+          args,
+          mode: statSync(file).mode & 0o777,
+          dirMode: statSync(dirname(file)).mode & 0o777,
+          text: readFileSync(file, "utf8"),
+        };
+        return ok("");
+      },
+    );
+    const secret = `synthetic-${Math.random().toString(36).slice(2)}`;
+    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/c.jsonc", 1, { X1_TOKEN: secret });
+    expect(seen?.args.slice(2)).toEqual([
+      "deploy",
+      "--config",
+      "/w/c.jsonc",
+      "--name",
+      "cfo-stg-a",
+      "--domain",
+      "cfo-stg-a.example.com",
+      "--secrets-file",
+      expect.stringMatching(/cfo-stg-secrets-[^/]+\/secrets\.json$/),
+    ]);
+    expect(seen?.args.join(" ")).not.toContain(secret);
+    expect(seen?.mode).toBe(0o600);
+    expect(seen?.dirMode).toBe(0o700);
+    expect(JSON.parse(seen?.text ?? "{}")).toEqual({ X1_TOKEN: secret });
+    const file = seen?.args.at(-1) ?? "";
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(dirname(file))).toBe(false);
+  });
+
+  it("are removed when the upload fails, and are not used for an empty set", () => {
+    let file = "";
+    expect(() =>
+      withSecretsFile({ A: "1" }, (path) => {
+        file = path;
+        throw new Error("wrangler deploy exited with 1");
+      }),
+    ).toThrow("exited");
+    expect(existsSync(dirname(file))).toBe(false);
+    const calls: (readonly string[])[] = [];
+    const cloud = cliCloud(
+      { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" },
+      WORKER,
+      (_command, args) => {
+        calls.push(args);
+        return ok("");
+      },
+    );
+    cloud.deployWorker("cfo-stg-a", "h", "/c", 1, {});
+    expect(calls[0]).not.toContain("--secrets-file");
   });
 });
 
@@ -253,6 +416,176 @@ describe("CLI wiring", () => {
     expect(deletes.every((c) => c.includes("--force"))).toBe(true);
   });
 
+  it("manages Tunnels, DNS records and VPC services with cf, never interactively", () => {
+    const cfCalls: (readonly string[])[] = [];
+    const answers: Record<string, unknown> = {
+      "tunnels list": [
+        { id: "t1", name: "cfo-stg-a" },
+        { id: "t2", name: "cfo-stg-ab" },
+      ],
+      "tunnels create": { id: "t9", token: "synthetic-token", credentials_file: {} },
+      "tunnels config": { config: { ingress: [{ service: "http_status:404" }] } },
+      "tunnels token": "synthetic-token",
+      "records list": [
+        { id: "d1", name: "cfo-stg-a-tunnel.example.com", type: "CNAME", content: "x" },
+        { id: "d2", name: "cfo-stg-a-tunnel.example.com.other", type: "CNAME", content: "x" },
+      ],
+      "records create": { id: "d9" },
+      "services list": [{ service_id: "v1", name: "cfo-stg-a-x1-vpc" }],
+      "services create": { service_id: "v9" },
+    };
+    const managing = cliCloud(config, WORKER, (command, args) => {
+      expect(command).toBe("cf");
+      cfCalls.push(args);
+      const answer = answers[`${args[0]} ${args[1]}`] ?? answers[`${args[1]} ${args[2]}`];
+      return ok(JSON.stringify({ result: answer ?? {} }));
+    });
+    const last = () => cfCalls.at(-1);
+
+    expect(managing.tunnels({ name: "cfo-stg-a" })).toEqual([{ id: "t1", name: "cfo-stg-a" }]);
+    expect(last()).toEqual([
+      "tunnels",
+      "list",
+      "--name",
+      "cfo-stg-a",
+      "--is-deleted",
+      "false",
+      "--tun-types",
+      "cfd_tunnel",
+      "--per-page",
+      "100",
+      "--page",
+      "1",
+    ]);
+    expect(managing.tunnels({ prefix: "cfo-stg-" }).map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(last()?.slice(2, 4)).toEqual(["--include-prefix", "cfo-stg-"]);
+    expect(managing.createTunnel("cfo-stg-a")).toBe("t9");
+    expect(last()).toEqual([
+      "tunnels",
+      "create",
+      "--body",
+      '{"name":"cfo-stg-a","config_src":"cloudflare"}',
+    ]);
+    expect(managing.tunnelIngress("t9")).toEqual([{ service: "http_status:404" }]);
+    expect(last()).toEqual(["tunnels", "config", "get", "t9"]);
+    managing.putTunnelIngress("t9", [{ hostname: "h", service: "http://localhost:1" }]);
+    expect(last()).toEqual([
+      "tunnels",
+      "config",
+      "update",
+      "t9",
+      "--body",
+      '{"config":{"ingress":[{"hostname":"h","service":"http://localhost:1"}]}}',
+    ]);
+    expect(managing.tunnelToken("t9")).toBe("synthetic-token");
+    expect(last()).toEqual(["tunnels", "token", "get", "t9"]);
+    managing.deleteTunnel("t9");
+    expect(cfCalls.slice(-2)).toEqual([
+      ["tunnels", "connections", "cleanup", "t9", "--force"],
+      ["tunnels", "delete", "t9", "--force"],
+    ]);
+
+    expect(managing.dnsRecords({ name: "cfo-stg-a-tunnel.example.com" }).map((r) => r.id)).toEqual([
+      "d1",
+    ]);
+    expect(last()).toEqual([
+      "dns",
+      "records",
+      "list",
+      "--zone",
+      "example.com",
+      "--name-exact",
+      "cfo-stg-a-tunnel.example.com",
+      "--per-page",
+      "100",
+      "--page",
+      "1",
+    ]);
+    managing.dnsRecords({ prefix: "cfo-stg-" });
+    expect(last()?.slice(5, 7)).toEqual(["--name-startswith", "cfo-stg-"]);
+    expect(managing.createDnsRecord("h.example.com", "t9.cfargotunnel.com", "cfo-stg-a")).toBe(
+      "d9",
+    );
+    expect(last()).toEqual([
+      "dns",
+      "records",
+      "create",
+      "--zone",
+      "example.com",
+      "--body",
+      '{"type":"CNAME","name":"h.example.com","content":"t9.cfargotunnel.com","proxied":true,"ttl":1,"comment":"cfo-stg-a"}',
+    ]);
+    managing.deleteDnsRecord("d9");
+    expect(last()).toEqual(["dns", "records", "delete", "d9", "--zone", "example.com", "--force"]);
+
+    expect(managing.vpcServices().map((s) => s.id)).toEqual(["v1"]);
+    expect(last()).toEqual(["workers-vpc", "services", "list", "--per-page", "100", "--page", "1"]);
+    expect(managing.createVpcService("cfo-stg-a-x1-vpc", "t9", 8081)).toBe("v9");
+    expect(last()).toEqual([
+      "workers-vpc",
+      "services",
+      "create",
+      "--body",
+      '{"type":"http","name":"cfo-stg-a-x1-vpc","http_port":8081,"host":{"ipv4":"127.0.0.1","network":{"tunnel_id":"t9"}}}',
+    ]);
+    managing.deleteVpcService("v9");
+    expect(last()).toEqual(["workers-vpc", "services", "delete", "v9", "--force"]);
+
+    const deletes = cfCalls.filter((c) => c.some((arg) => /^(delete|cleanup)$/.test(arg)));
+    expect(deletes).toHaveLength(4);
+    expect(deletes.every((c) => c.includes("--force"))).toBe(true);
+  });
+
+  it("reads every page of a listing, and refuses one that never ends", () => {
+    const pages: string[] = [];
+    const listing = (total: number) =>
+      cliCloud(config, WORKER, (_command, args) => {
+        const page = Number(args[args.indexOf("--page") + 1]);
+        pages.push(String(page));
+        const first = (page - 1) * 100;
+        const count = Math.max(0, Math.min(100, total - first));
+        const result = Array.from({ length: count }, (_, i) => ({
+          service_id: `v${first + i}`,
+          name: `s${first + i}`,
+        }));
+        return ok(JSON.stringify({ result }));
+      });
+    expect(listing(250).vpcServices()).toHaveLength(250);
+    expect(pages).toEqual(["1", "2", "3"]);
+    pages.length = 0;
+    expect(listing(200).vpcServices()).toHaveLength(200);
+    expect(pages).toEqual(["1", "2", "3"]);
+    expect(() => listing(10_000).vpcServices()).toThrow("more than 50 pages");
+    const odd = cliCloud(config, WORKER, () => ok(JSON.stringify({ result: {} })));
+    expect(() => odd.vpcServices()).toThrow("unexpected listing");
+  });
+
+  it("refuses answers without IDs or tokens, and never repeats cf's output in an error", () => {
+    const answering = (stdout: string) => cliCloud(config, WORKER, () => ok(stdout));
+    expect(() => answering(JSON.stringify({ result: {} })).createTunnel("x")).toThrow(
+      "Cloudflare Tunnel did not return an ID",
+    );
+    expect(() => answering(JSON.stringify({ result: {} })).createDnsRecord("h", "t", "c")).toThrow(
+      "DNS did not return an ID",
+    );
+    expect(() =>
+      answering(JSON.stringify({ result: { id: "x" } })).createVpcService("n", "t", 1),
+    ).toThrow("Workers VPC did not return an ID");
+    expect(() => answering(JSON.stringify({ result: null })).tunnelToken("t")).toThrow(
+      "no Tunnel token",
+    );
+    // A JSON parse error would quote the text it failed on, here part of a token.
+    const leaky = answering("token=synthetic-secret-value");
+    for (const call of [() => leaky.tunnelToken("t"), () => leaky.createTunnel("x")]) {
+      expect(call).toThrow("cf printed something other than JSON");
+      try {
+        call();
+      } catch (error) {
+        expect(String(error)).not.toContain("synthetic-secret-value");
+      }
+    }
+  });
+
   it("returns the created application's ID and fails loudly on a CLI error", () => {
     expect(cloud.createAccessApp({ name: "cfo-stg-a" })).toBe("app-1");
     expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
@@ -342,6 +675,51 @@ describe("Wrangler's own reading of a configuration", () => {
     expect(() =>
       validateDeployConfig(view, ACCOUNT, "cfo-stg-x", { registry: { ...registry, owner: "z" } }),
     ).toThrow("belongs to lead");
+  });
+
+  it("reads a rendered configuration's Tunnel route and VPC bindings as the tool wrote them", () => {
+    const route = tunnelRoute("cfo-stg-x-tunnel.example.com", "example.com");
+    const path = write("rendered.json", {
+      ...closed,
+      routes: [route],
+      vpc_services: [{ binding: "X1_VPC", service_id: "0191dce4-9ab4-7fce-b660-8e5dec5172da" }],
+    });
+    const view = readWranglerConfig(path, WORKER);
+    expect(view.effective.routes).toEqual([route]);
+    const rendered = {
+      routes: [route],
+      vpcServiceIds: ["0191dce4-9ab4-7fce-b660-8e5dec5172da"],
+    };
+    expect(() => validateDeployConfig(view, ACCOUNT, "cfo-stg-x", { rendered })).not.toThrow();
+    expect(() => check(path)).toThrow('"routes", "vpc_services"');
+    expect(() =>
+      validateDeployConfig(view, ACCOUNT, "cfo-stg-x", {
+        rendered: { ...rendered, vpcServiceIds: ["x"] },
+      }),
+    ).toThrow("did not record");
+  });
+
+  it("reads the staging manifest next to a configuration, and writes private files", () => {
+    const dir = mkdtempSync(join(scratch, "manifest-"));
+    const configPath = join(dir, "wrangler.jsonc");
+    expect(readStagingManifest(configPath)).toBeUndefined();
+    writeFileSync(
+      join(dir, "staging.jsonc"),
+      '{\n  // X1\n  "tunnel": { "tokenSecret": "T", },\n}\n',
+    );
+    expect(readStagingManifest(configPath)).toEqual({
+      path: join(dir, "staging.jsonc"),
+      json: { tunnel: { tokenSecret: "T" } },
+    });
+    writeFileSync(join(dir, "staging.jsonc"), "{ nope");
+    expect(() => readStagingManifest(configPath)).toThrow(
+      `cannot parse ${join(dir, "staging.jsonc")}`,
+    );
+    const rendered = join(dir, ".stg-rendered.cfo-stg-x.jsonc");
+    writePrivateFile(rendered, "{}");
+    writePrivateFile(rendered, '{"a":1}'); // a leftover from a crashed run is replaced
+    expect(readFileSync(rendered, "utf8")).toBe('{"a":1}');
+    expect(statSync(rendered).mode & 0o777).toBe(0o600);
   });
 
   it("accepts the checked-in Worker configuration", () => {

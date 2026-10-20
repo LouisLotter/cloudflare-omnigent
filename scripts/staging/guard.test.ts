@@ -4,11 +4,13 @@ import {
   type AccessApp,
   ALLOWED_CONFIG_KEYS,
   accessAppBody,
+  appNameFor,
   assertAccount,
   assertManaged,
   assertOwnerOnly,
   assertSameSite,
   claimAccessApp,
+  claimNamed,
   type DeployConfigView,
   type Deployment,
   declaredResources,
@@ -17,11 +19,19 @@ import {
   hostnameFor,
   markInterrupted,
   ownedBy,
+  parseJsonc,
+  parseManifest,
   parseRegistry,
   policyRepository,
+  renderedConfigPath,
   resourceName,
+  sameIngress,
   serializeRegistry,
+  tunnelHostnameFor,
+  tunnelIngress,
+  tunnelRoute,
   validateDeployConfig,
+  vpcServiceName,
 } from "./guard.ts";
 
 const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "owner@example.com" };
@@ -578,6 +588,252 @@ describe("Access application checks", () => {
   });
 });
 
+describe("staging manifest", () => {
+  const PATH = "/w/staging.jsonc";
+  const full = {
+    tunnel: {
+      origin: "http://localhost:8081",
+      publicHostname: true,
+      tokenSecret: "X1_TUNNEL_TOKEN",
+    },
+    vpcServices: [{ binding: "X1_VPC", port: 8081 }],
+  };
+
+  it("reads X1's manifest", () => {
+    expect(parseManifest(full, PATH)).toEqual(full);
+    expect(parseManifest({}, PATH)).toEqual({ vpcServices: [] });
+    expect(parseManifest({ tunnel: { tokenSecret: "T" } }, PATH)).toEqual({
+      tunnel: { publicHostname: false, tokenSecret: "T" },
+      vpcServices: [],
+    });
+  });
+
+  it("refuses anything else, naming every problem", () => {
+    const tunnel = (extra: Record<string, unknown>) => ({ tunnel: { ...full.tunnel, ...extra } });
+    const refused: [string, unknown, string][] = [
+      ["a list", [], "must be an object"],
+      ["an unknown key", { ...full, routes: [] }, "unknown keys routes"],
+      ["the service token, until it is built", { ...full, serviceToken: {} }, "serviceToken"],
+      ["a tunnel that is not an object", { tunnel: true }, '"tunnel" must be an object'],
+      ["an unknown tunnel key", tunnel({ ingress: [] }), '"tunnel" has unknown keys ingress'],
+      ["an origin on another host", tunnel({ origin: "http://10.0.0.1:80" }), "localhost"],
+      ["an https origin", tunnel({ origin: "https://localhost:8443" }), "localhost"],
+      ["a path on the origin", tunnel({ origin: "http://localhost:80/x" }), "localhost"],
+      ["port 0", tunnel({ origin: "http://localhost:0" }), "localhost"],
+      ["a port too large", tunnel({ origin: "http://localhost:65536" }), "localhost"],
+      ["no origin for the public hostname", tunnel({ origin: undefined }), "localhost"],
+      [
+        "an origin without a public hostname",
+        tunnel({ publicHostname: false }),
+        'set "publicHostname"',
+      ],
+      ["a string for publicHostname", tunnel({ publicHostname: "yes" }), "true or false"],
+      ["no token secret", tunnel({ tokenSecret: undefined }), "tokenSecret"],
+      ["a lower-case secret name", tunnel({ tokenSecret: "token" }), "upper-case"],
+      ["vpcServices not a list", { ...full, vpcServices: {} }, "must be a list"],
+      ["vpcServices without a tunnel", { vpcServices: full.vpcServices }, 'need a "tunnel"'],
+      [
+        "a VPC service with a host",
+        { ...full, vpcServices: [{ binding: "V", port: 1, host: "10.0.0.1" }] },
+        'only "binding" and "port"',
+      ],
+      ["a VPC service that is not an object", { ...full, vpcServices: [7] }, "only"],
+      ["a VPC port out of range", { ...full, vpcServices: [{ binding: "V", port: 0 }] }, "port"],
+      ["a VPC binding that is not a name", { ...full, vpcServices: [{ port: 1 }] }, "upper-case"],
+      [
+        "a binding that reuses the token's name",
+        { ...full, vpcServices: [{ binding: "X1_TUNNEL_TOKEN", port: 1 }] },
+        "used twice",
+      ],
+    ];
+    for (const [label, json, message] of refused) {
+      expect(() => parseManifest(json, PATH), label).toThrow(message);
+    }
+    expect(() => parseManifest([], PATH)).toThrow(`refusing staging manifest ${PATH}`);
+  });
+
+  it("parses JSONC as Wrangler writes it: comments and trailing commas", () => {
+    const text = `{
+      // a line comment, with "quotes" and a trailing comma,
+      "tunnel": { "origin": "http://localhost:8081", /* inline */ "tokenSecret": "T", },
+      "note": "keeps // and /* inside strings */, and \\"escaped\\" quotes,",
+      "list": [1, 2, ],
+    }`;
+    expect(parseJsonc(text)).toEqual({
+      tunnel: { origin: "http://localhost:8081", tokenSecret: "T" },
+      note: 'keeps // and /* inside strings */, and "escaped" quotes,',
+      list: [1, 2],
+    });
+    expect(() => parseJsonc("{ /* open")).toThrow("unterminated comment");
+    expect(() => parseJsonc("{ x: 1 }")).toThrow();
+  });
+});
+
+describe("names and shapes of the manifest's resources", () => {
+  it("names the Tunnel hostname, its Access application and the VPC services", () => {
+    expect(tunnelHostnameFor("cfo-stg-x1-transport", "example.com")).toBe(
+      "cfo-stg-x1-transport-tunnel.example.com",
+    );
+    expect(appNameFor("cfo-stg-x1-transport-tunnel.example.com")).toBe(
+      "cfo-stg-x1-transport-tunnel",
+    );
+    expect(() => tunnelHostnameFor(`cfo-stg-${"x".repeat(50)}`, "example.com")).toThrow("too long");
+    expect(() => tunnelHostnameFor("agents", "example.com")).toThrow("refusing to touch");
+    expect(vpcServiceName("cfo-stg-x1-transport", "X1_VPC")).toBe("cfo-stg-x1-transport-x1-vpc");
+    expect(() => vpcServiceName("agents", "X")).toThrow("refusing to touch");
+    expect(renderedConfigPath("/w/x1/wrangler.jsonc", "cfo-stg-x1-transport")).toBe(
+      "/w/x1/.stg-rendered.cfo-stg-x1-transport.jsonc",
+    );
+    expect(() => renderedConfigPath("/w/wrangler.jsonc", "agents")).toThrow();
+  });
+
+  it("builds the ingress and compares hostnames, paths and services only", () => {
+    const desired = tunnelIngress("h.example.com", "http://localhost:8081");
+    expect(desired).toEqual([
+      { hostname: "h.example.com", service: "http://localhost:8081" },
+      { service: "http_status:404" },
+    ]);
+    expect(tunnelIngress(undefined, undefined)).toEqual([{ service: "http_status:404" }]);
+    expect(sameIngress([...desired], desired)).toBe(true);
+    expect(sameIngress([], desired)).toBe(false);
+    expect(sameIngress([{ service: "http_status:404" }, desired[0] as never], desired)).toBe(false);
+    expect(
+      sameIngress(
+        [
+          { hostname: "h.example.com", path: "/x", service: "http://localhost:8081" },
+          { service: "http_status:404" },
+        ],
+        desired,
+      ),
+    ).toBe(false);
+  });
+
+  it("claims only the recorded resource, or an unrecorded one the caller accepts", () => {
+    const a = { id: "a" };
+    const b = { id: "b" };
+    expect(claimNamed([], "a", "X")).toBeUndefined();
+    expect(claimNamed([a], "a", "X")).toBe(a);
+    expect(claimNamed([a], undefined, "X")).toBe(a);
+    expect(() => claimNamed([a], undefined, "X", () => false)).toThrow(
+      "X exists but this deployment did not record it",
+    );
+    expect(() => claimNamed([b], "a", "X")).toThrow("did not record");
+    expect(() => claimNamed([a, b], "a", "X")).toThrow("did not record");
+    expect(() => claimNamed([a, b], undefined, "X")).toThrow("did not record");
+  });
+});
+
+describe("rendered configurations", () => {
+  const ACCOUNT = config.accountId;
+  const NAME = "cfo-stg-a";
+  const route = tunnelRoute("cfo-stg-a-tunnel.example.com", "example.com");
+  const view = (raw: Record<string, unknown>, routes: unknown = raw.routes): DeployConfigView => ({
+    path: "/w/.stg-rendered.cfo-stg-a.jsonc",
+    redirected: false,
+    raw: { workers_dev: false, preview_urls: false, ...raw },
+    effective: { workers_dev: false, preview_urls: false, ...(routes ? { routes } : {}) },
+  });
+  const rendered = (vpcServiceIds: string[] = ["vpc-1"], routes = [route]) => ({
+    rendered: { routes, vpcServiceIds },
+  });
+  const binding = { binding: "X1_VPC", service_id: "vpc-1" };
+
+  it("accepts exactly the Tunnel route and bindings of recorded VPC services", () => {
+    expect(route).toEqual({ pattern: "cfo-stg-a-tunnel.example.com/*", zone_name: "example.com" });
+    const good = view({ routes: [route], vpc_services: [binding] });
+    expect(() => validateDeployConfig(good, ACCOUNT, NAME, rendered())).not.toThrow();
+    expect(() =>
+      validateDeployConfig(
+        view({ vpc_services: [binding] }),
+        ACCOUNT,
+        NAME,
+        rendered(["vpc-1"], []),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateDeployConfig(view({ routes: [route] }), ACCOUNT, NAME, rendered([])),
+    ).not.toThrow();
+  });
+
+  it("refuses everything else, and both keys without the allowance", () => {
+    const refused: [string, DeployConfigView, ReturnType<typeof rendered>, string][] = [
+      [
+        "another route",
+        view({ routes: [{ ...route, pattern: "x.example.com/*" }] }),
+        rendered([]),
+        "differs",
+      ],
+      ["a second route", view({ routes: [route, route] }), rendered([]), "differs"],
+      [
+        "a route with more keys",
+        view({ routes: [{ ...route, custom_domain: true }] }),
+        rendered([]),
+        "differs",
+      ],
+      ["a route as text", view({ routes: [`${route.pattern}`] }), rendered([]), "differs"],
+      [
+        "a route Wrangler reads differently",
+        view({ routes: [route] }, [{ ...route, zone_name: "example.org" }]),
+        rendered([]),
+        "differs",
+      ],
+      ["no route when one is expected", view({}), rendered([]), "differs"],
+      [
+        "a route when none is expected",
+        view({ routes: [route] }),
+        rendered(["vpc-1"], []),
+        '"routes"',
+      ],
+      [
+        "an unrecorded VPC service",
+        view({ routes: [route], vpc_services: [{ ...binding, service_id: "x" }] }),
+        rendered(),
+        "did not record",
+      ],
+      [
+        "a VPC binding with more keys",
+        view({ routes: [route], vpc_services: [{ ...binding, remote: true }] }),
+        rendered(),
+        "remote",
+      ],
+      [
+        "a repeated VPC binding",
+        view({ routes: [route], vpc_services: [binding, binding] }),
+        rendered(),
+        "its own",
+      ],
+      [
+        "a VPC binding without a name",
+        view({ routes: [route], vpc_services: [{ service_id: "vpc-1" }] }),
+        rendered(),
+        "its own",
+      ],
+      [
+        "vpc_services not a list",
+        view({ routes: [route], vpc_services: binding }),
+        rendered(),
+        "must be a list",
+      ],
+      [
+        "VPC services when none are recorded",
+        view({ routes: [route], vpc_services: [binding] }),
+        rendered([]),
+        '"vpc_services"',
+      ],
+    ];
+    for (const [label, v, allowance, message] of refused) {
+      expect(() => validateDeployConfig(v, ACCOUNT, NAME, allowance), label).toThrow(message);
+    }
+    // A checked configuration may hold neither.
+    expect(() => validateDeployConfig(view({ vpc_services: [binding] }), ACCOUNT, NAME)).toThrow(
+      'does not manage "vpc_services"',
+    );
+    expect(() => validateDeployConfig(view({ routes: [route] }), ACCOUNT, NAME)).toThrow(
+      '"routes"',
+    );
+  });
+});
+
 describe("registry file", () => {
   it("round-trips deployments", () => {
     const list = [
@@ -585,6 +841,39 @@ describe("registry file", () => {
       { ...deployment, name: "cfo-stg-b", accessAppId: "x", state: "deployed" as const },
     ];
     expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
+  });
+
+  it("round-trips the manifest's resources and refuses malformed ones", () => {
+    const tunnel = {
+      name: "cfo-stg-a",
+      id: "t",
+      hostname: "cfo-stg-a-tunnel.example.com",
+      accessAppId: "app",
+      dnsRecordId: "dns",
+    };
+    const vpcServices = [{ name: "cfo-stg-a-x1-vpc", binding: "X1_VPC", port: 8081, id: "v" }];
+    const list = [
+      { ...deployment, tunnel, vpcServices },
+      { ...deployment, name: "cfo-stg-b", tunnel: { name: "cfo-stg-b" } },
+    ];
+    expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
+    for (const bad of [
+      { tunnel: "cfo-stg-a" },
+      { tunnel: { name: "agents" } },
+      { tunnel: { ...tunnel, id: "" } },
+      { tunnel: { ...tunnel, token: "x" } },
+      { vpcServices: {} },
+      { vpcServices: [{ ...vpcServices[0], name: "other" }] },
+      { vpcServices: [{ ...vpcServices[0], port: 0 }] },
+      { vpcServices: [{ ...vpcServices[0], binding: 7 }] },
+      { vpcServices: [{ ...vpcServices[0], id: 7 }] },
+      { vpcServices: [{ ...vpcServices[0], host: "10.0.0.1" }] },
+      { vpcServices: [null] },
+    ]) {
+      expect(() => parseRegistry({ version: 3, deployments: [{ ...deployment, ...bad }] })).toThrow(
+        "malformed",
+      );
+    }
   });
 
   it("writes version 3, which tools before IR-001's fix refuse", () => {

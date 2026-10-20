@@ -17,12 +17,19 @@ import { dirname, join, resolve } from "node:path";
 import {
   type AccessApp,
   type DeployConfigView,
+  type DnsRecordInfo,
+  type IngressRule,
+  MANIFEST_FILE,
+  parseJsonc,
   parseRegistry,
   type StagingConfig,
   serializeRegistry,
+  type TunnelInfo,
+  VPC_HOST,
+  type VpcServiceInfo,
 } from "./guard.ts";
 import { acquireLock, heldLockFds } from "./lock.ts";
-import type { Cloud, Store } from "./ops.ts";
+import type { Cloud, NameFilter, Store } from "./ops.ts";
 
 export interface CommandResult {
   readonly status: number | null;
@@ -86,8 +93,18 @@ function firstLine(text: string): string {
   );
 }
 
+/**
+ * The `result` of cf's JSON output, or the output itself. Some answers carry secrets (a new
+ * Tunnel's token, for one), and a JSON parse error quotes the text it failed on, so that error
+ * is replaced, never passed on.
+ */
 function resultOf(stdout: string): unknown {
-  const parsed = JSON.parse(stdout) as { result?: unknown };
+  let parsed: { result?: unknown };
+  try {
+    parsed = JSON.parse(stdout) as { result?: unknown };
+  } catch {
+    throw new Error("cf printed something other than JSON");
+  }
   return parsed && typeof parsed === "object" && "result" in parsed ? parsed.result : parsed;
 }
 
@@ -145,6 +162,97 @@ export function imagesOf(listing: unknown, repository: string): string[] {
   });
 }
 
+function entries(listing: unknown, what: string): Record<string, unknown>[] {
+  if (!Array.isArray(listing)) throw new Error(`unexpected ${what} listing from cf`);
+  return listing.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`unexpected ${what} entry from cf`);
+    }
+    return entry as Record<string, unknown>;
+  });
+}
+
+function text(entry: Record<string, unknown>, key: string, what: string): string {
+  const value = entry[key];
+  if (typeof value !== "string" || value === "") throw new Error(`${what} without a ${key}`);
+  return value;
+}
+
+/** The Cloudflare Tunnels in a `cf tunnels list` page that exist: not deleted, cloudflared. */
+export function tunnelsOf(listing: unknown): TunnelInfo[] {
+  return entries(listing, "Tunnel").flatMap((t) => {
+    const tunnel = { id: text(t, "id", "a Tunnel"), name: text(t, "name", "a Tunnel") };
+    const live = (t.deleted_at ?? null) === null && (t.tun_type ?? "cfd_tunnel") === "cfd_tunnel";
+    return live ? [tunnel] : [];
+  });
+}
+
+/** The ingress rules of `cf tunnels config get`; [] when the Tunnel has no configuration yet. */
+export function ingressOf(answer: unknown): IngressRule[] {
+  const config = (answer as { config?: unknown } | null)?.config;
+  if (config === undefined || config === null) return [];
+  const ingress = (config as { ingress?: unknown }).ingress;
+  if (ingress === undefined || ingress === null) return [];
+  return entries(ingress, "ingress rule").map((rule) => ({
+    ...(typeof rule.hostname === "string" ? { hostname: rule.hostname } : {}),
+    ...(typeof rule.path === "string" ? { path: rule.path } : {}),
+    service: text(rule, "service", "an ingress rule"),
+  }));
+}
+
+export function dnsRecordsOf(listing: unknown): DnsRecordInfo[] {
+  return entries(listing, "DNS record").map((r) => ({
+    id: text(r, "id", "a DNS record"),
+    name: text(r, "name", "a DNS record"),
+    type: text(r, "type", "a DNS record"),
+    content: typeof r.content === "string" ? r.content : "",
+    proxied: r.proxied === true,
+  }));
+}
+
+/** Workers VPC services, flattened; an IPv4 host on a Tunnel is the only kind the tool makes. */
+export function vpcServicesOf(listing: unknown): VpcServiceInfo[] {
+  return entries(listing, "VPC service").map((s) => {
+    const host = (s.host ?? {}) as { ipv4?: unknown; network?: { tunnel_id?: unknown } };
+    return {
+      id: text(s, "service_id", "a VPC service"),
+      name: text(s, "name", "a VPC service"),
+      ...(typeof s.type === "string" ? { type: s.type } : {}),
+      ...(typeof host.ipv4 === "string" ? { ipv4: host.ipv4 } : {}),
+      ...(typeof host.network?.tunnel_id === "string" ? { tunnelId: host.network.tunnel_id } : {}),
+      ...(typeof s.http_port === "number" ? { httpPort: s.http_port } : {}),
+      ...(typeof s.https_port === "number" ? { httpsPort: s.https_port } : {}),
+    };
+  });
+}
+
+/**
+ * The directory for a short-lived secrets file: the user's runtime directory, which is private
+ * and in memory on most Linux systems, or else the system's temporary directory.
+ */
+function secretsBase(): string {
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  return runtime !== undefined && runtime !== "" && existsSync(runtime) ? runtime : tmpdir();
+}
+
+/**
+ * Runs `use` with the secrets in a JSON file, mode 0600, in a new directory only this user can
+ * enter, and removes both afterwards, whatever happens. The values never reach argv or a log.
+ */
+export function withSecretsFile<T>(
+  secrets: Readonly<Record<string, string>>,
+  use: (file: string) => T,
+): T {
+  const dir = mkdtempSync(join(secretsBase(), "cfo-stg-secrets-"));
+  try {
+    const file = join(dir, "secrets.json");
+    writeFileSync(file, JSON.stringify(secrets), { mode: 0o600, flag: "wx" });
+    return use(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
  * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
@@ -167,6 +275,33 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
     const result = run(process.execPath, cli, { inherit: true, cwd, env });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
+  };
+  // cf returns one page of a listing. Ask for pages until a short one; a listing that never
+  // ends is an error, not a reason to act on part of it.
+  const PER_PAGE = 100;
+  const listAll = (args: string[]): unknown[] => {
+    const all: unknown[] = [];
+    for (let page = 1; page <= 50; page++) {
+      const listed = cf([...args, "--per-page", String(PER_PAGE), "--page", String(page)]);
+      if (!Array.isArray(listed)) throw new Error(`unexpected listing from cf ${args[0]}`);
+      all.push(...listed);
+      if (listed.length < PER_PAGE) return all;
+    }
+    throw new Error(`cf ${args[0]} listed more than 50 pages`);
+  };
+  // cf's list filters are only a first cut: an unknown dotted flag such as --name.exact is
+  // silently ignored (see the upstream-candidates log), so every answer is filtered again here.
+  const named = <T extends { name: string }>(found: T[], filter: NameFilter): T[] =>
+    found.filter((r) =>
+      "name" in filter ? r.name === filter.name : r.name.startsWith(filter.prefix),
+    );
+  const nameArgs = (filter: NameFilter, exact: string, prefix: string): string[] =>
+    "name" in filter ? [exact, filter.name] : [prefix, filter.prefix];
+  const zone = ["--zone", config.zone];
+  const created = (answer: unknown, key: string, what: string): string => {
+    const id = (answer as Record<string, unknown> | null)?.[key];
+    if (typeof id !== "string" || id === "") throw new Error(`${what} did not return an ID`);
+    return id;
   };
   return {
     accountIds: () => (cf(["accounts", "list"]) as { id: string }[]).map((a) => a.id),
@@ -203,13 +338,19 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
     // validateDeployConfig has checked this configuration's account, routes and resources.
     // Wrangler runs `docker build` with its own environment, and BuildKit takes the image
-    // timestamp from SOURCE_DATE_EPOCH.
-    deployWorker: (name, hostname, configPath, buildEpoch) =>
-      wrangler(
-        ["deploy", "--config", configPath, "--name", name, "--domain", hostname],
-        workerDir,
-        { SOURCE_DATE_EPOCH: String(buildEpoch) },
-      ),
+    // timestamp from SOURCE_DATE_EPOCH. Secrets go up with the same version through
+    // --secrets-file, so no second version is made; Wrangler prints their names only.
+    deployWorker: (name, hostname, configPath, buildEpoch, secrets) => {
+      const args = ["deploy", "--config", configPath, "--name", name, "--domain", hostname];
+      const env = { SOURCE_DATE_EPOCH: String(buildEpoch) };
+      if (secrets === undefined || Object.keys(secrets).length === 0) {
+        wrangler(args, workerDir, env);
+        return;
+      }
+      withSecretsFile(secrets, (file) =>
+        wrangler([...args, "--secrets-file", file], workerDir, env),
+      );
+    },
     // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
     // --config it reads whatever configuration its working directory holds. A generated
     // configuration in an empty directory pins the staging account.
@@ -265,7 +406,115 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     deleteContainerImage: (reference) => {
       cf(["containers", "images", "delete", reference, "--force"]);
     },
+    tunnels: (filter) =>
+      named(
+        tunnelsOf(
+          listAll([
+            "tunnels",
+            "list",
+            ...nameArgs(filter, "--name", "--include-prefix"),
+            "--is-deleted",
+            "false",
+            "--tun-types",
+            "cfd_tunnel",
+          ]),
+        ),
+        filter,
+      ),
+    // The answer also holds the Tunnel's token and secret; only the ID is kept.
+    createTunnel: (name) =>
+      created(
+        cf(["tunnels", "create", "--body", JSON.stringify({ name, config_src: "cloudflare" })]),
+        "id",
+        "Cloudflare Tunnel",
+      ),
+    tunnelIngress: (id) => ingressOf(cf(["tunnels", "config", "get", id])),
+    putTunnelIngress: (id, ingress) => {
+      cf(["tunnels", "config", "update", id, "--body", JSON.stringify({ config: { ingress } })]);
+    },
+    tunnelToken: (id) => {
+      const token = cf(["tunnels", "token", "get", id]);
+      if (typeof token !== "string" || token === "") {
+        throw new Error("Cloudflare returned no Tunnel token");
+      }
+      return token;
+    },
+    // A Tunnel with connections cannot be deleted. Its connectors stopped with the containers,
+    // but Cloudflare may still list their connections, so remove them first.
+    deleteTunnel: (id) => {
+      cf(["tunnels", "connections", "cleanup", id, "--force"]);
+      cf(["tunnels", "delete", id, "--force"]);
+    },
+    dnsRecords: (filter) =>
+      named(
+        dnsRecordsOf(
+          listAll([
+            "dns",
+            "records",
+            "list",
+            ...zone,
+            ...nameArgs(filter, "--name-exact", "--name-startswith"),
+          ]),
+        ),
+        filter,
+      ),
+    createDnsRecord: (name, target, comment) =>
+      created(
+        cf([
+          "dns",
+          "records",
+          "create",
+          ...zone,
+          "--body",
+          JSON.stringify({ type: "CNAME", name, content: target, proxied: true, ttl: 1, comment }),
+        ]),
+        "id",
+        "DNS",
+      ),
+    deleteDnsRecord: (id) => {
+      cf(["dns", "records", "delete", id, ...zone, "--force"]);
+    },
+    vpcServices: () => vpcServicesOf(listAll(["workers-vpc", "services", "list"])),
+    createVpcService: (name, tunnelId, port) =>
+      created(
+        cf([
+          "workers-vpc",
+          "services",
+          "create",
+          "--body",
+          JSON.stringify({
+            type: "http",
+            name,
+            http_port: port,
+            host: { ipv4: VPC_HOST, network: { tunnel_id: tunnelId } },
+          }),
+        ]),
+        "service_id",
+        "Workers VPC",
+      ),
+    deleteVpcService: (id) => {
+      cf(["workers-vpc", "services", "delete", id, "--force"]);
+    },
   };
+}
+
+/** The staging manifest next to a Wrangler configuration, parsed, or undefined without one. */
+export function readStagingManifest(
+  configPath: string,
+): { path: string; json: unknown } | undefined {
+  const path = join(dirname(resolve(configPath)), MANIFEST_FILE);
+  if (!existsSync(path)) return undefined;
+  try {
+    return { path, json: parseJsonc(readFileSync(path, "utf8")) };
+  } catch (error) {
+    throw new Error(`cannot parse ${path}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** Writes a rendered configuration afresh, readable by the owner only. */
+export function writePrivateFile(path: string, text: string): void {
+  rmSync(path, { force: true });
+  writeFileSync(path, text, { mode: 0o600, flag: "wx" });
 }
 
 interface WranglerApi {
