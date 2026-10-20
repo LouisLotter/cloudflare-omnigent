@@ -536,6 +536,24 @@ describe("CLI wiring", () => {
     expect(deletes.every((c) => c.includes("--force"))).toBe(true);
   });
 
+  it("lets the Tunnel delete decide when the connections cleanup fails", () => {
+    const cleanupFails = (deleteFails: boolean) =>
+      cliCloud(config, WORKER, (_command, args) =>
+        args[1] === "connections" || deleteFails
+          ? failed(`│ [1000] ${args[1]} refused`)
+          : ok(JSON.stringify({ result: {} })),
+      );
+    expect(() => cleanupFails(false).deleteTunnel("t")).not.toThrow();
+    expect(() => cleanupFails(true).deleteTunnel("t")).toThrow(
+      "cf tunnels failed: [1000] delete refused",
+    );
+    try {
+      cleanupFails(true).deleteTunnel("t");
+    } catch (error) {
+      expect(String((error as Error).cause)).toContain("connections refused");
+    }
+  });
+
   it("reads every page of a listing, and refuses one that never ends", () => {
     const pages: string[] = [];
     const listing = (total: number) =>

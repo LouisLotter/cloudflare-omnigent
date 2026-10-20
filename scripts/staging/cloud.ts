@@ -289,8 +289,8 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     }
     throw new Error(`cf ${args[0]} listed more than 50 pages`);
   };
-  // cf's list filters are only a first cut: an unknown dotted flag such as --name.exact is
-  // silently ignored (see the upstream-candidates log), so every answer is filtered again here.
+  // cf's list filters are only a first cut: cf 1.0.0-beta.18 silently ignores a dotted flag such
+  // as --name.exact, the name `cf schema` gives, so every answer is filtered again here.
   const named = <T extends { name: string }>(found: T[], filter: NameFilter): T[] =>
     found.filter((r) =>
       "name" in filter ? r.name === filter.name : r.name.startsWith(filter.prefix),
@@ -440,10 +440,20 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       return token;
     },
     // A Tunnel with connections cannot be deleted. Its connectors stopped with the containers,
-    // but Cloudflare may still list their connections, so remove them first.
+    // but Cloudflare may still list their connections, so remove them first. The delete
+    // decides: if the cleanup failed and the delete still works, nothing was in the way.
     deleteTunnel: (id) => {
-      cf(["tunnels", "connections", "cleanup", id, "--force"]);
-      cf(["tunnels", "delete", id, "--force"]);
+      let cleanup: unknown;
+      try {
+        cf(["tunnels", "connections", "cleanup", id, "--force"]);
+      } catch (error) {
+        cleanup = error;
+      }
+      try {
+        cf(["tunnels", "delete", id, "--force"]);
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : error}`, { cause: cleanup });
+      }
     },
     dnsRecords: (filter) =>
       named(
