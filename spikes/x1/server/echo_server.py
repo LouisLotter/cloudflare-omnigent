@@ -205,6 +205,37 @@ def log_server(log: EventLog, log_id: str, port: int) -> ThreadingHTTPServer:
     return server
 
 
+# cloudflared's connection events, by the start of their message. Workers VPC needs QUIC
+# (outbound UDP 7844); a fallback to HTTP/2 shows here as "fallback" and in the protocol field.
+CLOUDFLARED_EVENTS = (
+    ("Registered tunnel connection", "registered"),
+    ("Unregistered tunnel connection", "unregistered"),
+    ("Connection terminated", "terminated"),
+    ("Switching to fallback protocol", "fallback"),
+    ("Failed to dial", "dial-failed"),
+    ("Retrying connection", "retrying"),
+    ("Serve tunnel error", "serve-error"),
+    ("Lost connection", "lost"),
+)
+CLOUDFLARED_FIELDS = ("connIndex", "protocol", "location", "event", "ip")
+KEY_VALUE = re.compile(r'(\w+)=("[^"]*"|\S+)')
+
+
+def cloudflared_event(line: str) -> dict | None:
+    """A connection event in one cloudflared log line: its kind and the protocol, connection
+    index, edge location and address it names. None for any other line."""
+    kind = next((k for marker, k in CLOUDFLARED_EVENTS if marker in line), None)
+    if kind is None and "fallback" not in line.lower():
+        return None
+    fields = {k: v.strip('"') for k, v in KEY_VALUE.findall(line) if k in CLOUDFLARED_FIELDS}
+    level = (
+        line.split()[1]
+        if len(line.split()) > 1 and line.split()[1] in ("INF", "WRN", "ERR", "DBG")
+        else None
+    )
+    return {"kind": kind or "fallback", "level": level, **fields}
+
+
 async def run_cloudflared(log: EventLog, token: str, stop: asyncio.Event) -> None:
     """cloudflared with the Tunnel token, restarted if it exits, its output into the log."""
     restarts = 0
@@ -223,12 +254,21 @@ async def run_cloudflared(log: EventLog, token: str, stop: asyncio.Event) -> Non
             stderr=asyncio.subprocess.STDOUT,
         )
         assert process.stdout is not None
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            log.write("cloudflared", "line", line=line.decode(errors="replace").rstrip()[:500])
-        code = await process.wait()
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").rstrip()[:500]
+                log.write("cloudflared", "line", line=text)
+                event = cloudflared_event(text)
+                if event is not None:
+                    log.write("cloudflared", "conn", **event)
+            code = await process.wait()
+        finally:
+            if process.returncode is None:  # cancelled: the server is stopping
+                process.kill()
+                await process.wait()
         log.write("cloudflared", "exit", code=code)
         restarts += 1
         with contextlib.suppress(TimeoutError):
@@ -263,6 +303,7 @@ async def main() -> None:
     log.write("server", "stop")
     for task in tasks:
         task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

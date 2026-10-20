@@ -160,6 +160,75 @@ def test_cloudflared_is_restarted_and_its_output_redacted(tmp_path, monkeypatch)
     assert events[2]["code"] == 3
 
 
+@pytest.mark.parametrize(
+    ("line", "event"),
+    [
+        (
+            "2026-10-20T12:00:00Z INF Registered tunnel connection connIndex=0 connection=0f0f0f0f-0000-4000-8000-000000000000 event=0 ip=198.51.100.7 location=ams01 protocol=quic",
+            {
+                "kind": "registered",
+                "level": "INF",
+                "connIndex": "0",
+                "event": "0",
+                "ip": "198.51.100.7",
+                "location": "ams01",
+                "protocol": "quic",
+            },
+        ),
+        (
+            '2026-10-20T12:00:00Z ERR Failed to dial a quic connection error="timeout: no recent network activity" connIndex=1 event=0 ip=198.51.100.8',
+            {
+                "kind": "dial-failed",
+                "level": "ERR",
+                "connIndex": "1",
+                "event": "0",
+                "ip": "198.51.100.8",
+            },
+        ),
+        (
+            "2026-10-20T12:00:01Z INF Switching to fallback protocol http2 connIndex=1",
+            {"kind": "fallback", "level": "INF", "connIndex": "1"},
+        ),
+        (
+            '2026-10-20T12:00:02Z WRN Connection terminated error="x" connIndex=2',
+            {"kind": "terminated", "level": "WRN", "connIndex": "2"},
+        ),
+        (
+            "2026-10-20T12:00:03Z INF Using fallback protocol=http2",
+            {"kind": "fallback", "level": "INF", "protocol": "http2"},
+        ),
+        ("short", None),
+        ("2026-10-20T12:00:00Z INF Starting tunnel", None),
+    ],
+)
+def test_cloudflared_connection_events_are_extracted(line, event):
+    assert echo_server.cloudflared_event(line) == event
+
+
+def test_cloudflared_event_lines_are_logged_structured(tmp_path, monkeypatch):
+    fake = tmp_path / "cloudflared"
+    fake.write_text(
+        "#!/bin/sh\necho '2026-10-20T12:00:00Z INF Registered tunnel connection connIndex=0 protocol=quic'\nsleep 5\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(echo_server, "CLOUDFLARED", str(fake))
+    log = echo_server.EventLog(str(tmp_path / "log"), [])
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(echo_server.run_cloudflared(log, "t", stop))
+        await asyncio.sleep(1.0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    events = [json.loads(line) for line in log.read(0).decode().splitlines()]
+    conn = [e for e in events if e["ev"] == "conn"]
+    assert conn == [
+        {**conn[0], "kind": "registered", "connIndex": "0", "protocol": "quic", "level": "INF"}
+    ]
+
+
 def test_main_serves_until_stopped(tmp_path, monkeypatch):
     import socket
 

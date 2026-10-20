@@ -4,7 +4,9 @@
 # build epoch gives the same image and a redeploy starts no container rollout (DC-36).
 FROM python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 # cloudflared 2026.10.0 (released 2026-10-05), the official linux-amd64 build. The checksum is the
-# one GitHub records for the release asset and the release notes list.
+# one GitHub records for the release asset and the release notes list. Workers VPC needs
+# cloudflared 2025.7.0 or later over QUIC (outbound UDP 7844); echo_server.py logs the protocol
+# each connection uses, so a fallback to HTTP/2 shows at the preflight.
 ADD --chmod=0755 --checksum=sha256:d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db \
     https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-amd64 \
     /usr/local/bin/cloudflared
