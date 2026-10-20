@@ -28,7 +28,7 @@ They stay there. If implementation shows the design is wrong, change the design 
 ## Working on a package
 
 1. **Take your package from the lead,** who keeps the tracker and the traceability matrix in the project notes and updates them from your reports.
-2. **Use your own worktree and branch,** named `wp/<id>-<slug>`, for example `git worktree add ../cfo-wp-3.1 -b wp/3.1-workspace-core <integration branch>`. The integration branch for M0 is `m0/foundations`. Claude Code agent worktrees under `.claude/worktrees/` are fine; they are gitignored.
+2. **Use your own worktree and branch,** named `wp/<id>-<slug>`, for example `git worktree add ../cfo-wp-3.1 -b wp/3.1-workspace-core main`. Branch from `main` unless the lead names a milestone integration branch. Claude Code agent worktrees under `.claude/worktrees/` are fine; they are gitignored.
 3. **Stay inside your owned paths,** as listed in the plan's work-package tables and the code-structure plan. Change shared files only through a pull request to the lead. If another package's interface blocks you, ask the lead for a contract change; never edit that package's paths.
 4. **Contract first.** Build against the milestone's contract package and its fakes, never against another package's unfinished code. Parse every inbound payload with a `contracts` schema.
 5. **Meet the definition of done** below.
@@ -38,7 +38,7 @@ They stay there. If implementation shows the design is wrong, change the design 
 
 1. Code follows the conventions: strict TypeScript, typed contracts, operation IDs, persist-before-effect, error codes rather than error classes across RPC.
 2. Tests: unit and property tests for pure modules (fast-check, hypothesis); Workers-runtime tests for every DO method, evicting after each persisted transition; contract tests for every fixture the package uses; integration or end-to-end tests across process and network boundaries.
-3. At least 90% line and branch coverage for pure modules; mutation score of at least 75% for state machines and the schedule cache. These supplement the failure tests, never replace them.
+3. At least 90% line and branch coverage for pure modules; mutation score of at least 75% for state machines. These supplement the failure tests, never replace them.
 4. Every failure row the package touches has a test, not only the happy path.
 5. No secrets or login material in logs, fixtures or snapshots; the canary scan passes.
 6. Independent review done, findings fixed or answered, report saved in the project notes.
