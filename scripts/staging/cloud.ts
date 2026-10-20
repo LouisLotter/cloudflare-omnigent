@@ -157,6 +157,30 @@ export function workerLookup(result: CommandResult, name: string): boolean {
 }
 
 /**
+ * Reads a `cf … get <id>` answer about a resource the tool recorded by ID. Cloudflare's "no such
+ * resource" answer (the kind's own error code with a 404) means it is gone, and gives
+ * undefined; a successful answer is parsed by `parse`, which must find that same ID. Anything
+ * else is unknown and throws.
+ */
+export function lookupById<T extends { readonly id: string }>(
+  result: CommandResult,
+  id: string,
+  what: string,
+  notFound: string,
+  parse: (answer: unknown) => T | undefined,
+): T | undefined {
+  if (result.status === 0) {
+    const found = parse(resultOf(result.stdout));
+    if (found === undefined || found.id === id) return found;
+    throw new Error(`Cloudflare answered about another ${what} than the one asked for`);
+  }
+  if (result.stderr.includes(notFound) && result.stderr.includes("404 Not Found")) {
+    return undefined;
+  }
+  throw new Error(`could not tell whether the ${what} exists: ${diagnostic(result.stderr)}`);
+}
+
+/**
  * Reads `cf r2 buckets get <name>`, like workerLookup: only a successful lookup of that bucket or
  * R2's "no such bucket" answer ([10006], 404) count; anything else is unknown and throws.
  */
@@ -463,6 +487,40 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     updateAccessApp: (id, body) => {
       cf(["zero-trust", "access", "applications", "update", id, "--body", JSON.stringify(body)]);
     },
+    // Lookups of recorded resources by ID, whatever their name is now (review r2, finding 3).
+    accessApp: (id) =>
+      lookupById(
+        run("cf", ["zero-trust", "access", "applications", "get", id], { inherit: false }),
+        id,
+        "Access application",
+        "[11021]",
+        (app) => accessAppsOf([app])[0],
+      ),
+    tunnel: (id) =>
+      lookupById(
+        run("cf", ["tunnels", "get", id], { inherit: false }),
+        id,
+        "Cloudflare Tunnel",
+        "[1002]",
+        // A deleted Tunnel is still answered for, with deleted_at: it is gone.
+        (tunnel) => tunnelsOf([tunnel])[0],
+      ),
+    dnsRecord: (id) =>
+      lookupById(
+        run("cf", ["dns", "records", "get", id, "--zone", config.zone], { inherit: false }),
+        id,
+        "DNS record",
+        "[81044]",
+        (record) => dnsRecordsOf([record])[0],
+      ),
+    vpcService: (id) =>
+      lookupById(
+        run("cf", ["workers-vpc", "services", "get", id], { inherit: false }),
+        id,
+        "Workers VPC service",
+        "[5104]",
+        (service) => vpcServicesOf([service])[0],
+      ),
     // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
       cf(["zero-trust", "access", "applications", "delete", id, "--force"]);

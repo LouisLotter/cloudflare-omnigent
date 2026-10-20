@@ -256,6 +256,27 @@ class FakeCloud implements Cloud {
     this.apps.delete(id);
     this.check();
   }
+  accessApp(id: string): AccessApp | undefined {
+    this.tick();
+    this.calls.push("access.get");
+    return this.hideAccessApps ? undefined : this.apps.get(id);
+  }
+  tunnel(id: string): TunnelInfo | undefined {
+    this.tick();
+    this.calls.push("tunnel.get");
+    const tunnel = this.tunnels_.get(id);
+    return tunnel && { id, name: tunnel.name };
+  }
+  dnsRecord(id: string): DnsRecordInfo | undefined {
+    this.tick();
+    this.calls.push("dns.get");
+    return this.dns.get(id);
+  }
+  vpcService(id: string): VpcServiceInfo | undefined {
+    this.tick();
+    this.calls.push("vpc.get");
+    return this.vpc.get(id);
+  }
   workerExists(name: string): boolean {
     this.tick();
     this.calls.push("worker.exists");
@@ -671,7 +692,7 @@ describe("deploy and teardown", () => {
       "worker.exists",
       "worker.delete cfo-stg-a",
       "worker.exists",
-      "access.list",
+      "access.get",
       "access.delete cfo-stg-a",
     ]);
     expect(store.load()).toEqual([]);
@@ -887,7 +908,7 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
       "worker.exists",
       `sleep ${SETTLE}`,
       "worker.exists",
-      "access.list",
+      "access.get",
       "access.delete cfo-stg-a",
     ]);
   });
@@ -1532,15 +1553,36 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       expect(uploaded()).toBe(false);
     });
 
-    it("a Tunnel that replaced the recorded one, in deploy and in teardown", () => {
+    // Review r2, finding 3: recorded resources are found by ID, and only they are deleted.
+    it("a Tunnel that replaced the recorded one: deploy refuses, teardown leaves it alone", () => {
       deploy(ctx, request("a", 7, withManifest("a")));
       cloud.tunnels_.delete("tunnel-3");
       cloud.tunnels_.set("theirs", { name: "cfo-stg-a", ingress: [], token: "x" });
-      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("did not record it");
-      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("did not record it");
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("recorded but gone");
+      teardown(ctx, "cfo-stg-a");
       expect(cloud.tunnels_.has("theirs")).toBe(true);
-      expect(cloud.apps.size).toBe(2);
+      expect(store.load()).toEqual([]);
+    });
+
+    it.each([
+      ["Tunnel", () => cloud.tunnels_.get("tunnel-3"), "Cloudflare Tunnel cfo-stg-a"],
+      ["DNS record", () => cloud.dns.get("dns-4"), `DNS record ${HOST}`],
+      ["VPC service", () => cloud.vpc.get("vpc-5"), "Workers VPC service cfo-stg-a-x1-vpc"],
+      ["Access application", () => cloud.apps.get("app-2"), `An Access application on ${HOST}`],
+    ] as const)("a renamed %s, which deploy and teardown refuse and keep", (_, of, label) => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      const resource = of() as { name: string } | undefined;
+      if (!resource) throw new Error("missing resource");
+      resource.name = "renamed-by-someone";
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        `${label} has changed since this deployment created it`,
+      );
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow(`${label} has changed`);
+      expect(of()).toMatchObject({ name: "renamed-by-someone" });
       expect(record()?.state).toBe("deleting");
+      expect(cloud.apps.size).toBe(2);
+      // A renamed DNS record serves a hostname nobody protects: that is the renamer's doing.
+      expect(cloud.violations.filter((v) => !v.startsWith("renamed-by-someone"))).toEqual([]);
     });
 
     it("a recorded Tunnel that is gone", () => {
@@ -1561,7 +1603,9 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       const dns = cloud.dns.get("dns-4");
       if (!dns) throw new Error("missing record");
       cloud.dns.set("dns-4", { ...dns, ...change });
-      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("no longer points");
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "has changed since this deployment created it",
+      );
       expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
         `DNS record ${HOST} has changed since this deployment created it`,
       );
@@ -1592,7 +1636,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       expect(cloud.tunnels_.size + cloud.dns.size + cloud.apps.size).toBe(4);
     });
 
-    it("an unrecorded DNS record that replaced ours, which teardown refuses to delete", () => {
+    it("an unrecorded DNS record that replaced ours, which teardown leaves alone", () => {
       deploy(ctx, request("a", 7, withManifest("a")));
       cloud.dns.delete("dns-4");
       cloud.dns.set("theirs", {
@@ -1602,9 +1646,9 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
         content: "x",
         proxied: true,
       });
-      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("DNS record");
+      teardown(ctx, "cfo-stg-a");
       expect(cloud.dns.has("theirs")).toBe(true);
-      expect(cloud.apps.size).toBe(2);
+      expect(store.load()).toEqual([]);
     });
 
     it("a VPC service that changed, and a manifest that changes a recorded port", () => {
@@ -1612,7 +1656,9 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       const service = cloud.vpc.get("vpc-5");
       if (!service) throw new Error("missing service");
       cloud.vpc.set("vpc-5", { ...service, httpPort: 22 });
-      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("no longer points");
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "has changed since this deployment created it",
+      );
       cloud.vpc.set("vpc-5", service);
       const moved = { ...TUNNEL_MANIFEST, vpcServices: [{ binding: "X1_VPC", port: 9000 }] };
       expect(() => deploy(ctx, request("a", 7, withManifest("a", moved)))).toThrow(
@@ -1620,13 +1666,15 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       );
     });
 
-    it("an unrecorded VPC service on another Tunnel, in teardown", () => {
+    it("an unrecorded VPC service under our name: deploy refuses, teardown leaves it alone", () => {
       cloud.crashAfter = "tunnel.put";
       expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
       restart();
       cloud.vpc.set("theirs", { id: "theirs", name: "cfo-stg-a-x1-vpc", tunnelId: "other" });
-      expect(() => teardown(ctx, "cfo-stg-a")).toThrow("Workers VPC service cfo-stg-a-x1-vpc");
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("did not create");
+      teardown(ctx, "cfo-stg-a");
       expect(cloud.vpc.has("theirs")).toBe(true);
+      expect(store.load()).toEqual([]);
     });
   });
 

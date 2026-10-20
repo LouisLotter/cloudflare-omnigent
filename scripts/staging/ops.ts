@@ -97,6 +97,15 @@ export interface Cloud {
   /** Replaces the application's settings with `body`. */
   updateAccessApp(id: string, body: Record<string, unknown>): void;
   deleteAccessApp(id: string): void;
+  /*
+   * Recorded resources by ID, whatever their name is now: undefined only when Cloudflare says
+   * the resource does not exist (or, for a Tunnel, is deleted); throws when the answer is
+   * unknown.
+   */
+  accessApp(id: string): AccessApp | undefined;
+  tunnel(id: string): TunnelInfo | undefined;
+  dnsRecord(id: string): DnsRecordInfo | undefined;
+  vpcService(id: string): VpcServiceInfo | undefined;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   workerExists(name: string): boolean;
   /** Every Workers custom domain in the account, with the Worker it serves. */
@@ -284,7 +293,9 @@ interface Owned<T extends { readonly id: string }> {
   /** A create intent is recorded: a create was started and its outcome never seen. */
   readonly pending: boolean;
   list(): T[];
-  /** Whether a listed resource has exactly the name and properties the tool gives it. */
+  /** The resource with this ID, whatever its name is now; undefined when it is gone. */
+  get(id: string): T | undefined;
+  /** Whether a resource has exactly the name and properties the tool gives it. */
   fits(resource: T): boolean;
   /** The record with a create intent for this resource, and no ID for it. */
   starting(record: Deployment, at: string): Deployment;
@@ -321,6 +332,7 @@ function workerAccess(ctx: Context, record: Deployment): Owned<AccessApp> {
     id: record.accessAppId,
     pending: record.accessCreateStartedAt !== undefined,
     list: () => ctx.cloud.listAccessApps(host.hostname).filter((a) => a.domain === host.hostname),
+    get: (id) => ctx.cloud.accessApp(id),
     fits: (app) => accessAppFits(app, host),
     starting: (r, at) => {
       const { accessAppId: _, ...rest } = r;
@@ -340,6 +352,7 @@ function tunnelAccess(ctx: Context, record: Deployment, hostname: string): Owned
     id: record.tunnel?.accessAppId,
     pending: record.tunnel?.accessCreateStartedAt !== undefined,
     list: () => ctx.cloud.listAccessApps(hostname).filter((a) => a.domain === hostname),
+    get: (id) => ctx.cloud.accessApp(id),
     fits: (app) => accessAppFits(app, host),
     starting: (r, at) => withTunnel(r, { accessCreateStartedAt: at }, ["accessAppId"]),
     settled: (r, id) =>
@@ -357,6 +370,7 @@ function tunnelOwned(ctx: Context, record: Deployment): Owned<TunnelInfo> {
     id: record.tunnel?.id,
     pending: record.tunnel?.createStartedAt !== undefined,
     list: () => ctx.cloud.tunnels({ name }),
+    get: (id) => ctx.cloud.tunnel(id),
     fits: (tunnel) => tunnel.name === name,
     starting: (r, at) => withTunnel(r, { createStartedAt: at }, ["id"]),
     settled: (r, id) =>
@@ -375,6 +389,7 @@ function dnsOwned(ctx: Context, record: Deployment, hostname: string): Owned<Dns
     id: record.tunnel?.dnsRecordId,
     pending: record.tunnel?.dnsCreateStartedAt !== undefined,
     list: () => ctx.cloud.dnsRecords({ name: hostname }),
+    get: (id) => ctx.cloud.dnsRecord(id),
     fits: (r) =>
       tunnelId !== undefined &&
       r.name === hostname &&
@@ -406,6 +421,7 @@ function vpcOwned(
     id: service.id,
     pending: service.createStartedAt !== undefined,
     list: () => ctx.cloud.vpcServices().filter((v) => v.name === service.name),
+    get: (id) => ctx.cloud.vpcService(id),
     fits: (v) =>
       tunnelId !== undefined &&
       v.name === service.name &&
@@ -417,6 +433,39 @@ function vpcOwned(
     settled: (r, id) =>
       update(r, ({ id: _, createStartedAt: __, ...s }) => (id === undefined ? s : { ...s, id })),
   };
+}
+
+/**
+ * The resource the record holds, looked up by its ID, whatever its name is now; undefined when
+ * the record holds none or Cloudflare says it is gone. One that has changed, in name or
+ * properties, is refused: someone changed it, and it stays, with the record and Access, for the
+ * owner to reconcile.
+ */
+function recorded<T extends { readonly id: string }>(
+  record: Deployment,
+  owned: Owned<T>,
+): T | undefined {
+  if (owned.id === undefined) return undefined;
+  const found = owned.get(owned.id);
+  if (found && !owned.fits(found)) {
+    throw new Error(
+      `${record.name}: ${owned.label} has changed since this deployment created it, so it was left in place with Access and the record; inspect it in the dashboard`,
+    );
+  }
+  return found;
+}
+
+/**
+ * The recorded resource, or, when there is none, undefined after checking that nothing else
+ * holds the name the tool would give a new one.
+ */
+function recordedOrFree<T extends { readonly id: string }>(
+  record: Deployment,
+  owned: Owned<T>,
+): T | undefined {
+  const found = recorded(record, owned);
+  if (!found) claimNamed(owned.list(), undefined, owned.label);
+  return found;
 }
 
 /** Every resource the record says the tool created or started to create. */
@@ -606,7 +655,7 @@ function ensureAccess(
   const { hostname } = host;
   const body = accessAppBody(host.name, hostname, ctx.config);
   const owned = ownedIn(record);
-  const app = claimNamed(owned.list(), owned.id, owned.label);
+  const app = recordedOrFree(record, owned);
   let id: string;
   if (app) {
     assertOwnerOnly(app, hostname, ctx.config.ownerEmail);
@@ -619,7 +668,7 @@ function ensureAccess(
     ({ record, id } = createOwned(ctx, record, owned, () => ctx.cloud.createAccessApp(body)));
     ctx.log(`created Access application for ${hostname}`);
   }
-  const confirmed = claimNamed(owned.list(), id, owned.label);
+  const confirmed = recorded(record, ownedIn(record));
   if (!confirmed) throw new Error(`${hostname} has no Access application after writing one`);
   assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail);
   assertSameSite(confirmed, hostname);
@@ -637,13 +686,14 @@ function ensureTunnel(
 ): { record: Deployment; id: string } {
   let record = start;
   const owned = tunnelOwned(ctx, record);
-  const found = claimNamed(owned.list(), owned.id, owned.label);
+  const found = recorded(record, owned);
   if (!found && owned.id !== undefined) {
     // Its token is in the running containers and its DNS record points to it. Start over.
     throw new Error(
       `${owned.label} is recorded but gone; tear the deployment down and deploy again`,
     );
   }
+  if (!found) claimNamed(owned.list(), undefined, owned.label);
   let id = found?.id;
   if (id === undefined) {
     ({ record, id } = createOwned(ctx, record, owned, () => ctx.cloud.createTunnel(wanted.name)));
@@ -664,11 +714,7 @@ function ensureTunnel(
 function ensureDns(ctx: Context, start: Deployment, hostname: string, tunnelId: string) {
   let record = start;
   const owned = dnsOwned(ctx, record, hostname);
-  const found = claimNamed(owned.list(), owned.id, owned.label);
-  if (found && !owned.fits(found)) {
-    throw new Error(`DNS record ${hostname} no longer points to the deployment's Tunnel`);
-  }
-  if (!found) {
+  if (!recordedOrFree(record, owned)) {
     const target = `${tunnelId}.cfargotunnel.com`;
     ({ record } = createOwned(ctx, record, owned, () =>
       ctx.cloud.createDnsRecord(hostname, target, `${record.name}: staging tool`),
@@ -687,15 +733,9 @@ function ensureVpcServices(
 ): Deployment {
   let record = start;
   for (const service of wanted) {
-    const recorded = record.vpcServices?.find((s) => s.name === service.name) ?? service;
-    const owned = vpcOwned(ctx, record, recorded);
-    const found = claimNamed(owned.list(), owned.id, owned.label);
-    if (found && !owned.fits(found)) {
-      throw new Error(
-        `${owned.label} no longer points to ${VPC_HOST}:${service.port} on the Tunnel`,
-      );
-    }
-    if (!found) {
+    const entry = record.vpcServices?.find((s) => s.name === service.name) ?? service;
+    const owned = vpcOwned(ctx, record, entry);
+    if (!recordedOrFree(record, owned)) {
       ({ record } = createOwned(ctx, record, owned, () =>
         ctx.cloud.createVpcService(service.name, tunnelId, service.port),
       ));
@@ -932,28 +972,21 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
 }
 
 /**
- * Deletes a resource the record holds by ID and checks it is gone. A resource that is gone
- * already is skipped. Anything else under its name belongs to someone else and is refused. So
- * is the recorded resource itself if it no longer has the properties the tool gave it: someone
- * changed it, and deleting it could cut off what they made it serve. It stays, and so do the
- * record entry and Access, for the owner to reconcile.
+ * Deletes the resource the record holds, found by its ID whatever its name is now, and checks by
+ * ID that it is gone. One that is gone already is skipped. One that has changed, in name or
+ * properties, is refused (recorded): deleting it could cut off what someone made it serve, so
+ * it stays, and so do the record entry and Access, for the owner to reconcile. Nothing found by
+ * name alone is ever deleted.
  */
 function removeOwned<T extends { readonly id: string }>(
   record: Deployment,
   owned: Owned<T>,
   remove: (id: string) => void,
 ): void {
-  const found = claimNamed(owned.list(), owned.id, owned.label);
+  const found = recorded(record, owned);
   if (!found) return;
-  if (!owned.fits(found)) {
-    throw new Error(
-      `${record.name}: ${owned.label} has changed since this deployment created it, so it was left in place with Access and the record; inspect it in the dashboard`,
-    );
-  }
   remove(found.id);
-  if (owned.list().some((r) => r.id === found.id)) {
-    throw new Error(`${record.name}: ${owned.label} still exists`);
-  }
+  if (owned.get(found.id)) throw new Error(`${record.name}: ${owned.label} still exists`);
 }
 
 /**
@@ -975,8 +1008,8 @@ function removeTunnelResources(ctx: Context, record: Deployment): void {
 }
 
 /** Deletes the Access application the record holds by ID, and nothing else on its hostname. */
-function removeAccess(ctx: Context, owned: Owned<AccessApp>): void {
-  const app = owned.list().find((a) => a.id === owned.id);
+function removeAccess(ctx: Context, record: Deployment, owned: Owned<AccessApp>): void {
+  const app = recorded(record, owned);
   if (app) ctx.cloud.deleteAccessApp(app.id);
 }
 
@@ -1076,9 +1109,9 @@ export function teardown(
     // applications the record holds.
     const recordedTunnelHost = record.tunnel?.hostname;
     if (recordedTunnelHost !== undefined) {
-      removeAccess(ctx, tunnelAccess(ctx, record, recordedTunnelHost));
+      removeAccess(ctx, record, tunnelAccess(ctx, record, recordedTunnelHost));
     }
-    removeAccess(ctx, workerAccess(ctx, record));
+    removeAccess(ctx, record, workerAccess(ctx, record));
     remove(ctx, name);
     ctx.log(`removed ${name}: Worker, containers and buckets, then Access`);
   });

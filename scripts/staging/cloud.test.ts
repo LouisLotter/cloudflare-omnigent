@@ -764,6 +764,59 @@ describe("CLI wiring", () => {
     }
   });
 
+  // Review r2, finding 3.
+  it("looks up recorded resources by ID, and only Cloudflare's own 404 means gone", () => {
+    const cases = [
+      {
+        get: (c: ReturnType<typeof cliCloud>) => c.accessApp("x1"),
+        args: ["zero-trust", "access", "applications", "get", "x1"],
+        answer: { id: "x1", name: "cfo-stg-a", domain: "h" },
+        missing: "[11021] access.api.error.unknown_application",
+      },
+      {
+        get: (c: ReturnType<typeof cliCloud>) => c.tunnel("x1"),
+        args: ["tunnels", "get", "x1"],
+        answer: { id: "x1", name: "cfo-stg-a", deleted_at: null },
+        missing: "[1002] Tunnel not found",
+      },
+      {
+        get: (c: ReturnType<typeof cliCloud>) => c.dnsRecord("x1"),
+        args: ["dns", "records", "get", "x1", "--zone", "example.com"],
+        answer: { id: "x1", name: "h", type: "CNAME", content: "t", proxied: true },
+        missing: "[81044] Record does not exist.",
+      },
+      {
+        get: (c: ReturnType<typeof cliCloud>) => c.vpcService("x1"),
+        args: ["workers-vpc", "services", "get", "x1"],
+        answer: { service_id: "x1", name: "cfo-stg-a-x" },
+        missing: '[5104] Service (ID: "x1") not found',
+      },
+    ];
+    for (const { get, args, answer, missing } of cases) {
+      const seen: (readonly string[])[] = [];
+      const answering = (result: CommandResult) =>
+        cliCloud(config, WORKER, (_command, a) => {
+          seen.push(a);
+          return result;
+        });
+      expect(get(answering(ok(JSON.stringify({ result: answer }))))?.id).toBe("x1");
+      expect(seen.at(-1)).toEqual(args);
+      expect(get(answering(failed(`│ ${missing}\n│ 404 Not Found · HTTP /x`)))).toBeUndefined();
+      // A 404 without the kind's own code, another error, or an answer about another ID: unknown.
+      expect(() => get(answering(failed("│ 404 Not Found")))).toThrow("could not tell");
+      expect(() => get(answering(failed("│ [10000] Authentication error")))).toThrow(
+        "could not tell",
+      );
+      const other = { ...answer, id: "x2", service_id: "x2" };
+      expect(() => get(answering(ok(JSON.stringify({ result: other }))))).toThrow("another");
+    }
+    // Cloudflare still answers for a deleted Tunnel: it is gone.
+    const deleted = cliCloud(config, WORKER, () =>
+      ok(JSON.stringify({ result: { id: "x1", name: "a", deleted_at: "2026-10-20T00:00:00Z" } })),
+    );
+    expect(deleted.tunnel("x1")).toBeUndefined();
+  });
+
   it("reads every page of a listing, and refuses one that never ends", () => {
     const pages: string[] = [];
     const listing = (total: number) =>
