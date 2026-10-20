@@ -66,6 +66,7 @@ export interface AccessApp {
   readonly name: string;
   readonly domain: string;
   readonly type?: string;
+  readonly same_site_cookie_attribute?: string;
   readonly policies?: readonly {
     readonly decision?: string;
     readonly include?: readonly unknown[];
@@ -537,6 +538,22 @@ export function assertOwnerOnly(app: AccessApp, hostname: string, ownerEmail: st
   }
 }
 
+/**
+ * The SameSite attribute of every staging application's CF_Authorization cookie (owner decision
+ * D9). Left unset, Access sends SameSite=None, and cross-site requests from a signed-in browser
+ * reach the Worker carrying the cookie (spike S6).
+ */
+export const ACCESS_SAME_SITE = "lax";
+
+/** Refuses an Access application whose cookie is not SameSite=lax. */
+export function assertSameSite(app: AccessApp, hostname: string): void {
+  if (app.same_site_cookie_attribute !== ACCESS_SAME_SITE) {
+    throw new Error(
+      `the Access application for ${hostname} does not set SameSite=${ACCESS_SAME_SITE}; not deploying`,
+    );
+  }
+}
+
 /** Owner-only Access application for one staging hostname. */
 export function accessAppBody(
   name: string,
@@ -552,6 +569,7 @@ export function accessAppBody(
     domain: hostname,
     session_duration: "24h",
     app_launcher_visible: false,
+    same_site_cookie_attribute: ACCESS_SAME_SITE,
     ...(config.identityProviderId
       ? { allowed_idps: [config.identityProviderId], auto_redirect_to_identity: true }
       : {}),

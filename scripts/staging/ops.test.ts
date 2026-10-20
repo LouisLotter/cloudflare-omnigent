@@ -85,6 +85,13 @@ class FakeCloud implements Cloud {
   bucketDeleteKeeps = false;
   imageDeleteKeeps = false;
   containerDeleteKeeps = false;
+  /** Repositories whose pushed digest the local Docker still remembers. */
+  readonly remembered = new Set<string>();
+  /** An Access update that reports success but changes nothing. */
+  accessUpdateKeeps = false;
+  /** Listings that no longer show an application, as if it were deleted meanwhile. */
+  hideAccessApps = false;
+  forgetFails = false;
   private nextAppId = 1;
   private nextTag = 1;
   private nextId = 1;
@@ -132,6 +139,7 @@ class FakeCloud implements Cloud {
   listAccessApps(hostname: string): AccessApp[] {
     this.tick();
     this.calls.push("access.list");
+    if (this.hideAccessApps) return [];
     return [...this.apps.values()].filter((app) => app.domain === hostname);
   }
   createAccessApp(body: Record<string, unknown>): string {
@@ -141,6 +149,12 @@ class FakeCloud implements Cloud {
     this.calls.push(`access.create ${String(body.name)}`);
     if (this.deployFault === "crash-after-access") this.die();
     return id;
+  }
+  updateAccessApp(id: string, body: Record<string, unknown>): void {
+    this.tick();
+    this.calls.push(`access.update ${String(body.name)}`);
+    if (!this.accessUpdateKeeps) this.apps.set(id, { ...(body as unknown as AccessApp), id });
+    this.check();
   }
   deleteAccessApp(id: string): void {
     this.tick();
@@ -177,7 +191,14 @@ class FakeCloud implements Cloud {
       }
     }
     for (const repository of declared.repositories) {
+      // Wrangler skips the push of an image whose digest Docker remembers pushing; if the
+      // registry no longer holds it, creating the application fails (DC-36).
+      const held = [...this.images].some((i) => i.startsWith(`${repository}:`));
+      if (this.remembered.has(repository) && !held) {
+        throw new Error("wrangler deploy exited with 1: IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE");
+      }
       this.images.add(`${repository}:wrangler-${this.nextTag++}`);
+      this.remembered.add(repository);
     }
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
@@ -233,6 +254,12 @@ class FakeCloud implements Cloud {
     this.tick();
     this.calls.push(`image.delete ${reference}`);
     if (!this.imageDeleteKeeps) this.images.delete(reference);
+  }
+  forgetPushedImages(repositories: readonly string[]): void {
+    this.tick();
+    this.calls.push(`docker.forget ${repositories.join(" ")}`);
+    if (this.forgetFails) throw new Error("the local Docker still holds an image");
+    for (const repository of repositories) this.remembered.delete(repository);
   }
   /** Every bucket, container application and image is recorded for some deployment. */
   unrecorded(deployments: readonly Deployment[]): string[] {
@@ -980,6 +1007,83 @@ describe("Access applications the tool cannot vouch for", () => {
     deploy(ctx, request());
     const moved: Context = { ...ctx, config: { ...config, zone: "example.org" } };
     expect(() => deploy(moved, request())).toThrow("tear it down first");
+  });
+});
+
+describe("plan change 18: SameSite on Access (D9), and a push after teardown (DC-36)", () => {
+  const deployedWorker = () => cloud.calls.some((call) => call.startsWith("worker.deploy"));
+
+  it("creates the Access application with SameSite=lax", () => {
+    deploy(ctx, request());
+    expect(cloud.apps.get("app-1")?.same_site_cookie_attribute).toBe("lax");
+  });
+
+  it("rewrites an application from an older tool before the Worker upload", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    const { same_site_cookie_attribute: _, ...older } = app;
+    cloud.apps.set("app-1", older);
+    cloud.calls.length = 0;
+    deploy(ctx, request());
+    expect(cloud.apps.get("app-1")?.same_site_cookie_attribute).toBe("lax");
+    const update = cloud.calls.indexOf("access.update cfo-stg-a");
+    expect(update).toBeGreaterThan(-1);
+    expect(update).toBeLessThan(cloud.calls.findIndex((c) => c.startsWith("worker.deploy")));
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("refuses to upload when Access does not hold SameSite=lax after writing it", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    cloud.apps.set("app-1", { ...app, same_site_cookie_attribute: "none" });
+    cloud.accessUpdateKeeps = true;
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request())).toThrow("does not set SameSite=lax");
+    expect(deployedWorker()).toBe(false);
+  });
+
+  it("refuses to upload when the written application cannot be read back", () => {
+    cloud.hideAccessApps = true;
+    expect(() => deploy(ctx, request())).toThrow("no Access application after writing one");
+    expect(deployedWorker()).toBe(false);
+  });
+
+  it("pushes the images again when a deployment is redeployed after a teardown", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.images.size).toBe(0);
+    // The local Docker still remembers the earlier push, as it does on the laptop.
+    expect(cloud.remembered.has("cfo-stg-a-host")).toBe(true);
+    cloud.calls.length = 0;
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    const forget = cloud.calls.indexOf("docker.forget cfo-stg-a-host");
+    expect(forget).toBeGreaterThan(-1);
+    expect(forget).toBeLessThan(cloud.calls.findIndex((c) => c.startsWith("worker.deploy")));
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("stops before the upload when the local Docker cannot forget a pushed image", () => {
+    cloud.forgetFails = true;
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("still holds");
+    expect(deployedWorker()).toBe(false);
+    expect(store.load()[0]?.uploadStartedAt).toBeUndefined();
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("forgets only the deployment's own repositories, and nothing without containers", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    deploy(ctx, request("a-x", 7, withResources("a-x")));
+    expect(cloud.calls.filter((c) => c.startsWith("docker.forget"))).toEqual([
+      "docker.forget cfo-stg-a-host",
+      "docker.forget cfo-stg-a-x-host",
+    ]);
+    cloud.calls.length = 0;
+    deploy(ctx, request("b"));
+    expect(cloud.calls.some((c) => c.startsWith("docker.forget"))).toBe(false);
   });
 });
 

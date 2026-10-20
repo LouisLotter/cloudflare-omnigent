@@ -144,6 +144,31 @@ export function imagesOf(listing: unknown, repository: string): string[] {
 }
 
 /**
+ * The local Docker's references to images it pushed to exactly these repositories of the managed
+ * registry, from `docker image ls --digests --format '{{json .}}'`: each `<repo>:<tag>` and each
+ * `<repo>@<digest>`, where `<repo>` is `registry.cloudflare.com/<account>/<repository>`.
+ */
+export function pushedImageReferences(listing: string, repositories: readonly string[]): string[] {
+  const references = new Set<string>();
+  for (const line of listing.split("\n")) {
+    if (line.trim() === "") continue;
+    const image = JSON.parse(line) as { Repository?: unknown; Tag?: unknown; Digest?: unknown };
+    if (typeof image.Repository !== "string") {
+      throw new Error("unexpected entry in the local image listing");
+    }
+    const repository = /^registry\.cloudflare\.com\/[^/]+\/([^/]+)$/.exec(image.Repository)?.[1];
+    if (repository === undefined || !repositories.includes(repository)) continue;
+    if (typeof image.Tag === "string" && image.Tag !== "<none>") {
+      references.add(`${image.Repository}:${image.Tag}`);
+    }
+    if (typeof image.Digest === "string" && image.Digest !== "<none>") {
+      references.add(`${image.Repository}@${image.Digest}`);
+    }
+  }
+  return [...references];
+}
+
+/**
  * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
  * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
  */
@@ -189,6 +214,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       ]) as { id?: unknown };
       if (typeof created?.id !== "string") throw new Error("Access did not return an app ID");
       return created.id;
+    },
+    updateAccessApp: (id, body) => {
+      cf(["zero-trust", "access", "applications", "update", id, "--body", JSON.stringify(body)]);
     },
     // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
@@ -253,6 +281,26 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     containerImages: (repository) => imagesOf(cf(["containers", "images", "list"]), repository),
     deleteContainerImage: (reference) => {
       cf(["containers", "images", "delete", reference, "--force"]);
+    },
+    // Local Docker only. A reference already gone counts as forgotten; one still listed
+    // afterwards stops the deploy before its upload.
+    forgetPushedImages: (repositories) => {
+      const docker = (args: string[]) => run("docker", args, { inherit: false });
+      const remembered = () => {
+        const listed = docker(["image", "ls", "--digests", "--format", "{{json .}}"]);
+        if (listed.status !== 0) {
+          throw new Error(`docker image ls failed: ${firstLine(listed.stderr)}`);
+        }
+        return pushedImageReferences(listed.stdout, repositories);
+      };
+      for (const reference of remembered()) {
+        const removed = docker(["image", "rm", reference]);
+        if (removed.status !== 0 && !removed.stderr.includes("No such image")) {
+          throw new Error(`could not forget ${reference}: ${firstLine(removed.stderr)}`);
+        }
+      }
+      const left = remembered();
+      if (left.length > 0) throw new Error(`the local Docker still holds ${left.join(", ")}`);
     },
   };
 }

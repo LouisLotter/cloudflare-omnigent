@@ -21,13 +21,19 @@
 //     Containers and R2 buckets the configuration declares carry the deployment's name, are
 //     recorded before the deploy that creates them, and are removed by the same teardown,
 //     after the Worker and before Access.
+//   - Access applications set SameSite=lax on their cookie (D9). One written by an older tool is
+//     rewritten, and every application is read back and checked before the Worker upload.
+//   - Before every upload the local Docker forgets what it pushed to the deployment's own
+//     repositories, so a redeploy after a teardown pushes its images again (DC-36).
 
 import {
+  ACCESS_SAME_SITE,
   type AccessApp,
   accessAppBody,
   assertAccount,
   assertManaged,
   assertOwnerOnly,
+  assertSameSite,
   claimAccessApp,
   type DeployConfigView,
   type Deployment,
@@ -47,6 +53,8 @@ export interface Cloud {
   listAccessApps(hostname: string): AccessApp[];
   /** Returns the new application's ID. */
   createAccessApp(body: Record<string, unknown>): string;
+  /** Replaces the application's settings with `body`. */
+  updateAccessApp(id: string, body: Record<string, unknown>): void;
   deleteAccessApp(id: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   workerExists(name: string): boolean;
@@ -63,6 +71,12 @@ export interface Cloud {
   /** Image references (`repository:tag`) in this repository of the managed registry. */
   containerImages(repository: string): string[];
   deleteContainerImage(reference: string): void;
+  /**
+   * Drops the local Docker's references to images it pushed to these repositories. Wrangler
+   * skips a push when the built image carries a digest it pushed before, and the registry keeps
+   * answering for that digest after the image is deleted (DC-36).
+   */
+  forgetPushedImages(repositories: readonly string[]): void;
 }
 
 export interface Store {
@@ -205,15 +219,25 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     let record = intent;
 
     // Access before the Worker: the hostname never serves traffic without the owner-only gate.
+    const body = accessAppBody(name, hostname, ctx.config);
     const app = claimAccessApp(ctx.cloud.listAccessApps(hostname), record);
     if (app) {
       assertOwnerOnly(app, hostname, ctx.config.ownerEmail);
       if (record.accessAppId !== app.id) record = put(ctx, { ...record, accessAppId: app.id });
+      if (app.same_site_cookie_attribute !== ACCESS_SAME_SITE) {
+        ctx.cloud.updateAccessApp(app.id, body);
+        ctx.log(`set SameSite=${ACCESS_SAME_SITE} on the Access application for ${hostname}`);
+      }
     } else {
-      const id = ctx.cloud.createAccessApp(accessAppBody(name, hostname, ctx.config));
+      const id = ctx.cloud.createAccessApp(body);
       record = put(ctx, { ...record, accessAppId: id });
       ctx.log(`created Access application for ${hostname}`);
     }
+    // What Access holds now, not what was sent, decides.
+    const confirmed = claimAccessApp(ctx.cloud.listAccessApps(hostname), record);
+    if (!confirmed) throw new Error(`${hostname} has no Access application after writing one`);
+    assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail);
+    assertSameSite(confirmed, hostname);
 
     // Buckets before the Worker binds them, so Wrangler never provisions one itself. A bucket
     // that exists here is one this record already owned (checked above), or one an
@@ -224,6 +248,9 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         ctx.log(`created R2 bucket ${bucket}`);
       }
     }
+
+    const repositories = repositoriesOf(record);
+    if (repositories.length > 0) ctx.cloud.forgetPushedImages(repositories);
 
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
     // still appear, and the next command marks the upload interrupted.

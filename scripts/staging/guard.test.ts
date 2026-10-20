@@ -7,6 +7,7 @@ import {
   assertAccount,
   assertManaged,
   assertOwnerOnly,
+  assertSameSite,
   claimAccessApp,
   type DeployConfigView,
   type Deployment,
@@ -92,6 +93,7 @@ describe("staging guard", () => {
       type: "self_hosted",
       name: "cfo-stg-a",
       domain: "cfo-stg-a.example.com",
+      same_site_cookie_attribute: "lax",
       policies: [{ decision: "allow", include: [{ email: { email: "owner@example.com" } }] }],
     });
     expect(() => accessAppBody("cfo-stg-a", "cfo-stg-b.example.com", config)).toThrow();
@@ -496,6 +498,18 @@ describe("Access application checks", () => {
       }),
     ]) {
       expect(() => assertOwnerOnly(bad, host, "owner@example.com")).toThrow("not owner-only");
+    }
+  });
+
+  it("accepts only SameSite=lax for the Access cookie (D9)", () => {
+    const host = "cfo-stg-a.example.com";
+    expect(() => assertSameSite(app({ same_site_cookie_attribute: "lax" }), host)).not.toThrow();
+    const { same_site_cookie_attribute: _, ...unset } = app({ same_site_cookie_attribute: "lax" });
+    expect(() => assertSameSite(unset, host)).toThrow("does not set SameSite=lax");
+    for (const value of ["", "none", "strict", "Lax"]) {
+      expect(() => assertSameSite(app({ same_site_cookie_attribute: value }), host)).toThrow(
+        "does not set SameSite=lax",
+      );
     }
   });
 });
