@@ -89,6 +89,8 @@ class FakeCloud implements Cloud {
   readonly remembered = new Set<string>();
   /** An Access update that reports success but changes nothing. */
   accessUpdateKeeps = false;
+  /** An Access update that sets SameSite but leaves a policy open to everyone. */
+  accessUpdateWidens = false;
   /** Listings that no longer show an application, as if it were deleted meanwhile. */
   hideAccessApps = false;
   forgetFails = false;
@@ -154,6 +156,15 @@ class FakeCloud implements Cloud {
     this.tick();
     this.calls.push(`access.update ${String(body.name)}`);
     if (!this.accessUpdateKeeps) this.apps.set(id, { ...(body as unknown as AccessApp), id });
+    if (this.accessUpdateWidens) {
+      const app = this.apps.get(id);
+      if (app) {
+        this.apps.set(id, {
+          ...app,
+          policies: [{ decision: "allow", include: [{ everyone: {} }] }],
+        });
+      }
+    }
     this.check();
   }
   deleteAccessApp(id: string): void {
@@ -1044,6 +1055,18 @@ describe("plan change 18: SameSite on Access (D9), and a push after teardown (DC
     expect(deployedWorker()).toBe(false);
   });
 
+  it("refuses to upload when the read-back shows SameSite=lax but a widened policy", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    const { same_site_cookie_attribute: _, ...older } = app;
+    cloud.apps.set("app-1", older);
+    cloud.accessUpdateWidens = true;
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request())).toThrow("not owner-only");
+    expect(deployedWorker()).toBe(false);
+  });
+
   it("refuses to upload when the written application cannot be read back", () => {
     cloud.hideAccessApps = true;
     expect(() => deploy(ctx, request())).toThrow("no Access application after writing one");
@@ -1071,6 +1094,11 @@ describe("plan change 18: SameSite on Access (D9), and a push after teardown (DC
     expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("still holds");
     expect(deployedWorker()).toBe(false);
     expect(store.load()[0]?.uploadStartedAt).toBeUndefined();
+    expect(cloud.violations).toEqual([]);
+    // Once Docker cooperates, the same deploy goes through.
+    cloud.forgetFails = false;
+    deploy(ctx, request("a", 7, withResources("a")));
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
     expect(cloud.violations).toEqual([]);
   });
 

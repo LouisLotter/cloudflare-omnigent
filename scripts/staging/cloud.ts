@@ -144,11 +144,18 @@ export function imagesOf(listing: unknown, repository: string): string[] {
 }
 
 /**
- * The local Docker's references to images it pushed to exactly these repositories of the managed
- * registry, from `docker image ls --digests --format '{{json .}}'`: each `<repo>:<tag>` and each
- * `<repo>@<digest>`, where `<repo>` is `registry.cloudflare.com/<account>/<repository>`.
+ * The local Docker's references to images it pushed to exactly these repositories of the staging
+ * account's namespace in the managed registry, from `docker image ls --digests --format
+ * '{{json .}}'`: each `<repo>:<tag>` and each `<repo>@<digest>`, where `<repo>` is
+ * `registry.cloudflare.com/<account>/<repository>`. Other accounts' images are never matched.
  */
-export function pushedImageReferences(listing: string, repositories: readonly string[]): string[] {
+export function pushedImageReferences(
+  listing: string,
+  accountId: string,
+  repositories: readonly string[],
+): string[] {
+  if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("invalid staging account ID");
+  const namespace = `registry.cloudflare.com/${accountId}/`;
   const references = new Set<string>();
   for (const line of listing.split("\n")) {
     if (line.trim() === "") continue;
@@ -156,8 +163,9 @@ export function pushedImageReferences(listing: string, repositories: readonly st
     if (typeof image.Repository !== "string") {
       throw new Error("unexpected entry in the local image listing");
     }
-    const repository = /^registry\.cloudflare\.com\/[^/]+\/([^/]+)$/.exec(image.Repository)?.[1];
-    if (repository === undefined || !repositories.includes(repository)) continue;
+    if (!image.Repository.startsWith(namespace)) continue;
+    const repository = image.Repository.slice(namespace.length);
+    if (!repositories.includes(repository)) continue;
     if (typeof image.Tag === "string" && image.Tag !== "<none>") {
       references.add(`${image.Repository}:${image.Tag}`);
     }
@@ -166,6 +174,14 @@ export function pushedImageReferences(listing: string, repositories: readonly st
     }
   }
   return [...references];
+}
+
+/**
+ * The Docker executable Wrangler builds and pushes with: `WRANGLER_DOCKER_BIN`, else `docker`
+ * (Wrangler 4.149.0, `getDockerPath`). The staging tool cleans the same image store.
+ */
+export function dockerExecutable(env: NodeJS.ProcessEnv = process.env): string {
+  return env.WRANGLER_DOCKER_BIN || "docker";
 }
 
 /**
@@ -285,13 +301,14 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     // Local Docker only. A reference already gone counts as forgotten; one still listed
     // afterwards stops the deploy before its upload.
     forgetPushedImages: (repositories) => {
-      const docker = (args: string[]) => run("docker", args, { inherit: false });
+      const executable = dockerExecutable();
+      const docker = (args: string[]) => run(executable, args, { inherit: false });
       const remembered = () => {
         const listed = docker(["image", "ls", "--digests", "--format", "{{json .}}"]);
         if (listed.status !== 0) {
           throw new Error(`docker image ls failed: ${firstLine(listed.stderr)}`);
         }
-        return pushedImageReferences(listed.stdout, repositories);
+        return pushedImageReferences(listed.stdout, config.accountId, repositories);
       };
       for (const reference of remembered()) {
         const removed = docker(["image", "rm", reference]);

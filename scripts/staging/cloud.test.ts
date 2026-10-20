@@ -9,6 +9,7 @@ import {
   childEnv,
   childStdio,
   cliCloud,
+  dockerExecutable,
   fileStore,
   imagesOf,
   pushedImageReferences,
@@ -94,32 +95,57 @@ describe("R2 bucket lookup and image listings", () => {
 });
 
 describe("DC-36: the local Docker forgets what it pushed", () => {
-  const REGISTRY = "registry.cloudflare.com/acct";
+  const ACCOUNT = "a".repeat(32);
+  const OTHER = "b".repeat(32);
+  const REGISTRY = `registry.cloudflare.com/${ACCOUNT}`;
   const line = (repository: string, tag: string, digest: string) =>
     JSON.stringify({ Repository: repository, Tag: tag, Digest: digest });
 
-  it("picks the tags and digests of exactly the deployment's repositories", () => {
+  it("picks the tags and digests of exactly the deployment's repositories in its account", () => {
     const listing = [
       line(`${REGISTRY}/cfo-stg-a-host`, "wrangler-1", "sha256:aaa"),
       line(`${REGISTRY}/cfo-stg-a-host`, "<none>", "sha256:bbb"),
       line(`${REGISTRY}/cfo-stg-a-host-big`, "1", "sha256:ccc"),
       line(`${REGISTRY}/nested/cfo-stg-a-host`, "1", "sha256:ddd"),
+      line(`registry.cloudflare.com/${OTHER}/cfo-stg-a-host`, "1", "sha256:fff"),
       line("cfo-stg-a-host", "latest", "<none>"),
       line("docker.io/library/node", "22", "sha256:eee"),
       "",
     ].join("\n");
-    expect(pushedImageReferences(listing, ["cfo-stg-a-host"])).toEqual([
+    expect(pushedImageReferences(listing, ACCOUNT, ["cfo-stg-a-host"])).toEqual([
       `${REGISTRY}/cfo-stg-a-host:wrangler-1`,
       `${REGISTRY}/cfo-stg-a-host@sha256:aaa`,
       `${REGISTRY}/cfo-stg-a-host@sha256:bbb`,
     ]);
-    expect(pushedImageReferences(listing, [])).toEqual([]);
-    expect(() => pushedImageReferences('{"Tag":"1"}', ["cfo-stg-a-host"])).toThrow(
+    expect(pushedImageReferences(listing, ACCOUNT, [])).toEqual([]);
+    expect(() => pushedImageReferences('{"Tag":"1"}', ACCOUNT, ["cfo-stg-a-host"])).toThrow(
       "unexpected entry",
     );
+    expect(() => pushedImageReferences("", "acct", ["cfo-stg-a-host"])).toThrow("account ID");
   });
 
-  const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
+  it("cleans the image store Wrangler uses: WRANGLER_DOCKER_BIN, else docker", () => {
+    expect(dockerExecutable({})).toBe("docker");
+    expect(dockerExecutable({ WRANGLER_DOCKER_BIN: "" })).toBe("docker");
+    expect(dockerExecutable({ WRANGLER_DOCKER_BIN: "/opt/podman/bin/docker" })).toBe(
+      "/opt/podman/bin/docker",
+    );
+    const commands: string[] = [];
+    const saved = process.env.WRANGLER_DOCKER_BIN;
+    process.env.WRANGLER_DOCKER_BIN = "/opt/podman/bin/docker";
+    try {
+      cliCloud(config, WORKER, (command) => {
+        commands.push(command);
+        return ok("");
+      }).forgetPushedImages(["cfo-stg-a-host"]);
+    } finally {
+      if (saved === undefined) delete process.env.WRANGLER_DOCKER_BIN;
+      else process.env.WRANGLER_DOCKER_BIN = saved;
+    }
+    expect(commands).toEqual(["/opt/podman/bin/docker", "/opt/podman/bin/docker"]);
+  });
+
+  const config = { accountId: ACCOUNT, zone: "example.com", ownerEmail: "o@example.com" };
   /** A local Docker holding `held`; `rm` answers from `onRemove`, which may keep the image. */
   function docker(held: Set<string>, onRemove: (reference: string) => CommandResult) {
     const calls: { command: string; args: readonly string[]; options: RunOptions }[] = [];
@@ -143,10 +169,12 @@ describe("DC-36: the local Docker forgets what it pushed", () => {
   }
 
   it("removes each reference, quietly, and checks that none is left", () => {
+    const foreign = `registry.cloudflare.com/${OTHER}/cfo-stg-a-host:7`;
     const held = new Set([
       `${REGISTRY}/cfo-stg-a-host:7`,
       `${REGISTRY}/cfo-stg-a-host@sha256:aaa`,
       `${REGISTRY}/cfo-stg-b-host:7`,
+      foreign,
     ]);
     const { cloud, calls } = docker(held, (reference) => {
       held.delete(reference);
@@ -155,7 +183,7 @@ describe("DC-36: the local Docker forgets what it pushed", () => {
       return reference.includes("@") ? failed("Error: No such image: x") : ok("");
     });
     cloud.forgetPushedImages(["cfo-stg-a-host"]);
-    expect([...held]).toEqual([`${REGISTRY}/cfo-stg-b-host:7`]);
+    expect([...held]).toEqual([`${REGISTRY}/cfo-stg-b-host:7`, foreign]);
     expect(calls.every((c) => c.command === "docker" && c.options.inherit === false)).toBe(true);
     expect(calls.map((c) => c.args.slice(0, 2).join(" "))).toEqual([
       "image ls",
