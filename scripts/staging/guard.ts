@@ -1149,8 +1149,9 @@ const LATE_KINDS: readonly string[] = ["access", "tunnel", "dns", "vpc", "bucket
 
 /**
  * A create the tool gave up on: after the settle wait Cloudflare still showed nothing, so the
- * intent left its record (ops.ts, settleCreates). Nothing proves such a create never lands
- * (review r2, finding 5), so the registry keeps it. Sweep flags a resource that carries its
+ * intent left its record (ops.ts, settleCreates). Nothing proves such a create never lands, or
+ * bounds how late it may (review r2, finding 5, accepted as open), so the registry keeps it
+ * for as long as it has not landed. Sweep flags a resource that carries its
  * nonce as this tool's, landed late, and `sweep --yes` deletes exactly those. A bucket has no
  * place for a nonce, and an intent from before nonces has none: one under the name is reported
  * as maybe this tool's, and left for the owner.

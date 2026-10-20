@@ -686,7 +686,9 @@ function createOwned<T extends Resource>(
  *
  * Checked before anything is recorded and again just before the upload. Between the last check
  * and Wrangler's request, a record someone creates on the hostname would still be replaced:
- * Cloudflare offers no conditional publish, and the window is the upload itself.
+ * Cloudflare offers no conditional publish, and the window is the upload itself (UC-32). That
+ * window is accepted (review r2, finding 1b): the hostname is a cfo-stg- name in the staging
+ * zone, which only this tool creates.
  */
 function checkWorkerAndDomain(
   ctx: Context,
@@ -1029,8 +1031,8 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         record = ensureDns(ctx, record, plan.tunnel.hostname, tunnelId);
         // Wrangler refuses a route that another Worker holds. Neither it nor cf can list a
         // zone's Worker routes, so the tool records no route ID and cannot check after a
-        // teardown that the route went with the Worker (review r1, finding 8): that is checked
-        // by hand at the preflight.
+        // teardown that the route went with the Worker (review r1, finding 8, and r2, finding 8):
+        // that is checked by hand at the preflight.
         routes.push(tunnelRoute(plan.tunnel.hostname, ctx.config.zone));
       }
       record = ensureVpcServices(ctx, record, plan.vpcServices, tunnelId);
