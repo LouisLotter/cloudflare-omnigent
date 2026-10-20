@@ -15,6 +15,7 @@ import {
   type DeployConfigView,
   type Deployment,
   declaredResources,
+  dependencyCycle,
   expired,
   expiry,
   hostnameFor,
@@ -466,6 +467,31 @@ describe("Wrangler configuration check", () => {
           label,
         ).toThrow(message);
       }
+    });
+
+    it("finds the dependency cycle a new set of dependencies would close", () => {
+      const d = (name: string, dependsOn?: string[]): Deployment => ({
+        ...target,
+        name,
+        ...(dependsOn ? { dependsOn } : {}),
+      });
+      const registry = [
+        d("cfo-stg-a", ["cfo-stg-b"]),
+        d("cfo-stg-b", ["cfo-stg-c"]),
+        d("cfo-stg-c"),
+      ];
+      expect(dependencyCycle(registry, "cfo-stg-c", ["cfo-stg-a"])).toEqual([
+        "cfo-stg-c",
+        "cfo-stg-a",
+        "cfo-stg-b",
+        "cfo-stg-c",
+      ]);
+      expect(dependencyCycle(registry, "cfo-stg-c", [])).toBeUndefined();
+      expect(dependencyCycle(registry, "cfo-stg-d", ["cfo-stg-a", "cfo-stg-b"])).toBeUndefined();
+      // A diamond is no cycle.
+      const diamond = [d("cfo-stg-a", ["cfo-stg-b", "cfo-stg-c"]), d("cfo-stg-b", ["cfo-stg-c"])];
+      expect(dependencyCycle(diamond, "cfo-stg-c", ["cfo-stg-x"])).toBeUndefined();
+      expect(dependencyCycle(diamond, "cfo-stg-x", ["cfo-stg-a"])).toBeUndefined();
     });
 
     it("names the bound deployments, sorted, once each, never itself or a non-staging name", () => {

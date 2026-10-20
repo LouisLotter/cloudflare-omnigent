@@ -410,6 +410,33 @@ function doBindings(raw: Readonly<Record<string, unknown>>): unknown[] {
 }
 
 /**
+ * The dependency cycle that recording `dependsOn` for the deployment `name` would close, from
+ * `name` back to it, or undefined when there is none. The other deployments' dependencies come
+ * from the registry, including those kept from interrupted uploads. In a cycle, each teardown
+ * would refuse because another deployment depends on it.
+ */
+export function dependencyCycle(
+  deployments: readonly Deployment[],
+  name: string,
+  dependsOn: readonly string[],
+): string[] | undefined {
+  const next = (node: string) =>
+    node === name ? dependsOn : (deployments.find((d) => d.name === node)?.dependsOn ?? []);
+  const seen = new Set<string>();
+  const search = (node: string, trail: readonly string[]): string[] | undefined => {
+    for (const target of next(node)) {
+      if (target === name) return [...trail, target];
+      if (seen.has(target)) continue;
+      seen.add(target);
+      const cycle = search(target, [...trail, target]);
+      if (cycle) return cycle;
+    }
+    return undefined;
+  };
+  return search(name, [name]);
+}
+
+/**
  * The other deployments whose Durable Objects a configuration binds, by name, sorted. Only names
  * a staging deployment can have count; validateDeployConfig refuses any other.
  */

@@ -57,6 +57,7 @@ import {
   type Deployment,
   type DnsRecordInfo,
   declaredResources,
+  dependencyCycle,
   expired,
   expiry,
   hostnameFor,
@@ -808,6 +809,14 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         const theirs = claimsOf(other);
         const clash = mine.find((r) => theirs.includes(r));
         if (clash) throw new Error(`${clash} is recorded for the deployment ${other.name}`);
+      }
+      // No two deployments may depend on each other, even through dependencies kept from an
+      // interrupted upload: neither could then be torn down.
+      const cycle = dependencyCycle(all, name, intent.dependsOn ?? []);
+      if (cycle) {
+        throw new Error(
+          `binding these Durable Objects would make a dependency cycle (${cycle.join(" → ")}); remove a binding first`,
+        );
       }
     };
     refuseClaimed(ctx.store.load());

@@ -6,6 +6,7 @@ import {
   type Deployment,
   type DnsRecordInfo,
   declaredResources,
+  dependencyCycle,
   type IngressRule,
   parseRegistry,
   serializeRegistry,
@@ -2152,6 +2153,39 @@ describe("cross-script Durable Object bindings", () => {
     expect(sweep(ctx, true)).toEqual([expect.stringContaining("is bound by cfo-stg-x1-ui")]);
     expect(record("cfo-stg-x1-transport")?.state).toBe("deployed");
   });
+
+  // Review r2, finding 6: Codex's reproduction, refused before anything is recorded.
+  it("refuses a binding that would make two deployments depend on each other", () => {
+    deploy(ctx, request("b"));
+    deploy(ctx, request("a", 7, withBinding("a", "cfo-stg-b")));
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("b", 7, withBinding("b", "cfo-stg-a")))).toThrow(
+      "dependency cycle (cfo-stg-b → cfo-stg-a → cfo-stg-b)",
+    );
+    expect(record("cfo-stg-b")).not.toHaveProperty("dependsOn");
+    expect(cloud.calls.filter((c) => /\.(create|update|deploy)/.test(c))).toEqual([]);
+    teardown(ctx, "cfo-stg-a");
+    teardown(ctx, "cfo-stg-b");
+    expect(store.load()).toEqual([]);
+  });
+
+  it("counts a dependency kept from an interrupted upload when looking for a cycle", () => {
+    deploy(ctx, request("b"));
+    deploy(ctx, request("c"));
+    deploy(ctx, request("a", 7, withBinding("a", "cfo-stg-b")));
+    // b's redeploy, binding c, fails: b keeps that dependency until an upload without it.
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request("b", 7, withBinding("b", "cfo-stg-c")))).toThrow(
+      "wrangler deploy",
+    );
+    restart();
+    expect(record("cfo-stg-b")).toMatchObject({ state: "pending", dependsOn: ["cfo-stg-c"] });
+    // c binding a (deployed) would close c → a → b → c through that kept dependency.
+    expect(() => deploy(ctx, request("c", 7, withBinding("c", "cfo-stg-a")))).toThrow(
+      "dependency cycle (cfo-stg-c → cfo-stg-a → cfo-stg-b → cfo-stg-c)",
+    );
+    expect(record("cfo-stg-c")).not.toHaveProperty("dependsOn");
+  });
 });
 
 describe("Access applications the tool cannot vouch for", () => {
@@ -2357,7 +2391,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       late: fc.constantFrom("none", "access.create", "tunnel.create", "dns.create", "vpc.create"),
       lateCreateDelay: fc.integer({ min: 0, max: SETTLE - 1 }),
       lateDies: fc.boolean(),
-      // b's Worker binds a's Durable Objects.
+      // The Worker binds the other deployment's Durable Objects: a binds b, or b binds a.
       binds: fc.boolean(),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
@@ -2409,14 +2443,13 @@ describe("model check: no Worker is ever reachable without its Access applicatio
                 op.late === "none"
                   ? undefined
                   : { prefix: op.late, delay: op.lateCreateDelay, die: op.lateDies };
-              const path =
-                op.binds && op.suffix === "b"
-                  ? withBinding("b", "cfo-stg-a")
-                  : op.manifest
-                    ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
-                    : op.resources
-                      ? withResources(op.suffix)
-                      : GOOD.path;
+              const path = op.binds
+                ? withBinding(op.suffix, op.suffix === "a" ? "cfo-stg-b" : "cfo-stg-a")
+                : op.manifest
+                  ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
+                  : op.resources
+                    ? withResources(op.suffix)
+                    : GOOD.path;
               deploy(ctx, request(op.suffix, op.days, path));
             } else if (op.kind === "teardown") {
               clock += op.wallJump; // the wall clock only
@@ -2455,6 +2488,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           // Nothing a record depends on is gone from the registry.
           for (const d of store.load()) {
             for (const target of d.dependsOn ?? []) expect(recorded.has(target)).toBe(true);
+            expect(dependencyCycle(store.load(), d.name, d.dependsOn ?? [])).toBeUndefined();
           }
         }
         // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
