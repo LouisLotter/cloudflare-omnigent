@@ -46,7 +46,7 @@ def test_deleted_events_with_headers_kept_fail_setup():
         lines[:] = [x for x in lines if not (x.get("route") == "p2" and x["mono"] >= S)]
     report = run(probe=probe, setup_fails=True)
     setup_failed(report, "header's events is")
-    assert report.would_be.selected == "p2"  # what the invalid records would have given
+    assert report.would_be is None and report.routes == {}  # nothing computed from them
 
 
 def test_deleted_close_record_fails_setup_even_with_the_counts_fixed():
@@ -60,7 +60,7 @@ def test_deleted_close_record_fails_setup_even_with_the_counts_fixed():
     setup_failed(run(probe=copy.deepcopy(probe), setup_fails=True), "header's events is")
     lines[0]["events"] = len(lines) - 1
     probe[b.instance]["manifest"]["events"] = len(lines) - 1
-    setup_failed(run(probe=probe, setup_fails=True), "has no close record")
+    setup_failed(run(probe=probe, setup_fails=True), "has no terminal record")
 
 
 def test_a_manifest_declaring_fewer_batches_fails_setup():
@@ -84,7 +84,7 @@ def test_the_run_as_its_own_preflight_fails_setup():
     [
         (lambda pre: pre.update(worker="cfo-stg-x1-other"), "another deployment"),
         (lambda pre: pre.update(t0=T0 + 1), "did not start before the run"),
-        (lambda pre: pre.pop("t0"), "did not start before the run"),
+        (lambda pre: pre.pop("t0"), "preflight: run.json has no finite t0"),
     ],
 )
 def test_preflight_metadata(change, words):
@@ -137,13 +137,13 @@ def test_spans_and_events_within_them():
     probe = b.probe(batches=3)
     batches = probe[b.instance]["batches"]
     batches[3][-1]["mono"] = batches[3][0]["cutMono"] + 1  # an event after its batch's cut
-    del batches[1][0]["cutMono"]  # no span at all
+    batches[1][0]["cutMono"] = batches[1][0]["fromMono"] - 1  # a span that ends before it starts
     # A record timed before its batch's span but written inside it (a close frame's arrival)
     # is fine.
     batches[2][1]["loggedMono"] = batches[2][1]["mono"]
     batches[2][1]["mono"] = batches[2][0]["fromMono"] - 3
     joined = " | ".join(analyze.validate_batches(probe, RUN_ID, "run"))
-    assert "batch 1: its header has no valid span" in joined
+    assert "batch 1: its span ends before it starts" in joined
     assert "batch 3: 1 events lie outside its span" in joined
     assert "batch 2" not in joined
     probe = b.probe(batches=3)
@@ -156,8 +156,9 @@ def test_manifest_without_a_count_and_no_records():
     b = clean()
     probe = b.probe(batches=1)
     probe[b.instance]["manifest"]["batches"] = "one"
-    joined = " ".join(analyze.validate_batches(probe, RUN_ID, "run"))
-    assert "its manifest has no batch count" in joined
+    assert any(
+        "the manifest's batch count is not a count" in p for p in analyze.record_shape(probe, "run")
+    )
     assert analyze.validate_batches({}, RUN_ID, "run") == ["run: no probe records"]
 
 
@@ -166,7 +167,7 @@ def test_a_connection_needs_a_close_or_to_be_answering_at_the_tails_end():
         {"i": [{"wall": 0.0, "mono": 0.0, "ev": "open", "route": "p1", "conn": 1}]}
     )
     assert analyze.terminal_problems(line, 10_000.0, "run") == [
-        "run: P1 connection i/1 has no close record and was not answering at the tail's end"
+        "run: P1 connection i/1 has no terminal record and was not answering at the tail's end"
     ]
     answering = [
         {"ev": "open", "route": "p1", "conn": 1, "wall": 0.0, "mono": 0.0},
@@ -276,13 +277,14 @@ def test_ar17_unassessable_without_a_deploy_window():
 
 
 def test_ar17_unassessable_when_the_record_over_a_window_is_missing():
-    b = clean()
-    probe = b.probe(batches=8)
-    batches = probe[b.instance]["batches"]
-    w0, w1 = DEPLOYS["transport"], DEPLOYS["transport"] + UPLOAD_MS + 330_000
-    for n in [n for n, x in batches.items() if x[0]["fromMono"] <= w1 and x[0]["cutMono"] >= w0]:
-        del batches[n]
-    report = run(probe=probe, setup_fails=True)
+    """Two probe instances, each with every batch and its manifest, that leave the transport
+    deploy's window uncovered: valid evidence, but none over that window."""
+    w0 = DEPLOYS["transport"]
+    first, second = Builder(instance="g2-0a1b2c3d-000002"), Builder(instance="g3-0a1b2c3d-000003")
+    for route in ROUTES:
+        first.route(route, end=w0 - 10_000)
+        second.route(route, start=w0 + UPLOAD_MS + 400_000)
+    report = run(probe={**first.probe(), **second.probe()})
     verdict = next(iter(report.ar17.values()))[0]
     assert verdict == (
         "unassessable: the probe's record over the transport deploy window is incomplete"

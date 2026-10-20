@@ -63,6 +63,8 @@ RESET_AFTER_MS = 30_000.0
 DEPLOY_AFTER_UPLOADED_MS = 330_000.0
 HOUR_MS = 3_600_000.0
 UNBOUNDED = math.inf
+# The records that end a connection, with the close code each implies when it names none.
+TERMINAL = {"close": None, "error": 1006, "silence": 4000}
 RULE5_TEXT = (
     "The owner chooses between B, one rerun with a fixed budget and a changed setup, and the "
     "fallbacks in AR section 6."
@@ -128,9 +130,9 @@ def coverage(probe: dict[str, dict]) -> list[tuple[float, float]]:
             continue
         offset = instance_offset(events)
         for lines in probe[instance].get("batches", {}).values():
+            # The records' form is checked first (check_evidence): every header has its span.
             for header in (h for h in lines if "ev" not in h):
-                if "fromMono" in header and "cutMono" in header:
-                    spans.append((header["fromMono"] + offset, header["cutMono"] + offset))
+                spans.append((header["fromMono"] + offset, header["cutMono"] + offset))
     return merge(spans)
 
 
@@ -275,12 +277,15 @@ def route_records(events: list[dict], route: str) -> RouteRecords:
             conn = rec.connections.get((inst, e["conn"]))
             if conn is not None:
                 conn.ids.append(e.get("id") or {})
-        elif kind == "close":
+        elif kind in TERMINAL and "conn" in e:
+            # A close, error or silence record ends its connection (Amendment 3, item 1). The
+            # first one counts, with its time: the close that the probe writes after a silence
+            # or an error record is the same end, not a second drop (review r2, finding 5).
             conn = rec.connections.get((inst, e["conn"]))
             if conn is not None and conn.close_t is None:
                 conn.close_t = e["t"]
-                conn.by = e.get("by")
-                conn.code = e.get("code")
+                conn.by = e.get("by") if kind == "close" else kind
+                conn.code = e.get("code", TERMINAL[kind])
                 conn.reason = e.get("reason")
                 conn.error = e.get("error")
         elif kind == "ping":
@@ -841,13 +846,37 @@ def ar17_unassessable(
 
 
 # ---------------------------------------------------------------------------------------------
-# Evidence validity and clock health (Amendment 3, items 1 and 2)
+# Evidence (Amendment 3, items 1 and 2; review r2, findings 2 to 5)
+#
+# One check, check_evidence(), serves the decision run and the preflight alike. It works in two
+# steps. First the records' form: every field a calculation reads is present, timestamps are
+# finite numbers and counts are non-negative integers. Malformed records are reported and
+# nothing is computed from them. Then their content: batches, headers, spans, manifests,
+# terminal records, recorder conflicts, and the probe's clock and skew. Any finding is a setup
+# failure. Records are never repaired or inferred.
 
 MAX_STEP_MS = 1000.0
 MAX_SKEW_MS = 2000.0
 # "Still answering at the tail's end": an echo answered within the last two seconds of the tail.
 ANSWERING_MS = 2 * SLOT_MS
 INSTANCE_GENERATION = re.compile(r"^g(\d+)-")
+MAX_LISTED = 10
+
+# The fields each kind of event needs before anything is computed from it.
+EVENT_FIELDS = {
+    "attempt": ("route",),
+    "open": ("route", "conn"),
+    "close": ("route", "conn"),
+    "silence": ("route", "conn"),
+    "ident": ("route", "conn"),
+    "ping": ("route", "conn"),
+    "pong-missing": ("route", "conn"),
+    "pong": ("route", "conn", "rtt"),
+    "send": ("route", "conn", "seq"),
+    "reply": ("route", "conn", "seq"),
+    "miss": ("route", "conn", "seq"),
+    "duplicate": ("route", "conn", "seq"),
+}
 
 
 def short(numbers: list[int]) -> str:
@@ -858,10 +887,132 @@ def is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def finite(value: object) -> bool:
+    return is_number(value) and math.isfinite(value)  # type: ignore[arg-type]
+
+
+def is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def event_shape(e: dict) -> str | None:
+    """What is wrong with one event record's form, or None."""
+    ev = e.get("ev")
+    if not isinstance(ev, str):
+        return "an event without a name"
+    named = f"{'an' if ev[:1] in tuple('aeiou') else 'a'} {ev} event"
+    for key in ("wall", "mono"):
+        if not finite(e.get(key)):
+            return f"{named} without a finite {key}"
+    if "loggedMono" in e and not finite(e["loggedMono"]):
+        return f"{named} without a finite loggedMono"
+    for key in EVENT_FIELDS.get(ev, ()):
+        if key not in e:
+            return f"{named} without its {key}"
+    if ev in EVENT_FIELDS and e["route"] not in ROUTES:
+        return f"{named} for an unknown route"
+    for key in ("conn", "seq"):
+        if key in e and not is_count(e[key]):
+            return f"{named} whose {key} is not a count"
+    if ev == "pong" and not finite(e["rtt"]):
+        return f"{named} without a finite rtt"
+    return None
+
+
+def header_shape(h: dict) -> str | None:
+    """What is wrong with one batch header's form, or None."""
+    if not is_count(h.get("batch")) or h["batch"] < 1:
+        return "a header without a batch number"
+    if not is_count(h.get("events")):
+        return "a header whose event count is not a count"
+    for key in ("fromMono", "cutMono"):
+        if not finite(h.get(key)):
+            return f"a header without a finite {key}"
+    for key in ("instance", "runId"):
+        if not isinstance(h.get(key), str):
+            return f"a header without its {key}"
+    return None
+
+
+def manifest_shape(m: object) -> str | None:
+    """What is wrong with one manifest's form, or None."""
+    if not isinstance(m, dict):
+        return "the manifest is not an object"
+    if not is_count(m.get("batches")):
+        return "the manifest's batch count is not a count"
+    if "events" in m and not is_count(m["events"]):
+        return "the manifest's event count is not a count"
+    for key in ("instance", "runId"):
+        if not isinstance(m.get(key), str):
+            return f"the manifest has no {key}"
+    conflicts = m.get("conflicts", [])
+    if not isinstance(conflicts, list) or not all(is_count(n) for n in conflicts):
+        return "the manifest's conflicts are not a list of batch numbers"
+    return None
+
+
+def record_shape(probe: object, label: str) -> list[str]:
+    """The probe records' form: batches of objects, each a well-formed header or event, and
+    well-formed manifests and failure records."""
+    if not isinstance(probe, dict):
+        return [f"{label}: the probe records are not readable"]
+    problems: list[str] = []
+    for instance, data in sorted(probe.items()):
+        where = f"{label} probe {instance}"
+        if not isinstance(data, dict) or not isinstance(data.get("batches", {}), dict):
+            problems.append(f"{where}: its records are not readable")
+            continue
+        found: list[str] = []
+        for n, lines in data.get("batches", {}).items():
+            if not is_count(n) or n < 1:
+                found.append(f"batch {n!r} is not a batch number")
+            elif not isinstance(lines, list) or not all(isinstance(x, dict) for x in lines):
+                found.append(f"batch {n} holds lines that are not objects")
+            else:
+                for x in lines:
+                    bad = event_shape(x) if "ev" in x else header_shape(x)
+                    if bad:
+                        found.append(f"batch {n} holds {bad}")
+        if data.get("manifest") is not None:
+            bad = manifest_shape(data["manifest"])
+            if bad:
+                found.append(bad)
+        if data.get("failure") is not None and not isinstance(data["failure"], dict):
+            found.append("its failure record is not an object")
+        problems += [f"{where}: {p}" for p in found[:MAX_LISTED]]
+        if len(found) > MAX_LISTED:
+            problems.append(f"{where}: and {len(found) - MAX_LISTED} more")
+    return problems
+
+
+def run_shape(run: object, label: str) -> list[str]:
+    """run.json's form: its identity and its times."""
+    if not isinstance(run, dict):
+        return [f"{label}: run.json is not an object"]
+    problems = [
+        f"{label}: run.json has no {key}"
+        for key in ("runId", "mode")
+        if not isinstance(run.get(key), str)
+    ]
+    problems += [
+        f"{label}: run.json has no finite {key}"
+        for key in ("t0", "soakStart", "soakEnd")
+        if not finite(run.get(key))
+    ]
+    if "tailEnd" in run and not finite(run["tailEnd"]):
+        problems.append(f"{label}: run.json has no finite tailEnd")
+    if not problems:
+        start, end, tail = soak_of(run)
+        if not start < end <= tail:
+            problems.append(f"{label}: run.json's soak and tail are out of order")
+    return problems
+
+
 def batch_problems(
     where: str, n: int, lines: list[dict], instance: str, run_id: object
 ) -> tuple[list[str], dict | None]:
-    """One batch against its header: its number, instance, run, event count and span."""
+    """One well-formed batch against its header: its number, instance, run, event count and
+    span."""
     headers = [x for x in lines if "ev" not in x]
     events = [x for x in lines if "ev" in x]
     if len(headers) != 1:
@@ -877,21 +1028,21 @@ def batch_problems(
         )
         if h.get(key) != want
     ]
-    start, cut = h.get("fromMono"), h.get("cutMono")
-    if not (is_number(start) and is_number(cut)) or cut < start:
-        return [*problems, f"{where} batch {n}: its header has no valid span"], None
+    start, cut = h["fromMono"], h["cutMono"]
+    if cut < start:
+        return [*problems, f"{where} batch {n}: its span ends before it starts"], None
     # A record timed before it was written (a close frame's arrival) carries loggedMono: the
-    # batch holds the moment of writing.
-    written = [e.get("loggedMono", e.get("mono")) for e in events]
-    outside = sum(1 for m in written if not (is_number(m) and start <= m <= cut))
+    # batch holds the moment of writing (Amendment 4, item 8).
+    outside = sum(1 for e in events if not start <= e.get("loggedMono", e["mono"]) <= cut)
     if outside:
         problems.append(f"{where} batch {n}: {outside} events lie outside its span")
     return problems, h
 
 
 def validate_batches(probe: dict[str, dict], run_id: object, label: str) -> list[str]:
-    """Batches numbered 1 to the manifest's count with none beyond it, each matching its header
-    and contents, spans joining without gaps, and the manifest's event count."""
+    """Well-formed records' content: batches numbered 1 to the manifest's count with none beyond
+    it, each matching its header and contents, spans joining without gaps, and the manifest's
+    run, instance and event count."""
     if not probe:
         return [f"{label}: no probe records"]
     problems: list[str] = []
@@ -902,12 +1053,12 @@ def validate_batches(probe: dict[str, dict], run_id: object, label: str) -> list
         declared = max(batches, default=0)
         if manifest is None:
             problems.append(f"{where}: no manifest")
-        elif not is_number(manifest.get("batches")) or manifest["batches"] < 0:
-            problems.append(f"{where}: its manifest has no batch count")
         else:
-            declared = int(manifest["batches"])
-            if manifest.get("instance") != instance:
+            declared = manifest["batches"]
+            if manifest["instance"] != instance:
                 problems.append(f"{where}: its manifest names another instance")
+            if manifest["runId"] != run_id:
+                problems.append(f"{where}: its manifest names another run")
         missing = sorted(set(range(1, declared + 1)) - set(batches))
         beyond = sorted(n for n in batches if not 1 <= n <= declared)
         if missing:
@@ -936,8 +1087,8 @@ def validate_batches(probe: dict[str, dict], run_id: object, label: str) -> list
 
 
 def terminal_problems(events: list[dict], tail_end: float, label: str) -> list[str]:
-    """Every connection ends on record (close, error or silence close), or is still answering
-    at the tail's end."""
+    """Every connection ends on record (a close, error or silence record), or is still
+    answering at the tail's end."""
     problems = []
     for route in ROUTES:
         rec = route_records(events, route)
@@ -954,18 +1105,36 @@ def terminal_problems(events: list[dict], tail_end: float, label: str) -> list[s
             )
             if last is None or last < tail_end - ANSWERING_MS:
                 problems.append(
-                    f"{label}: {route.upper()} connection {c.instance}/{c.conn} has no close "
+                    f"{label}: {route.upper()} connection {c.instance}/{c.conn} has no terminal "
                     "record and was not answering at the tail's end"
                 )
     return problems
 
 
-def conflict_problems(events: list[dict]) -> list[str]:
+def conflict_problems(events: list[dict], label: str) -> list[str]:
+    """Conflicts the probe recorded in its batches."""
     return [
-        f"the recorder held a different body for the probe's {e.get('what')}"
+        f"{label}: the recorder held a different body for the probe's {e.get('what')}"
         for e in events
         if e.get("ev") == "batch-conflict"
     ]
+
+
+def failure_problems(probe: dict[str, dict], label: str) -> list[str]:
+    """Conflicts the probe recorded at its end (review r2, finding 3): batches named in its
+    manifest, and a failure record in place of a manifest."""
+    problems = []
+    for instance, data in sorted(probe.items()):
+        conflicts = (data.get("manifest") or {}).get("conflicts") or []
+        if conflicts:
+            problems.append(
+                f"{label} probe {instance}: the recorder held other bodies for batches "
+                f"{short(sorted(conflicts))}"
+            )
+        if data.get("failure") is not None:
+            what = data["failure"].get("failure", "a failure")
+            problems.append(f"{label} probe {instance}: the probe recorded {what}")
+    return problems
 
 
 def clock_problems(probe: dict[str, dict], label: str) -> list[str]:
@@ -975,7 +1144,7 @@ def clock_problems(probe: dict[str, dict], label: str) -> list[str]:
     problems = []
     clocks = estimates = 0
     for instance, events in sorted(instance_events(probe).items()):
-        diffs = [e["wall"] - e["mono"] for e in events if "wall" in e and "mono" in e]
+        diffs = [e["wall"] - e["mono"] for e in events]
         if diffs and max(diffs) - min(diffs) > MAX_STEP_MS:
             problems.append(
                 f"{label} probe {instance}: its records are not on one fixed clock mapping (wall "
@@ -986,11 +1155,11 @@ def clock_problems(probe: dict[str, dict], label: str) -> list[str]:
             if e.get("ev") == "clock":
                 clocks += 1
                 drift = e.get("driftMs")
-                if not is_number(drift) or abs(drift) > MAX_STEP_MS:
+                if not finite(drift) or abs(drift) > MAX_STEP_MS:
                     steps.append(drift)
             elif e.get("ev") == "skew" and e.get("medianMs") is not None:
                 estimates += 1
-                if not is_number(e["medianMs"]) or abs(e["medianMs"]) > MAX_SKEW_MS:
+                if not finite(e["medianMs"]) or abs(e["medianMs"]) > MAX_SKEW_MS:
                     skews.append(e["medianMs"])
         if steps:
             problems.append(
@@ -1009,20 +1178,55 @@ def clock_problems(probe: dict[str, dict], label: str) -> list[str]:
     return problems
 
 
+@dataclass
+class Evidence:
+    """What check_evidence() found in one set of records."""
+
+    malformed: list[str]  # the records' form: nothing is computed from them
+    invalid: list[str]  # batches, terminal records, conflicts: nothing is computed from them
+    clock: list[str]  # the probe's clock and skew: numbers are computed for information only
+    events: list[dict] | None  # the time line, when the records are well formed
+
+    @property
+    def problems(self) -> list[str]:
+        return self.malformed + self.invalid + self.clock
+
+    @property
+    def usable(self) -> bool:
+        return not self.malformed and not self.invalid
+
+
+def check_evidence(run: object, probe: object, label: str) -> Evidence:
+    """The one evidence check, for the decision run and for the preflight (review r2,
+    finding 2): form first, then batches, terminal records, conflicts, clock and skew."""
+    malformed = run_shape(run, label) + record_shape(probe, label)
+    if malformed:
+        return Evidence(malformed, [], [], None)
+    assert isinstance(run, dict) and isinstance(probe, dict)
+    events = probe_events(probe)
+    invalid = (
+        validate_batches(probe, run["runId"], label)
+        + terminal_problems(events, soak_of(run)[2], label)
+        + conflict_problems(events, label)
+        + failure_problems(probe, label)
+    )
+    return Evidence([], invalid, clock_problems(probe, label), events)
+
+
 def laptop_clock_problems(campaign: dict | None) -> list[str]:
     """The laptop's time synchronisation and its skew against Cloudflare's Date header, at the
     campaign's start and end."""
     clock = (campaign or {}).get("clock") or {}
     problems = []
     for point in ("start", "end"):
-        record = clock.get(point)
+        record = clock.get(point) if isinstance(clock, dict) else None
         if not isinstance(record, dict):
             problems.append(f"no laptop clock record at the campaign's {point}")
             continue
         if record.get("synchronized") is not True:
             problems.append(f"the laptop's clock was not synchronised at the campaign's {point}")
         skew = record.get("skewMs")
-        if not is_number(skew) or abs(skew) > MAX_SKEW_MS:
+        if not finite(skew) or abs(skew) > MAX_SKEW_MS:
             problems.append(
                 f"the laptop's skew against Cloudflare at the campaign's {point} is {skew} ms, "
                 "beyond ±2.0 s"
@@ -1030,27 +1234,21 @@ def laptop_clock_problems(campaign: dict | None) -> list[str]:
     return problems
 
 
-def generations(probe: dict[str, dict]) -> list[int]:
-    found = (INSTANCE_GENERATION.match(instance) for instance in probe)
+def generations(probe: object) -> list[int]:
+    found = (INSTANCE_GENERATION.match(str(i)) for i in (probe if isinstance(probe, dict) else {}))
     return [int(m.group(1)) for m in found if m]
 
 
-def preflight_problems(
-    pre_run: dict | None, run: dict, pre_probe: dict[str, dict] | None, run_probe: dict[str, dict]
-) -> list[str]:
+def preflight_identity(pre_run: dict, run: dict, pre_probe: dict, run_probe: object) -> list[str]:
     """The preflight names a preflight run of the same deployment, distinct from the run and
     before it. Same deployment: the same Worker, and ComputerDO's generations (kept in its
     storage, which a new deployment starts afresh) all lower than the run's."""
-    if pre_run is None or pre_probe is None:
-        return ["no preflight records"]
     problems = []
     if pre_run.get("mode") != "preflight":
         problems.append(f"the preflight records are a {pre_run.get('mode')}, not a preflight")
     if pre_run.get("runId") == run.get("runId"):
         problems.append("the preflight records are the run's own")
-    if not (
-        is_number(pre_run.get("t0")) and is_number(run.get("t0")) and pre_run["t0"] < run["t0"]
-    ):
+    if not (finite(run.get("t0")) and pre_run["t0"] < run["t0"]):
         problems.append("the preflight did not start before the run")
     if pre_run.get("worker") is None or pre_run.get("worker") != run.get("worker"):
         problems.append("the preflight names another deployment")
@@ -1058,6 +1256,20 @@ def preflight_problems(
     if not before or not after or max(before) >= min(after):
         problems.append("the preflight's computer generations do not precede the run's")
     return problems
+
+
+def preflight_evidence(inputs: Inputs) -> tuple[list[dict] | None, list[str]]:
+    """The preflight's time line (None when it cannot be used) and every problem with it: the
+    same evidence check as the run's, and its identity."""
+    pre_run, pre_probe = inputs.preflight_run, inputs.preflight_probe
+    if pre_run is None or pre_probe is None:
+        return None, ["no preflight records"]
+    evidence = check_evidence(pre_run, pre_probe, "preflight")
+    if evidence.malformed:
+        return None, evidence.malformed
+    assert isinstance(pre_run, dict) and isinstance(pre_probe, dict)
+    identity = preflight_identity(pre_run, inputs.run, pre_probe, inputs.probe)
+    return evidence.events, identity + evidence.problems
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1092,7 +1304,7 @@ class Report:
     criteria: dict[str, dict[str, Criterion]]
     eligible: dict[str, bool]
     outcome: Outcome
-    would_be: Outcome
+    would_be: Outcome | None  # None when nothing could be computed from the records
     ar17: dict[str, tuple[str, int | None, int | None]]
     blocked: list[dict]
 
@@ -1106,30 +1318,49 @@ def soak_of(run: dict) -> tuple[float, float, float]:
     return start, end, float(run.get("tailEnd", end + TAIL_MS))
 
 
-def resets_from(lifecycle: list[dict]) -> list[tuple[str, float]]:
+def lifecycle_problems(lifecycle: object) -> list[str]:
+    if not isinstance(lifecycle, list) or not all(isinstance(r, dict) for r in lifecycle):
+        return ["the lifecycle records are not readable"]
+    return [
+        f"the reset record for {r.get('event')} has no finite R"
+        for r in lifecycle
+        if r.get("x1") == "reset-requested" and not finite(r.get("R"))
+    ]
+
+
+def resets_from(lifecycle: object) -> list[tuple[str, float]]:
+    """RunDO's recorded resets; records without a finite R are left out (and reported)."""
+    records = lifecycle if isinstance(lifecycle, list) else []
     return sorted(
         (
             (str(r.get("event")), float(r["R"]))
-            for r in lifecycle
-            if r.get("x1") == "reset-requested"
+            for r in records
+            if isinstance(r, dict) and r.get("x1") == "reset-requested" and finite(r.get("R"))
         ),
         key=lambda x: x[1],
     )
 
 
 def windows_from(
-    lifecycle: list[dict], campaign: dict | None
+    lifecycle: object, campaign: dict | None
 ) -> tuple[list[Window], list[str], list[str]]:
     """The forced windows, the setup problems (Amendment 1, item 6) and the deviations from the
     schedule that are reported only."""
     windows = [reset_window(f"reset {name}", r) for name, r in resets_from(lifecycle)]
-    problems: list[str] = []
+    problems: list[str] = lifecycle_problems(lifecycle)
     deviations: list[str] = []
-    deploys = {d.get("target"): d for d in (campaign or {}).get("deploys", [])}
+    listed = (campaign or {}).get("deploys", []) if isinstance(campaign, dict) else []
+    if campaign is not None and not isinstance(listed, list):
+        problems.append("the campaign record's deploys are not readable")
+        listed = []
+    deploys = {d.get("target"): d for d in listed if isinstance(d, dict)}
     for target in ("ui", "transport"):
         d = deploys.get(target)
         if d is None:
             problems.append(f"no record of the {target} deploy")
+            continue
+        if not finite(d.get("start")) or not (d.get("uploaded") is None or finite(d["uploaded"])):
+            problems.append(f"the {target} deploy's record is malformed")
             continue
         if d.get("rollout"):
             problems.append(f"the {target} deploy started a container rollout")
@@ -1158,40 +1389,69 @@ def blocked_checks(events: list[dict]) -> list[dict]:
     return out
 
 
+NO_COMPLETENESS = Completeness(0, 0, 0, {}, [], {})
+
+
+def unusable(
+    run: object, problems: list[str], windows: list[Window], deviations: list[str]
+) -> Report:
+    """The report when the run's records are not valid evidence: the problems, a setup
+    failure, AR-17 unassessable, and no number computed from the records."""
+    meta = run if isinstance(run, dict) else {}
+    start, end, tail = soak_of(meta) if not run_shape(run, "run") else (0.0, 0.0, 0.0)
+    return Report(
+        run_id=str(meta.get("runId")),
+        mode=str(meta.get("mode")),
+        soak_start=start,
+        soak_end=end,
+        tail_end=tail,
+        public_built=bool(meta.get("publicRoutes")),
+        windows=windows,
+        observed_hours=0.0,
+        setup_problems=problems,
+        deviations=deviations,
+        completeness=NO_COMPLETENESS,
+        routes={},
+        criteria={},
+        eligible={},
+        outcome=setup_failure(),
+        would_be=None,
+        ar17={route: ("unassessable: the setup failed", None, None) for route in CANDIDATES},
+        blocked=[],
+    )
+
+
 def analyze(inputs: Inputs) -> Report:
     run = inputs.run
+    evidence = check_evidence(run, inputs.probe, "run")
+    preflight, preflight_problems = preflight_evidence(inputs)
+    windows, problems, deviations = windows_from(inputs.lifecycle, inputs.campaign)
+    if not evidence.usable:
+        # Nothing is computed from records that are not valid evidence (review r2, finding 4).
+        everything = evidence.problems + preflight_problems + problems
+        return unusable(
+            run, everything + laptop_clock_problems(inputs.campaign), windows, deviations
+        )
+    events = evidence.events or []
     soak = soak_of(run)
     soak_start, soak_end, tail_end = soak
     public_built = bool(run.get("publicRoutes"))
     built_routes = set(run.get("routes") or [])
-    events = probe_events(inputs.probe)
     spans = coverage(inputs.probe)
-    preflight = probe_events(inputs.preflight_probe) if inputs.preflight_probe is not None else None
-    windows, problems, deviations = windows_from(inputs.lifecycle, inputs.campaign)
     if run.get("mode") != "run":
         problems.append(f"the records are a {run.get('mode')}, not a run")
-    if inputs.campaign is not None and inputs.campaign.get("runId") not in (None, run.get("runId")):
+    if isinstance(inputs.campaign, dict) and inputs.campaign.get("runId") not in (
+        None,
+        run.get("runId"),
+    ):
         problems.append("the campaign record names another run")
-    planned = [e for e in run.get("events", []) if e.get("kind") == "reset"]
+    planned = [e for e in run.get("events", []) if isinstance(e, dict) and e.get("kind") == "reset"]
     recorded = {name for name, _ in resets_from(inputs.lifecycle)}
     for e in planned:
         if e.get("id") not in recorded:
             deviations.append(f"forced reset {e.get('id')} was not recorded by RunDO")
-    # Amendment 3: the records are checked before the rule; nothing is repaired or inferred.
-    invalid = (
-        validate_batches(inputs.probe, run.get("runId"), "run")
-        + terminal_problems(events, tail_end, "run")
-        + conflict_problems(events)
-    )
-    pre = preflight_problems(inputs.preflight_run, run, inputs.preflight_probe, inputs.probe)
-    if not pre:
-        assert inputs.preflight_run is not None and inputs.preflight_probe is not None
-        pre += validate_batches(
-            inputs.preflight_probe, inputs.preflight_run.get("runId"), "preflight"
-        )
-        pre += terminal_problems(preflight or [], soak_of(inputs.preflight_run)[2], "preflight")
-    problems += invalid + pre + clock_problems(inputs.probe, "run")
-    problems += laptop_clock_problems(inputs.campaign)
+    # Every evidence problem, the run's and the preflight's, is a setup failure (Amendment 3).
+    problems += evidence.clock + preflight_problems + laptop_clock_problems(inputs.campaign)
     complete = completeness(inputs.probe)
     results = {r: route_result(events, r, r in built_routes, soak, windows, spans) for r in ROUTES}
     criteria = {}
@@ -1243,14 +1503,17 @@ class PreflightReport:
 
 
 def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) -> PreflightReport:
-    """Section 5's preflight checks: all six routes, the forced reset, the block list, record
-    completeness and validity (Amendment 3, item 1), and the probe's clock (item 2)."""
-    events = probe_events(probe)
-    problems = validate_batches(probe, run.get("runId"), "preflight")
-    problems += terminal_problems(events, soak_of(run)[2], "preflight")
-    problems += conflict_problems(events) + clock_problems(probe, "preflight")
-    spans = coverage(probe)
+    """Section 5's preflight checks: all six routes, the forced reset, the block list, and the
+    same evidence check as the decision run's (review r2, finding 2). Nothing is computed from
+    records that are not valid evidence."""
+    evidence = check_evidence(run, probe, "preflight")
+    problems = evidence.problems + lifecycle_problems(lifecycle)
+    run_id = str(run.get("runId")) if isinstance(run, dict) else "?"
     resets = resets_from(lifecycle)
+    if not evidence.usable:
+        return PreflightReport(run_id, {}, [], resets, NO_COMPLETENESS, problems)
+    events = evidence.events or []
+    spans = coverage(probe)
     windows = [reset_window(f"reset {name}", r) for name, r in resets]
     routes = {}
     for route in ROUTES:
@@ -1268,7 +1531,7 @@ def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) 
             "outcomeFraction": result.outcome_fraction,
         }
     return PreflightReport(
-        str(run.get("runId")), routes, blocked_checks(events), resets, completeness(probe), problems
+        run_id, routes, blocked_checks(events), resets, completeness(probe), problems
     )
 
 
@@ -1382,7 +1645,9 @@ def render(report: Report) -> str:
         lines.append("SETUP FAILED:")
         lines.extend(f"  {p}" for p in report.setup_problems)
     lines.append(f"OUTCOME (rule {report.outcome.rule}): {report.outcome.text}")
-    if report.setup_problems:
+    if report.would_be is None:
+        lines.append("(no numbers: the run's records are not valid evidence)")
+    elif report.setup_problems:
         lines.append(
             f"(for information only, without the setup failure the rule would give rule "
             f"{report.would_be.rule}: {report.would_be.text})"
@@ -1447,9 +1712,11 @@ def load_dir(directory: Path) -> tuple[dict, list[dict], dict[str, dict]]:
         for p in sorted(inst_dir.glob("batch-*.jsonl")):
             batches[int(p.stem.split("-")[1])] = read_jsonl(p)
         manifest_path = inst_dir / "manifest.json"
+        failure_path = inst_dir / "failure.json"
         probe[inst_dir.name] = {
             "batches": batches,
             "manifest": read_json(manifest_path) if manifest_path.exists() else None,
+            "failure": read_json(failure_path) if failure_path.exists() else None,
         }
     return run, lifecycle, probe
 

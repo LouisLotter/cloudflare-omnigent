@@ -649,22 +649,25 @@ def test_drop_records_instance_identities_on_either_side():
 # Data completeness and setup (Amendment 1, item 6)
 
 
-def test_missing_batch_fails_every_route_and_leaves_its_slots_without_outcome():
+def test_missing_batch_fails_setup_and_nothing_is_computed():
     b = clean()
-    report = run(b, setup_fails=True, probe=b.probe(batches=4, missing=(2,)))
-    for route in ("p2", "p5", "p6"):
-        assert not report.criteria[route]["5 complete data"].passed
-        assert report.routes[route].slots.unaccounted > 0
-    assert report.completeness.missing == {b.instance: [2]}
-    assert report.outcome.rule == 5
+    probe = b.probe(batches=4, missing=(2,))
+    report = run(b, setup_fails=True, probe=probe)
+    assert report.outcome.rule == 5 and report.would_be is None
+    assert any("batches missing: 2" in p for p in report.setup_problems)
+    assert report.routes == {} and report.criteria == {}
+    # On its own, the completeness count still names the batch and its uncovered slots.
+    assert analyze.completeness(probe).missing == {b.instance: [2]}
 
 
 def test_missing_manifest_fails_completeness():
     b = clean()
-    report = run(b, setup_fails=True, probe=b.probe(batches=2, missing=(2,), manifest=False))
-    assert report.completeness.no_manifest == [b.instance]
-    assert report.completeness.missing == {}
-    assert not report.completeness.all_present
+    probe = b.probe(batches=2, missing=(2,), manifest=False)
+    report = run(b, setup_fails=True, probe=probe)
+    assert any(p.endswith(": no manifest") for p in report.setup_problems)
+    complete = analyze.completeness(probe)
+    assert complete.no_manifest == [b.instance] and complete.missing == {}
+    assert not complete.all_present
 
 
 def test_batches_beyond_the_manifest_are_listed():
@@ -675,12 +678,13 @@ def test_batches_beyond_the_manifest_are_listed():
     assert c.unexpected == {next(iter(probe)): [3]} and c.all_present
 
 
-def test_a_batch_without_its_span_covers_nothing():
+def test_a_batch_without_its_span_is_malformed():
     b = clean()
     probe = b.probe(batches=1)
     del probe[b.instance]["batches"][1][0]["cutMono"]
     report = run(probe=probe, setup_fails=True)
-    assert report.routes["p2"].slots.unaccounted == SLOTS
+    assert any("a header without a finite cutMono" in p for p in report.setup_problems)
+    assert report.routes == {}
 
 
 def test_rollout_makes_the_outcome_inconclusive_and_still_reports():

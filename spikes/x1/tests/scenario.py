@@ -48,6 +48,9 @@ class DropSpec:
     misses_after: int = 0
     reconnect: bool = True
     failed: tuple[float, ...] = ()
+    # The connection's terminal records: "close", "error", "silence", or "silence+close" (as the
+    # probe writes a silence close).
+    terminal: str = "close"
 
 
 @dataclass
@@ -146,9 +149,17 @@ class Builder:
             if drop is None:
                 self.add("close", seg_close, route=route, conn=conn, by="end", code=1000)
             else:
-                self.add("close", seg_close, route=route, conn=conn, by=drop.by, code=drop.code)
+                self.end(route, conn, seg_close, drop)
                 for offset in drop.failed:
                     self.failed_open(route, drop.at + offset)
+
+    def end(self, route: str, conn: int, t: float, drop: DropSpec) -> None:
+        if drop.terminal in ("silence", "silence+close"):
+            self.add("silence", t, route=route, conn=conn, quietMs=3000.0, outstanding=3)
+        if drop.terminal == "error":
+            self.add("error", t, route=route, conn=conn, error="ConnectionResetError")
+        if drop.terminal in ("close", "silence+close"):
+            self.add("close", t, route=route, conn=conn, by=drop.by, code=drop.code)
 
     def never(self, route: str, status: int = 502, start: float = FIRST_OPEN) -> None:
         for n in range(3):
@@ -199,7 +210,13 @@ class Builder:
             chunks[n + 1] = [header, *lines]
         for n in missing:
             chunks.pop(n, None)
-        record = {"batches": batches, "instance": self.instance, "events": len(ordered)}
+        record = {
+            "batches": batches,
+            "instance": self.instance,
+            "runId": self.run_id,
+            "events": len(ordered),
+            "conflicts": [],
+        }
         return {self.instance: {"batches": chunks, "manifest": record if manifest else None}}
 
 
