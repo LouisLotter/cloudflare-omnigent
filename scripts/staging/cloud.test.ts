@@ -9,10 +9,8 @@ import {
   childEnv,
   childStdio,
   cliCloud,
-  dockerExecutable,
   fileStore,
   imagesOf,
-  pushedImageReferences,
   type RunOptions,
   readWranglerConfig,
   workerLookup,
@@ -94,121 +92,6 @@ describe("R2 bucket lookup and image listings", () => {
   });
 });
 
-describe("DC-36: the local Docker forgets what it pushed", () => {
-  const ACCOUNT = "a".repeat(32);
-  const OTHER = "b".repeat(32);
-  const REGISTRY = `registry.cloudflare.com/${ACCOUNT}`;
-  const line = (repository: string, tag: string, digest: string) =>
-    JSON.stringify({ Repository: repository, Tag: tag, Digest: digest });
-
-  it("picks the tags and digests of exactly the deployment's repositories in its account", () => {
-    const listing = [
-      line(`${REGISTRY}/cfo-stg-a-host`, "wrangler-1", "sha256:aaa"),
-      line(`${REGISTRY}/cfo-stg-a-host`, "<none>", "sha256:bbb"),
-      line(`${REGISTRY}/cfo-stg-a-host-big`, "1", "sha256:ccc"),
-      line(`${REGISTRY}/nested/cfo-stg-a-host`, "1", "sha256:ddd"),
-      line(`registry.cloudflare.com/${OTHER}/cfo-stg-a-host`, "1", "sha256:fff"),
-      line("cfo-stg-a-host", "latest", "<none>"),
-      line("docker.io/library/node", "22", "sha256:eee"),
-      "",
-    ].join("\n");
-    expect(pushedImageReferences(listing, ACCOUNT, ["cfo-stg-a-host"])).toEqual([
-      `${REGISTRY}/cfo-stg-a-host:wrangler-1`,
-      `${REGISTRY}/cfo-stg-a-host@sha256:aaa`,
-      `${REGISTRY}/cfo-stg-a-host@sha256:bbb`,
-    ]);
-    expect(pushedImageReferences(listing, ACCOUNT, [])).toEqual([]);
-    expect(() => pushedImageReferences('{"Tag":"1"}', ACCOUNT, ["cfo-stg-a-host"])).toThrow(
-      "unexpected entry",
-    );
-    expect(() => pushedImageReferences("", "acct", ["cfo-stg-a-host"])).toThrow("account ID");
-  });
-
-  it("cleans the image store Wrangler uses: WRANGLER_DOCKER_BIN, else docker", () => {
-    expect(dockerExecutable({})).toBe("docker");
-    expect(dockerExecutable({ WRANGLER_DOCKER_BIN: "" })).toBe("docker");
-    expect(dockerExecutable({ WRANGLER_DOCKER_BIN: "/opt/podman/bin/docker" })).toBe(
-      "/opt/podman/bin/docker",
-    );
-    const commands: string[] = [];
-    const saved = process.env.WRANGLER_DOCKER_BIN;
-    process.env.WRANGLER_DOCKER_BIN = "/opt/podman/bin/docker";
-    try {
-      cliCloud(config, WORKER, (command) => {
-        commands.push(command);
-        return ok("");
-      }).forgetPushedImages(["cfo-stg-a-host"]);
-    } finally {
-      if (saved === undefined) delete process.env.WRANGLER_DOCKER_BIN;
-      else process.env.WRANGLER_DOCKER_BIN = saved;
-    }
-    expect(commands).toEqual(["/opt/podman/bin/docker", "/opt/podman/bin/docker"]);
-  });
-
-  const config = { accountId: ACCOUNT, zone: "example.com", ownerEmail: "o@example.com" };
-  /** A local Docker holding `held`; `rm` answers from `onRemove`, which may keep the image. */
-  function docker(held: Set<string>, onRemove: (reference: string) => CommandResult) {
-    const calls: { command: string; args: readonly string[]; options: RunOptions }[] = [];
-    const cloud = cliCloud(config, WORKER, (command, args, options) => {
-      calls.push({ command, args, options });
-      if (args[1] === "ls") {
-        return ok(
-          [...held]
-            .map((reference) => {
-              const at = reference.indexOf("@");
-              return at >= 0
-                ? line(reference.slice(0, at), "<none>", reference.slice(at + 1))
-                : line(reference.slice(0, reference.lastIndexOf(":")), "7", "<none>");
-            })
-            .join("\n"),
-        );
-      }
-      return onRemove(args[2] as string);
-    });
-    return { cloud, calls };
-  }
-
-  it("removes each reference, quietly, and checks that none is left", () => {
-    const foreign = `registry.cloudflare.com/${OTHER}/cfo-stg-a-host:7`;
-    const held = new Set([
-      `${REGISTRY}/cfo-stg-a-host:7`,
-      `${REGISTRY}/cfo-stg-a-host@sha256:aaa`,
-      `${REGISTRY}/cfo-stg-b-host:7`,
-      foreign,
-    ]);
-    const { cloud, calls } = docker(held, (reference) => {
-      held.delete(reference);
-      // Removing the tag can take the digest reference with it.
-      if (reference.endsWith(":7")) held.delete(`${REGISTRY}/cfo-stg-a-host@sha256:aaa`);
-      return reference.includes("@") ? failed("Error: No such image: x") : ok("");
-    });
-    cloud.forgetPushedImages(["cfo-stg-a-host"]);
-    expect([...held]).toEqual([`${REGISTRY}/cfo-stg-b-host:7`, foreign]);
-    expect(calls.every((c) => c.command === "docker" && c.options.inherit === false)).toBe(true);
-    expect(calls.map((c) => c.args.slice(0, 2).join(" "))).toEqual([
-      "image ls",
-      "image rm",
-      "image rm",
-      "image ls",
-    ]);
-  });
-
-  it("stops the deploy when Docker refuses, or keeps an image it reported removed", () => {
-    const busy = new Set([`${REGISTRY}/cfo-stg-a-host:7`]);
-    expect(() =>
-      docker(busy, () =>
-        failed("Error: image is being used by a running container"),
-      ).cloud.forgetPushedImages(["cfo-stg-a-host"]),
-    ).toThrow("could not forget");
-    const sticky = new Set([`${REGISTRY}/cfo-stg-a-host:7`]);
-    expect(() => docker(sticky, () => ok("")).cloud.forgetPushedImages(["cfo-stg-a-host"])).toThrow(
-      "still holds",
-    );
-    const broken = cliCloud(config, WORKER, () => failed("Cannot connect to the Docker daemon"));
-    expect(() => broken.forgetPushedImages(["cfo-stg-a-host"])).toThrow("docker image ls failed");
-  });
-});
-
 describe("CLI wiring", () => {
   const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
   const calls: { command: string; args: readonly string[]; options: RunOptions }[] = [];
@@ -263,7 +146,9 @@ describe("CLI wiring", () => {
     const cli = wranglerCli(WORKER);
     expect(cli).toMatch(/wrangler-dist\/cli\.js$/);
     expect(existsSync(cli)).toBe(true);
-    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc");
+    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc", 1792400000);
+    // The build epoch reaches Wrangler, and through it `docker build`, as SOURCE_DATE_EPOCH
+    // (DC-36).
     expect(calls.at(-1)).toEqual({
       command: process.execPath,
       args: [
@@ -277,7 +162,7 @@ describe("CLI wiring", () => {
         "--domain",
         "cfo-stg-a.example.com",
       ],
-      options: { inherit: true, cwd: WORKER },
+      options: { inherit: true, cwd: WORKER, env: { SOURCE_DATE_EPOCH: "1792400000" } },
     });
   });
 
@@ -373,7 +258,7 @@ describe("CLI wiring", () => {
     expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
     const broken = cliCloud(config, WORKER, () => failed("│ [10000] Authentication error"));
     expect(() => broken.accountIds()).toThrow("Authentication error");
-    expect(() => broken.deployWorker("cfo-stg-a", "h", "/c")).toThrow("wrangler deploy exited");
+    expect(() => broken.deployWorker("cfo-stg-a", "h", "/c", 1)).toThrow("wrangler deploy exited");
   });
 
   it("pins the account and drops CLOUDFLARE_ENV for every child process", () => {

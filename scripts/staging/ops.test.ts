@@ -85,15 +85,21 @@ class FakeCloud implements Cloud {
   bucketDeleteKeeps = false;
   imageDeleteKeeps = false;
   containerDeleteKeeps = false;
-  /** Repositories whose pushed digest the local Docker still remembers. */
-  readonly remembered = new Set<string>();
+  /** Image digests the registry answers for, also after their image was deleted (DC-36). */
+  readonly answered = new Set<string>();
+  /** Each repository's current image digest, and the repositories whose image changed. */
+  readonly current = new Map<string, string>();
+  readonly rollouts: string[] = [];
+  /** The build epoch of every upload. */
+  readonly epochs: number[] = [];
+  /** The version of the image sources; a change gives new digests. */
+  sources = 1;
   /** An Access update that reports success but changes nothing. */
   accessUpdateKeeps = false;
   /** An Access update that sets SameSite but leaves a policy open to everyone. */
   accessUpdateWidens = false;
   /** Listings that no longer show an application, as if it were deleted meanwhile. */
   hideAccessApps = false;
-  forgetFails = false;
   private nextAppId = 1;
   private nextTag = 1;
   private nextId = 1;
@@ -182,9 +188,10 @@ class FakeCloud implements Cloud {
     this.tick();
     return answer;
   }
-  deployWorker(name: string, hostname: string, configPath: string): void {
+  deployWorker(name: string, hostname: string, configPath: string, buildEpoch: number): void {
     this.tick();
     this.calls.push(`worker.deploy ${name} ${configPath}`);
+    this.epochs.push(buildEpoch);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
     // Wrangler binds the declared buckets, creating any that is missing, and creates the
@@ -202,14 +209,21 @@ class FakeCloud implements Cloud {
       }
     }
     for (const repository of declared.repositories) {
-      // Wrangler skips the push of an image whose digest Docker remembers pushing; if the
-      // registry no longer holds it, creating the application fails (DC-36).
+      // The same sources built with the same epoch give the same digest. Wrangler skips pushing
+      // a digest the registry answers for, which it still does after the image was deleted;
+      // creating the application then fails (DC-36).
+      const digest = `${repository}@${this.sources}@${buildEpoch}`;
       const held = [...this.images].some((i) => i.startsWith(`${repository}:`));
-      if (this.remembered.has(repository) && !held) {
+      if (!this.answered.has(digest)) {
+        this.images.add(`${repository}:wrangler-${this.nextTag++}`);
+        this.answered.add(digest);
+      } else if (!held) {
         throw new Error("wrangler deploy exited with 1: IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE");
       }
-      this.images.add(`${repository}:wrangler-${this.nextTag++}`);
-      this.remembered.add(repository);
+      if (this.current.has(repository) && this.current.get(repository) !== digest) {
+        this.rollouts.push(repository);
+      }
+      this.current.set(repository, digest);
     }
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
@@ -265,12 +279,6 @@ class FakeCloud implements Cloud {
     this.tick();
     this.calls.push(`image.delete ${reference}`);
     if (!this.imageDeleteKeeps) this.images.delete(reference);
-  }
-  forgetPushedImages(repositories: readonly string[]): void {
-    this.tick();
-    this.calls.push(`docker.forget ${repositories.join(" ")}`);
-    if (this.forgetFails) throw new Error("the local Docker still holds an image");
-    for (const repository of repositories) this.remembered.delete(repository);
   }
   /** Every bucket, container application and image is recorded for some deployment. */
   unrecorded(deployments: readonly Deployment[]): string[] {
@@ -874,7 +882,8 @@ describe("containers and buckets", () => {
       },
     };
     deploy(ctx, request("a", 7, path));
-    deploy(ctx, request("a", 7, path)); // every deploy pushes a new tag
+    cloud.sources += 1; // changed sources: the next deploy pushes a new tag
+    deploy(ctx, request("a", 7, path));
     expect(record()?.repositories).toEqual(["cfo-stg-a-s1computer-computer"]);
     expect(
       [...cloud.images].filter((i) => i.startsWith("cfo-stg-a-s1computer-computer:")),
@@ -1073,45 +1082,44 @@ describe("plan change 18: SameSite on Access (D9), and a push after teardown (DC
     expect(deployedWorker()).toBe(false);
   });
 
+  it("builds with the record's creation time as the image timestamp", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    const createdAt = store.load()[0]?.createdAt ?? "";
+    expect(cloud.epochs).toEqual([Math.floor(Date.parse(createdAt) / 1000)]);
+  });
+
+  it("rebuilds identical images on a redeploy, so no container rollout starts", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    elapse(HOUR);
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.epochs[0]).toBe(cloud.epochs[1]);
+    expect(cloud.images.size).toBe(1);
+    expect(cloud.rollouts).toEqual([]);
+    expect(cloud.violations).toEqual([]);
+  });
+
   it("pushes the images again when a deployment is redeployed after a teardown", () => {
     const path = withResources("a");
     deploy(ctx, request("a", 7, path));
     teardown(ctx, "cfo-stg-a");
     expect(cloud.images.size).toBe(0);
-    // The local Docker still remembers the earlier push, as it does on the laptop.
-    expect(cloud.remembered.has("cfo-stg-a-host")).toBe(true);
-    cloud.calls.length = 0;
+    // The registry still answers for the deleted image's digest, as on Cloudflare.
+    expect(cloud.answered.size).toBe(1);
+    elapse(HOUR);
     deploy(ctx, request("a", 7, path));
     expect(cloud.workers.has("cfo-stg-a")).toBe(true);
-    const forget = cloud.calls.indexOf("docker.forget cfo-stg-a-host");
-    expect(forget).toBeGreaterThan(-1);
-    expect(forget).toBeLessThan(cloud.calls.findIndex((c) => c.startsWith("worker.deploy")));
+    expect(cloud.images.size).toBe(1);
+    expect(cloud.epochs[1]).toBeGreaterThan(cloud.epochs[0] ?? Number.POSITIVE_INFINITY);
     expect(cloud.violations).toEqual([]);
   });
 
-  it("stops before the upload when the local Docker cannot forget a pushed image", () => {
-    cloud.forgetFails = true;
-    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("still holds");
-    expect(deployedWorker()).toBe(false);
-    expect(store.load()[0]?.uploadStartedAt).toBeUndefined();
-    expect(cloud.violations).toEqual([]);
-    // Once Docker cooperates, the same deploy goes through.
-    cloud.forgetFails = false;
-    deploy(ctx, request("a", 7, withResources("a")));
-    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
-    expect(cloud.violations).toEqual([]);
-  });
-
-  it("forgets only the deployment's own repositories, and nothing without containers", () => {
-    deploy(ctx, request("a", 7, withResources("a")));
-    deploy(ctx, request("a-x", 7, withResources("a-x")));
-    expect(cloud.calls.filter((c) => c.startsWith("docker.forget"))).toEqual([
-      "docker.forget cfo-stg-a-host",
-      "docker.forget cfo-stg-a-x-host",
-    ]);
-    cloud.calls.length = 0;
-    deploy(ctx, request("b"));
-    expect(cloud.calls.some((c) => c.startsWith("docker.forget"))).toBe(false);
+  it("relies on the new record being created in a later second than the old one", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    teardown(ctx, "cfo-stg-a");
+    // No time passes: the new record has the old creation second, so the digest is the old one.
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE");
   });
 });
 

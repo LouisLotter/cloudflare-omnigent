@@ -23,8 +23,9 @@
 //     after the Worker and before Access.
 //   - Access applications set SameSite=lax on their cookie (D9). One written by an older tool is
 //     rewritten, and every application is read back and checked before the Worker upload.
-//   - Before every upload the local Docker forgets what it pushed to the deployment's own
-//     repositories, so a redeploy after a teardown pushes its images again (DC-36).
+//   - Images are built with the record's creation time as their timestamp. A redeploy rebuilds
+//     identical images and starts no container rollout; after a teardown, the new record gives
+//     new digests, so Wrangler pushes the images again (DC-36).
 
 import {
   ACCESS_SAME_SITE,
@@ -58,7 +59,12 @@ export interface Cloud {
   deleteAccessApp(id: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   workerExists(name: string): boolean;
-  deployWorker(name: string, hostname: string, configPath: string): void;
+  /**
+   * Uploads the Worker and builds and pushes its container images, built with `buildEpoch`
+   * (Unix seconds) as their timestamp (BuildKit's SOURCE_DATE_EPOCH). The same sources and
+   * epoch give the same digests; another epoch gives new ones.
+   */
+  deployWorker(name: string, hostname: string, configPath: string, buildEpoch: number): void;
   deleteWorker(name: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
@@ -71,12 +77,6 @@ export interface Cloud {
   /** Image references (`repository:tag`) in this repository of the managed registry. */
   containerImages(repository: string): string[];
   deleteContainerImage(reference: string): void;
-  /**
-   * Drops the local Docker's references to images it pushed to these repositories. Wrangler
-   * skips a push when the built image carries a digest it pushed before, and the registry keeps
-   * answering for that digest after the image is deleted (DC-36).
-   */
-  forgetPushedImages(repositories: readonly string[]): void;
 }
 
 export interface Store {
@@ -249,13 +249,18 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       }
     }
 
-    const repositories = repositoriesOf(record);
-    if (repositories.length > 0) ctx.cloud.forgetPushedImages(repositories);
+    // Wrangler skips pushing an image whose digest the registry answers for, and the registry
+    // keeps answering for a digest after the image is deleted. An identical rebuild after a
+    // teardown would then never be pushed, and creating its application fails (DC-36). Images
+    // are therefore built with the record's creation time as their timestamp: every redeploy of
+    // a live deployment rebuilds identical images and starts no container rollout, and a
+    // teardown removes the record, so the next deployment's images get new digests.
+    const buildEpoch = Math.floor(Date.parse(record.createdAt) / 1000);
 
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
     // still appear, and the next command marks the upload interrupted.
     record = put(ctx, { ...record, uploadStartedAt: ctx.now().toISOString() });
-    ctx.cloud.deployWorker(name, hostname, request.configPath);
+    ctx.cloud.deployWorker(name, hostname, request.configPath, buildEpoch);
     if (!ctx.cloud.workerExists(name)) {
       throw new Error(
         `${name}: Wrangler reported success, but the staging account has no such Worker`,

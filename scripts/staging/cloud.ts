@@ -34,6 +34,8 @@ export interface RunOptions {
   /** Show the command's output to the user instead of capturing it. */
   readonly inherit: boolean;
   readonly cwd?: string;
+  /** Added to the child's environment. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export type Runner = (
@@ -65,7 +67,7 @@ function spawnRunner(accountId: string): Runner {
   return (command, args, options) => {
     const child = spawnSync(command, args, {
       encoding: "utf8",
-      env: childEnv(accountId),
+      env: { ...childEnv(accountId), ...options.env },
       stdio: childStdio(options.inherit),
       maxBuffer: 64 * 1024 * 1024,
       ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -144,47 +146,6 @@ export function imagesOf(listing: unknown, repository: string): string[] {
 }
 
 /**
- * The local Docker's references to images it pushed to exactly these repositories of the staging
- * account's namespace in the managed registry, from `docker image ls --digests --format
- * '{{json .}}'`: each `<repo>:<tag>` and each `<repo>@<digest>`, where `<repo>` is
- * `registry.cloudflare.com/<account>/<repository>`. Other accounts' images are never matched.
- */
-export function pushedImageReferences(
-  listing: string,
-  accountId: string,
-  repositories: readonly string[],
-): string[] {
-  if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("invalid staging account ID");
-  const namespace = `registry.cloudflare.com/${accountId}/`;
-  const references = new Set<string>();
-  for (const line of listing.split("\n")) {
-    if (line.trim() === "") continue;
-    const image = JSON.parse(line) as { Repository?: unknown; Tag?: unknown; Digest?: unknown };
-    if (typeof image.Repository !== "string") {
-      throw new Error("unexpected entry in the local image listing");
-    }
-    if (!image.Repository.startsWith(namespace)) continue;
-    const repository = image.Repository.slice(namespace.length);
-    if (!repositories.includes(repository)) continue;
-    if (typeof image.Tag === "string" && image.Tag !== "<none>") {
-      references.add(`${image.Repository}:${image.Tag}`);
-    }
-    if (typeof image.Digest === "string" && image.Digest !== "<none>") {
-      references.add(`${image.Repository}@${image.Digest}`);
-    }
-  }
-  return [...references];
-}
-
-/**
- * The Docker executable Wrangler builds and pushes with: `WRANGLER_DOCKER_BIN`, else `docker`
- * (Wrangler 4.149.0, `getDockerPath`). The staging tool cleans the same image store.
- */
-export function dockerExecutable(env: NodeJS.ProcessEnv = process.env): string {
-  return env.WRANGLER_DOCKER_BIN || "docker";
-}
-
-/**
  * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
  * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
  */
@@ -202,9 +163,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${firstLine(result.stderr)}`);
     return resultOf(result.stdout);
   };
-  const wrangler = (args: string[], cwd: string): void => {
+  const wrangler = (args: string[], cwd: string, env: Record<string, string> = {}): void => {
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
-    const result = run(process.execPath, cli, { inherit: true, cwd });
+    const result = run(process.execPath, cli, { inherit: true, cwd, env });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
   return {
@@ -241,8 +202,14 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     workerExists: (name) =>
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
     // validateDeployConfig has checked this configuration's account, routes and resources.
-    deployWorker: (name, hostname, configPath) =>
-      wrangler(["deploy", "--config", configPath, "--name", name, "--domain", hostname], workerDir),
+    // Wrangler runs `docker build` with its own environment, and BuildKit takes the image
+    // timestamp from SOURCE_DATE_EPOCH.
+    deployWorker: (name, hostname, configPath, buildEpoch) =>
+      wrangler(
+        ["deploy", "--config", configPath, "--name", name, "--domain", hostname],
+        workerDir,
+        { SOURCE_DATE_EPOCH: String(buildEpoch) },
+      ),
     // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
     // --config it reads whatever configuration its working directory holds. A generated
     // configuration in an empty directory pins the staging account.
@@ -297,27 +264,6 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     containerImages: (repository) => imagesOf(cf(["containers", "images", "list"]), repository),
     deleteContainerImage: (reference) => {
       cf(["containers", "images", "delete", reference, "--force"]);
-    },
-    // Local Docker only. A reference already gone counts as forgotten; one still listed
-    // afterwards stops the deploy before its upload.
-    forgetPushedImages: (repositories) => {
-      const executable = dockerExecutable();
-      const docker = (args: string[]) => run(executable, args, { inherit: false });
-      const remembered = () => {
-        const listed = docker(["image", "ls", "--digests", "--format", "{{json .}}"]);
-        if (listed.status !== 0) {
-          throw new Error(`docker image ls failed: ${firstLine(listed.stderr)}`);
-        }
-        return pushedImageReferences(listed.stdout, config.accountId, repositories);
-      };
-      for (const reference of remembered()) {
-        const removed = docker(["image", "rm", reference]);
-        if (removed.status !== 0 && !removed.stderr.includes("No such image")) {
-          throw new Error(`could not forget ${reference}: ${firstLine(removed.stderr)}`);
-        }
-      }
-      const left = remembered();
-      if (left.length > 0) throw new Error(`the local Docker still holds ${left.join(", ")}`);
     },
   };
 }
