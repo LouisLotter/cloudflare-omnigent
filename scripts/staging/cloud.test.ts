@@ -1,4 +1,5 @@
 import {
+  closeSync,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -26,6 +27,7 @@ import {
   fileStore,
   imagesOf,
   ingressOf,
+  openNameless,
   type RunOptions,
   readStagingManifest,
   readWranglerConfig,
@@ -383,6 +385,19 @@ describe("secrets for an upload", () => {
       ]);
     } finally {
       release();
+    }
+  });
+
+  // Review r2, finding 4: no named file ever holds a secret.
+  it("are written only into a file that has no name left, and is empty until then", () => {
+    const base = mkdtempSync(join(scratch, "nameless-"));
+    const fd = openNameless(base);
+    try {
+      const stat = fstatSync(fd);
+      expect([stat.size, stat.nlink, stat.mode & 0o777]).toEqual([0, 0, 0o600]);
+      expect(readdirSync(base)).toEqual([]);
+    } finally {
+      closeSync(fd);
     }
   });
 

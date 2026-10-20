@@ -14,6 +14,7 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -298,36 +299,42 @@ export function secretsBase(): string {
 const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";
 
 /**
- * Runs `use` with the secrets as JSON behind an open, read-only descriptor of a file that no
- * longer has a name. The file is written in a new directory only this user can enter, opened,
- * and unlinked with its directory at once, before `use` runs; its contents live only as long as
- * a descriptor does, so no file outlasts the processes that hold one, even after SIGKILL. The
+ * Runs `use` with the secrets as JSON behind an open descriptor of a file that no longer has a
+ * name. The file is created empty, mode 0600, in a new directory only this user can enter, and
+ * opened; the file and its directory are unlinked at once, and only then are the secrets
+ * written, through the descriptor. So at no moment does a named file hold a secret, and the
+ * contents live only as long as a descriptor does, even after SIGKILL. The write goes to
+ * offset 0 without moving the descriptor's own offset (pwrite), so it reads from the start. The
  * descriptor is closed afterwards. The values never reach argv or a log.
  */
 export function withSecretsDescriptor<T>(
   secrets: Readonly<Record<string, string>>,
   use: (fd: number) => T,
 ): T {
-  const dir = mkdtempSync(join(secretsBase(), SECRETS_DIR_PREFIX));
-  let fd: number;
+  const fd = openNameless();
   try {
-    const file = join(dir, "secrets.json");
-    writeFileSync(file, JSON.stringify(secrets), { mode: 0o600, flag: "wx" });
-    fd = openSync(file, "r");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-  try {
+    writeSync(fd, JSON.stringify(secrets), 0);
     return use(fd);
   } finally {
     closeSync(fd);
   }
 }
 
+/** An empty file, mode 0600, opened for reading and writing, whose name and directory are gone. */
+export function openNameless(base: string = secretsBase()): number {
+  const dir = mkdtempSync(join(base, SECRETS_DIR_PREFIX));
+  try {
+    return openSync(join(dir, "secrets.json"), "wx+", 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
- * Removes secrets directories that a run killed in the instant between writing and unlinking
- * its file left behind: this user's, older than `minAgeMs`, so that a run in progress in another
- * worktree is never disturbed. Called when the tool starts. Returns how many it removed.
+ * Removes secrets directories that a run killed in the instant between creating and unlinking
+ * its (still empty) file left behind: this user's, older than `minAgeMs`, so that a run in
+ * progress in another worktree is never disturbed. Called when the tool starts. Returns how many
+ * it removed.
  */
 export function removeStaleSecretDirs(
   base: string = secretsBase(),
@@ -469,7 +476,8 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     // --secrets-file, so no second version is made; Wrangler prints their names only. The file
     // is the child's descriptor 3 (Linux's /dev/fd), whose name is gone before Wrangler starts;
     // Wrangler 4.149.0 reads the path with readFileSync and parses JSON first, whatever the
-    // name. Children Wrangler starts inherit that descriptor too, as they do the locks.
+    // name. Node marks a descriptor it inherits close-on-exec, and Wrangler's `docker` spawn
+    // passes only 0 to 2, so no process Wrangler starts receives it.
     deployWorker: (name, hostname, configPath, buildEpoch, secrets) => {
       const args = ["deploy", "--config", configPath, "--name", name, "--domain", hostname];
       const env = { SOURCE_DATE_EPOCH: String(buildEpoch) };
