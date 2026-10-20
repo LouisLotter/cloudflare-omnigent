@@ -16,8 +16,6 @@ dev = [
 ]
 
 [tool.uv]
-# Seven-day dependency cooldown, the same as upstream Omnigent.
-exclude-newer = "7 days"
 package = false
 
 [tool.ruff]

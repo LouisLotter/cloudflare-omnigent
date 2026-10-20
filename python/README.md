@@ -12,5 +12,3 @@ The Python side of the platform: the distribution `cloudflare-omnigent`, managed
 uv run --directory python pytest
 uv run --directory python ruff check
 ```
-
-Dependencies observe the same seven-day release cooldown as the TypeScript workspace (`exclude-newer` in `pyproject.toml`).

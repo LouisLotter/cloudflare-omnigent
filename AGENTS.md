@@ -28,7 +28,7 @@ They stay there. If implementation shows the design is wrong, change the design 
 ## Working on a package
 
 1. **Take your package from the lead,** who keeps the tracker and the traceability matrix in the project notes and updates them from your reports.
-2. **Use your own worktree and branch,** named `wp/<id>-<slug>`, for example `git worktree add ../cfo-wp-3.1 -b wp/3.1-workspace-core <integration branch>`. The integration branch for M0 is `m0/foundations`. Claude Code agent worktrees under `.claude/worktrees/` are fine; they are gitignored.
+2. **Use your own worktree and branch,** named `wp/<id>-<slug>`, for example `git worktree add ../cfo-wp-3.1 -b wp/3.1-workspace-core main`. Branch from `main` unless the lead names a milestone integration branch. Claude Code agent worktrees under `.claude/worktrees/` are fine; they are gitignored.
 3. **Stay inside your owned paths,** as listed in the plan's work-package tables and the code-structure plan. Change shared files only through a pull request to the lead. If another package's interface blocks you, ask the lead for a contract change; never edit that package's paths.
 4. **Contract first.** Build against the milestone's contract package and its fakes, never against another package's unfinished code. Parse every inbound payload with a `contracts` schema.
 5. **Meet the definition of done** below.
@@ -38,7 +38,7 @@ They stay there. If implementation shows the design is wrong, change the design 
 
 1. Code follows the conventions: strict TypeScript, typed contracts, operation IDs, persist-before-effect, error codes rather than error classes across RPC.
 2. Tests: unit and property tests for pure modules (fast-check, hypothesis); Workers-runtime tests for every DO method, evicting after each persisted transition; contract tests for every fixture the package uses; integration or end-to-end tests across process and network boundaries.
-3. At least 90% line and branch coverage for pure modules; mutation score of at least 75% for state machines and the schedule cache. These supplement the failure tests, never replace them.
+3. At least 90% line and branch coverage for pure modules; mutation score of at least 75% for state machines. These supplement the failure tests, never replace them.
 4. Every failure row the package touches has a test, not only the happy path.
 5. No secrets or login material in logs, fixtures or snapshots; the canary scan passes.
 6. Independent review done, findings fixed or answered, report saved in the project notes.
@@ -82,9 +82,10 @@ They stay there. If implementation shows the design is wrong, change the design 
 
 - **Omnigent changes do not belong here.** Make them as separate branches in the fork `LouisLotter/omnigent` (WP3.7–3.9, WP5.1 and WP5.2). This repository uses Omnigent only through its interfaces, such as the sandbox launcher and `create_app`, and never patches its internals at run time.
 - **Prefer a fork feature to a workaround.** When platform code would only compensate for something Omnigent lacks, propose an upstream-shaped feature in the fork instead. Judge the options by the total behaviour maintained across both repositories (owner decision D12).
+- **Upstream contribution is a goal.** Design each Omnigent change as a general, provider-neutral feature that other Omnigent users would want, and state the case for upstream in its pull request. Needing an Omnigent change is never in itself a reason against an option.
 - **Nothing goes upstream early.** Do not open issues or pull requests on `omnigent-ai/omnigent` unless the maintainer asks.
 - **Record every upstream bug you find.** When a problem turns out to be in a dependency rather than in our code, add it to the upstream-candidates log in the project notes, `../omnigent-cloudflare-context/project/upstream-candidates.md`. Dependencies include Omnigent, workerd, Wrangler, Cloudflare Containers and Access, the `cf` CLI, Claude Code, the Codex CLI, ttyd and Litestream. Record the component and version, what happens and what should happen, the evidence (result files and commits), whether we reproduced it, our workaround, and whether it is already known upstream. Do this even when we work around the problem. Unknown upstream bugs are valuable to the maintainer. Never file them yourself: the maintainer decides what goes upstream and when.
-- **Pin exactly.** Use exact versions for Wrangler, the `@cloudflare/*` packages, images, Litestream and the CLIs, and keep the seven-day release cooldown. An emergency security patch may skip the cooldown after review.
+- **Pin exactly.** Use exact versions for Wrangler, the `@cloudflare/*` packages, images, Litestream, the CLIs and the Omnigent fork build.
 - **Beta APIs stay behind adapters.** Only `container-port.ts` modules touch `ctx.container` or Sandbox SDK helpers. Pure modules import nothing from `cloudflare:workers`.
 
 ## Commands
