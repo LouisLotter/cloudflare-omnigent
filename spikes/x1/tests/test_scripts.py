@@ -391,7 +391,67 @@ def test_teardown_check_all_gone_and_something_left():
     assert "no live Tunnel cfo-stg-x1-…" in failed
     assert "no staging registry record for cfo-stg-x1-ui" in failed
     assert any(f.startswith("https://") for f in failed)
-    assert teardown_check.names("x") == []
+    assert teardown_check.names("x") is None
+
+
+def _gone(args):
+    if args[:2] == ["workers", "get"]:
+        return 1, None, "[10007] 404 Not Found"
+    if args[:3] == ["r2", "buckets", "get"]:
+        return 1, None, "[10006] 404 Not Found"
+    return 0, [], ""
+
+
+def _failed(run):
+    results = teardown_check.checks(run, "example.test", [], lambda url: "URLError")
+    return [what for what, ok in results if not ok]
+
+
+def test_teardown_check_finds_a_nonce_suffixed_token():
+    # Review AIR2-002: the token is named `<deployment>-svc--<nonce>`; an unrelated token is not.
+    def token_left(args):
+        if args[:4] == ["zero-trust", "access", "service-tokens", "list"]:
+            return 0, [{"name": "other"}, {"name": "cfo-stg-x1-transport-svc--0a1b2c3d"}], ""
+        return _gone(args)
+
+    assert _failed(token_left) == ["no service token cfo-stg-x1-transport-svc…"]
+
+    def unrelated(args):
+        if args[:4] == ["zero-trust", "access", "service-tokens", "list"]:
+            return 0, [{"name": "cfo-stg-other-svc--0a1b2c3d"}], ""
+        return _gone(args)
+
+    assert _failed(unrelated) == []
+
+
+def test_teardown_check_never_takes_an_unknown_answer_for_gone():
+    # Review AIR2-002: a wrapped, malformed or failed listing is unknown, not empty.
+    for answer in ({"items": []}, "text", None, [1, 2], [{"name": "x"}, "y"]):
+
+        def odd(args, answer=answer):
+            if args[:3] == ["workers-vpc", "services", "list"]:
+                return 0, answer, ""
+            return _gone(args)
+
+        assert _failed(odd) == ["no VPC service cfo-stg-x1-…"]
+
+    def images_odd(args):
+        return (0, None, "") if args[:3] == ["containers", "images", "list"] else _gone(args)
+
+    assert _failed(images_odd) == ["no registry image of cfo-stg-x1-transport"]
+
+
+def test_teardown_check_reads_every_page():
+    # A resource on the second page of a full first page is found.
+    def paged(args):
+        if args[:2] == ["tunnels", "list"]:
+            page = int(args[args.index("--page") + 1])
+            if page == 1:
+                return 0, [{"name": f"other-{i}"} for i in range(teardown_check.PAGE)], ""
+            return 0, [{"name": "cfo-stg-x1-transport--0a1b2c3d"}], ""
+        return _gone(args)
+
+    assert _failed(paged) == ["no live Tunnel cfo-stg-x1-…"]
 
 
 def test_staging_dir_defaults(monkeypatch, tmp_path):

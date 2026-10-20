@@ -28,6 +28,7 @@ WORKERS = (TRANSPORT, UI)
 CONTAINERS = (f"{TRANSPORT}-server", f"{TRANSPORT}-computer")
 BUCKET = f"{TRANSPORT}-results"
 TOKEN = f"{TRANSPORT}-svc"
+PAGE = 100
 
 Runner = Callable[[list[str]], tuple[int, object, str]]
 
@@ -57,30 +58,59 @@ def cf_runner(account: str) -> Runner:
     return run
 
 
-def names(body: object, key: str = "name") -> list[str]:
-    if not isinstance(body, list):
-        return []
-    return [str(item.get(key)) for item in body if isinstance(item, dict) and item.get(key)]
+def names(body: object, key: str = "name") -> list[str] | None:
+    """The `key` of every item of a listing, or None when the answer is not a list of objects: an
+    answer of unknown shape is never taken for an empty listing (review AIR2-002)."""
+    if not isinstance(body, list) or not all(isinstance(item, dict) for item in body):
+        return None
+    return [str(item.get(key, "")) for item in body]
+
+
+def listed(run: Runner, args: list[str], key: str = "name", paged: bool = True) -> list[str] | None:
+    """Every page of a listing's names, or None if any page fails or has an unknown shape."""
+    found: list[str] = []
+    page = 1
+    while True:
+        command = [*args, "--per-page", str(PAGE), "--page", str(page)] if paged else args
+        code, body, _ = run(command)
+        items = names(body, key) if code == 0 else None
+        if items is None:
+            return None
+        found += items
+        if not paged or len(items) < PAGE:
+            return found
+        page += 1
+
+
+def none_named(items: list[str] | None, prefix: str = PREFIX) -> bool:
+    """Gone only if the listing is known and nothing in it starts with `prefix`, nonce-suffixed
+    names included."""
+    return items is not None and not [n for n in items if n.startswith(prefix)]
 
 
 def checks(
     run: Runner, zone: str, registry: list[str], http: Callable[[str], str]
 ) -> list[tuple[str, bool]]:
-    """(description, gone) for every resource X1 may have left."""
+    """(description, gone) for every resource X1 may have left. Every listing is matched by the
+    cfo-stg-x1 prefix, locally and over all its pages; an unknown answer counts as not gone."""
     out: list[tuple[str, bool]] = []
     for name in WORKERS:
         code, _, err = run(["workers", "get", name])
         out.append((f"Worker {name} absent", code != 0 and "[10007]" in err and "404" in err))
     for name in CONTAINERS:
-        code, body, _ = run(["containers", "applications", "list", "--name", name])
-        out.append((f"container application {name} absent", code == 0 and name not in names(body)))
+        apps = listed(run, ["containers", "applications", "list", "--name", name], paged=False)
+        out.append((f"container application {name} absent", none_named(apps, name)))
     code, body, _ = run(["containers", "images", "list"])
     out.append(
-        (f"no registry image of {TRANSPORT}", code == 0 and TRANSPORT not in json.dumps(body))
+        (
+            f"no registry image of {TRANSPORT}",
+            code == 0 and isinstance(body, list) and TRANSPORT not in json.dumps(body),
+        )
     )
     code, _, err = run(["r2", "buckets", "get", BUCKET])
     out.append((f"R2 bucket {BUCKET} absent", code != 0 and "[10006]" in err and "404" in err))
-    code, body, _ = run(
+    tunnels = listed(
+        run,
         [
             "tunnels",
             "list",
@@ -90,36 +120,31 @@ def checks(
             "false",
             "--tun-types",
             "cfd_tunnel",
-        ]
+        ],
     )
-    out.append(
-        (
-            "no live Tunnel cfo-stg-x1-…",
-            code == 0 and not [n for n in names(body) if n.startswith(PREFIX)],
-        )
-    )
-    code, body, _ = run(["dns", "records", "list", "--zone", zone, "--name-startswith", PREFIX])
-    out.append(
-        (
-            "no DNS record cfo-stg-x1-…",
-            code == 0 and not [n for n in names(body) if n.startswith(PREFIX)],
-        )
-    )
-    code, body, _ = run(["workers-vpc", "services", "list"])
+    out.append(("no live Tunnel cfo-stg-x1-…", none_named(tunnels)))
+    records = listed(run, ["dns", "records", "list", "--zone", zone, "--name-startswith", PREFIX])
+    out.append(("no DNS record cfo-stg-x1-…", none_named(records)))
     out.append(
         (
             "no VPC service cfo-stg-x1-…",
-            code == 0 and not [n for n in names(body) if n.startswith(PREFIX)],
+            none_named(listed(run, ["workers-vpc", "services", "list"])),
         )
     )
-    code, body, _ = run(["zero-trust", "access", "service-tokens", "list", "--name", TOKEN])
-    out.append((f"service token {TOKEN} absent", code == 0 and TOKEN not in names(body)))
+    # The token's name carries its create's nonce (`<deployment>-svc--<nonce>`), and the list
+    # filters by exact name only: every token is listed and matched by prefix.
+    tokens = listed(run, ["zero-trust", "access", "service-tokens", "list"])
+    out.append((f"no service token {TOKEN}…", none_named(tokens, TOKEN)))
     hosts = [f"{TRANSPORT}.{zone}", f"{UI}.{zone}", f"{TRANSPORT}-tunnel.{zone}"]
     for host in hosts:
-        code, body, _ = run(
-            ["zero-trust", "access", "applications", "list", "--domain", host, "--exact"]
+        domains = listed(
+            run,
+            ["zero-trust", "access", "applications", "list", "--domain", host, "--exact"],
+            key="domain",
         )
-        out.append((f"no Access application on {host}", code == 0 and not names(body, "domain")))
+        out.append(
+            (f"no Access application on {host}", domains is not None and host not in domains)
+        )
     for name in WORKERS:
         out.append((f"no staging registry record for {name}", name not in registry))
     for host in hosts:
