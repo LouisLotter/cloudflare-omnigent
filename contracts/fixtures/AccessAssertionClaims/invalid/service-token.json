@@ -1,0 +1,12 @@
+{
+  "aud": ["4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2"],
+  "country": "NL",
+  "email": "owner@example.com",
+  "exp": 1792407600,
+  "iat": 1792404000,
+  "identity_nonce": "6ei69kawdKzMIAPF",
+  "iss": "https://example-team.cloudflareaccess.com",
+  "nbf": 1792404000,
+  "sub": "",
+  "type": "app"
+}

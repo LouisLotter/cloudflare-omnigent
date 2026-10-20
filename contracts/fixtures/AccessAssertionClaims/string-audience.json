@@ -1,0 +1,7 @@
+{
+  "aud": "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2",
+  "exp": 1792407600,
+  "iss": "https://example-team.cloudflareaccess.com",
+  "sub": "7335d417-61da-459d-899c-0a01c76a2f94",
+  "type": "app"
+}

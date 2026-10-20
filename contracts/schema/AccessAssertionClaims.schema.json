@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": {},
+  "properties": {
+    "aud": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      ]
+    },
+    "email": {
+      "format": "email",
+      "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+      "type": "string"
+    },
+    "exp": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "iat": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "iss": {
+      "pattern": "^https:\\/\\/[a-z0-9-]+(\\.[a-z0-9-]+)+$",
+      "type": "string"
+    },
+    "nbf": {
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "type": "integer"
+    },
+    "sub": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "type": {
+      "const": "app",
+      "type": "string"
+    }
+  },
+  "required": [
+    "iss",
+    "aud",
+    "sub",
+    "type",
+    "exp"
+  ],
+  "title": "AccessAssertionClaims",
+  "type": "object"
+}

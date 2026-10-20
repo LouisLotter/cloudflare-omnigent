@@ -1,0 +1,8 @@
+{
+  "outageId": "out_01hs3f9q2m8z4w7k6t5r1n0ybc",
+  "cause": "container_stopped",
+  "startedAt": "2026-10-20T05:00:00+02:00",
+  "detectedAt": "2026-10-20T03:02:14.512Z",
+  "endedAt": "2026-10-20T03:12:40.003Z",
+  "restarts": 1
+}

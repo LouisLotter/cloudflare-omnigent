@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "durability_unconfirmed",
+    "message": "The change was applied, but its durability is not yet confirmed. Check the current state before repeating it."
+  },
+  "applied": true
+}
