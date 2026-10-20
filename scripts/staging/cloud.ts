@@ -3,9 +3,13 @@
 
 import { type StdioOptions, spawnSync } from "node:child_process";
 import {
+  closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -43,6 +47,8 @@ export interface RunOptions {
   readonly cwd?: string;
   /** Added to the child's environment. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Descriptors the child receives as 3, 4 and so on, before the staging locks. */
+  readonly fds?: readonly number[];
 }
 
 export type Runner = (
@@ -62,12 +68,12 @@ export function childEnv(accountId: string): NodeJS.ProcessEnv {
 }
 
 /**
- * stdio for a child process. Descriptors 3 and up are the staging locks this process holds,
- * so a child that outlives a crashed staging command keeps its deployment locked.
+ * stdio for a child process. Descriptors 3 and up are `fds`, if any, then the staging locks this
+ * process holds, so a child that outlives a crashed staging command keeps its deployment locked.
  */
-export function childStdio(inherit: boolean): StdioOptions {
+export function childStdio(inherit: boolean, fds: readonly number[] = []): StdioOptions {
   const mode = inherit ? "inherit" : "pipe";
-  return ["ignore", mode, mode, ...heldLockFds()];
+  return ["ignore", mode, mode, ...fds, ...heldLockFds()];
 }
 
 export function spawnRunner(accountId: string): Runner {
@@ -75,7 +81,7 @@ export function spawnRunner(accountId: string): Runner {
     const child = spawnSync(command, args, {
       encoding: "utf8",
       env: { ...childEnv(accountId), ...options.env },
-      stdio: childStdio(options.inherit),
+      stdio: childStdio(options.inherit, options.fds),
       maxBuffer: 64 * 1024 * 1024,
       ...(options.cwd ? { cwd: options.cwd } : {}),
     });
@@ -253,30 +259,66 @@ export function vpcServicesOf(listing: unknown): VpcServiceInfo[] {
 }
 
 /**
- * The directory for a short-lived secrets file: the user's runtime directory, which is private
- * and in memory on most Linux systems, or else the system's temporary directory.
+ * Where the secrets file lives for the instant before it is unlinked: the user's runtime
+ * directory, which is private and in memory on most Linux systems, or else the system's
+ * temporary directory.
  */
-function secretsBase(): string {
+export function secretsBase(): string {
   const runtime = process.env.XDG_RUNTIME_DIR;
   return runtime !== undefined && runtime !== "" && existsSync(runtime) ? runtime : tmpdir();
 }
 
+const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";
+
 /**
- * Runs `use` with the secrets in a JSON file, mode 0600, in a new directory only this user can
- * enter, and removes both afterwards, whatever happens. The values never reach argv or a log.
+ * Runs `use` with the secrets as JSON behind an open, read-only descriptor of a file that no
+ * longer has a name. The file is written in a new directory only this user can enter, opened,
+ * and unlinked with its directory at once, before `use` runs; its contents live only as long as
+ * a descriptor does, so no file outlasts the processes that hold one, even after SIGKILL. The
+ * descriptor is closed afterwards. The values never reach argv or a log.
  */
-export function withSecretsFile<T>(
+export function withSecretsDescriptor<T>(
   secrets: Readonly<Record<string, string>>,
-  use: (file: string) => T,
+  use: (fd: number) => T,
 ): T {
-  const dir = mkdtempSync(join(secretsBase(), "cfo-stg-secrets-"));
+  const dir = mkdtempSync(join(secretsBase(), SECRETS_DIR_PREFIX));
+  let fd: number;
   try {
     const file = join(dir, "secrets.json");
     writeFileSync(file, JSON.stringify(secrets), { mode: 0o600, flag: "wx" });
-    return use(file);
+    fd = openSync(file, "r");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+  try {
+    return use(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Removes secrets directories that a run killed in the instant between writing and unlinking
+ * its file left behind: this user's, older than `minAgeMs`, so that a run in progress in another
+ * worktree is never disturbed. Called when the tool starts. Returns how many it removed.
+ */
+export function removeStaleSecretDirs(
+  base: string = secretsBase(),
+  now: number = Date.now(),
+  minAgeMs = 60_000,
+): number {
+  let removed = 0;
+  for (const name of existsSync(base) ? readdirSync(base) : []) {
+    if (!name.startsWith(SECRETS_DIR_PREFIX)) continue;
+    const path = join(base, name);
+    const stat = lstatSync(path);
+    const ours = stat.isDirectory() && stat.uid === process.getuid?.();
+    if (ours && now - stat.mtimeMs >= minAgeMs) {
+      rmSync(path, { recursive: true, force: true });
+      removed++;
+    }
+  }
+  return removed;
 }
 
 /**
@@ -324,12 +366,18 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     }
     return resultOf(result.stdout);
   };
-  const wrangler = (args: string[], cwd: string, env: Record<string, string> = {}): void => {
+  const wrangler = (
+    args: string[],
+    cwd: string,
+    env: Record<string, string> = {},
+    fds: readonly number[] = [],
+  ): void => {
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
     const result = run(process.execPath, cli, {
       inherit: true,
       cwd,
       env: { ...env, ...WRANGLER_QUIET_LOGS },
+      ...(fds.length > 0 ? { fds } : {}),
     });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
@@ -396,7 +444,10 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     // validateDeployConfig has checked this configuration's account, routes and resources.
     // Wrangler runs `docker build` with its own environment, and BuildKit takes the image
     // timestamp from SOURCE_DATE_EPOCH. Secrets go up with the same version through
-    // --secrets-file, so no second version is made; Wrangler prints their names only.
+    // --secrets-file, so no second version is made; Wrangler prints their names only. The file
+    // is the child's descriptor 3 (Linux's /dev/fd), whose name is gone before Wrangler starts;
+    // Wrangler 4.149.0 reads the path with readFileSync and parses JSON first, whatever the
+    // name. Children Wrangler starts inherit that descriptor too, as they do the locks.
     deployWorker: (name, hostname, configPath, buildEpoch, secrets) => {
       const args = ["deploy", "--config", configPath, "--name", name, "--domain", hostname];
       const env = { SOURCE_DATE_EPOCH: String(buildEpoch) };
@@ -404,8 +455,8 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         wrangler(args, workerDir, env);
         return;
       }
-      withSecretsFile(secrets, (file) =>
-        wrangler([...args, "--secrets-file", file], workerDir, env),
+      withSecretsDescriptor(secrets, (fd) =>
+        wrangler([...args, "--secrets-file", "/dev/fd/3"], workerDir, env, [fd]),
       );
     },
     // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without

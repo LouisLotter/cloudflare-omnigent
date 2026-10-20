@@ -46,6 +46,7 @@ import {
   fileStore,
   readStagingManifest,
   readWranglerConfig,
+  removeStaleSecretDirs,
   writePrivateFile,
 } from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
@@ -96,6 +97,9 @@ function context(config: StagingConfig, command: string): Context {
 }
 
 function main(): void {
+  // A run killed in the instant between writing its secrets file and unlinking it leaves
+  // the file behind; remove any such leftovers first.
+  removeStaleSecretDirs();
   const [command, ...rest] = process.argv.slice(2);
   const { values } = parseArgs({
     args: rest,

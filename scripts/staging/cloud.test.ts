@@ -1,4 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,11 +29,13 @@ import {
   type RunOptions,
   readStagingManifest,
   readWranglerConfig,
+  removeStaleSecretDirs,
+  secretsBase,
   spawnRunner,
   tunnelsOf,
   vpcServicesOf,
   WRANGLER_QUIET_LOGS,
-  withSecretsFile,
+  withSecretsDescriptor,
   workerLookup,
   wranglerCli,
   writePrivateFile,
@@ -265,22 +278,35 @@ describe("Tunnel, DNS and VPC answers", () => {
 });
 
 describe("secrets for an upload", () => {
-  it("live in a private file only while the upload runs, and never in argv", () => {
-    let seen: { args: readonly string[]; mode: number; dirMode: number; text: string } | undefined;
-    const cloud = cliCloud(
-      { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" },
-      WORKER,
-      (_command, args) => {
-        const file = args[args.indexOf("--secrets-file") + 1] ?? "";
-        seen = {
-          args,
-          mode: statSync(file).mode & 0o777,
-          dirMode: statSync(dirname(file)).mode & 0o777,
-          text: readFileSync(file, "utf8"),
-        };
-        return ok("");
-      },
-    );
+  const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
+  const secretDirs = () =>
+    readdirSync(secretsBase()).filter((name) => name.startsWith("cfo-stg-secrets-"));
+
+  it("reach Wrangler only as descriptor 3, a file without a name, and never argv", () => {
+    const before = secretDirs();
+    let seen:
+      | {
+          args: readonly string[];
+          fds: readonly number[];
+          links: number;
+          mode: number;
+          text: string;
+        }
+      | undefined;
+    const cloud = cliCloud(config, WORKER, (_command, args, options) => {
+      const fd = options.fds?.[0] ?? -1;
+      const stat = fstatSync(fd);
+      seen = {
+        args,
+        fds: options.fds ?? [],
+        links: stat.nlink,
+        mode: stat.mode & 0o777,
+        // A fresh read through the descriptor's path, as Wrangler makes it.
+        text: readFileSync(`/dev/fd/${fd}`, "utf8"),
+      };
+      expect(secretDirs()).toEqual(before);
+      return ok("");
+    });
     const secret = `synthetic-${Math.random().toString(36).slice(2)}`;
     cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/c.jsonc", 1, { X1_TOKEN: secret });
     expect(seen?.args.slice(2)).toEqual([
@@ -292,37 +318,82 @@ describe("secrets for an upload", () => {
       "--domain",
       "cfo-stg-a.example.com",
       "--secrets-file",
-      expect.stringMatching(/cfo-stg-secrets-[^/]+\/secrets\.json$/),
+      "/dev/fd/3",
     ]);
     expect(seen?.args.join(" ")).not.toContain(secret);
+    expect(seen?.fds).toHaveLength(1);
+    expect(seen?.links).toBe(0);
     expect(seen?.mode).toBe(0o600);
-    expect(seen?.dirMode).toBe(0o700);
     expect(JSON.parse(seen?.text ?? "{}")).toEqual({ X1_TOKEN: secret });
-    const file = seen?.args.at(-1) ?? "";
-    expect(existsSync(file)).toBe(false);
-    expect(existsSync(dirname(file))).toBe(false);
+    // The descriptor is closed afterwards.
+    expect(() => fstatSync(seen?.fds[0] ?? -1)).toThrow();
+    expect(secretDirs()).toEqual(before);
   });
 
-  it("are removed when the upload fails, and are not used for an empty set", () => {
-    let file = "";
+  it("are readable by a real child at /dev/fd/3, as Wrangler reads them", () => {
+    const read = withSecretsDescriptor({ X1_TOKEN: "synthetic" }, (fd) =>
+      spawnRunner("a".repeat(32))(
+        process.execPath,
+        ["-e", "process.stdout.write(require('node:fs').readFileSync('/dev/fd/3', 'utf8'))"],
+        { inherit: false, fds: [fd] },
+      ),
+    );
+    expect(JSON.parse(read.stdout)).toEqual({ X1_TOKEN: "synthetic" });
+  });
+
+  it("puts the descriptor at 3, before the staging locks", () => {
+    const release = acquireLock(join(scratch, "locks", "fds.lock"), 0, "test");
+    try {
+      expect(childStdio(true, [42])).toEqual([
+        "ignore",
+        "inherit",
+        "inherit",
+        42,
+        ...heldLockFds(),
+      ]);
+    } finally {
+      release();
+    }
+  });
+
+  it("are gone when the upload fails, and are not sent for an empty set", () => {
+    let held = -1;
     expect(() =>
-      withSecretsFile({ A: "1" }, (path) => {
-        file = path;
+      withSecretsDescriptor({ A: "1" }, (fd) => {
+        held = fd;
         throw new Error("wrangler deploy exited with 1");
       }),
     ).toThrow("exited");
-    expect(existsSync(dirname(file))).toBe(false);
-    const calls: (readonly string[])[] = [];
-    const cloud = cliCloud(
-      { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" },
-      WORKER,
-      (_command, args) => {
-        calls.push(args);
-        return ok("");
-      },
-    );
+    expect(() => fstatSync(held)).toThrow();
+    const calls: { args: readonly string[]; options: RunOptions }[] = [];
+    const cloud = cliCloud(config, WORKER, (_command, args, options) => {
+      calls.push({ args, options });
+      return ok("");
+    });
     cloud.deployWorker("cfo-stg-a", "h", "/c", 1, {});
-    expect(calls[0]).not.toContain("--secrets-file");
+    expect(calls[0]?.args).not.toContain("--secrets-file");
+    expect(calls[0]?.options.fds).toBeUndefined();
+  });
+
+  it("removes only this user's secrets directories that a killed run left long ago", () => {
+    const base = mkdtempSync(join(scratch, "runtime-"));
+    for (const name of ["cfo-stg-secrets-old", "cfo-stg-secrets-new", "other-old"]) {
+      mkdirSync(join(base, name));
+      writeFileSync(join(base, name, "secrets.json"), "{}");
+    }
+    writeFileSync(join(base, "cfo-stg-secrets-file"), "{}");
+    const now = Date.now();
+    const old = new Date(now - 120_000);
+    for (const name of ["cfo-stg-secrets-old", "other-old", "cfo-stg-secrets-file"]) {
+      utimesSync(join(base, name), old, old);
+    }
+    expect(removeStaleSecretDirs(base, now)).toBe(1);
+    expect(readdirSync(base).sort()).toEqual([
+      "cfo-stg-secrets-file",
+      "cfo-stg-secrets-new",
+      "other-old",
+    ]);
+    expect(removeStaleSecretDirs(join(base, "missing"), now)).toBe(0);
   });
 });
 
