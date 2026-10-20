@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   bucketLookup,
+  bucketNamesOf,
   type CommandResult,
   childEnv,
   childStdio,
@@ -43,7 +44,7 @@ import {
   wranglerCli,
   writePrivateFile,
 } from "./cloud.ts";
-import { type Deployment, tunnelRoute, validateDeployConfig } from "./guard.ts";
+import { type Deployment, type LateCreate, tunnelRoute, validateDeployConfig } from "./guard.ts";
 import { acquireLock, heldLockFds } from "./lock.ts";
 
 const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
@@ -511,6 +512,66 @@ describe("CLI wiring", () => {
       ok(JSON.stringify({ result: [{ id: "a1", name: "x" }] })),
     );
     expect(() => broken.listAccessApps("h")).toThrow("without a domain");
+  });
+
+  it("lists Access applications by name for the sweep, and keeps only staging names", () => {
+    const seen: (readonly string[])[] = [];
+    const listing = cliCloud(config, WORKER, (_command, args) => {
+      seen.push(args);
+      return ok(
+        JSON.stringify({
+          result: [
+            { id: "a1", name: "cfo-stg-a--0a1b2c3d", domain: "cfo-stg-a.example.com" },
+            { id: "a2", name: "copy of cfo-stg-a", domain: "other.example.com" },
+          ],
+        }),
+      );
+    });
+    expect(listing.accessAppsNamed("cfo-stg-").map((app) => app.id)).toEqual(["a1"]);
+    expect(seen.at(-1)).toEqual([
+      ...["zero-trust", "access", "applications", "list", "--name", "cfo-stg-"],
+      ...["--per-page", "100", "--page", "1"],
+    ]);
+  });
+
+  it("lists R2 buckets by name, a page after the last name seen, and refuses odd answers", () => {
+    const seen: (readonly string[])[] = [];
+    const buckets = (total: number) =>
+      cliCloud(config, WORKER, (_command, args) => {
+        seen.push(args);
+        const after = args.includes("--start-after")
+          ? Number(args[args.indexOf("--start-after") + 1]?.slice("cfo-stg-".length))
+          : -1;
+        const names = Array.from(
+          { length: total },
+          (_, i) => `cfo-stg-${String(i).padStart(4, "0")}`,
+        );
+        const page = names.filter((n) => Number(n.slice("cfo-stg-".length)) > after).slice(0, 1000);
+        return ok(JSON.stringify({ result: { buckets: page.map((name) => ({ name })) } }));
+      });
+    expect(buckets(1500).bucketNames("cfo-stg-")).toHaveLength(1500);
+    expect(seen).toEqual([
+      [
+        ...["r2", "buckets", "list", "--name-contains", "cfo-stg-", "--per-page", "1000"],
+        ...["--order", "name", "--direction", "asc"],
+      ],
+      [
+        ...["r2", "buckets", "list", "--name-contains", "cfo-stg-", "--per-page", "1000"],
+        ...["--order", "name", "--direction", "asc", "--start-after", "cfo-stg-0999"],
+      ],
+    ]);
+    expect(() => buckets(60_000).bucketNames("cfo-stg-")).toThrow("more than 50 pages");
+    // "Contains" matches anywhere in the name; only names that start with the prefix count.
+    expect(bucketNamesOf({ buckets: [{ name: "cfo-stg-a" }, { name: "x-cfo-stg-a" }] })).toEqual([
+      "cfo-stg-a",
+      "x-cfo-stg-a",
+    ]);
+    const odd = cliCloud(config, WORKER, () =>
+      ok(JSON.stringify({ result: { buckets: [{ name: "cfo-stg-a" }, { name: "x-cfo-stg-a" }] } })),
+    );
+    expect(odd.bucketNames("cfo-stg-")).toEqual(["cfo-stg-a"]);
+    expect(() => bucketNamesOf({})).toThrow("unexpected R2 bucket listing");
+    expect(() => bucketNamesOf({ buckets: [{}] })).toThrow("without a name");
   });
 
   it("runs Wrangler's CLI directly, with exactly the guarded arguments", () => {
@@ -1110,6 +1171,32 @@ describe("registry file store", () => {
     store.update((all) => all);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
-    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(3);
+    expect(JSON.parse(readFileSync(file, "utf8")).version).toBe(4);
+  });
+
+  it("keeps the late creates and the deployments through each other's updates", () => {
+    const store = fileStore(join(scratch, "late", "resources.json"), "test");
+    expect(store.lateCreates()).toEqual([]);
+    const late: LateCreate = {
+      kind: "dns",
+      deployment: "cfo-stg-a",
+      name: "cfo-stg-a-tunnel.example.com",
+      nonce: "0a1b2c3d",
+      givenUpAt: "2026-10-18T12:00:00.000Z",
+    };
+    store.updateLateCreates((all) => [...all, late]);
+    const d: Deployment = {
+      name: "cfo-stg-a",
+      hostname: "cfo-stg-a.example.com",
+      owner: "wp0.4",
+      createdAt: "2026-10-18T12:00:00.000Z",
+      expiresAt: "2026-10-25T12:00:00.000Z",
+      state: "pending",
+    };
+    store.update((all) => [...all, d]);
+    expect(store.lateCreates()).toEqual([late]);
+    store.updateLateCreates(() => []);
+    expect(store.load()).toEqual([d]);
+    expect(store.lateCreates()).toEqual([]);
   });
 });

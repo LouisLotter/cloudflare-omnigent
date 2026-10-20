@@ -22,10 +22,13 @@ import { dirname, join, resolve } from "node:path";
 import {
   type AccessApp,
   type DeployConfigView,
+  type Deployment,
   type DnsRecordInfo,
   type IngressRule,
+  type LateCreate,
   MANIFEST_FILE,
   parseJsonc,
+  parseLateCreates,
   parseRegistry,
   type StagingConfig,
   serializeRegistry,
@@ -295,6 +298,12 @@ export function dnsRecordsOf(listing: unknown): DnsRecordInfo[] {
   }));
 }
 
+/** The bucket names in a page of `cf r2 buckets list`: `{ buckets: [{ name }] }`. */
+export function bucketNamesOf(listing: unknown): string[] {
+  const buckets = (listing as { buckets?: unknown } | null)?.buckets;
+  return entries(buckets, "R2 bucket").map((b) => text(b, "name", "an R2 bucket"));
+}
+
 /** Workers VPC services, flattened; an IPv4 host on a Tunnel is the only kind the tool makes. */
 export function vpcServicesOf(listing: unknown): VpcServiceInfo[] {
   return entries(listing, "VPC service").map((s) => {
@@ -473,6 +482,11 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       accessAppsOf(
         listAll(["zero-trust", "access", "applications", "list", "--domain", hostname, "--exact"]),
       ).filter((app) => app.domain === hostname),
+    // Cloudflare filters by name first, so no other application is ever listed in full.
+    accessAppsNamed: (prefix) =>
+      accessAppsOf(
+        listAll(["zero-trust", "access", "applications", "list", "--name", prefix]),
+      ).filter((app) => app.name.startsWith(prefix)),
     createAccessApp: (body) => {
       const created = cf([
         "zero-trust",
@@ -565,6 +579,23 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     },
     bucketExists: (name) =>
       bucketLookup(run("cf", ["r2", "buckets", "get", name], { inherit: false }), name),
+    // Pages of up to 1,000 in name order, each starting after the last name seen.
+    bucketNames: (prefix) => {
+      const names: string[] = [];
+      for (let page = 0; page < 50; page++) {
+        const last = names.at(-1);
+        const listed = bucketNamesOf(
+          cf([
+            ...["r2", "buckets", "list", "--name-contains", prefix, "--per-page", "1000"],
+            ...["--order", "name", "--direction", "asc"],
+            ...(last === undefined ? [] : ["--start-after", last]),
+          ]),
+        );
+        names.push(...listed);
+        if (listed.length < 1000) return names.filter((n) => n.startsWith(prefix));
+      }
+      throw new Error("cf r2 buckets listed more than 50 pages");
+    },
     createBucket: (name) => {
       cf(["r2", "buckets", "create", "--body", JSON.stringify({ name })]);
     },
@@ -766,20 +797,34 @@ export function readWranglerConfig(path: string, workerDir: string): DeployConfi
  * to a temporary file first, so neither a concurrent command nor a crash loses or tears it.
  */
 export function fileStore(file: string, holder: string): Store {
-  const load = () =>
-    existsSync(file) ? parseRegistry(JSON.parse(readFileSync(file, "utf8")) as unknown) : [];
+  const read = (): unknown =>
+    existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as unknown) : undefined;
+  const load = () => {
+    const json = read();
+    return json === undefined ? [] : parseRegistry(json);
+  };
+  const lateCreates = () => {
+    const json = read();
+    return json === undefined ? [] : parseLateCreates(json);
+  };
+  const write = (deployments: readonly Deployment[], late: readonly LateCreate[]) => {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${process.pid}.tmp`;
+    writeFileSync(temporary, serializeRegistry(deployments, late), { mode: 0o600 });
+    renameSync(temporary, file);
+  };
+  const locked = (run: () => void) => {
+    const release = acquireLock(`${file}.lock`, 30, holder);
+    try {
+      run();
+    } finally {
+      release();
+    }
+  };
   return {
     load,
-    update: (change) => {
-      const release = acquireLock(`${file}.lock`, 30, holder);
-      try {
-        mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-        const temporary = `${file}.${process.pid}.tmp`;
-        writeFileSync(temporary, serializeRegistry(change(load())), { mode: 0o600 });
-        renameSync(temporary, file);
-      } finally {
-        release();
-      }
-    },
+    update: (change) => locked(() => write(change(load()), lateCreates())),
+    lateCreates,
+    updateLateCreates: (change) => locked(() => write(load(), change(lateCreates()))),
   };
 }

@@ -19,11 +19,14 @@ import {
   expired,
   expiry,
   hostnameFor,
+  type LateCreate,
+  madeBy,
   markInterrupted,
   namedFor,
   nonceName,
   ownedBy,
   parseJsonc,
+  parseLateCreates,
   parseManifest,
   parseRegistry,
   policyRepository,
@@ -971,8 +974,51 @@ describe("registry file", () => {
     }
   });
 
-  it("writes version 3, which tools before IR-001's fix refuse", () => {
-    expect(JSON.parse(serializeRegistry([deployment])).version).toBe(3);
+  it("writes version 4, which earlier tools refuse, with its late creates", () => {
+    const late: LateCreate[] = [
+      {
+        kind: "tunnel",
+        deployment: "cfo-stg-a",
+        name: "cfo-stg-a",
+        nonce: "0a1b2c3d",
+        givenUpAt: "2026-10-18T12:00:00.000Z",
+      },
+      { kind: "bucket", deployment: "cfo-stg-a", name: "cfo-stg-a-data", givenUpAt: "t" },
+    ];
+    const json = JSON.parse(serializeRegistry([deployment], late));
+    expect(json.version).toBe(4);
+    expect(parseRegistry(json)).toEqual([deployment]);
+    expect(parseLateCreates(json)).toEqual(late);
+    // Earlier versions have none.
+    expect(parseLateCreates({ version: 3, deployments: [] })).toEqual([]);
+    for (const bad of [
+      { ...late[0], kind: "worker" },
+      { ...late[0], nonce: "0a1b" },
+      { ...late[0], name: "agents" },
+      { ...late[0], deployment: "agents" },
+      { ...late[0], givenUpAt: "" },
+      { ...late[0], extra: true },
+      null,
+    ]) {
+      expect(() => parseLateCreates({ version: 4, deployments: [], lateCreates: [bad] })).toThrow();
+    }
+    expect(() => parseLateCreates({ version: 4, deployments: [], lateCreates: {} })).toThrow();
+  });
+
+  it("tells a late create's resource by its nonce, and a bucket's by nothing", () => {
+    const create = { kind: "vpc", deployment: "cfo-stg-a", name: "cfo-stg-a-x" } as const;
+    const nonce = "0a1b2c3d";
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x--0a1b2c3d" })).toBe(true);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x--0a1b2c3e" })).toBe(false);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x" })).toBe(false);
+    expect(madeBy(create, { name: "cfo-stg-a-x" })).toBe(false);
+    const dns = { kind: "dns", deployment: "cfo-stg-a", name: "h.example.com", nonce } as const;
+    const comment = "cfo-stg-a: staging tool 0a1b2c3d";
+    expect(madeBy(dns, { name: "h.example.com", comment })).toBe(true);
+    expect(madeBy(dns, { name: "i.example.com", comment })).toBe(false);
+    expect(madeBy(dns, { name: "h.example.com" })).toBe(false);
+    const bucket = { kind: "bucket", deployment: "cfo-stg-a", name: "cfo-stg-a-data" } as const;
+    expect(madeBy(bucket, { name: "cfo-stg-a-data" })).toBe(false);
   });
 
   // IR-001: version 2 files from the tool of d1988ea carry a wall-clock settleUntil.
@@ -1002,7 +1048,7 @@ describe("registry file", () => {
     for (const bad of [
       [],
       { version: 1, deployments: [] },
-      { version: 4, deployments: [] },
+      { version: 5, deployments: [] },
       { version: 2 },
       { version: 3, deployments: [{ ...deployment, settleUntil: "2026-10-18T11:00:00.000Z" }] },
       { version: 2, deployments: [{ ...deployment, settleUntil: 7 }] },

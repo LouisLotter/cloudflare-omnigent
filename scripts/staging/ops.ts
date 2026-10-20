@@ -62,7 +62,10 @@ import {
   expiry,
   hostnameFor,
   type IngressRule,
+  type LateCreate,
+  type LateCreateKind,
   type Manifest,
+  madeBy,
   markInterrupted,
   namedFor,
   nonceName,
@@ -94,6 +97,8 @@ export interface Cloud {
   accountIds(): string[];
   /** The Access applications on exactly this hostname. */
   listAccessApps(hostname: string): AccessApp[];
+  /** The Access applications whose names start with `prefix`, for the sweep. */
+  accessAppsNamed(prefix: string): AccessApp[];
   /** Returns the new application's ID. */
   createAccessApp(body: Record<string, unknown>): string;
   /** Replaces the application's settings with `body`. */
@@ -128,6 +133,8 @@ export interface Cloud {
   deleteWorker(name: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
+  /** The names of every R2 bucket whose name starts with `prefix`. */
+  bucketNames(prefix: string): string[];
   createBucket(name: string): void;
   /** Deletes every object, then the bucket. */
   emptyAndDeleteBucket(name: string): void;
@@ -164,6 +171,10 @@ export interface Store {
   load(): Deployment[];
   /** Replaces the registry with `change(current)`, atomically with respect to other commands. */
   update(change: (current: Deployment[]) => Deployment[]): void;
+  /** The creates the tool gave up on (guard.ts, LateCreate). */
+  lateCreates(): LateCreate[];
+  /** Replaces them with `change(current)`, atomically with respect to other commands. */
+  updateLateCreates(change: (current: LateCreate[]) => LateCreate[]): void;
 }
 
 export interface Context {
@@ -286,6 +297,13 @@ function planFor(name: string, zone: string, manifest: Manifest): ManifestPlan {
   };
 }
 
+/** What the tool needs of any resource it creates: its ID, its name and, for DNS, its comment. */
+interface Resource {
+  readonly id: string;
+  readonly name: string;
+  readonly comment?: string | undefined;
+}
+
 /**
  * One resource the tool creates for a deployment, as its record describes it: what Cloudflare
  * lists under the names the tool gives this resource, which properties the tool gives it, and
@@ -293,10 +311,14 @@ function planFor(name: string, zone: string, manifest: Manifest): ManifestPlan {
  *
  * Every create carries a nonce, fresh for each attempt and recorded with the intent before the
  * request (review r2, finding 2): in the resource's name (guard.ts, nonceName) or, for a DNS
- * record, in its comment. Recovery adopts only a resource that carries the intent's own nonce.
+ * record, in its comment. Recovery adopts only a resource that carries the intent's own nonce
+ * (marked). A bucket has no place for one and is adopted by its name (guard.ts, create intents).
  */
-interface Owned<T extends { readonly id: string }> {
+interface Owned<T extends Resource> {
+  readonly kind: LateCreateKind;
   readonly label: string;
+  /** The name the tool gives the resource, before its nonce; for a DNS record, its hostname. */
+  readonly base: string;
   readonly id: string | undefined;
   /** A create intent is recorded: a create was started and its outcome never seen. */
   readonly pending: boolean;
@@ -306,14 +328,32 @@ interface Owned<T extends { readonly id: string }> {
   candidates(): T[];
   /** The resource with this ID, whatever its name is now; undefined when it is gone. */
   get(id: string): T | undefined;
-  /** Whether a resource carries `nonce`, in its name or, for a DNS record, its comment. */
-  carries(resource: T, nonce: string): boolean;
   /** Whether a resource has exactly the name, nonce and properties the tool gives it. */
   fits(resource: T): boolean;
   /** The record with a create intent, with its nonce, for this resource, and no ID for it. */
   starting(record: Deployment, at: string, nonce: string): Deployment;
   /** The record with this resource's ID, or none (then without its nonce), and no intent. */
   settled(record: Deployment, id: string | undefined): Deployment;
+}
+
+/** The create a record's intent describes, as a late create would keep it. */
+function createOf(record: Deployment, owned: Owned<Resource>): Omit<LateCreate, "givenUpAt"> {
+  const { kind, base: name, nonce } = owned;
+  return { kind, deployment: record.name, name, ...(nonce === undefined ? {} : { nonce }) };
+}
+
+/**
+ * Whether `resource` carries the mark of the record's create for `owned`: its nonce or, for a
+ * bucket, its name.
+ */
+function marked(record: Deployment, owned: Owned<Resource>, resource: Resource): boolean {
+  if (owned.kind === "bucket") return resource.name === owned.base;
+  return madeBy(createOf(record, owned), resource);
+}
+
+/** Whether the record holds `resource`: under its ID, or under its create intent. */
+function holds(record: Deployment, owned: Owned<Resource>, resource: Resource): boolean {
+  return owned.id === resource.id || (owned.pending && marked(record, owned, resource));
 }
 
 function workerHost(record: Deployment): ProtectedHost {
@@ -350,7 +390,9 @@ function accessOwned(
   },
 ): Owned<AccessApp> {
   return {
+    kind: "access",
     label: `An Access application on ${host.hostname}`,
+    base: host.name,
     id: host.accessAppId,
     pending,
     nonce,
@@ -358,7 +400,6 @@ function accessOwned(
     candidates: () =>
       ctx.cloud.listAccessApps(host.hostname).filter((a) => a.domain === host.hostname),
     get: (id) => ctx.cloud.accessApp(id),
-    carries: (app, n) => app.name === nonceName(host.name, n),
     fits: (app) => accessAppFits(app, { ...host, name: nonceName(host.name, nonce) }),
     ...fields,
   };
@@ -406,13 +447,14 @@ function tunnelOwned(ctx: Context, record: Deployment): Owned<TunnelInfo> {
   const base = record.tunnel?.name ?? record.name;
   const nonce = record.tunnel?.nonce;
   return {
+    kind: "tunnel",
     label: `Cloudflare Tunnel ${base}`,
+    base,
     id: record.tunnel?.id,
     pending: record.tunnel?.createStartedAt !== undefined,
     nonce,
     candidates: () => ctx.cloud.tunnels({ prefix: base }).filter((t) => namedFor(t.name, base)),
     get: (id) => ctx.cloud.tunnel(id),
-    carries: (tunnel, n) => tunnel.name === nonceName(base, n),
     fits: (tunnel) => tunnel.name === nonceName(base, nonce),
     starting: (r, at, n) => withTunnel(r, { createStartedAt: at, nonce: n }, ["id"]),
     settled: (r, id) =>
@@ -426,22 +468,22 @@ function tunnelOwned(ctx: Context, record: Deployment): Owned<TunnelInfo> {
 function dnsOwned(ctx: Context, record: Deployment, hostname: string): Owned<DnsRecordInfo> {
   const tunnelId = record.tunnel?.id;
   const nonce = record.tunnel?.dnsNonce;
-  const carries = (r: DnsRecordInfo, n: string) => r.comment === dnsComment(record.name, n);
   return {
+    kind: "dns",
     label: `DNS record ${hostname}`,
+    base: hostname,
     id: record.tunnel?.dnsRecordId,
     pending: record.tunnel?.dnsCreateStartedAt !== undefined,
     nonce,
     candidates: () => ctx.cloud.dnsRecords({ name: hostname }),
     get: (id) => ctx.cloud.dnsRecord(id),
-    carries,
     fits: (r) =>
       tunnelId !== undefined &&
       r.name === hostname &&
       r.type === "CNAME" &&
       r.content === `${tunnelId}.cfargotunnel.com` &&
       r.proxied &&
-      (nonce === undefined || carries(r, nonce)),
+      (nonce === undefined || r.comment === dnsComment(record.name, nonce)),
     starting: (r, at, n) => withTunnel(r, { dnsCreateStartedAt: at, dnsNonce: n }, ["dnsRecordId"]),
     settled: (r, id) =>
       id === undefined
@@ -463,13 +505,14 @@ function vpcOwned(
     vpcServices: (r.vpcServices ?? []).map((s) => (s.name === base ? change(s) : s)),
   });
   return {
+    kind: "vpc",
     label: `Workers VPC service ${base}`,
+    base,
     id: service.id,
     pending: service.createStartedAt !== undefined,
     nonce: service.nonce,
     candidates: () => ctx.cloud.vpcServices().filter((v) => namedFor(v.name, base)),
     get: (id) => ctx.cloud.vpcService(id),
-    carries: (v, n) => v.name === nonceName(base, n),
     fits: (v) =>
       tunnelId !== undefined &&
       v.name === nonceName(base, service.nonce) &&
@@ -487,15 +530,41 @@ function vpcOwned(
 }
 
 /**
+ * The create intent for an R2 bucket the record names (guard.ts, pendingBuckets). The record
+ * keeps the bucket's name in `buckets` either way, so teardown deletes it if it exists.
+ */
+function bucketOwned(ctx: Context, name: string): Owned<Resource> {
+  const bucket = (id: string) => (ctx.cloud.bucketExists(id) ? { id, name: id } : undefined);
+  const without = (r: Deployment) => (r.pendingBuckets ?? []).filter((b) => b !== name);
+  return {
+    kind: "bucket",
+    label: `R2 bucket ${name}`,
+    base: name,
+    id: undefined,
+    pending: true,
+    nonce: undefined,
+    candidates: () => {
+      const found = bucket(name);
+      return found ? [found] : [];
+    },
+    get: bucket,
+    fits: () => true,
+    starting: (r) => ({ ...r, pendingBuckets: [...without(r), name] }),
+    settled: (r) => {
+      const { pendingBuckets: _, ...rest } = r;
+      const left = without(r);
+      return left.length > 0 ? { ...rest, pendingBuckets: left } : rest;
+    },
+  };
+}
+
+/**
  * The resource the record holds, looked up by its ID, whatever its name is now; undefined when
  * the record holds none or Cloudflare says it is gone. One that has changed, in name or
  * properties, is refused: someone changed it, and it stays, with the record and Access, for the
  * owner to reconcile.
  */
-function recorded<T extends { readonly id: string }>(
-  record: Deployment,
-  owned: Owned<T>,
-): T | undefined {
+function recorded<T extends Resource>(record: Deployment, owned: Owned<T>): T | undefined {
   if (owned.id === undefined) return undefined;
   const found = owned.get(owned.id);
   if (found && !owned.fits(found)) {
@@ -509,18 +578,19 @@ function recorded<T extends { readonly id: string }>(
 /**
  * Refuses to create a resource while anything the deployment does not hold already carries one
  * of the names the tool gives it: never adopted, never deleted, left for the owner to reconcile.
+ * Sweep tells whether it is a create of this tool that landed late.
  */
-function refuseOthers<T extends { readonly id: string }>(owned: Owned<T>): void {
+function refuseOthers<T extends Resource>(owned: Owned<T>): void {
   const others = owned.candidates();
   if (others.length > 0) {
     throw new Error(
-      `${owned.label}: ${others.length === 1 ? "one exists" : `${others.length} exist`} that this deployment did not create; inspect ${others.length === 1 ? "it" : "them"} in the dashboard`,
+      `${owned.label}: ${others.length === 1 ? "one exists" : `${others.length} exist`} that this deployment did not create; run sweep to see whether a create of this tool landed late, or inspect ${others.length === 1 ? "it" : "them"} in the dashboard`,
     );
   }
 }
 
 /** Every resource the record says the tool created or started to create. */
-function ownedOf(ctx: Context, record: Deployment): Owned<{ readonly id: string }>[] {
+function ownedOf(ctx: Context, record: Deployment): Owned<Resource>[] {
   const t = record.tunnel;
   return [
     workerAccess(ctx, record),
@@ -528,6 +598,7 @@ function ownedOf(ctx: Context, record: Deployment): Owned<{ readonly id: string 
     ...(t ? [tunnelOwned(ctx, record)] : []),
     ...(t?.hostname !== undefined ? [dnsOwned(ctx, record, t.hostname)] : []),
     ...(record.vpcServices ?? []).map((s) => vpcOwned(ctx, record, s)),
+    ...(record.pendingBuckets ?? []).map((b) => bucketOwned(ctx, b)),
   ];
 }
 
@@ -538,8 +609,9 @@ function ownedOf(ctx: Context, record: Deployment): Owned<{ readonly id: string 
  * else's: reported, never adopted or deleted. An intent from before nonces adopts nothing. If
  * none is listed, the create may still take effect: the command waits the settle time once,
  * unless it already has since taking the lock (`waited`), and lists again. A create still not
- * visible then is taken as never having happened, and its intent and nonce are removed. Returns
- * the record with no intent left.
+ * visible then may land later still (review r2, finding 5): its intent leaves the record, and
+ * the registry keeps it as a late create, which sweep watches for (guard.ts, LateCreate).
+ * Returns the record with no intent left.
  */
 function settleCreates(ctx: Context, start: Deployment, waited = false): Deployment {
   let record = start;
@@ -547,9 +619,8 @@ function settleCreates(ctx: Context, start: Deployment, waited = false): Deploym
   for (;;) {
     const unseen: string[] = [];
     for (const owned of ownedOf(ctx, record).filter((o) => o.pending)) {
-      const { nonce } = owned;
       const candidates = owned.candidates();
-      const found = candidates.filter((r) => nonce !== undefined && owned.carries(r, nonce));
+      const found = candidates.filter((r) => marked(record, owned, r));
       const others = candidates.length - found.length;
       if (others > 0) {
         ctx.log(
@@ -571,9 +642,13 @@ function settleCreates(ctx: Context, start: Deployment, waited = false): Deploym
     }
     if (unseen.length === 0) return record;
     if (slept) {
-      // A full settle time has passed since the run that started them ended: they never landed.
+      // A full settle time has passed since the run that started them ended. The registry keeps
+      // each as a late create before its intent leaves the record.
       for (const owned of ownedOf(ctx, record).filter((o) => unseen.includes(o.label))) {
+        const late: LateCreate = { ...createOf(record, owned), givenUpAt: ctx.now().toISOString() };
+        ctx.store.updateLateCreates((all) => [...all, late]);
         record = put(ctx, owned.settled(record, undefined));
+        ctx.log(`${owned.label} did not appear; sweep reports it if it lands later`);
       }
       return record;
     }
@@ -589,7 +664,7 @@ function settleCreates(ctx: Context, start: Deployment, waited = false): Deploym
  * Records a create intent with a fresh nonce, creates the resource with that nonce, then records
  * its ID in place of the intent.
  */
-function createOwned<T extends { readonly id: string }>(
+function createOwned<T extends Resource>(
   ctx: Context,
   start: Deployment,
   owned: Owned<T>,
@@ -935,7 +1010,11 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     // interrupted run of this deploy created after recording it.
     for (const bucket of declared.buckets) {
       if (!ctx.cloud.bucketExists(bucket)) {
-        ctx.cloud.createBucket(bucket);
+        // R2 has no field for the nonce, so this create leaves it unused.
+        ({ record } = createOwned(ctx, record, bucketOwned(ctx, bucket), () => {
+          ctx.cloud.createBucket(bucket);
+          return bucket;
+        }));
         ctx.log(`created R2 bucket ${bucket}`);
       }
     }
@@ -1030,7 +1109,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
  * it stays, and so do the record entry and Access, for the owner to reconcile. Nothing found by
  * name alone is ever deleted.
  */
-function removeOwned<T extends { readonly id: string }>(
+function removeOwned<T extends Resource>(
   record: Deployment,
   owned: Owned<T>,
   remove: (id: string) => void,
@@ -1169,46 +1248,123 @@ export function teardown(
   });
 }
 
-/** Whether a record holds `resource`: under its ID, or under a create intent by its nonce. */
-function holds<T extends { readonly id: string }>(owned: Owned<T>, resource: T): boolean {
-  return (
-    owned.id === resource.id ||
-    (owned.pending && owned.nonce !== undefined && owned.carries(resource, owned.nonce))
-  );
+/**
+ * A resource with the staging prefix that no record holds. `late` is the given-up create
+ * (guard.ts, LateCreate) whose nonce it carries or, for a bucket, whose name it has. `remove`,
+ * set only for one that carries a nonce, deletes it by ID and checks that it is gone.
+ */
+interface Unowned {
+  readonly label: string;
+  readonly late: LateCreate | undefined;
+  readonly remove?: () => void;
 }
 
 /**
- * Tunnels, Workers VPC services and DNS records that carry the staging prefix but that no
- * record holds: left by hand, by a lost registry, or by a create that landed after its intent
- * was given up. A deployment's own hostname is a Workers custom domain, not an orphan. Orphans
- * are reported and never deleted, since nothing shows who made them.
+ * Every resource with the staging prefix that no record holds, of each kind the tool creates,
+ * in the order sweep deletes late ones: VPC services, DNS records, Tunnels, buckets, then Access
+ * applications. A deployment's own hostname is a Workers custom domain, not an orphan.
  */
-function orphans(ctx: Context): string[] {
+function unowned(ctx: Context): Unowned[] {
   const deployments = ctx.store.load();
-  const found: string[] = [];
-  for (const t of ctx.cloud.tunnels({ prefix: STAGING_PREFIX })) {
-    const held = deployments.some((d) => d.tunnel && holds(tunnelOwned(ctx, d), t));
-    if (!held) found.push(`Cloudflare Tunnel ${t.name}`);
-  }
+  const lateCreates = ctx.store.lateCreates();
+  const heldBy = (resource: Resource, ownedIn: (d: Deployment) => Owned<Resource>[]) =>
+    deployments.some((d) => ownedIn(d).some((owned) => holds(d, owned, resource)));
+  const found: Unowned[] = [];
+  const add = <T extends Resource>(
+    kind: LateCreateKind,
+    label: string,
+    resource: T,
+    get: (id: string) => T | undefined,
+    remove: (id: string) => void,
+  ) => {
+    const late = lateCreates.find(
+      (l) =>
+        l.kind === kind && (kind === "bucket" ? l.name === resource.name : madeBy(l, resource)),
+    );
+    if (late?.nonce === undefined) {
+      found.push({ label, late });
+      return;
+    }
+    // Checked again by ID under the deployment's lock: delete exactly what carries the nonce.
+    const removeLate = () => {
+      const current = get(resource.id);
+      if (current && madeBy(late, current)) remove(resource.id);
+      if (get(resource.id)) throw new Error(`${label} still exists`);
+    };
+    found.push({ label, late, remove: removeLate });
+  };
+
   for (const v of ctx.cloud.vpcServices()) {
     if (!v.name.startsWith(STAGING_PREFIX)) continue;
-    const held = deployments.some((d) => d.vpcServices?.some((s) => holds(vpcOwned(ctx, d, s), v)));
-    if (!held) found.push(`Workers VPC service ${v.name}`);
+    if (heldBy(v, (d) => (d.vpcServices ?? []).map((s) => vpcOwned(ctx, d, s)))) continue;
+    add(
+      "vpc",
+      `Workers VPC service ${v.name}`,
+      v,
+      (id) => ctx.cloud.vpcService(id),
+      (id) => ctx.cloud.deleteVpcService(id),
+    );
   }
   for (const r of ctx.cloud.dnsRecords({ prefix: STAGING_PREFIX })) {
-    const held = deployments.some(
-      (d) =>
-        d.hostname === r.name ||
-        (d.tunnel?.hostname !== undefined && holds(dnsOwned(ctx, d, d.tunnel.hostname), r)),
+    if (deployments.some((d) => d.hostname === r.name)) continue;
+    const dnsIn = (d: Deployment) =>
+      d.tunnel?.hostname !== undefined ? [dnsOwned(ctx, d, d.tunnel.hostname)] : [];
+    if (heldBy(r, dnsIn)) continue;
+    add(
+      "dns",
+      `${r.type} record ${r.name}`,
+      r,
+      (id) => ctx.cloud.dnsRecord(id),
+      (id) => ctx.cloud.deleteDnsRecord(id),
     );
-    if (!held) found.push(`${r.type} record ${r.name}`);
+  }
+  for (const t of ctx.cloud.tunnels({ prefix: STAGING_PREFIX })) {
+    if (heldBy(t, (d) => (d.tunnel ? [tunnelOwned(ctx, d)] : []))) continue;
+    add(
+      "tunnel",
+      `Cloudflare Tunnel ${t.name}`,
+      t,
+      (id) => ctx.cloud.tunnel(id),
+      (id) => ctx.cloud.deleteTunnel(id),
+    );
+  }
+  for (const name of ctx.cloud.bucketNames(STAGING_PREFIX)) {
+    if (deployments.some((d) => d.buckets?.includes(name))) continue;
+    // A bucket carries no nonce, so it is never deleted here: nothing proves whose it is.
+    found.push({
+      label: `R2 bucket ${name}`,
+      late: lateCreates.find((l) => l.kind === "bucket" && l.name === name),
+    });
+  }
+  for (const app of ctx.cloud.accessAppsNamed(STAGING_PREFIX)) {
+    const accessIn = (d: Deployment) => [
+      workerAccess(ctx, d),
+      ...(d.tunnel?.hostname ? [tunnelAccess(ctx, d, d.tunnel.hostname)] : []),
+    ];
+    if (heldBy(app, accessIn)) continue;
+    add(
+      "access",
+      `Access application ${app.name} on ${app.domain}`,
+      app,
+      (id) => ctx.cloud.accessApp(id),
+      (id) => {
+        // It may still be all that keeps the owner-only gate on its hostname.
+        const served =
+          ctx.cloud.dnsRecords({ name: app.domain }).length > 0 ||
+          ctx.cloud.workerDomains().some((w) => w.hostname === app.domain);
+        if (served) throw new Error(`${app.domain} still has a DNS record or a Worker`);
+        ctx.cloud.deleteAccessApp(id);
+      },
+    );
   }
   return found;
 }
 
 /**
- * Lists expired deployments and, with `apply`, tears each one down, then reports orphaned
- * staging resources. Returns the failures.
+ * Lists expired deployments and, with `apply`, tears each one down. Then reports every staging
+ * resource no record holds, and, with `apply`, deletes those that carry the nonce of a create the
+ * registry lists as given up: this tool's, landed late. Nothing else unowned is ever deleted.
+ * Returns the failures.
  */
 export function sweep(ctx: Context, apply: boolean): string[] {
   const now = ctx.now();
@@ -1216,6 +1372,8 @@ export function sweep(ctx: Context, apply: boolean): string[] {
   if (due.length === 0) ctx.log("no expired deployments");
   for (const d of due) ctx.log(`expired: ${d.name} (owner ${d.owner}, ${d.state})`);
   const failures: string[] = [];
+  const failed = (what: string, error: unknown) =>
+    failures.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
   if (!apply) {
     if (due.length > 0) ctx.log("re-run with --yes to remove them");
   } else {
@@ -1229,17 +1387,37 @@ export function sweep(ctx: Context, apply: boolean): string[] {
         // Another command may have removed or redeployed it since the list was read.
         teardown(ctx, d.name, { ifPresent: true, ifExpiredAt: now });
       } catch (error) {
-        failures.push(`${d.name}: ${error instanceof Error ? error.message : String(error)}`);
+        failed(d.name, error);
       }
     }
   }
   try {
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
-    for (const orphan of orphans(ctx)) {
-      ctx.log(`orphan: ${orphan} has the staging prefix, but no record owns it; left in place`);
+    for (const { label, late, remove } of unowned(ctx)) {
+      if (late === undefined) {
+        ctx.log(`orphan: ${label} has the staging prefix, but no record owns it; left in place`);
+      } else if (remove === undefined) {
+        ctx.log(
+          `late?: ${label} has the name of a create of ${late.deployment} given up at ${late.givenUpAt}, but carries no nonce to prove it; left in place for you to check`,
+        );
+      } else if (!apply) {
+        ctx.log(
+          `late: ${label} is a create of ${late.deployment} that landed after it was given up at ${late.givenUpAt}; re-run with --yes to delete it`,
+        );
+      } else {
+        try {
+          locked(ctx, late.deployment, remove);
+          ctx.store.updateLateCreates((all) =>
+            all.filter((l) => !(l.kind === late.kind && l.nonce === late.nonce)),
+          );
+          ctx.log(`late: deleted ${label}, a create of ${late.deployment} that landed late`);
+        } catch (error) {
+          failed(label, error);
+        }
+      }
     }
   } catch (error) {
-    failures.push(`orphan check: ${error instanceof Error ? error.message : String(error)}`);
+    failed("orphan check", error);
   }
   return failures;
 }

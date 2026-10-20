@@ -55,6 +55,8 @@ export interface Deployment {
   readonly containers?: readonly string[];
   /** R2 buckets the deployment created, named like its containers. Teardown empties and deletes them. */
   readonly buckets?: readonly string[];
+  /** Create intents for buckets, by name (see the create intents below). */
+  readonly pendingBuckets?: readonly string[];
   /**
    * Registry repositories the deployment's containers push to, besides the ones named after a
    * container (the default scheduling policy): a `durable_object`-policy container pushes to
@@ -120,6 +122,10 @@ export interface VpcServiceRecord {
  * ID. Recovery adopts only a resource that carries the intent's own nonce, with exactly the
  * properties the tool gave it; anything else under the tool's names is refused, never adopted.
  * A record from before nonces holds IDs without one, for resources named exactly the base.
+ *
+ * R2 gives a bucket no field for a nonce, and the Wrangler configuration fixes its name, so a
+ * bucket's intent (`pendingBuckets`) adopts the bucket by name: the record named it before the
+ * create, after checking that no bucket had the name.
  */
 
 /**
@@ -1130,14 +1136,48 @@ export function parseJsonc(text: string): unknown {
 
 const STATES: readonly string[] = ["pending", "deployed", "deleting"];
 
-/** Parses `.staging/resources.json`. Unknown formats are refused, never guessed at. */
 /**
  * The registry format. Version 3 changed what an interrupted upload means (IR-001): version 2
  * files from earlier tools may carry `settleUntil`, a wall-clock deadline the current tool no
- * longer trusts. Tools that predate version 3 check for exactly version 2, so they refuse a
- * version 3 file instead of misreading it.
+ * longer trusts. Version 4 adds `lateCreates`, which an earlier tool would drop. Each version's
+ * tools accept only the versions they know, so they refuse a newer file instead of misreading it.
  */
-export const REGISTRY_VERSION = 3;
+export const REGISTRY_VERSION = 4;
+
+export type LateCreateKind = "access" | "tunnel" | "dns" | "vpc" | "bucket";
+const LATE_KINDS: readonly string[] = ["access", "tunnel", "dns", "vpc", "bucket"];
+
+/**
+ * A create the tool gave up on: after the settle wait Cloudflare still showed nothing, so the
+ * intent left its record (ops.ts, settleCreates). Nothing proves such a create never lands
+ * (review r2, finding 5), so the registry keeps it. Sweep flags a resource that carries its
+ * nonce as this tool's, landed late, and `sweep --yes` deletes exactly those. A bucket has no
+ * place for a nonce, and an intent from before nonces has none: one under the name is reported
+ * as maybe this tool's, and left for the owner.
+ */
+export interface LateCreate {
+  readonly kind: LateCreateKind;
+  readonly deployment: string;
+  /** The name the tool gives the resource, before its nonce; for a DNS record, its hostname. */
+  readonly name: string;
+  readonly nonce?: string;
+  readonly givenUpAt: string;
+}
+
+/** Whether `resource` is what a create made: it carries that create's nonce. */
+export function madeBy(
+  create: Omit<LateCreate, "givenUpAt">,
+  resource: { readonly name: string; readonly comment?: string | undefined },
+): boolean {
+  if (create.nonce === undefined) return false;
+  if (create.kind === "dns") {
+    return (
+      resource.name === create.name &&
+      resource.comment === dnsComment(create.deployment, create.nonce)
+    );
+  }
+  return resource.name === nonceName(create.name, create.nonce);
+}
 
 const DEPLOYMENT_KEYS = [
   "name",
@@ -1154,6 +1194,7 @@ const DEPLOYMENT_KEYS = [
   "uploadInterruptedAt",
   "containers",
   "buckets",
+  "pendingBuckets",
   "repositories",
   "tunnel",
   "vpcServices",
@@ -1218,9 +1259,9 @@ function validVpcServices(value: unknown): boolean {
 export function parseRegistry(json: unknown): Deployment[] {
   const file = json as { version?: unknown; deployments?: unknown };
   const version = file && typeof file === "object" ? file.version : undefined;
-  if ((version !== 2 && version !== REGISTRY_VERSION) || !Array.isArray(file.deployments)) {
+  if (![2, 3, REGISTRY_VERSION].includes(version as number) || !Array.isArray(file.deployments)) {
     throw new Error(
-      `unrecognised staging registry format; expected version 2 or ${REGISTRY_VERSION}`,
+      `unrecognised staging registry format; expected version 2 to ${REGISTRY_VERSION}`,
     );
   }
   return file.deployments.map((entry: unknown) => {
@@ -1260,6 +1301,7 @@ export function parseRegistry(json: unknown): Deployment[] {
       (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||
       !names(d.containers) ||
       !names(d.buckets) ||
+      !names(d.pendingBuckets) ||
       !names(d.repositories) ||
       !validTunnel(d.tunnel) ||
       !validVpcServices(d.vpcServices) ||
@@ -1272,6 +1314,32 @@ export function parseRegistry(json: unknown): Deployment[] {
   });
 }
 
-export function serializeRegistry(deployments: readonly Deployment[]): string {
-  return `${JSON.stringify({ version: REGISTRY_VERSION, deployments }, null, 2)}\n`;
+/** The registry's late creates; a file before version 4 has none. */
+export function parseLateCreates(json: unknown): LateCreate[] {
+  parseRegistry(json);
+  const file = json as { version: unknown; lateCreates?: unknown };
+  if (file.version !== REGISTRY_VERSION || file.lateCreates === undefined) return [];
+  if (!Array.isArray(file.lateCreates)) throw new Error("malformed late creates in the registry");
+  return file.lateCreates.map((entry: unknown) => {
+    const ok =
+      isObject(entry) &&
+      keysOutside(entry, ["kind", "deployment", "name", "nonce", "givenUpAt"]).length === 0 &&
+      LATE_KINDS.includes(entry.kind as string) &&
+      typeof entry.deployment === "string" &&
+      typeof entry.name === "string" &&
+      entry.name.startsWith(STAGING_PREFIX) &&
+      validNonce(entry.nonce) &&
+      typeof entry.givenUpAt === "string" &&
+      entry.givenUpAt !== "";
+    if (!ok) throw new Error("malformed late create in the staging registry");
+    assertManaged(entry.deployment as string);
+    return entry as unknown as LateCreate;
+  });
+}
+
+export function serializeRegistry(
+  deployments: readonly Deployment[],
+  lateCreates: readonly LateCreate[] = [],
+): string {
+  return `${JSON.stringify({ version: REGISTRY_VERSION, deployments, lateCreates }, null, 2)}\n`;
 }

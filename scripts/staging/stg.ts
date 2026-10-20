@@ -10,8 +10,9 @@
 //   node scripts/staging/stg.ts teardown --suffix <s>
 //   node scripts/staging/stg.ts sweep [--yes]
 //
-// sweep lists expired deployments (removed with --yes) and reports staging Tunnels, VPC
-// services and DNS records that no record owns, which it never removes.
+// sweep lists expired deployments (removed with --yes) and reports every staging bucket, Access
+// application, Tunnel, VPC service and DNS record that no record owns. Of those it removes, with
+// --yes, only the ones that carry the nonce of a create the tool gave up on: its own, landed late.
 //
 // A Durable Object binding may name another deployment in script_name if the registry shows it
 // deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
@@ -34,10 +35,13 @@
 // Before a deployment's first upload, its Worker name and hostname must be free, since
 // Wrangler's --domain takes them over. A deploy that binds another deployment's Durable Objects
 // holds that deployment's lock too, and a deployment that another one binds is not torn down.
-// Every create is recorded as an intent first; a command that finds one unresolved after an
-// interrupted run waits the settle time (five minutes) once before deciding. No cf or Wrangler
-// command lists a zone's Worker routes, so whether the Tunnel hostname's route went with its
-// Worker at teardown is checked by hand.
+// Every create is recorded as an intent with a random nonce first, and the resource carries the
+// nonce in its name (a DNS record in its comment), so only what that create made is ever
+// adopted. A command that finds an intent unresolved after an interrupted run waits the settle
+// time (five minutes) once; a create still not seen then is kept in the registry as a late
+// create, which sweep looks for. R2 buckets carry no nonce: their names are adopted, and a late
+// one is only reported. No cf or Wrangler command lists a zone's Worker routes, so whether the
+// Tunnel hostname's route went with its Worker at teardown is checked by hand.
 //
 // State lives outside the repository, so that every worktree on this laptop shares one
 // registry and one set of locks: $CFO_STAGING_DIR, or ~/.config/cloudflare-omnigent/staging.

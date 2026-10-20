@@ -10,7 +10,10 @@ import {
   dependencyCycle,
   dnsComment,
   type IngressRule,
+  type LateCreate,
+  madeBy,
   nonceName,
+  parseLateCreates,
   parseRegistry,
   serializeRegistry,
   type TunnelInfo,
@@ -45,7 +48,13 @@ class FakeStore implements Store {
     return parseRegistry(JSON.parse(this.text));
   }
   update(change: (current: Deployment[]) => Deployment[]): void {
-    if (!this.frozen) this.text = serializeRegistry(change(this.load()));
+    if (!this.frozen) this.text = serializeRegistry(change(this.load()), this.lateCreates());
+  }
+  lateCreates(): LateCreate[] {
+    return parseLateCreates(JSON.parse(this.text));
+  }
+  updateLateCreates(change: (current: LateCreate[]) => LateCreate[]): void {
+    if (!this.frozen) this.text = serializeRegistry(this.load(), change(this.lateCreates()));
   }
 }
 
@@ -195,9 +204,17 @@ class FakeCloud implements Cloud {
       if (!this.protectedByOwner(hostname))
         this.violations.push(`${name} reachable without Access`);
     }
-    // A DNS record makes the Tunnel hostname reachable, through the Worker route or not.
+    // A DNS record makes the Tunnel hostname reachable while the Tunnel it points to, or the
+    // Worker whose route covers the hostname, exists. A create that lands after its teardown
+    // finds neither.
     for (const record of this.dns.values()) {
-      if (!this.protectedByOwner(record.name)) {
+      const tunnel = [...this.tunnels_.keys()].some(
+        (id) => record.content === `${id}.cfargotunnel.com`,
+      );
+      const worker = [...this.workers.keys()].some(
+        (name) => record.name === `${name}-tunnel.example.com`,
+      );
+      if ((tunnel || worker) && !this.protectedByOwner(record.name)) {
         this.violations.push(`${record.name} reachable without Access`);
       }
     }
@@ -228,6 +245,11 @@ class FakeCloud implements Cloud {
     this.calls.push("access.list");
     if (this.hideAccessApps) return [];
     return [...this.apps.values()].filter((app) => app.domain === hostname);
+  }
+  accessAppsNamed(prefix: string): AccessApp[] {
+    this.tick();
+    this.calls.push("access.list-named");
+    return [...this.apps.values()].filter((app) => app.name.startsWith(prefix));
   }
   createAccessApp(body: Record<string, unknown>): string {
     this.tick();
@@ -370,8 +392,12 @@ class FakeCloud implements Cloud {
   }
   createBucket(name: string): void {
     this.tick();
-    this.calls.push(`bucket.create ${name}`);
-    this.buckets.add(name);
+    this.effect(`bucket.create ${name}`, () => this.buckets.add(name));
+  }
+  bucketNames(prefix: string): string[] {
+    this.tick();
+    this.calls.push("bucket.list");
+    return [...this.buckets].filter((b) => b.startsWith(prefix));
   }
   emptyAndDeleteBucket(name: string): void {
     this.tick();
@@ -476,8 +502,12 @@ class FakeCloud implements Cloud {
     if (!this.vpcDeleteKeeps) this.vpc.delete(id);
     this.did(`vpc.delete ${bare(name)}`);
   }
-  /** Every bucket, container application, image, Tunnel, DNS and VPC service is recorded. */
-  unrecorded(deployments: readonly Deployment[]): string[] {
+  /**
+   * Every bucket, container application, image, Tunnel, DNS and VPC service is recorded, or is
+   * what a create the registry lists as given up made.
+   */
+  unrecorded(deployments: readonly Deployment[], late: readonly LateCreate[] = []): string[] {
+    const made = (r: { name: string; comment?: string }) => late.some((l) => madeBy(l, r));
     const containers = new Set(deployments.flatMap((d) => d.containers ?? []));
     const buckets = new Set(deployments.flatMap((d) => d.buckets ?? []));
     const repositories = new Set([
@@ -499,14 +529,20 @@ class FakeCloud implements Cloud {
       deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => nonceName(s.name, s.nonce))),
     );
     return [
-      ...[...this.buckets].filter((b) => !buckets.has(b)),
+      ...[...this.buckets].filter(
+        (b) => !buckets.has(b) && !late.some((l) => l.kind === "bucket" && l.name === b),
+      ),
       ...[...this.containerApps_.values()].filter((c) => !containers.has(c)),
       ...[...this.images].filter((i) => !repositories.has(i.slice(0, i.lastIndexOf(":")))),
-      ...[...this.tunnels_.values()].map((t) => t.name).filter((n) => !tunnels.has(n)),
+      ...[...this.tunnels_.values()]
+        .map((t) => t.name)
+        .filter((n) => !tunnels.has(n) && !made({ name: n })),
       ...[...this.dns.values()]
-        .filter((r) => !comments.has(`${r.name} ${r.comment}`))
+        .filter((r) => !comments.has(`${r.name} ${r.comment}`) && !made(r))
         .map((r) => r.name),
-      ...[...this.vpc.values()].map((s) => s.name).filter((n) => !services.has(n)),
+      ...[...this.vpc.values()]
+        .map((s) => s.name)
+        .filter((n) => !services.has(n) && !made({ name: n })),
     ];
   }
   /** How many Tunnels, DNS records and VPC services exist. */
@@ -875,7 +911,14 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
     cloud.calls.length = 0;
     expect(sweep(ctx, false)).toEqual([]);
     // Only the account check and the listings of the orphan report.
-    expect(cloud.calls).toEqual(["accounts", "tunnel.list", "vpc.list", "dns.list"]);
+    expect(cloud.calls).toEqual([
+      "accounts",
+      "vpc.list",
+      "dns.list",
+      "tunnel.list",
+      "bucket.list",
+      "access.list-named",
+    ]);
     expect(record()?.state).toBe("deployed");
   });
 });
@@ -976,7 +1019,7 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
     expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
     expect(cloud.apps.size).toBe(1);
     expect(cloud.violations).toEqual([]);
-    expect(JSON.parse(store.text).version).toBe(3);
+    expect(JSON.parse(store.text).version).toBe(4);
     teardown(ctx, "cfo-stg-a");
     elapse(SETTLE);
     cloud.tick();
@@ -1245,12 +1288,12 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       tunnel: {
         name: "cfo-stg-a",
         id: "tunnel-3",
-        nonce: "a0000002",
+        nonce: "a0000003",
         hostname: HOST,
         accessAppId: "app-2",
         accessNonce: "a0000001",
         dnsRecordId: "dns-4",
-        dnsNonce: "a0000003",
+        dnsNonce: "a0000004",
       },
       vpcServices: [
         {
@@ -1258,15 +1301,15 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
           binding: "X1_VPC",
           port: 8081,
           id: "vpc-5",
-          nonce: "a0000004",
+          nonce: "a0000005",
         },
       ],
     });
     // Each resource carries its create's nonce, in its name or, for the DNS record, its comment.
     expect(cloud.apps.get("app-1")?.name).toBe("cfo-stg-a--a0000000");
-    expect(cloud.tunnels_.get("tunnel-3")?.name).toBe("cfo-stg-a--a0000002");
-    expect(cloud.vpc.get("vpc-5")?.name).toBe("cfo-stg-a-x1-vpc--a0000004");
-    expect(cloud.dns.get("dns-4")?.comment).toBe("cfo-stg-a: staging tool a0000003");
+    expect(cloud.tunnels_.get("tunnel-3")?.name).toBe("cfo-stg-a--a0000003");
+    expect(cloud.vpc.get("vpc-5")?.name).toBe("cfo-stg-a-x1-vpc--a0000005");
+    expect(cloud.dns.get("dns-4")?.comment).toBe("cfo-stg-a: staging tool a0000004");
     expect(cloud.apps.get("app-2")).toMatchObject({
       name: "cfo-stg-a-tunnel--a0000001",
       domain: HOST,
@@ -1757,9 +1800,9 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       logs.length = 0;
       expect(sweep(ctx, apply)).toEqual([]);
       expect(logs.filter((l) => l.startsWith("orphan:"))).toEqual([
-        "orphan: Cloudflare Tunnel cfo-stg-old has the staging prefix, but no record owns it; left in place",
         "orphan: Workers VPC service cfo-stg-old-vpc has the staging prefix, but no record owns it; left in place",
         "orphan: CNAME record cfo-stg-old-tunnel.example.com has the staging prefix, but no record owns it; left in place",
+        "orphan: Cloudflare Tunnel cfo-stg-old has the staging prefix, but no record owns it; left in place",
       ]);
     }
     expect(everything()).toBe(before);
@@ -2012,6 +2055,129 @@ describe("review r2, finding 2: only what carries its create's nonce is adopted"
     teardown(ctx, "cfo-stg-a");
     expect(cloud.tunnels_.has(id)).toBe(true);
     expect(store.load()).toEqual([]);
+  });
+});
+
+describe("review r2, finding 5: creates that land after they were given up", () => {
+  const everything = () =>
+    cloud.tunnelResources() + cloud.apps.size + cloud.workers.size + cloud.buckets.size;
+  const lateLogs = () => logs.filter((l) => l.startsWith("late"));
+
+  it("waits for a bucket create that lost its answer, and deletes the bucket with the rest", () => {
+    // Codex's reproduction: the bucket's create loses its answer before the upload starts.
+    cloud.lateCreate = { prefix: "bucket.create", delay: SETTLE / 2, die: false };
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow("no answer");
+    expect(record()?.pendingBuckets).toEqual(["cfo-stg-a-data"]);
+    teardown(ctx, "cfo-stg-a");
+    expect(store.load()).toEqual([]);
+    elapse(SETTLE);
+    cloud.tick();
+    expect(everything()).toBe(0);
+    expect(store.lateCreates()).toEqual([]);
+  });
+
+  it("keeps a Tunnel create that lands after the settle wait, and sweep --yes deletes it", () => {
+    // Codex's reproduction: the create lands just after the settle time.
+    cloud.lateCreate = { prefix: "tunnel.create", delay: SETTLE + 1_000, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    const nonce = record()?.tunnel?.nonce;
+    teardown(ctx, "cfo-stg-a");
+    expect(store.load()).toEqual([]);
+    expect(store.lateCreates()).toEqual([
+      {
+        kind: "tunnel",
+        deployment: "cfo-stg-a",
+        name: "cfo-stg-a",
+        nonce,
+        givenUpAt: new Date(clock).toISOString(),
+      },
+    ]);
+    elapse(SETTLE);
+    cloud.tick();
+    expect(cloud.tunnels_.size).toBe(1);
+    // Someone else's Tunnel under a staging name is reported, and never deleted.
+    cloud.tunnels_.set("theirs", { name: "cfo-stg-a--0badc0de", ingress: [], token: "x" });
+    logs.length = 0;
+    expect(sweep(ctx, false)).toEqual([]);
+    expect(lateLogs()).toEqual([
+      `late: Cloudflare Tunnel cfo-stg-a--${nonce} is a create of cfo-stg-a that landed after it was given up at ${new Date(clock - SETTLE).toISOString()}; re-run with --yes to delete it`,
+    ]);
+    expect(cloud.tunnels_.size).toBe(2);
+    logs.length = 0;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(lateLogs()).toEqual([
+      `late: deleted Cloudflare Tunnel cfo-stg-a--${nonce}, a create of cfo-stg-a that landed late`,
+    ]);
+    expect([...cloud.tunnels_.keys()]).toEqual(["theirs"]);
+    expect(store.lateCreates()).toEqual([]);
+    expect(logs).toContain(
+      "orphan: Cloudflare Tunnel cfo-stg-a--0badc0de has the staging prefix, but no record owns it; left in place",
+    );
+  });
+
+  it("reports a bucket that lands late, and never deletes it: no nonce proves whose it is", () => {
+    cloud.lateCreate = { prefix: "bucket.create", delay: SETTLE + 1_000, die: true };
+    expect(() => deploy(ctx, request("a", 7, withResources("a")))).toThrow(ProcessLost);
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect([...cloud.buckets]).toEqual(["cfo-stg-a-data"]);
+    logs.length = 0;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(lateLogs()).toEqual([
+      `late?: R2 bucket cfo-stg-a-data has the name of a create of cfo-stg-a given up at ${new Date(clock - SETTLE).toISOString()}, but carries no nonce to prove it; left in place for you to check`,
+    ]);
+    expect([...cloud.buckets]).toEqual(["cfo-stg-a-data"]);
+    expect(store.lateCreates()).toHaveLength(1);
+  });
+
+  it("deletes a late Access application only once nothing is served on its hostname", () => {
+    // The first deploy's application lands only after the next deploy gave it up.
+    cloud.lateCreate = { prefix: "access.create", delay: SETTLE + 1_000, die: true };
+    expect(() => deploy(ctx, request())).toThrow(ProcessLost);
+    restart();
+    deploy(ctx, request());
+    expect(store.lateCreates()).toHaveLength(1);
+    elapse(SETTLE);
+    cloud.tick();
+    expect(cloud.apps.size).toBe(2);
+    expect(sweep(ctx, true)).toEqual([
+      expect.stringMatching(
+        /^Access application cfo-stg-a--a[0-9a-f]+ on cfo-stg-a\.example\.com: cfo-stg-a\.example\.com still has a DNS record or a Worker$/,
+      ),
+    ]);
+    expect(cloud.apps.size).toBe(2);
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.apps.size).toBe(1);
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(everything()).toBe(0);
+    expect(store.lateCreates()).toEqual([]);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("reports unowned staging buckets and Access applications too, and deletes neither", () => {
+    deploy(ctx, request());
+    cloud.buckets.add("cfo-stg-old-data");
+    cloud.buckets.add("production-data");
+    const app = cloud.apps.get(record()?.accessAppId ?? "");
+    if (!app) throw new Error("missing app");
+    cloud.apps.set("lost", {
+      ...app,
+      id: "lost",
+      name: "cfo-stg-old",
+      domain: "cfo-stg-old.example.com",
+    });
+    cloud.apps.set("prod", { ...app, id: "prod", name: "Production", domain: "example.com" });
+    logs.length = 0;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(logs.filter((l) => l.startsWith("orphan:"))).toEqual([
+      "orphan: R2 bucket cfo-stg-old-data has the staging prefix, but no record owns it; left in place",
+      "orphan: Access application cfo-stg-old on cfo-stg-old.example.com has the staging prefix, but no record owns it; left in place",
+    ]);
+    expect(cloud.buckets.size).toBe(2);
+    expect(cloud.apps.size).toBe(3);
   });
 });
 
@@ -2566,9 +2732,17 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "dns.create",
         "vpc.create",
       ),
-      // One create takes effect late, and its caller dies or hears nothing.
-      late: fc.constantFrom("none", "access.create", "tunnel.create", "dns.create", "vpc.create"),
-      lateCreateDelay: fc.integer({ min: 0, max: SETTLE - 1 }),
+      // One create takes effect late, and its caller dies or hears nothing. It may land after
+      // the settle wait (review r2, finding 5).
+      late: fc.constantFrom(
+        "none",
+        "access.create",
+        "tunnel.create",
+        "dns.create",
+        "vpc.create",
+        "bucket.create",
+      ),
+      lateCreateDelay: fc.integer({ min: 0, max: 2 * SETTLE }),
       lateDies: fc.boolean(),
       // The Worker binds the other deployment's Durable Objects: a binds b, or b binds a.
       binds: fc.boolean(),
@@ -2654,8 +2828,10 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           }
           restart();
           expect(cloud.violations).toEqual([]);
-          // Nothing exists in the cloud without a record to clean it up.
+          // Nothing exists in the cloud without a record to clean it up, or a late create that
+          // sweep finds it by.
           const recorded = new Set(store.load().map((d) => d.name));
+          const late = store.lateCreates();
           // An application is held under its ID, or under a create intent by its nonce.
           const heldApps = new Set(
             store
@@ -2669,9 +2845,10 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           );
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
           for (const app of cloud.apps.values()) {
-            expect(heldApps.has(app.id) || heldApps.has(app.name)).toBe(true);
+            const lateApp = late.some((l) => madeBy(l, app));
+            expect(heldApps.has(app.id) || heldApps.has(app.name) || lateApp).toBe(true);
           }
-          expect(cloud.unrecorded(store.load())).toEqual([]);
+          expect(cloud.unrecorded(store.load(), late)).toEqual([]);
           // Nothing a record depends on is gone from the registry.
           for (const d of store.load()) {
             for (const target of d.dependsOn ?? []) expect(recorded.has(target)).toBe(true);
@@ -2695,14 +2872,19 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         }
         expect(cloud.violations).toEqual([]);
         expect(store.load()).toEqual([]);
-        expect(cloud.workers.size + cloud.apps.size).toBe(0);
-        // Every lost upload and late create has had its time; none may land after the cleanup.
-        elapse(SETTLE);
+        expect(cloud.workers.size).toBe(0);
+        // Every lost upload and late create has its time. Sweep then deletes each late create
+        // that carries its nonce, and leaves only buckets, which carry none.
+        elapse(2 * SETTLE);
         cloud.tick();
-        expect(cloud.workers.size + cloud.apps.size).toBe(0);
         expect(cloud.lateEffects).toEqual([]);
-        expect(cloud.buckets.size + cloud.containerApps_.size + cloud.images.size).toBe(0);
+        expect(sweep(ctx, true)).toEqual([]);
+        expect(cloud.workers.size + cloud.apps.size).toBe(0);
+        expect(cloud.containerApps_.size + cloud.images.size).toBe(0);
         expect(cloud.tunnelResources()).toBe(0);
+        const lateBuckets = store.lateCreates().map((l) => l.kind === "bucket" && l.name);
+        for (const bucket of cloud.buckets) expect(lateBuckets).toContain(bucket);
+        expect(store.lateCreates().filter((l) => l.kind !== "bucket")).toEqual([]);
         expect(cloud.violations).toEqual([]);
       }),
       { numRuns: 300 },
