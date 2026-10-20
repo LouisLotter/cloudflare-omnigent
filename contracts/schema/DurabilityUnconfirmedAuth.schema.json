@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "applied": {
+      "const": true,
+      "type": "boolean"
+    },
+    "code": {
+      "const": "durability_unconfirmed",
+      "type": "string"
+    },
+    "error": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "error",
+    "code",
+    "applied"
+  ],
+  "title": "DurabilityUnconfirmedAuth",
+  "type": "object"
+}

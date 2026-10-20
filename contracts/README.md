@@ -4,7 +4,7 @@ The wire contract between the Worker and the processes in its containers: the co
 
 | Path | Contents |
 |---|---|
-| `src/` | The zod schemas: IDs, the error body, the supervisor protocol. `wireSchemas` in `src/index.ts` registers every schema that crosses a boundary. |
+| `src/` | The zod schemas: IDs and timestamps, the error body, the supervisor protocol, and M2's contracts: the Access assertion claims, the two 424 "durability unconfirmed" bodies, the outage record and the bootstrap status. `wireSchemas` in `src/index.ts` registers every schema that crosses a boundary. |
 | `schema/` | JSON Schema exported from `src/` by `pnpm contracts:export`. Generated and committed; CI fails if it drifts from the source. |
 | `fixtures/<Schema>/` | Golden fixtures: valid examples at the top level, invalid ones under `invalid/`. Every registered schema needs at least one of each. |
 | `test/` | Vitest: every fixture parses as expected and round-trips unchanged, plus property tests. |
