@@ -31,6 +31,14 @@
 // The tool deploys a rendered copy of the configuration with the route and VPC bindings added,
 // .stg-rendered.<deployment>.jsonc next to it, and removes it afterwards.
 //
+// Before a deployment's first upload, its Worker name and hostname must be free, since
+// Wrangler's --domain takes them over. A deploy that binds another deployment's Durable Objects
+// holds that deployment's lock too, and a deployment that another one binds is not torn down.
+// Every create is recorded as an intent first; a command that finds one unresolved after an
+// interrupted run waits the settle time (five minutes) once before deciding. No cf or Wrangler
+// command lists a zone's Worker routes, so whether the Tunnel hostname's route went with its
+// Worker at teardown is checked by hand.
+//
 // State lives outside the repository, so that every worktree on this laptop shares one
 // registry and one set of locks: $CFO_STAGING_DIR, or ~/.config/cloudflare-omnigent/staging.
 // It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it

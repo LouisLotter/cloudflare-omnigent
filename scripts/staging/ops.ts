@@ -847,6 +847,10 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       ({ record, id: tunnelId } = ensureTunnel(ctx, record, plan.tunnel));
       if (plan.tunnel.hostname !== undefined) {
         record = ensureDns(ctx, record, plan.tunnel.hostname, tunnelId);
+        // Wrangler refuses a route that another Worker holds. Neither it nor cf can list a
+        // zone's Worker routes, so the tool records no route ID and cannot check after a
+        // teardown that the route went with the Worker (review r1, finding 8): that is checked
+        // by hand at the preflight.
         routes.push(tunnelRoute(plan.tunnel.hostname, ctx.config.zone));
       }
       record = ensureVpcServices(ctx, record, plan.vpcServices, tunnelId);
