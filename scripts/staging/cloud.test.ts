@@ -9,6 +9,8 @@ import {
   childEnv,
   childStdio,
   cliCloud,
+  DIAGNOSTIC_LIMIT,
+  diagnostic,
   dnsRecordsOf,
   fileStore,
   imagesOf,
@@ -16,8 +18,10 @@ import {
   type RunOptions,
   readStagingManifest,
   readWranglerConfig,
+  spawnRunner,
   tunnelsOf,
   vpcServicesOf,
+  WRANGLER_QUIET_LOGS,
   withSecretsFile,
   workerLookup,
   wranglerCli,
@@ -96,6 +100,73 @@ describe("R2 bucket lookup and image listings", () => {
     expect(imagesOf([], "cfo-stg-a-host")).toEqual([]);
     expect(() => imagesOf({ images: [] }, "x")).toThrow();
     expect(() => imagesOf([{ name: "x" }], "x")).toThrow();
+  });
+});
+
+describe("what of cf's and Wrangler's output may reach an error or a log", () => {
+  const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
+
+  it("bounds cf's error output and masks emails, tokens, identifiers and secrets", () => {
+    const token = `eyJ${"A".repeat(30)}.${"b".repeat(10)}`;
+    const secret = "Xq7Zp".repeat(9);
+    const line = `│ [10000] denied for someone@example.org with ${token} ${secret} on account ${"f".repeat(32)} id 0191dce4-9ab4-7fce-b660-8e5dec5172da at cfo-stg-x1-transport-tunnel.example.com`;
+    const shown = diagnostic(`┌ APIError\n${line}\n│ second line with ${secret}`);
+    for (const hidden of ["someone@example.org", token, secret, "f".repeat(32), "0191dce4"]) {
+      expect(shown).not.toContain(hidden);
+    }
+    expect(shown).toContain("[10000] denied for <email> with <token> <redacted>");
+    expect(shown).toContain("cfo-stg-x1-transport-tunnel.example.com");
+    expect(diagnostic(`│ ${"x ".repeat(500)}`)).toHaveLength(DIAGNOSTIC_LIMIT + 1);
+    expect(diagnostic("")).toBe("no output");
+  });
+
+  it("never copies the output of a cf command that returns a secret into its error", () => {
+    const leak = "synthetic-secret-in-output";
+    const failing = cliCloud(config, WORKER, () => ({
+      status: 1,
+      stdout: `{"result":"${leak}"}`,
+      stderr: `│ [1002] Tunnel not found ${leak}\n│ 404 Not Found`,
+    }));
+    for (const call of [() => failing.tunnelToken("t"), () => failing.createTunnel("x")]) {
+      expect(call).toThrow(/^cf tunnels (token get|create --body) failed: \[1002\]$/);
+      try {
+        call();
+      } catch (error) {
+        expect(String(error)).not.toContain(leak);
+      }
+    }
+    const silent = cliCloud(config, WORKER, () => failed("Segmentation fault"));
+    expect(() => silent.tunnelToken("t")).toThrow(/^cf tunnels token get failed$/);
+  });
+
+  it("forces Wrangler's sanitised, console-only logging whatever the environment says", () => {
+    const saved = { ...process.env };
+    process.env.WRANGLER_LOG_SANITIZE = "false";
+    process.env.WRANGLER_WRITE_LOGS = "true";
+    process.env.WRANGLER_LOG = "debug";
+    try {
+      const printed = spawnRunner("a".repeat(32))(
+        process.execPath,
+        [
+          "-e",
+          "console.log([process.env.WRANGLER_LOG_SANITIZE, process.env.WRANGLER_WRITE_LOGS, process.env.WRANGLER_LOG].join())",
+        ],
+        { inherit: false, env: WRANGLER_QUIET_LOGS },
+      );
+      expect(printed.stdout.trim()).toBe("true,false,log");
+    } finally {
+      for (const key of ["WRANGLER_LOG_SANITIZE", "WRANGLER_WRITE_LOGS", "WRANGLER_LOG"]) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+    // Every Wrangler child gets them, also a caller's explicit setting cannot undo them.
+    let seen: Readonly<Record<string, string>> | undefined;
+    cliCloud(config, WORKER, (_command, _args, options) => {
+      seen = options.env;
+      return ok("");
+    }).deleteWorker("cfo-stg-a");
+    expect(seen).toMatchObject(WRANGLER_QUIET_LOGS);
   });
 });
 
@@ -325,7 +396,11 @@ describe("CLI wiring", () => {
         "--domain",
         "cfo-stg-a.example.com",
       ],
-      options: { inherit: true, cwd: WORKER, env: { SOURCE_DATE_EPOCH: "1792400000" } },
+      options: {
+        inherit: true,
+        cwd: WORKER,
+        env: { SOURCE_DATE_EPOCH: "1792400000", ...WRANGLER_QUIET_LOGS },
+      },
     });
   });
 

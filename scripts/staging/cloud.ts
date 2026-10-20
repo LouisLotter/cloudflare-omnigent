@@ -70,7 +70,7 @@ export function childStdio(inherit: boolean): StdioOptions {
   return ["ignore", mode, mode, ...heldLockFds()];
 }
 
-function spawnRunner(accountId: string): Runner {
+export function spawnRunner(accountId: string): Runner {
   return (command, args, options) => {
     const child = spawnSync(command, args, {
       encoding: "utf8",
@@ -91,6 +91,32 @@ function firstLine(text: string): string {
       .map((line) => line.replace(/^[│┌└\s]+/, "").trim())
       .find((line) => line !== "" && line !== "APIError") ?? "no output"
   );
+}
+
+/** At most this many characters of cf's error output reach an error message. */
+export const DIAGNOSTIC_LIMIT = 200;
+
+/**
+ * The part of cf's error output that may reach an error message, and through it the terminal:
+ * its first line, bounded, with whatever looks like an email address, a token, a long
+ * identifier or a secret masked. Hostnames, which are lower case, stay readable.
+ */
+export function diagnostic(stderr: string): string {
+  const masked = firstLine(stderr)
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<email>")
+    .replace(/eyJ[\w-]*(?:\.[\w-]+)*/g, "<token>")
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
+    .replace(/[0-9a-f]{32,}/gi, "<id>")
+    .replace(/[A-Za-z0-9+/=_-]{40,}/g, (run) =>
+      /[A-Z]/.test(run) && /[a-z]/.test(run) ? "<redacted>" : run,
+    );
+  return masked.length > DIAGNOSTIC_LIMIT ? `${masked.slice(0, DIAGNOSTIC_LIMIT)}…` : masked;
+}
+
+/** Cloudflare's numeric error codes in cf's error output, such as [1002]: safe to show. */
+function errorCodes(stderr: string): string {
+  const codes = [...new Set(stderr.match(/\[\d{3,6}\]/g) ?? [])];
+  return codes.length > 0 ? `: ${codes.join(" ")}` : "";
 }
 
 /**
@@ -119,7 +145,7 @@ export function workerLookup(result: CommandResult, name: string): boolean {
     throw new Error(`unexpected answer when looking up Worker ${name}`);
   }
   if (result.stderr.includes("[10007]") && result.stderr.includes("404 Not Found")) return false;
-  throw new Error(`could not tell whether Worker ${name} exists: ${firstLine(result.stderr)}`);
+  throw new Error(`could not tell whether Worker ${name} exists: ${diagnostic(result.stderr)}`);
 }
 
 /**
@@ -133,7 +159,7 @@ export function bucketLookup(result: CommandResult, name: string): boolean {
     throw new Error(`unexpected answer when looking up R2 bucket ${name}`);
   }
   if (result.stderr.includes("[10006]") && result.stderr.includes("404 Not Found")) return false;
-  throw new Error(`could not tell whether R2 bucket ${name} exists: ${firstLine(result.stderr)}`);
+  throw new Error(`could not tell whether R2 bucket ${name} exists: ${diagnostic(result.stderr)}`);
 }
 
 /**
@@ -254,6 +280,24 @@ export function withSecretsFile<T>(
 }
 
 /**
+ * Logging settings for every Wrangler child, overriding whatever the caller's environment says.
+ * In Wrangler 4.149.0 (src/logger.ts, src/utils/log-file.ts, src/cfetch/internal.ts):
+ *   - every message at every level, debug included, is appended to a log file on disk unless
+ *     WRANGLER_WRITE_LOGS is "false" or "0";
+ *   - request bodies, among them the upload's metadata with secret values, are logged only at
+ *     debug and only through debugWithSanitization, which omits them while
+ *     WRANGLER_LOG_SANITIZE is on (its default, which an inherited "false" would turn off);
+ *   - WRANGLER_LOG picks the console level.
+ * So no file is written at all, sanitising stays on, and the console stays at its normal level.
+ * Writing no file is safer than a private log directory, which a killed run would leave behind.
+ */
+export const WRANGLER_QUIET_LOGS: Readonly<Record<string, string>> = {
+  WRANGLER_LOG_SANITIZE: "true",
+  WRANGLER_WRITE_LOGS: "false",
+  WRANGLER_LOG: "log",
+};
+
+/**
  * Wrangler's CLI entry point. Wrangler's own launcher re-spawns this file with only stdio and
  * an IPC channel, which would drop the lock descriptors, so the staging tool runs it directly.
  */
@@ -268,12 +312,25 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
   const run = runner ?? spawnRunner(config.accountId);
   const cf = (args: string[]): unknown => {
     const result = run("cf", args, { inherit: false });
-    if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${firstLine(result.stderr)}`);
+    if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${diagnostic(result.stderr)}`);
+    return resultOf(result.stdout);
+  };
+  // For commands whose answer holds a secret: no part of cf's output reaches an error, only
+  // Cloudflare's error codes.
+  const secretCf = (args: string[]): unknown => {
+    const result = run("cf", args, { inherit: false });
+    if (result.status !== 0) {
+      throw new Error(`cf ${args.slice(0, 3).join(" ")} failed${errorCodes(result.stderr)}`);
+    }
     return resultOf(result.stdout);
   };
   const wrangler = (args: string[], cwd: string, env: Record<string, string> = {}): void => {
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
-    const result = run(process.execPath, cli, { inherit: true, cwd, env });
+    const result = run(process.execPath, cli, {
+      inherit: true,
+      cwd,
+      env: { ...env, ...WRANGLER_QUIET_LOGS },
+    });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
   // cf returns one page of a listing. Ask for pages until a short one; a listing that never
@@ -424,7 +481,12 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     // The answer also holds the Tunnel's token and secret; only the ID is kept.
     createTunnel: (name) =>
       created(
-        cf(["tunnels", "create", "--body", JSON.stringify({ name, config_src: "cloudflare" })]),
+        secretCf([
+          "tunnels",
+          "create",
+          "--body",
+          JSON.stringify({ name, config_src: "cloudflare" }),
+        ]),
         "id",
         "Cloudflare Tunnel",
       ),
@@ -433,7 +495,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       cf(["tunnels", "config", "update", id, "--body", JSON.stringify({ config: { ingress } })]);
     },
     tunnelToken: (id) => {
-      const token = cf(["tunnels", "token", "get", id]);
+      const token = secretCf(["tunnels", "token", "get", id]);
       if (typeof token !== "string" || token === "") {
         throw new Error("Cloudflare returned no Tunnel token");
       }
