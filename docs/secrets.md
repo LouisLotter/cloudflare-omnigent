@@ -5,7 +5,7 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 ## Rules
 
 - [ ] No secret, login file, account ID or personal email address is committed. Local state that identifies the owner lives outside the repository (the staging directory below) or in gitignored files (`.env*`, `.dev.vars*`).
-- [ ] Worker secrets are set with `wrangler secret put` from the owner's laptop, never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
+- [ ] Worker secrets are set from the owner's laptop, with `wrangler secret put` or by the staging tool, which uploads them with the Worker version (`wrangler deploy --secrets-file`), never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
 - [ ] CI holds no secrets. It runs on `pull_request` with a read-only token and no persisted checkout credentials, so code from a fork gets nothing.
 - [ ] Staging uses staging-only values. Deleting a staging Worker deletes its secrets with it.
 - [ ] A cloud computer never holds platform secrets, connected-account credentials or storage keys. It holds only the person's own Omnigent, Claude and Codex logins.
@@ -22,6 +22,8 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 | GitHub CLI login | Pushes and pull requests | `~/.config/gh/`, mode 600 | `gh auth logout` |
 | Staging configuration | Account ID, zone, owner email, identity provider ID. Identifying rather than secret | `~/.config/cloudflare-omnigent/staging/config.json` (or `$CFO_STAGING_DIR`), mode 600, outside the repository and shared by every worktree | Delete the file |
 | Staging registry and locks | Which `cfo-stg-` deployments exist, with owners and expiries; the locks that keep staging commands from overlapping | `resources.json` and `locks/` in the same directory, mode 600 | `stg.ts teardown` or `sweep` |
+| Staging service token (F7-staging, owner-approved for X1 only) | Lets a staging computer pass Access on the hostnames its deployment's `staging.jsonc` names | Created by the staging tool for 24 hours. Its client ID and secret go only to the Worker secrets the manifest names, the same way as the Tunnel token (an unlinked file on descriptor 3), and only when the token is created or rotated. Never in argv, logs, the registry or files that stay | Deleted at teardown, after its Access policies |
+| Staging Tunnel token | Lets a staging deployment's server container run the Tunnel that its `staging.jsonc` asks for | Read from Cloudflare by the staging tool at each deploy and uploaded as the Worker secret the manifest names, through a mode 600 file that is unlinked as soon as it is opened and reaches Wrangler only as an open descriptor (`--secrets-file /dev/fd/3`). Wrangler runs with sanitised logging and writes no log file. Never in argv, logs, the registry or the rendered configuration | Deleted with the Worker; the Tunnel is deleted at teardown |
 | Real Claude and ChatGPT logins | Recorded real-account runs in spikes S6 and later | Only inside the staging computer under test | Sign out after each run, and check |
 
 ## In an installation (from M2 on)

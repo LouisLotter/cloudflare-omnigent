@@ -1,0 +1,8 @@
+# Raw and redacted run data stay outside the repository: redacted copies go to the project
+# notes (verification/x1/), never here.
+results/
+# Configurations the staging tool (and validate_config.ts) render next to the checked ones.
+.stg-rendered.*.jsonc
+# Test artefacts
+.coverage
+.hypothesis/

@@ -1,0 +1,31 @@
+[project]
+name = "x1-transport-spike"
+version = "0.0.0"
+description = "Experiment X1: the probe, the echo server and the analysis (tests only; the images pin their own copies)."
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "coverage==7.16.2",
+  "hypothesis==6.169.0",
+  "pytest==9.1.1",
+  "pytest-cov==7.1.0",
+  "ruff==0.17.0",
+  # The images load this exact wheel by checksum (server/Dockerfile, computer/Dockerfile).
+  "websockets==15.0.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,22 @@
+// Experiment X1, the UI Worker: the owner's Preflight, Start run and Stop controls and the status
+// page, behind owner-only Access. It binds RunDO in the transport Worker cross-script, so the
+// transport Worker must be deployed first. Deploy only with scripts/deploy.sh:
+//
+//   spikes/x1/scripts/deploy.sh ui <label>
+//   pnpm stg teardown --suffix x1-ui
+{
+  "$schema": "../../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-x1-ui",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RUN", "class_name": "RunDO", "script_name": "cfo-stg-x1-transport" }]
+  }
+}

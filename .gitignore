@@ -31,6 +31,8 @@ build/
 
 # Local staging state: account, owner email and resource registry (never committed)
 .staging/
+# Wrangler configurations the staging tool renders next to a checked one for one deploy
+.stg-rendered.*.jsonc
 
 # Process documents: reviews (including the Codex active review), plans, the tracker and
 # evidence live outside this repository and are never committed. These are the paths the

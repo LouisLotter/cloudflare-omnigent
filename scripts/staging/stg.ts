@@ -10,17 +10,67 @@
 //   node scripts/staging/stg.ts teardown --suffix <s>
 //   node scripts/staging/stg.ts sweep [--yes]
 //
+// sweep lists expired deployments (removed with --yes) and reports every staging bucket, Access
+// application, service token, Tunnel, VPC service and DNS record that no record owns. Of those
+// it removes, with --yes, only the ones that carry the nonce of a create the tool gave up on:
+// its own, landed late.
+//
+// A Durable Object binding may name another deployment in script_name if the registry shows it
+// deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
+// in an optional staging manifest, staging.jsonc, next to it. It applies to every configuration
+// in that directory, and without it deploy runs as before:
+//
+//   {
+//     "tunnel": {                           // a remotely managed Tunnel named after the deployment
+//       "publicHostname": true,             // <deployment>-tunnel.<zone>, with its own owner-only
+//                                           // Access, a DNS record and a route to the Worker
+//       "origin": "http://localhost:8081",  // that hostname's ingress service
+//       "tokenSecret": "X1_TUNNEL_TOKEN"    // the Worker secret that receives the connector token
+//     },
+//     "vpcServices": [{ "binding": "X1_VPC", "port": 8081 }], // HTTP to 127.0.0.1:<port>
+//     // F7-staging, only with the owner's approval: an Access service token, named
+//     // <deployment>-svc--<nonce>, for 24 hours, admitted by one more policy on the named
+//     // hostnames of this deployment.
+//     "serviceToken": {
+//       "hostnames": ["worker", "tunnel"],
+//       "clientIdSecret": "X1_ACCESS_CLIENT_ID",       // Worker secrets for its credentials,
+//       "clientSecretSecret": "X1_ACCESS_CLIENT_SECRET" // sent when created or rotated
+//     }
+//   }
+//
+// The tool deploys a rendered copy of the configuration with the route and VPC bindings added,
+// .stg-rendered.<deployment>.jsonc next to it, and removes it afterwards.
+//
+// Before a deployment's first upload, its Worker name and hostname must be free, since
+// Wrangler's --domain takes them over. A deploy that binds another deployment's Durable Objects
+// holds that deployment's lock too, and a deployment that another one binds is not torn down.
+// Every create is recorded as an intent with a random nonce first, and the resource carries the
+// nonce in its name (a DNS record in its comment), so only what that create made is ever
+// adopted. A command that finds an intent unresolved after an interrupted run waits the settle
+// time (five minutes) once; a create still not seen then is kept in the registry as a late
+// create, which sweep looks for. R2 buckets carry no nonce: their names are adopted, and a late
+// one is only reported. No cf or Wrangler command lists a zone's Worker routes, so whether the
+// Tunnel hostname's route went with its Worker at teardown is checked by hand.
+//
 // State lives outside the repository, so that every worktree on this laptop shares one
 // registry and one set of locks: $CFO_STAGING_DIR, or ~/.config/cloudflare-omnigent/staging.
 // It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it
 // is ever committed.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { cliCloud, fileStore, readWranglerConfig } from "./cloud.ts";
+import {
+  cliCloud,
+  fileStore,
+  readStagingManifest,
+  readWranglerConfig,
+  removeStaleSecretDirs,
+  writePrivateFile,
+} from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
 import { type Context, deploy, sweep, teardown } from "./ops.ts";
@@ -57,15 +107,22 @@ function context(config: StagingConfig, command: string): Context {
     cloud: cliCloud(config, WORKER),
     store: fileStore(REGISTRY_FILE, holder),
     readConfig: (path) => readWranglerConfig(path, WORKER),
+    readManifest: readStagingManifest,
+    writeFile: writePrivateFile,
+    removeFile: (path) => rmSync(path, { force: true }),
     lock: (name) => acquireLock(join(STATE, "locks", `${name}.lock`), 0, holder),
     sleep: sleepSync,
     settleMs: SETTLE_MS,
     now: () => new Date(),
+    nonce: () => randomBytes(4).toString("hex"),
     log: (message) => console.log(message),
   };
 }
 
 function main(): void {
+  // A run killed in the instant between writing its secrets file and unlinking it leaves
+  // the file behind; remove any such leftovers first.
+  removeStaleSecretDirs();
   const [command, ...rest] = process.argv.slice(2);
   const { values } = parseArgs({
     args: rest,
@@ -120,8 +177,10 @@ function main(): void {
     case "list": {
       for (const d of fileStore(REGISTRY_FILE, command).load()) {
         const unsettled = d.uploadStartedAt ? ` upload-interrupted=${d.uploadStartedAt}` : "";
+        const tunnel = d.tunnel ? ` tunnel${d.tunnel.hostname ? "+hostname" : ""}` : "";
+        const vpc = d.vpcServices?.length ? ` vpc=${d.vpcServices.length}` : "";
         console.log(
-          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}${unsettled}`,
+          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}${unsettled}${tunnel}${vpc}`,
         );
       }
       return;

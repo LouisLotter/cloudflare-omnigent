@@ -1,0 +1,55 @@
+// Experiment X1, the transport Worker: ServerDO with the server container (an echo server and
+// cloudflared), ComputerDO with the computer container (the probe), RunDO with the run's
+// schedule, the interception handlers for P1, P2, P3, P6 and the recorder, P4's stateless echo
+// and P5's policy route on the Tunnel hostname. Each container runs with the policy the design
+// gives it:
+//   - the server keeps the default policy: `basic`, one instance;
+//   - the computer uses the `durable_object` policy. ComputerDO starts it as `standard-1`,
+//     under one fixed Durable Object name, so only one instance ever runs.
+// The staging tool reads staging.jsonc next to this file: it creates the Tunnel, its public
+// hostname with Access and this Worker's route on it, the VPC service (rendered into
+// `vpc_services` as X1_VPC) and the Worker secrets. Deploy only with scripts/deploy.sh, which
+// stamps the build and calls the guarded tool:
+//
+//   spikes/x1/scripts/deploy.sh transport <label>
+//   pnpm stg teardown --suffix x1-transport
+{
+  "$schema": "../../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-x1-transport",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SERVER", "class_name": "ServerDO" },
+      { "name": "COMPUTER", "class_name": "ComputerDO" },
+      { "name": "RUN", "class_name": "RunDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ServerDO", "ComputerDO", "RunDO"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-x1-transport-server",
+      "class_name": "ServerDO",
+      "image": "../server/Dockerfile",
+      "image_build_context": "../server",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-x1-transport-computer",
+      "class_name": "ComputerDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "computer": { "dockerfile": "../computer/Dockerfile", "build_context": "../computer" }
+      }
+    }
+  ],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-x1-transport-results" }]
+}
