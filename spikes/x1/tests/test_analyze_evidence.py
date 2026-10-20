@@ -294,7 +294,21 @@ def test_ar17_unassessable_on_invalid_records():
     b.add("batch-conflict", spontaneous_time(1), what="batch 4")
     report = run(b, setup_fails=True)
     verdict = next(iter(report.ar17.values()))[0]
-    assert verdict == "unassessable: the probe's records are not valid evidence"
+    assert verdict == "unassessable: the setup failed"
+
+
+def test_ar17_unassessable_on_any_setup_failure():
+    """Amendment 4, item 7: a clock step or a rollout too, with every window placed and
+    covered, and a UI-deploy drop that would otherwise read "no help"."""
+    b = build(p2=drops_at(DEPLOYS["ui"] + 60_000))
+    assert run(b).ar17["p2"][0].startswith("no help")
+    stepped = build(p2=drops_at(DEPLOYS["ui"] + 60_000))
+    stepped.drift = -15_000.0
+    rolled = run(b, camp=campaign(rollout=("transport",)), setup_fails=True)
+    for report in (run(stepped, setup_fails=True), rolled):
+        assert set(report.ar17) == {"p2", "p6", "p5"}
+        assert {v for v, _, _ in report.ar17.values()} == {"unassessable: the setup failed"}
+        assert all((t, u) == (None, None) for _, t, u in report.ar17.values())
 
 
 def test_preflight_only_lists_record_problems():

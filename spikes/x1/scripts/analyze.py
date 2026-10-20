@@ -822,10 +822,12 @@ def ar17(
 
 
 def ar17_unassessable(
-    windows: list[Window], spans: list[tuple[float, float]], invalid: bool
+    windows: list[Window], spans: list[tuple[float, float]], setup_failed: bool
 ) -> str | None:
     """Why AR-17 cannot be assessed: a deploy window that cannot be placed, the probe's record
-    over a window incomplete, or records that are not valid evidence. None when it can."""
+    over a window incomplete, or any other setup failure (Amendment 4, item 7: placing the
+    windows and the deploys' effect both depend on a valid setup, so a clock step or a rollout
+    counts too). None when it can."""
     deploys = {w.event: w for w in windows if w.kind == "deploy"}
     for event in ("ui deploy", "transport deploy"):
         if event not in deploys:
@@ -833,8 +835,8 @@ def ar17_unassessable(
     for event, w in deploys.items():
         if not covered(spans, w.start, w.end):
             return f"the probe's record over the {event} window is incomplete"
-    if invalid:
-        return "the probe's records are not valid evidence"
+    if setup_failed:
+        return "the setup failed"
     return None
 
 
@@ -1202,7 +1204,7 @@ def analyze(inputs: Inputs) -> Report:
     would_be = decide(eligible, rates, public_built)
     outcome = setup_failure() if problems else would_be
     ar: dict[str, tuple[str, int | None, int | None]] = {}
-    unassessable = ar17_unassessable(windows, spans, bool(invalid))
+    unassessable = ar17_unassessable(windows, spans, bool(problems))
     for route in [outcome.selected] if outcome.selected else list(CANDIDATES):
         if route in built_routes:
             ar[route] = ar17(results[route], "ui deploy", "transport deploy", unassessable)
