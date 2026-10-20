@@ -79,6 +79,7 @@ import {
   type VpcServiceRecord,
   validateDeployConfig,
   vpcServiceName,
+  type WorkerDomain,
   type WorkerRoute,
 } from "./guard.ts";
 
@@ -96,6 +97,8 @@ export interface Cloud {
   deleteAccessApp(id: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   workerExists(name: string): boolean;
+  /** Every Workers custom domain in the account, with the Worker it serves. */
+  workerDomains(): WorkerDomain[];
   /**
    * Uploads the Worker and builds and pushes its container images, built with `buildEpoch`
    * (Unix seconds) as their timestamp (BuildKit's SOURCE_DATE_EPOCH). The same sources and
@@ -468,6 +471,44 @@ function createOwned<T extends { readonly id: string }>(
 }
 
 /**
+ * Without a terminal, Wrangler 4.149.0 publishes `--domain` with Cloudflare's
+ * override_existing_origin and override_existing_dns_record set, so an upload would take over a
+ * hostname that a DNS record or another Worker's custom domain uses, and a Worker name that
+ * someone else uses. Before the deployment's first upload (`ownsWorker` false), the Worker name
+ * and the hostname must be free. Afterwards the hostname must be a custom domain of this Worker
+ * only, and, once a deploy succeeded (`lastDeployed`), it must still be one.
+ *
+ * Checked before anything is recorded and again just before the upload. Between the last check
+ * and Wrangler's request, a record someone creates on the hostname would still be replaced:
+ * Cloudflare offers no conditional publish, and the window is the upload itself.
+ */
+function checkWorkerAndDomain(
+  ctx: Context,
+  name: string,
+  hostname: string,
+  ownsWorker: boolean,
+  lastDeployed: boolean,
+): void {
+  const attached = ctx.cloud.workerDomains().filter((d) => d.hostname === hostname);
+  const other = attached.find((d) => d.service !== name);
+  if (other) {
+    throw new Error(`${hostname} is a custom domain of the Worker ${other.service}; not deploying`);
+  }
+  if (!ownsWorker && (attached.length > 0 || ctx.cloud.workerExists(name))) {
+    throw new Error(`a Worker named ${name} exists but this deployment did not create it`);
+  }
+  if (attached.length > 0) return;
+  if (lastDeployed) {
+    throw new Error(
+      `${hostname} is no longer a custom domain of ${name}, as its last deploy left it; inspect it in the dashboard`,
+    );
+  }
+  if (ctx.cloud.dnsRecords({ name: hostname }).length > 0) {
+    throw new Error(`${hostname} has DNS records that Wrangler would replace; not deploying`);
+  }
+}
+
+/**
  * An Access application, Tunnel, DNS record or VPC service that the record does not hold must
  * not exist yet, for the same reason as a container or bucket. Checked before recording, after
  * settleCreates has resolved the record's create intents.
@@ -682,6 +723,13 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     }
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
     const existing = interrupted && settleCreates(ctx, interrupted);
+    // Whether this deployment has started an upload before: then the Worker name is its own.
+    const ownsWorker =
+      existing !== undefined &&
+      (existing.workerSince !== undefined ||
+        existing.state === "deployed" ||
+        existing.uploadInterruptedAt !== undefined);
+    const lastDeployed = existing?.state === "deployed";
 
     // A container or bucket new to this deployment must not exist yet: otherwise it belongs to
     // someone else, and recording it would let teardown delete it. Checked before recording.
@@ -725,6 +773,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         containers: union(existing?.containers, declared.containers),
         buckets: union(existing?.buckets, declared.buckets),
         repositories: union(existing?.repositories, declared.repositories),
+        ...(ownsWorker ? { workerSince: existing?.workerSince ?? now.toISOString() } : {}),
       },
       plan,
     );
@@ -741,6 +790,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       }
     };
     refuseClaimed(ctx.store.load());
+    checkWorkerAndDomain(ctx, name, hostname, ownsWorker, lastDeployed);
     checkNewResources(ctx, existing, hostname, plan);
     ctx.store.update((all) => {
       refuseClaimed(all);
@@ -823,7 +873,13 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
 
       // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
       // still appear, and the next command marks the upload interrupted.
-      record = put(ctx, { ...record, uploadStartedAt: ctx.now().toISOString() });
+      checkWorkerAndDomain(ctx, name, hostname, ownsWorker, lastDeployed);
+      const startedAt = ctx.now().toISOString();
+      record = put(ctx, {
+        ...record,
+        uploadStartedAt: startedAt,
+        workerSince: record.workerSince ?? startedAt,
+      });
       ctx.cloud.deployWorker(name, hostname, rendered ?? request.configPath, buildEpoch, secrets);
     } finally {
       if (rendered !== undefined) ctx.removeFile(rendered);

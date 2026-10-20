@@ -36,6 +36,7 @@ import {
   vpcServicesOf,
   WRANGLER_QUIET_LOGS,
   withSecretsDescriptor,
+  workerDomainsOf,
   workerLookup,
   wranglerCli,
   writePrivateFile,
@@ -223,6 +224,35 @@ describe("Tunnel, DNS and VPC answers", () => {
     }
     expect(() => ingressOf({ config: { ingress: {} } })).toThrow();
     expect(() => ingressOf({ config: { ingress: [{ hostname: "h" }] } })).toThrow("service");
+  });
+
+  it("reads every Worker's custom domains from the Workers listing", () => {
+    expect(
+      workerDomainsOf([
+        {
+          name: "cfo-stg-a",
+          references: { domains: [{ id: "d", hostname: "cfo-stg-a.example.com" }] },
+        },
+        { name: "other", references: { domains: [] } },
+        { name: "bare" },
+        { name: "nulls", references: { domains: null } },
+      ]),
+    ).toEqual([{ hostname: "cfo-stg-a.example.com", service: "cfo-stg-a" }]);
+    expect(() => workerDomainsOf([{ references: {} }])).toThrow("name");
+    expect(() => workerDomainsOf([{ name: "x", references: { domains: [{}] } }])).toThrow(
+      "hostname",
+    );
+    const calls: (readonly string[])[] = [];
+    const listing = cliCloud(
+      { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" },
+      WORKER,
+      (_command, args) => {
+        calls.push(args);
+        return ok(JSON.stringify({ result: [] }));
+      },
+    );
+    expect(listing.workerDomains()).toEqual([]);
+    expect(calls).toEqual([["workers", "list", "--per-page", "100", "--page", "1"]]);
   });
 
   it("flattens DNS records and VPC services, refusing entries without IDs", () => {

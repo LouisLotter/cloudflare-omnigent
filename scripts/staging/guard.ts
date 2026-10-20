@@ -24,8 +24,14 @@ export interface Deployment {
   readonly state: DeploymentState;
   /** Set as soon as the Access application exists. */
   readonly accessAppId?: string;
-  /** A create intent for the Access application (see CreateIntent). */
+  /** A create intent for the Access application (see the create intents below). */
   readonly accessCreateStartedAt?: string;
+  /**
+   * When the tool first started uploading this Worker. From then on the Worker name and the
+   * custom domain on `hostname` are this deployment's; before, both must be free (ops.ts,
+   * checkWorkerAndDomain).
+   */
+  readonly workerSince?: string;
   /**
    * Set just before a Worker upload and cleared when it succeeds. If the next command finds it
    * still set, that upload was interrupted, and the command records `uploadInterruptedAt`.
@@ -139,6 +145,12 @@ export interface DnsRecordInfo {
   readonly type: string;
   readonly content: string;
   readonly proxied: boolean;
+}
+
+/** A Workers custom domain: a hostname and the Worker it serves. */
+export interface WorkerDomain {
+  readonly hostname: string;
+  readonly service: string;
 }
 
 /** A Workers VPC service, flattened to the fields the staging tool checks. */
@@ -1075,6 +1087,7 @@ const DEPLOYMENT_KEYS = [
   "state",
   "accessAppId",
   "accessCreateStartedAt",
+  "workerSince",
   "uploadStartedAt",
   "uploadInterruptedAt",
   "containers",
@@ -1169,6 +1182,7 @@ export function parseRegistry(json: unknown): Deployment[] {
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
       (d.accessCreateStartedAt !== undefined && !text("accessCreateStartedAt")) ||
+      (d.workerSince !== undefined && !text("workerSince")) ||
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
       (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||
       !names(d.containers) ||

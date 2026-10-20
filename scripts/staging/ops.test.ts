@@ -11,6 +11,7 @@ import {
   serializeRegistry,
   type TunnelInfo,
   type VpcServiceInfo,
+  type WorkerDomain,
 } from "./guard.ts";
 import {
   type Cloud,
@@ -121,6 +122,8 @@ class FakeCloud implements Cloud {
   readonly tunnels_ = new Map<string, { name: string; ingress: IngressRule[]; token: string }>();
   readonly dns = new Map<string, DnsRecordInfo>();
   readonly vpc = new Map<string, VpcServiceInfo>();
+  /** Custom domains of Workers the tool did not deploy. */
+  readonly otherDomains: WorkerDomain[] = [];
   /** The secrets each Worker holds, as uploads set them. */
   readonly secrets = new Map<string, Record<string, string>>();
   /** The process dies right after the call that starts with this takes effect. */
@@ -260,6 +263,15 @@ class FakeCloud implements Cloud {
     elapse(this.lookupDelay);
     this.tick();
     return answer;
+  }
+  /** Custom domains: each Worker on the hostname it was deployed to, and any the test adds. */
+  workerDomains(): WorkerDomain[] {
+    this.tick();
+    this.calls.push("worker.domains");
+    return [
+      ...[...this.workers].map(([service, hostname]) => ({ hostname, service })),
+      ...this.otherDomains,
+    ];
   }
   deployWorker(
     name: string,
@@ -1322,7 +1334,11 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
 
   it("without a manifest, makes no Tunnel calls and uploads the checked file without secrets", () => {
     deploy(ctx, request());
-    expect(cloud.calls.filter((c) => /^(tunnel|dns|vpc)\./.test(c))).toEqual([]);
+    // Only the checks that the Worker hostname is free (review r1, finding 1) list DNS.
+    expect(cloud.calls.filter((c) => /^(tunnel|dns|vpc)\./.test(c))).toEqual([
+      "dns.list",
+      "dns.list",
+    ]);
     expect(cloud.uploads).toEqual([
       { name: "cfo-stg-a", configPath: GOOD.path, secrets: undefined },
     ]);
@@ -1870,6 +1886,77 @@ describe("IR-002: only closed Wrangler configurations deploy", () => {
     expect(deploy(ctx, request("b", 7, "/w/own.jsonc")).state).toBe("deployed");
     expect(deploy(ctx, request()).state).toBe("deployed");
     expect(cloud.calls).toContain(`worker.deploy cfo-stg-a ${GOOD.path}`);
+  });
+});
+
+describe("review r1, finding 1: Wrangler's --domain overrides, so the name and hostname must be ours", () => {
+  const HOSTNAME = "cfo-stg-a.example.com";
+  const uploaded = () => cloud.calls.some((c) => c.startsWith("worker.deploy"));
+
+  it.each([
+    [
+      "a Worker of that name",
+      () => cloud.workers.set("cfo-stg-a", "elsewhere.example.com"),
+      "a Worker named cfo-stg-a exists but this deployment did not create it",
+    ],
+    [
+      "a DNS record on the hostname",
+      () =>
+        cloud.dns.set("theirs", {
+          id: "theirs",
+          name: HOSTNAME,
+          type: "A",
+          content: "192.0.2.1",
+          proxied: true,
+        }),
+      "has DNS records that Wrangler would replace",
+    ],
+    [
+      "another Worker's custom domain on the hostname",
+      () => cloud.otherDomains.push({ hostname: HOSTNAME, service: "production" }),
+      `${HOSTNAME} is a custom domain of the Worker production`,
+    ],
+  ])("refuses a first deploy over %s, before recording anything", (_, arrange, message) => {
+    arrange();
+    expect(() => deploy(ctx, request())).toThrow(message);
+    expect(store.load()).toEqual([]);
+    expect(uploaded()).toBe(false);
+    expect(cloud.calls.filter((c) => /\.(create|update|delete)/.test(c))).toEqual([]);
+  });
+
+  it("refuses a redeploy once the hostname is no longer this Worker's custom domain", () => {
+    deploy(ctx, request());
+    cloud.workers.set("cfo-stg-a", "elsewhere.example.com");
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request())).toThrow(`${HOSTNAME} is no longer a custom domain`);
+    expect(uploaded()).toBe(false);
+    cloud.workers.set("cfo-stg-a", HOSTNAME);
+    cloud.otherDomains.push({ hostname: HOSTNAME, service: "production" });
+    expect(() => deploy(ctx, request())).toThrow("custom domain of the Worker production");
+  });
+
+  it("checks again just before the upload", () => {
+    const path = withResources("a");
+    cloud.createBucket = function (this: FakeCloud, bucket: string) {
+      this.buckets.add(bucket);
+      this.dns.set("late", { id: "late", name: HOSTNAME, type: "A", content: "x", proxied: true });
+    };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("Wrangler would replace");
+    expect(uploaded()).toBe(false);
+    expect(record()?.uploadStartedAt).toBeUndefined();
+  });
+
+  it("owns the name from its first upload on, also after an interrupted one", () => {
+    cloud.deployFault = "after-upload";
+    expect(() => deploy(ctx, request())).toThrow("wrangler deploy");
+    restart();
+    expect(record()?.workerSince).toBe(new Date(T0).toISOString());
+    // The Worker exists now, and its domain too: both are this deployment's.
+    expect(deploy(ctx, request()).state).toBe("deployed");
+    // A record from an earlier tool, deployed but without workerSince, owns its Worker too.
+    store.update((all) => all.map(({ workerSince: _, ...d }) => d));
+    elapse(HOUR);
+    expect(deploy(ctx, request()).workerSince).toBe(new Date(clock).toISOString());
   });
 });
 

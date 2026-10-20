@@ -31,6 +31,7 @@ import {
   type TunnelInfo,
   VPC_HOST,
   type VpcServiceInfo,
+  type WorkerDomain,
 } from "./guard.ts";
 import { acquireLock, heldLockFds } from "./lock.ts";
 import type { Cloud, NameFilter, Store } from "./ops.ts";
@@ -217,6 +218,22 @@ export function accessAppsOf(listing: unknown): AccessApp[] {
     text(app, "name", "an Access application");
     if (typeof app.domain !== "string") throw new Error("an Access application without a domain");
     return app as unknown as AccessApp;
+  });
+}
+
+/**
+ * The custom domains in a `cf workers list` page: each Worker's references.domains, with the
+ * Worker's name. cf 1.0.0-beta.18 has no command for /workers/domains itself.
+ */
+export function workerDomainsOf(listing: unknown): WorkerDomain[] {
+  return entries(listing, "Worker").flatMap((worker) => {
+    const service = text(worker, "name", "a Worker");
+    const domains = (worker.references as { domains?: unknown } | undefined)?.domains;
+    if (domains === undefined || domains === null) return [];
+    return entries(domains, "custom domain").map((d) => ({
+      hostname: text(d, "hostname", "a custom domain"),
+      service,
+    }));
   });
 }
 
@@ -445,6 +462,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     },
     workerExists: (name) =>
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
+    workerDomains: () => workerDomainsOf(listAll(["workers", "list"])),
     // validateDeployConfig has checked this configuration's account, routes and resources.
     // Wrangler runs `docker build` with its own environment, and BuildKit takes the image
     // timestamp from SOURCE_DATE_EPOCH. Secrets go up with the same version through
