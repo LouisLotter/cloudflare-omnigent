@@ -2,9 +2,6 @@ packages:
   - contracts
   - worker
 
-# Seven-day dependency cooldown, the same as upstream Omnigent.
-minimumReleaseAge: 10080
-
 allowBuilds:
   esbuild: true
   workerd: true
