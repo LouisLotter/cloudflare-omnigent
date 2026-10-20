@@ -22,7 +22,12 @@ RESETS = {"reset-s30": S + 30 * MIN, "reset-s60": S + 60 * MIN, "reset-s90": S +
 UPLOAD_MS = 20_000
 DEPLOYS = {"ui": S + 45 * MIN, "transport": S + 75 * MIN}
 ROUTES = ("p1", "p2", "p3", "p4", "p5", "p6")
-INSTANCE = "g1-0a1b2c3d-00a1b2"
+INSTANCE = "g2-0a1b2c3d-00a1b2"
+RUN_ID = "run-20270115T080000Z"
+PRE_ID = "preflight-20270115T072000Z"
+PRE_INSTANCE = "g1-0f0f0f0f-0f0f0f"
+WORKER = "cfo-stg-x1-transport"
+PRE_T0 = T0 - 40 * MIN
 FIRST_OPEN = T0 + 20_000
 # Observed time on the default schedule: 7200 s minus 3 x 32 s of resets and 2 x 350 s of deploys.
 OBSERVED_MS = 120 * MIN - 3 * 32_000 - 2 * (UPLOAD_MS + 330_000)
@@ -48,12 +53,19 @@ class DropSpec:
 @dataclass
 class Builder:
     instance: str = INSTANCE
+    run_id: str = RUN_ID
+    # Per-minute clock and skew records, as the probe writes them (Amendment 3, item 2).
+    health: bool = True
+    drift: float = 0.0
+    skew: float | None = 120.0
+    # This instance's monotonic clock reads `mono_shift` ms behind its wall clock.
+    mono_shift: float = 0.0
     events: list[dict] = field(default_factory=list)
     conns: dict[str, int] = field(default_factory=dict)
     seqs: dict[str, int] = field(default_factory=dict)
 
     def add(self, ev: str, t: float, **fields: object) -> None:
-        self.events.append({"ev": ev, "wall": t, "mono": t, **fields})
+        self.events.append({"ev": ev, "wall": t, "mono": t - self.mono_shift, **fields})
 
     def mark(self, t: float) -> None:
         """An event with no route, so the records cover up to (or from) t."""
@@ -147,23 +159,48 @@ class Builder:
     def probe(self, batches: int = 3, missing: tuple[int, ...] = (), manifest: bool = True) -> dict:
         """The instance's batches, each led by a header with the span it accounts for: from the
         previous cut (the first from the earliest event) to its last event."""
-        ordered = sorted(self.events, key=lambda e: e["mono"])
+        events = list(self.events)
+        if self.health and events:
+            first, last = min(e["wall"] for e in events), max(e["wall"] for e in events)
+            t = first
+            while t <= last:
+                live = t + self.drift if t > first else t
+                mono = t - self.mono_shift
+                events.append(
+                    {"ev": "clock", "wall": t, "mono": mono, "liveWall": live, "driftMs": live - t}
+                )
+                n = 50 if self.skew is not None else 0
+                events.append(
+                    {
+                        "ev": "skew",
+                        "wall": t,
+                        "mono": mono,
+                        "route": "p3",
+                        "n": n,
+                        "medianMs": self.skew,
+                    }
+                )
+                t += 60_000
+        ordered = sorted(events, key=lambda e: e["mono"])
         size = max(1, -(-len(ordered) // batches))
         chunks: dict[int, list[dict]] = {}
         cut = ordered[0]["mono"] if ordered else 0.0
         for n in range(batches):
             lines = ordered[n * size : (n + 1) * size]
             start, cut = cut, (lines[-1]["mono"] if lines else cut)
-            header = {"batch": n + 1, "fromMono": start, "cutMono": cut, "events": len(lines)}
+            header = {
+                "batch": n + 1,
+                "instance": self.instance,
+                "runId": self.run_id,
+                "fromMono": start,
+                "cutMono": cut,
+                "events": len(lines),
+            }
             chunks[n + 1] = [header, *lines]
         for n in missing:
             chunks.pop(n, None)
-        return {
-            self.instance: {
-                "batches": chunks,
-                "manifest": {"batches": batches, "instance": self.instance} if manifest else None,
-            }
-        }
+        record = {"batches": batches, "instance": self.instance, "events": len(ordered)}
+        return {self.instance: {"batches": chunks, "manifest": record if manifest else None}}
 
 
 def run_json(
@@ -178,7 +215,8 @@ def run_json(
         else (list(ROUTES) if public else ["p1", "p2", "p3", "p6"])
     )
     return {
-        "runId": "run-20270115T080000Z",
+        "runId": RUN_ID,
+        "worker": WORKER,
         "mode": mode,
         "t0": T0,
         "soakStart": S,
@@ -206,7 +244,11 @@ def campaign(
     uploaded = uploaded or {}
     status = status or {}
     return {
-        "runId": "run-20270115T080000Z",
+        "runId": RUN_ID,
+        "clock": {
+            "start": {"synchronized": True, "skewMs": 150.0},
+            "end": {"synchronized": True, "skewMs": -90.0},
+        },
         "deploys": [
             {
                 "target": target,
@@ -221,10 +263,24 @@ def campaign(
     }
 
 
+def preflight_run(public: bool = True) -> dict:
+    """The preflight's run.json: 10 minutes from PRE_T0 and its 60 s tail, same deployment."""
+    return {
+        **run_json(public),
+        "runId": PRE_ID,
+        "mode": "preflight",
+        "t0": PRE_T0,
+        "soakStart": PRE_T0,
+        "soakEnd": PRE_T0 + 10 * MIN,
+        "tailEnd": PRE_T0 + 10 * MIN + TAIL,
+        "events": [],
+    }
+
+
 def preflight(routes: tuple[str, ...] = ROUTES) -> dict:
-    b = Builder(instance="g1-0f0f0f0f-0f0f0f")
+    b = Builder(instance=PRE_INSTANCE, run_id=PRE_ID)
     for route in routes:
-        b.route(route, start=T0 - 30 * MIN, end=T0 - 25 * MIN)
+        b.route(route, start=PRE_T0 + 20_000, end=PRE_T0 + 10 * MIN + TAIL)
     return b.probe(batches=1)
 
 
@@ -243,12 +299,15 @@ def inputs(
     life: list[dict] | None = None,
     camp: dict | None = None,
     pre: dict | None | str = "default",
+    pre_run: dict | None | str = "default",
     refused: set[str] | None = None,
     probe: dict | None = None,
 ) -> analyze.Inputs:
     b = b or clean(public)
     if pre == "default":
         pre = preflight(ROUTES if public else ("p1", "p2", "p3", "p6"))
+    if pre_run == "default":
+        pre_run = preflight_run(public)
     return analyze.Inputs(
         run=run or run_json(public),
         lifecycle=lifecycle() if life is None else life,
@@ -256,6 +315,7 @@ def inputs(
         campaign=campaign() if camp is None else camp,
         preflight_probe=copy.deepcopy(pre),  # type: ignore[arg-type]
         refused=refused or set(),
+        preflight_run=copy.deepcopy(pre_run),  # type: ignore[arg-type]
     )
 
 

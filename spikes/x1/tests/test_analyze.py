@@ -30,6 +30,7 @@ from scenario import (
     inputs,
     lifecycle,
     preflight,
+    preflight_run,
     run_json,
     spontaneous_time,
 )
@@ -47,8 +48,12 @@ def build(**per_route) -> Builder:
     return b
 
 
-def run(b: Builder | None = None, **kwargs) -> analyze.Report:
-    return analyze.analyze(inputs(b, **kwargs))
+def run(b: Builder | None = None, setup_fails: bool = False, **kwargs) -> analyze.Report:
+    """The analysis of a scenario; unless `setup_fails`, its records must be valid evidence."""
+    report = analyze.analyze(inputs(b, **kwargs))
+    if not setup_fails:
+        assert report.setup_problems == [], report.setup_problems
+    return report
 
 
 def drops_at(*times: float, outage: float = 500.0, **kw) -> dict:
@@ -189,7 +194,7 @@ def test_f7_declined_rule_four_reads_p3_and_p6():
     assert not report.eligible["p5"]
     assert report.criteria["p5"]["6 supported"].detail == "not built"
     assert report.outcome.rule == 4 and report.outcome.rule4_routes == ["p3", "p6"]
-    assert report.ar17["p5"] == ("not built", 0, 0)
+    assert report.ar17["p5"] == ("not built", None, None)
 
 
 def test_f7_declined_never_selects_c():
@@ -249,7 +254,7 @@ def gap_probe(gap_slots: int) -> dict:
     1.0 s deadline covered, so that leaves `gap_slots` slots with no outcome."""
     c1 = spontaneous_time(3)
     c2 = c1 + 1000 * (gap_slots - 1)
-    first, second = Builder(instance="g1-0a1b2c3d-000001"), Builder(instance="g2-0a1b2c3d-000002")
+    first, second = Builder(instance="g2-0a1b2c3d-000002"), Builder(instance="g3-0a1b2c3d-000003")
     for route in ROUTES:
         first.route(route, end=c1 + 1)
         second.route(route, start=c2)
@@ -646,7 +651,7 @@ def test_drop_records_instance_identities_on_either_side():
 
 def test_missing_batch_fails_every_route_and_leaves_its_slots_without_outcome():
     b = clean()
-    report = run(b, probe=b.probe(batches=4, missing=(2,)))
+    report = run(b, setup_fails=True, probe=b.probe(batches=4, missing=(2,)))
     for route in ("p2", "p5", "p6"):
         assert not report.criteria[route]["5 complete data"].passed
         assert report.routes[route].slots.unaccounted > 0
@@ -656,7 +661,7 @@ def test_missing_batch_fails_every_route_and_leaves_its_slots_without_outcome():
 
 def test_missing_manifest_fails_completeness():
     b = clean()
-    report = run(b, probe=b.probe(batches=2, missing=(2,), manifest=False))
+    report = run(b, setup_fails=True, probe=b.probe(batches=2, missing=(2,), manifest=False))
     assert report.completeness.no_manifest == [b.instance]
     assert report.completeness.missing == {}
     assert not report.completeness.all_present
@@ -674,12 +679,12 @@ def test_a_batch_without_its_span_covers_nothing():
     b = clean()
     probe = b.probe(batches=1)
     del probe[b.instance]["batches"][1][0]["cutMono"]
-    report = run(probe=probe)
+    report = run(probe=probe, setup_fails=True)
     assert report.routes["p2"].slots.unaccounted == SLOTS
 
 
 def test_rollout_makes_the_outcome_inconclusive_and_still_reports():
-    report = run(camp=campaign(rollout=("transport",)))
+    report = run(setup_fails=True, camp=campaign(rollout=("transport",)))
     assert report.outcome.rule == 5 and report.outcome.selected is None
     assert report.outcome.text.startswith("inconclusive (rule 5, setup failure).")
     assert report.would_be.rule == 1 and report.would_be.selected == "p2"
@@ -693,7 +698,9 @@ def test_rollout_makes_the_outcome_inconclusive_and_still_reports():
 
 
 def test_missing_uploaded_line_and_missing_deploy():
-    report = run(camp=campaign(uploaded={"ui": None}, deploys={"ui": DEPLOYS["ui"]}))
+    report = run(
+        setup_fails=True, camp=campaign(uploaded={"ui": None}, deploys={"ui": DEPLOYS["ui"]})
+    )
     assert any('no "Uploaded" line' in p for p in report.setup_problems)
     assert any("no record of the transport deploy" in p for p in report.setup_problems)
     assert [w.event for w in report.windows] == [f"reset {k}" for k in RESETS]
@@ -710,15 +717,15 @@ def test_failed_deploy_status_and_missing_reset_are_deviations():
 
 
 def test_preflight_records_and_campaign_must_match_the_run():
-    report = run(run=run_json(mode="preflight"))
+    report = run(setup_fails=True, run=run_json(mode="preflight"))
     assert any("a preflight, not a run" in p for p in report.setup_problems)
     camp = campaign()
     camp["runId"] = "run-20990101T000000Z"
-    assert any("another run" in p for p in run(camp=camp).setup_problems)
+    assert any("another run" in p for p in run(camp=camp, setup_fails=True).setup_problems)
 
 
 def test_no_preflight_records_means_not_supported():
-    report = run(pre=None)
+    report = run(pre=None, setup_fails=True)
     assert report.criteria["p2"]["6 supported"].detail == "no preflight records"
     assert report.outcome.rule == 5
 
@@ -757,19 +764,15 @@ def test_instance_offset_is_the_median_and_needs_events():
 
 
 def test_two_instances_share_one_time_line():
-    first = Builder(instance="g1-0a1b2c3d-000001")
-    second = Builder(instance="g2-0a1b2c3d-000002")
+    restart = spontaneous_time(1) + 30_000
+    first = Builder(instance="g2-0a1b2c3d-000002")
     # The second instance's monotonic clock starts near zero; its wall clock carries on.
+    second = Builder(instance="g3-0a1b2c3d-000003", mono_shift=restart - 1000)
     first.route("p2", drops=(DropSpec(at=spontaneous_time(1), reconnect=False),))
     for route in ("p1", "p3", "p4", "p5", "p6"):
         first.route(route)
-    restart = spontaneous_time(1) + 30_000
     second.route("p2", start=restart)
-    for e in second.events:
-        e["mono"] -= restart - 1000
     probe = {**first.probe(batches=1), **second.probe(batches=1)}
-    probe[second.instance]["batches"][1][0]["fromMono"] -= restart - 1000
-    probe[second.instance]["batches"][1][0]["cutMono"] -= restart - 1000
     report = run(probe=probe)
     drop = report.routes["p2"].spontaneous[0]
     assert drop.recovery_ms == pytest.approx(30_020.0)
@@ -850,7 +853,7 @@ def write_dir(root, run_doc, life, probe):
 def test_command_line(tmp_path, capsys):
     b = build(p2={"drops": (DropSpec(at=spontaneous_time(1), reconnect=False),)})
     write_dir(tmp_path / "run", run_json(), lifecycle(), b.probe())
-    write_dir(tmp_path / "pre", run_json(mode="preflight"), [], preflight())
+    write_dir(tmp_path / "pre", preflight_run(), [], preflight())
     (tmp_path / "campaign.json").write_text(json.dumps(campaign()))
     out = tmp_path / "out.json"
     code = analyze.main(
@@ -923,6 +926,6 @@ def test_render_lists_checks_outside_drops_and_gaps():
 
 
 def test_preflight_only_without_json(tmp_path, capsys):
-    write_dir(tmp_path / "pre", run_json(mode="preflight"), [], preflight())
+    write_dir(tmp_path / "pre", preflight_run(), [], preflight())
     assert analyze.main(["--preflight-only", str(tmp_path / "pre")]) == 0
     assert "X1 preflight" in capsys.readouterr().out

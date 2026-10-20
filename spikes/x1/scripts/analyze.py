@@ -11,10 +11,16 @@ run.json, lifecycle/*.json and probe/<instance>/{batch-NNNNNN.jsonl,manifest.jso
 <campaign.json> is campaign.py's record of the two deploys (command start, the "Uploaded"
 line, end, exit status and whether a container rollout started).
 
-Clocks. Probe events carry wall and monotonic milliseconds. Each probe instance's events are
-placed on one time line, t = monotonic + the instance's median (wall - monotonic), so durations
-come from the monotonic clock and times compare with the Worker's (the soak, resets) and the
-laptop's (deploys) as wall-clock milliseconds. All clocks are NTP-synchronised.
+Clocks. The probe stamps every record from one monotonic-to-wall mapping fixed at its start
+(Amendment 3, item 2). Each instance's events are placed on one time line, t = monotonic + the
+instance's median (wall - monotonic), so durations come from the monotonic clock and times
+compare with the Worker's (the soak, resets) and the laptop's (deploys) as wall-clock
+milliseconds. A mapping that moves, a clock step in the probe's minute records, a skew against
+the Worker or a laptop clock out of bounds is a setup failure.
+
+Evidence (Amendment 3, item 1). Before the rule, the records are checked: batches, headers,
+spans and manifests, every connection's end, and the preflight's identity. Any failure is a
+setup failure; nothing is repaired or inferred.
 
 The soak is [S, E): its 1-second slots run from S, and a drop counts when it starts at or after S
 and before E. The recovery tail (Amendment 1, item 7) is [E, E + 60 s]: recoveries may complete
@@ -30,6 +36,7 @@ import argparse
 import bisect
 import json
 import math
+import re
 import statistics
 import sys
 from dataclasses import asdict, dataclass, field
@@ -796,8 +803,13 @@ def setup_failure() -> Outcome:
 # AR-17 (section 9, Amendment 1 item 5)
 
 
-def ar17(result: RouteResult, ui_event: str, transport_event: str) -> tuple[str, int, int]:
-    """Clear benefit, no benefit or no help, from the deploys' forced-event drops."""
+def ar17(
+    result: RouteResult, ui_event: str, transport_event: str, unassessable: str | None = None
+) -> tuple[str, int | None, int | None]:
+    """Clear benefit, no benefit or no help, from the deploys' forced-event drops; or, without
+    the evidence (Amendment 3, item 5), unassessable."""
+    if unassessable is not None:
+        return f"unassessable: {unassessable}", None, None
     t = len(result.forced.get(transport_event, []))
     u = len(result.forced.get(ui_event, []))
     if u > 0:
@@ -807,6 +819,243 @@ def ar17(result: RouteResult, ui_event: str, transport_event: str) -> tuple[str,
     else:
         verdict = "no benefit: neither deploy drops the route"
     return verdict, t, u
+
+
+def ar17_unassessable(
+    windows: list[Window], spans: list[tuple[float, float]], invalid: bool
+) -> str | None:
+    """Why AR-17 cannot be assessed: a deploy window that cannot be placed, the probe's record
+    over a window incomplete, or records that are not valid evidence. None when it can."""
+    deploys = {w.event: w for w in windows if w.kind == "deploy"}
+    for event in ("ui deploy", "transport deploy"):
+        if event not in deploys:
+            return f"the {event} window cannot be placed"
+    for event, w in deploys.items():
+        if not covered(spans, w.start, w.end):
+            return f"the probe's record over the {event} window is incomplete"
+    if invalid:
+        return "the probe's records are not valid evidence"
+    return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Evidence validity and clock health (Amendment 3, items 1 and 2)
+
+MAX_STEP_MS = 1000.0
+MAX_SKEW_MS = 2000.0
+# "Still answering at the tail's end": an echo answered within the last two seconds of the tail.
+ANSWERING_MS = 2 * SLOT_MS
+INSTANCE_GENERATION = re.compile(r"^g(\d+)-")
+
+
+def short(numbers: list[int]) -> str:
+    return ", ".join(str(n) for n in numbers[:8]) + (" …" if len(numbers) > 8 else "")
+
+
+def is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def batch_problems(
+    where: str, n: int, lines: list[dict], instance: str, run_id: object
+) -> tuple[list[str], dict | None]:
+    """One batch against its header: its number, instance, run, event count and span."""
+    headers = [x for x in lines if "ev" not in x]
+    events = [x for x in lines if "ev" in x]
+    if len(headers) != 1:
+        return [f"{where} batch {n}: {len(headers)} headers"], None
+    h = headers[0]
+    problems = [
+        f"{where} batch {n}: its header's {key} is {h.get(key)!r}, not {want!r}"
+        for key, want in (
+            ("batch", n),
+            ("instance", instance),
+            ("runId", run_id),
+            ("events", len(events)),
+        )
+        if h.get(key) != want
+    ]
+    start, cut = h.get("fromMono"), h.get("cutMono")
+    if not (is_number(start) and is_number(cut)) or cut < start:
+        return [*problems, f"{where} batch {n}: its header has no valid span"], None
+    # A record timed before it was written (a close frame's arrival) carries loggedMono: the
+    # batch holds the moment of writing.
+    written = [e.get("loggedMono", e.get("mono")) for e in events]
+    outside = sum(1 for m in written if not (is_number(m) and start <= m <= cut))
+    if outside:
+        problems.append(f"{where} batch {n}: {outside} events lie outside its span")
+    return problems, h
+
+
+def validate_batches(probe: dict[str, dict], run_id: object, label: str) -> list[str]:
+    """Batches numbered 1 to the manifest's count with none beyond it, each matching its header
+    and contents, spans joining without gaps, and the manifest's event count."""
+    if not probe:
+        return [f"{label}: no probe records"]
+    problems: list[str] = []
+    for instance, data in sorted(probe.items()):
+        where = f"{label} probe {instance}"
+        batches = data.get("batches", {})
+        manifest = data.get("manifest")
+        declared = max(batches, default=0)
+        if manifest is None:
+            problems.append(f"{where}: no manifest")
+        elif not is_number(manifest.get("batches")) or manifest["batches"] < 0:
+            problems.append(f"{where}: its manifest has no batch count")
+        else:
+            declared = int(manifest["batches"])
+            if manifest.get("instance") != instance:
+                problems.append(f"{where}: its manifest names another instance")
+        missing = sorted(set(range(1, declared + 1)) - set(batches))
+        beyond = sorted(n for n in batches if not 1 <= n <= declared)
+        if missing:
+            problems.append(f"{where}: batches missing: {short(missing)}")
+        if beyond:
+            problems.append(
+                f"{where}: batches beyond the manifest's count of {declared}: {short(beyond)}"
+            )
+        total = 0
+        previous: tuple[int, float] | None = None
+        for n in sorted(batches):
+            total += sum(1 for x in batches[n] if "ev" in x)
+            found, header = batch_problems(where, n, batches[n], instance, run_id)
+            problems.extend(found)
+            if header is None:
+                previous = None
+                continue
+            if previous is not None and previous[0] == n - 1 and header["fromMono"] != previous[1]:
+                problems.append(f"{where} batch {n}: its span does not join batch {n - 1}'s")
+            previous = (n, header["cutMono"])
+        if manifest is not None and manifest.get("events") not in (None, total):
+            problems.append(
+                f"{where}: its manifest counts {manifest.get('events')} events, its batches hold {total}"
+            )
+    return problems
+
+
+def terminal_problems(events: list[dict], tail_end: float, label: str) -> list[str]:
+    """Every connection ends on record (close, error or silence close), or is still answering
+    at the tail's end."""
+    problems = []
+    for route in ROUTES:
+        rec = route_records(events, route)
+        for c in rec.connections.values():
+            if c.close_t is not None:
+                continue
+            last = max(
+                (
+                    e.reply_t
+                    for e in rec.echoes.values()
+                    if (e.instance, e.conn) == (c.instance, c.conn) and e.answered and e.reply_t
+                ),
+                default=None,
+            )
+            if last is None or last < tail_end - ANSWERING_MS:
+                problems.append(
+                    f"{label}: {route.upper()} connection {c.instance}/{c.conn} has no close "
+                    "record and was not answering at the tail's end"
+                )
+    return problems
+
+
+def conflict_problems(events: list[dict]) -> list[str]:
+    return [
+        f"the recorder held a different body for the probe's {e.get('what')}"
+        for e in events
+        if e.get("ev") == "batch-conflict"
+    ]
+
+
+def clock_problems(probe: dict[str, dict], label: str) -> list[str]:
+    """The probe's clock: one fixed mapping from monotonic to wall time in its records, no step
+    of more than 1.0 s in its per-minute clock records, and its skew against the Worker's clock
+    (from P3's echoes) within ±2.0 s in every minute that has an estimate."""
+    problems = []
+    clocks = estimates = 0
+    for instance, events in sorted(instance_events(probe).items()):
+        diffs = [e["wall"] - e["mono"] for e in events if "wall" in e and "mono" in e]
+        if diffs and max(diffs) - min(diffs) > MAX_STEP_MS:
+            problems.append(
+                f"{label} probe {instance}: its records are not on one fixed clock mapping (wall "
+                f"minus monotonic moves by {max(diffs) - min(diffs):.0f} ms)"
+            )
+        steps, skews = [], []
+        for e in events:
+            if e.get("ev") == "clock":
+                clocks += 1
+                drift = e.get("driftMs")
+                if not is_number(drift) or abs(drift) > MAX_STEP_MS:
+                    steps.append(drift)
+            elif e.get("ev") == "skew" and e.get("medianMs") is not None:
+                estimates += 1
+                if not is_number(e["medianMs"]) or abs(e["medianMs"]) > MAX_SKEW_MS:
+                    skews.append(e["medianMs"])
+        if steps:
+            problems.append(
+                f"{label} probe {instance}: clock step: {len(steps)} minute records differ from "
+                f"the start's mapping by more than 1.0 s (first {steps[0]} ms)"
+            )
+        if skews:
+            problems.append(
+                f"{label} probe {instance}: skew against the Worker beyond ±2.0 s in "
+                f"{len(skews)} minutes (first {skews[0]} ms)"
+            )
+    if clocks == 0:
+        problems.append(f"{label}: no clock records")
+    if estimates == 0:
+        problems.append(f"{label}: no skew estimate from P3's echoes")
+    return problems
+
+
+def laptop_clock_problems(campaign: dict | None) -> list[str]:
+    """The laptop's time synchronisation and its skew against Cloudflare's Date header, at the
+    campaign's start and end."""
+    clock = (campaign or {}).get("clock") or {}
+    problems = []
+    for point in ("start", "end"):
+        record = clock.get(point)
+        if not isinstance(record, dict):
+            problems.append(f"no laptop clock record at the campaign's {point}")
+            continue
+        if record.get("synchronized") is not True:
+            problems.append(f"the laptop's clock was not synchronised at the campaign's {point}")
+        skew = record.get("skewMs")
+        if not is_number(skew) or abs(skew) > MAX_SKEW_MS:
+            problems.append(
+                f"the laptop's skew against Cloudflare at the campaign's {point} is {skew} ms, "
+                "beyond ±2.0 s"
+            )
+    return problems
+
+
+def generations(probe: dict[str, dict]) -> list[int]:
+    found = (INSTANCE_GENERATION.match(instance) for instance in probe)
+    return [int(m.group(1)) for m in found if m]
+
+
+def preflight_problems(
+    pre_run: dict | None, run: dict, pre_probe: dict[str, dict] | None, run_probe: dict[str, dict]
+) -> list[str]:
+    """The preflight names a preflight run of the same deployment, distinct from the run and
+    before it. Same deployment: the same Worker, and ComputerDO's generations (kept in its
+    storage, which a new deployment starts afresh) all lower than the run's."""
+    if pre_run is None or pre_probe is None:
+        return ["no preflight records"]
+    problems = []
+    if pre_run.get("mode") != "preflight":
+        problems.append(f"the preflight records are a {pre_run.get('mode')}, not a preflight")
+    if pre_run.get("runId") == run.get("runId"):
+        problems.append("the preflight records are the run's own")
+    if not (
+        is_number(pre_run.get("t0")) and is_number(run.get("t0")) and pre_run["t0"] < run["t0"]
+    ):
+        problems.append("the preflight did not start before the run")
+    if pre_run.get("worker") is None or pre_run.get("worker") != run.get("worker"):
+        problems.append("the preflight names another deployment")
+    before, after = generations(pre_probe), generations(run_probe)
+    if not before or not after or max(before) >= min(after):
+        problems.append("the preflight's computer generations do not precede the run's")
+    return problems
 
 
 # ---------------------------------------------------------------------------------------------
@@ -821,6 +1070,7 @@ class Inputs:
     campaign: dict | None
     preflight_probe: dict[str, dict] | None
     refused: set[str] = field(default_factory=set)
+    preflight_run: dict | None = None
 
 
 @dataclass
@@ -841,7 +1091,7 @@ class Report:
     eligible: dict[str, bool]
     outcome: Outcome
     would_be: Outcome
-    ar17: dict[str, tuple[str, int, int]]
+    ar17: dict[str, tuple[str, int | None, int | None]]
     blocked: list[dict]
 
 
@@ -925,6 +1175,21 @@ def analyze(inputs: Inputs) -> Report:
     for e in planned:
         if e.get("id") not in recorded:
             deviations.append(f"forced reset {e.get('id')} was not recorded by RunDO")
+    # Amendment 3: the records are checked before the rule; nothing is repaired or inferred.
+    invalid = (
+        validate_batches(inputs.probe, run.get("runId"), "run")
+        + terminal_problems(events, tail_end, "run")
+        + conflict_problems(events)
+    )
+    pre = preflight_problems(inputs.preflight_run, run, inputs.preflight_probe, inputs.probe)
+    if not pre:
+        assert inputs.preflight_run is not None and inputs.preflight_probe is not None
+        pre += validate_batches(
+            inputs.preflight_probe, inputs.preflight_run.get("runId"), "preflight"
+        )
+        pre += terminal_problems(preflight or [], soak_of(inputs.preflight_run)[2], "preflight")
+    problems += invalid + pre + clock_problems(inputs.probe, "run")
+    problems += laptop_clock_problems(inputs.campaign)
     complete = completeness(inputs.probe)
     results = {r: route_result(events, r, r in built_routes, soak, windows, spans) for r in ROUTES}
     criteria = {}
@@ -936,12 +1201,13 @@ def analyze(inputs: Inputs) -> Report:
     rates = {r: results[r].spontaneous_rate for r in ROUTES}
     would_be = decide(eligible, rates, public_built)
     outcome = setup_failure() if problems else would_be
-    ar = {}
+    ar: dict[str, tuple[str, int | None, int | None]] = {}
+    unassessable = ar17_unassessable(windows, spans, bool(invalid))
     for route in [outcome.selected] if outcome.selected else list(CANDIDATES):
         if route in built_routes:
-            ar[route] = ar17(results[route], "ui deploy", "transport deploy")
+            ar[route] = ar17(results[route], "ui deploy", "transport deploy", unassessable)
         else:
-            ar[route] = ("not built", 0, 0)
+            ar[route] = ("not built", None, None)
     return Report(
         run_id=str(run.get("runId")),
         mode=str(run.get("mode")),
@@ -971,12 +1237,16 @@ class PreflightReport:
     blocked: list[dict]
     resets: list[tuple[str, float]]
     completeness: Completeness
+    problems: list[str]
 
 
 def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) -> PreflightReport:
-    """Section 5's preflight checks: all six routes, the forced reset, the block list and record
-    completeness."""
+    """Section 5's preflight checks: all six routes, the forced reset, the block list, record
+    completeness and validity (Amendment 3, item 1), and the probe's clock (item 2)."""
     events = probe_events(probe)
+    problems = validate_batches(probe, run.get("runId"), "preflight")
+    problems += terminal_problems(events, soak_of(run)[2], "preflight")
+    problems += conflict_problems(events) + clock_problems(probe, "preflight")
     spans = coverage(probe)
     resets = resets_from(lifecycle)
     windows = [reset_window(f"reset {name}", r) for name, r in resets]
@@ -996,7 +1266,7 @@ def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) 
             "outcomeFraction": result.outcome_fraction,
         }
     return PreflightReport(
-        str(run.get("runId")), routes, blocked_checks(events), resets, completeness(probe)
+        str(run.get("runId")), routes, blocked_checks(events), resets, completeness(probe), problems
     )
 
 
@@ -1116,9 +1386,8 @@ def render(report: Report) -> str:
             f"{report.would_be.rule}: {report.would_be.text})"
         )
     for route, (verdict, t, u) in report.ar17.items():
-        lines.append(
-            f"AR-17 {route.upper()}: {verdict} (transport deploy drops {t}, UI deploy drops {u})"
-        )
+        counts = "" if t is None else f" (transport deploy drops {t}, UI deploy drops {u})"
+        lines.append(f"AR-17 {route.upper()}: {verdict}{counts}")
     lines.append("In every case: core changes 12 and 14. The selection is provisional until RC-26.")
     return "\n".join(lines)
 
@@ -1138,6 +1407,8 @@ def render_preflight(report: PreflightReport) -> str:
         f"batches {c.batches_present}/{c.batches_expected}; missing {c.missing or 'none'}; "
         f"without manifest {c.no_manifest or 'none'}"
     )
+    lines.append(f"record problems: {len(report.problems)}")
+    lines.extend(f"  {p}" for p in report.problems)
     return "\n".join(lines)
 
 
@@ -1202,10 +1473,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.run_dir is None:
         parser.error("give a run directory or --preflight-only")
     run, lifecycle, probe = load_dir(args.run_dir)
-    preflight_probe = load_dir(args.preflight)[2] if args.preflight else None
+    pre_run, _, preflight_probe = load_dir(args.preflight) if args.preflight else (None, [], None)
     campaign = read_json(args.campaign) if args.campaign else None
     report = analyze(
-        Inputs(run, lifecycle, probe, campaign, preflight_probe, set(args.unsupported))
+        Inputs(run, lifecycle, probe, campaign, preflight_probe, set(args.unsupported), pre_run)
     )
     print(render(report))
     if args.json:
