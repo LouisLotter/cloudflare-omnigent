@@ -1,5 +1,6 @@
 """The X1 analyzer against synthetic records: every branch of section 8's rule, each eligibility
-criterion's boundary, forced-window edges, and the record anomalies section 6 reports."""
+criterion's boundary, forced-window edges, Amendment 1's slots, failed opens, setup failure and
+recovery tail, and the record anomalies section 6 reports."""
 
 from __future__ import annotations
 
@@ -15,7 +16,10 @@ from scenario import (
     OBSERVED_MS,
     RESETS,
     ROUTES,
+    SLOTS,
     T0,
+    TAIL,
+    TAIL_END,
     UPLOAD_MS,
     Builder,
     DropSpec,
@@ -51,6 +55,11 @@ def drops_at(*times: float, outage: float = 500.0, **kw) -> dict:
     return {"drops": tuple(DropSpec(at=t, outage=outage, **kw) for t in times)}
 
 
+# Slots touching a forced window on the default schedule: 33 per reset (R-2 s .. R+30 s on the
+# grid) and 351 per deploy (start .. Uploaded + 330 s).
+OBSERVED_SLOTS = SLOTS - 3 * 33 - 2 * 351
+
+
 # ---------------------------------------------------------------------------------------------
 # The rule, in order
 
@@ -58,17 +67,19 @@ def drops_at(*times: float, outage: float = 500.0, **kw) -> dict:
 def test_clean_run_selects_a_prime():
     report = run()
     assert report.setup_problems == []
-    assert report.outcome is not None and report.outcome.rule == 1
-    assert report.outcome.selected == "p2"
+    assert report.outcome.rule == 1 and report.outcome.selected == "p2"
     assert report.eligible == {"p2": True, "p6": True, "p5": True}
     p2 = report.routes["p2"]
     assert p2.spontaneous == [] and p2.availability == 1.0 and p2.outcome_fraction == 1.0
-    assert p2.soak_slots == 7200
+    assert (p2.slots.total, p2.slots.answered, p2.slots.down) == (SLOTS, SLOTS, 0)
+    assert p2.slots.observed == OBSERVED_SLOTS
     assert report.observed_hours == pytest.approx(OBSERVED_MS / 3_600_000)
+    assert report.tail_end == TAIL_END
     assert report.ar17 == {"p2": ("no benefit: neither deploy drops the route", 0, 0)}
     text = analyze.render(report)
     assert "OUTCOME (rule 1): select A′ native forwarding (P2)." in text
     assert "core changes 12 and 14" in text
+    assert "for information only" not in text
 
 
 def test_v_when_p2_fails_drop_rate():
@@ -103,14 +114,6 @@ def test_v_when_p2_fails_forced_recovery():
     assert report.outcome.selected == "p6"
 
 
-def test_v_when_p2_fails_outcome_completeness():
-    b = build(p2={"no_outcome": 73})
-    report = run(b)
-    assert not report.criteria["p2"]["5 complete data"].passed
-    assert report.criteria["p6"]["5 complete data"].passed
-    assert report.outcome.selected == "p6"
-
-
 def test_v_when_p2_first_connects_after_the_soak_starts():
     b = build(p2={"start": S + 1000})
     report = run(b)
@@ -130,11 +133,13 @@ def test_v_when_p2_is_not_supported():
 
 def test_v_when_p2_never_connected_at_the_run():
     report = run(build(p2="never"))
+    p2 = report.routes["p2"]
     assert not report.criteria["p2"]["6 supported"].passed
     assert "the run" in report.criteria["p2"]["6 supported"].detail
-    assert report.routes["p2"].first_open is None
-    assert report.routes["p2"].outcome_fraction is None
-    assert report.routes["p2"].failed_statuses == {"502": 3}
+    assert p2.first_open is None and p2.first_connection is None
+    # Every slot of a route that never connected is down: the records account for all of them.
+    assert p2.slots.down == SLOTS and p2.outcome_fraction == 1.0 and p2.availability == 0.0
+    assert p2.failed_statuses == {"502": 3}
     assert report.outcome.selected == "p6"
 
 
@@ -171,7 +176,7 @@ def test_inconclusive_when_one_watched_route_is_quiet():
     b = build(p2=twice, p3=once, p4=twice, p5=twice, p6=twice)
     report = run(b)
     assert report.outcome.rule == 5
-    assert "inconclusive" in report.outcome.text
+    assert report.outcome.text.startswith("inconclusive.")
 
 
 def test_f7_declined_rule_four_reads_p3_and_p6():
@@ -208,9 +213,10 @@ def boundary_run(drops: int) -> analyze.Report:
     """A soak whose observed time is exactly 2 hours, with `drops` spontaneous P2 drops."""
     soak_end = S + 2 * 3_600_000 + (E - S - OBSERVED_MS)
     times = [spontaneous_time(k) for k in range(drops)]
+    end = soak_end + TAIL
     b = build(
-        p2={**drops_at(*times), "end": soak_end},
-        **{r: {"end": soak_end} for r in ("p1", "p3", "p4", "p5", "p6")},
+        p2={**drops_at(*times), "end": end},
+        **{r: {"end": end} for r in ("p1", "p3", "p4", "p5", "p6")},
     )
     return run(b, run=run_json(soak_end=soak_end))
 
@@ -237,11 +243,38 @@ def test_forced_recovery_boundary_is_60_seconds(outage, passed):
     assert report.criteria["p2"]["3 forced recovery"].passed is passed
 
 
-@pytest.mark.parametrize(("blank", "passed"), [(72, True), (73, False)])
-def test_outcome_fraction_boundary_is_99_percent(blank, passed):
-    report = run(build(p2={"no_outcome": blank}))
-    assert report.routes["p2"].soak_slots == 7200
-    assert report.criteria["p2"]["5 complete data"].passed is passed
+def gap_probe(gap_slots: int) -> dict:
+    """Two probe instances, each with every batch and its manifest, with the records covering
+    nothing for `gap_slots` - 1 seconds between them. A slot needs its second and its echoes'
+    1.0 s deadline covered, so that leaves `gap_slots` slots with no outcome."""
+    c1 = spontaneous_time(3)
+    c2 = c1 + 1000 * (gap_slots - 1)
+    first, second = Builder(instance="g1-0a1b2c3d-000001"), Builder(instance="g2-0a1b2c3d-000002")
+    for route in ROUTES:
+        first.route(route, end=c1 + 1)
+        second.route(route, start=c2)
+    first.mark(c1)
+    second.mark(c2)
+    return {**first.probe(batches=2), **second.probe(batches=2)}
+
+
+@pytest.mark.parametrize(("gap_slots", "passed"), [(72, True), (73, False)])
+def test_outcome_fraction_boundary_is_99_percent(gap_slots, passed):
+    report = run(probe=gap_probe(gap_slots))
+    assert report.completeness.all_present
+    for route in ("p2", "p5", "p6"):
+        slots = report.routes[route].slots
+        assert (slots.total, slots.unaccounted) == (SLOTS, gap_slots)
+        assert report.criteria[route]["5 complete data"].passed is passed
+
+
+def test_slots_without_records_are_shared_by_every_route():
+    """Completeness counts slots the records cover, which no route's own events change: P2
+    cannot fail criterion 5's 99% alone (only its first connection is its own)."""
+    report = run(probe=gap_probe(100))
+    fractions = {r.outcome_fraction for r in report.routes.values()}
+    assert fractions == {(SLOTS - 100) / SLOTS}
+    assert "slots with an outcome" in report.criteria["p2"]["5 complete data"].detail
 
 
 def test_recovery_counts_missed_echoes_on_the_new_connection():
@@ -259,10 +292,174 @@ def test_unrecovered_drop_is_unbounded():
     assert "unbounded" in analyze.render(report)
 
 
-def test_recovery_after_the_soak_end_is_unbounded():
+# ---------------------------------------------------------------------------------------------
+# Amendment 1, item 7: the recovery tail
+
+
+def test_a_drop_near_the_soak_end_recovers_in_the_tail():
     b = build(p2=drops_at(E - 2000, outage=5000.0))
     drop = run(b).routes["p2"].spontaneous[0]
-    assert math.isinf(drop.recovery_ms)
+    assert drop.recovered_at == E + 3020 and drop.recovery_ms == pytest.approx(5020.0)
+
+
+@pytest.mark.parametrize(("outage", "recovered"), [(61_980.0, True), (61_981.0, False)])
+def test_recovery_completing_at_the_tails_last_moment(outage, recovered):
+    """A drop at E - 2 s, recovered by an echo answered at exactly E + 60 s, or 1 ms later."""
+    b = build(p2={**drops_at(E - 2000, outage=outage), "end": TAIL_END + 1000})
+    drop = run(b).routes["p2"].spontaneous[0]
+    if recovered:
+        assert drop.recovered_at == TAIL_END and drop.recovery_ms == pytest.approx(62_000.0)
+    else:
+        assert drop.recovered_at is None and math.isinf(drop.recovery_ms)
+
+
+@pytest.mark.parametrize(
+    ("at", "kind"),
+    [
+        (S - 1, "outside"),
+        (S, "spontaneous"),
+        (E - 1, "spontaneous"),
+        (E, "outside"),
+        (E + 30_000, "outside"),
+    ],
+)
+def test_soak_edges_for_drops(at, kind):
+    """The soak is [S, E): a drop starting at S+120 min exactly is in the tail, not counted."""
+    r = run(build(p2=drops_at(at))).routes["p2"]
+    found = r.spontaneous + r.outside
+    assert [d.kind for d in found] == [kind]
+
+
+# ---------------------------------------------------------------------------------------------
+# Amendment 1, item 2: failed opens
+
+
+def test_failed_open_during_recovery_is_part_of_it():
+    """A connection opens and closes with no echo answered on it while the route recovers: no
+    new drop, and the recovery runs on to the first answered echo."""
+    at = spontaneous_time(2)
+    b = build(p2=drops_at(at, outage=3000.0, failed=(500.0, 1500.0)))
+    r = run(b).routes["p2"]
+    assert len(r.spontaneous) == 1 and r.outside == []
+    assert r.failed_opens == [at + 500.0, at + 1500.0]
+    assert r.connections == 4
+    assert r.spontaneous[0].recovery_ms == pytest.approx(3020.0)
+    # Their unanswered echoes are missed slots; the seconds with no connection are down.
+    assert r.slots.missed == 2
+
+
+def test_failed_open_in_the_warm_up_and_after_it():
+    """The first open fails in the warm-up; the route works before S: no drop, criterion 5
+    passes. For P6 the only open before S fails and the first working connection comes after S:
+    no drop either, and criterion 5 fails on the first connection."""
+    b = Builder()
+    for route in ROUTES:
+        if route in ("p2", "p6"):
+            b.failed_open(route, FIRST_OPEN - 5000)
+        start = S + 30_000 if route == "p6" else FIRST_OPEN
+        b.route(route, start=start)
+    report = run(b)
+    p2, p6 = report.routes["p2"], report.routes["p6"]
+    assert p2.failed_opens == [FIRST_OPEN - 5000] and p2.spontaneous == p2.outside == []
+    assert p2.first_open == FIRST_OPEN - 5000 and p2.first_connection == FIRST_OPEN
+    assert report.criteria["p2"]["5 complete data"].passed
+    assert p6.spontaneous == p6.outside == [] and p6.first_connection == S + 30_000
+    assert not report.criteria["p6"]["5 complete data"].passed
+    assert report.outcome.selected == "p2"
+
+
+def test_a_connection_with_only_late_replies_is_a_failed_open():
+    at = spontaneous_time(2)
+    b = build(p2=drops_at(at, outage=2000.0))
+    b.failed_open("p2", at + 500.0)
+    late = [
+        e for e in b.events if e["ev"] == "send" and e["route"] == "p2" and e["mono"] == at + 500.0
+    ][0]
+    b.add("reply", at + 1600.0, route="p2", conn=2, seq=late["seq"], rtt=1100.0)
+    r = run(b).routes["p2"]
+    assert len(r.spontaneous) == 1 and r.failed_opens == [at + 500.0]
+
+
+# ---------------------------------------------------------------------------------------------
+# Amendment 1, item 1: slots
+
+
+def records(events: list[dict]) -> analyze.RouteRecords:
+    line = analyze.timeline({"i": [{"wall": e["t"], "mono": e["t"], **e} for e in events]})
+    return analyze.route_records(line, "p1")
+
+
+def echo(seq: int, sent: float, rtt: float | None, conn: int = 1) -> list[dict]:
+    out = [{"ev": "send", "route": "p1", "conn": conn, "seq": seq, "t": sent}]
+    if rtt is not None:
+        out.append({"ev": "reply", "route": "p1", "conn": conn, "seq": seq, "t": sent + rtt})
+    return out
+
+
+def test_slot_edges_and_outcomes():
+    """Slots are [S + k s, S + (k+1) s) for the soak [S, E); an echo belongs to the slot its send
+    time falls in. Here S = 0 and E = 6 s: six slots."""
+    events = [{"ev": "open", "route": "p1", "conn": 1, "t": -5000.0}]
+    events += echo(1, -1.0, 10)  # before the soak: no slot
+    events += echo(2, 0.0, 10)  # slot 0, answered
+    events += echo(3, 1000.0, 1001)  # slot 1, answered late: missed
+    events += echo(4, 2000.0, None) + echo(5, 2999.0, 1000)  # slot 2: one missed, one answered
+    # slot 3: nothing sent, a connection open: down (counted as down while open)
+    events += [{"ev": "close", "route": "p1", "conn": 1, "by": "peer", "code": 1006, "t": 3500.0}]
+    # slot 4: nothing sent, no connection: down
+    events += echo(6, 5999.0, None)  # slot 5 (the last one), missed
+    events += echo(7, 6000.0, 10)  # at E exactly: no slot
+    rec = records(events)
+    outcomes = analyze.slot_outcomes(rec, 0.0, 6000.0, [(-10_000.0, 10_000.0)])
+    assert outcomes == ["answered", "missed", "answered", "down", "down", "missed"]
+    counts = analyze.count_slots(rec, outcomes, 0.0, [])
+    assert (counts.answered, counts.missed, counts.down, counts.down_while_open) == (2, 2, 2, 1)
+    assert counts.availability == pytest.approx(2 / 6) and counts.outcome_fraction == 1.0
+
+
+def test_a_slot_needs_its_second_and_its_deadline_covered():
+    rec = records(echo(1, 0.0, 10) + echo(2, 1000.0, 10) + echo(3, 2000.0, 10))
+    # Records cover 0 .. 2.999 s: slot 0 (with its deadline, to 2 s) is covered; slot 1's
+    # deadline runs to 3 s, past the cover; slot 2 too.
+    outcomes = analyze.slot_outcomes(rec, 0.0, 3000.0, [(0.0, 2999.0)])
+    assert outcomes == ["answered", None, None]
+    counts = analyze.count_slots(rec, outcomes, 0.0, [])
+    assert counts.unaccounted == 2 and counts.outcome_fraction == pytest.approx(1 / 3)
+    assert analyze.slot_outcomes(rec, 0.0, 3000.0, []) == [None, None, None]
+
+
+def test_observed_slots_exclude_any_slot_a_window_touches():
+    w = analyze.Window("w", "reset", 1500.0, 2000.0)
+    assert [analyze.slot_observed(a, [w]) for a in (0.0, 1000.0, 2000.0, 3000.0)] == [
+        True,
+        False,
+        False,
+        True,
+    ]
+    edge = analyze.Window("e", "reset", 999.0, 999.0)
+    assert analyze.slot_observed(0.0, [edge]) is False and analyze.slot_observed(1000.0, [edge])
+
+
+def test_outages_count_against_availability():
+    at = spontaneous_time(2)
+    r = run(build(p2=drops_at(at, outage=4500.0))).routes["p2"]
+    # The connection ends at `at` (a slot start); the next opens 4.5 s later. Slots at, +1 s,
+    # +2 s and +3 s have no echo: down. The one at +4 s holds the new connection's first echo.
+    assert r.slots.down == 4 and r.slots.down_while_open == 0
+    assert r.slots.observed_answered == r.slots.observed - 4
+    assert r.availability == pytest.approx((OBSERVED_SLOTS - 4) / OBSERVED_SLOTS)
+
+
+def test_gap_is_reported_not_counted_as_a_drop():
+    miss = (spontaneous_time(4), spontaneous_time(4) + 1000)
+    report = run(build(p2={"miss_at": miss}))
+    r = report.routes["p2"]
+    assert r.spontaneous == []
+    assert len(r.gaps) == 1 and r.gaps[0].misses == 2
+    assert r.gaps[0].start == miss[0] + 1000
+    assert r.slots.missed == 2 and r.slots.observed_answered == r.slots.observed - 2
+    assert r.lost == 2
+    assert report.eligible["p2"]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -322,7 +519,7 @@ def test_drop_in_two_windows_is_forced_for_both():
     assert len(forced["reset reset-s30"]) == 1 and len(forced["ui deploy"]) == 1
 
 
-def test_drops_outside_the_soak_are_not_counted():
+def test_drops_before_the_soak_are_not_counted():
     b = build(p2=drops_at(T0 + 60_000))
     report = run(b)
     assert len(report.routes["p2"].outside) == 1
@@ -332,18 +529,6 @@ def test_drops_outside_the_soak_are_not_counted():
 
 # ---------------------------------------------------------------------------------------------
 # Gaps, sequence anomalies and pongs
-
-
-def test_gap_is_reported_not_counted_as_a_drop():
-    miss = (spontaneous_time(4), spontaneous_time(4) + 1000)
-    report = run(build(p2={"miss_at": miss}))
-    r = report.routes["p2"]
-    assert r.spontaneous == []
-    assert len(r.gaps) == 1 and r.gaps[0].misses == 2
-    assert r.gaps[0].start == miss[0] + 1000
-    assert r.observed_answered == r.observed_slots - 2
-    assert r.lost == 2
-    assert report.eligible["p2"]
 
 
 def test_gap_in_a_forced_window_names_it():
@@ -397,14 +582,15 @@ def test_drop_records_instance_identities_on_either_side():
 
 
 # ---------------------------------------------------------------------------------------------
-# Data completeness and setup
+# Data completeness and setup (Amendment 1, item 6)
 
 
-def test_missing_batch_fails_every_route():
+def test_missing_batch_fails_every_route_and_leaves_its_slots_without_outcome():
     b = clean()
     report = run(b, probe=b.probe(batches=4, missing=(2,)))
     for route in ("p2", "p5", "p6"):
         assert not report.criteria[route]["5 complete data"].passed
+        assert report.routes[route].slots.unaccounted > 0
     assert report.completeness.missing == {b.instance: [2]}
     assert report.outcome.rule == 5
 
@@ -425,13 +611,26 @@ def test_batches_beyond_the_manifest_are_listed():
     assert c.unexpected == {next(iter(probe)): [3]} and c.all_present
 
 
-def test_rollout_fails_setup_but_still_reports():
+def test_a_batch_without_its_span_covers_nothing():
+    b = clean()
+    probe = b.probe(batches=1)
+    del probe[b.instance]["batches"][1][0]["cutMono"]
+    report = run(probe=probe)
+    assert report.routes["p2"].slots.unaccounted == SLOTS
+
+
+def test_rollout_makes_the_outcome_inconclusive_and_still_reports():
     report = run(camp=campaign(rollout=("transport",)))
-    assert report.outcome is None
-    assert report.would_be.rule == 1
+    assert report.outcome.rule == 5 and report.outcome.selected is None
+    assert report.outcome.text.startswith("inconclusive (rule 5, setup failure).")
+    assert report.would_be.rule == 1 and report.would_be.selected == "p2"
     assert "container rollout" in report.setup_problems[0]
+    # Nothing is selected, so AR-17 covers every candidate.
+    assert set(report.ar17) == {"p2", "p6", "p5"}
     text = analyze.render(report)
-    assert "SETUP FAILED" in text and "for information only" in text
+    assert "SETUP FAILED" in text
+    assert "OUTCOME (rule 5): inconclusive (rule 5, setup failure)." in text
+    assert "(for information only, without the setup failure the rule would give rule 1:" in text
 
 
 def test_missing_uploaded_line_and_missing_deploy():
@@ -439,13 +638,14 @@ def test_missing_uploaded_line_and_missing_deploy():
     assert any('no "Uploaded" line' in p for p in report.setup_problems)
     assert any("no record of the transport deploy" in p for p in report.setup_problems)
     assert [w.event for w in report.windows] == [f"reset {k}" for k in RESETS]
+    assert report.outcome.text.startswith("inconclusive (rule 5, setup failure)")
 
 
 def test_failed_deploy_status_and_missing_reset_are_deviations():
     life = lifecycle({k: v for k, v in RESETS.items() if k != "reset-s60"})
     report = run(camp=campaign(status={"ui": 1}), life=life)
     assert report.setup_problems == []
-    assert any("exited with status 1" in d for d in report.deviations)
+    assert any("exited with status 1 after its Uploaded line" in d for d in report.deviations)
     assert any("reset-s60 was not recorded" in d for d in report.deviations)
     assert "schedule deviations" in analyze.render(report)
 
@@ -465,7 +665,7 @@ def test_no_preflight_records_means_not_supported():
 
 
 # ---------------------------------------------------------------------------------------------
-# AR-17
+# AR-17 (Amendment 1, item 5)
 
 
 def test_ar17_clear_benefit():
@@ -473,13 +673,11 @@ def test_ar17_clear_benefit():
     assert run(b).ar17["p2"][0].startswith("clear benefit")
 
 
-def test_ar17_no_help_both_and_ui_only():
+def test_ar17_no_help_whenever_the_ui_deploy_drops_the_route():
     both = build(p2=drops_at(DEPLOYS["transport"] + 60_000, DEPLOYS["ui"] + 60_000))
-    verdict, t, u = run(both).ar17["p2"]
-    assert verdict == "no help: the UI deploy drops the route too" and (t, u) == (1, 1)
+    assert run(both).ar17["p2"] == ("no help: the UI deploy drops the route", 1, 1)
     ui_only = build(p2=drops_at(DEPLOYS["ui"] + 60_000))
-    verdict, t, u = run(ui_only).ar17["p2"]
-    assert verdict.startswith("no help") and "does not name this case" in verdict and t == 0
+    assert run(ui_only).ar17["p2"] == ("no help: the UI deploy drops the route", 0, 1)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -511,9 +709,22 @@ def test_two_instances_share_one_time_line():
     for e in second.events:
         e["mono"] -= restart - 1000
     probe = {**first.probe(batches=1), **second.probe(batches=1)}
+    probe[second.instance]["batches"][1][0]["fromMono"] -= restart - 1000
+    probe[second.instance]["batches"][1][0]["cutMono"] -= restart - 1000
     report = run(probe=probe)
     drop = report.routes["p2"].spontaneous[0]
     assert drop.recovery_ms == pytest.approx(30_020.0)
+    # Both instances' batches cover the soak, so every slot has an outcome.
+    assert report.routes["p2"].slots.unaccounted == 0
+    assert report.routes["p2"].slots.down == 30
+
+
+def test_empty_instance_and_empty_batches():
+    b = clean()
+    probe = b.probe(batches=1)
+    probe["g9-0a1b2c3d-000009"] = {"batches": {}, "manifest": {"batches": 0}}
+    assert analyze.coverage(probe) == analyze.coverage(b.probe(batches=1))
+    assert analyze.merge([(5.0, 4.0), (0.0, 1.0), (1.0, 2.0)]) == [(0.0, 2.0)]
 
 
 def test_blocked_checks():
@@ -533,20 +744,28 @@ def test_blocked_checks():
 
 def test_preflight_report():
     b = Builder()
+    pre_end = T0 + 10 * MIN
     for route in ROUTES:
         if route == "p6":
             b.never(route, status=426, start=T0 + 1000)
             continue
         drops = (DropSpec(at=T0 + 5 * MIN + 1000, outage=2000.0),) if route == "p1" else ()
-        b.route(route, start=T0 + 20_000, end=T0 + 10 * MIN, drops=drops)
+        b.route(route, start=T0 + 20_000, end=pre_end + TAIL, drops=drops)
     b.add("blocked-check", T0 + 2000, target="p2", status=403, refusedBy="p2-handler")
-    pre_run = {**run_json(), "mode": "preflight", "soakStart": T0, "soakEnd": T0 + 10 * MIN}
+    pre_run = {
+        **run_json(),
+        "mode": "preflight",
+        "soakStart": T0,
+        "soakEnd": pre_end,
+        "tailEnd": pre_end + TAIL,
+    }
     report = analyze.analyze_preflight(
         pre_run, lifecycle({"reset-t5": T0 + 5 * MIN}), b.probe(batches=1)
     )
     assert report.routes["p6"]["connected"] is False
     assert report.routes["p6"]["failedStatuses"] == {"426": 3}
     assert report.routes["p1"]["forcedRecoveryMs"] == [pytest.approx(2020.0)]
+    assert report.routes["p1"]["failedOpens"] == 0
     assert report.blocked[0]["ok"] is True
     text = analyze.render_preflight(report)
     assert "P6:" in text and "reset reset-t5" in text
@@ -563,9 +782,8 @@ def write_dir(root, run_doc, life, probe):
     for instance, data in probe.items():
         d = root / "probe" / instance
         d.mkdir()
-        for n, events in data["batches"].items():
-            lines = [json.dumps({"batch": n})] + [json.dumps(e) for e in events]
-            (d / f"batch-{n:06d}.jsonl").write_text("\n".join(lines) + "\n")
+        for n, lines in data["batches"].items():
+            (d / f"batch-{n:06d}.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
         if data["manifest"] is not None:
             (d / "manifest.json").write_text(json.dumps(data["manifest"]))
 
@@ -593,8 +811,9 @@ def test_command_line(tmp_path, capsys):
     saved = json.loads(out.read_text())
     assert saved["outcome"]["selected"] == "p6"
     assert saved["routes"]["p2"]["spontaneous"][0]["recovery_ms"] == "unbounded"
-    # Without a campaign record the setup is incomplete and the exit status says so.
+    # Without a campaign record the setup failed: the outcome is inconclusive, exit status 2.
     assert analyze.main([str(tmp_path / "run"), "--preflight", str(tmp_path / "pre")]) == 2
+    assert "inconclusive (rule 5, setup failure)" in capsys.readouterr().out
     pre_json = tmp_path / "pre.json"
     assert analyze.main(["--preflight-only", str(tmp_path / "pre"), "--json", str(pre_json)]) == 0
     assert json.loads(pre_json.read_text())["routes"]["p1"]["connected"] is True
@@ -610,9 +829,11 @@ def test_formatting_helpers():
     assert analyze.percentile([], 0.5) is None
     assert analyze.drop_rate(0, 0) == 0.0 and math.isinf(analyze.drop_rate(1, 0))
     assert analyze.jsonable((1, math.inf)) == [1, "unbounded"]
+    empty = analyze.Slots(0, 0, 0, 0, 0, 0, 0, 0)
+    assert empty.outcome_fraction is None and empty.availability is None
 
 
-def test_first_open_before_the_soak_is_required_even_when_otherwise_clean():
+def test_first_connection_before_the_soak_is_required_even_when_otherwise_clean():
     assert run(build(p6={"start": S})).criteria["p6"]["5 complete data"].passed is False
     assert run(build(p6={"start": S - 1})).criteria["p6"]["5 complete data"].passed is True
 
@@ -621,8 +842,10 @@ def test_records_of_unknown_connections_are_ignored():
     b = clean()
     b.add("ident", T0, route="p2", conn=99, id={})
     b.add("close", T0, route="p2", conn=99, by="peer", code=1000)
-    b.add("miss", T0, route="p2", conn=99, seq=10**9)
-    assert run(b).routes["p2"].connections == 1
+    b.add("send", T0, route="p2", conn=99, seq=10**9)
+    b.add("reply", T0 + 5, route="p2", conn=99, seq=10**9, rtt=5)
+    r = run(b).routes["p2"]
+    assert r.connections == 1 and r.spontaneous == [] and r.outside == []
 
 
 def test_first_open_is_the_earliest():
@@ -635,8 +858,9 @@ def test_render_lists_checks_outside_drops_and_gaps():
     b.add("something-new", T0 + 1000, route="p2")
     text = analyze.render(run(b))
     assert "block-list check p2: 403 p2-handler ok=True" in text
-    assert "drops outside the soak (not counted): 1" in text
+    assert "drops before the soak or in the tail (not counted): 1" in text
     assert "misses=1" in text
+    assert "slots 7200: answered 7199, missed 1, down 0" in text
 
 
 def test_preflight_only_without_json(tmp_path, capsys):

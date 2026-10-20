@@ -1,5 +1,6 @@
 """X1 analysis: the pre-registration's definitions (section 6), eligibility and decision rule
-(section 8, applied in order) and AR-17 (section 9), applied to one run's records.
+(section 8, applied in order) and AR-17 (section 9), as Amendment 1 settles them, applied to one
+run's records.
 
     python3 -I spikes/x1/scripts/analyze.py <run-dir> --preflight <preflight-dir> \\
         --campaign <campaign.json> [--unsupported p6 ...] [--json <out.json>]
@@ -12,8 +13,12 @@ line, end, exit status and whether a container rollout started).
 
 Clocks. Probe events carry wall and monotonic milliseconds. Each probe instance's events are
 placed on one time line, t = monotonic + the instance's median (wall - monotonic), so durations
-come from the monotonic clock and times compare with the Worker's (resets, RunDO's record) and
-the laptop's (deploys) as wall-clock milliseconds. All clocks are NTP-synchronised.
+come from the monotonic clock and times compare with the Worker's (the soak, resets) and the
+laptop's (deploys) as wall-clock milliseconds. All clocks are NTP-synchronised.
+
+The soak is [S, E): its 1-second slots run from S, and a drop counts when it starts at or after S
+and before E. The recovery tail (Amendment 1, item 7) is [E, E + 60 s]: recoveries may complete
+in it; drops that start in it are not counted.
 
 --unsupported names a route the lead recorded as refused by Cloudflare at preflight (section 5);
 it fails criterion 6 for that route. Everything below the I/O section is pure.
@@ -22,6 +27,7 @@ it fails criterion 6 for that route. Everything below the I/O section is pure.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import statistics
@@ -30,7 +36,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 ROUTES = ("p1", "p2", "p3", "p4", "p5", "p6")
-PUBLIC = ("p4", "p5")
 # Section 8's order: A′ (P2), then V (P6), then C (P5).
 RULE_ORDER = (("p2", "A′ native forwarding"), ("p6", "V private Tunnel"), ("p5", "C public Tunnel"))
 CANDIDATES = tuple(route for route, _ in RULE_ORDER)
@@ -39,7 +44,9 @@ DESIGNED = frozenset(CANDIDATES)
 # Each candidate's policy point and the hop name it must give when refusing /x1/blocked.
 POLICY_HOPS = {"p2": "p2-handler", "p5": "p5-route", "p6": "p6-handler"}
 
+SLOT_MS = 1000.0
 DEADLINE_MS = 1000.0
+TAIL_MS = 60_000.0
 SPONTANEOUS_RECOVERY_MS = 5000.0
 FORCED_RECOVERY_MS = 60_000.0
 MAX_DROPS_PER_HOUR = 1.0
@@ -49,10 +56,14 @@ RESET_AFTER_MS = 30_000.0
 DEPLOY_AFTER_UPLOADED_MS = 330_000.0
 HOUR_MS = 3_600_000.0
 UNBOUNDED = math.inf
+RULE5_TEXT = (
+    "The owner chooses between B, one rerun with a fixed budget and a changed setup, and the "
+    "fallbacks in AR section 6."
+)
 
 
 # ---------------------------------------------------------------------------------------------
-# Time line
+# Time line and record coverage
 
 
 def instance_offset(events: list[dict]) -> float:
@@ -61,6 +72,17 @@ def instance_offset(events: list[dict]) -> float:
     if not diffs:
         raise ValueError("a probe instance has no timed events")
     return float(statistics.median(diffs))
+
+
+def instance_events(probe: dict[str, dict]) -> dict[str, list[dict]]:
+    """Each instance's events from its present batches (batch headers have no "ev")."""
+    out = {}
+    for instance, data in probe.items():
+        events: list[dict] = []
+        for n in sorted(data.get("batches", {})):
+            events.extend(e for e in data["batches"][n] if "ev" in e)
+        out[instance] = events
+    return out
 
 
 def timeline(instances: dict[str, list[dict]]) -> list[dict]:
@@ -74,6 +96,41 @@ def timeline(instances: dict[str, list[dict]]) -> list[dict]:
             out.append({**e, "instance": instance, "t": e["mono"] + offset})
     out.sort(key=lambda e: (e["t"], e.get("instance", "")))
     return out
+
+
+def merge(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The union of closed intervals, as sorted disjoint intervals; touching ones join."""
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if end < start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def coverage(probe: dict[str, dict]) -> list[tuple[float, float]]:
+    """The time the present batches account for. Each batch's header gives the monotonic span
+    it holds (fromMono to cutMono); a missing batch, or the time between two probe instances,
+    is not covered."""
+    spans = []
+    for instance, events in instance_events(probe).items():
+        if not events:
+            continue
+        offset = instance_offset(events)
+        for lines in probe[instance].get("batches", {}).values():
+            for header in (h for h in lines if "ev" not in h):
+                if "fromMono" in header and "cutMono" in header:
+                    spans.append((header["fromMono"] + offset, header["cutMono"] + offset))
+    return merge(spans)
+
+
+def covered(spans: list[tuple[float, float]], a: float, b: float) -> bool:
+    """Whether [a, b] lies within one covered span."""
+    i = bisect.bisect_right([s for s, _ in spans], a) - 1
+    return i >= 0 and spans[i][1] >= b
 
 
 # ---------------------------------------------------------------------------------------------
@@ -104,20 +161,7 @@ def windows_containing(t: float, windows: list[Window]) -> list[str]:
 
 
 def union_length(intervals: list[tuple[float, float]]) -> float:
-    total = 0.0
-    current: tuple[float, float] | None = None
-    for start, end in sorted(intervals):
-        if end <= start:
-            continue
-        if current is None or start > current[1]:
-            if current is not None:
-                total += current[1] - current[0]
-            current = (start, end)
-        else:
-            current = (current[0], max(current[1], end))
-    if current is not None:
-        total += current[1] - current[0]
-    return total
+    return sum(end - start for start, end in merge([(s, e) for s, e in intervals if e > s]))
 
 
 def observed_ms(soak_start: float, soak_end: float, windows: list[Window]) -> float:
@@ -126,12 +170,17 @@ def observed_ms(soak_start: float, soak_end: float, windows: list[Window]) -> fl
     return (soak_end - soak_start) - union_length(clipped)
 
 
+def slot_observed(a: float, windows: list[Window]) -> bool:
+    """A slot [a, a + 1 s) is in the observed time when no forced window touches it."""
+    return not any(w.start < a + SLOT_MS and w.end >= a for w in windows)
+
+
 # ---------------------------------------------------------------------------------------------
 # One route's records
 
 
 @dataclass
-class Slot:
+class Echo:
     instance: str
     conn: int
     seq: int
@@ -139,7 +188,6 @@ class Slot:
     reply_t: float | None = None
     rtt: float | None = None
     replies: int = 0
-    miss_recorded: bool = False
 
     @property
     def answered(self) -> bool:
@@ -148,10 +196,6 @@ class Slot:
     @property
     def deadline(self) -> float:
         return self.sent + DEADLINE_MS
-
-    @property
-    def outcome_recorded(self) -> bool:
-        return self.replies > 0 or self.miss_recorded
 
 
 @dataclass
@@ -165,12 +209,13 @@ class Connection:
     reason: str | None = None
     error: str | None = None
     ids: list[dict] = field(default_factory=list)
+    answered: bool = False
 
 
 @dataclass
 class RouteRecords:
     route: str
-    slots: dict[tuple[str, int], Slot] = field(default_factory=dict)
+    echoes: dict[tuple[str, int], Echo] = field(default_factory=dict)
     connections: dict[tuple[str, int], Connection] = field(default_factory=dict)
     attempts: list[dict] = field(default_factory=list)
     duplicates: int = 0
@@ -183,7 +228,7 @@ class RouteRecords:
 
 
 def route_records(events: list[dict], route: str) -> RouteRecords:
-    """Slots, connections, replies, pings and pongs of one route, from the time line."""
+    """Echoes, connections, replies, pings and pongs of one route, from the time line."""
     rec = RouteRecords(route)
     max_seq: dict[tuple[str, int], int] = {}
     for e in events:
@@ -196,30 +241,29 @@ def route_records(events: list[dict], route: str) -> RouteRecords:
         elif kind == "open":
             rec.connections[(inst, e["conn"])] = Connection(inst, e["conn"], e["t"])
         elif kind == "send":
-            rec.slots[(inst, e["seq"])] = Slot(inst, e["conn"], e["seq"], e["t"])
+            rec.echoes[(inst, e["seq"])] = Echo(inst, e["conn"], e["seq"], e["t"])
         elif kind == "reply":
-            slot = rec.slots.get((inst, e["seq"]))
-            if slot is None:
+            echo = rec.echoes.get((inst, e["seq"]))
+            if echo is None:
                 rec.unknown_replies += 1
                 continue
-            slot.replies += 1
-            if slot.replies > 1:
+            echo.replies += 1
+            if echo.replies > 1:
                 rec.duplicates += 1
                 continue
-            slot.reply_t = e["t"]
-            slot.rtt = e["t"] - slot.sent
+            echo.reply_t = e["t"]
+            echo.rtt = e["t"] - echo.sent
             key = (inst, e["conn"])
             if e["seq"] < max_seq.get(key, -1):
                 rec.reordered += 1
             max_seq[key] = max(max_seq.get(key, -1), e["seq"])
+            conn = rec.connections.get(key)
+            if conn is not None and echo.answered:
+                conn.answered = True
         elif kind == "duplicate":
             rec.duplicates += 1
         elif kind == "unexpected":
             rec.unexpected += 1
-        elif kind == "miss":
-            slot = rec.slots.get((inst, e["seq"]))
-            if slot is not None:
-                slot.miss_recorded = True
         elif kind == "ident":
             conn = rec.connections.get((inst, e["conn"]))
             if conn is not None:
@@ -241,15 +285,98 @@ def route_records(events: list[dict], route: str) -> RouteRecords:
     return rec
 
 
-def slots_of(rec: RouteRecords, instance: str, conn: int) -> list[Slot]:
+def echoes_of(rec: RouteRecords, instance: str, conn: int) -> list[Echo]:
     return sorted(
-        (s for s in rec.slots.values() if s.instance == instance and s.conn == conn),
+        (s for s in rec.echoes.values() if s.instance == instance and s.conn == conn),
         key=lambda s: s.seq,
     )
 
 
 # ---------------------------------------------------------------------------------------------
-# Drops, recoveries and gaps (section 6)
+# Slots (Amendment 1, item 1)
+
+
+@dataclass
+class Slots:
+    total: int
+    answered: int
+    missed: int
+    down: int
+    down_while_open: int
+    unaccounted: int
+    observed: int
+    observed_answered: int
+
+    @property
+    def outcome_fraction(self) -> float | None:
+        return (self.total - self.unaccounted) / self.total if self.total else None
+
+    @property
+    def availability(self) -> float | None:
+        return self.observed_answered / self.observed if self.observed else None
+
+
+def slot_outcomes(
+    rec: RouteRecords, soak_start: float, soak_end: float, spans: list[tuple[float, float]]
+) -> list[str | None]:
+    """Each 1-second slot of the soak, on the probe's time line: "answered" if an echo sent in
+    it was answered within 1.0 s, else "missed" if an echo was sent in it, else "down". A slot
+    the records do not cover, with its echoes' deadline, has no outcome (None)."""
+    n = int((soak_end - soak_start) // SLOT_MS)
+    by_slot: dict[int, list[Echo]] = {}
+    for echo in rec.echoes.values():
+        k = math.floor((echo.sent - soak_start) / SLOT_MS)
+        if 0 <= k < n:
+            by_slot.setdefault(k, []).append(echo)
+    out: list[str | None] = []
+    for k in range(n):
+        a = soak_start + k * SLOT_MS
+        if not covered(spans, a, a + SLOT_MS + DEADLINE_MS):
+            out.append(None)
+        elif any(e.answered for e in by_slot.get(k, [])):
+            out.append("answered")
+        elif k in by_slot:
+            out.append("missed")
+        else:
+            out.append("down")
+    return out
+
+
+def count_slots(
+    rec: RouteRecords,
+    outcomes: list[str | None],
+    soak_start: float,
+    windows: list[Window],
+) -> Slots:
+    open_spans = merge(
+        [
+            (c.open_t, c.close_t if c.close_t is not None else UNBOUNDED)
+            for c in rec.connections.values()
+        ]
+    )
+    down_while_open = observed = observed_answered = 0
+    for k, outcome in enumerate(outcomes):
+        a = soak_start + k * SLOT_MS
+        # A connection open for some part of the slot: opened before it ends, closed after it starts.
+        if outcome == "down" and any(s < a + SLOT_MS and e > a for s, e in open_spans):
+            down_while_open += 1
+        if slot_observed(a, windows):
+            observed += 1
+            observed_answered += outcome == "answered"
+    return Slots(
+        total=len(outcomes),
+        answered=outcomes.count("answered"),
+        missed=outcomes.count("missed"),
+        down=outcomes.count("down"),
+        down_while_open=down_while_open,
+        unaccounted=outcomes.count(None),
+        observed=observed,
+        observed_answered=observed_answered,
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Drops, failed opens, recoveries and gaps (section 6, Amendment 1 items 2 and 7)
 
 
 @dataclass
@@ -270,31 +397,37 @@ class Drop:
     kind: str = "outside"  # "spontaneous", "forced" or "outside" the soak
 
 
-def drop_start(slots: list[Slot], moment: float) -> float:
+def drop_start(echoes: list[Echo], moment: float) -> float:
     """The earlier of the drop's moment and the first missed deadline in the run of misses
-    before it: the slots after the connection's last answered one whose deadline had passed."""
-    last_answered = max((i for i, s in enumerate(slots) if s.answered), default=-1)
-    run = [s for s in slots[last_answered + 1 :] if not s.answered and s.deadline <= moment]
+    before it: the echoes after the connection's last answered one whose deadline had passed."""
+    last_answered = max((i for i, s in enumerate(echoes) if s.answered), default=-1)
+    run = [s for s in echoes[last_answered + 1 :] if not s.answered and s.deadline <= moment]
     if not run:
         return moment
     return min(moment, min(s.deadline for s in run))
 
 
+def ended(conn: Connection) -> bool:
+    """Ended by a close frame, a transport error or the silence deadline, not by the probe's
+    own close at the end of the run."""
+    return conn.close_t is not None and conn.by != "end"
+
+
 def find_drops(rec: RouteRecords) -> list[Drop]:
-    """Every connection that ended by a close frame, a transport error or the silence deadline.
-    The probe's own close at the end of the run is not a drop."""
+    """A connection on which an echo was answered, ending: a drop. A connection that ends before
+    any echo is answered on it is a failed attempt, not a drop (Amendment 1, item 2)."""
     drops = []
     for conn in rec.connections.values():
-        if conn.close_t is None or conn.by == "end":
+        if not ended(conn) or not conn.answered:
             continue
-        slots = slots_of(rec, conn.instance, conn.conn)
+        assert conn.close_t is not None
         drops.append(
             Drop(
                 route=rec.route,
                 instance=conn.instance,
                 conn=conn.conn,
                 moment=conn.close_t,
-                start=drop_start(slots, conn.close_t),
+                start=drop_start(echoes_of(rec, conn.instance, conn.conn), conn.close_t),
                 by=conn.by,
                 code=conn.code,
                 reason=conn.reason,
@@ -305,34 +438,47 @@ def find_drops(rec: RouteRecords) -> list[Drop]:
     return drops
 
 
-def attach_recoveries(rec: RouteRecords, drops: list[Drop], soak_end: float) -> None:
+def failed_opens(rec: RouteRecords) -> list[Connection]:
+    """Connections that opened and ended with no echo answered on them."""
+    return sorted(
+        (c for c in rec.connections.values() if ended(c) and not c.answered),
+        key=lambda c: c.open_t,
+    )
+
+
+def attach_recoveries(rec: RouteRecords, drops: list[Drop], tail_end: float) -> None:
     """Recovery: from the drop start to the first answered echo on a new connection, by the
-    soak's end. Otherwise the recovery time is unbounded."""
+    tail's end. Failed opens in between are part of the same recovery. Otherwise the recovery
+    time is unbounded."""
+    answers = sorted(
+        ((echo.reply_t, echo) for echo in rec.echoes.values() if echo.answered),
+        key=lambda pair: pair[0],
+    )
     for drop in drops:
-        best: Slot | None = None
-        for slot in rec.slots.values():
-            if not slot.answered or (slot.instance, slot.conn) == (drop.instance, drop.conn):
+        for reply_t, echo in answers:
+            if reply_t > tail_end:
+                break
+            conn = rec.connections.get((echo.instance, echo.conn))
+            same = (echo.instance, echo.conn) == (drop.instance, drop.conn)
+            if conn is None or same or conn.open_t < drop.moment:
                 continue
-            conn = rec.connections.get((slot.instance, slot.conn))
-            if conn is None or conn.open_t < drop.moment:
-                continue
-            if slot.reply_t is None or slot.reply_t > soak_end:
-                continue
-            if best is None or slot.reply_t < best.reply_t:
-                best = slot
-        if best is not None:
-            drop.recovered_at = best.reply_t
-            drop.recovery_ms = best.reply_t - drop.start
-            conn = rec.connections[(best.instance, best.conn)]
+            drop.recovered_at = reply_t
+            drop.recovery_ms = reply_t - drop.start
             drop.ids_after = conn.ids[0] if conn.ids else None
+            break
+
+
+def in_soak(t: float, soak_start: float, soak_end: float) -> bool:
+    return soak_start <= t < soak_end
 
 
 def classify(drops: list[Drop], soak_start: float, soak_end: float, windows: list[Window]) -> None:
     """A drop that starts in a forced window is a forced-event drop of that event; every other
-    drop in the soak is spontaneous. Drops that start outside the soak are not counted."""
+    drop that starts in the soak is spontaneous. Drops that start before the soak or in the tail
+    are not counted."""
     for drop in drops:
         drop.windows = windows_containing(drop.start, windows)
-        if not soak_start <= drop.start <= soak_end:
+        if not in_soak(drop.start, soak_start, soak_end):
             drop.kind = "outside"
         elif drop.windows:
             drop.kind = "forced"
@@ -354,10 +500,10 @@ def find_gaps(rec: RouteRecords, windows: list[Window]) -> list[Gap]:
     """Missed deadlines followed by an answered echo on the same connection, with no drop."""
     gaps = []
     for conn in rec.connections.values():
-        run: list[Slot] = []
-        for slot in slots_of(rec, conn.instance, conn.conn):
-            if not slot.answered:
-                run.append(slot)
+        run: list[Echo] = []
+        for echo in echoes_of(rec, conn.instance, conn.conn):
+            if not echo.answered:
+                run.append(echo)
                 continue
             if run:
                 start = run[0].deadline
@@ -367,7 +513,7 @@ def find_gaps(rec: RouteRecords, windows: list[Window]) -> list[Gap]:
                         conn.conn,
                         start,
                         len(run),
-                        float(slot.reply_t),
+                        float(echo.reply_t if echo.reply_t is not None else start),
                         windows_containing(start, windows),
                     )
                 )
@@ -393,20 +539,18 @@ class RouteResult:
     built: bool
     connections: int
     first_open: float | None
+    first_connection: float | None
+    failed_opens: list[float]
     attempts: int
     failed_attempts: int
     failed_statuses: dict[str, int]
-    soak_slots: int
-    soak_slots_with_outcome: int
-    outcome_fraction: float | None
-    observed_slots: int
-    observed_answered: int
-    availability: float | None
+    slots: Slots
     spontaneous: list[Drop]
     forced: dict[str, list[Drop]]
     outside: list[Drop]
     spontaneous_rate: float
     gaps: list[Gap]
+    echoes: int
     lost: int
     duplicated: int
     reordered: int
@@ -419,6 +563,14 @@ class RouteResult:
     pong_p95: float | None
     pong_max: float | None
 
+    @property
+    def outcome_fraction(self) -> float | None:
+        return self.slots.outcome_fraction
+
+    @property
+    def availability(self) -> float | None:
+        return self.slots.availability
+
 
 def drop_rate(count: int, observed: float) -> float:
     if observed <= 0:
@@ -430,51 +582,49 @@ def route_result(
     events: list[dict],
     route: str,
     built: bool,
-    soak_start: float,
-    soak_end: float,
+    soak: tuple[float, float, float],
     windows: list[Window],
+    spans: list[tuple[float, float]],
 ) -> RouteResult:
+    """One route's numbers. `soak` is (S, E, end of the recovery tail)."""
+    soak_start, soak_end, tail_end = soak
     rec = route_records(events, route)
     drops = find_drops(rec)
-    attach_recoveries(rec, drops, soak_end)
+    attach_recoveries(rec, drops, tail_end)
     classify(drops, soak_start, soak_end, windows)
     forced: dict[str, list[Drop]] = {w.event: [] for w in windows}
     for drop in drops:
         if drop.kind == "forced":
             for event in drop.windows:
                 forced[event].append(drop)
-    soak = [s for s in rec.slots.values() if soak_start <= s.sent <= soak_end]
-    observed = [s for s in soak if not windows_containing(s.sent, windows)]
-    answered_observed = sum(1 for s in observed if s.answered)
-    recorded = sum(1 for s in soak if s.outcome_recorded)
+    sent = [s for s in rec.echoes.values() if in_soak(s.sent, soak_start, soak_end)]
     statuses: dict[str, int] = {}
     failed = [a for a in rec.attempts if not a.get("ok")]
     for a in failed:
         key = str(a.get("status") or a.get("error") or "unknown")
         statuses[key] = statuses.get(key, 0) + 1
     opens = [c.open_t for c in rec.connections.values()]
+    working = [c.open_t for c in rec.connections.values() if c.answered]
     spontaneous = [d for d in drops if d.kind == "spontaneous"]
-    obs_ms = observed_ms(soak_start, soak_end, windows)
+    outcomes = slot_outcomes(rec, soak_start, soak_end, spans)
     return RouteResult(
         route=route,
         built=built,
         connections=len(rec.connections),
         first_open=min(opens) if opens else None,
+        first_connection=min(working) if working else None,
+        failed_opens=[c.open_t for c in failed_opens(rec)],
         attempts=len(rec.attempts),
         failed_attempts=len(failed),
         failed_statuses=statuses,
-        soak_slots=len(soak),
-        soak_slots_with_outcome=recorded,
-        outcome_fraction=(recorded / len(soak)) if soak else None,
-        observed_slots=len(observed),
-        observed_answered=answered_observed,
-        availability=(answered_observed / len(observed)) if observed else None,
+        slots=count_slots(rec, outcomes, soak_start, windows),
         spontaneous=spontaneous,
         forced=forced,
         outside=[d for d in drops if d.kind == "outside"],
-        spontaneous_rate=drop_rate(len(spontaneous), obs_ms),
-        gaps=[g for g in find_gaps(rec, windows) if soak_start <= g.start <= soak_end],
-        lost=sum(1 for s in soak if s.replies == 0),
+        spontaneous_rate=drop_rate(len(spontaneous), observed_ms(soak_start, soak_end, windows)),
+        gaps=[g for g in find_gaps(rec, windows) if in_soak(g.start, soak_start, soak_end)],
+        echoes=len(sent),
+        lost=sum(1 for s in sent if s.replies == 0),
         duplicated=rec.duplicates,
         reordered=rec.reordered,
         unexpected=rec.unexpected,
@@ -518,13 +668,12 @@ def completeness(probe: dict[str, dict]) -> Completeness:
         if manifest is None:
             no_manifest.append(instance)
             top = max(numbers, default=0)
-            gaps = sorted(set(range(1, top + 1)) - numbers)
         else:
             top = int(manifest["batches"])
-            gaps = sorted(set(range(1, top + 1)) - numbers)
             extra = sorted(n for n in numbers if n > top)
             if extra:
                 unexpected[instance] = extra
+        gaps = sorted(set(range(1, top + 1)) - numbers)
         if gaps:
             missing[instance] = gaps
         expected += top
@@ -557,7 +706,7 @@ def eligibility(
     spont = [d.recovery_ms for d in result.spontaneous]
     forced = [d.recovery_ms for drops in result.forced.values() for d in drops]
     fraction = result.outcome_fraction
-    first = result.first_open
+    first = result.first_connection
     reasons = []
     if not complete.all_present:
         reasons.append(
@@ -566,7 +715,7 @@ def eligibility(
     if fraction is None or fraction < MIN_OUTCOME_FRACTION:
         reasons.append(f"soak slots with an outcome {fmt_fraction(fraction)} < 99%")
     if first is None or first >= soak_start:
-        reasons.append("first connection not before the soak started")
+        reasons.append("first connection (an echo answered on it) not before the soak started")
     return {
         "1 drop rate": Criterion(
             rate <= MAX_DROPS_PER_HOUR,
@@ -591,7 +740,8 @@ def eligibility(
 def supported(
     route: str, built: bool, preflight: list[dict] | None, run: list[dict], refused: set[str]
 ) -> tuple[bool, str]:
-    """Criterion 6: connected at preflight and at the run, without a Cloudflare refusal."""
+    """Criterion 6 (Amendment 1, item 4): at least one successful open at the preflight and at
+    the run, and not recorded as refused by Cloudflare at the preflight."""
     if not built:
         return False, "not built"
     if route in refused:
@@ -631,17 +781,16 @@ def decide(eligible: dict[str, bool], rates: dict[str, float], public_built: boo
             "spontaneous drop an hour, so the container's egress recycles whatever the route.",
             watched,
         )
-    return Outcome(
-        5,
-        None,
-        "inconclusive. The owner chooses between B, one rerun with a fixed budget and a changed "
-        "setup, and the fallbacks in AR section 6.",
-        watched,
-    )
+    return Outcome(5, None, f"inconclusive. {RULE5_TEXT}", watched)
+
+
+def setup_failure() -> Outcome:
+    """Amendment 1, item 6: a setup failure makes the outcome inconclusive (rule 5)."""
+    return Outcome(5, None, f"inconclusive (rule 5, setup failure). {RULE5_TEXT}", [])
 
 
 # ---------------------------------------------------------------------------------------------
-# AR-17 (section 9)
+# AR-17 (section 9, Amendment 1 item 5)
 
 
 def ar17(result: RouteResult, ui_event: str, transport_event: str) -> tuple[str, int, int]:
@@ -649,11 +798,7 @@ def ar17(result: RouteResult, ui_event: str, transport_event: str) -> tuple[str,
     t = len(result.forced.get(transport_event, []))
     u = len(result.forced.get(ui_event, []))
     if u > 0:
-        verdict = "no help: the UI deploy drops the route" + (
-            " too"
-            if t > 0
-            else " (the transport deploy does not; section 9 does not name this case)"
-        )
+        verdict = "no help: the UI deploy drops the route"
     elif t > 0:
         verdict = "clear benefit: the transport deploy drops the route and the UI deploy does not"
     else:
@@ -681,6 +826,7 @@ class Report:
     mode: str
     soak_start: float
     soak_end: float
+    tail_end: float
     public_built: bool
     windows: list[Window]
     observed_hours: float
@@ -690,20 +836,19 @@ class Report:
     routes: dict[str, RouteResult]
     criteria: dict[str, dict[str, Criterion]]
     eligible: dict[str, bool]
-    outcome: Outcome | None
-    would_be: Outcome | None
+    outcome: Outcome
+    would_be: Outcome
     ar17: dict[str, tuple[str, int, int]]
     blocked: list[dict]
 
 
 def probe_events(probe: dict[str, dict]) -> list[dict]:
-    instances = {}
-    for instance, data in probe.items():
-        events: list[dict] = []
-        for n in sorted(data.get("batches", {})):
-            events.extend(e for e in data["batches"][n] if "ev" in e)
-        instances[instance] = events
-    return timeline(instances)
+    return timeline(instance_events(probe))
+
+
+def soak_of(run: dict) -> tuple[float, float, float]:
+    start, end = float(run["soakStart"]), float(run["soakEnd"])
+    return start, end, float(run.get("tailEnd", end + TAIL_MS))
 
 
 def resets_from(lifecycle: list[dict]) -> list[tuple[str, float]]:
@@ -720,8 +865,8 @@ def resets_from(lifecycle: list[dict]) -> list[tuple[str, float]]:
 def windows_from(
     lifecycle: list[dict], campaign: dict | None
 ) -> tuple[list[Window], list[str], list[str]]:
-    """The forced windows, the setup problems that stop the rule being applied, and deviations
-    from the schedule that are reported only."""
+    """The forced windows, the setup problems (Amendment 1, item 6) and the deviations from the
+    schedule that are reported only."""
     windows = [reset_window(f"reset {name}", r) for name, r in resets_from(lifecycle)]
     problems: list[str] = []
     deviations: list[str] = []
@@ -733,11 +878,13 @@ def windows_from(
             continue
         if d.get("rollout"):
             problems.append(f"the {target} deploy started a container rollout")
-        if d.get("status") not in (0, None):
-            deviations.append(f"the {target} deploy exited with status {d.get('status')}")
         if d.get("uploaded") is None:
             problems.append(f'the {target} deploy has no "Uploaded" line: its window is undefined')
             continue
+        if d.get("status") not in (0, None):
+            deviations.append(
+                f"the {target} deploy exited with status {d.get('status')} after its Uploaded line"
+            )
         windows.append(deploy_window(f"{target} deploy", float(d["start"]), float(d["uploaded"])))
     return windows, problems, deviations
 
@@ -749,19 +896,21 @@ def blocked_checks(events: list[dict]) -> list[dict]:
             continue
         target = e.get("target")
         expected = POLICY_HOPS.get(str(target), f"{target}-handler")
-        ok = e.get("status") == 403 and e.get("refusedBy") == expected
         if target == "p5-badcred":
-            ok = e.get("status") == 403 and e.get("refusedBy") == "p5-route"
+            expected = "p5-route"
+        ok = e.get("status") == 403 and e.get("refusedBy") == expected
         out.append({**{k: e.get(k) for k in ("target", "status", "refusedBy")}, "ok": ok})
     return out
 
 
 def analyze(inputs: Inputs) -> Report:
     run = inputs.run
-    soak_start, soak_end = float(run["soakStart"]), float(run["soakEnd"])
+    soak = soak_of(run)
+    soak_start, soak_end, tail_end = soak
     public_built = bool(run.get("publicRoutes"))
     built_routes = set(run.get("routes") or [])
     events = probe_events(inputs.probe)
+    spans = coverage(inputs.probe)
     preflight = probe_events(inputs.preflight_probe) if inputs.preflight_probe is not None else None
     windows, problems, deviations = windows_from(inputs.lifecycle, inputs.campaign)
     if run.get("mode") != "run":
@@ -774,9 +923,7 @@ def analyze(inputs: Inputs) -> Report:
         if e.get("id") not in recorded:
             deviations.append(f"forced reset {e.get('id')} was not recorded by RunDO")
     complete = completeness(inputs.probe)
-    results = {
-        r: route_result(events, r, r in built_routes, soak_start, soak_end, windows) for r in ROUTES
-    }
+    results = {r: route_result(events, r, r in built_routes, soak, windows, spans) for r in ROUTES}
     criteria = {}
     eligible = {}
     for route in CANDIDATES:
@@ -784,11 +931,10 @@ def analyze(inputs: Inputs) -> Report:
         criteria[route] = eligibility(results[route], complete, soak_start, support)
         eligible[route] = route in built_routes and all(c.passed for c in criteria[route].values())
     rates = {r: results[r].spontaneous_rate for r in ROUTES}
-    decision = decide(eligible, rates, public_built)
-    outcome = decision if not problems else None
+    would_be = decide(eligible, rates, public_built)
+    outcome = setup_failure() if problems else would_be
     ar = {}
-    targets = [decision.selected] if decision.selected else list(CANDIDATES)
-    for route in targets:
+    for route in [outcome.selected] if outcome.selected else list(CANDIDATES):
         if route in built_routes:
             ar[route] = ar17(results[route], "ui deploy", "transport deploy")
         else:
@@ -798,6 +944,7 @@ def analyze(inputs: Inputs) -> Report:
         mode=str(run.get("mode")),
         soak_start=soak_start,
         soak_end=soak_end,
+        tail_end=tail_end,
         public_built=public_built,
         windows=windows,
         observed_hours=observed_ms(soak_start, soak_end, windows) / HOUR_MS,
@@ -808,7 +955,7 @@ def analyze(inputs: Inputs) -> Report:
         criteria=criteria,
         eligible=eligible,
         outcome=outcome,
-        would_be=decision,
+        would_be=would_be,
         ar17=ar,
         blocked=blocked_checks(events),
     )
@@ -827,17 +974,18 @@ def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) 
     """Section 5's preflight checks: all six routes, the forced reset, the block list and record
     completeness."""
     events = probe_events(probe)
+    spans = coverage(probe)
     resets = resets_from(lifecycle)
     windows = [reset_window(f"reset {name}", r) for name, r in resets]
-    start, end = float(run["soakStart"]), float(run["soakEnd"])
     routes = {}
     for route in ROUTES:
         built = route in (run.get("routes") or [])
-        result = route_result(events, route, built, start, end, windows)
+        result = route_result(events, route, built, soak_of(run), windows, spans)
         routes[route] = {
             "built": built,
             "connected": connected(events, route),
             "connections": result.connections,
+            "failedOpens": len(result.failed_opens),
             "failedAttempts": result.failed_attempts,
             "failedStatuses": result.failed_statuses,
             "drops": len(result.spontaneous) + sum(len(v) for v in result.forced.values()),
@@ -888,8 +1036,9 @@ def render(report: Report) -> str:
     s = report.soak_start
     lines = [
         f"X1 analysis of {report.run_id} ({report.mode})",
-        f"soak {fmt_t(report.soak_start, s)} to {fmt_t(report.soak_end, s)}; "
-        f"observed hours {report.observed_hours:.4f}; P4/P5 built: {report.public_built}",
+        f"soak {fmt_t(report.soak_start, s)} to {fmt_t(report.soak_end, s)}, recovery tail to "
+        f"{fmt_t(report.tail_end, s)}; observed hours {report.observed_hours:.4f}; "
+        f"P4/P5 built: {report.public_built}",
         "forced windows:",
     ]
     for w in report.windows:
@@ -905,15 +1054,21 @@ def render(report: Report) -> str:
             f"block-list check {item['target']}: {item['status']} {item['refusedBy']} ok={item['ok']}"
         )
     for route, r in report.routes.items():
+        sl = r.slots
         lines.append(f"{route.upper()} (built: {r.built})")
         lines.append(
-            f"  connections {r.connections}, attempts {r.attempts} ({r.failed_attempts} failed: "
-            f"{r.failed_statuses or '-'}), first open {fmt_t(r.first_open, s)}"
+            f"  connections {r.connections}, failed opens {len(r.failed_opens)}, attempts "
+            f"{r.attempts} ({r.failed_attempts} failed: {r.failed_statuses or '-'}), first open "
+            f"{fmt_t(r.first_open, s)}, first connection {fmt_t(r.first_connection, s)}"
         )
         lines.append(
-            f"  soak slots {r.soak_slots}, with an outcome {r.soak_slots_with_outcome} "
-            f"({fmt_fraction(r.outcome_fraction)}); observed slots {r.observed_slots}, answered "
-            f"{r.observed_answered}, availability {fmt_fraction(r.availability)}"
+            f"  slots {sl.total}: answered {sl.answered}, missed {sl.missed}, down {sl.down} "
+            f"(with a connection open in {sl.down_while_open}), no outcome {sl.unaccounted} "
+            f"(with an outcome {fmt_fraction(sl.outcome_fraction)})"
+        )
+        lines.append(
+            f"  observed slots {sl.observed}, answered {sl.observed_answered}, availability "
+            f"{fmt_fraction(sl.availability)}"
         )
         lines.append(
             f"  spontaneous drops {len(r.spontaneous)} ({fmt_rate(r.spontaneous_rate)} per observed hour)"
@@ -923,7 +1078,7 @@ def render(report: Report) -> str:
             lines.append(f"  forced-event drops, {event}: {len(drops)}")
             lines.extend(render_drop(d, s) for d in drops)
         if r.outside:
-            lines.append(f"  drops outside the soak (not counted): {len(r.outside)}")
+            lines.append(f"  drops before the soak or in the tail (not counted): {len(r.outside)}")
         lines.append(f"  gaps {len(r.gaps)}")
         for g in r.gaps:
             lines.append(
@@ -931,8 +1086,8 @@ def render(report: Report) -> str:
                 f"windows={g.windows or '-'}"
             )
         lines.append(
-            f"  sequence: lost {r.lost}, duplicated {r.duplicated}, reordered {r.reordered}, "
-            f"unexpected {r.unexpected}, replies to unknown slots {r.unknown_replies}"
+            f"  echoes {r.echoes}: lost {r.lost}, duplicated {r.duplicated}, reordered "
+            f"{r.reordered}, unexpected {r.unexpected}, replies to unknown echoes {r.unknown_replies}"
         )
         lines.append(
             f"  pongs {r.pongs}/{r.pings} pings, missing {r.pongs_missing}, rtt p50 "
@@ -949,15 +1104,14 @@ def render(report: Report) -> str:
         lines.append("schedule deviations (reported only):")
         lines.extend(f"  {d}" for d in report.deviations)
     if report.setup_problems:
-        lines.append("SETUP FAILED; the rule is not applied:")
+        lines.append("SETUP FAILED:")
         lines.extend(f"  {p}" for p in report.setup_problems)
-        assert report.would_be is not None
+    lines.append(f"OUTCOME (rule {report.outcome.rule}): {report.outcome.text}")
+    if report.setup_problems:
         lines.append(
-            f"(for information only, the rule would give rule {report.would_be.rule}: {report.would_be.text})"
+            f"(for information only, without the setup failure the rule would give rule "
+            f"{report.would_be.rule}: {report.would_be.text})"
         )
-    else:
-        assert report.outcome is not None
-        lines.append(f"OUTCOME (rule {report.outcome.rule}): {report.outcome.text}")
     for route, (verdict, t, u) in report.ar17.items():
         lines.append(
             f"AR-17 {route.upper()}: {verdict} (transport deploy drops {t}, UI deploy drops {u})"
@@ -1053,7 +1207,8 @@ def main(argv: list[str] | None = None) -> int:
     print(render(report))
     if args.json:
         args.json.write_text(json.dumps(jsonable(asdict(report)), indent=2, default=str) + "\n")
-    return 0 if report.outcome is not None else 2
+    # 2 marks a setup failure: the outcome is then inconclusive by Amendment 1, item 6.
+    return 2 if report.setup_problems else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

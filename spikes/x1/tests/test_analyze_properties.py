@@ -53,7 +53,7 @@ def test_classification_follows_the_drop_start(soak, resets, t):
     windows = [analyze.reset_window(f"r{i}", r) for i, r in enumerate(resets)]
     drop = analyze.Drop("p2", "i", 1, t, t, "peer", 1006, None, None)
     analyze.classify([drop], soak[0], soak[1], windows)
-    inside = soak[0] <= t <= soak[1]
+    inside = soak[0] <= t < soak[1]  # the soak is [S, E)
     named = [w.event for w in windows if w.start <= t <= w.end]
     assert drop.windows == named
     if not inside:
@@ -69,10 +69,10 @@ def test_classification_follows_the_drop_start(soak, resets, t):
 def test_drop_start_is_the_first_passed_deadline_of_the_trailing_misses(pattern, moment_offset):
     slots = []
     for i, answered in enumerate(pattern):
-        slot = analyze.Slot("i", 1, i, float(i * 1000))
+        echo = analyze.Echo("i", 1, i, float(i * 1000))
         if answered:
-            slot.replies, slot.rtt, slot.reply_t = 1, 20.0, i * 1000 + 20.0
-        slots.append(slot)
+            echo.replies, echo.rtt, echo.reply_t = 1, 20.0, i * 1000 + 20.0
+        slots.append(echo)
     moment = float(len(pattern) * 1000 + moment_offset - 1000)
     start = analyze.drop_start(slots, moment)
     assert start <= moment
@@ -84,3 +84,50 @@ def test_drop_start_is_the_first_passed_deadline_of_the_trailing_misses(pattern,
 @given(count=st.integers(0, 20), hours=st.integers(1, 5))
 def test_drop_rate_per_observed_hour(count, hours):
     assert analyze.drop_rate(count, hours * analyze.HOUR_MS) == count / hours
+
+
+spans_strategy = st.lists(
+    st.tuples(st.integers(0, 60), st.integers(0, 20)).map(lambda p: (p[0], p[0] + p[1])),
+    max_size=6,
+)
+
+
+@settings(max_examples=300)
+@given(spans=spans_strategy, a=st.integers(0, 80), length=st.integers(0, 20))
+def test_covered_matches_a_point_by_point_check(spans, a, length):
+    """[a, b] is covered when every half-unit point of it lies in some span (integer ends)."""
+    merged = analyze.merge([(float(s), float(e)) for s, e in spans])
+    b = a + length
+    points = [a + k / 2 for k in range(2 * length + 1)]
+    expected = all(any(s <= p <= e for s, e in spans) for p in points)
+    assert analyze.covered(merged, a, b) == expected
+    assert all(merged[i][1] < merged[i + 1][0] for i in range(len(merged) - 1))
+
+
+@settings(max_examples=200)
+@given(
+    sends=st.lists(
+        st.tuples(st.integers(-1500, 6500), st.one_of(st.none(), st.integers(0, 2000))),
+        max_size=12,
+    )
+)
+def test_slot_outcomes_follow_the_precedence(sends):
+    """answered if an echo sent in the slot was answered within 1.0 s, else missed if one was
+    sent, else down; slots are [k s, (k+1) s) over a 5 s soak."""
+    events = []
+    for seq, (sent, rtt) in enumerate(sends, start=1):
+        events.append({"ev": "send", "route": "p1", "conn": 1, "seq": seq, "t": float(sent)})
+        if rtt is not None:
+            reply = {"ev": "reply", "route": "p1", "conn": 1, "seq": seq, "t": float(sent + rtt)}
+            events.append(reply)
+    line = analyze.timeline({"i": [{"wall": e["t"], "mono": e["t"], **e} for e in events]})
+    rec = analyze.route_records(line, "p1")
+    outcomes = analyze.slot_outcomes(rec, 0.0, 5000.0, [(-10_000.0, 20_000.0)])
+    for k, outcome in enumerate(outcomes):
+        mine = [(s, r) for s, r in sends if k * 1000 <= s < (k + 1) * 1000]
+        if any(r is not None and r <= 1000 for _, r in mine):
+            assert outcome == "answered"
+        elif mine:
+            assert outcome == "missed"
+        else:
+            assert outcome == "down"
