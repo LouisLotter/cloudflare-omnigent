@@ -157,16 +157,27 @@ export const NONCE = /^[0-9a-f]{8,}$/;
  * The name the tool gives a resource whose create carries `nonce`: `<base>--<nonce>`. A staging
  * name never holds `--` (resourceName, vpcServiceName), so the nonce is unambiguous. Without a
  * nonce, the base: what a record from before nonces holds.
+ *
+ * Workers VPC refuses a service name with consecutive hyphens ([5101], X1 staging deploy, 20 Oct
+ * 2026), so a VPC service's nonce follows a single hyphen (VPC_NONCE_SEPARATOR). Another name
+ * that merely looks like one of its nonces can then only make the tool refuse a create
+ * (refuseOthers): adoption and deletion match the exact name.
  */
-export function nonceName(base: string, nonce: string | undefined): string {
+export function nonceName(base: string, nonce: string | undefined, separator = "--"): string {
   if (nonce === undefined) return base;
   if (!NONCE.test(nonce)) throw new Error(`invalid create nonce "${nonce}"`);
-  return `${base}--${nonce}`;
+  return `${base}${separator}${nonce}`;
 }
 
+export const VPC_NONCE_SEPARATOR = "-";
+
 /** Whether `name` is one the tool gives a resource named after `base`, with any nonce or none. */
-export function namedFor(name: string, base: string): boolean {
-  return name === base || (name.startsWith(`${base}--`) && NONCE.test(name.slice(base.length + 2)));
+export function namedFor(name: string, base: string, separator = "--"): boolean {
+  return (
+    name === base ||
+    (name.startsWith(`${base}${separator}`) &&
+      NONCE.test(name.slice(base.length + separator.length)))
+  );
 }
 
 /** The comment the tool gives a DNS record: its deployment and the create's nonce. */
@@ -1295,7 +1306,8 @@ export function madeBy(
       resource.comment === dnsComment(create.deployment, create.nonce)
     );
   }
-  return resource.name === nonceName(create.name, create.nonce);
+  const separator = create.kind === "vpc" ? VPC_NONCE_SEPARATOR : undefined;
+  return resource.name === nonceName(create.name, create.nonce, separator);
 }
 
 const DEPLOYMENT_KEYS = [

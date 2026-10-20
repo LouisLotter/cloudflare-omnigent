@@ -19,6 +19,7 @@ import {
   type ServiceTokenInfo,
   serializeRegistry,
   type TunnelInfo,
+  VPC_NONCE_SEPARATOR,
   type VpcServiceInfo,
   type WorkerDomain,
 } from "./guard.ts";
@@ -515,8 +516,13 @@ class FakeCloud implements Cloud {
   }
   createVpcService(name: string, tunnelId: string, port: number): string {
     this.tick();
+    // Workers VPC's own rule ([5101]): lowercase letters, digits and single hyphens, with an
+    // alphanumeric first and last character.
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+      throw new Error("[5101] Service name must be URL-safe");
+    }
     const id = `vpc-${this.nextId++}`;
-    this.effect(`vpc.create ${bare(name)}`, () =>
+    this.effect(`vpc.create ${bare(name, VPC_NONCE_SEPARATOR)}`, () =>
       this.vpc.set(id, { id, name, type: "http", ipv4: "127.0.0.1", tunnelId, httpPort: port }),
     );
     return id;
@@ -525,7 +531,7 @@ class FakeCloud implements Cloud {
     this.tick();
     const name = this.vpc.get(id)?.name;
     if (!this.vpcDeleteKeeps) this.vpc.delete(id);
-    this.did(`vpc.delete ${bare(name)}`);
+    this.did(`vpc.delete ${bare(name, VPC_NONCE_SEPARATOR)}`);
   }
   serviceTokens(filter: NameFilter): ServiceTokenInfo[] {
     this.tick();
@@ -603,7 +609,9 @@ class FakeCloud implements Cloud {
       ),
     );
     const services = new Set(
-      deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => nonceName(s.name, s.nonce))),
+      deployments.flatMap((d) =>
+        (d.vpcServices ?? []).map((s) => nonceName(s.name, s.nonce, VPC_NONCE_SEPARATOR)),
+      ),
     );
     const tokens = new Set(
       deployments.flatMap((d) =>
@@ -637,8 +645,8 @@ class FakeCloud implements Cloud {
 }
 
 /** A name in a call, without its create nonce, so that calls read the same in every run. */
-function bare(name: unknown): string {
-  return String(name).replace(/--[0-9a-f]{8,}$/, "");
+function bare(name: unknown, separator = "--"): string {
+  return String(name).replace(new RegExp(`${separator}[0-9a-f]{8,}$`), "");
 }
 
 /** A synthetic secret: the tests check that no command, log line or record ever holds it. */
@@ -1406,7 +1414,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     // Each resource carries its create's nonce, in its name or, for the DNS record, its comment.
     expect(cloud.apps.get("app-1")?.name).toBe("cfo-stg-a--a0000000");
     expect(cloud.tunnels_.get("tunnel-3")?.name).toBe("cfo-stg-a--a0000003");
-    expect(cloud.vpc.get("vpc-5")?.name).toBe("cfo-stg-a-x1-vpc--a0000005");
+    expect(cloud.vpc.get("vpc-5")?.name).toBe("cfo-stg-a-x1-vpc-a0000005");
     expect(cloud.dns.get("dns-4")?.comment).toBe("cfo-stg-a: staging tool a0000004");
     expect(cloud.apps.get("app-2")).toMatchObject({
       name: "cfo-stg-a-tunnel--a0000001",

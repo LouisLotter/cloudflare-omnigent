@@ -96,6 +96,7 @@ import {
   tunnelIngress,
   tunnelRoute,
   VPC_HOST,
+  VPC_NONCE_SEPARATOR,
   type VpcServiceInfo,
   type VpcServiceRecord,
   validateDeployConfig,
@@ -539,11 +540,12 @@ function vpcOwned(
     id: service.id,
     pending: service.createStartedAt !== undefined,
     nonce: service.nonce,
-    candidates: () => ctx.cloud.vpcServices().filter((v) => namedFor(v.name, base)),
+    candidates: () =>
+      ctx.cloud.vpcServices().filter((v) => namedFor(v.name, base, VPC_NONCE_SEPARATOR)),
     get: (id) => ctx.cloud.vpcService(id),
     fits: (v) =>
       tunnelId !== undefined &&
-      v.name === nonceName(base, service.nonce) &&
+      v.name === nonceName(base, service.nonce, VPC_NONCE_SEPARATOR) &&
       v.type === "http" &&
       v.ipv4 === VPC_HOST &&
       v.tunnelId === tunnelId &&
@@ -999,7 +1001,11 @@ function ensureVpcServices(
     if (!recorded(record, owned)) {
       refuseOthers(owned);
       ({ record } = createOwned(ctx, record, owned, (nonce) =>
-        ctx.cloud.createVpcService(nonceName(service.name, nonce), tunnelId, service.port),
+        ctx.cloud.createVpcService(
+          nonceName(service.name, nonce, VPC_NONCE_SEPARATOR),
+          tunnelId,
+          service.port,
+        ),
       ));
       ctx.log(`created ${owned.label}`);
     }

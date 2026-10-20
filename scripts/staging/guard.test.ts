@@ -39,6 +39,7 @@ import {
   tunnelHostnameFor,
   tunnelIngress,
   tunnelRoute,
+  VPC_NONCE_SEPARATOR,
   validateDeployConfig,
   vpcServiceName,
 } from "./guard.ts";
@@ -880,6 +881,18 @@ describe("names and shapes of the manifest's resources", () => {
     expect(dnsComment("cfo-stg-a", "0a1b2c3d")).toBe("cfo-stg-a: staging tool 0a1b2c3d");
     expect(() => vpcServiceName("cfo-stg-a", "X__Y")).toThrow("double underscore");
   });
+
+  it("puts a VPC service's nonce after a single hyphen, as Workers VPC allows no `--`", () => {
+    const base = vpcServiceName("cfo-stg-a", "X1_VPC");
+    const name = nonceName(base, "0a1b2c3d", VPC_NONCE_SEPARATOR);
+    expect(name).toBe("cfo-stg-a-x1-vpc-0a1b2c3d");
+    // What Workers VPC accepts: lowercase letters, digits and single hyphens, alphanumeric ends.
+    expect(name).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+    expect(namedFor(name, base, VPC_NONCE_SEPARATOR)).toBe(true);
+    expect(namedFor(base, base, VPC_NONCE_SEPARATOR)).toBe(true);
+    expect(namedFor(`${base}-x`, base, VPC_NONCE_SEPARATOR)).toBe(false);
+    expect(namedFor(`${base}--0a1b2c3d`, base, VPC_NONCE_SEPARATOR)).toBe(false);
+  });
 });
 
 describe("rendered configurations", () => {
@@ -1139,12 +1152,18 @@ describe("registry file", () => {
   });
 
   it("tells a late create's resource by its nonce, and a bucket's by nothing", () => {
-    const create = { kind: "vpc", deployment: "cfo-stg-a", name: "cfo-stg-a-x" } as const;
+    const create = { kind: "tunnel", deployment: "cfo-stg-a", name: "cfo-stg-a" } as const;
     const nonce = "0a1b2c3d";
-    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x--0a1b2c3d" })).toBe(true);
-    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x--0a1b2c3e" })).toBe(false);
-    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-x" })).toBe(false);
-    expect(madeBy(create, { name: "cfo-stg-a-x" })).toBe(false);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a--0a1b2c3d" })).toBe(true);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a--0a1b2c3e" })).toBe(false);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a-0a1b2c3d" })).toBe(false);
+    expect(madeBy({ ...create, nonce }, { name: "cfo-stg-a" })).toBe(false);
+    expect(madeBy(create, { name: "cfo-stg-a" })).toBe(false);
+    // Workers VPC refuses consecutive hyphens, so a VPC service's nonce follows a single one.
+    const vpc = { kind: "vpc", deployment: "cfo-stg-a", name: "cfo-stg-a-x", nonce } as const;
+    expect(madeBy(vpc, { name: "cfo-stg-a-x-0a1b2c3d" })).toBe(true);
+    expect(madeBy(vpc, { name: "cfo-stg-a-x--0a1b2c3d" })).toBe(false);
+    expect(madeBy(vpc, { name: "cfo-stg-a-x-0a1b2c3e" })).toBe(false);
     const dns = { kind: "dns", deployment: "cfo-stg-a", name: "h.example.com", nonce } as const;
     const comment = "cfo-stg-a: staging tool 0a1b2c3d";
     expect(madeBy(dns, { name: "h.example.com", comment })).toBe(true);
