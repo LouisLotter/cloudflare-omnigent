@@ -450,6 +450,13 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${diagnostic(result.stderr)}`);
     return resultOf(result.stdout);
   };
+  // A delete's answer is never used: each delete is checked afterwards by ID. Some print nothing
+  // at all (`workers-vpc services delete`, X1 teardown, 20 Oct 2026), so only the exit status
+  // counts.
+  const cfDelete = (args: string[]): void => {
+    const result = run("cf", args, { inherit: false });
+    if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${diagnostic(result.stderr)}`);
+  };
   // For commands whose answer holds a secret: no part of cf's output reaches an error, only
   // Cloudflare's error codes.
   const secretCf = (args: string[]): unknown => {
@@ -572,7 +579,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       ),
     // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
-      cf(["zero-trust", "access", "applications", "delete", id, "--force"]);
+      cfDelete(["zero-trust", "access", "applications", "delete", id, "--force"]);
     },
     workerExists: (name) =>
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
@@ -712,12 +719,12 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     deleteTunnel: (id) => {
       let cleanup: unknown;
       try {
-        cf(["tunnels", "connections", "cleanup", id, "--force"]);
+        cfDelete(["tunnels", "connections", "cleanup", id, "--force"]);
       } catch (error) {
         cleanup = error;
       }
       try {
-        cf(["tunnels", "delete", id, "--force"]);
+        cfDelete(["tunnels", "delete", id, "--force"]);
       } catch (error) {
         throw new Error(`${error instanceof Error ? error.message : error}`, { cause: cleanup });
       }
@@ -749,7 +756,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         "DNS",
       ),
     deleteDnsRecord: (id) => {
-      cf(["dns", "records", "delete", id, ...zone, "--force"]);
+      cfDelete(["dns", "records", "delete", id, ...zone, "--force"]);
     },
     vpcServices: () => vpcServicesOf(listAll(["workers-vpc", "services", "list"])),
     createVpcService: (name, tunnelId, port) =>
@@ -770,7 +777,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         "Workers VPC",
       ),
     deleteVpcService: (id) => {
-      cf(["workers-vpc", "services", "delete", id, "--force"]);
+      cfDelete(["workers-vpc", "services", "delete", id, "--force"]);
     },
     // The list filters by exact name only, so a prefix lists every token.
     serviceTokens: (filter) =>
@@ -801,7 +808,7 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     rotateServiceToken: (id) =>
       credentialsOf(secretCf(["zero-trust", "access", "service-tokens", "rotate", id])),
     deleteServiceToken: (id) => {
-      cf(["zero-trust", "access", "service-tokens", "delete", id, "--force"]);
+      cfDelete(["zero-trust", "access", "service-tokens", "delete", id, "--force"]);
     },
   };
 }

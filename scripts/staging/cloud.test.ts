@@ -809,6 +809,19 @@ describe("CLI wiring", () => {
     expect(deletes.every((c) => c.includes("--force"))).toBe(true);
   });
 
+  it("takes a delete's exit status alone, as some deletes print nothing", () => {
+    // `cf workers-vpc services delete` printed nothing at X1's teardown (20 Oct 2026); each
+    // delete is checked afterwards by ID, so its answer is never needed.
+    const silent = cliCloud(config, WORKER, () => ok(""));
+    expect(() => silent.deleteVpcService("v9")).not.toThrow();
+    expect(() => silent.deleteDnsRecord("d9")).not.toThrow();
+    expect(() => silent.deleteTunnel("t9")).not.toThrow();
+    expect(() => silent.deleteServiceToken("s9")).not.toThrow();
+    expect(() => silent.deleteAccessApp("a9")).not.toThrow();
+    const refused = cliCloud(config, WORKER, () => failed("[5104] Service not found"));
+    expect(() => refused.deleteVpcService("v9")).toThrow("cf workers-vpc failed");
+  });
+
   it("lets the Tunnel delete decide when the connections cleanup fails", () => {
     const cleanupFails = (deleteFails: boolean) =>
       cliCloud(config, WORKER, (_command, args) =>
