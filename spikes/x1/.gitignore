@@ -1,0 +1,6 @@
+# Raw and redacted run data stay outside the repository: redacted copies go to the project
+# notes (verification/x1/), never here.
+results/
+# Test artefacts
+.coverage
+.hypothesis/
