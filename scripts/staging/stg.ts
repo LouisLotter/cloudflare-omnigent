@@ -10,6 +10,27 @@
 //   node scripts/staging/stg.ts teardown --suffix <s>
 //   node scripts/staging/stg.ts sweep [--yes]
 //
+// sweep lists expired deployments (removed with --yes) and reports staging Tunnels, VPC
+// services and DNS records that no record owns, which it never removes.
+//
+// A Durable Object binding may name another deployment in script_name if the registry shows it
+// deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
+// in an optional staging manifest, staging.jsonc, next to it. It applies to every configuration
+// in that directory, and without it deploy runs as before:
+//
+//   {
+//     "tunnel": {                           // a remotely managed Tunnel named after the deployment
+//       "publicHostname": true,             // <deployment>-tunnel.<zone>, with its own owner-only
+//                                           // Access, a DNS record and a route to the Worker
+//       "origin": "http://localhost:8081",  // that hostname's ingress service
+//       "tokenSecret": "X1_TUNNEL_TOKEN"    // the Worker secret that receives the connector token
+//     },
+//     "vpcServices": [{ "binding": "X1_VPC", "port": 8081 }]  // HTTP to 127.0.0.1:<port>
+//   }
+//
+// The tool deploys a rendered copy of the configuration with the route and VPC bindings added,
+// .stg-rendered.<deployment>.jsonc next to it, and removes it afterwards.
+//
 // State lives outside the repository, so that every worktree on this laptop shares one
 // registry and one set of locks: $CFO_STAGING_DIR, or ~/.config/cloudflare-omnigent/staging.
 // It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it
@@ -129,8 +150,10 @@ function main(): void {
     case "list": {
       for (const d of fileStore(REGISTRY_FILE, command).load()) {
         const unsettled = d.uploadStartedAt ? ` upload-interrupted=${d.uploadStartedAt}` : "";
+        const tunnel = d.tunnel ? ` tunnel${d.tunnel.hostname ? "+hostname" : ""}` : "";
+        const vpc = d.vpcServices?.length ? ` vpc=${d.vpcServices.length}` : "";
         console.log(
-          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}${unsettled}`,
+          `${d.name.padEnd(32)} ${d.state.padEnd(8)} owner=${d.owner} expires=${d.expiresAt}${unsettled}${tunnel}${vpc}`,
         );
       }
       return;
