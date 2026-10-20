@@ -1,0 +1,25 @@
+// X1's staging manifest, read by the staging tool next to wrangler.jsonc (WP0.4 extension).
+//   - tunnel: one remotely managed Tunnel. Its public hostname cfo-stg-x1-transport-tunnel.<zone>
+//     points at http://localhost:8081 in the server container, has its own owner-only Access
+//     application and a Worker route to this Worker (P5's policy route). The token is the Worker
+//     secret X1_TUNNEL_TOKEN, given only to the server container.
+//   - vpcServices: the Workers VPC service on that Tunnel (HTTP, 127.0.0.1:8081), bound as X1_VPC
+//     for P6.
+//   - serviceToken: owner decision F7-staging. A staging-only Access service token, included on
+//     the Access applications of this Worker's hostname (P4) and the Tunnel hostname (P5); its
+//     client ID and secret are Worker secrets passed to the computer container.
+// If F7-staging is declined, remove "serviceToken", set "publicHostname" to false and set
+// PUBLIC_ROUTES to false in src/flags.js; scripts/deploy.sh refuses a mismatch.
+{
+  "tunnel": {
+    "origin": "http://localhost:8081",
+    "publicHostname": true,
+    "tokenSecret": "X1_TUNNEL_TOKEN"
+  },
+  "vpcServices": [{ "binding": "X1_VPC", "port": 8081 }],
+  "serviceToken": {
+    "hostnames": ["worker", "tunnel"],
+    "clientIdSecret": "X1_ACCESS_CLIENT_ID",
+    "clientSecretSecret": "X1_ACCESS_CLIENT_SECRET"
+  }
+}
