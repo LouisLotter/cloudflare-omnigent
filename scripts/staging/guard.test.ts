@@ -11,15 +11,17 @@ import {
   assertOwnerOnly,
   assertSameSite,
   boundDeployments,
-  claimNamed,
   type DeployConfigView,
   type Deployment,
   declaredResources,
   dependencyCycle,
+  dnsComment,
   expired,
   expiry,
   hostnameFor,
   markInterrupted,
+  namedFor,
+  nonceName,
   ownedBy,
   parseJsonc,
   parseManifest,
@@ -108,7 +110,13 @@ describe("staging guard", () => {
       same_site_cookie_attribute: "lax",
       policies: [{ decision: "allow", include: [{ email: { email: "owner@example.com" } }] }],
     });
+    expect(accessAppBody("cfo-stg-a--0a1b2c3d", "cfo-stg-a.example.com", config)).toMatchObject({
+      name: "cfo-stg-a--0a1b2c3d",
+      domain: "cfo-stg-a.example.com",
+    });
     expect(() => accessAppBody("cfo-stg-a", "cfo-stg-b.example.com", config)).toThrow();
+    expect(() => accessAppBody("cfo-stg-a--x", "cfo-stg-a.example.com", config)).toThrow();
+    expect(() => accessAppBody("cfo-stg-a", "cfo-stg-a", config)).toThrow();
     expect(() => accessAppBody("agents", "agents.example.com", config)).toThrow();
   });
 });
@@ -754,21 +762,21 @@ describe("names and shapes of the manifest's resources", () => {
     ).toBe(false);
   });
 
-  it("claims only the recorded resource, or, while a create is pending, one the caller accepts", () => {
-    const a = { id: "a" };
-    const b = { id: "b" };
-    expect(claimNamed([], "a", "X")).toBeUndefined();
-    expect(claimNamed([], undefined, "X")).toBeUndefined();
-    expect(claimNamed([a], "a", "X")).toBe(a);
-    expect(claimNamed([a], undefined, "X", () => true)).toBe(a);
-    // A name alone adopts nothing.
-    expect(() => claimNamed([a], undefined, "X")).toThrow(
-      "X exists but this deployment did not record it",
-    );
-    expect(() => claimNamed([a], undefined, "X", () => false)).toThrow("did not record");
-    expect(() => claimNamed([b], "a", "X")).toThrow("did not record");
-    expect(() => claimNamed([a, b], "a", "X")).toThrow("did not record");
-    expect(() => claimNamed([a, b], undefined, "X")).toThrow("did not record");
+  it("names a created resource after its base and its create nonce", () => {
+    expect(nonceName("cfo-stg-a", "0a1b2c3d")).toBe("cfo-stg-a--0a1b2c3d");
+    expect(nonceName("cfo-stg-a", undefined)).toBe("cfo-stg-a");
+    expect(() => nonceName("cfo-stg-a", "0A1B2C3D")).toThrow("invalid create nonce");
+    expect(() => nonceName("cfo-stg-a", "0a1b2c3")).toThrow("invalid create nonce");
+    expect(namedFor("cfo-stg-a", "cfo-stg-a")).toBe(true);
+    expect(namedFor("cfo-stg-a--0a1b2c3d", "cfo-stg-a")).toBe(true);
+    expect(namedFor("cfo-stg-a--0a1b2c3d9", "cfo-stg-a")).toBe(true);
+    // Another deployment's name, or a name the tool never gives, is not one of these.
+    expect(namedFor("cfo-stg-ab", "cfo-stg-a")).toBe(false);
+    expect(namedFor("cfo-stg-a-b", "cfo-stg-a")).toBe(false);
+    expect(namedFor("cfo-stg-a--b", "cfo-stg-a")).toBe(false);
+    expect(namedFor("cfo-stg-a--0a1b2c3d-x", "cfo-stg-a")).toBe(false);
+    expect(dnsComment("cfo-stg-a", "0a1b2c3d")).toBe("cfo-stg-a: staging tool 0a1b2c3d");
+    expect(() => vpcServiceName("cfo-stg-a", "X__Y")).toThrow("double underscore");
   });
 });
 
@@ -898,21 +906,31 @@ describe("registry file", () => {
       {
         ...deployment,
         accessCreateStartedAt: at,
+        accessNonce: "0a1b2c3d",
         tunnel: {
           name: "cfo-stg-a",
           createStartedAt: at,
+          nonce: "1a1b2c3d",
           hostname: "cfo-stg-a-tunnel.example.com",
           accessCreateStartedAt: at,
+          accessNonce: "2a1b2c3d",
           dnsCreateStartedAt: at,
+          dnsNonce: "3a1b2c3d",
         },
-        vpcServices: [{ name: "cfo-stg-a-x", binding: "X", port: 1, createStartedAt: at }],
+        vpcServices: [
+          { name: "cfo-stg-a-x", binding: "X", port: 1, createStartedAt: at, nonce: "4a1b2c3d" },
+        ],
       },
     ];
     expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
     for (const bad of [
       { accessCreateStartedAt: "" },
+      { accessNonce: "0a1b2c3" },
       { tunnel: { name: "cfo-stg-a", dnsCreateStartedAt: 7 } },
+      { tunnel: { name: "cfo-stg-a", nonce: "XXXXXXXX" } },
+      { tunnel: { name: "cfo-stg-a", dnsNonce: 7 } },
       { vpcServices: [{ name: "cfo-stg-a-x", binding: "X", port: 1, createStartedAt: 7 }] },
+      { vpcServices: [{ name: "cfo-stg-a-x", binding: "X", port: 1, nonce: "" }] },
     ]) {
       expect(() => parseRegistry({ version: 3, deployments: [{ ...deployment, ...bad }] })).toThrow(
         "malformed",

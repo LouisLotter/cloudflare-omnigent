@@ -291,6 +291,7 @@ export function dnsRecordsOf(listing: unknown): DnsRecordInfo[] {
     type: text(r, "type", "a DNS record"),
     content: typeof r.content === "string" ? r.content : "",
     proxied: r.proxied === true,
+    ...(typeof r.comment === "string" ? { comment: r.comment } : {}),
   }));
 }
 

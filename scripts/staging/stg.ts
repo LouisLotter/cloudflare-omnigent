@@ -44,6 +44,7 @@
 // It holds config.json (account ID, zone, owner email), resources.json and locks/. None of it
 // is ever committed.
 
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -100,6 +101,7 @@ function context(config: StagingConfig, command: string): Context {
     sleep: sleepSync,
     settleMs: SETTLE_MS,
     now: () => new Date(),
+    nonce: () => randomBytes(4).toString("hex"),
     log: (message) => console.log(message),
   };
 }

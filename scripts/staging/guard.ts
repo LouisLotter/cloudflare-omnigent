@@ -26,6 +26,8 @@ export interface Deployment {
   readonly accessAppId?: string;
   /** A create intent for the Access application (see the create intents below). */
   readonly accessCreateStartedAt?: string;
+  /** The nonce of the Access application's create (see the create intents below). */
+  readonly accessNonce?: string;
   /**
    * When the tool first started uploading this Worker. From then on the Worker name and the
    * custom domain on `hostname` are this deployment's; before, both must be free (ops.ts,
@@ -77,10 +79,11 @@ export interface Deployment {
  * finds everything an interrupted run made.
  */
 export interface TunnelRecord {
-  /** The Tunnel's name: the deployment's. */
+  /** The deployment's name: the Tunnel is named `<name>--<nonce>`. */
   readonly name: string;
   readonly id?: string;
   readonly createStartedAt?: string;
+  readonly nonce?: string;
   /**
    * The public hostname `<deployment>-tunnel.<zone>`, when the manifest asks for one. It has
    * its own owner-only Access application, a proxied DNS record to the Tunnel, and a route to
@@ -89,28 +92,62 @@ export interface TunnelRecord {
   readonly hostname?: string;
   readonly accessAppId?: string;
   readonly accessCreateStartedAt?: string;
+  readonly accessNonce?: string;
   readonly dnsRecordId?: string;
   readonly dnsCreateStartedAt?: string;
+  readonly dnsNonce?: string;
 }
 
 /** An HTTP Workers VPC service on the deployment's Tunnel, to 127.0.0.1:<port>. */
 export interface VpcServiceRecord {
-  /** `<deployment>-<binding>`, lowercased, with hyphens for underscores. */
+  /** `<deployment>-<binding>`, lowercased, with hyphens for underscores; `--<nonce>` follows. */
   readonly name: string;
   readonly binding: string;
   readonly port: number;
   readonly id?: string;
   readonly createStartedAt?: string;
+  readonly nonce?: string;
 }
 
 /*
  * Create intents. Each `…CreateStartedAt` is written before the tool asks Cloudflare to create
  * the resource and removed together with recording its ID. A command that finds one set does
  * not know whether that create took effect, or will: it lists the resource, waits the settle
- * time once if it is not there, and lists again (ops.ts, settleCreates). It adopts only a
- * resource with exactly the name and properties the tool gave it, and refuses anything else.
- * Without an intent, an unrecorded resource under the tool's name is never adopted.
+ * time once if it is not there, and lists again (ops.ts, settleCreates).
+ *
+ * Each intent also records a nonce, fresh for that create, and the resource carries it: in its
+ * name (nonceName) or, for a DNS record, in its comment (dnsComment). The nonce stays with the
+ * ID. Recovery adopts only a resource that carries the intent's own nonce, with exactly the
+ * properties the tool gave it; anything else under the tool's names is refused, never adopted.
+ * A record from before nonces holds IDs without one, for resources named exactly the base.
  */
+
+/**
+ * A create nonce: 8 or more lower-case hex digits. The tool draws 8 at random (stg.ts), so two
+ * creates of one resource collide with odds of one in four billion.
+ */
+export const NONCE = /^[0-9a-f]{8,}$/;
+
+/**
+ * The name the tool gives a resource whose create carries `nonce`: `<base>--<nonce>`. A staging
+ * name never holds `--` (resourceName, vpcServiceName), so the nonce is unambiguous. Without a
+ * nonce, the base: what a record from before nonces holds.
+ */
+export function nonceName(base: string, nonce: string | undefined): string {
+  if (nonce === undefined) return base;
+  if (!NONCE.test(nonce)) throw new Error(`invalid create nonce "${nonce}"`);
+  return `${base}--${nonce}`;
+}
+
+/** Whether `name` is one the tool gives a resource named after `base`, with any nonce or none. */
+export function namedFor(name: string, base: string): boolean {
+  return name === base || (name.startsWith(`${base}--`) && NONCE.test(name.slice(base.length + 2)));
+}
+
+/** The comment the tool gives a DNS record: its deployment and the create's nonce. */
+export function dnsComment(deployment: string, nonce: string): string {
+  return `${deployment}: staging tool ${nonce}`;
+}
 
 export interface StagingConfig {
   readonly accountId: string;
@@ -151,6 +188,7 @@ export interface DnsRecordInfo {
   readonly type: string;
   readonly content: string;
   readonly proxied: boolean;
+  readonly comment?: string;
 }
 
 /** A Workers custom domain: a hostname and the Worker it serves. */
@@ -244,7 +282,10 @@ export function renderedConfigPath(configPath: string, name: string): string {
 /** A Workers VPC service's name: `<deployment>-<binding>`, lowercased, hyphens for underscores. */
 export function vpcServiceName(name: string, binding: string): string {
   assertManaged(name);
-  return `${name}-${binding.toLowerCase().replaceAll("_", "-")}`;
+  const service = `${name}-${binding.toLowerCase().replaceAll("_", "-")}`;
+  // `--` comes before a create nonce only (nonceName).
+  if (service.includes("--")) throw new Error(`VPC binding ${binding} has a double underscore`);
+  return service;
 }
 
 export function assertAccount(expected: string, accessible: readonly string[]): void {
@@ -828,34 +869,6 @@ export interface ProtectedHost {
 }
 
 /**
- * Picks the resource a deployment owns among those Cloudflare lists under the name the tool
- * gave it: the one with the recorded ID, or none. Returns undefined when there is none. Without
- * a recorded ID, the only one is adopted only if `adoptable` is given, which a caller does only
- * while a create intent is recorded, and accepts it. Anything else under the name, such as a
- * second resource or one whose ID differs from the record, belongs to someone else and is
- * refused, never adopted.
- */
-export function claimNamed<T extends { readonly id: string }>(
-  found: readonly T[],
-  recordedId: string | undefined,
-  label: string,
-  adoptable?: (resource: T) => boolean,
-): T | undefined {
-  if (found.length === 0) return undefined;
-  const [only] = found;
-  const ours =
-    found.length === 1 &&
-    only !== undefined &&
-    (recordedId === undefined ? adoptable?.(only) === true : only.id === recordedId);
-  if (!ours) {
-    throw new Error(
-      `${label} exists but this deployment did not record it; inspect it in the dashboard`,
-    );
-  }
-  return only;
-}
-
-/**
  * The ingress of the deployment's Tunnel: its public hostname to the origin, if it has one,
  * then the catch-all 404 that Cloudflare requires last. Workers VPC services route by their own
  * host and port and need no ingress rule.
@@ -933,7 +946,8 @@ export function accessAppBody(
   config: StagingConfig,
 ): Record<string, unknown> {
   assertManaged(name);
-  if (!hostname.startsWith(`${name}.`))
+  // The application is named after the hostname's first label, with its create nonce.
+  if (!hostname.includes(".") || !namedFor(name, appNameFor(hostname)))
     throw new Error("hostname does not belong to this resource");
   return {
     type: "self_hosted",
@@ -1134,6 +1148,7 @@ const DEPLOYMENT_KEYS = [
   "state",
   "accessAppId",
   "accessCreateStartedAt",
+  "accessNonce",
   "workerSince",
   "uploadStartedAt",
   "uploadInterruptedAt",
@@ -1154,17 +1169,24 @@ const TUNNEL_IDS = [
   "dnsRecordId",
   "dnsCreateStartedAt",
 ];
+const TUNNEL_NONCES = ["nonce", "accessNonce", "dnsNonce"];
+
+/** A nonce field is absent or a nonce. */
+function validNonce(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && NONCE.test(value));
+}
 
 function validTunnel(value: unknown): boolean {
   if (value === undefined) return true;
   if (!isObject(value)) return false;
   return (
-    keysOutside(value, ["name", ...TUNNEL_IDS]).length === 0 &&
+    keysOutside(value, ["name", ...TUNNEL_IDS, ...TUNNEL_NONCES]).length === 0 &&
     typeof value.name === "string" &&
     value.name.startsWith(STAGING_PREFIX) &&
     TUNNEL_IDS.every(
       (key) => value[key] === undefined || (typeof value[key] === "string" && value[key] !== ""),
-    )
+    ) &&
+    TUNNEL_NONCES.every((key) => validNonce(value[key]))
   );
 }
 
@@ -1175,13 +1197,15 @@ function validVpcServices(value: unknown): boolean {
     value.every(
       (s) =>
         isObject(s) &&
-        keysOutside(s, ["name", "binding", "port", "id", "createStartedAt"]).length === 0 &&
+        keysOutside(s, ["name", "binding", "port", "id", "createStartedAt", "nonce"]).length ===
+          0 &&
         typeof s.name === "string" &&
         s.name.startsWith(STAGING_PREFIX) &&
         typeof s.binding === "string" &&
         isPort(s.port) &&
         (s.id === undefined || (typeof s.id === "string" && s.id !== "")) &&
-        (s.createStartedAt === undefined || typeof s.createStartedAt === "string"),
+        (s.createStartedAt === undefined || typeof s.createStartedAt === "string") &&
+        validNonce(s.nonce),
     )
   );
 }
@@ -1230,6 +1254,7 @@ export function parseRegistry(json: unknown): Deployment[] {
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
       (d.accessCreateStartedAt !== undefined && !text("accessCreateStartedAt")) ||
+      !validNonce(d.accessNonce) ||
       (d.workerSince !== undefined && !text("workerSince")) ||
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
       (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||

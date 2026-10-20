@@ -2,12 +2,15 @@ import fc from "fast-check";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   type AccessApp,
+  accessAppBody,
   type DeployConfigView,
   type Deployment,
   type DnsRecordInfo,
   declaredResources,
   dependencyCycle,
+  dnsComment,
   type IngressRule,
+  nonceName,
   parseRegistry,
   serializeRegistry,
   type TunnelInfo,
@@ -229,7 +232,7 @@ class FakeCloud implements Cloud {
   createAccessApp(body: Record<string, unknown>): string {
     this.tick();
     const id = `app-${this.nextId++}`;
-    this.effect(`access.create ${String(body.name)}`, () =>
+    this.effect(`access.create ${bare(body.name)}`, () =>
       this.apps.set(id, { ...(body as unknown as AccessApp), id }),
     );
     if (this.deployFault === "crash-after-access") this.die();
@@ -237,7 +240,7 @@ class FakeCloud implements Cloud {
   }
   updateAccessApp(id: string, body: Record<string, unknown>): void {
     this.tick();
-    this.calls.push(`access.update ${String(body.name)}`);
+    this.calls.push(`access.update ${bare(body.name)}`);
     if (!this.accessUpdateKeeps) this.apps.set(id, { ...(body as unknown as AccessApp), id });
     if (this.accessUpdateWidens) {
       const app = this.apps.get(id);
@@ -252,7 +255,7 @@ class FakeCloud implements Cloud {
   }
   deleteAccessApp(id: string): void {
     this.tick();
-    this.calls.push(`access.delete ${this.apps.get(id)?.name}`);
+    this.calls.push(`access.delete ${bare(this.apps.get(id)?.name)}`);
     this.apps.delete(id);
     this.check();
   }
@@ -406,7 +409,7 @@ class FakeCloud implements Cloud {
   createTunnel(name: string): string {
     this.tick();
     const id = `tunnel-${this.nextId++}`;
-    this.effect(`tunnel.create ${name}`, () =>
+    this.effect(`tunnel.create ${bare(name)}`, () =>
       this.tunnels_.set(id, { name, ingress: [], token: `${TOKEN}-${id}` }),
     );
     return id;
@@ -420,7 +423,7 @@ class FakeCloud implements Cloud {
     this.tick();
     const tunnel = this.tunnels_.get(id);
     if (tunnel) tunnel.ingress = [...ingress];
-    this.did(`tunnel.put ${tunnel?.name}`);
+    this.did(`tunnel.put ${bare(tunnel?.name)}`);
   }
   tunnelToken(id: string): string {
     this.tick();
@@ -433,18 +436,18 @@ class FakeCloud implements Cloud {
     this.tick();
     const name = this.tunnels_.get(id)?.name;
     if (!this.tunnelDeleteKeeps) this.tunnels_.delete(id);
-    this.did(`tunnel.delete ${name}`);
+    this.did(`tunnel.delete ${bare(name)}`);
   }
   dnsRecords(filter: NameFilter): DnsRecordInfo[] {
     this.tick();
     this.calls.push("dns.list");
     return [...this.dns.values()].filter((r) => matches(r.name, filter));
   }
-  createDnsRecord(name: string, target: string, _comment: string): string {
+  createDnsRecord(name: string, target: string, comment: string): string {
     this.tick();
     const id = `dns-${this.nextId++}`;
     this.effect(`dns.create ${name}`, () =>
-      this.dns.set(id, { id, name, type: "CNAME", content: target, proxied: true }),
+      this.dns.set(id, { id, name, type: "CNAME", content: target, proxied: true, comment }),
     );
     return id;
   }
@@ -462,7 +465,7 @@ class FakeCloud implements Cloud {
   createVpcService(name: string, tunnelId: string, port: number): string {
     this.tick();
     const id = `vpc-${this.nextId++}`;
-    this.effect(`vpc.create ${name}`, () =>
+    this.effect(`vpc.create ${bare(name)}`, () =>
       this.vpc.set(id, { id, name, type: "http", ipv4: "127.0.0.1", tunnelId, httpPort: port }),
     );
     return id;
@@ -471,7 +474,7 @@ class FakeCloud implements Cloud {
     this.tick();
     const name = this.vpc.get(id)?.name;
     if (!this.vpcDeleteKeeps) this.vpc.delete(id);
-    this.did(`vpc.delete ${name}`);
+    this.did(`vpc.delete ${bare(name)}`);
   }
   /** Every bucket, container application, image, Tunnel, DNS and VPC service is recorded. */
   unrecorded(deployments: readonly Deployment[]): string[] {
@@ -481,15 +484,28 @@ class FakeCloud implements Cloud {
       ...containers,
       ...deployments.flatMap((d) => d.repositories ?? []),
     ]);
-    const tunnels = new Set(deployments.flatMap((d) => (d.tunnel ? [d.tunnel.name] : [])));
-    const hosts = new Set(deployments.flatMap((d) => d.tunnel?.hostname ?? []));
-    const services = new Set(deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => s.name)));
+    // A resource is recorded under its ID, or under its create intent, by the nonce it carries.
+    const tunnels = new Set(
+      deployments.flatMap((d) => (d.tunnel ? [nonceName(d.tunnel.name, d.tunnel.nonce)] : [])),
+    );
+    const comments = new Set(
+      deployments.flatMap((d) =>
+        d.tunnel?.hostname === undefined
+          ? []
+          : [`${d.tunnel.hostname} ${d.tunnel.dnsNonce && dnsComment(d.name, d.tunnel.dnsNonce)}`],
+      ),
+    );
+    const services = new Set(
+      deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => nonceName(s.name, s.nonce))),
+    );
     return [
       ...[...this.buckets].filter((b) => !buckets.has(b)),
       ...[...this.containerApps_.values()].filter((c) => !containers.has(c)),
       ...[...this.images].filter((i) => !repositories.has(i.slice(0, i.lastIndexOf(":")))),
       ...[...this.tunnels_.values()].map((t) => t.name).filter((n) => !tunnels.has(n)),
-      ...[...this.dns.values()].map((r) => r.name).filter((n) => !hosts.has(n)),
+      ...[...this.dns.values()]
+        .filter((r) => !comments.has(`${r.name} ${r.comment}`))
+        .map((r) => r.name),
       ...[...this.vpc.values()].map((s) => s.name).filter((n) => !services.has(n)),
     ];
   }
@@ -497,6 +513,11 @@ class FakeCloud implements Cloud {
   tunnelResources(): number {
     return this.tunnels_.size + this.dns.size + this.vpc.size;
   }
+}
+
+/** A name in a call, without its create nonce, so that calls read the same in every run. */
+function bare(name: unknown): string {
+  return String(name).replace(/--[0-9a-f]{8,}$/, "");
 }
 
 /** A synthetic secret: the tests check that no command, log line or record ever holds it. */
@@ -541,6 +562,8 @@ let cloud: FakeCloud;
 let clock: number;
 /** Elapsed time, unaffected by wall-clock jumps. */
 let real: number;
+/** How many create nonces the tool has drawn. */
+let nonces: number;
 
 /** Time passes: both clocks advance. */
 function elapse(ms: number): void {
@@ -575,6 +598,7 @@ function newContext(): Context {
   locks = new FakeLocks();
   clock = T0;
   real = 0;
+  nonces = 0;
   files = new Map();
   written = [];
   logs = [];
@@ -608,6 +632,7 @@ function newContext(): Context {
     },
     settleMs: SETTLE,
     now: () => new Date(clock),
+    nonce: () => (0xa0000000 + nonces++).toString(16),
     log: (message) => logs.push(message),
   };
 }
@@ -764,7 +789,7 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
     expect(() => deploy(ctx, request("b"))).toThrow(ProcessLost);
     restart();
     teardown(ctx, "cfo-stg-b");
-    expect([...cloud.apps.values()].map((app) => app.name)).toEqual(["cfo-stg-a"]);
+    expect([...cloud.apps.values()].map((app) => app.name)).toEqual(["cfo-stg-a--a0000000"]);
   });
 
   it("gives the Worker and its Access application one expiry across retries", () => {
@@ -840,7 +865,7 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain("cfo-stg-a");
     expect(cloud.workers.has("cfo-stg-b")).toBe(false);
-    expect([...cloud.apps.values()].map((app) => app.name)).toEqual(["cfo-stg-a"]);
+    expect([...cloud.apps.values()].map((app) => app.name)).toEqual(["cfo-stg-a--a0000000"]);
     expect(cloud.violations).toEqual([]);
   });
 
@@ -1216,17 +1241,34 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     expect(record()).toMatchObject({
       state: "deployed",
       accessAppId: "app-1",
+      accessNonce: "a0000000",
       tunnel: {
         name: "cfo-stg-a",
         id: "tunnel-3",
+        nonce: "a0000002",
         hostname: HOST,
         accessAppId: "app-2",
+        accessNonce: "a0000001",
         dnsRecordId: "dns-4",
+        dnsNonce: "a0000003",
       },
-      vpcServices: [{ name: "cfo-stg-a-x1-vpc", binding: "X1_VPC", port: 8081, id: "vpc-5" }],
+      vpcServices: [
+        {
+          name: "cfo-stg-a-x1-vpc",
+          binding: "X1_VPC",
+          port: 8081,
+          id: "vpc-5",
+          nonce: "a0000004",
+        },
+      ],
     });
+    // Each resource carries its create's nonce, in its name or, for the DNS record, its comment.
+    expect(cloud.apps.get("app-1")?.name).toBe("cfo-stg-a--a0000000");
+    expect(cloud.tunnels_.get("tunnel-3")?.name).toBe("cfo-stg-a--a0000002");
+    expect(cloud.vpc.get("vpc-5")?.name).toBe("cfo-stg-a-x1-vpc--a0000004");
+    expect(cloud.dns.get("dns-4")?.comment).toBe("cfo-stg-a: staging tool a0000003");
     expect(cloud.apps.get("app-2")).toMatchObject({
-      name: "cfo-stg-a-tunnel",
+      name: "cfo-stg-a-tunnel--a0000001",
       domain: HOST,
       same_site_cookie_attribute: "lax",
     });
@@ -1353,7 +1395,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     const raw = JSON.parse(written[0]?.text ?? "{}");
     expect(raw).not.toHaveProperty("routes");
     expect(raw.vpc_services).toEqual([{ binding: "X1_VPC", service_id: "vpc-3" }]);
-    expect(record()?.tunnel).toEqual({ name: "cfo-stg-a", id: "tunnel-2" });
+    expect(record()?.tunnel).toEqual({ name: "cfo-stg-a", id: "tunnel-2", nonce: "a0000001" });
     teardown(ctx, "cfo-stg-a");
     expect(everything()).toBe(0);
   });
@@ -1493,7 +1535,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     it("a Tunnel under the deployment's name, before recording anything", () => {
       cloud.tunnels_.set("theirs", { name: "cfo-stg-a", ingress: [], token: "x" });
       expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
-        "Cloudflare Tunnel cfo-stg-a exists but this deployment did not create it",
+        "Cloudflare Tunnel cfo-stg-a: one exists that this deployment did not create",
       );
       expect(store.load()).toEqual([]);
       expect(creates()).toEqual([]);
@@ -1508,7 +1550,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
         proxied: true,
       });
       expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
-        "DNS records this deployment did not create",
+        `DNS record ${HOST}: one exists that this deployment did not create`,
       );
       expect(store.load()).toEqual([]);
     });
@@ -1516,7 +1558,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     it("a VPC service under the name the tool would give", () => {
       cloud.vpc.set("theirs", { id: "theirs", name: "cfo-stg-a-x1-vpc" });
       expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
-        "Workers VPC service cfo-stg-a-x1-vpc exists but this deployment did not create it",
+        "Workers VPC service cfo-stg-a-x1-vpc: one exists that this deployment did not create",
       );
       expect(store.load()).toEqual([]);
     });
@@ -1883,6 +1925,93 @@ describe("review r1, finding 6: creates whose effect shows up late", () => {
     elapse(SETTLE);
     cloud.tick();
     expect(everything()).toBe(0);
+  });
+});
+
+describe("review r2, finding 2: only what carries its create's nonce is adopted", () => {
+  const HOST = "cfo-stg-a-tunnel.example.com";
+
+  it("never adopts an Access application that appears after a create that made nothing", () => {
+    // Codex's reproduction: the create fails without effect, then someone else's application
+    // appears with the name, domain and type the tool gives, with or without a nonce.
+    cloud.createAccessApp = function (this: FakeCloud) {
+      this.calls.push("access.create (no effect)");
+      throw new Error("cf access failed: [10000]");
+    };
+    expect(() => deploy(ctx, request())).toThrow("[10000]");
+    expect(record()?.accessNonce).toBe("a0000000");
+    delete (cloud as Partial<FakeCloud>).createAccessApp;
+    for (const [id, name] of [
+      ["theirs", "cfo-stg-a"],
+      ["guess", "cfo-stg-a--0badc0de"],
+    ] as const) {
+      const body = accessAppBody(name, "cfo-stg-a.example.com", config);
+      cloud.apps.set(id, { ...(body as unknown as AccessApp), id });
+    }
+    logs.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    expect(logs).toContain(
+      "An Access application on cfo-stg-a.example.com: 2 that this deployment did not create left in place; inspect them in the dashboard",
+    );
+    expect([...cloud.apps.keys()]).toEqual(["theirs", "guess"]);
+    expect(cloud.calls.filter((c) => c.startsWith("access.delete"))).toEqual([]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("adopts the Tunnel with its intent's nonce and leaves the others under its name", () => {
+    cloud.crashAfter = "tunnel.create";
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    const nonce = record()?.tunnel?.nonce;
+    cloud.tunnels_.set("legacy", { name: "cfo-stg-a", ingress: [], token: "x" });
+    cloud.tunnels_.set("guess", { name: "cfo-stg-a--0badc0de", ingress: [], token: "y" });
+    deploy(ctx, request("a", 7, withManifest("a")));
+    expect(cloud.tunnels_.get(record()?.tunnel?.id ?? "")?.name).toBe(`cfo-stg-a--${nonce}`);
+    teardown(ctx, "cfo-stg-a");
+    expect([...cloud.tunnels_.keys()]).toEqual(["legacy", "guess"]);
+  });
+
+  it("adopts the DNS record whose comment carries its intent's nonce, and no other", () => {
+    cloud.lateCreate = { prefix: "dns.create", delay: SETTLE / 2, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    const tunnelId = record()?.tunnel?.id;
+    // Exactly the record the tool would make, but without the nonce.
+    cloud.dns.set("theirs", {
+      id: "theirs",
+      name: HOST,
+      type: "CNAME",
+      content: `${tunnelId}.cfargotunnel.com`,
+      proxied: true,
+      comment: "cfo-stg-a: staging tool",
+    });
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).not.toThrow();
+    const ours = record()?.tunnel?.dnsRecordId;
+    expect(ours).not.toBe("theirs");
+    expect(cloud.dns.get(ours ?? "")?.comment).toBe(
+      `cfo-stg-a: staging tool ${record()?.tunnel?.dnsNonce}`,
+    );
+    teardown(ctx, "cfo-stg-a");
+    expect([...cloud.dns.keys()]).toEqual(["theirs"]);
+  });
+
+  it("adopts nothing for an intent recorded before nonces", () => {
+    cloud.crashAfter = "tunnel.create";
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    // An earlier tool named the Tunnel exactly after the deployment and recorded no nonce.
+    store.update((all) =>
+      all.map(({ tunnel, ...d }) => {
+        const { nonce: _, ...rest } = tunnel ?? { name: "cfo-stg-a" };
+        return { ...d, tunnel: rest };
+      }),
+    );
+    const [[id, tunnel] = []] = [...cloud.tunnels_];
+    if (!id || !tunnel) throw new Error("missing Tunnel");
+    cloud.tunnels_.set(id, { ...tunnel, name: "cfo-stg-a" });
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.tunnels_.has(id)).toBe(true);
+    expect(store.load()).toEqual([]);
   });
 });
 
@@ -2284,7 +2413,9 @@ describe("Access applications the tool cannot vouch for", () => {
     if (!app) throw new Error("missing app");
     cloud.apps.delete("app-2");
     cloud.apps.set("theirs", { ...app, id: "theirs" });
-    expect(() => deploy(ctx, request("b"))).toThrow("did not record");
+    expect(() => deploy(ctx, request("b"))).toThrow(
+      "An Access application on cfo-stg-b.example.com: one exists that this deployment did not create",
+    );
     expect(() => teardown(ctx, "cfo-stg-b")).not.toThrow();
     expect(cloud.apps.has("theirs")).toBe(true);
   });
@@ -2525,13 +2656,21 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           expect(cloud.violations).toEqual([]);
           // Nothing exists in the cloud without a record to clean it up.
           const recorded = new Set(store.load().map((d) => d.name));
-          const appNames = new Set(
+          // An application is held under its ID, or under a create intent by its nonce.
+          const heldApps = new Set(
             store
               .load()
-              .flatMap((d) => [d.name, ...(d.tunnel?.hostname ? [`${d.name}-tunnel`] : [])]),
+              .flatMap((d) => [
+                d.accessAppId ?? nonceName(d.name, d.accessNonce),
+                ...(d.tunnel?.hostname
+                  ? [d.tunnel.accessAppId ?? nonceName(`${d.name}-tunnel`, d.tunnel.accessNonce)]
+                  : []),
+              ]),
           );
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
-          for (const app of cloud.apps.values()) expect(appNames.has(app.name)).toBe(true);
+          for (const app of cloud.apps.values()) {
+            expect(heldApps.has(app.id) || heldApps.has(app.name)).toBe(true);
+          }
           expect(cloud.unrecorded(store.load())).toEqual([]);
           // Nothing a record depends on is gone from the registry.
           for (const d of store.load()) {

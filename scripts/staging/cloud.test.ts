@@ -266,6 +266,7 @@ describe("Tunnel, DNS and VPC answers", () => {
           type: "CNAME",
           content: "t.cfargotunnel.com",
           proxied: true,
+          comment: "cfo-stg-a: staging tool 0a1b2c3d",
         },
         { id: "e", name: "h.example.com", type: "TXT" },
       ]),
@@ -276,6 +277,7 @@ describe("Tunnel, DNS and VPC answers", () => {
         type: "CNAME",
         content: "t.cfargotunnel.com",
         proxied: true,
+        comment: "cfo-stg-a: staging tool 0a1b2c3d",
       },
       { id: "e", name: "h.example.com", type: "TXT", content: "", proxied: false },
     ]);

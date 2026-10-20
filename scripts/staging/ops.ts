@@ -52,18 +52,20 @@ import {
   assertOwnerOnly,
   assertSameSite,
   boundDeployments,
-  claimNamed,
   type DeployConfigView,
   type Deployment,
   type DnsRecordInfo,
   declaredResources,
   dependencyCycle,
+  dnsComment,
   expired,
   expiry,
   hostnameFor,
   type IngressRule,
   type Manifest,
   markInterrupted,
+  namedFor,
+  nonceName,
   type ProtectedHost,
   parseManifest,
   renderedConfigPath,
@@ -184,6 +186,8 @@ export interface Context {
   readonly settleMs: number;
   readonly now: () => Date;
   readonly log: (message: string) => void;
+  /** A fresh nonce for a create: 8 or more lower-case hex digits (guard.ts, NONCE). */
+  readonly nonce: () => string;
 }
 
 export interface DeployRequest {
@@ -284,22 +288,31 @@ function planFor(name: string, zone: string, manifest: Manifest): ManifestPlan {
 
 /**
  * One resource the tool creates for a deployment, as its record describes it: what Cloudflare
- * lists under the name the tool gives it, which properties the tool gives it, and how the
- * record holds its ID and its create intent.
+ * lists under the names the tool gives this resource, which properties the tool gives it, and
+ * how the record holds its ID, its nonce and its create intent.
+ *
+ * Every create carries a nonce, fresh for each attempt and recorded with the intent before the
+ * request (review r2, finding 2): in the resource's name (guard.ts, nonceName) or, for a DNS
+ * record, in its comment. Recovery adopts only a resource that carries the intent's own nonce.
  */
 interface Owned<T extends { readonly id: string }> {
   readonly label: string;
   readonly id: string | undefined;
   /** A create intent is recorded: a create was started and its outcome never seen. */
   readonly pending: boolean;
-  list(): T[];
+  /** The nonce of the create intent, kept with the ID once the create is seen. */
+  readonly nonce: string | undefined;
+  /** What Cloudflare lists under any name the tool gives this resource, whoever made it. */
+  candidates(): T[];
   /** The resource with this ID, whatever its name is now; undefined when it is gone. */
   get(id: string): T | undefined;
-  /** Whether a resource has exactly the name and properties the tool gives it. */
+  /** Whether a resource carries `nonce`, in its name or, for a DNS record, its comment. */
+  carries(resource: T, nonce: string): boolean;
+  /** Whether a resource has exactly the name, nonce and properties the tool gives it. */
   fits(resource: T): boolean;
-  /** The record with a create intent for this resource, and no ID for it. */
-  starting(record: Deployment, at: string): Deployment;
-  /** The record with this resource's ID, or none, and no create intent. */
+  /** The record with a create intent, with its nonce, for this resource, and no ID for it. */
+  starting(record: Deployment, at: string, nonce: string): Deployment;
+  /** The record with this resource's ID, or none (then without its nonce), and no intent. */
   settled(record: Deployment, id: string | undefined): Deployment;
 }
 
@@ -325,113 +338,151 @@ function withTunnel(
   return { ...record, tunnel: tunnel as unknown as TunnelRecord };
 }
 
-function workerAccess(ctx: Context, record: Deployment): Owned<AccessApp> {
-  const host = workerHost(record);
+/** An owner-only Access application on `host`, named `<hostname label>--<nonce>`. */
+function accessOwned(
+  ctx: Context,
+  host: ProtectedHost,
+  nonce: string | undefined,
+  pending: boolean,
+  fields: {
+    starting: Owned<AccessApp>["starting"];
+    settled: Owned<AccessApp>["settled"];
+  },
+): Owned<AccessApp> {
   return {
     label: `An Access application on ${host.hostname}`,
-    id: record.accessAppId,
-    pending: record.accessCreateStartedAt !== undefined,
-    list: () => ctx.cloud.listAccessApps(host.hostname).filter((a) => a.domain === host.hostname),
+    id: host.accessAppId,
+    pending,
+    nonce,
+    // Any application on the hostname is a candidate: Access is per hostname, not per name.
+    candidates: () =>
+      ctx.cloud.listAccessApps(host.hostname).filter((a) => a.domain === host.hostname),
     get: (id) => ctx.cloud.accessApp(id),
-    fits: (app) => accessAppFits(app, host),
-    starting: (r, at) => {
-      const { accessAppId: _, ...rest } = r;
-      return { ...rest, accessCreateStartedAt: at };
-    },
-    settled: (r, id) => {
-      const { accessAppId: _, accessCreateStartedAt: __, ...rest } = r;
-      return id === undefined ? rest : { ...rest, accessAppId: id };
-    },
+    carries: (app, n) => app.name === nonceName(host.name, n),
+    fits: (app) => accessAppFits(app, { ...host, name: nonceName(host.name, nonce) }),
+    ...fields,
   };
+}
+
+function workerAccess(ctx: Context, record: Deployment): Owned<AccessApp> {
+  return accessOwned(
+    ctx,
+    workerHost(record),
+    record.accessNonce,
+    record.accessCreateStartedAt !== undefined,
+    {
+      starting: (r, at, nonce) => {
+        const { accessAppId: _, ...rest } = r;
+        return { ...rest, accessCreateStartedAt: at, accessNonce: nonce };
+      },
+      settled: (r, id) => {
+        const { accessAppId: _, accessCreateStartedAt: __, accessNonce, ...rest } = r;
+        if (id === undefined) return rest;
+        return { ...rest, accessAppId: id, ...(accessNonce ? { accessNonce } : {}) };
+      },
+    },
+  );
 }
 
 function tunnelAccess(ctx: Context, record: Deployment, hostname: string): Owned<AccessApp> {
-  const host = tunnelHost(record, hostname);
-  return {
-    label: `An Access application on ${hostname}`,
-    id: record.tunnel?.accessAppId,
-    pending: record.tunnel?.accessCreateStartedAt !== undefined,
-    list: () => ctx.cloud.listAccessApps(hostname).filter((a) => a.domain === hostname),
-    get: (id) => ctx.cloud.accessApp(id),
-    fits: (app) => accessAppFits(app, host),
-    starting: (r, at) => withTunnel(r, { accessCreateStartedAt: at }, ["accessAppId"]),
-    settled: (r, id) =>
-      withTunnel(r, id === undefined ? {} : { accessAppId: id }, [
-        "accessCreateStartedAt",
-        ...(id === undefined ? (["accessAppId"] as const) : []),
-      ]),
-  };
+  return accessOwned(
+    ctx,
+    tunnelHost(record, hostname),
+    record.tunnel?.accessNonce,
+    record.tunnel?.accessCreateStartedAt !== undefined,
+    {
+      starting: (r, at, nonce) =>
+        withTunnel(r, { accessCreateStartedAt: at, accessNonce: nonce }, ["accessAppId"]),
+      settled: (r, id) =>
+        id === undefined
+          ? withTunnel(r, {}, ["accessAppId", "accessCreateStartedAt", "accessNonce"])
+          : withTunnel(r, { accessAppId: id }, ["accessCreateStartedAt"]),
+    },
+  );
 }
 
+/** The deployment's Tunnel, named `<deployment>--<nonce>`. */
 function tunnelOwned(ctx: Context, record: Deployment): Owned<TunnelInfo> {
-  const name = record.tunnel?.name ?? record.name;
+  const base = record.tunnel?.name ?? record.name;
+  const nonce = record.tunnel?.nonce;
   return {
-    label: `Cloudflare Tunnel ${name}`,
+    label: `Cloudflare Tunnel ${base}`,
     id: record.tunnel?.id,
     pending: record.tunnel?.createStartedAt !== undefined,
-    list: () => ctx.cloud.tunnels({ name }),
+    nonce,
+    candidates: () => ctx.cloud.tunnels({ prefix: base }).filter((t) => namedFor(t.name, base)),
     get: (id) => ctx.cloud.tunnel(id),
-    fits: (tunnel) => tunnel.name === name,
-    starting: (r, at) => withTunnel(r, { createStartedAt: at }, ["id"]),
+    carries: (tunnel, n) => tunnel.name === nonceName(base, n),
+    fits: (tunnel) => tunnel.name === nonceName(base, nonce),
+    starting: (r, at, n) => withTunnel(r, { createStartedAt: at, nonce: n }, ["id"]),
     settled: (r, id) =>
-      withTunnel(r, id === undefined ? {} : { id }, [
-        "createStartedAt",
-        ...(id === undefined ? (["id"] as const) : []),
-      ]),
+      id === undefined
+        ? withTunnel(r, {}, ["id", "createStartedAt", "nonce"])
+        : withTunnel(r, { id }, ["createStartedAt"]),
   };
 }
 
-/** The proxied CNAME from the Tunnel hostname to the Tunnel the record names. */
+/** The proxied CNAME from the Tunnel hostname to the Tunnel, with its nonce in the comment. */
 function dnsOwned(ctx: Context, record: Deployment, hostname: string): Owned<DnsRecordInfo> {
   const tunnelId = record.tunnel?.id;
+  const nonce = record.tunnel?.dnsNonce;
+  const carries = (r: DnsRecordInfo, n: string) => r.comment === dnsComment(record.name, n);
   return {
     label: `DNS record ${hostname}`,
     id: record.tunnel?.dnsRecordId,
     pending: record.tunnel?.dnsCreateStartedAt !== undefined,
-    list: () => ctx.cloud.dnsRecords({ name: hostname }),
+    nonce,
+    candidates: () => ctx.cloud.dnsRecords({ name: hostname }),
     get: (id) => ctx.cloud.dnsRecord(id),
+    carries,
     fits: (r) =>
       tunnelId !== undefined &&
       r.name === hostname &&
       r.type === "CNAME" &&
       r.content === `${tunnelId}.cfargotunnel.com` &&
-      r.proxied,
-    starting: (r, at) => withTunnel(r, { dnsCreateStartedAt: at }, ["dnsRecordId"]),
+      r.proxied &&
+      (nonce === undefined || carries(r, nonce)),
+    starting: (r, at, n) => withTunnel(r, { dnsCreateStartedAt: at, dnsNonce: n }, ["dnsRecordId"]),
     settled: (r, id) =>
-      withTunnel(r, id === undefined ? {} : { dnsRecordId: id }, [
-        "dnsCreateStartedAt",
-        ...(id === undefined ? (["dnsRecordId"] as const) : []),
-      ]),
+      id === undefined
+        ? withTunnel(r, {}, ["dnsRecordId", "dnsCreateStartedAt", "dnsNonce"])
+        : withTunnel(r, { dnsRecordId: id }, ["dnsCreateStartedAt"]),
   };
 }
 
-/** An HTTP VPC service to VPC_HOST:<port> through the Tunnel the record names. */
+/** An HTTP VPC service to VPC_HOST:<port> through the Tunnel, named `<base>--<nonce>`. */
 function vpcOwned(
   ctx: Context,
   record: Deployment,
   service: VpcServiceRecord,
 ): Owned<VpcServiceInfo> {
   const tunnelId = record.tunnel?.id;
+  const base = service.name;
   const update = (r: Deployment, change: (s: VpcServiceRecord) => VpcServiceRecord) => ({
     ...r,
-    vpcServices: (r.vpcServices ?? []).map((s) => (s.name === service.name ? change(s) : s)),
+    vpcServices: (r.vpcServices ?? []).map((s) => (s.name === base ? change(s) : s)),
   });
   return {
-    label: `Workers VPC service ${service.name}`,
+    label: `Workers VPC service ${base}`,
     id: service.id,
     pending: service.createStartedAt !== undefined,
-    list: () => ctx.cloud.vpcServices().filter((v) => v.name === service.name),
+    nonce: service.nonce,
+    candidates: () => ctx.cloud.vpcServices().filter((v) => namedFor(v.name, base)),
     get: (id) => ctx.cloud.vpcService(id),
+    carries: (v, n) => v.name === nonceName(base, n),
     fits: (v) =>
       tunnelId !== undefined &&
-      v.name === service.name &&
+      v.name === nonceName(base, service.nonce) &&
       v.type === "http" &&
       v.ipv4 === VPC_HOST &&
       v.tunnelId === tunnelId &&
       v.httpPort === service.port,
-    starting: (r, at) => update(r, ({ id: _, ...s }) => ({ ...s, createStartedAt: at })),
+    starting: (r, at, nonce) =>
+      update(r, ({ id: _, ...s }) => ({ ...s, createStartedAt: at, nonce })),
     settled: (r, id) =>
-      update(r, ({ id: _, createStartedAt: __, ...s }) => (id === undefined ? s : { ...s, id })),
+      update(r, ({ id: _, createStartedAt: __, nonce, ...s }) =>
+        id === undefined ? s : { ...s, id, ...(nonce ? { nonce } : {}) },
+      ),
   };
 }
 
@@ -456,16 +507,16 @@ function recorded<T extends { readonly id: string }>(
 }
 
 /**
- * The recorded resource, or, when there is none, undefined after checking that nothing else
- * holds the name the tool would give a new one.
+ * Refuses to create a resource while anything the deployment does not hold already carries one
+ * of the names the tool gives it: never adopted, never deleted, left for the owner to reconcile.
  */
-function recordedOrFree<T extends { readonly id: string }>(
-  record: Deployment,
-  owned: Owned<T>,
-): T | undefined {
-  const found = recorded(record, owned);
-  if (!found) claimNamed(owned.list(), undefined, owned.label);
-  return found;
+function refuseOthers<T extends { readonly id: string }>(owned: Owned<T>): void {
+  const others = owned.candidates();
+  if (others.length > 0) {
+    throw new Error(
+      `${owned.label}: ${others.length === 1 ? "one exists" : `${others.length} exist`} that this deployment did not create; inspect ${others.length === 1 ? "it" : "them"} in the dashboard`,
+    );
+  }
 }
 
 /** Every resource the record says the tool created or started to create. */
@@ -481,11 +532,14 @@ function ownedOf(ctx: Context, record: Deployment): Owned<{ readonly id: string 
 }
 
 /**
- * Resolves every create intent in the record. A resource that is now listed with exactly the
- * expected name and properties is adopted; anything else under its name is refused. If one is
- * not listed, its create may still take effect: the command waits the settle time once, unless
- * it already has since taking the lock (`waited`), and lists again. A create still not visible
- * then never happened, and its intent is removed. Returns the record with no intent left.
+ * Resolves every create intent in the record. Only a resource that carries the intent's own
+ * nonce is adopted, and only with exactly the name and properties the tool gives it; one that
+ * carries the nonce but differs is refused. Anything else under the tool's names is someone
+ * else's: reported, never adopted or deleted. An intent from before nonces adopts nothing. If
+ * none is listed, the create may still take effect: the command waits the settle time once,
+ * unless it already has since taking the lock (`waited`), and lists again. A create still not
+ * visible then is taken as never having happened, and its intent and nonce are removed. Returns
+ * the record with no intent left.
  */
 function settleCreates(ctx: Context, start: Deployment, waited = false): Deployment {
   let record = start;
@@ -493,7 +547,15 @@ function settleCreates(ctx: Context, start: Deployment, waited = false): Deploym
   for (;;) {
     const unseen: string[] = [];
     for (const owned of ownedOf(ctx, record).filter((o) => o.pending)) {
-      const found = owned.list();
+      const { nonce } = owned;
+      const candidates = owned.candidates();
+      const found = candidates.filter((r) => nonce !== undefined && owned.carries(r, nonce));
+      const others = candidates.length - found.length;
+      if (others > 0) {
+        ctx.log(
+          `${owned.label}: ${others} that this deployment did not create left in place; inspect ${others === 1 ? "it" : "them"} in the dashboard`,
+        );
+      }
       if (found.length === 0) {
         unseen.push(owned.label);
         continue;
@@ -523,15 +585,19 @@ function settleCreates(ctx: Context, start: Deployment, waited = false): Deploym
   }
 }
 
-/** Records a create intent, creates the resource, then records its ID in place of the intent. */
+/**
+ * Records a create intent with a fresh nonce, creates the resource with that nonce, then records
+ * its ID in place of the intent.
+ */
 function createOwned<T extends { readonly id: string }>(
   ctx: Context,
   start: Deployment,
   owned: Owned<T>,
-  create: () => string,
+  create: (nonce: string) => string,
 ): { record: Deployment; id: string } {
-  const intent = put(ctx, owned.starting(start, ctx.now().toISOString()));
-  const id = create();
+  const nonce = ctx.nonce();
+  const intent = put(ctx, owned.starting(start, ctx.now().toISOString(), nonce));
+  const id = create(nonce);
   return { record: put(ctx, owned.settled(intent, id)), id };
 }
 
@@ -574,51 +640,25 @@ function checkWorkerAndDomain(
 }
 
 /**
- * An Access application, Tunnel, DNS record or VPC service that the record does not hold must
- * not exist yet, for the same reason as a container or bucket. Checked before recording, after
- * settleCreates has resolved the record's create intents.
+ * An Access application, Tunnel, DNS record or VPC service that `intent` does not hold yet must
+ * have no candidate: nothing may carry a name the tool would give it (refuseOthers), for the
+ * same reason as a container or bucket. Checked before recording, after settleCreates has
+ * resolved the record's create intents. A recorded VPC service keeps its port.
  */
 function checkNewResources(
   ctx: Context,
   existing: Deployment | undefined,
-  hostname: string,
+  intent: Deployment,
   plan: ManifestPlan | undefined,
 ): void {
-  const foreignApp = (host: string, recorded: string | undefined) => {
-    if (recorded === undefined && ctx.cloud.listAccessApps(host).some((a) => a.domain === host)) {
-      throw new Error(
-        `${host} has an Access application this deployment did not create; inspect it in the Zero Trust dashboard`,
-      );
-    }
-  };
-  foreignApp(hostname, existing?.accessAppId);
-  const tunnel = plan?.tunnel;
-  if (!tunnel) return;
-  if (tunnel.hostname !== undefined) foreignApp(tunnel.hostname, existing?.tunnel?.accessAppId);
-  if (existing?.tunnel?.id === undefined && ctx.cloud.tunnels({ name: tunnel.name }).length > 0) {
-    throw new Error(
-      `Cloudflare Tunnel ${tunnel.name} exists but this deployment did not create it`,
-    );
+  for (const owned of ownedOf(ctx, intent)) {
+    if (owned.id === undefined && !owned.pending) refuseOthers(owned);
   }
-  if (
-    tunnel.hostname !== undefined &&
-    existing?.tunnel?.dnsRecordId === undefined &&
-    ctx.cloud.dnsRecords({ name: tunnel.hostname }).length > 0
-  ) {
-    throw new Error(`${tunnel.hostname} has DNS records this deployment did not create`);
-  }
-  if (plan.vpcServices.length === 0) return;
-  const services = ctx.cloud.vpcServices();
-  for (const wanted of plan.vpcServices) {
+  for (const wanted of plan?.vpcServices ?? []) {
     const recorded = existing?.vpcServices?.find((s) => s.name === wanted.name);
     if (recorded && recorded.port !== wanted.port) {
       throw new Error(
         `Workers VPC service ${wanted.name} is recorded with port ${recorded.port}; tear the deployment down to change it`,
-      );
-    }
-    if (recorded?.id === undefined && services.some((s) => s.name === wanted.name)) {
-      throw new Error(
-        `Workers VPC service ${wanted.name} exists but this deployment did not create it`,
       );
     }
   }
@@ -653,25 +693,33 @@ function ensureAccess(
 ): Deployment {
   let record = start;
   const { hostname } = host;
-  const body = accessAppBody(host.name, hostname, ctx.config);
   const owned = ownedIn(record);
-  const app = recordedOrFree(record, owned);
+  const app = recorded(record, owned);
   let id: string;
   if (app) {
     assertOwnerOnly(app, hostname, ctx.config.ownerEmail);
     id = app.id;
     if (app.same_site_cookie_attribute !== ACCESS_SAME_SITE) {
-      ctx.cloud.updateAccessApp(id, body);
+      ctx.cloud.updateAccessApp(id, accessAppBody(app.name, hostname, ctx.config));
       ctx.log(`set SameSite=${ACCESS_SAME_SITE} on the Access application for ${hostname}`);
     }
   } else {
-    ({ record, id } = createOwned(ctx, record, owned, () => ctx.cloud.createAccessApp(body)));
+    refuseOthers(owned);
+    ({ record, id } = createOwned(ctx, record, owned, (nonce) =>
+      ctx.cloud.createAccessApp(accessAppBody(nonceName(host.name, nonce), hostname, ctx.config)),
+    ));
     ctx.log(`created Access application for ${hostname}`);
   }
   const confirmed = recorded(record, ownedIn(record));
   if (!confirmed) throw new Error(`${hostname} has no Access application after writing one`);
   assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail);
   assertSameSite(confirmed, hostname);
+  // A second application on the hostname could decide instead of this one.
+  if (owned.candidates().some((a) => a.id !== id)) {
+    throw new Error(
+      `${hostname} has another Access application besides this deployment's; inspect it in the Zero Trust dashboard`,
+    );
+  }
   return record;
 }
 
@@ -693,10 +741,12 @@ function ensureTunnel(
       `${owned.label} is recorded but gone; tear the deployment down and deploy again`,
     );
   }
-  if (!found) claimNamed(owned.list(), undefined, owned.label);
   let id = found?.id;
   if (id === undefined) {
-    ({ record, id } = createOwned(ctx, record, owned, () => ctx.cloud.createTunnel(wanted.name)));
+    refuseOthers(owned);
+    ({ record, id } = createOwned(ctx, record, owned, (nonce) =>
+      ctx.cloud.createTunnel(nonceName(wanted.name, nonce)),
+    ));
     ctx.log(`created ${owned.label}`);
   }
   const desired = tunnelIngress(wanted.hostname, wanted.origin);
@@ -714,10 +764,11 @@ function ensureTunnel(
 function ensureDns(ctx: Context, start: Deployment, hostname: string, tunnelId: string) {
   let record = start;
   const owned = dnsOwned(ctx, record, hostname);
-  if (!recordedOrFree(record, owned)) {
+  if (!recorded(record, owned)) {
+    refuseOthers(owned);
     const target = `${tunnelId}.cfargotunnel.com`;
-    ({ record } = createOwned(ctx, record, owned, () =>
-      ctx.cloud.createDnsRecord(hostname, target, `${record.name}: staging tool`),
+    ({ record } = createOwned(ctx, record, owned, (nonce) =>
+      ctx.cloud.createDnsRecord(hostname, target, dnsComment(record.name, nonce)),
     ));
     ctx.log(`created DNS record ${hostname}`);
   }
@@ -735,9 +786,10 @@ function ensureVpcServices(
   for (const service of wanted) {
     const entry = record.vpcServices?.find((s) => s.name === service.name) ?? service;
     const owned = vpcOwned(ctx, record, entry);
-    if (!recordedOrFree(record, owned)) {
-      ({ record } = createOwned(ctx, record, owned, () =>
-        ctx.cloud.createVpcService(service.name, tunnelId, service.port),
+    if (!recorded(record, owned)) {
+      refuseOthers(owned);
+      ({ record } = createOwned(ctx, record, owned, (nonce) =>
+        ctx.cloud.createVpcService(nonceName(service.name, nonce), tunnelId, service.port),
       ));
       ctx.log(`created ${owned.label}`);
     }
@@ -861,7 +913,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     };
     refuseClaimed(ctx.store.load());
     checkWorkerAndDomain(ctx, name, hostname, ownsWorker, lastDeployed);
-    checkNewResources(ctx, existing, hostname, plan);
+    checkNewResources(ctx, existing, intent, plan);
     ctx.store.update((all) => {
       refuseClaimed(all);
       return [...all.filter((d) => d.name !== name), intent];
@@ -1117,46 +1169,39 @@ export function teardown(
   });
 }
 
+/** Whether a record holds `resource`: under its ID, or under a create intent by its nonce. */
+function holds<T extends { readonly id: string }>(owned: Owned<T>, resource: T): boolean {
+  return (
+    owned.id === resource.id ||
+    (owned.pending && owned.nonce !== undefined && owned.carries(resource, owned.nonce))
+  );
+}
+
 /**
  * Tunnels, Workers VPC services and DNS records that carry the staging prefix but that no
- * record owns, by ID or by a create intent under the same name: left by hand, by a lost
- * registry, or by a create that landed after its intent was given up. A deployment's own
- * hostname is a Workers custom domain, not an orphan. Orphans are reported and never deleted,
- * since nothing shows who made them.
+ * record holds: left by hand, by a lost registry, or by a create that landed after its intent
+ * was given up. A deployment's own hostname is a Workers custom domain, not an orphan. Orphans
+ * are reported and never deleted, since nothing shows who made them.
  */
 function orphans(ctx: Context): string[] {
   const deployments = ctx.store.load();
-  const owns = (
-    recordedId: string | undefined,
-    pending: string | undefined,
-    recordedName: string,
-    id: string,
-    name: string,
-  ) =>
-    recordedId === id ||
-    (recordedId === undefined && pending !== undefined && recordedName === name);
   const found: string[] = [];
   for (const t of ctx.cloud.tunnels({ prefix: STAGING_PREFIX })) {
-    const owned = deployments.some(
-      (d) => d.tunnel && owns(d.tunnel.id, d.tunnel.createStartedAt, d.tunnel.name, t.id, t.name),
-    );
-    if (!owned) found.push(`Cloudflare Tunnel ${t.name}`);
+    const held = deployments.some((d) => d.tunnel && holds(tunnelOwned(ctx, d), t));
+    if (!held) found.push(`Cloudflare Tunnel ${t.name}`);
   }
-  for (const s of ctx.cloud.vpcServices()) {
-    if (!s.name.startsWith(STAGING_PREFIX)) continue;
-    const owned = deployments.some((d) =>
-      d.vpcServices?.some((r) => owns(r.id, r.createStartedAt, r.name, s.id, s.name)),
-    );
-    if (!owned) found.push(`Workers VPC service ${s.name}`);
+  for (const v of ctx.cloud.vpcServices()) {
+    if (!v.name.startsWith(STAGING_PREFIX)) continue;
+    const held = deployments.some((d) => d.vpcServices?.some((s) => holds(vpcOwned(ctx, d, s), v)));
+    if (!held) found.push(`Workers VPC service ${v.name}`);
   }
   for (const r of ctx.cloud.dnsRecords({ prefix: STAGING_PREFIX })) {
-    const owned = deployments.some(
+    const held = deployments.some(
       (d) =>
         d.hostname === r.name ||
-        (d.tunnel?.hostname !== undefined &&
-          owns(d.tunnel.dnsRecordId, d.tunnel.dnsCreateStartedAt, d.tunnel.hostname, r.id, r.name)),
+        (d.tunnel?.hostname !== undefined && holds(dnsOwned(ctx, d, d.tunnel.hostname), r)),
     );
-    if (!owned) found.push(`${r.type} record ${r.name}`);
+    if (!held) found.push(`${r.type} record ${r.name}`);
   }
   return found;
 }
