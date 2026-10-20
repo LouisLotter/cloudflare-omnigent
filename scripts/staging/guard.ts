@@ -63,6 +63,12 @@ export interface Deployment {
   readonly tunnel?: TunnelRecord;
   /** Workers VPC services on that Tunnel. They accumulate across deploys, like containers. */
   readonly vpcServices?: readonly VpcServiceRecord[];
+  /**
+   * The deployments whose Durable Objects this one's Worker binds. A deployment that another
+   * record depends on is not torn down. A deploy adds its bindings' targets before the upload
+   * and drops those it no longer binds only after an upload without them succeeded.
+   */
+  readonly dependsOn?: readonly string[];
 }
 
 /**
@@ -401,6 +407,20 @@ function keysOutside(value: unknown, allowed: readonly string[]): string[] {
 function doBindings(raw: Readonly<Record<string, unknown>>): unknown[] {
   const objects = raw.durable_objects as { bindings?: unknown } | undefined;
   return Array.isArray(objects?.bindings) ? objects.bindings : [];
+}
+
+/**
+ * The other deployments whose Durable Objects a configuration binds, by name, sorted. Only names
+ * a staging deployment can have count; validateDeployConfig refuses any other.
+ */
+export function boundDeployments(raw: Readonly<Record<string, unknown>>, name: string): string[] {
+  const names = doBindings(raw)
+    .map((entry) => (entry as Record<string, unknown> | null)?.script_name)
+    .filter(
+      (script): script is string =>
+        typeof script === "string" && /^cfo-stg-[a-z0-9-]+$/.test(script) && script !== name,
+    );
+  return [...new Set(names)].sort();
 }
 
 /**
@@ -1095,6 +1115,7 @@ const DEPLOYMENT_KEYS = [
   "repositories",
   "tunnel",
   "vpcServices",
+  "dependsOn",
 ];
 
 const TUNNEL_IDS = [
@@ -1189,7 +1210,8 @@ export function parseRegistry(json: unknown): Deployment[] {
       !names(d.buckets) ||
       !names(d.repositories) ||
       !validTunnel(d.tunnel) ||
-      !validVpcServices(d.vpcServices)
+      !validVpcServices(d.vpcServices) ||
+      !names(d.dependsOn)
     ) {
       throw new Error("malformed entry in the staging registry");
     }

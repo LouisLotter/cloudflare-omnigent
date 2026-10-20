@@ -10,6 +10,7 @@ import {
   assertManaged,
   assertOwnerOnly,
   assertSameSite,
+  boundDeployments,
   claimNamed,
   type DeployConfigView,
   type Deployment,
@@ -464,6 +465,32 @@ describe("Wrangler configuration check", () => {
             validateDeployConfig(bound(script), ACCOUNT, "cfo-stg-x1-ui", registry(deployments)),
           label,
         ).toThrow(message);
+      }
+    });
+
+    it("names the bound deployments, sorted, once each, never itself or a non-staging name", () => {
+      const config = raw({
+        durable_objects: {
+          bindings: [
+            { name: "A", class_name: "A", script_name: "cfo-stg-z" },
+            { name: "B", class_name: "B", script_name: "cfo-stg-b" },
+            { name: "C", class_name: "C", script_name: "cfo-stg-z" },
+            { name: "D", class_name: "D", script_name: "cfo-stg-x1-ui" },
+            { name: "E", class_name: "E", script_name: "../cfo-stg-b" },
+            { name: "F", class_name: "F", script_name: 7 },
+            { name: "G", class_name: "G" },
+          ],
+        },
+      });
+      expect(boundDeployments(config.raw, "cfo-stg-x1-ui")).toEqual(["cfo-stg-b", "cfo-stg-z"]);
+      expect(boundDeployments(closed.raw, NAME)).toEqual([]);
+      // The registry field holds them.
+      const d = { ...target, dependsOn: ["cfo-stg-b"] };
+      expect(parseRegistry(JSON.parse(serializeRegistry([d])))).toEqual([d]);
+      for (const bad of [["agents"], "cfo-stg-b", [7]]) {
+        expect(() =>
+          parseRegistry({ version: 3, deployments: [{ ...target, dependsOn: bad }] }),
+        ).toThrow("malformed");
       }
     });
 

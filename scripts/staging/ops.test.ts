@@ -621,6 +621,20 @@ const TUNNEL_MANIFEST = {
   vpcServices: [{ binding: "X1_VPC", port: 8081 }],
 };
 
+/** Registers a configuration whose Durable Object binding lives in the deployment `script`. */
+function withBinding(suffix: string, script: string): string {
+  const path = `/w/bound-${suffix}.jsonc`;
+  views[path] = {
+    ...GOOD,
+    path,
+    raw: {
+      ...GOOD.raw,
+      durable_objects: { bindings: [{ name: "RUN", class_name: "RunDO", script_name: script }] },
+    },
+  };
+  return path;
+}
+
 /** Registers a configuration with a staging manifest next to it. */
 function withManifest(suffix: string, manifest: unknown = TUNNEL_MANIFEST, resources = false) {
   const base = resources ? views[withResources(suffix)] : GOOD;
@@ -2038,6 +2052,85 @@ describe("cross-script Durable Object bindings", () => {
     expect(cloud.calls).toEqual([]);
     expect(record("cfo-stg-x1-ui")).toBeUndefined();
   });
+
+  // Review r1, finding 7.
+  it("holds the bound deployment's lock through the upload", () => {
+    deploy(ctx, request("x1-transport"));
+    const taken: string[] = [];
+    const lock = ctx.lock;
+    ctx = {
+      ...ctx,
+      lock: (name) => {
+        taken.push(name);
+        return lock(name);
+      },
+    };
+    cloud.duringUpload = () => {
+      cloud.duringUpload = undefined;
+      // Neither a teardown nor a redeploy of the bound deployment can run meanwhile.
+      expect(() => teardown(ctx, "cfo-stg-x1-transport")).toThrow("busy");
+      expect(() => deploy(ctx, request("x1-transport"))).toThrow("busy");
+    };
+    deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")));
+    // Taken in sorted order, the bound deployment's with the deploying one's.
+    expect(taken.slice(0, 2)).toEqual(["cfo-stg-x1-transport", "cfo-stg-x1-ui"]);
+    expect(locks.held.size).toBe(0);
+  });
+
+  it("refuses a deploy while the bound deployment's lock is held, before any cloud call", () => {
+    deploy(ctx, request("x1-transport"));
+    const release = ctx.lock("cfo-stg-x1-transport");
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")))).toThrow("busy");
+    expect(cloud.calls).toEqual([]);
+    expect(locks.held.has("cfo-stg-x1-ui")).toBe(false);
+    release();
+  });
+
+  it("records the dependency, and refuses to tear down a deployment another one binds", () => {
+    deploy(ctx, request("x1-transport"));
+    deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")));
+    expect(record("cfo-stg-x1-ui")?.dependsOn).toEqual(["cfo-stg-x1-transport"]);
+    cloud.calls.length = 0;
+    expect(() => teardown(ctx, "cfo-stg-x1-transport")).toThrow(
+      "cfo-stg-x1-transport is bound by cfo-stg-x1-ui",
+    );
+    expect(cloud.calls).toEqual([]);
+    expect(record("cfo-stg-x1-transport")?.state).toBe("deployed");
+    teardown(ctx, "cfo-stg-x1-ui");
+    teardown(ctx, "cfo-stg-x1-transport");
+    expect(store.load()).toEqual([]);
+  });
+
+  it("drops a dependency only after an upload without the binding succeeded", () => {
+    deploy(ctx, request("x1-transport"));
+    deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")));
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request("x1-ui"))).toThrow("wrangler deploy");
+    restart();
+    expect(record("cfo-stg-x1-ui")?.dependsOn).toEqual(["cfo-stg-x1-transport"]);
+    deploy(ctx, request("x1-ui"));
+    expect(record("cfo-stg-x1-ui")).not.toHaveProperty("dependsOn");
+    teardown(ctx, "cfo-stg-x1-transport");
+  });
+
+  it("sweeps a bound deployment after the one that binds it", () => {
+    deploy(ctx, request("x1-transport", 1));
+    deploy(ctx, request("x1-ui", 1, boundTo("cfo-stg-x1-transport")));
+    // The registry lists the bound deployment first.
+    expect(store.load().map((d) => d.name)).toEqual(["cfo-stg-x1-transport", "cfo-stg-x1-ui"]);
+    clock += 2 * DAY;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("reports a bound deployment that cannot go yet in a sweep", () => {
+    deploy(ctx, request("x1-transport", 1));
+    deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")));
+    clock += 2 * DAY;
+    expect(sweep(ctx, true)).toEqual([expect.stringContaining("is bound by cfo-stg-x1-ui")]);
+    expect(record("cfo-stg-x1-transport")?.state).toBe("deployed");
+  });
 });
 
 describe("Access applications the tool cannot vouch for", () => {
@@ -2243,6 +2336,8 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       late: fc.constantFrom("none", "access.create", "tunnel.create", "dns.create", "vpc.create"),
       lateCreateDelay: fc.integer({ min: 0, max: SETTLE - 1 }),
       lateDies: fc.boolean(),
+      // b's Worker binds a's Durable Objects.
+      binds: fc.boolean(),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
@@ -2293,11 +2388,14 @@ describe("model check: no Worker is ever reachable without its Access applicatio
                 op.late === "none"
                   ? undefined
                   : { prefix: op.late, delay: op.lateCreateDelay, die: op.lateDies };
-              const path = op.manifest
-                ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
-                : op.resources
-                  ? withResources(op.suffix)
-                  : GOOD.path;
+              const path =
+                op.binds && op.suffix === "b"
+                  ? withBinding("b", "cfo-stg-a")
+                  : op.manifest
+                    ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
+                    : op.resources
+                      ? withResources(op.suffix)
+                      : GOOD.path;
               deploy(ctx, request(op.suffix, op.days, path));
             } else if (op.kind === "teardown") {
               clock += op.wallJump; // the wall clock only
@@ -2333,10 +2431,18 @@ describe("model check: no Worker is ever reachable without its Access applicatio
           for (const name of cloud.workers.keys()) expect(recorded.has(name)).toBe(true);
           for (const app of cloud.apps.values()) expect(appNames.has(app.name)).toBe(true);
           expect(cloud.unrecorded(store.load())).toEqual([]);
+          // Nothing a record depends on is gone from the registry.
+          for (const d of store.load()) {
+            for (const target of d.dependsOn ?? []) expect(recorded.has(target)).toBe(true);
+          }
         }
         // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
         // upload that lands during the settle wait costs one more attempt.
-        for (const d of store.load()) {
+        // A deployment that another one binds goes after it.
+        const order = store
+          .load()
+          .sort((x, y) => Number(x.dependsOn === undefined) - Number(y.dependsOn === undefined));
+        for (const d of order) {
           for (let attempt = 1; record(d.name); attempt++) {
             try {
               teardown(ctx, d.name);

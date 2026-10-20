@@ -51,6 +51,7 @@ import {
   assertManaged,
   assertOwnerOnly,
   assertSameSite,
+  boundDeployments,
   claimNamed,
   type DeployConfigView,
   type Deployment,
@@ -217,12 +218,26 @@ function claimsOf(d: Deployment): string[] {
 }
 
 function locked<T>(ctx: Context, name: string, run: () => T): T {
-  const release = ctx.lock(name);
+  return lockedAll(ctx, [name], run);
+}
+
+/**
+ * Runs `run` holding the locks of all `names`, taken in sorted order so that two commands never
+ * wait on each other, and released in reverse.
+ */
+function lockedAll<T>(ctx: Context, names: readonly string[], run: () => T): T {
+  const releases: (() => void)[] = [];
   try {
+    for (const name of [...new Set(names)].sort()) releases.push(ctx.lock(name));
     return run();
   } finally {
-    release();
+    for (const release of releases.reverse()) release();
   }
+}
+
+/** A record's `dependsOn` field: present only when it names a deployment. */
+function dependsOn(names: readonly string[]): { dependsOn?: readonly string[] } {
+  return names.length > 0 ? { dependsOn: [...names].sort() } : {};
 }
 
 /** What a manifest asks of one deployment, with the names the tool gives it. */
@@ -705,7 +720,12 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const manifest = ctx.readManifest(request.configPath);
   const plan =
     manifest && planFor(name, ctx.config.zone, parseManifest(manifest.json, manifest.path));
-  return locked(ctx, name, () => {
+  // The deployments whose Durable Objects this Worker binds stay locked, with this one, until
+  // the upload is done: none can be torn down, redeployed or recreated under another owner
+  // between the check under the locks and the upload. Their teardown also refuses while this
+  // record depends on them.
+  const bound = boundDeployments(view.raw, name);
+  return lockedAll(ctx, [name, ...bound], () => {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
     const registry = ctx.store.load();
@@ -774,6 +794,7 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         buckets: union(existing?.buckets, declared.buckets),
         repositories: union(existing?.repositories, declared.repositories),
         ...(ownsWorker ? { workerSince: existing?.workerSince ?? now.toISOString() } : {}),
+        ...dependsOn(union(existing?.dependsOn, bound)),
       },
       plan,
     );
@@ -889,8 +910,9 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         `${name}: Wrangler reported success, but the staging account has no such Worker`,
       );
     }
-    const { uploadStartedAt: _, ...settled } = record;
-    record = put(ctx, { ...settled, state: "deployed" });
+    // Only now does the Worker bind exactly `bound`.
+    const { uploadStartedAt: _, dependsOn: __, ...settled } = record;
+    record = put(ctx, { ...settled, ...dependsOn(bound), state: "deployed" });
     ctx.log(`deployed ${name} at https://${hostname} (expires ${expiresAt})`);
     return record;
   });
@@ -959,6 +981,15 @@ export function teardown(
       throw new Error(`no recorded deployment named ${name}`);
     }
     if (options.ifExpiredAt && expired([found], options.ifExpiredAt).length === 0) return;
+    const dependents = ctx.store
+      .load()
+      .filter((d) => d.name !== name && d.dependsOn?.includes(name))
+      .map((d) => d.name);
+    if (dependents.length > 0) {
+      throw new Error(
+        `${name} is bound by ${dependents.join(", ")}, whose Worker uses its Durable Objects; tear that down first`,
+      );
+    }
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
     let record = put(ctx, { ...markInterrupted(found, ctx.now()), state: "deleting" });
 
@@ -1085,7 +1116,12 @@ export function sweep(ctx: Context, apply: boolean): string[] {
   if (!apply) {
     if (due.length > 0) ctx.log("re-run with --yes to remove them");
   } else {
-    for (const d of due) {
+    // A deployment that another one binds goes after it, so both can go in one sweep.
+    const left = [...due];
+    while (left.length > 0) {
+      const d = left.find((x) => !left.some((o) => o.dependsOn?.includes(x.name))) ?? left[0];
+      if (!d) break;
+      left.splice(left.indexOf(d), 1);
       try {
         // Another command may have removed or redeployed it since the list was read.
         teardown(ctx, d.name, { ifPresent: true, ifExpiredAt: now });
