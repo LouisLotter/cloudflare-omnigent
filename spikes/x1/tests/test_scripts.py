@@ -425,8 +425,21 @@ def test_teardown_check_finds_a_nonce_suffixed_token():
 
 
 def test_teardown_check_never_takes_an_unknown_answer_for_gone():
-    # Review AIR2-002: a wrapped, malformed or failed listing is unknown, not empty.
-    for answer in ({"items": []}, "text", None, [1, 2], [{"name": "x"}, "y"]):
+    # Review AIR2-002: a wrapped, malformed or failed listing is unknown, not empty, and so is an
+    # item whose name is missing, null, empty or not a string.
+    for answer in (
+        {"items": []},
+        "text",
+        None,
+        [1, 2],
+        [{"name": "x"}, "y"],
+        [{}],
+        [{"name": None}],
+        [{"name": ""}],
+        [{"name": 7}],
+        [{"name": ["cfo-stg-x1-transport-x1-vpc"]}],
+        [{"id": "v1"}],
+    ):
 
         def odd(args, answer=answer):
             if args[:3] == ["workers-vpc", "services", "list"]:
@@ -435,10 +448,12 @@ def test_teardown_check_never_takes_an_unknown_answer_for_gone():
 
         assert _failed(odd) == ["no VPC service cfo-stg-x1-…"]
 
-    def images_odd(args):
-        return (0, None, "") if args[:3] == ["containers", "images", "list"] else _gone(args)
+    for images in (None, {"images": []}, [1, 2], ["cfo-stg-x1-transport"], [{}], [{"a": 1}, None]):
 
-    assert _failed(images_odd) == ["no registry image of cfo-stg-x1-transport"]
+        def images_odd(args, images=images):
+            return (0, images, "") if args[:3] == ["containers", "images", "list"] else _gone(args)
+
+        assert _failed(images_odd) == ["no registry image of cfo-stg-x1-transport"]
 
 
 def test_teardown_check_reads_every_page():

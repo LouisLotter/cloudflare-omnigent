@@ -59,11 +59,18 @@ def cf_runner(account: str) -> Runner:
 
 
 def names(body: object, key: str = "name") -> list[str] | None:
-    """The `key` of every item of a listing, or None when the answer is not a list of objects: an
-    answer of unknown shape is never taken for an empty listing (review AIR2-002)."""
-    if not isinstance(body, list) or not all(isinstance(item, dict) for item in body):
+    """The `key` of every item of a listing, or None when the answer is not a list of objects that
+    each carry a non-empty string `key`: an answer of unknown shape, or an item without a name, is
+    never taken for an empty listing or for someone else's resource (review AIR2-002)."""
+    if not isinstance(body, list):
         return None
-    return [str(item.get(key, "")) for item in body]
+    found: list[str] = []
+    for item in body:
+        value = item.get(key) if isinstance(item, dict) else None
+        if not isinstance(value, str) or value == "":
+            return None
+        found.append(value)
+    return found
 
 
 def listed(run: Runner, args: list[str], key: str = "name", paged: bool = True) -> list[str] | None:
@@ -100,12 +107,16 @@ def checks(
     for name in CONTAINERS:
         apps = listed(run, ["containers", "applications", "list", "--name", name], paged=False)
         out.append((f"container application {name} absent", none_named(apps, name)))
+    # An image's repository may sit under any field, so the whole answer is searched, but only
+    # once every item is a non-empty object.
     code, body, _ = run(["containers", "images", "list"])
+    images_known = (
+        code == 0
+        and isinstance(body, list)
+        and all(isinstance(item, dict) and item for item in body)
+    )
     out.append(
-        (
-            f"no registry image of {TRANSPORT}",
-            code == 0 and isinstance(body, list) and TRANSPORT not in json.dumps(body),
-        )
+        (f"no registry image of {TRANSPORT}", images_known and TRANSPORT not in json.dumps(body))
     )
     code, _, err = run(["r2", "buckets", "get", BUCKET])
     out.append((f"R2 bucket {BUCKET} absent", code != 0 and "[10006]" in err and "404" in err))
