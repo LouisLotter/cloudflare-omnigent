@@ -52,7 +52,10 @@ check(`${TRANSPORT}: the checked configuration`, () => {
 let manifest: { serviceToken?: unknown; tunnel?: { publicHostname: boolean } } | undefined;
 if (typeof guard.parseManifest === "function") {
   check(`${TRANSPORT}: staging.jsonc`, () => {
-    manifest = guard.parseManifest(guard.parseJsonc(readFileSync(manifestPath, "utf8")), manifestPath);
+    manifest = guard.parseManifest(
+      guard.parseJsonc(readFileSync(manifestPath, "utf8")),
+      manifestPath,
+    );
   });
 } else {
   skip(`${TRANSPORT}: staging.jsonc`, "this staging tool has no manifests");
@@ -66,30 +69,35 @@ check("the F7 build flag agrees with the manifest", () => {
   const publicHost = /"publicHostname"\s*:\s*true/.test(text);
   if (flag === undefined) throw new Error("src/flags.js has no PUBLIC_ROUTES");
   if ((flag === "true") !== token || (flag === "true") !== publicHost) {
-    throw new Error(`PUBLIC_ROUTES is ${flag}, but the manifest's service token is ${token ? "present" : "absent"} and its public hostname ${publicHost ? "on" : "off"}`);
+    throw new Error(
+      `PUBLIC_ROUTES is ${flag}, but the manifest's service token is ${token ? "present" : "absent"} and its public hostname ${publicHost ? "on" : "off"}`,
+    );
   }
 });
 
 if (typeof guard.renderedConfigPath === "function" && typeof guard.tunnelRoute === "function") {
-  check(`${TRANSPORT}: the configuration as the tool renders it (Tunnel route, VPC service)`, () => {
-    const raw = guard.parseJsonc(readFileSync(transportConfig, "utf8"));
-    const route = guard.tunnelRoute(guard.tunnelHostnameFor(TRANSPORT, ZONE), ZONE);
-    const serviceId = "00000000-0000-4000-8000-000000000000";
-    const rendered = {
-      ...raw,
-      routes: manifest?.tunnel?.publicHostname ? [route] : [],
-      vpc_services: [{ binding: "X1_VPC", service_id: serviceId }],
-    };
-    const path = guard.renderedConfigPath(transportConfig, TRANSPORT);
-    writeFileSync(path, JSON.stringify(rendered, null, 2));
-    try {
-      guard.validateDeployConfig(cloud.readWranglerConfig(path, worker), ACCOUNT, TRANSPORT, {
-        rendered: { routes: rendered.routes, vpcServiceIds: [serviceId] },
-      });
-    } finally {
-      rmSync(path, { force: true });
-    }
-  });
+  check(
+    `${TRANSPORT}: the configuration as the tool renders it (Tunnel route, VPC service)`,
+    () => {
+      const raw = guard.parseJsonc(readFileSync(transportConfig, "utf8"));
+      const route = guard.tunnelRoute(guard.tunnelHostnameFor(TRANSPORT, ZONE), ZONE);
+      const serviceId = "00000000-0000-4000-8000-000000000000";
+      const rendered = {
+        ...raw,
+        routes: manifest?.tunnel?.publicHostname ? [route] : [],
+        vpc_services: [{ binding: "X1_VPC", service_id: serviceId }],
+      };
+      const path = guard.renderedConfigPath(transportConfig, TRANSPORT);
+      writeFileSync(path, JSON.stringify(rendered, null, 2));
+      try {
+        guard.validateDeployConfig(cloud.readWranglerConfig(path, worker), ACCOUNT, TRANSPORT, {
+          rendered: { routes: rendered.routes, vpcServiceIds: [serviceId] },
+        });
+      } finally {
+        rmSync(path, { force: true });
+      }
+    },
+  );
 } else {
   skip(`${TRANSPORT}: the rendered configuration`, "this staging tool renders none");
 }
@@ -98,19 +106,22 @@ check(`${UI}: no staging manifest in its directory`, () => {
   if (existsSync(join(x1, "ui", "staging.jsonc"))) throw new Error("ui/staging.jsonc exists");
 });
 
-check(`${UI}: the cross-script binding to RunDO, with ${TRANSPORT} deployed by the same owner`, () => {
-  const deployed = {
-    name: TRANSPORT,
-    hostname: `${TRANSPORT}.${ZONE}`,
-    owner: "X1",
-    createdAt: "2027-01-15T08:00:00.000Z",
-    expiresAt: "2027-01-17T08:00:00.000Z",
-    state: "deployed",
-  };
-  guard.validateDeployConfig(cloud.readWranglerConfig(uiConfig, worker), ACCOUNT, UI, {
-    registry: { owner: "X1", deployments: [deployed] },
-  });
-});
+check(
+  `${UI}: the cross-script binding to RunDO, with ${TRANSPORT} deployed by the same owner`,
+  () => {
+    const deployed = {
+      name: TRANSPORT,
+      hostname: `${TRANSPORT}.${ZONE}`,
+      owner: "X1",
+      createdAt: "2027-01-15T08:00:00.000Z",
+      expiresAt: "2027-01-17T08:00:00.000Z",
+      state: "deployed",
+    };
+    guard.validateDeployConfig(cloud.readWranglerConfig(uiConfig, worker), ACCOUNT, UI, {
+      registry: { owner: "X1", deployments: [deployed] },
+    });
+  },
+);
 
 console.log(failures === 0 ? "all checks passed" : `${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
