@@ -995,6 +995,18 @@ export function teardown(
       );
     }
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
+    // A Worker under this name is this deployment's only if it ever started an upload; one
+    // that appeared otherwise is someone else's and stays, with the record and Access.
+    const uploaded =
+      found.workerSince !== undefined ||
+      found.uploadStartedAt !== undefined ||
+      found.uploadInterruptedAt !== undefined ||
+      found.state === "deployed";
+    if (!uploaded && ctx.cloud.workerExists(name)) {
+      throw new Error(
+        `a Worker named ${name} exists, but this deployment never uploaded one; it was left in place, and so were Access and the record`,
+      );
+    }
     let record = put(ctx, { ...markInterrupted(found, ctx.now()), state: "deleting" });
 
     if (ctx.cloud.workerExists(name)) {

@@ -1960,6 +1960,27 @@ describe("review r1, finding 1: Wrangler's --domain overrides, so the name and h
     expect(record()?.uploadStartedAt).toBeUndefined();
   });
 
+  // Review r2, finding 1a: Codex's reproduction.
+  it("never deletes a Worker that appeared under the name before this deployment uploaded", () => {
+    const path = withResources("a");
+    cloud.createBucket = function (this: FakeCloud, bucket: string) {
+      this.buckets.add(bucket);
+      this.workers.set("cfo-stg-a", "elsewhere.example.com"); // someone else's, meanwhile
+    };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("did not create it");
+    delete (cloud as Partial<FakeCloud>).createBucket;
+    expect(record()).not.toHaveProperty("workerSince");
+    cloud.calls.length = 0;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("this deployment never uploaded one");
+    expect(cloud.workers.get("cfo-stg-a")).toBe("elsewhere.example.com");
+    expect(cloud.calls.filter((c) => /\.(delete|create|update)/.test(c))).toEqual([]);
+    expect(record()?.state).toBe("pending");
+    // Once that Worker is gone, the teardown removes what this deployment did create.
+    cloud.workers.delete("cfo-stg-a");
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.apps.size + cloud.buckets.size).toBe(0);
+  });
+
   it("owns the name from its first upload on, also after an interrupted one", () => {
     cloud.deployFault = "after-upload";
     expect(() => deploy(ctx, request())).toThrow("wrangler deploy");
