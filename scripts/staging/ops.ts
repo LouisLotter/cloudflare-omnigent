@@ -34,12 +34,14 @@
 //     confirmed gone. The tool writes the hostname's Worker route and the VPC bindings into a
 //     rendered copy of the configuration, checked like the original, and passes the Tunnel's
 //     token to the Worker as a secret with the upload, never in argv or logs.
-//   - Every create of an Access application, Tunnel, DNS record or VPC service is preceded by a
-//     create intent in the record (guard.ts) and followed by its ID. A create whose client died
-//     may still take effect within `settleMs`, like an upload, so a command that finds an intent
-//     unresolved waits that long once before deciding the create never happened (settleCreates),
-//     and never removes a record that still holds one. Without an intent, nothing found under
-//     the tool's name is adopted: a deploy refuses it, and a teardown leaves it alone.
+//   - Every create of an Access application, Tunnel, DNS record, VPC service or bucket is
+//     preceded by a create intent in the record (guard.ts), with a fresh nonce that the resource
+//     carries, and followed by its ID. Only a resource with the intent's nonce is ever adopted
+//     (a bucket, which has no place for one, by its name). A create whose client died may still
+//     take effect, like an upload, so a command that finds an intent unresolved waits `settleMs`
+//     once (settleCreates). A create still not seen then leaves the record but stays in the
+//     registry as a late create, and sweep deletes what it made if it lands. Nothing else found
+//     under the tool's names is adopted or deleted: a deploy refuses it, and a teardown leaves it.
 
 import {
   ACCESS_SAME_SITE,
