@@ -770,7 +770,8 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
     clock += 2 * DAY;
     cloud.calls.length = 0;
     expect(sweep(ctx, false)).toEqual([]);
-    expect(cloud.calls).toEqual([]);
+    // Only the account check and the listings of the orphan report.
+    expect(cloud.calls).toEqual(["accounts", "tunnel.list", "vpc.list", "dns.list"]);
     expect(record()?.state).toBe("deployed");
   });
 });
@@ -1533,6 +1534,68 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       expect(() => teardown(ctx, "cfo-stg-a")).toThrow("Workers VPC service cfo-stg-a-x1-vpc");
       expect(cloud.vpc.has("theirs")).toBe(true);
     });
+  });
+
+  it("sweeps an expired deployment's Tunnel resources with the rest", () => {
+    deploy(ctx, request("a", 1, withManifest("a", TUNNEL_MANIFEST, true)));
+    clock += 2 * DAY;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(everything()).toBe(0);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("reports orphaned staging Tunnels, VPC services and DNS records, and removes none", () => {
+    deploy(ctx, request("a", 7, withManifest("a")));
+    // An interrupted deploy of b recorded its Tunnel's name but not yet its ID.
+    cloud.crashAfter = "tunnel.create";
+    expect(() => deploy(ctx, request("b", 7, withManifest("b")))).toThrow(ProcessLost);
+    restart();
+    cloud.tunnels_.set("lost", { name: "cfo-stg-old", ingress: [], token: "x" });
+    cloud.vpc.set("lost", { id: "lost", name: "cfo-stg-old-vpc" });
+    cloud.vpc.set("prod", { id: "prod", name: "production-api" });
+    cloud.dns.set("lost", {
+      id: "lost",
+      name: "cfo-stg-old-tunnel.example.com",
+      type: "CNAME",
+      content: "x",
+      proxied: true,
+    });
+    // The Worker's custom domain, as Cloudflare may list it.
+    cloud.dns.set("custom", {
+      id: "custom",
+      name: "cfo-stg-a.example.com",
+      type: "AAAA",
+      content: "100::",
+      proxied: true,
+    });
+    const before = everything();
+    for (const apply of [false, true]) {
+      logs.length = 0;
+      expect(sweep(ctx, apply)).toEqual([]);
+      expect(logs.filter((l) => l.startsWith("orphan:"))).toEqual([
+        "orphan: Cloudflare Tunnel cfo-stg-old has the staging prefix, but no record owns it; left in place",
+        "orphan: Workers VPC service cfo-stg-old-vpc has the staging prefix, but no record owns it; left in place",
+        "orphan: CNAME record cfo-stg-old-tunnel.example.com has the staging prefix, but no record owns it; left in place",
+      ]);
+    }
+    expect(everything()).toBe(before);
+    // A record that replaced ours under a recorded ID is not ours either.
+    cloud.dns.delete("dns-4");
+    cloud.dns.set("swap", { id: "swap", name: HOST, type: "CNAME", content: "x", proxied: true });
+    logs.length = 0;
+    sweep(ctx, false);
+    expect(logs).toContain(
+      `orphan: CNAME record ${HOST} has the staging prefix, but no record owns it; left in place`,
+    );
+  });
+
+  it("reports a failed orphan check as a failure", () => {
+    cloud.tunnels = () => {
+      throw new Error("cf tunnels failed: [10000] Authentication error");
+    };
+    expect(sweep(ctx, false)).toEqual([
+      "orphan check: cf tunnels failed: [10000] Authentication error",
+    ]);
   });
 
   it("never records the Tunnel hostname for two deployments", () => {

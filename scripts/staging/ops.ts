@@ -62,6 +62,7 @@ import {
   parseManifest,
   renderedConfigPath,
   resourceName,
+  STAGING_PREFIX,
   type StagingConfig,
   sameIngress,
   type TunnelInfo,
@@ -794,24 +795,70 @@ export function teardown(
   });
 }
 
-/** Lists expired deployments and, with `apply`, tears each one down. Returns the failures. */
+/**
+ * Tunnels, Workers VPC services and DNS records that carry the staging prefix but that no
+ * record owns: left by hand, by a lost registry, or by a run that died before recording its
+ * intent. A deployment's own hostname is a Workers custom domain, not an orphan. Orphans are
+ * reported and never deleted, since nothing shows who made them.
+ */
+function orphans(ctx: Context): string[] {
+  const deployments = ctx.store.load();
+  const owns = (recordedId: string | undefined, recordedName: string, id: string, name: string) =>
+    recordedId === undefined ? recordedName === name : recordedId === id;
+  const found: string[] = [];
+  for (const t of ctx.cloud.tunnels({ prefix: STAGING_PREFIX })) {
+    if (!deployments.some((d) => d.tunnel && owns(d.tunnel.id, d.tunnel.name, t.id, t.name))) {
+      found.push(`Cloudflare Tunnel ${t.name}`);
+    }
+  }
+  for (const s of ctx.cloud.vpcServices()) {
+    if (!s.name.startsWith(STAGING_PREFIX)) continue;
+    const owned = deployments.some((d) =>
+      d.vpcServices?.some((r) => owns(r.id, r.name, s.id, s.name)),
+    );
+    if (!owned) found.push(`Workers VPC service ${s.name}`);
+  }
+  for (const r of ctx.cloud.dnsRecords({ prefix: STAGING_PREFIX })) {
+    const owned = deployments.some(
+      (d) =>
+        d.hostname === r.name ||
+        (d.tunnel?.hostname !== undefined &&
+          owns(d.tunnel.dnsRecordId, d.tunnel.hostname, r.id, r.name)),
+    );
+    if (!owned) found.push(`${r.type} record ${r.name}`);
+  }
+  return found;
+}
+
+/**
+ * Lists expired deployments and, with `apply`, tears each one down, then reports orphaned
+ * staging resources. Returns the failures.
+ */
 export function sweep(ctx: Context, apply: boolean): string[] {
   const now = ctx.now();
   const due = expired(ctx.store.load(), now);
   if (due.length === 0) ctx.log("no expired deployments");
   for (const d of due) ctx.log(`expired: ${d.name} (owner ${d.owner}, ${d.state})`);
+  const failures: string[] = [];
   if (!apply) {
     if (due.length > 0) ctx.log("re-run with --yes to remove them");
-    return [];
-  }
-  const failures: string[] = [];
-  for (const d of due) {
-    try {
-      // Another command may have removed or redeployed it since the list was read.
-      teardown(ctx, d.name, { ifPresent: true, ifExpiredAt: now });
-    } catch (error) {
-      failures.push(`${d.name}: ${error instanceof Error ? error.message : String(error)}`);
+  } else {
+    for (const d of due) {
+      try {
+        // Another command may have removed or redeployed it since the list was read.
+        teardown(ctx, d.name, { ifPresent: true, ifExpiredAt: now });
+      } catch (error) {
+        failures.push(`${d.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+  }
+  try {
+    assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
+    for (const orphan of orphans(ctx)) {
+      ctx.log(`orphan: ${orphan} has the staging prefix, but no record owns it; left in place`);
+    }
+  } catch (error) {
+    failures.push(`orphan check: ${error instanceof Error ? error.message : String(error)}`);
   }
   return failures;
 }
