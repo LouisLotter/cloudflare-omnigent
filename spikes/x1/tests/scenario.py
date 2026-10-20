@@ -99,7 +99,9 @@ class Builder:
                     continue
                 self.add("reply", sent + rtt, route=route, conn=conn, seq=seq, rtt=rtt)
                 if first_reply:
-                    self.add("ident", sent + rtt, route=route, conn=conn, id={**identity, "conn": conn})
+                    self.add(
+                        "ident", sent + rtt, route=route, conn=conn, id={**identity, "conn": conn}
+                    )
                     first_reply = False
                 if pings and i % 5 == 4:
                     self.add("ping", sent + 1, route=route, conn=conn, n=i)
@@ -111,7 +113,9 @@ class Builder:
 
     def never(self, route: str, status: int = 502, start: float = FIRST_OPEN) -> None:
         for n in range(3):
-            self.add("attempt", start + n * 500, route=route, n=n + 1, ok=False, ms=3.0, status=status)
+            self.add(
+                "attempt", start + n * 500, route=route, n=n + 1, ok=False, ms=3.0, status=status
+            )
 
     def probe(self, batches: int = 3, missing: tuple[int, ...] = (), manifest: bool = True) -> dict:
         ordered = sorted(self.events, key=lambda e: e["mono"])
@@ -128,9 +132,16 @@ class Builder:
 
 
 def run_json(
-    public: bool = True, soak_end: float = E, mode: str = "run", routes: tuple[str, ...] | None = None
+    public: bool = True,
+    soak_end: float = E,
+    mode: str = "run",
+    routes: tuple[str, ...] | None = None,
 ) -> dict:
-    built = list(routes) if routes is not None else (list(ROUTES) if public else ["p1", "p2", "p3", "p6"])
+    built = (
+        list(routes)
+        if routes is not None
+        else (list(ROUTES) if public else ["p1", "p2", "p3", "p6"])
+    )
     return {
         "runId": "run-20270115T080000Z",
         "mode": mode,

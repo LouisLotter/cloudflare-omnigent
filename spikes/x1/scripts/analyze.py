@@ -614,9 +614,7 @@ class Outcome:
     rule4_routes: list[str]
 
 
-def decide(
-    eligible: dict[str, bool], rates: dict[str, float], public_built: bool
-) -> Outcome:
+def decide(eligible: dict[str, bool], rates: dict[str, float], public_built: bool) -> Outcome:
     """Section 8's outcome, in order."""
     for rule, (route, name) in enumerate(RULE_ORDER, start=1):
         if eligible.get(route, False):
@@ -652,7 +650,9 @@ def ar17(result: RouteResult, ui_event: str, transport_event: str) -> tuple[str,
     u = len(result.forced.get(ui_event, []))
     if u > 0:
         verdict = "no help: the UI deploy drops the route" + (
-            " too" if t > 0 else " (the transport deploy does not; section 9 does not name this case)"
+            " too"
+            if t > 0
+            else " (the transport deploy does not; section 9 does not name this case)"
         )
     elif t > 0:
         verdict = "clear benefit: the transport deploy drops the route and the UI deploy does not"
@@ -708,7 +708,11 @@ def probe_events(probe: dict[str, dict]) -> list[dict]:
 
 def resets_from(lifecycle: list[dict]) -> list[tuple[str, float]]:
     return sorted(
-        ((str(r.get("event")), float(r["R"])) for r in lifecycle if r.get("x1") == "reset-requested"),
+        (
+            (str(r.get("event")), float(r["R"]))
+            for r in lifecycle
+            if r.get("x1") == "reset-requested"
+        ),
         key=lambda x: x[1],
     )
 
@@ -732,7 +736,7 @@ def windows_from(
         if d.get("status") not in (0, None):
             deviations.append(f"the {target} deploy exited with status {d.get('status')}")
         if d.get("uploaded") is None:
-            problems.append(f"the {target} deploy has no \"Uploaded\" line: its window is undefined")
+            problems.append(f'the {target} deploy has no "Uploaded" line: its window is undefined')
             continue
         windows.append(deploy_window(f"{target} deploy", float(d["start"]), float(d["uploaded"])))
     return windows, problems, deviations
@@ -840,7 +844,9 @@ def analyze_preflight(run: dict, lifecycle: list[dict], probe: dict[str, dict]) 
             "forcedRecoveryMs": [d.recovery_ms for v in result.forced.values() for d in v],
             "outcomeFraction": result.outcome_fraction,
         }
-    return PreflightReport(str(run.get("runId")), routes, blocked_checks(events), resets, completeness(probe))
+    return PreflightReport(
+        str(run.get("runId")), routes, blocked_checks(events), resets, completeness(probe)
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -895,7 +901,9 @@ def render(report: Report) -> str:
         f"beyond manifest {c.unexpected or 'none'}"
     )
     for item in report.blocked:
-        lines.append(f"block-list check {item['target']}: {item['status']} {item['refusedBy']} ok={item['ok']}")
+        lines.append(
+            f"block-list check {item['target']}: {item['status']} {item['refusedBy']} ok={item['ok']}"
+        )
     for route, r in report.routes.items():
         lines.append(f"{route.upper()} (built: {r.built})")
         lines.append(
@@ -932,7 +940,9 @@ def render(report: Report) -> str:
         )
     lines.append("eligibility:")
     for route, crits in report.criteria.items():
-        lines.append(f"  {route.upper()}: {'ELIGIBLE' if report.eligible[route] else 'not eligible'}")
+        lines.append(
+            f"  {route.upper()}: {'ELIGIBLE' if report.eligible[route] else 'not eligible'}"
+        )
         for name, crit in crits.items():
             lines.append(f"    {name}: {'pass' if crit.passed else 'FAIL'} ({crit.detail})")
     if report.deviations:
@@ -942,15 +952,17 @@ def render(report: Report) -> str:
         lines.append("SETUP FAILED; the rule is not applied:")
         lines.extend(f"  {p}" for p in report.setup_problems)
         assert report.would_be is not None
-        lines.append(f"(for information only, the rule would give rule {report.would_be.rule}: {report.would_be.text})")
+        lines.append(
+            f"(for information only, the rule would give rule {report.would_be.rule}: {report.would_be.text})"
+        )
     else:
         assert report.outcome is not None
         lines.append(f"OUTCOME (rule {report.outcome.rule}): {report.outcome.text}")
     for route, (verdict, t, u) in report.ar17.items():
-        lines.append(f"AR-17 {route.upper()}: {verdict} (transport deploy drops {t}, UI deploy drops {u})")
-    lines.append(
-        "In every case: core changes 12 and 14. The selection is provisional until RC-26."
-    )
+        lines.append(
+            f"AR-17 {route.upper()}: {verdict} (transport deploy drops {t}, UI deploy drops {u})"
+        )
+    lines.append("In every case: core changes 12 and 14. The selection is provisional until RC-26.")
     return "\n".join(lines)
 
 
@@ -961,7 +973,9 @@ def render_preflight(report: PreflightReport) -> str:
     for name, r in report.resets:
         lines.append(f"reset {name} at {r}")
     for item in report.blocked:
-        lines.append(f"block-list check {item['target']}: {item['status']} {item['refusedBy']} ok={item['ok']}")
+        lines.append(
+            f"block-list check {item['target']}: {item['status']} {item['refusedBy']} ok={item['ok']}"
+        )
     c = report.completeness
     lines.append(
         f"batches {c.batches_present}/{c.batches_expected}; missing {c.missing or 'none'}; "
@@ -1011,7 +1025,9 @@ def load_dir(directory: Path) -> tuple[dict, list[dict], dict[str, dict]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("run_dir", nargs="?", type=Path)
     parser.add_argument("--preflight", type=Path)
     parser.add_argument("--preflight-only", type=Path)
@@ -1031,7 +1047,9 @@ def main(argv: list[str] | None = None) -> int:
     run, lifecycle, probe = load_dir(args.run_dir)
     preflight_probe = load_dir(args.preflight)[2] if args.preflight else None
     campaign = read_json(args.campaign) if args.campaign else None
-    report = analyze(Inputs(run, lifecycle, probe, campaign, preflight_probe, set(args.unsupported)))
+    report = analyze(
+        Inputs(run, lifecycle, probe, campaign, preflight_probe, set(args.unsupported))
+    )
     print(render(report))
     if args.json:
         args.json.write_text(json.dumps(jsonable(asdict(report)), indent=2, default=str) + "\n")

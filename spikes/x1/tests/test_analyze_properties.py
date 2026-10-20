@@ -35,9 +35,7 @@ def test_observed_time_is_the_soak_minus_the_union_of_windows(soak, spans):
     """On integer end points, the union's length is the number of unit cells it covers."""
     start, end = soak
     windows = [analyze.Window(f"w{i}", "reset", a, b) for i, (a, b) in enumerate(spans)]
-    covered = sum(
-        1 for k in range(start, end) if any(a <= k and k + 1 <= b for a, b in spans)
-    )
+    covered = sum(1 for k in range(start, end) if any(a <= k and k + 1 <= b for a, b in spans))
     observed = analyze.observed_ms(start, end, windows)
     assert observed == (end - start) - covered
     assert 0 <= observed <= end - start

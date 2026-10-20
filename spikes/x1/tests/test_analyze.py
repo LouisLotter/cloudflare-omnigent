@@ -10,17 +10,17 @@ import analyze
 import pytest
 from scenario import (
     DEPLOYS,
-    E,
     FIRST_OPEN,
     MIN,
     OBSERVED_MS,
     RESETS,
     ROUTES,
+    T0,
     UPLOAD_MS,
     Builder,
     DropSpec,
+    E,
     S,
-    T0,
     campaign,
     clean,
     inputs,
@@ -190,7 +190,10 @@ def test_f7_declined_rule_four_reads_p3_and_p6():
 def test_f7_declined_never_selects_c():
     b = Builder()
     for route in ("p1", "p2", "p3", "p6"):
-        b.route(route, **(drops_at(spontaneous_time(1), spontaneous_time(5)) if route in ("p2", "p6") else {}))
+        b.route(
+            route,
+            **(drops_at(spontaneous_time(1), spontaneous_time(5)) if route in ("p2", "p6") else {}),
+        )
     # Even with P5 records present, an unbuilt route is not eligible.
     b.route("p5")
     report = run(b, public=False)
@@ -205,7 +208,10 @@ def boundary_run(drops: int) -> analyze.Report:
     """A soak whose observed time is exactly 2 hours, with `drops` spontaneous P2 drops."""
     soak_end = S + 2 * 3_600_000 + (E - S - OBSERVED_MS)
     times = [spontaneous_time(k) for k in range(drops)]
-    b = build(p2={**drops_at(*times), "end": soak_end}, **{r: {"end": soak_end} for r in ("p1", "p3", "p4", "p5", "p6")})
+    b = build(
+        p2={**drops_at(*times), "end": soak_end},
+        **{r: {"end": soak_end} for r in ("p1", "p3", "p4", "p5", "p6")},
+    )
     return run(b, run=run_json(soak_end=soak_end))
 
 
@@ -349,7 +355,11 @@ def test_gap_in_a_forced_window_names_it():
 def test_duplicated_reordered_and_unknown_replies():
     b = clean()
     t = spontaneous_time(6)
-    seqs = sorted(e["seq"] for e in b.events if e["ev"] == "send" and e["route"] == "p3" and t <= e["mono"] <= t + 3000)
+    seqs = sorted(
+        e["seq"]
+        for e in b.events
+        if e["ev"] == "send" and e["route"] == "p3" and t <= e["mono"] <= t + 3000
+    )
     a, c = seqs[0], seqs[2]
     replies = {e["seq"]: e for e in b.events if e["ev"] == "reply" and e["route"] == "p3"}
     # a's reply arrives after c's, so a is reordered; a duplicate of a and a stray reply follow.
@@ -374,7 +384,11 @@ def test_drop_records_instance_identities_on_either_side():
     b = Builder()
     for route in ROUTES:
         if route == "p2":
-            b.route(route, drops=(DropSpec(at=spontaneous_time(1)),), ids={"by": "server", "serverdo": "aa"})
+            b.route(
+                route,
+                drops=(DropSpec(at=spontaneous_time(1)),),
+                ids={"by": "server", "serverdo": "aa"},
+            )
         else:
             b.route(route)
     drop = run(b).routes["p2"].spontaneous[0]
@@ -422,7 +436,7 @@ def test_rollout_fails_setup_but_still_reports():
 
 def test_missing_uploaded_line_and_missing_deploy():
     report = run(camp=campaign(uploaded={"ui": None}, deploys={"ui": DEPLOYS["ui"]}))
-    assert any("no \"Uploaded\" line" in p for p in report.setup_problems)
+    assert any('no "Uploaded" line' in p for p in report.setup_problems)
     assert any("no record of the transport deploy" in p for p in report.setup_problems)
     assert [w.event for w in report.windows] == [f"reset {k}" for k in RESETS]
 
@@ -473,7 +487,11 @@ def test_ar17_no_help_both_and_ui_only():
 
 
 def test_instance_offset_is_the_median_and_needs_events():
-    events = [{"wall": 100.0, "mono": 1.0}, {"wall": 105.0, "mono": 2.0}, {"wall": 1000.0, "mono": 3.0}]
+    events = [
+        {"wall": 100.0, "mono": 1.0},
+        {"wall": 105.0, "mono": 2.0},
+        {"wall": 1000.0, "mono": 3.0},
+    ]
     assert analyze.instance_offset(events) == 103.0
     with pytest.raises(ValueError):
         analyze.instance_offset([{"ev": "x"}])
@@ -523,7 +541,9 @@ def test_preflight_report():
         b.route(route, start=T0 + 20_000, end=T0 + 10 * MIN, drops=drops)
     b.add("blocked-check", T0 + 2000, target="p2", status=403, refusedBy="p2-handler")
     pre_run = {**run_json(), "mode": "preflight", "soakStart": T0, "soakEnd": T0 + 10 * MIN}
-    report = analyze.analyze_preflight(pre_run, lifecycle({"reset-t5": T0 + 5 * MIN}), b.probe(batches=1))
+    report = analyze.analyze_preflight(
+        pre_run, lifecycle({"reset-t5": T0 + 5 * MIN}), b.probe(batches=1)
+    )
     assert report.routes["p6"]["connected"] is False
     assert report.routes["p6"]["failedStatuses"] == {"426": 3}
     assert report.routes["p1"]["forcedRecoveryMs"] == [pytest.approx(2020.0)]
@@ -557,7 +577,15 @@ def test_command_line(tmp_path, capsys):
     (tmp_path / "campaign.json").write_text(json.dumps(campaign()))
     out = tmp_path / "out.json"
     code = analyze.main(
-        [str(tmp_path / "run"), "--preflight", str(tmp_path / "pre"), "--campaign", str(tmp_path / "campaign.json"), "--json", str(out)]
+        [
+            str(tmp_path / "run"),
+            "--preflight",
+            str(tmp_path / "pre"),
+            "--campaign",
+            str(tmp_path / "campaign.json"),
+            "--json",
+            str(out),
+        ]
     )
     assert code == 0
     printed = capsys.readouterr().out
