@@ -30,6 +30,8 @@ import {
   parseJsonc,
   parseLateCreates,
   parseRegistry,
+  type ServiceTokenCredentials,
+  type ServiceTokenInfo,
   type StagingConfig,
   serializeRegistry,
   type TunnelInfo,
@@ -320,6 +322,29 @@ export function vpcServicesOf(listing: unknown): VpcServiceInfo[] {
   });
 }
 
+export function serviceTokensOf(listing: unknown): ServiceTokenInfo[] {
+  return entries(listing, "service token").map((t) => ({
+    id: text(t, "id", "a service token"),
+    name: text(t, "name", "a service token"),
+  }));
+}
+
+/**
+ * The credentials in the answer to creating or rotating a service token. An error names the
+ * missing field only, never a value.
+ */
+export function credentialsOf(answer: unknown): ServiceTokenCredentials {
+  const t = (answer ?? {}) as Record<string, unknown>;
+  const field = (key: string): string => {
+    const value = t[key];
+    if (typeof value !== "string" || value === "") {
+      throw new Error(`the service token answer has no ${key}`);
+    }
+    return value;
+  };
+  return { id: field("id"), clientId: field("client_id"), clientSecret: field("client_secret") };
+}
+
 /**
  * Where the secrets file lives for the instant before it is unlinked: the user's runtime
  * directory, which is private and in memory on most Linux systems, or else the system's
@@ -536,6 +561,15 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         "[5104]",
         (service) => vpcServicesOf([service])[0],
       ),
+    // Cloudflare shows a token's secret only when it creates or rotates it, never here.
+    serviceToken: (id) =>
+      lookupById(
+        run("cf", ["zero-trust", "access", "service-tokens", "get", id], { inherit: false }),
+        id,
+        "Access service token",
+        "[12135]",
+        (token) => serviceTokensOf([token])[0],
+      ),
     // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
       cf(["zero-trust", "access", "applications", "delete", id, "--force"]);
@@ -737,6 +771,37 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       ),
     deleteVpcService: (id) => {
       cf(["workers-vpc", "services", "delete", id, "--force"]);
+    },
+    // The list filters by exact name only, so a prefix lists every token.
+    serviceTokens: (filter) =>
+      named(
+        serviceTokensOf(
+          listAll([
+            "zero-trust",
+            "access",
+            "service-tokens",
+            "list",
+            ...("name" in filter ? ["--name", filter.name] : []),
+          ]),
+        ),
+        filter,
+      ),
+    // The answers hold the client secret, which Cloudflare shows only here.
+    createServiceToken: (name, duration) =>
+      credentialsOf(
+        secretCf([
+          "zero-trust",
+          "access",
+          "service-tokens",
+          "create",
+          "--body",
+          JSON.stringify({ name, duration }),
+        ]),
+      ),
+    rotateServiceToken: (id) =>
+      credentialsOf(secretCf(["zero-trust", "access", "service-tokens", "rotate", id])),
+    deleteServiceToken: (id) => {
+      cf(["zero-trust", "access", "service-tokens", "delete", id, "--force"]);
     },
   };
 }

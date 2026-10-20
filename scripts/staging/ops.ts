@@ -42,6 +42,11 @@
 //     once (settleCreates). A create still not seen then leaves the record but stays in the
 //     registry as a late create, and sweep deletes what it made if it lands. Nothing else found
 //     under the tool's names is adopted or deleted: a deploy refuses it, and a teardown leaves it.
+//   - F7-staging: a manifest may also ask for a service token. It is created before Access,
+//     and each hostname the manifest names gets exactly one more policy, admitting that token
+//     (assertOwnerOnly). Its credentials reach the Worker only when it is created or rotated;
+//     teardown narrows Access back to the owner, reads each application back by ID, deletes the
+//     token, then Access.
 
 import {
   ACCESS_SAME_SITE,
@@ -64,6 +69,7 @@ import {
   expiry,
   hostnameFor,
   type IngressRule,
+  isServiceTokenPolicy,
   type LateCreate,
   type LateCreateKind,
   type Manifest,
@@ -75,9 +81,15 @@ import {
   parseManifest,
   renderedConfigPath,
   resourceName,
+  SERVICE_TOKEN_DURATION,
+  type ServiceTokenCredentials,
+  type ServiceTokenInfo,
+  type ServiceTokenManifest,
+  type ServiceTokenRecord,
   STAGING_PREFIX,
   type StagingConfig,
   sameIngress,
+  type TokenHostname,
   type TunnelInfo,
   type TunnelRecord,
   tunnelHostnameFor,
@@ -167,6 +179,15 @@ export interface Cloud {
   /** Creates an HTTP VPC service to VPC_HOST:<port> through the Tunnel; returns its ID. */
   createVpcService(name: string, tunnelId: string, port: number): string;
   deleteVpcService(id: string): void;
+  /** Access service tokens under this name. */
+  serviceTokens(filter: NameFilter): ServiceTokenInfo[];
+  /** The service token with this ID, like the lookups above. */
+  serviceToken(id: string): ServiceTokenInfo | undefined;
+  /** Creates a service token lasting `duration`. Its secret is in the answer, and only there. */
+  createServiceToken(name: string, duration: string): ServiceTokenCredentials;
+  /** Issues a new client secret; the old one stops working at once. */
+  rotateServiceToken(id: string): ServiceTokenCredentials;
+  deleteServiceToken(id: string): void;
 }
 
 export interface Store {
@@ -241,6 +262,7 @@ function claimsOf(d: Deployment): string[] {
     ...(d.tunnel ? [`Cloudflare Tunnel ${d.tunnel.name}`] : []),
     ...(d.tunnel?.hostname ? [`the hostname ${d.tunnel.hostname}`] : []),
     ...(d.vpcServices ?? []).map((s) => `Workers VPC service ${s.name}`),
+    ...(d.serviceToken ? [`Access service token ${d.serviceToken.name}`] : []),
   ];
 }
 
@@ -276,11 +298,15 @@ interface ManifestPlan {
     readonly tokenSecret: string;
   };
   readonly vpcServices: readonly VpcServiceRecord[];
+  readonly serviceToken?: ServiceTokenManifest & { readonly name: string };
 }
 
 function planFor(name: string, zone: string, manifest: Manifest): ManifestPlan {
   const t = manifest.tunnel;
   return {
+    ...(manifest.serviceToken
+      ? { serviceToken: { ...manifest.serviceToken, name: `${name}-svc` } }
+      : {}),
     ...(t
       ? {
           tunnel: {
@@ -532,6 +558,45 @@ function vpcOwned(
 }
 
 /**
+ * The deployment's Access service token (F7-staging), named `<deployment>-svc--<nonce>`. Its
+ * record forgets `deliveredTo` whenever it changes: a token with a new or unknown secret is held
+ * by no Worker secret the tool knows of.
+ */
+function tokenOwned(ctx: Context, record: Deployment): Owned<ServiceTokenInfo> {
+  const base = record.serviceToken?.name ?? `${record.name}-svc`;
+  const nonce = record.serviceToken?.nonce;
+  const update = (r: Deployment, change: Partial<ServiceTokenRecord>): Deployment => {
+    const {
+      id: _,
+      createStartedAt: __,
+      deliveredTo: ___,
+      nonce: ____,
+      ...rest
+    } = r.serviceToken ?? {
+      name: base,
+    };
+    return { ...r, serviceToken: { ...rest, ...change } };
+  };
+  return {
+    kind: "token",
+    label: `Access service token ${base}`,
+    base,
+    id: record.serviceToken?.id,
+    pending: record.serviceToken?.createStartedAt !== undefined,
+    nonce,
+    candidates: () =>
+      ctx.cloud.serviceTokens({ prefix: base }).filter((t) => namedFor(t.name, base)),
+    get: (id) => ctx.cloud.serviceToken(id),
+    fits: (token) => token.name === nonceName(base, nonce),
+    starting: (r, at, n) => update(r, { createStartedAt: at, nonce: n }),
+    settled: (r, id) => {
+      const kept = r.serviceToken?.nonce;
+      return update(r, id === undefined ? {} : { id, ...(kept ? { nonce: kept } : {}) });
+    },
+  };
+}
+
+/**
  * The create intent for an R2 bucket the record names (guard.ts, pendingBuckets). The record
  * keeps the bucket's name in `buckets` either way, so teardown deletes it if it exists.
  */
@@ -601,6 +666,7 @@ function ownedOf(ctx: Context, record: Deployment): Owned<Resource>[] {
     ...(t?.hostname !== undefined ? [dnsOwned(ctx, record, t.hostname)] : []),
     ...(record.vpcServices ?? []).map((s) => vpcOwned(ctx, record, s)),
     ...(record.pendingBuckets ?? []).map((b) => bucketOwned(ctx, b)),
+    ...(record.serviceToken ? [tokenOwned(ctx, record)] : []),
   ];
 }
 
@@ -747,7 +813,11 @@ function checkNewResources(
  * Adds the manifest's resources to the record before any is created. Like containers, they
  * accumulate: a resource a later manifest leaves out stays recorded until teardown.
  */
-function withManifestIntent(record: Deployment, plan: ManifestPlan | undefined): Deployment {
+function withManifestIntent(start: Deployment, plan: ManifestPlan | undefined): Deployment {
+  let record = start;
+  if (plan?.serviceToken) {
+    record = { ...record, serviceToken: { ...record.serviceToken, name: plan.serviceToken.name } };
+  }
   if (!plan?.tunnel) return record;
   const hostname = record.tunnel?.hostname ?? plan.tunnel.hostname;
   const recorded = record.vpcServices ?? [];
@@ -761,38 +831,99 @@ function withManifestIntent(record: Deployment, plan: ManifestPlan | undefined):
 }
 
 /**
+ * Creates or claims the deployment's service token. Returns its credentials when this run must
+ * send them to the Worker: after creating it, or after rotating it because no run has shown
+ * that its current secret arrived. The record forgets `deliveredTo` before a rotation, so a run
+ * that dies after it rotates again.
+ */
+function ensureServiceToken(
+  ctx: Context,
+  start: Deployment,
+  wanted: NonNullable<ManifestPlan["serviceToken"]>,
+): { record: Deployment; credentials?: ServiceTokenCredentials } {
+  let record = start;
+  const owned = tokenOwned(ctx, record);
+  const found = recorded(record, owned);
+  if (!found && owned.id !== undefined) {
+    // Its ID is in the Access policies and its secret in the Worker. Start over.
+    throw new Error(
+      `${owned.label} is recorded but gone; tear the deployment down and deploy again`,
+    );
+  }
+  if (!found) {
+    refuseOthers(owned);
+    let credentials: ServiceTokenCredentials | undefined;
+    ({ record } = createOwned(ctx, record, owned, (nonce) => {
+      credentials = ctx.cloud.createServiceToken(
+        nonceName(wanted.name, nonce),
+        SERVICE_TOKEN_DURATION,
+      );
+      return credentials.id;
+    }));
+    ctx.log(`created ${owned.label}, valid for ${SERVICE_TOKEN_DURATION}`);
+    return { record, ...(credentials ? { credentials } : {}) };
+  }
+  const names = [wanted.clientIdSecret, wanted.clientSecretSecret];
+  if (record.serviceToken?.deliveredTo?.join() === names.join()) return { record };
+  record = put(ctx, owned.settled(record, found.id));
+  const credentials = ctx.cloud.rotateServiceToken(found.id);
+  ctx.log(`rotated ${owned.label}: no run has shown that its current secret reached the Worker`);
+  return { record, credentials };
+}
+
+/**
  * Creates, or claims and checks, the owner-only Access application for one hostname, then reads
- * it back: what Access holds now, not what was sent, decides.
+ * it back: what Access holds now, not what was sent, decides. `tokenId` is set when the
+ * manifest admits the deployment's service token on this hostname (F7-staging): the application
+ * then holds exactly one more policy, for that token. An existing application may hold that
+ * policy for the deployment's recorded token; it is rewritten when the manifest no longer names
+ * the hostname.
  */
 function ensureAccess(
   ctx: Context,
   start: Deployment,
   host: ProtectedHost,
   ownedIn: (record: Deployment) => Owned<AccessApp>,
+  tokenId?: string,
 ): Deployment {
   let record = start;
   const { hostname } = host;
   const owned = ownedIn(record);
   const app = recorded(record, owned);
+  const recordedToken = record.serviceToken?.id;
+  const admits = (a: AccessApp, token: string | undefined) =>
+    token !== undefined && (a.policies ?? []).some((p) => isServiceTokenPolicy(p, token));
   let id: string;
   if (app) {
-    assertOwnerOnly(app, hostname, ctx.config.ownerEmail);
+    assertOwnerOnly(app, hostname, ctx.config.ownerEmail, recordedToken);
     id = app.id;
+    const body = accessAppBody(app.name, hostname, ctx.config, tokenId);
     if (app.same_site_cookie_attribute !== ACCESS_SAME_SITE) {
-      ctx.cloud.updateAccessApp(id, accessAppBody(app.name, hostname, ctx.config));
+      ctx.cloud.updateAccessApp(id, body);
       ctx.log(`set SameSite=${ACCESS_SAME_SITE} on the Access application for ${hostname}`);
+    } else if (admits(app, recordedToken) !== (tokenId !== undefined)) {
+      // tokenId, when set, is the recorded token: ensureServiceToken recorded it first.
+      ctx.cloud.updateAccessApp(id, body);
+      ctx.log(
+        `${tokenId ? "admitted" : "removed"} the service token on the Access application for ${hostname}`,
+      );
     }
   } else {
     refuseOthers(owned);
     ({ record, id } = createOwned(ctx, record, owned, (nonce) =>
-      ctx.cloud.createAccessApp(accessAppBody(nonceName(host.name, nonce), hostname, ctx.config)),
+      ctx.cloud.createAccessApp(
+        accessAppBody(nonceName(host.name, nonce), hostname, ctx.config, tokenId),
+      ),
     ));
     ctx.log(`created Access application for ${hostname}`);
   }
   const confirmed = recorded(record, ownedIn(record));
   if (!confirmed) throw new Error(`${hostname} has no Access application after writing one`);
-  assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail);
+  assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail, tokenId);
   assertSameSite(confirmed, hostname);
+  if (tokenId !== undefined && !admits(confirmed, tokenId)) {
+    throw new Error(`the Access application for ${hostname} does not admit the service token`);
+  }
   // A second application on the hostname could decide instead of this one.
   if (owned.candidates().some((a) => a.id !== id)) {
     throw new Error(
@@ -999,13 +1130,36 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     });
     let record = intent;
 
+    // F7-staging: the service token before the Access policies that name it. On its own it
+    // opens nothing.
+    let tokenCredentials: ServiceTokenCredentials | undefined;
+    if (plan?.serviceToken) {
+      ({ record, credentials: tokenCredentials } = ensureServiceToken(
+        ctx,
+        record,
+        plan.serviceToken,
+      ));
+    }
+    const tokenFor = (which: TokenHostname) =>
+      plan?.serviceToken?.hostnames.includes(which) ? record.serviceToken?.id : undefined;
+
     // Access before the Worker: the hostname never serves traffic without the owner-only gate.
     // The same holds for the Tunnel hostname, whose Access comes before its DNS record.
-    record = ensureAccess(ctx, record, workerHost(record), (r) => workerAccess(ctx, r));
+    record = ensureAccess(
+      ctx,
+      record,
+      workerHost(record),
+      (r) => workerAccess(ctx, r),
+      tokenFor("worker"),
+    );
     const recordedTunnelHost = record.tunnel?.hostname;
     if (recordedTunnelHost !== undefined) {
-      record = ensureAccess(ctx, record, tunnelHost(record, recordedTunnelHost), (r) =>
-        tunnelAccess(ctx, r, recordedTunnelHost),
+      record = ensureAccess(
+        ctx,
+        record,
+        tunnelHost(record, recordedTunnelHost),
+        (r) => tunnelAccess(ctx, r, recordedTunnelHost),
+        tokenFor("tunnel"),
       );
     }
 
@@ -1074,11 +1228,16 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       }
       // The Tunnel's token is read only now and goes only to the upload. It never changes for
       // a live Tunnel, so a redeploy passes the same value, and the server container keeps
-      // working with the one it started with.
-      const secrets =
-        plan?.tunnel && tunnelId !== undefined
-          ? { [plan.tunnel.tokenSecret]: ctx.cloud.tunnelToken(tunnelId) }
-          : undefined;
+      // working with the one it started with. The service token's credentials go only when
+      // this run created or rotated it; otherwise the Worker keeps the ones it has.
+      const secrets: Record<string, string> = {};
+      if (plan?.tunnel && tunnelId !== undefined) {
+        secrets[plan.tunnel.tokenSecret] = ctx.cloud.tunnelToken(tunnelId);
+      }
+      if (plan?.serviceToken && tokenCredentials) {
+        secrets[plan.serviceToken.clientIdSecret] = tokenCredentials.clientId;
+        secrets[plan.serviceToken.clientSecretSecret] = tokenCredentials.clientSecret;
+      }
 
       // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
       // still appear, and the next command marks the upload interrupted.
@@ -1089,7 +1248,13 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         uploadStartedAt: startedAt,
         workerSince: record.workerSince ?? startedAt,
       });
-      ctx.cloud.deployWorker(name, hostname, rendered ?? request.configPath, buildEpoch, secrets);
+      ctx.cloud.deployWorker(
+        name,
+        hostname,
+        rendered ?? request.configPath,
+        buildEpoch,
+        Object.keys(secrets).length > 0 ? secrets : undefined,
+      );
     } finally {
       if (rendered !== undefined) ctx.removeFile(rendered);
     }
@@ -1100,7 +1265,18 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     }
     // Only now does the Worker bind exactly `bound`.
     const { uploadStartedAt: _, dependsOn: __, ...settled } = record;
-    record = put(ctx, { ...settled, ...dependsOn(bound), state: "deployed" });
+    // Wrangler's success and the Worker's presence show that the credentials arrived, as they
+    // show that the code did.
+    const delivered =
+      plan?.serviceToken && tokenCredentials && settled.serviceToken
+        ? {
+            serviceToken: {
+              ...settled.serviceToken,
+              deliveredTo: [plan.serviceToken.clientIdSecret, plan.serviceToken.clientSecretSecret],
+            },
+          }
+        : {};
+    record = put(ctx, { ...settled, ...delivered, ...dependsOn(bound), state: "deployed" });
     ctx.log(`deployed ${name} at https://${hostname} (expires ${expiresAt})`);
     return record;
   });
@@ -1146,6 +1322,40 @@ function removeTunnelResources(ctx: Context, record: Deployment): void {
 function removeAccess(ctx: Context, record: Deployment, owned: Owned<AccessApp>): void {
   const app = recorded(record, owned);
   if (app) ctx.cloud.deleteAccessApp(app.id);
+}
+
+/**
+ * Removes the deployment's service token (F7-staging). First each Access application the record
+ * holds is looked up by its ID, narrowed back to the owner if it admits the token, and read back
+ * by ID. The token is deleted only once every one of them shows owner-only policies, so no policy
+ * ever names a deleted token. An application the record holds that cannot be read back keeps
+ * the token and the record (review r2, finding 7).
+ */
+function removeServiceToken(
+  ctx: Context,
+  record: Deployment,
+  apps: readonly { host: ProtectedHost; owned: Owned<AccessApp> }[],
+): void {
+  if (!record.serviceToken) return;
+  const owned = tokenOwned(ctx, record);
+  const token = recorded(record, owned);
+  if (!token) return;
+  for (const { host, owned: app } of apps) {
+    if (app.id === undefined) continue;
+    const before = recorded(record, app);
+    if (before && (before.policies ?? []).some((p) => isServiceTokenPolicy(p, token.id))) {
+      ctx.cloud.updateAccessApp(before.id, accessAppBody(before.name, host.hostname, ctx.config));
+    }
+    const after = recorded(record, app);
+    if (!after) {
+      throw new Error(
+        `${record.name}: ${app.label} cannot be read back, so ${owned.label} was kept, with the record; inspect Access in the dashboard`,
+      );
+    }
+    assertOwnerOnly(after, host.hostname, ctx.config.ownerEmail);
+  }
+  ctx.cloud.deleteServiceToken(token.id);
+  if (owned.get(token.id)) throw new Error(`${record.name}: ${owned.label} still exists`);
 }
 
 /** Removes a deployment: its Worker first, then its Access application, then its record. */
@@ -1240,13 +1450,22 @@ export function teardown(
         throw new Error(`${name}: R2 bucket ${bucket} still exists`);
     }
 
-    // The Worker and the Tunnel hostname's DNS record are confirmed absent. Remove the Access
-    // applications the record holds.
+    // The Worker and the Tunnel hostname's DNS record are confirmed absent. Remove the service
+    // token, then the Access applications the record holds.
     const recordedTunnelHost = record.tunnel?.hostname;
-    if (recordedTunnelHost !== undefined) {
-      removeAccess(ctx, record, tunnelAccess(ctx, record, recordedTunnelHost));
-    }
-    removeAccess(ctx, record, workerAccess(ctx, record));
+    const apps = [
+      ...(recordedTunnelHost !== undefined
+        ? [
+            {
+              host: tunnelHost(record, recordedTunnelHost),
+              owned: tunnelAccess(ctx, record, recordedTunnelHost),
+            },
+          ]
+        : []),
+      { host: workerHost(record), owned: workerAccess(ctx, record) },
+    ];
+    removeServiceToken(ctx, record, apps);
+    for (const { owned } of apps) removeAccess(ctx, record, owned);
     remove(ctx, name);
     ctx.log(`removed ${name}: Worker, containers and buckets, then Access`);
   });
@@ -1265,8 +1484,8 @@ interface Unowned {
 
 /**
  * Every resource with the staging prefix that no record holds, of each kind the tool creates,
- * in the order sweep deletes late ones: VPC services, DNS records, Tunnels, buckets, then Access
- * applications. A deployment's own hostname is a Workers custom domain, not an orphan.
+ * in the order sweep deletes late ones: VPC services, DNS records, Tunnels, buckets, service
+ * tokens, then Access applications. A deployment's own hostname is a Workers custom domain, not an orphan.
  */
 function unowned(ctx: Context): Unowned[] {
   const deployments = ctx.store.load();
@@ -1339,6 +1558,16 @@ function unowned(ctx: Context): Unowned[] {
       label: `R2 bucket ${name}`,
       late: lateCreates.find((l) => l.kind === "bucket" && l.name === name),
     });
+  }
+  for (const t of ctx.cloud.serviceTokens({ prefix: STAGING_PREFIX })) {
+    if (heldBy(t, (d) => (d.serviceToken ? [tokenOwned(ctx, d)] : []))) continue;
+    add(
+      "token",
+      `Access service token ${t.name}`,
+      t,
+      (id) => ctx.cloud.serviceToken(id),
+      (id) => ctx.cloud.deleteServiceToken(id),
+    );
   }
   for (const app of ctx.cloud.accessAppsNamed(STAGING_PREFIX)) {
     const accessIn = (d: Deployment) => [

@@ -15,6 +15,8 @@ import {
   nonceName,
   parseLateCreates,
   parseRegistry,
+  type ServiceTokenCredentials,
+  type ServiceTokenInfo,
   serializeRegistry,
   type TunnelInfo,
   type VpcServiceInfo,
@@ -137,6 +139,12 @@ class FakeCloud implements Cloud {
   readonly vpc = new Map<string, VpcServiceInfo>();
   /** Custom domains of Workers the tool did not deploy. */
   readonly otherDomains: WorkerDomain[] = [];
+  readonly tokens = new Map<
+    string,
+    { name: string; clientId: string; secret: string; version: number }
+  >();
+  /** The duration of every service token created. */
+  readonly durations: string[] = [];
   /** The secrets each Worker holds, as uploads set them. */
   readonly secrets = new Map<string, Record<string, string>>();
   /** The process dies right after the call that starts with this takes effect. */
@@ -148,6 +156,7 @@ class FakeCloud implements Cloud {
   tunnelDeleteKeeps = false;
   dnsDeleteKeeps = false;
   vpcDeleteKeeps = false;
+  tokenDeleteKeeps = false;
   private nextAppId = 1;
   private nextTag = 1;
   private nextId = 1;
@@ -187,15 +196,31 @@ class FakeCloud implements Cloud {
     throw new Error(`${call}: no answer`);
   }
 
+  /**
+   * An owner-only application on the hostname. Besides the owner's, it may admit only the
+   * service token of the deployment that owns the hostname (F7-staging).
+   */
   private protectedByOwner(hostname: string): boolean {
+    const deployment = hostname.slice(0, hostname.indexOf(".")).replace(/-tunnel$/, "");
+    type Policy = NonNullable<AccessApp["policies"]>[number];
+    const owner = (p: Policy) =>
+      p.decision === "allow" &&
+      JSON.stringify(p.include) === JSON.stringify([{ email: { email: OWNER } }]);
+    const ownToken = (p: Policy) => {
+      const rule = p.include?.[0] as { service_token?: { token_id?: string } } | undefined;
+      const token = this.tokens.get(rule?.service_token?.token_id ?? "");
+      return (
+        p.decision === "non_identity" &&
+        p.include?.length === 1 &&
+        token !== undefined &&
+        bare(token.name) === `${deployment}-svc`
+      );
+    };
     return [...this.apps.values()].some(
       (app) =>
         app.domain === hostname &&
-        app.policies?.every(
-          (p) =>
-            p.decision === "allow" &&
-            JSON.stringify(p.include) === JSON.stringify([{ email: { email: OWNER } }]),
-        ),
+        (app.policies ?? []).some(owner) &&
+        (app.policies ?? []).every((p) => owner(p) || ownToken(p)),
     );
   }
 
@@ -502,6 +527,58 @@ class FakeCloud implements Cloud {
     if (!this.vpcDeleteKeeps) this.vpc.delete(id);
     this.did(`vpc.delete ${bare(name)}`);
   }
+  serviceTokens(filter: NameFilter): ServiceTokenInfo[] {
+    this.tick();
+    this.calls.push("token.list");
+    return [...this.tokens]
+      .map(([id, t]) => ({ id, name: t.name }))
+      .filter((t) => matches(t.name, filter));
+  }
+  serviceToken(id: string): ServiceTokenInfo | undefined {
+    this.tick();
+    this.calls.push("token.get");
+    const token = this.tokens.get(id);
+    return token && { id, name: token.name };
+  }
+  createServiceToken(name: string, duration: string): ServiceTokenCredentials {
+    this.tick();
+    const id = `token-${this.nextId++}`;
+    const token = {
+      name,
+      clientId: `${id}.access`,
+      secret: `${CLIENT_SECRET}-${id}-1`,
+      version: 1,
+    };
+    this.durations.push(duration);
+    this.effect(`token.create ${bare(name)}`, () => this.tokens.set(id, token));
+
+    return { id, clientId: token.clientId, clientSecret: token.secret };
+  }
+  rotateServiceToken(id: string): ServiceTokenCredentials {
+    this.tick();
+    const token = this.tokens.get(id);
+    if (!token) throw new Error("service token does not exist");
+    token.version += 1;
+    token.secret = `${CLIENT_SECRET}-${id}-${token.version}`;
+    this.did(`token.rotate ${bare(token.name)}`);
+    return { id, clientId: token.clientId, clientSecret: token.secret };
+  }
+  deleteServiceToken(id: string): void {
+    this.tick();
+    const name = this.tokens.get(id)?.name;
+    if (!this.tokenDeleteKeeps) this.tokens.delete(id);
+    this.did(`token.delete ${bare(name)}`);
+  }
+  /** Whether a Worker holds the current credentials of a service token. */
+  holdsToken(worker: string, id: string): boolean {
+    const token = this.tokens.get(id);
+    const secrets = this.secrets.get(worker) ?? {};
+    return (
+      token !== undefined &&
+      Object.values(secrets).includes(token.clientId) &&
+      Object.values(secrets).includes(token.secret)
+    );
+  }
   /**
    * Every bucket, container application, image, Tunnel, DNS and VPC service is recorded, or is
    * what a create the registry lists as given up made.
@@ -528,6 +605,11 @@ class FakeCloud implements Cloud {
     const services = new Set(
       deployments.flatMap((d) => (d.vpcServices ?? []).map((s) => nonceName(s.name, s.nonce))),
     );
+    const tokens = new Set(
+      deployments.flatMap((d) =>
+        d.serviceToken ? [nonceName(d.serviceToken.name, d.serviceToken.nonce)] : [],
+      ),
+    );
     return [
       ...[...this.buckets].filter(
         (b) => !buckets.has(b) && !late.some((l) => l.kind === "bucket" && l.name === b),
@@ -543,11 +625,14 @@ class FakeCloud implements Cloud {
       ...[...this.vpc.values()]
         .map((s) => s.name)
         .filter((n) => !services.has(n) && !made({ name: n })),
+      ...[...this.tokens.values()]
+        .map((t) => t.name)
+        .filter((n) => !tokens.has(n) && !made({ name: n })),
     ];
   }
   /** How many Tunnels, DNS records and VPC services exist. */
-  tunnelResources(): number {
-    return this.tunnels_.size + this.dns.size + this.vpc.size;
+  manifestResources(): number {
+    return this.tunnels_.size + this.dns.size + this.vpc.size + this.tokens.size;
   }
 }
 
@@ -558,6 +643,7 @@ function bare(name: unknown): string {
 
 /** A synthetic secret: the tests check that no command, log line or record ever holds it. */
 const TOKEN = "synthetic-tunnel-token";
+const CLIENT_SECRET = "synthetic-client-secret";
 
 function matches(name: string, filter: NameFilter): boolean {
   return "name" in filter ? name === filter.name : name.startsWith(filter.prefix);
@@ -696,6 +782,7 @@ function restart(): void {
   cloud.tunnelDeleteKeeps = false;
   cloud.dnsDeleteKeeps = false;
   cloud.vpcDeleteKeeps = false;
+  cloud.tokenDeleteKeeps = false;
 }
 
 /** X1's transport manifest: a Tunnel with a public hostname, and one VPC service. */
@@ -717,6 +804,16 @@ function withBinding(suffix: string, script: string): string {
   };
   return path;
 }
+
+/** F7-staging: the same, with a service token admitted on both of its hostnames. */
+const TOKEN_MANIFEST = {
+  ...TUNNEL_MANIFEST,
+  serviceToken: {
+    hostnames: ["worker", "tunnel"],
+    clientIdSecret: "X1_ACCESS_CLIENT_ID",
+    clientSecretSecret: "X1_ACCESS_CLIENT_SECRET",
+  },
+};
 
 /** Registers a configuration with a staging manifest next to it. */
 function withManifest(suffix: string, manifest: unknown = TUNNEL_MANIFEST, resources = false) {
@@ -917,6 +1014,7 @@ describe("IR-001: Access stays until the Worker is confirmed absent", () => {
       "dns.list",
       "tunnel.list",
       "bucket.list",
+      "token.list",
       "access.list-named",
     ]);
     expect(record()?.state).toBe("deployed");
@@ -1258,7 +1356,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
   const HOST = "cfo-stg-a-tunnel.example.com";
   const RENDERED = "/w/.stg-rendered.cfo-stg-a.jsonc";
   const everything = () =>
-    cloud.tunnelResources() +
+    cloud.manifestResources() +
     cloud.apps.size +
     cloud.workers.size +
     cloud.buckets.size +
@@ -1468,7 +1566,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
   });
 
   it("refuses a manifest the tool does not understand before any cloud call", () => {
-    const path = withManifest("a", { tunnel: { tokenSecret: "T" }, serviceToken: {} });
+    const path = withManifest("a", { tunnel: { tokenSecret: "T" }, routes: [] });
     expect(() => deploy(ctx, request("a", 7, path))).toThrow("refusing staging manifest");
     expect(cloud.calls).toEqual([]);
     expect(store.load()).toEqual([]);
@@ -1860,7 +1958,7 @@ describe("review r1, finding 6: creates whose effect shows up late", () => {
     "dns.create",
     "vpc.create",
   ];
-  const everything = () => cloud.tunnelResources() + cloud.apps.size + cloud.workers.size;
+  const everything = () => cloud.manifestResources() + cloud.apps.size + cloud.workers.size;
   // The Worker's application is created first, so its prefix catches it before the Tunnel's.
   const slept = () => cloud.calls.filter((c) => c.startsWith("sleep")).length;
 
@@ -2060,7 +2158,7 @@ describe("review r2, finding 2: only what carries its create's nonce is adopted"
 
 describe("review r2, finding 5: creates that land after they were given up", () => {
   const everything = () =>
-    cloud.tunnelResources() + cloud.apps.size + cloud.workers.size + cloud.buckets.size;
+    cloud.manifestResources() + cloud.apps.size + cloud.workers.size + cloud.buckets.size;
   const lateLogs = () => logs.filter((l) => l.startsWith("late"));
 
   it("waits for a bucket create that lost its answer, and deletes the bucket with the rest", () => {
@@ -2178,6 +2276,332 @@ describe("review r2, finding 5: creates that land after they were given up", () 
     ]);
     expect(cloud.buckets.size).toBe(2);
     expect(cloud.apps.size).toBe(3);
+  });
+});
+
+describe("F7-staging: the deployment's own Access service token", () => {
+  const HOST = "cfo-stg-a-tunnel.example.com";
+  const tokenPolicy = (id: string) => ({
+    decision: "non_identity",
+    include: [{ service_token: { token_id: id } }],
+  });
+  const OWNER_POLICY = { decision: "allow", include: [{ email: { email: OWNER } }] };
+  const policiesOf = (id: string) =>
+    cloud.apps.get(id)?.policies?.map(({ decision, include }) => ({ decision, include }));
+  const uploaded = () => cloud.calls.some((c) => c.startsWith("worker.deploy"));
+  const everything = () =>
+    cloud.manifestResources() + cloud.apps.size + cloud.workers.size + cloud.buckets.size;
+
+  it("creates the token first, admits it on the named hostnames, and sends its credentials", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    const steps = order(
+      "token.create",
+      "access.create cfo-stg-a",
+      "tunnel.create",
+      "worker.deploy",
+    );
+    expect(steps.every((step) => step >= 0)).toBe(true);
+    expect([...steps].sort((x, y) => x - y)).toEqual(steps);
+    expect(cloud.durations).toEqual(["24h"]);
+    expect(policiesOf("app-2")).toEqual([OWNER_POLICY, tokenPolicy("token-1")]);
+    expect(policiesOf("app-3")).toEqual([OWNER_POLICY, tokenPolicy("token-1")]);
+    expect(cloud.apps.get("app-3")?.domain).toBe(HOST);
+    expect(cloud.uploads[0]?.secrets).toEqual({
+      X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-4`,
+      X1_ACCESS_CLIENT_ID: "token-1.access",
+      X1_ACCESS_CLIENT_SECRET: `${CLIENT_SECRET}-token-1-1`,
+    });
+    expect(cloud.holdsToken("cfo-stg-a", "token-1")).toBe(true);
+    expect(record()?.serviceToken).toEqual({
+      name: "cfo-stg-a-svc",
+      id: "token-1",
+      nonce: "a0000000",
+      deliveredTo: ["X1_ACCESS_CLIENT_ID", "X1_ACCESS_CLIENT_SECRET"],
+    });
+    expect(cloud.tokens.get("token-1")?.name).toBe("cfo-stg-a-svc--a0000000");
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("admits the token only on the hostnames the manifest names; the UI Worker stays owner-only", () => {
+    const workerOnly = {
+      ...TOKEN_MANIFEST,
+      serviceToken: { ...TOKEN_MANIFEST.serviceToken, hostnames: ["worker"] },
+    };
+    deploy(ctx, request("a", 7, withManifest("a", workerOnly)));
+    expect(policiesOf("app-2")).toEqual([OWNER_POLICY, tokenPolicy("token-1")]);
+    expect(policiesOf("app-3")).toEqual([OWNER_POLICY]);
+    deploy(ctx, request("x1-ui"));
+    const ui = [...cloud.apps.values()].find((app) => app.domain === "cfo-stg-x1-ui.example.com");
+    expect(ui?.policies?.map(({ decision, include }) => ({ decision, include }))).toEqual([
+      OWNER_POLICY,
+    ]);
+  });
+
+  it("redeploys without rotating the token, resending it or rewriting Access", () => {
+    const path = withManifest("a", TOKEN_MANIFEST);
+    deploy(ctx, request("a", 7, path));
+    cloud.calls.length = 0;
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.calls.filter((c) => /^(token|access)\.(create|rotate|update)/.test(c))).toEqual(
+      [],
+    );
+    expect(cloud.uploads[1]?.secrets).toEqual({ X1_TUNNEL_TOKEN: `${TOKEN}-tunnel-4` });
+    expect(cloud.holdsToken("cfo-stg-a", "token-1")).toBe(true);
+  });
+
+  it("rotates and resends when the process died after creating the token", () => {
+    const path = withManifest("a", TOKEN_MANIFEST);
+    cloud.crashAfter = "token.create";
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow(ProcessLost);
+    restart();
+    // Only the create intent is recorded; the rerun finds the token and adopts it.
+    expect(record()?.serviceToken).toEqual({
+      name: "cfo-stg-a-svc",
+      createStartedAt: new Date(T0).toISOString(),
+      nonce: "a0000000",
+    });
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.tokens.size).toBe(1);
+    expect(cloud.calls).toContain("token.rotate cfo-stg-a-svc");
+    expect(cloud.holdsToken("cfo-stg-a", "token-1")).toBe(true);
+    expect(record()?.serviceToken?.deliveredTo).toHaveLength(2);
+  });
+
+  it("rotates and resends after an upload that failed, and again if the rotation was cut short", () => {
+    const path = withManifest("a", TOKEN_MANIFEST);
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("wrangler deploy");
+    restart();
+    cloud.crashAfter = "token.rotate";
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow(ProcessLost);
+    restart();
+    // The rotation happened; the record no longer claims that any secret arrived.
+    expect(record()?.serviceToken).toEqual({
+      name: "cfo-stg-a-svc",
+      id: "token-1",
+      nonce: "a0000000",
+    });
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.tokens.get("token-1")?.version).toBe(3);
+    expect(cloud.holdsToken("cfo-stg-a", "token-1")).toBe(true);
+  });
+
+  it("rotates and resends when the manifest names other Worker secrets", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    const renamed = {
+      ...TOKEN_MANIFEST,
+      serviceToken: { ...TOKEN_MANIFEST.serviceToken, clientSecretSecret: "X1_SECRET" },
+    };
+    deploy(ctx, request("a", 7, withManifest("a", renamed)));
+    expect(cloud.uploads[1]?.secrets).toMatchObject({ X1_SECRET: `${CLIENT_SECRET}-token-1-2` });
+  });
+
+  it("never puts the client secret in a command, log line, record or file", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    teardown(ctx, "cfo-stg-a");
+    for (const text of [...cloud.calls, ...logs, store.text, ...written.map((w) => w.text)]) {
+      expect(text).not.toContain(CLIENT_SECRET);
+    }
+  });
+
+  it("removes the token after the Tunnel, narrowing Access first, and Access last", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.calls.filter((c) => /\.(delete|update)/.test(c))).toEqual([
+      "worker.delete cfo-stg-a",
+      "vpc.delete cfo-stg-a-x1-vpc",
+      `dns.delete ${HOST}`,
+      "tunnel.delete cfo-stg-a",
+      "access.update cfo-stg-a-tunnel",
+      "access.update cfo-stg-a",
+      "token.delete cfo-stg-a-svc",
+      "access.delete cfo-stg-a-tunnel",
+      "access.delete cfo-stg-a",
+    ]);
+    expect(everything()).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("narrows Access when the manifest drops the token, and still removes it at teardown", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    deploy(ctx, request("a", 7, withManifest("a", TUNNEL_MANIFEST)));
+    expect(policiesOf("app-2")).toEqual([OWNER_POLICY]);
+    expect(policiesOf("app-3")).toEqual([OWNER_POLICY]);
+    expect(record()?.serviceToken?.id).toBe("token-1");
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it.each([
+    ["another token", [OWNER_POLICY, tokenPolicy("token-other")]],
+    [
+      "any valid token",
+      [OWNER_POLICY, { decision: "non_identity", include: [{ any_valid_service_token: {} }] }],
+    ],
+    ["the token twice", [OWNER_POLICY, tokenPolicy("token-1"), tokenPolicy("token-1")]],
+    [
+      "the token as an allow policy",
+      [OWNER_POLICY, { ...tokenPolicy("token-1"), decision: "allow" }],
+    ],
+    ["the token as a bypass", [OWNER_POLICY, { ...tokenPolicy("token-1"), decision: "bypass" }]],
+    ["the token without the owner", [tokenPolicy("token-1")]],
+  ])("refuses to deploy behind an application that admits %s", (_, policies) => {
+    const path = withManifest("a", TOKEN_MANIFEST);
+    deploy(ctx, request("a", 7, path));
+    const app = cloud.apps.get("app-2");
+    if (!app) throw new Error("missing app");
+    cloud.apps.set("app-2", { ...app, policies });
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("not owner-only");
+    expect(uploaded()).toBe(false);
+  });
+
+  it("refuses to upload when Access does not hold the token policy it was given", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TUNNEL_MANIFEST)));
+    cloud.accessUpdateKeeps = true;
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)))).toThrow(
+      "does not admit the service token",
+    );
+    expect(uploaded()).toBe(false);
+  });
+
+  it("refuses a token it did not create, and one that is gone; never deletes another", () => {
+    cloud.tokens.set("theirs", { name: "cfo-stg-a-svc", clientId: "x", secret: "x", version: 1 });
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)))).toThrow(
+      "Access service token cfo-stg-a-svc: one exists that this deployment did not create",
+    );
+    expect(store.load()).toEqual([]);
+    cloud.tokens.clear();
+
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    const id = record()?.serviceToken?.id ?? "";
+    const ours = cloud.tokens.get(id);
+    if (!ours) throw new Error("missing token");
+    cloud.tokens.delete(id);
+    // Another token under our name, even our nonce's, is not the one the record holds by ID.
+    cloud.tokens.set("theirs", { ...ours });
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)))).toThrow(
+      "recorded but gone",
+    );
+    teardown(ctx, "cfo-stg-a");
+    expect([...cloud.tokens.keys()]).toEqual(["theirs"]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("refuses a recorded token whose name has changed, and keeps it with Access", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    const token = cloud.tokens.get("token-1");
+    if (!token) throw new Error("missing token");
+    cloud.tokens.set("token-1", { ...token, name: "renamed-by-someone" });
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+      "has changed since this deployment created it",
+    );
+    expect(cloud.tokens.has("token-1")).toBe(true);
+    expect(cloud.apps.size).toBe(2);
+    expect(record()?.state).toBe("deleting");
+  });
+
+  // Review r2, finding 7: Codex's reproduction.
+  it("keeps the token and the record while an application cannot be read back by ID", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    cloud.accessUpdateKeeps = true; // the narrowing reports success but changes nothing
+    cloud.hideAccessApps = true; // and the applications cannot be read back
+    cloud.calls.length = 0;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+      "An Access application on cfo-stg-a-tunnel.example.com cannot be read back, so Access service token cfo-stg-a-svc was kept",
+    );
+    expect(cloud.calls.some((c) => c.startsWith("token.delete"))).toBe(false);
+    expect(cloud.tokens.has("token-1")).toBe(true);
+    expect(cloud.apps.size).toBe(2);
+    expect(record()?.state).toBe("deleting");
+    cloud.accessUpdateKeeps = false;
+    cloud.hideAccessApps = false;
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it("refuses a manifest that admits the token to a hostname the deployment does not have", () => {
+    const noHost = {
+      tunnel: { tokenSecret: "T" },
+      serviceToken: { ...TOKEN_MANIFEST.serviceToken, hostnames: ["tunnel"] },
+    };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", noHost)))).toThrow(
+      "has no public hostname",
+    );
+    expect(cloud.calls).toEqual([]);
+  });
+
+  // Review r1, finding 9.
+  it("deletes the token only after reading back that Access no longer admits it", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    cloud.accessUpdateKeeps = true; // the narrowing reports success but changes nothing
+    cloud.calls.length = 0;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("not owner-only");
+    expect(cloud.calls.some((c) => c.startsWith("token.delete"))).toBe(false);
+    expect(cloud.tokens.has("token-1")).toBe(true);
+    expect(record()?.state).toBe("deleting");
+    expect(cloud.apps.size).toBe(2);
+    cloud.accessUpdateKeeps = false;
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it("waits for a token create that lands late, adopts it, and rotates its lost secret", () => {
+    const path = withManifest("a", TOKEN_MANIFEST);
+    cloud.lateCreate = { prefix: "token.create", delay: SETTLE / 2, die: true };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow(ProcessLost);
+    restart();
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.tokens.size).toBe(1);
+    expect(cloud.calls).toContain("token.rotate cfo-stg-a-svc");
+    expect(cloud.holdsToken("cfo-stg-a", "token-1")).toBe(true);
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect(everything()).toBe(0);
+  });
+
+  it("keeps Access and the record while the token survives its delete", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    cloud.tokenDeleteKeeps = true;
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+      "Access service token cfo-stg-a-svc still exists",
+    );
+    expect(cloud.apps.size).toBe(2);
+    expect(policiesOf("app-2")).toEqual([OWNER_POLICY]);
+    expect(record()?.state).toBe("deleting");
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    expect(everything()).toBe(0);
+  });
+
+  it("deletes a token create that lands after teardown gave it up, with sweep --yes", () => {
+    cloud.lateCreate = { prefix: "token.create", delay: SETTLE + 1_000, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)))).toThrow(
+      ProcessLost,
+    );
+    restart();
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect(cloud.tokens.size).toBe(1);
+    logs.length = 0;
+    expect(sweep(ctx, true)).toEqual([]);
+    expect(logs).toContain(
+      "late: deleted Access service token cfo-stg-a-svc--a0000000, a create of cfo-stg-a that landed late",
+    );
+    expect(everything()).toBe(0);
+  });
+
+  it("reports an orphaned staging token in a sweep", () => {
+    cloud.tokens.set("lost", { name: "cfo-stg-old-svc", clientId: "x", secret: "x", version: 1 });
+    sweep(ctx, false);
+    expect(logs).toContain(
+      "orphan: Access service token cfo-stg-old-svc has the staging prefix, but no record owns it; left in place",
+    );
+    expect(cloud.tokens.size).toBe(1);
   });
 });
 
@@ -2722,7 +3146,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       ),
       lateDelay: fc.integer({ min: 0, max: SETTLE }),
       resources: fc.boolean(),
-      manifest: fc.boolean(),
+      manifest: fc.constantFrom("none", "tunnel", "token"),
       // The process dies right after one of the manifest's creations.
       crash: fc.constantFrom(
         "none",
@@ -2731,6 +3155,8 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "tunnel.put",
         "dns.create",
         "vpc.create",
+        "token.create",
+        "token.rotate",
       ),
       // One create takes effect late, and its caller dies or hears nothing. It may land after
       // the settle wait (review r2, finding 5).
@@ -2741,6 +3167,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "dns.create",
         "vpc.create",
         "bucket.create",
+        "token.create",
       ),
       lateCreateDelay: fc.integer({ min: 0, max: 2 * SETTLE }),
       lateDies: fc.boolean(),
@@ -2758,7 +3185,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
       bucketFails: fc.boolean(),
       containerKeeps: fc.boolean(),
       tunnelKeeps: fc.boolean(),
-      crash: fc.constantFrom("none", "vpc.delete", "dns.delete", "tunnel.delete"),
+      crash: fc.constantFrom("none", "vpc.delete", "dns.delete", "tunnel.delete", "token.delete"),
     }),
     fc.record({
       kind: fc.constant("sweep" as const),
@@ -2774,6 +3201,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
     fc.assert(
       fc.property(fc.array(operation, { maxLength: 25 }), (operations) => {
         ctx = newContext();
+        const phantom = new Set<string>();
         for (const op of operations) {
           try {
             if (op.kind === "deploy") {
@@ -2796,10 +3224,13 @@ describe("model check: no Worker is ever reachable without its Access applicatio
                 op.late === "none"
                   ? undefined
                   : { prefix: op.late, delay: op.lateCreateDelay, die: op.lateDies };
+              const manifest = { tunnel: TUNNEL_MANIFEST, token: TOKEN_MANIFEST, none: undefined }[
+                op.manifest
+              ];
               const path = op.binds
                 ? withBinding(op.suffix, op.suffix === "a" ? "cfo-stg-b" : "cfo-stg-a")
-                : op.manifest
-                  ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
+                : manifest
+                  ? withManifest(op.suffix, manifest, op.resources)
                   : op.resources
                     ? withResources(op.suffix)
                     : GOOD.path;
@@ -2854,6 +3285,17 @@ describe("model check: no Worker is ever reachable without its Access applicatio
             for (const target of d.dependsOn ?? []) expect(recorded.has(target)).toBe(true);
             expect(dependencyCycle(store.load(), d.name, d.dependsOn ?? [])).toBeUndefined();
           }
+          // A record that says the service token's secret arrived is right about it, unless
+          // Wrangler reported an upload that never took effect on a Worker that already
+          // existed: the tool trusts that report for the secrets as it does for the code.
+          if (op.kind === "deploy" && op.fault === "phantom-success") phantom.add(op.suffix);
+          for (const d of store.load()) {
+            const token = d.serviceToken;
+            const trusted = !phantom.has(d.name.slice("cfo-stg-".length));
+            if (trusted && token?.id && token.deliveredTo && cloud.workers.has(d.name)) {
+              expect(cloud.holdsToken(d.name, token.id)).toBe(true);
+            }
+          }
         }
         // With the faults gone, teardown finishes and leaves nothing behind. An interrupted
         // upload that lands during the settle wait costs one more attempt.
@@ -2881,7 +3323,7 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         expect(sweep(ctx, true)).toEqual([]);
         expect(cloud.workers.size + cloud.apps.size).toBe(0);
         expect(cloud.containerApps_.size + cloud.images.size).toBe(0);
-        expect(cloud.tunnelResources()).toBe(0);
+        expect(cloud.manifestResources()).toBe(0);
         const lateBuckets = store.lateCreates().map((l) => l.kind === "bucket" && l.name);
         for (const bucket of cloud.buckets) expect(lateBuckets).toContain(bucket);
         expect(store.lateCreates().filter((l) => l.kind !== "bucket")).toEqual([]);

@@ -19,6 +19,7 @@ import {
   expired,
   expiry,
   hostnameFor,
+  isServiceTokenPolicy,
   type LateCreate,
   madeBy,
   markInterrupted,
@@ -32,6 +33,7 @@ import {
   policyRepository,
   renderedConfigPath,
   resourceName,
+  SERVICE_TOKEN_DURATION,
   sameIngress,
   serializeRegistry,
   tunnelHostnameFor,
@@ -632,6 +634,60 @@ describe("Access application checks", () => {
     }
   });
 
+  describe("F7-staging: one more policy, for the deployment's own service token", () => {
+    const host = "cfo-stg-a.example.com";
+    const owner = { decision: "allow", include: [{ email: { email: "owner@example.com" } }] };
+    const token = (id = "token-1", decision = "non_identity") => ({
+      decision,
+      include: [{ service_token: { token_id: id } }],
+    });
+
+    it("accepts the owner's policy plus exactly one for that token, and the owner's alone", () => {
+      for (const policies of [[owner, token()], [token(), owner], [owner]]) {
+        expect(() =>
+          assertOwnerOnly(app({ policies }), host, "owner@example.com", "token-1"),
+        ).not.toThrow();
+      }
+      expect(isServiceTokenPolicy(token(), "token-1")).toBe(true);
+      expect(isServiceTokenPolicy(token("token-2"), "token-1")).toBe(false);
+    });
+
+    it("refuses every other shape, and the token policy without the token's ID", () => {
+      const refused = [
+        [owner, token("token-2")],
+        [owner, token(), token()],
+        [token()],
+        [owner, token("token-1", "allow")],
+        [owner, token("token-1", "bypass")],
+        [owner, { decision: "non_identity", include: [{ any_valid_service_token: {} }] }],
+        [owner, { decision: "non_identity", include: [...token().include, { everyone: {} }] }],
+        [owner, { decision: "non_identity", include: [{ email: { email: "owner@example.com" } }] }],
+        [
+          owner,
+          { decision: "non_identity", include: [{ service_token: { token_id: "token-1", x: 1 } }] },
+        ],
+      ];
+      for (const policies of refused) {
+        expect(() =>
+          assertOwnerOnly(app({ policies }), host, "owner@example.com", "token-1"),
+        ).toThrow("not owner-only");
+      }
+      expect(() =>
+        assertOwnerOnly(app({ policies: [owner, token()] }), host, "owner@example.com"),
+      ).toThrow("not owner-only");
+    });
+
+    it("adds the token policy to the application body only when asked, for 24 hours of token", () => {
+      const body = accessAppBody("cfo-stg-a", host, config, "token-1");
+      expect(body.policies).toEqual([
+        { name: "Allow owner", ...owner },
+        { name: "Allow the staging service token", ...token() },
+      ]);
+      expect(accessAppBody("cfo-stg-a", host, config).policies).toHaveLength(1);
+      expect(SERVICE_TOKEN_DURATION).toBe("24h");
+    });
+  });
+
   it("accepts only SameSite=lax for the Access cookie (D9)", () => {
     const host = "cfo-stg-a.example.com";
     expect(() => assertSameSite(app({ same_site_cookie_attribute: "lax" }), host)).not.toThrow();
@@ -665,12 +721,55 @@ describe("staging manifest", () => {
     });
   });
 
+  describe("F7-staging: the service token", () => {
+    const serviceToken = {
+      hostnames: ["worker", "tunnel"],
+      clientIdSecret: "X1_ACCESS_CLIENT_ID",
+      clientSecretSecret: "X1_ACCESS_CLIENT_SECRET",
+    };
+
+    it("reads it for the deployment's own hostnames", () => {
+      expect(parseManifest({ ...full, serviceToken }, PATH)).toEqual({ ...full, serviceToken });
+      const workerOnly = { ...serviceToken, hostnames: ["worker"] };
+      expect(parseManifest({ serviceToken: workerOnly }, PATH)).toEqual({
+        vpcServices: [],
+        serviceToken: workerOnly,
+      });
+    });
+
+    it("refuses any other hostname, shape or secret name", () => {
+      const token = (extra: Record<string, unknown>) => ({
+        ...full,
+        serviceToken: { ...serviceToken, ...extra },
+      });
+      const refused: [string, unknown, string][] = [
+        ["not an object", { ...full, serviceToken: true }, '"serviceToken" takes'],
+        ["an unknown key", token({ duration: "forever" }), '"serviceToken" takes'],
+        ["no hostnames", token({ hostnames: [] }), "once each"],
+        ["hostnames not a list", token({ hostnames: "worker" }), "once each"],
+        ["another deployment's hostname", token({ hostnames: ["ui"] }), "once each"],
+        ["a hostname twice", token({ hostnames: ["worker", "worker"] }), "once each"],
+        [
+          "the Tunnel without a public hostname",
+          { tunnel: { tokenSecret: "T" }, serviceToken },
+          "has no public hostname",
+        ],
+        ["no client ID secret", token({ clientIdSecret: undefined }), "clientIdSecret"],
+        ["a lower-case secret", token({ clientSecretSecret: "secret" }), "upper-case"],
+        ["one secret for both", token({ clientSecretSecret: "X1_ACCESS_CLIENT_ID" }), "twice"],
+        ["the Tunnel token's secret", token({ clientIdSecret: "X1_TUNNEL_TOKEN" }), "twice"],
+      ];
+      for (const [label, json, message] of refused) {
+        expect(() => parseManifest(json, PATH), label).toThrow(message);
+      }
+    });
+  });
+
   it("refuses anything else, naming every problem", () => {
     const tunnel = (extra: Record<string, unknown>) => ({ tunnel: { ...full.tunnel, ...extra } });
     const refused: [string, unknown, string][] = [
       ["a list", [], "must be an object"],
       ["an unknown key", { ...full, routes: [] }, "unknown keys routes"],
-      ["the service token, until it is built", { ...full, serviceToken: {} }, "serviceToken"],
       ["a tunnel that is not an object", { tunnel: true }, '"tunnel" must be an object'],
       ["an unknown tunnel key", tunnel({ ingress: [] }), '"tunnel" has unknown keys ingress'],
       ["an origin on another host", tunnel({ origin: "http://10.0.0.1:80" }), "localhost"],
@@ -938,6 +1037,40 @@ describe("registry file", () => {
       expect(() => parseRegistry({ version: 3, deployments: [{ ...deployment, ...bad }] })).toThrow(
         "malformed",
       );
+    }
+  });
+
+  it("round-trips the service token and refuses malformed ones", () => {
+    const serviceToken = {
+      name: "cfo-stg-a-svc",
+      id: "t",
+      nonce: "0a1b2c3d",
+      deliveredTo: ["A", "B"],
+    };
+    const pending = {
+      name: "cfo-stg-c-svc",
+      createStartedAt: "2026-10-20T12:00:00.000Z",
+      nonce: "1a1b2c3d",
+    };
+    const list = [
+      { ...deployment, serviceToken },
+      { ...deployment, name: "cfo-stg-c", serviceToken: pending },
+      { ...deployment, name: "cfo-stg-b", serviceToken: { name: "cfo-stg-b-svc" } },
+    ];
+    expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
+    for (const bad of [
+      "cfo-stg-a-svc",
+      { name: "agents-svc" },
+      { ...serviceToken, id: "" },
+      { ...serviceToken, deliveredTo: "A" },
+      { ...serviceToken, deliveredTo: [1] },
+      { ...serviceToken, clientSecret: "x" },
+      { ...serviceToken, createStartedAt: 7 },
+      { ...serviceToken, nonce: "0a1b" },
+    ]) {
+      expect(() =>
+        parseRegistry({ version: 3, deployments: [{ ...deployment, serviceToken: bad }] }),
+      ).toThrow("malformed");
     }
   });
 

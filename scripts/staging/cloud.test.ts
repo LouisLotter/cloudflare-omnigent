@@ -854,6 +854,12 @@ describe("CLI wiring", () => {
         answer: { service_id: "x1", name: "cfo-stg-a-x" },
         missing: '[5104] Service (ID: "x1") not found',
       },
+      {
+        get: (c: ReturnType<typeof cliCloud>) => c.serviceToken("x1"),
+        args: ["zero-trust", "access", "service-tokens", "get", "x1"],
+        answer: { id: "x1", name: "cfo-stg-a-svc", client_id: "c" },
+        missing: "[12135] Access service token not found",
+      },
     ];
     for (const { get, args, answer, missing } of cases) {
       const seen: (readonly string[])[] = [];
@@ -878,6 +884,84 @@ describe("CLI wiring", () => {
       ok(JSON.stringify({ result: { id: "x1", name: "a", deleted_at: "2026-10-20T00:00:00Z" } })),
     );
     expect(deleted.tunnel("x1")).toBeUndefined();
+  });
+
+  it("manages the service token with cf, keeping its secret out of every error", () => {
+    const cfCalls: (readonly string[])[] = [];
+    const secret = `synthetic-${Math.random().toString(36).slice(2)}`;
+    const managing = cliCloud(config, WORKER, (_command, args) => {
+      cfCalls.push(args);
+      if (args[3] === "list") {
+        return ok(
+          JSON.stringify({
+            result: [
+              { id: "s1", name: "cfo-stg-a-svc", client_id: "c1" },
+              { id: "s2", name: "cfo-stg-a-svc-old", client_id: "c2" },
+              { id: "s3", name: "other", client_id: "c3" },
+            ],
+          }),
+        );
+      }
+      return ok(JSON.stringify({ result: { id: "s1", client_id: "c1", client_secret: secret } }));
+    });
+    const last = () => cfCalls.at(-1);
+    expect(managing.serviceTokens({ name: "cfo-stg-a-svc" })).toEqual([
+      { id: "s1", name: "cfo-stg-a-svc" },
+    ]);
+    expect(last()).toEqual([
+      "zero-trust",
+      "access",
+      "service-tokens",
+      "list",
+      "--name",
+      "cfo-stg-a-svc",
+      "--per-page",
+      "100",
+      "--page",
+      "1",
+    ]);
+    expect(managing.serviceTokens({ prefix: "cfo-stg-" }).map((t) => t.id)).toEqual(["s1", "s2"]);
+    expect(last()?.slice(3, 5)).toEqual(["list", "--per-page"]);
+    expect(managing.createServiceToken("cfo-stg-a-svc", "24h")).toEqual({
+      id: "s1",
+      clientId: "c1",
+      clientSecret: secret,
+    });
+    expect(last()).toEqual([
+      "zero-trust",
+      "access",
+      "service-tokens",
+      "create",
+      "--body",
+      '{"name":"cfo-stg-a-svc","duration":"24h"}',
+    ]);
+    expect(managing.rotateServiceToken("s1").clientSecret).toBe(secret);
+    expect(last()).toEqual(["zero-trust", "access", "service-tokens", "rotate", "s1"]);
+    managing.deleteServiceToken("s1");
+    expect(last()).toEqual(["zero-trust", "access", "service-tokens", "delete", "s1", "--force"]);
+    expect(cfCalls.flat().join(" ")).not.toContain(secret);
+
+    const partial = cliCloud(config, WORKER, () =>
+      ok(JSON.stringify({ result: { id: "s1", client_secret: secret } })),
+    );
+    expect(() => partial.rotateServiceToken("s1")).toThrow("has no client_id");
+    try {
+      partial.createServiceToken("x", "24h");
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
+    // A failing create or rotate reports Cloudflare's error codes, and nothing cf printed.
+    const failing = cliCloud(config, WORKER, () => ({
+      status: 1,
+      stdout: `{"result":{"client_secret":"${secret}"}}`,
+      stderr: `│ [12130] refused ${secret}`,
+    }));
+    for (const call of [
+      () => failing.createServiceToken("x", "24h"),
+      () => failing.rotateServiceToken("s1"),
+    ]) {
+      expect(call).toThrow(/^cf zero-trust access service-tokens failed: \[12130\]$/);
+    }
   });
 
   it("reads every page of a listing, and refuses one that never ends", () => {

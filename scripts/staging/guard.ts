@@ -73,6 +73,25 @@ export interface Deployment {
    * and drops those it no longer binds only after an upload without them succeeded.
    */
   readonly dependsOn?: readonly string[];
+  /** F7-staging: the deployment's Access service token, when its manifest asks for one. */
+  readonly serviceToken?: ServiceTokenRecord;
+}
+
+/**
+ * An Access service token named `<deployment>-svc--<nonce>`. Cloudflare shows its client secret
+ * only when it creates or rotates the token, so the record says which Worker secrets hold the
+ * current one. A run that cannot show the secret arrived rotates the token and sends the new
+ * one; the record forgets `deliveredTo` before every rotation. Its create has an intent and a
+ * nonce like every other.
+ */
+export interface ServiceTokenRecord {
+  /** `<deployment>-svc`, before the nonce. */
+  readonly name: string;
+  readonly id?: string;
+  readonly createStartedAt?: string;
+  readonly nonce?: string;
+  /** The client ID and secret Worker secrets that hold the current credentials. */
+  readonly deliveredTo?: readonly string[];
 }
 
 /**
@@ -201,6 +220,18 @@ export interface DnsRecordInfo {
 export interface WorkerDomain {
   readonly hostname: string;
   readonly service: string;
+}
+
+export interface ServiceTokenInfo {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** What creating or rotating a service token returns. The secret is shown only then. */
+export interface ServiceTokenCredentials {
+  readonly id: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
 }
 
 /** A Workers VPC service, flattened to the fields the staging tool checks. */
@@ -908,26 +939,58 @@ export function sameIngress(
   );
 }
 
-/** Refuses an Access application that would let anyone but the owner through. */
-export function assertOwnerOnly(app: AccessApp, hostname: string, ownerEmail: string): void {
+/**
+ * Refuses an Access application that would let anyone but the owner through. With
+ * `serviceTokenId`, the application may also hold one policy that admits exactly that token
+ * (isServiceTokenPolicy); callers pass it only for the deployment's own recorded token.
+ */
+export function assertOwnerOnly(
+  app: AccessApp,
+  hostname: string,
+  ownerEmail: string,
+  serviceTokenId?: string,
+): void {
   const ownerOnly = (rule: unknown) =>
     JSON.stringify(rule) === JSON.stringify({ email: { email: ownerEmail } });
+  type Policy = NonNullable<AccessApp["policies"]>[number];
+  const ownerPolicy = (p: Policy) =>
+    p.decision === "allow" &&
+    p.include !== undefined &&
+    p.include.length > 0 &&
+    p.include.every(ownerOnly);
+  const tokenPolicy = (p: Policy) =>
+    serviceTokenId !== undefined && isServiceTokenPolicy(p, serviceTokenId);
+  const policies = app.policies ?? [];
   const ok =
     app.type === "self_hosted" &&
     app.domain === hostname &&
-    app.policies !== undefined &&
-    app.policies.length > 0 &&
-    app.policies.every(
-      (p) =>
-        p.decision === "allow" &&
-        p.include !== undefined &&
-        p.include.length > 0 &&
-        p.include.every(ownerOnly),
-    );
+    policies.some(ownerPolicy) &&
+    policies.every((p) => ownerPolicy(p) || tokenPolicy(p)) &&
+    policies.filter(tokenPolicy).length <= 1;
   if (!ok) {
     throw new Error(`the Access application for ${hostname} is not owner-only; not deploying`);
   }
 }
+
+/**
+ * F7-staging (X1 pre-registration, section 10): the one policy besides the owner's that a
+ * staging application may hold. It admits exactly one service token, the deployment's own,
+ * without an identity, and only on a hostname the deployment's manifest names. assertOwnerOnly
+ * accepts it only when given that token's ID, and at most once.
+ */
+export function isServiceTokenPolicy(
+  policy: NonNullable<AccessApp["policies"]>[number],
+  serviceTokenId: string,
+): boolean {
+  return (
+    policy.decision === "non_identity" &&
+    JSON.stringify(policy.include) ===
+      JSON.stringify([{ service_token: { token_id: serviceTokenId } }])
+  );
+}
+
+/** How long the staging service token lasts: one day, enough for X1's preflight and run. */
+export const SERVICE_TOKEN_DURATION = "24h";
 
 /**
  * The SameSite attribute of every staging application's CF_Authorization cookie (owner decision
@@ -950,6 +1013,7 @@ export function accessAppBody(
   name: string,
   hostname: string,
   config: StagingConfig,
+  serviceTokenId?: string,
 ): Record<string, unknown> {
   assertManaged(name);
   // The application is named after the hostname's first label, with its create nonce.
@@ -971,6 +1035,15 @@ export function accessAppBody(
         decision: "allow",
         include: [{ email: { email: config.ownerEmail } }],
       },
+      ...(serviceTokenId !== undefined
+        ? [
+            {
+              name: "Allow the staging service token",
+              decision: "non_identity",
+              include: [{ service_token: { token_id: serviceTokenId } }],
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -985,6 +1058,21 @@ export const MANIFEST_FILE = "staging.jsonc";
 export interface Manifest {
   readonly tunnel?: TunnelManifest;
   readonly vpcServices: readonly VpcServiceManifest[];
+  readonly serviceToken?: ServiceTokenManifest;
+}
+
+/** The deployment's own hostnames that a service token may be admitted to. */
+export type TokenHostname = "worker" | "tunnel";
+
+/**
+ * F7-staging, only with the owner's approval: an Access service token `<deployment>-svc`,
+ * lasting SERVICE_TOKEN_DURATION, admitted by a second policy on the named hostnames of this
+ * deployment only. Its client ID and secret go only to the two named Worker secrets.
+ */
+export interface ServiceTokenManifest {
+  readonly hostnames: readonly TokenHostname[];
+  readonly clientIdSecret: string;
+  readonly clientSecretSecret: string;
 }
 
 /** A remotely managed Tunnel owned by the deployment and named after it. */
@@ -1028,7 +1116,7 @@ export function parseManifest(json: unknown, path: string): Manifest {
     problems.push("it must be an object");
     return refuse();
   }
-  const unknown = keysOutside(json, ["tunnel", "vpcServices"]);
+  const unknown = keysOutside(json, ["tunnel", "vpcServices", "serviceToken"]);
   if (unknown.length > 0) problems.push(`it has unknown keys ${unknown.join(", ")}`);
   const names: string[] = [];
   const name = (value: unknown, where: string): string => {
@@ -1081,8 +1169,38 @@ export function parseManifest(json: unknown, path: string): Manifest {
       });
     }
   }
+
+  let serviceToken: ServiceTokenManifest | undefined;
+  if (json.serviceToken !== undefined) {
+    const t = isObject(json.serviceToken) ? json.serviceToken : {};
+    const outside = keysOutside(t, ["hostnames", "clientIdSecret", "clientSecretSecret"]);
+    if (!isObject(json.serviceToken) || outside.length > 0) {
+      problems.push('"serviceToken" takes "hostnames", "clientIdSecret" and "clientSecretSecret"');
+    }
+    const hostnames = Array.isArray(t.hostnames) ? t.hostnames : [];
+    const known: readonly unknown[] = ["worker", "tunnel"];
+    if (
+      hostnames.length === 0 ||
+      !hostnames.every((h) => known.includes(h)) ||
+      new Set(hostnames).size !== hostnames.length
+    ) {
+      problems.push('"serviceToken.hostnames" lists "worker", "tunnel" or both, once each');
+    }
+    if (hostnames.includes("tunnel") && tunnel?.publicHostname !== true) {
+      problems.push('"serviceToken.hostnames" names "tunnel", which has no public hostname');
+    }
+    serviceToken = {
+      hostnames: hostnames as TokenHostname[],
+      clientIdSecret: name(t.clientIdSecret, '"serviceToken.clientIdSecret"'),
+      clientSecretSecret: name(t.clientSecretSecret, '"serviceToken.clientSecretSecret"'),
+    };
+  }
   if (problems.length > 0) refuse();
-  return { ...(tunnel ? { tunnel } : {}), vpcServices };
+  return {
+    ...(tunnel ? { tunnel } : {}),
+    vpcServices,
+    ...(serviceToken ? { serviceToken } : {}),
+  };
 }
 
 /**
@@ -1144,8 +1262,8 @@ const STATES: readonly string[] = ["pending", "deployed", "deleting"];
  */
 export const REGISTRY_VERSION = 4;
 
-export type LateCreateKind = "access" | "tunnel" | "dns" | "vpc" | "bucket";
-const LATE_KINDS: readonly string[] = ["access", "tunnel", "dns", "vpc", "bucket"];
+export type LateCreateKind = "access" | "tunnel" | "dns" | "vpc" | "bucket" | "token";
+const LATE_KINDS: readonly string[] = ["access", "tunnel", "dns", "vpc", "bucket", "token"];
 
 /**
  * A create the tool gave up on: after the settle wait Cloudflare still showed nothing, so the
@@ -1200,6 +1318,7 @@ const DEPLOYMENT_KEYS = [
   "tunnel",
   "vpcServices",
   "dependsOn",
+  "serviceToken",
 ];
 
 const TUNNEL_IDS = [
@@ -1249,6 +1368,22 @@ function validVpcServices(value: unknown): boolean {
         (s.createStartedAt === undefined || typeof s.createStartedAt === "string") &&
         validNonce(s.nonce),
     )
+  );
+}
+
+function validServiceToken(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isObject(value)) return false;
+  const delivered = value.deliveredTo;
+  return (
+    keysOutside(value, ["name", "id", "createStartedAt", "nonce", "deliveredTo"]).length === 0 &&
+    typeof value.name === "string" &&
+    value.name.startsWith(STAGING_PREFIX) &&
+    (value.id === undefined || (typeof value.id === "string" && value.id !== "")) &&
+    (value.createStartedAt === undefined || typeof value.createStartedAt === "string") &&
+    validNonce(value.nonce) &&
+    (delivered === undefined ||
+      (Array.isArray(delivered) && delivered.every((n) => typeof n === "string")))
   );
 }
 
@@ -1306,7 +1441,8 @@ export function parseRegistry(json: unknown): Deployment[] {
       !names(d.repositories) ||
       !validTunnel(d.tunnel) ||
       !validVpcServices(d.vpcServices) ||
-      !names(d.dependsOn)
+      !names(d.dependsOn) ||
+      !validServiceToken(d.serviceToken)
     ) {
       throw new Error("malformed entry in the staging registry");
     }

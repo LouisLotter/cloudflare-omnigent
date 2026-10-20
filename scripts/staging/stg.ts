@@ -11,8 +11,9 @@
 //   node scripts/staging/stg.ts sweep [--yes]
 //
 // sweep lists expired deployments (removed with --yes) and reports every staging bucket, Access
-// application, Tunnel, VPC service and DNS record that no record owns. Of those it removes, with
-// --yes, only the ones that carry the nonce of a create the tool gave up on: its own, landed late.
+// application, service token, Tunnel, VPC service and DNS record that no record owns. Of those
+// it removes, with --yes, only the ones that carry the nonce of a create the tool gave up on:
+// its own, landed late.
 //
 // A Durable Object binding may name another deployment in script_name if the registry shows it
 // deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
@@ -26,7 +27,15 @@
 //       "origin": "http://localhost:8081",  // that hostname's ingress service
 //       "tokenSecret": "X1_TUNNEL_TOKEN"    // the Worker secret that receives the connector token
 //     },
-//     "vpcServices": [{ "binding": "X1_VPC", "port": 8081 }]  // HTTP to 127.0.0.1:<port>
+//     "vpcServices": [{ "binding": "X1_VPC", "port": 8081 }], // HTTP to 127.0.0.1:<port>
+//     // F7-staging, only with the owner's approval: an Access service token, named
+//     // <deployment>-svc--<nonce>, for 24 hours, admitted by one more policy on the named
+//     // hostnames of this deployment.
+//     "serviceToken": {
+//       "hostnames": ["worker", "tunnel"],
+//       "clientIdSecret": "X1_ACCESS_CLIENT_ID",       // Worker secrets for its credentials,
+//       "clientSecretSecret": "X1_ACCESS_CLIENT_SECRET" // sent when created or rotated
+//     }
 //   }
 //
 // The tool deploys a rendered copy of the configuration with the route and VPC bindings added,
