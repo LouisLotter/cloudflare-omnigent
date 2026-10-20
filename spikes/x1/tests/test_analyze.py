@@ -396,25 +396,65 @@ def echo(seq: int, sent: float, rtt: float | None, conn: int = 1) -> list[dict]:
     return out
 
 
+COVER_ALL = [(-10_000.0, 20_000.0)]
+
+
+def opened(conn: int, t: float) -> dict:
+    return {"ev": "open", "route": "p1", "conn": conn, "t": t}
+
+
+def closed(conn: int, t: float) -> dict:
+    return {"ev": "close", "route": "p1", "conn": conn, "by": "peer", "code": 1006, "t": t}
+
+
 def test_slot_edges_and_outcomes():
     """Slots are [S + k s, S + (k+1) s) for the soak [S, E); an echo belongs to the slot its send
     time falls in. Here S = 0 and E = 6 s: six slots."""
-    events = [{"ev": "open", "route": "p1", "conn": 1, "t": -5000.0}]
+    events = [opened(1, -5000.0)]
     events += echo(1, -1.0, 10)  # before the soak: no slot
     events += echo(2, 0.0, 10)  # slot 0, answered
     events += echo(3, 1000.0, 1001)  # slot 1, answered late: missed
-    events += echo(4, 2000.0, None) + echo(5, 2999.0, 1000)  # slot 2: one missed, one answered
-    # slot 3: nothing sent, a connection open: down (counted as down while open)
-    events += [{"ev": "close", "route": "p1", "conn": 1, "by": "peer", "code": 1006, "t": 3500.0}]
-    # slot 4: nothing sent, no connection: down
-    events += echo(6, 5999.0, None)  # slot 5 (the last one), missed
-    events += echo(7, 6000.0, 10)  # at E exactly: no slot
+    # Slot 2: two echoes, one missed: missed (Amendment 2, item 2).
+    events += echo(4, 2000.0, None) + echo(5, 2999.0, 1000)
+    # Slot 3: the connection ends mid-slot, before that second's echo: unscheduled.
+    events += [closed(1, 3500.0)]
+    # Slot 4: nothing sent and no connection open: down.
+    events += [opened(2, 5000.0)] + echo(6, 5999.0, None, conn=2)  # slot 5, the last: missed
+    events += echo(7, 6000.0, 10, conn=2)  # at E exactly: no slot
     rec = records(events)
-    outcomes = analyze.slot_outcomes(rec, 0.0, 6000.0, [(-10_000.0, 10_000.0)])
-    assert outcomes == ["answered", "missed", "answered", "down", "down", "missed"]
-    counts = analyze.count_slots(rec, outcomes, 0.0, [])
-    assert (counts.answered, counts.missed, counts.down, counts.down_while_open) == (2, 2, 2, 1)
-    assert counts.availability == pytest.approx(2 / 6) and counts.outcome_fraction == 1.0
+    outcomes = analyze.slot_outcomes(rec, 0.0, 6000.0, COVER_ALL)
+    assert outcomes == ["answered", "missed", "missed", "unscheduled", "down", "missed"]
+    counts = analyze.count_slots(outcomes, 0.0, [])
+    assert (counts.answered, counts.missed, counts.down, counts.unscheduled) == (1, 3, 1, 1)
+    # Unscheduled slots have an outcome, but are left out of availability: 1 of 5.
+    assert counts.outcome_fraction == 1.0
+    assert counts.availability == pytest.approx(1 / 5)
+
+
+def test_two_answered_echoes_in_one_slot_answer_it():
+    events = [opened(1, -1.0)] + echo(1, 0.0, 10) + echo(2, 999.0, 10)
+    assert analyze.slot_outcomes(records(events), 0.0, 1000.0, COVER_ALL) == ["answered"]
+
+
+def test_jitter_leaves_a_slot_unscheduled_between_answered_slots():
+    """A connection whose cadence sits on a slot boundary: jitter moves one echo past it, so
+    slot 2 has none and slot 3 has two. Slot 2 is unscheduled, and availability stays 100%."""
+    events = [opened(1, 0.0)]
+    for seq, sent in enumerate((999.0, 1999.0, 3000.5, 3999.0), start=1):
+        events += echo(seq, sent, 20)
+    rec = records(events)
+    outcomes = analyze.slot_outcomes(rec, 0.0, 4000.0, COVER_ALL)
+    assert outcomes == ["answered", "answered", "unscheduled", "answered"]
+    counts = analyze.count_slots(outcomes, 0.0, [])
+    assert counts.availability == 1.0 and counts.unscheduled == 1
+
+
+def test_open_at_any_point_of_the_slot_and_not_at_its_edges():
+    """A connection closed at a slot's start, or opened at its end, was not open in it."""
+    events = [opened(1, -500.0), closed(1, 0.0), opened(2, 2000.0), closed(2, 2001.0)]
+    events += [opened(3, 3999.0)]
+    outcomes = analyze.slot_outcomes(records(events), 0.0, 4000.0, COVER_ALL)
+    assert outcomes == ["down", "down", "unscheduled", "unscheduled"]
 
 
 def test_a_slot_needs_its_second_and_its_deadline_covered():
@@ -423,9 +463,14 @@ def test_a_slot_needs_its_second_and_its_deadline_covered():
     # deadline runs to 3 s, past the cover; slot 2 too.
     outcomes = analyze.slot_outcomes(rec, 0.0, 3000.0, [(0.0, 2999.0)])
     assert outcomes == ["answered", None, None]
-    counts = analyze.count_slots(rec, outcomes, 0.0, [])
+    counts = analyze.count_slots(outcomes, 0.0, [])
     assert counts.unaccounted == 2 and counts.outcome_fraction == pytest.approx(1 / 3)
     assert analyze.slot_outcomes(rec, 0.0, 3000.0, []) == [None, None, None]
+
+
+def test_a_slot_with_only_unscheduled_seconds_has_no_availability():
+    counts = analyze.count_slots(["unscheduled", "unscheduled"], 0.0, [])
+    assert counts.availability is None and counts.outcome_fraction == 1.0
 
 
 def test_observed_slots_exclude_any_slot_a_window_touches():
@@ -444,10 +489,24 @@ def test_outages_count_against_availability():
     at = spontaneous_time(2)
     r = run(build(p2=drops_at(at, outage=4500.0))).routes["p2"]
     # The connection ends at `at` (a slot start); the next opens 4.5 s later. Slots at, +1 s,
-    # +2 s and +3 s have no echo: down. The one at +4 s holds the new connection's first echo.
-    assert r.slots.down == 4 and r.slots.down_while_open == 0
+    # +2 s and +3 s have no echo and no connection: down. The one at +4 s holds the new
+    # connection's first echo.
+    assert r.slots.down == 4 and r.slots.unscheduled == 0
     assert r.slots.observed_answered == r.slots.observed - 4
     assert r.availability == pytest.approx((OBSERVED_SLOTS - 4) / OBSERVED_SLOTS)
+
+
+def test_a_connection_ending_mid_slot_before_its_echo():
+    """Echoes go out 0.6 s into each slot. The connection ends 0.3 s into a slot, before that
+    second's echo: that slot is unscheduled; the three with no connection are down."""
+    at = spontaneous_time(2)
+    b = build(p2={"start": FIRST_OPEN + 600, **drops_at(at + 300, outage=4000.0)})
+    r = run(b).routes["p2"]
+    assert (r.slots.unscheduled, r.slots.down, r.slots.missed) == (1, 3, 0)
+    assert r.slots.answered == SLOTS - 4
+    observed = OBSERVED_SLOTS - 1
+    assert r.availability == pytest.approx((observed - 3) / observed)
+    assert "unscheduled 1" in analyze.render(run(b))
 
 
 def test_gap_is_reported_not_counted_as_a_drop():
@@ -829,7 +888,7 @@ def test_formatting_helpers():
     assert analyze.percentile([], 0.5) is None
     assert analyze.drop_rate(0, 0) == 0.0 and math.isinf(analyze.drop_rate(1, 0))
     assert analyze.jsonable((1, math.inf)) == [1, "unbounded"]
-    empty = analyze.Slots(0, 0, 0, 0, 0, 0, 0, 0)
+    empty = analyze.Slots(0, 0, 0, 0, 0, 0, 0, 0, 0)
     assert empty.outcome_fraction is None and empty.availability is None
 
 
@@ -860,7 +919,7 @@ def test_render_lists_checks_outside_drops_and_gaps():
     assert "block-list check p2: 403 p2-handler ok=True" in text
     assert "drops before the soak or in the tail (not counted): 1" in text
     assert "misses=1" in text
-    assert "slots 7200: answered 7199, missed 1, down 0" in text
+    assert "slots 7200: answered 7199, missed 1, down 0, unscheduled 0" in text
 
 
 def test_preflight_only_without_json(tmp_path, capsys):

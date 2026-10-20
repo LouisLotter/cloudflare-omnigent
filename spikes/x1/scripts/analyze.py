@@ -293,7 +293,7 @@ def echoes_of(rec: RouteRecords, instance: str, conn: int) -> list[Echo]:
 
 
 # ---------------------------------------------------------------------------------------------
-# Slots (Amendment 1, item 1)
+# Slots (Amendment 1, item 1; Amendment 2, items 1 and 2)
 
 
 @dataclass
@@ -302,75 +302,78 @@ class Slots:
     answered: int
     missed: int
     down: int
-    down_while_open: int
+    unscheduled: int
     unaccounted: int
     observed: int
+    observed_unscheduled: int
     observed_answered: int
 
     @property
     def outcome_fraction(self) -> float | None:
+        """Slots with an outcome (answered, missed, down or unscheduled) over all slots."""
         return (self.total - self.unaccounted) / self.total if self.total else None
 
     @property
     def availability(self) -> float | None:
-        return self.observed_answered / self.observed if self.observed else None
+        """Answered slots over the observed slots, leaving out unscheduled ones."""
+        counted = self.observed - self.observed_unscheduled
+        return self.observed_answered / counted if counted else None
 
 
 def slot_outcomes(
     rec: RouteRecords, soak_start: float, soak_end: float, spans: list[tuple[float, float]]
 ) -> list[str | None]:
-    """Each 1-second slot of the soak, on the probe's time line: "answered" if an echo sent in
-    it was answered within 1.0 s, else "missed" if an echo was sent in it, else "down". A slot
-    the records do not cover, with its echoes' deadline, has no outcome (None)."""
+    """Each 1-second slot of the soak, on the probe's time line:
+      - "missed" if an echo sent in it was not answered within 1.0 s (with two echoes, either);
+      - "answered" if every echo sent in it was answered within 1.0 s;
+      - with no echo sent in it, "unscheduled" if a connection was open at any point in it (one
+        ended before that second's echo, or jitter moved the echo into the next slot), else
+        "down".
+    A slot the records do not cover, with its echoes' deadline, has no outcome (None)."""
     n = int((soak_end - soak_start) // SLOT_MS)
     by_slot: dict[int, list[Echo]] = {}
     for echo in rec.echoes.values():
         k = math.floor((echo.sent - soak_start) / SLOT_MS)
         if 0 <= k < n:
             by_slot.setdefault(k, []).append(echo)
-    out: list[str | None] = []
-    for k in range(n):
-        a = soak_start + k * SLOT_MS
-        if not covered(spans, a, a + SLOT_MS + DEADLINE_MS):
-            out.append(None)
-        elif any(e.answered for e in by_slot.get(k, [])):
-            out.append("answered")
-        elif k in by_slot:
-            out.append("missed")
-        else:
-            out.append("down")
-    return out
-
-
-def count_slots(
-    rec: RouteRecords,
-    outcomes: list[str | None],
-    soak_start: float,
-    windows: list[Window],
-) -> Slots:
     open_spans = merge(
         [
             (c.open_t, c.close_t if c.close_t is not None else UNBOUNDED)
             for c in rec.connections.values()
         ]
     )
-    down_while_open = observed = observed_answered = 0
-    for k, outcome in enumerate(outcomes):
+    out: list[str | None] = []
+    for k in range(n):
         a = soak_start + k * SLOT_MS
-        # A connection open for some part of the slot: opened before it ends, closed after it starts.
-        if outcome == "down" and any(s < a + SLOT_MS and e > a for s, e in open_spans):
-            down_while_open += 1
-        if slot_observed(a, windows):
+        echoes = by_slot.get(k, [])
+        if not covered(spans, a, a + SLOT_MS + DEADLINE_MS):
+            out.append(None)
+        elif echoes:
+            out.append("answered" if all(e.answered for e in echoes) else "missed")
+        # Open at some point in [a, a + 1 s): opened before the slot ends, closed after it starts.
+        elif any(s < a + SLOT_MS and e > a for s, e in open_spans):
+            out.append("unscheduled")
+        else:
+            out.append("down")
+    return out
+
+
+def count_slots(outcomes: list[str | None], soak_start: float, windows: list[Window]) -> Slots:
+    observed = observed_unscheduled = observed_answered = 0
+    for k, outcome in enumerate(outcomes):
+        if slot_observed(soak_start + k * SLOT_MS, windows):
             observed += 1
+            observed_unscheduled += outcome == "unscheduled"
             observed_answered += outcome == "answered"
     return Slots(
         total=len(outcomes),
         answered=outcomes.count("answered"),
         missed=outcomes.count("missed"),
         down=outcomes.count("down"),
-        down_while_open=down_while_open,
+        unscheduled=outcomes.count("unscheduled"),
         unaccounted=outcomes.count(None),
         observed=observed,
+        observed_unscheduled=observed_unscheduled,
         observed_answered=observed_answered,
     )
 
@@ -617,7 +620,7 @@ def route_result(
         attempts=len(rec.attempts),
         failed_attempts=len(failed),
         failed_statuses=statuses,
-        slots=count_slots(rec, outcomes, soak_start, windows),
+        slots=count_slots(outcomes, soak_start, windows),
         spontaneous=spontaneous,
         forced=forced,
         outside=[d for d in drops if d.kind == "outside"],
@@ -1062,13 +1065,13 @@ def render(report: Report) -> str:
             f"{fmt_t(r.first_open, s)}, first connection {fmt_t(r.first_connection, s)}"
         )
         lines.append(
-            f"  slots {sl.total}: answered {sl.answered}, missed {sl.missed}, down {sl.down} "
-            f"(with a connection open in {sl.down_while_open}), no outcome {sl.unaccounted} "
+            f"  slots {sl.total}: answered {sl.answered}, missed {sl.missed}, down {sl.down}, "
+            f"unscheduled {sl.unscheduled}, no outcome {sl.unaccounted} "
             f"(with an outcome {fmt_fraction(sl.outcome_fraction)})"
         )
         lines.append(
-            f"  observed slots {sl.observed}, answered {sl.observed_answered}, availability "
-            f"{fmt_fraction(sl.availability)}"
+            f"  observed slots {sl.observed} ({sl.observed_unscheduled} unscheduled, left out), "
+            f"answered {sl.observed_answered}, availability {fmt_fraction(sl.availability)}"
         )
         lines.append(
             f"  spontaneous drops {len(r.spontaneous)} ({fmt_rate(r.spontaneous_rate)} per observed hour)"

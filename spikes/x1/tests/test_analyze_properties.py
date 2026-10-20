@@ -112,8 +112,9 @@ def test_covered_matches_a_point_by_point_check(spans, a, length):
     )
 )
 def test_slot_outcomes_follow_the_precedence(sends):
-    """answered if an echo sent in the slot was answered within 1.0 s, else missed if one was
-    sent, else down; slots are [k s, (k+1) s) over a 5 s soak."""
+    """missed if an echo sent in the slot was not answered within 1.0 s, answered if every one
+    was, down if none was sent (no connection is open here); slots are [k s, (k+1) s) over a
+    5 s soak (Amendment 2, items 1 and 2)."""
     events = []
     for seq, (sent, rtt) in enumerate(sends, start=1):
         events.append({"ev": "send", "route": "p1", "conn": 1, "seq": seq, "t": float(sent)})
@@ -125,9 +126,9 @@ def test_slot_outcomes_follow_the_precedence(sends):
     outcomes = analyze.slot_outcomes(rec, 0.0, 5000.0, [(-10_000.0, 20_000.0)])
     for k, outcome in enumerate(outcomes):
         mine = [(s, r) for s, r in sends if k * 1000 <= s < (k + 1) * 1000]
-        if any(r is not None and r <= 1000 for _, r in mine):
-            assert outcome == "answered"
-        elif mine:
-            assert outcome == "missed"
-        else:
+        if not mine:
             assert outcome == "down"
+        elif all(r is not None and r <= 1000 for _, r in mine):
+            assert outcome == "answered"
+        else:
+            assert outcome == "missed"
