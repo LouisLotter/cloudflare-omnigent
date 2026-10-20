@@ -14,7 +14,9 @@ export class FakeBucket {
   }
 
   async head(key) {
-    return this.objects.has(key) ? { key, size: this.objects.get(key).body.length } : null;
+    const object = this.objects.get(key);
+    if (!object) return null;
+    return { key, size: object.body.length, customMetadata: object.options.customMetadata };
   }
 
   async get(key) {

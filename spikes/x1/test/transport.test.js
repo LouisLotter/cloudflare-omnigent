@@ -119,6 +119,7 @@ describe("starting a run", () => {
     ]);
     const runJson = h.bucket.json("runs/run-20270115T080000Z/run.json");
     expect(runJson.zone).toBeUndefined();
+    expect(runJson.worker).toBe("cfo-stg-x1-transport");
     expect(runJson.routes).toEqual(["p1", "p2", "p3", "p4", "p5", "p6"]);
     expect(runJson.publicRoutes).toBe(true);
     expect(h.bucket.json("runs/current.json")).toMatchObject({ status: "active", mode: "run" });
@@ -192,7 +193,12 @@ describe("ComputerDO", () => {
       X1_ACCESS_CLIENT_ID: "client-id-canary",
       X1_ACCESS_CLIENT_SECRET: "client-secret-canary",
     });
-    const info = await h.env.COMPUTER.get("c1").routeInfo();
+    const computer = h.env.COMPUTER.get("c1");
+    const info = {
+      computerId: "c1",
+      key: await computer.routeKey(),
+      generation: await computer.generation(),
+    };
     expect(await verifyCredential(start.env.X1_ROUTE_CREDENTIAL, info)).toMatchObject({ ok: true });
     // The server gets the Tunnel token, and only the server.
     expect(h.starts.server).toEqual({
@@ -204,7 +210,7 @@ describe("ComputerDO", () => {
 
   it("never writes a secret to the bucket or the logs", async () => {
     await begin("run");
-    await h.env.COMPUTER.get("c1").routeInfo();
+    await h.env.COMPUTER.get("c1").routeKey();
     const written = [...h.bucket.objects.values()].map((o) => o.body).join("\n") + logs.join("\n");
     for (const secret of [...Object.values(SECRETS), h.starts.computer.env.X1_ROUTE_CREDENTIAL]) {
       expect(written).not.toContain(secret);
@@ -230,7 +236,7 @@ describe("ComputerDO", () => {
     await begin("run");
     h.env.COMPUTER.evict("c1");
     h.effects.length = 0;
-    await h.env.COMPUTER.get("c1").routeInfo();
+    await h.env.COMPUTER.get("c1").generation();
     expect(h.effects.filter((e) => e.includes("intercept"))).toHaveLength(5);
     expect(h.effects).toContain("computer:inactivity");
     expect(h.effects).not.toContain("computer:start");
@@ -458,25 +464,51 @@ describe("P5: the public Tunnel's policy route", () => {
     expect(sent.headers.get("upgrade")).toBe("websocket");
   });
 
-  it("caches the route key per isolate and fetches it again only for a newer generation", async () => {
+  it("caches only the key per isolate and reads the generation on every handshake", async () => {
     await begin("run");
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response("ok")),
     );
     const computer = h.env.COMPUTER.object("c1");
-    const spy = vi.spyOn(computer, "routeInfo");
+    const keys = vi.spyOn(computer, "routeKey");
+    const generations = vi.spyOn(computer, "generation");
     const presented = await credential(1);
+    keys.mockClear();
     for (let i = 0; i < 3; i++) {
       await worker.fetch(tunnelRequest("/x1/echo", { "x-x1-route-credential": presented }), h.env);
     }
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(keys).toHaveBeenCalledTimes(1);
+    expect(generations).toHaveBeenCalledTimes(3);
+  });
+
+  it("refuses a replaced generation's credential once the cache is warm (review r1, finding 5)", async () => {
+    await begin("run");
+    const fetchSpy = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const first = await credential(1);
+    const warm = await worker.fetch(
+      tunnelRequest("/x1/echo", { "x-x1-route-credential": first }),
+      h.env,
+    );
+    expect(warm.status).toBe(200);
+    // The computer restarts: ComputerDO advances to generation 2. Nobody presents it yet.
+    h.env.COMPUTER.state("c1").container.running = false;
+    await h.env.COMPUTER.get("c1").ensure();
+    const stale = await worker.fetch(
+      tunnelRequest("/x1/echo", { "x-x1-route-credential": first }),
+      h.env,
+    );
+    expect(stale.status).toBe(403);
+    expect(stale.headers.get("x-x1-refused-by")).toBe("p5-route");
+    expect(await stale.text()).toContain("older generation");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("answers 503 if the credential check fails and 502 if the origin fetch fails", async () => {
     await begin("run");
     const presented = await credential(1);
-    vi.spyOn(h.env.COMPUTER.object("c1"), "routeInfo").mockRejectedValueOnce(new Error("reset"));
+    vi.spyOn(h.env.COMPUTER.object("c1"), "generation").mockRejectedValueOnce(new Error("reset"));
     const failed = await worker.fetch(
       tunnelRequest("/x1/echo", { "x-x1-route-credential": presented }),
       h.env,
@@ -553,11 +585,11 @@ describe("the recorder (rec.x1.internal)", () => {
 
   it("stores a batch once: a retry finds it and changes nothing", async () => {
     const first = await (await post(`/x1/batch/${run}/${instance}/1`, "first\n")).json();
-    const again = await (await post(`/x1/batch/${run}/${instance}/1`, "second\n")).json();
+    const again = await (await post(`/x1/batch/${run}/${instance}/1`, "first\n")).json();
     expect(first).toEqual({ stored: true, existed: false });
     expect(again).toEqual({ stored: false, existed: true });
     expect(h.bucket.objects.get(batchKey(run, instance, 1)).body).toBe("first\n");
-    expect(h.bucket.objects.get(batchKey(run, instance, 1)).options.customMetadata).toEqual({
+    expect(h.bucket.objects.get(batchKey(run, instance, 1)).options.customMetadata).toMatchObject({
       generation: "1",
     });
     await post(`/x1/manifest/${run}/${instance}`, '{"batches":1}');
@@ -590,24 +622,59 @@ describe("the recorder (rec.x1.internal)", () => {
     expect(h.bucket.objects.size).toBe(0);
   });
 
-  it("a racing write that lands first wins; an unsupported condition still stores", async () => {
+  it("stores the body's sha256 and acknowledges a retry only when the bodies match", async () => {
+    const key = batchKey(run, instance, 5);
+    expect(await (await post(`/x1/batch/${run}/${instance}/5`, "same\n")).json()).toEqual({
+      stored: true,
+      existed: false,
+    });
+    const hash = h.bucket.objects.get(key).options.customMetadata.sha256;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await (await post(`/x1/batch/${run}/${instance}/5`, "same\n")).json()).toEqual({
+      stored: false,
+      existed: true,
+    });
+    const other = await post(`/x1/batch/${run}/${instance}/5`, "different\n");
+    expect(other.status).toBe(409);
+    expect(await other.json()).toEqual({ stored: false, conflict: true });
+    expect(h.bucket.objects.get(key).body).toBe("same\n");
+  });
+
+  it("a racing write that lands first is checked by its hash", async () => {
     const key = batchKey(run, instance, 3);
     const realHead = h.bucket.head.bind(h.bucket);
-    vi.spyOn(h.bucket, "head").mockImplementationOnce(async (k) => {
-      await h.bucket.put(k, "racer\n");
-      return null;
-    });
+    // Another write of the same body lands between the head and the conditional put.
+    const racer = async (body) => {
+      vi.spyOn(h.bucket, "head").mockImplementationOnce(async () => {
+        await new Recorder({ props: { generation: 1 } }, h.env).fetch(
+          new Request(`http://rec.x1.internal/x1/batch/${run}/${instance}/3`, {
+            method: "POST",
+            body,
+          }),
+        );
+        return null;
+      });
+    };
+    await racer("late\n");
     expect(await (await post(`/x1/batch/${run}/${instance}/3`, "late\n")).json()).toEqual({
       stored: false,
       existed: true,
     });
-    expect(h.bucket.objects.get(key).body).toBe("racer\n");
     h.bucket.head = realHead;
+    h.bucket.objects.delete(key);
+    await racer("racer\n");
+    const conflict = await post(`/x1/batch/${run}/${instance}/3`, "late\n");
+    expect(conflict.status).toBe(409);
+    expect(h.bucket.objects.get(key).body).toBe("racer\n");
+  });
+
+  it("never falls back to an unconditional put: an error is retryable (review r1, finding 6)", async () => {
     h.bucket.failConditional = true;
-    expect(await (await post(`/x1/batch/${run}/${instance}/4`)).json()).toEqual({
-      stored: true,
-      existed: false,
-    });
+    const res = await post(`/x1/batch/${run}/${instance}/4`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ stored: false, retry: true });
+    expect(h.bucket.objects.size).toBe(0);
+    expect(h.effects.filter((e) => e.startsWith("r2:put"))).toEqual([]);
   });
 });
 

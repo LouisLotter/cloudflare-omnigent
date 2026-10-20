@@ -29,7 +29,6 @@ import {
   lifecycleKey,
   logChunkKey,
   nextEventAt,
-  parseCredential,
   parseRecorderPath,
   publicRun,
   RUN_ID,
@@ -42,6 +41,7 @@ import {
   stripTrust,
   TUNNEL_LABEL,
   verifyCredential,
+  WORKER_NAME,
 } from "./lib.js";
 
 const ECHO_PORT = 8081;
@@ -286,51 +286,63 @@ export class Recorder extends WorkerEntrypoint {
     }
     const body = await request.arrayBuffer();
     if (body.byteLength > MAX_RECORD_BYTES) return new Response("too large\n", { status: 413 });
-    let stored = false;
-    if ((await this.env.RESULTS.head(target.key)) === null) {
-      const options = { customMetadata: { generation: String(props.generation) } };
-      let put;
-      try {
-        // Create-only: of two concurrent writes of one batch, at most one is stored.
-        put = await this.env.RESULTS.put(target.key, body, {
-          ...options,
-          onlyIf: new Headers({ "If-None-Match": "*" }),
-        });
-      } catch (error) {
-        // The head above found no object; keep the batch rather than lose it.
-        log("record-conditional-failed", { error: errorText(error) });
-        put = await this.env.RESULTS.put(target.key, body, options);
-      }
-      stored = put !== null;
-    }
-    log("recorded", {
+    const hash = await sha256Hex(body);
+    const fields = {
       kind: target.kind,
       runId: target.runId,
       instance: target.instance,
       n: target.n,
-      bytes: body.byteLength,
-      stored,
-    });
+    };
+    let stored = false;
+    try {
+      let existing = await this.env.RESULTS.head(target.key);
+      if (existing === null) {
+        // Create-only, always: of two writes of one name, at most one is stored. Never an
+        // unconditional put.
+        const put = await this.env.RESULTS.put(target.key, body, {
+          customMetadata: { sha256: hash, generation: String(props.generation) },
+          onlyIf: new Headers({ "If-None-Match": "*" }),
+        });
+        stored = put !== null;
+        if (!stored) existing = await this.env.RESULTS.head(target.key);
+      }
+      if (!stored && existing?.customMetadata?.sha256 !== hash) {
+        // The name holds another body: acknowledging would hide the difference.
+        log("record-conflict", fields);
+        return Response.json({ stored: false, conflict: true }, { status: 409 });
+      }
+    } catch (error) {
+      // The outcome is uncertain: the probe retries, and the retry checks what is stored.
+      log("record-error", { ...fields, error: errorText(error) });
+      return Response.json({ stored: false, retry: true }, { status: 503 });
+    }
+    log("recorded", { ...fields, bytes: body.byteLength, stored });
     return Response.json({ stored, existed: !stored });
   }
 }
 
-let routeInfoCache = null;
+async function sha256Hex(body) {
+  const digest = await crypto.subtle.digest("SHA-256", body);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+let routeKeyCache = null;
 
 /**
- * The key and current generation ComputerDO holds, cached per isolate. Fetched again only when
- * a credential names a newer generation than the cached one.
+ * What P5 checks a credential against. The key never changes, so it is cached per isolate.
+ * The current generation is read from ComputerDO on every handshake (handshakes are rare), so
+ * a credential of a generation that has been replaced is refused at once (probe review r1,
+ * finding 5).
  */
-async function routeInfo(env, generation) {
-  if (routeInfoCache === null || generation > routeInfoCache.generation) {
-    routeInfoCache = await computerStub(env).routeInfo();
-  }
-  return routeInfoCache;
+async function routeInfo(env) {
+  const computer = computerStub(env);
+  routeKeyCache ??= await computer.routeKey();
+  return { computerId: COMPUTER_ID, key: routeKeyCache, generation: await computer.generation() };
 }
 
 /** Test hook: forget the cached route key. */
 export function resetRouteInfoCache() {
-  routeInfoCache = null;
+  routeKeyCache = null;
 }
 
 /**
@@ -345,7 +357,7 @@ async function tunnelRoute(request, env, url) {
   const presented = request.headers.get(CREDENTIAL_HEADER) ?? "";
   let verdict;
   try {
-    const info = await routeInfo(env, parseCredential(presented)?.generation ?? 0);
+    const info = await routeInfo(env);
     verdict = await verifyCredential(presented, info);
   } catch (error) {
     log("route-error", { route: "p5", error: errorText(error) });
@@ -624,13 +636,9 @@ export class ComputerDO extends Keeper {
     return key;
   }
 
-  /** For P5's policy route, in this Worker only: the key and the current generation. */
-  async routeInfo() {
-    return {
-      computerId: COMPUTER_ID,
-      generation: (await this.ctx.storage.get("generation")) ?? 0,
-      key: await this.routeKey(),
-    };
+  /** For P5's policy route, on every handshake: the computer's current generation. */
+  async generation() {
+    return (await this.ctx.storage.get("generation")) ?? 0;
   }
 
   async ensure(run) {
@@ -758,6 +766,8 @@ export class RunDO extends DurableObject {
       publicRoutes,
       routes: routesFor(publicRoutes),
       build: BUILD.id,
+      // Names the deployment, so the analysis can tell a preflight of this one (Amendment 3).
+      worker: WORKER_NAME,
       zone,
     };
     // Persist before effect: the run exists in storage and in the bucket before any container.
