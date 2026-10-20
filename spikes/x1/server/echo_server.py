@@ -208,6 +208,8 @@ def log_server(log: EventLog, log_id: str, port: int) -> ThreadingHTTPServer:
 # cloudflared's connection events, by the start of their message. Workers VPC needs QUIC
 # (outbound UDP 7844); a fallback to HTTP/2 shows here as "fallback" and in the protocol field.
 CLOUDFLARED_EVENTS = (
+    ("Initial protocol", "initial-protocol"),
+    ("Register tunnel error", "register-error"),
     ("Registered tunnel connection", "registered"),
     ("Unregistered tunnel connection", "unregistered"),
     ("Connection terminated", "terminated"),
@@ -219,6 +221,15 @@ CLOUDFLARED_EVENTS = (
 )
 CLOUDFLARED_FIELDS = ("connIndex", "protocol", "location", "event", "ip")
 KEY_VALUE = re.compile(r'(\w+)=("[^"]*"|\S+)')
+INITIAL_PROTOCOL = re.compile(r"Initial protocol (\w+)")
+
+
+def cloudflared_env(environ: dict[str, str] | os._Environ) -> dict[str, str]:
+    """cloudflared's environment: ours without any variable whose name holds "TUNNEL".
+    cloudflared 2026.10.0 logs every variable whose name contains TUNNEL_ ("Environmental
+    variables map[…]") and masks only its own, so X1_TUNNEL_TOKEN would reach the log in
+    plain text. The token goes on the command line only."""
+    return {k: v for k, v in environ.items() if "TUNNEL" not in k.upper()}
 
 
 def cloudflared_event(line: str) -> dict | None:
@@ -228,6 +239,9 @@ def cloudflared_event(line: str) -> dict | None:
     if kind is None and "fallback" not in line.lower():
         return None
     fields = {k: v.strip('"') for k, v in KEY_VALUE.findall(line) if k in CLOUDFLARED_FIELDS}
+    initial = INITIAL_PROTOCOL.search(line)
+    if initial and "protocol" not in fields:
+        fields["protocol"] = initial.group(1)
     level = (
         line.split()[1]
         if len(line.split()) > 1 and line.split()[1] in ("INF", "WRN", "ERR", "DBG")
@@ -252,6 +266,7 @@ async def run_cloudflared(log: EventLog, token: str, stop: asyncio.Event) -> Non
             token,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=cloudflared_env(os.environ),
         )
         assert process.stdout is not None
         try:

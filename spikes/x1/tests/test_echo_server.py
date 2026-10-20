@@ -205,6 +205,19 @@ def test_cloudflared_connection_events_are_extracted(line, event):
     assert echo_server.cloudflared_event(line) == event
 
 
+def test_cloudflared_gets_no_tunnel_variable_and_initial_protocol_is_parsed():
+    env = {"PATH": "/bin", "X1_TUNNEL_TOKEN": "t", "tunnel_x": "y", "HOME": "/root"}
+    assert echo_server.cloudflared_env(env) == {"PATH": "/bin", "HOME": "/root"}
+    line = "2026-10-20T11:16:52Z INF Initial protocol quic"
+    assert echo_server.cloudflared_event(line) == {
+        "kind": "initial-protocol",
+        "level": "INF",
+        "protocol": "quic",
+    }
+    error = '2026-10-20T11:16:52Z ERR Register tunnel error from server side error="x" connIndex=0'
+    assert echo_server.cloudflared_event(error)["kind"] == "register-error"
+
+
 def test_cloudflared_event_lines_are_logged_structured(tmp_path, monkeypatch):
     fake = tmp_path / "cloudflared"
     fake.write_text(
