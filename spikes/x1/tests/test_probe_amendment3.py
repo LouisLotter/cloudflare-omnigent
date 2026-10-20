@@ -175,11 +175,11 @@ def test_an_exception_while_holding_records_a_terminal_close(tmp_path, monkeypat
     calls = {"n": 0}
     real = probe.RouteProbe.on_message
 
-    def flaky(self, conn, message, state):
+    def flaky(self, conn, message, state, at=None):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("probe bug")
-        return real(self, conn, message, state)
+        return real(self, conn, message, state, at)
 
     monkeypatch.setattr(probe.RouteProbe, "on_message", flaky)
 
@@ -283,19 +283,25 @@ def test_a_recorder_conflict_is_recorded_not_retried(tmp_path):
 
 @pytest.mark.parametrize("payload", [b"", b"\x03"])
 def test_odd_close_frames_still_end_the_connection(payload):
-    """An empty or malformed close frame still marks the moment, with no code."""
-    seen = []
+    """An empty or malformed close frame still marks the moment; only the first counts. Data
+    frames, fragmented or not, go to the inbox in order, never to the library's queue."""
 
     class Conn(probe.ProbeConnection):
         def __init__(self):  # no network: only process_event is exercised
             self.response = object()
-            self.close_frame_seen = None
-            self.on_close_frame = lambda code, reason, at: seen.append((code, reason))
-            self.recv_messages = type("R", (), {"put": lambda self, e: None})()
+            self.inbox = probe.deque()
+            self.arrived = asyncio.Event()
+            self.fragments, self.fragment_opcode = [], None
+            self.recv_messages = type("R", (), {"put": lambda self, e: pytest.fail("queued")})()
 
     conn = Conn()
+    conn.process_event(probe.Frame(probe.Opcode.TEXT, b"one", fin=False))
+    conn.process_event(probe.Frame(probe.Opcode.CONT, b" two"))
+    conn.process_event(probe.Frame(probe.Opcode.BINARY, b"\x00"))
     conn.process_event(probe.Frame(probe.Opcode.CLOSE, payload))
-    conn.process_event(probe.Frame(probe.Opcode.CLOSE, payload))  # only the first counts
-    assert len(seen) == 1
-    assert seen[0][0] in (1005, None)
+    first = conn.close_frame_seen
+    conn.process_event(probe.Frame(probe.Opcode.CLOSE, payload))
+    assert conn.close_frame_seen is first and first[0] in (1005, None)
+    assert [m for _, m in conn.inbox] == ["one two", b"\x00"]
+    assert conn.arrived.is_set()
     assert run  # the shared helpers stay importable

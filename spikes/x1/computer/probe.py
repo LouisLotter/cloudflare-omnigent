@@ -39,6 +39,7 @@ import statistics
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -254,6 +255,7 @@ class Batcher:
         self.number = 0
         self.stored = 0
         self.events = 0
+        self.conflicts: list[int] = []
         # The span each batch accounts for runs from the previous cut (the first from the probe's
         # start) to its own cut, so the analysis can tell which time a missing batch held.
         self.span_from = start or {"wall": wall_ms(), "mono": mono_ms()}
@@ -310,23 +312,44 @@ class Batcher:
                 await self.wake.wait()
                 continue
             n, body = self.queue[0]
-            await self.deliver(
+            stored = await self.deliver(
                 f"/x1/batch/{self.config.run_id}/{self.instance}/{n}", body, f"batch {n}"
             )
             self.queue.pop(0)
-            self.stored += 1
+            if stored:
+                self.stored += 1
+            else:
+                # The recorder holds another body under this batch's name: never counted as
+                # stored, and named in the manifest (review r2, finding 3).
+                self.conflicts.append(n)
 
-    async def finish(self, manifest: dict) -> None:
-        """The final cut, every batch stored, then the manifest: the completion marker."""
+    async def finish(self, manifest: dict) -> bool:
+        """The final cut, every batch delivered, then the manifest: the completion marker. The
+        manifest lists every batch the recorder refused as a conflict. If the manifest itself
+        conflicts, a failure record takes its place. Returns whether the manifest was stored."""
         self.cut()
         self.log.closed = True
         while self.queue:
             await asyncio.sleep(0.05)
-        body = json.dumps(
-            {**manifest, "batches": self.number, "events": self.events, "instance": self.instance},
-            separators=(",", ":"),
-        ).encode()
-        await self.deliver(f"/x1/manifest/{self.config.run_id}/{self.instance}", body, "manifest")
+        record = {
+            **manifest,
+            "runId": self.config.run_id,
+            "instance": self.instance,
+            "batches": self.number,
+            "events": self.events,
+            "conflicts": sorted(self.conflicts),
+        }
+        body = json.dumps(record, separators=(",", ":")).encode()
+        path = f"/x1/manifest/{self.config.run_id}/{self.instance}"
+        if await self.deliver(path, body, "manifest"):
+            return True
+        failure = {**record, "failure": "manifest conflict"}
+        await self.deliver(
+            f"/x1/failure/{self.config.run_id}/{self.instance}",
+            json.dumps(failure, separators=(",", ":")).encode(),
+            "failure record",
+        )
+        return False
 
 
 def sanitize_identity(value: object) -> dict | None:
@@ -379,20 +402,51 @@ async def clock_watch(log: Log, skew: SkewMeter, params: Params, stop: asyncio.E
             await asyncio.wait_for(stop.wait(), params.clock_interval)
 
 
-class ProbeConnection(ClientConnection):
-    """The pinned websockets client connection, with the moment a close frame arrives noted at
-    the protocol layer: recv() raises only once TCP shutdown completes, which can be much later."""
+DATA_OPCODES = (Opcode.TEXT, Opcode.BINARY, Opcode.CONT)
 
-    on_close_frame: Callable[[int | None, str, float], None] | None = None
+
+class ProbeConnection(ClientConnection):
+    """The pinned websockets client connection, read at the protocol layer, frame by frame in
+    the order the frames arrive:
+
+    - application messages go to `inbox` with their arrival time (monotonic seconds), and never
+      to the library's receive queue, so recv() only ever reports the connection's end;
+    - a close frame's arrival is noted in `close_frame_seen` (monotonic ms), because recv()
+      raises only once TCP shutdown completes, which can be much later (review r1, finding 2).
+
+    An echo that arrives in the same read as a close frame is therefore in `inbox` before the
+    close is noted, and hold() takes it first (review r2, finding 1)."""
+
     close_frame_seen: tuple[int | None, str, float] | None = None
     # When the handshake's response arrived: the open is recorded at this moment, so that a
     # close frame arriving right behind it is never recorded before the open.
     opened_mono: float | None = None
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.inbox: deque[tuple[float, str | bytes]] = deque()
+        self.arrived = asyncio.Event()  # set by every message and by the close frame
+        self.fragments: list[bytes] = []
+        self.fragment_opcode: Opcode | None = None
+
     def process_event(self, event: object) -> None:
-        if not isinstance(event, Frame) and self.opened_mono is None:
-            self.opened_mono = mono_ms()
-        if isinstance(event, Frame) and event.opcode is Opcode.CLOSE and not self.close_frame_seen:
+        if not isinstance(event, Frame):
+            if self.opened_mono is None:
+                self.opened_mono = mono_ms()
+            super().process_event(event)  # type: ignore[arg-type]
+            return
+        if event.opcode in DATA_OPCODES:
+            if event.opcode is not Opcode.CONT:
+                self.fragment_opcode, self.fragments = event.opcode, []
+            self.fragments.append(bytes(event.data))
+            if event.fin:
+                data = b"".join(self.fragments)
+                text = self.fragment_opcode is Opcode.TEXT
+                message = data.decode("utf-8", errors="replace") if text else data
+                self.inbox.append((time.monotonic(), message))
+                self.arrived.set()
+            return
+        if event.opcode is Opcode.CLOSE and self.close_frame_seen is None:
             at = mono_ms()
             try:
                 close = Close.parse(bytes(event.data))
@@ -400,8 +454,7 @@ class ProbeConnection(ClientConnection):
             except Exception:  # noqa: BLE001 - the protocol layer rejects it on its own
                 code, reason = None, ""
             self.close_frame_seen = (code, reason, at)
-            if self.on_close_frame is not None:
-                self.on_close_frame(code, reason, at)
+            self.arrived.set()
         super().process_event(event)  # type: ignore[arg-type]
 
 
@@ -492,28 +545,27 @@ class RouteProbe:
 
     async def hold(self, ws: ProbeConnection) -> bool:
         """Holds one connection until it ends, records exactly one close for it, and says whether
-        an echo was answered on it (an established connection) or not (a failed open)."""
+        an echo was answered on it (an established connection) or not (a failed open).
+
+        Each pass first takes the messages that have arrived, in arrival order and with their
+        arrival times, and only then looks at how the connection may have ended: a close frame
+        (timed when it arrived), the end of the transport, the silence deadline or the run's
+        end. So an echo answered just before a close frame counts."""
         conn = self.conn
         p = self.p
         state = HoldState()
-        loop = asyncio.get_running_loop()
-        close_frame: asyncio.Future = loop.create_future()
-
-        def on_close_frame(code: int | None, reason: str, at: float) -> None:
-            if not close_frame.done():
-                close_frame.set_result((code, reason, at))
-
-        ws.on_close_frame = on_close_frame
-        if ws.close_frame_seen is not None:  # it arrived with the handshake
-            on_close_frame(*ws.close_frame_seen)
         opened = time.monotonic()
         last_frame = opened
         next_send = opened
         close_code = 1000
+        # recv() never returns a message here (ProbeConnection keeps them): it only reports the
+        # connection's end, once the transport has ended.
         recv: asyncio.Future = asyncio.ensure_future(ws.recv())
+        arrived = asyncio.ensure_future(ws.arrived.wait())
         stopper = asyncio.ensure_future(self.stop.wait())
         pongs: set[asyncio.Task] = set()
         pinger = asyncio.create_task(self.pings(ws, conn, pongs))
+        transport_end: tuple[str, int, dict] | None = None
 
         def end(by: str, code: int | None, at: float | None = None, **extra: object) -> None:
             if state.terminal:
@@ -524,9 +576,19 @@ class RouteProbe:
 
         try:
             while True:
-                if close_frame.done():
-                    code, reason, at = close_frame.result()
-                    end("peer", code, at=at, reason=reason[:120])
+                # 1. Messages, in the order they arrived.
+                while ws.inbox:
+                    at, message = ws.inbox.popleft()
+                    last_frame = max(last_frame, at)
+                    self.on_message(conn, message, state, at)
+                # 2. How the connection ended, if it has.
+                if ws.close_frame_seen is not None:
+                    code, reason, at_ms = ws.close_frame_seen
+                    end("peer", code, at=at_ms, reason=reason[:120])
+                    return state.answered
+                if transport_end is not None:
+                    by, code, extra = transport_end
+                    end(by, code, **extra)
                     return state.answered
                 now = time.monotonic()
                 for seq, sent in state.outstanding.items():
@@ -544,9 +606,10 @@ class RouteProbe:
                     end("silence", SILENCE_CODE)
                     return state.answered
                 if self.stop.is_set():
-                    recv = await self.drain(ws, conn, recv, state)
+                    await self.drain(ws, conn, state)
                     end("end", 1000)
                     return state.answered
+                # 3. The next echo, when it is due.
                 if now >= next_send:
                     self.seq += 1
                     state.outstanding[self.seq] = now
@@ -565,7 +628,8 @@ class RouteProbe:
                     next_send += p.echo_interval
                     if next_send <= now:
                         next_send = now + p.echo_interval
-                    continue  # look again at once: the send may have let a close frame in
+                    continue  # look again at once: the send may have let a frame in
+                # 4. Wait for a frame, the transport's end, the run's end or the next deadline.
                 wake = [next_send]
                 wake += [
                     s + p.deadline for q, s in state.outstanding.items() if q not in state.missed
@@ -574,29 +638,15 @@ class RouteProbe:
                     wake.append(last_frame + p.silence)
                 timeout = max(0.0, min(wake) - time.monotonic())
                 done, _ = await asyncio.wait(
-                    {recv, stopper, close_frame},
+                    {recv, arrived, stopper},
                     timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if close_frame in done:
-                    continue
+                if arrived in done:
+                    ws.arrived.clear()
+                    arrived = asyncio.ensure_future(ws.arrived.wait())
                 if recv in done:
-                    try:
-                        message = recv.result()
-                    except ConnectionClosed as error:
-                        if close_frame.done():
-                            continue
-                        if error.rcvd is not None:
-                            end("peer", error.rcvd.code, reason=error.rcvd.reason[:120])
-                        else:
-                            end("error", 1006, error=type(error).__name__)
-                        return state.answered
-                    except Exception as error:  # noqa: BLE001 - a transport error ends the connection
-                        end("error", 1006, error=type(error).__name__)
-                        return state.answered
-                    last_frame = time.monotonic()
-                    self.on_message(conn, message, state)
-                    recv = asyncio.ensure_future(ws.recv())
+                    transport_end = self.transport_end(recv)
         except asyncio.CancelledError:
             end("end", 1000, reason="cancelled")
             raise
@@ -604,14 +654,27 @@ class RouteProbe:
             end("error", 1006, error=type(error).__name__)
             return state.answered
         finally:
-            ws.on_close_frame = None
-            for task in (recv, stopper, pinger, *pongs):
+            for task in (recv, arrived, stopper, pinger, *pongs):
                 task.cancel()
             # The closing handshake runs in the background, so the reconnect is not delayed by a
             # peer that never completes it (close_timeout bounds it).
             task = asyncio.create_task(self.close_quietly(ws, close_code))
             self.closing.add(task)
             task.add_done_callback(self.closing.discard)
+
+    @staticmethod
+    def transport_end(recv: asyncio.Future) -> tuple[str, int, dict]:
+        """How the connection ended, from recv()'s outcome. The next pass still takes any
+        message that arrived first."""
+        try:
+            recv.result()
+        except ConnectionClosed as error:
+            if error.rcvd is not None:
+                return "peer", error.rcvd.code, {"reason": error.rcvd.reason[:120]}
+            return "error", 1006, {"error": type(error).__name__}
+        except Exception as error:  # noqa: BLE001 - a transport error ends the connection
+            return "error", 1006, {"error": type(error).__name__}
+        return "error", 1006, {"error": "UnexpectedMessage"}
 
     async def close_quietly(self, ws: ClientConnection, code: int) -> None:
         with contextlib.suppress(Exception):
@@ -630,8 +693,11 @@ class RouteProbe:
                     deadlineMono=round((sent + self.p.deadline) * 1000, 3),
                 )
 
-    def on_message(self, conn: int, message: object, state: HoldState) -> None:
-        now = time.monotonic()
+    def on_message(
+        self, conn: int, message: object, state: HoldState, at: float | None = None
+    ) -> None:
+        """One application message, received at `at` (monotonic seconds; now if not given)."""
+        now = time.monotonic() if at is None else at
         try:
             data = json.loads(message) if isinstance(message, str) else None
         except ValueError:
@@ -656,10 +722,12 @@ class RouteProbe:
             on_time = rtt <= self.p.deadline * 1000
             state.replied.add(seq)
             state.answered = state.answered or on_time
-            self.event("reply", conn=conn, seq=seq, rtt=rtt, late=not on_time)
+            self.event(
+                "reply", at_mono=round(now * 1000, 3), conn=conn, seq=seq, rtt=rtt, late=not on_time
+            )
             worker_ms = data.get("at")
             if self.skew is not None and on_time and type(worker_ms) in (int, float):
-                self.skew.add(float(worker_ms), state.sent_wall[seq], wall_ms())
+                self.skew.add(float(worker_ms), state.sent_wall[seq], CLOCK.wall(now * 1000))
             identity = sanitize_identity(data.get("id"))
             if identity != state.ident:
                 state.ident = identity
@@ -669,22 +737,19 @@ class RouteProbe:
         else:
             self.event("unexpected", conn=conn, seq=seq, size=size, why="unknown sequence number")
 
-    async def drain(
-        self, ws: ClientConnection, conn: int, recv: asyncio.Future, state: HoldState
-    ) -> asyncio.Future:
+    async def drain(self, ws: ProbeConnection, conn: int, state: HoldState) -> None:
         """The run's end: wait up to one deadline for outstanding replies."""
         until = time.monotonic() + self.p.deadline
-        while state.outstanding and time.monotonic() < until:
-            done, _ = await asyncio.wait({recv}, timeout=max(0.0, until - time.monotonic()))
-            if recv not in done:
-                break
-            try:
-                message = recv.result()
-            except Exception:  # noqa: BLE001 - the connection ended during the drain
-                break
-            self.on_message(conn, message, state)
-            recv = asyncio.ensure_future(ws.recv())
-        return recv
+        while True:
+            while ws.inbox:
+                at, message = ws.inbox.popleft()
+                self.on_message(conn, message, state, at)
+            left = until - time.monotonic()
+            if not state.outstanding or left <= 0 or ws.close_frame_seen is not None:
+                return
+            ws.arrived.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(ws.arrived.wait(), left)
 
     async def pings(self, ws: ClientConnection, conn: int, pongs: set[asyncio.Task]) -> None:
         n = 0
@@ -829,17 +894,18 @@ async def run_probe(
     await watch  # the last clock and skew records
     log.event("end", reason="schedule")
     background[0].cancel()
-    await batcher.finish(
-        {
-            "runId": config.run_id,
-            "generation": config.generation,
-            "boot": boot,
-            "routes": config.routes,
-        }
+    stored = await batcher.finish(
+        {"generation": config.generation, "boot": boot, "routes": config.routes}
     )
     for task in background:
         task.cancel()
-    manifest = {"instance": instance, "batches": batcher.number, "events": batcher.events}
+    manifest = {
+        "instance": instance,
+        "batches": batcher.number,
+        "events": batcher.events,
+        "conflicts": sorted(batcher.conflicts),
+        "manifestStored": stored,
+    }
     if idle:
         await asyncio.Event().wait()  # RunDO stops the container once it sees the manifest
     return manifest
