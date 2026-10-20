@@ -85,6 +85,21 @@ class FakeCloud implements Cloud {
   bucketDeleteKeeps = false;
   imageDeleteKeeps = false;
   containerDeleteKeeps = false;
+  /** Image digests the registry answers for, also after their image was deleted (DC-36). */
+  readonly answered = new Set<string>();
+  /** Each repository's current image digest, and the repositories whose image changed. */
+  readonly current = new Map<string, string>();
+  readonly rollouts: string[] = [];
+  /** The build epoch of every upload. */
+  readonly epochs: number[] = [];
+  /** The version of the image sources; a change gives new digests. */
+  sources = 1;
+  /** An Access update that reports success but changes nothing. */
+  accessUpdateKeeps = false;
+  /** An Access update that sets SameSite but leaves a policy open to everyone. */
+  accessUpdateWidens = false;
+  /** Listings that no longer show an application, as if it were deleted meanwhile. */
+  hideAccessApps = false;
   private nextAppId = 1;
   private nextTag = 1;
   private nextId = 1;
@@ -132,6 +147,7 @@ class FakeCloud implements Cloud {
   listAccessApps(hostname: string): AccessApp[] {
     this.tick();
     this.calls.push("access.list");
+    if (this.hideAccessApps) return [];
     return [...this.apps.values()].filter((app) => app.domain === hostname);
   }
   createAccessApp(body: Record<string, unknown>): string {
@@ -141,6 +157,21 @@ class FakeCloud implements Cloud {
     this.calls.push(`access.create ${String(body.name)}`);
     if (this.deployFault === "crash-after-access") this.die();
     return id;
+  }
+  updateAccessApp(id: string, body: Record<string, unknown>): void {
+    this.tick();
+    this.calls.push(`access.update ${String(body.name)}`);
+    if (!this.accessUpdateKeeps) this.apps.set(id, { ...(body as unknown as AccessApp), id });
+    if (this.accessUpdateWidens) {
+      const app = this.apps.get(id);
+      if (app) {
+        this.apps.set(id, {
+          ...app,
+          policies: [{ decision: "allow", include: [{ everyone: {} }] }],
+        });
+      }
+    }
+    this.check();
   }
   deleteAccessApp(id: string): void {
     this.tick();
@@ -157,9 +188,10 @@ class FakeCloud implements Cloud {
     this.tick();
     return answer;
   }
-  deployWorker(name: string, hostname: string, configPath: string): void {
+  deployWorker(name: string, hostname: string, configPath: string, buildEpoch: number): void {
     this.tick();
     this.calls.push(`worker.deploy ${name} ${configPath}`);
+    this.epochs.push(buildEpoch);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
     // Wrangler binds the declared buckets, creating any that is missing, and creates the
@@ -177,7 +209,21 @@ class FakeCloud implements Cloud {
       }
     }
     for (const repository of declared.repositories) {
-      this.images.add(`${repository}:wrangler-${this.nextTag++}`);
+      // The same sources built with the same epoch give the same digest. Wrangler skips pushing
+      // a digest the registry answers for, which it still does after the image was deleted;
+      // creating the application then fails (DC-36).
+      const digest = `${repository}@${this.sources}@${buildEpoch}`;
+      const held = [...this.images].some((i) => i.startsWith(`${repository}:`));
+      if (!this.answered.has(digest)) {
+        this.images.add(`${repository}:wrangler-${this.nextTag++}`);
+        this.answered.add(digest);
+      } else if (!held) {
+        throw new Error("wrangler deploy exited with 1: IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE");
+      }
+      if (this.current.has(repository) && this.current.get(repository) !== digest) {
+        this.rollouts.push(repository);
+      }
+      this.current.set(repository, digest);
     }
     if (this.deployFault === "phantom-success") return;
     if (this.deployFault === "lost-response") {
@@ -836,7 +882,8 @@ describe("containers and buckets", () => {
       },
     };
     deploy(ctx, request("a", 7, path));
-    deploy(ctx, request("a", 7, path)); // every deploy pushes a new tag
+    cloud.sources += 1; // changed sources: the next deploy pushes a new tag
+    deploy(ctx, request("a", 7, path));
     expect(record()?.repositories).toEqual(["cfo-stg-a-s1computer-computer"]);
     expect(
       [...cloud.images].filter((i) => i.startsWith("cfo-stg-a-s1computer-computer:")),
@@ -980,6 +1027,99 @@ describe("Access applications the tool cannot vouch for", () => {
     deploy(ctx, request());
     const moved: Context = { ...ctx, config: { ...config, zone: "example.org" } };
     expect(() => deploy(moved, request())).toThrow("tear it down first");
+  });
+});
+
+describe("plan change 18: SameSite on Access (D9), and a push after teardown (DC-36)", () => {
+  const deployedWorker = () => cloud.calls.some((call) => call.startsWith("worker.deploy"));
+
+  it("creates the Access application with SameSite=lax", () => {
+    deploy(ctx, request());
+    expect(cloud.apps.get("app-1")?.same_site_cookie_attribute).toBe("lax");
+  });
+
+  it("rewrites an application from an older tool before the Worker upload", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    const { same_site_cookie_attribute: _, ...older } = app;
+    cloud.apps.set("app-1", older);
+    cloud.calls.length = 0;
+    deploy(ctx, request());
+    expect(cloud.apps.get("app-1")?.same_site_cookie_attribute).toBe("lax");
+    const update = cloud.calls.indexOf("access.update cfo-stg-a");
+    expect(update).toBeGreaterThan(-1);
+    expect(update).toBeLessThan(cloud.calls.findIndex((c) => c.startsWith("worker.deploy")));
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("refuses to upload when Access does not hold SameSite=lax after writing it", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    cloud.apps.set("app-1", { ...app, same_site_cookie_attribute: "none" });
+    cloud.accessUpdateKeeps = true;
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request())).toThrow("does not set SameSite=lax");
+    expect(deployedWorker()).toBe(false);
+  });
+
+  it("refuses to upload when the read-back shows SameSite=lax but a widened policy", () => {
+    deploy(ctx, request());
+    const app = cloud.apps.get("app-1");
+    if (!app) throw new Error("missing app");
+    const { same_site_cookie_attribute: _, ...older } = app;
+    cloud.apps.set("app-1", older);
+    cloud.accessUpdateWidens = true;
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request())).toThrow("not owner-only");
+    expect(deployedWorker()).toBe(false);
+  });
+
+  it("refuses to upload when the written application cannot be read back", () => {
+    cloud.hideAccessApps = true;
+    expect(() => deploy(ctx, request())).toThrow("no Access application after writing one");
+    expect(deployedWorker()).toBe(false);
+  });
+
+  it("builds with the record's creation time as the image timestamp", () => {
+    deploy(ctx, request("a", 7, withResources("a")));
+    const createdAt = store.load()[0]?.createdAt ?? "";
+    expect(cloud.epochs).toEqual([Math.floor(Date.parse(createdAt) / 1000)]);
+  });
+
+  it("rebuilds identical images on a redeploy, so no container rollout starts", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    elapse(HOUR);
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.epochs[0]).toBe(cloud.epochs[1]);
+    expect(cloud.images.size).toBe(1);
+    expect(cloud.rollouts).toEqual([]);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("pushes the images again when a deployment is redeployed after a teardown", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.images.size).toBe(0);
+    // The registry still answers for the deleted image's digest, as on Cloudflare.
+    expect(cloud.answered.size).toBe(1);
+    elapse(HOUR);
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(cloud.images.size).toBe(1);
+    expect(cloud.epochs[1]).toBeGreaterThan(cloud.epochs[0] ?? Number.POSITIVE_INFINITY);
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it("relies on the new record being created in a later second than the old one", () => {
+    const path = withResources("a");
+    deploy(ctx, request("a", 7, path));
+    teardown(ctx, "cfo-stg-a");
+    // No time passes: the new record has the old creation second, so the digest is the old one.
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE");
   });
 });
 

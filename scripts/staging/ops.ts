@@ -21,13 +21,20 @@
 //     Containers and R2 buckets the configuration declares carry the deployment's name, are
 //     recorded before the deploy that creates them, and are removed by the same teardown,
 //     after the Worker and before Access.
+//   - Access applications set SameSite=lax on their cookie (D9). One written by an older tool is
+//     rewritten, and every application is read back and checked before the Worker upload.
+//   - Images are built with the record's creation time as their timestamp. A redeploy rebuilds
+//     identical images and starts no container rollout; after a teardown, the new record gives
+//     new digests, so Wrangler pushes the images again (DC-36).
 
 import {
+  ACCESS_SAME_SITE,
   type AccessApp,
   accessAppBody,
   assertAccount,
   assertManaged,
   assertOwnerOnly,
+  assertSameSite,
   claimAccessApp,
   type DeployConfigView,
   type Deployment,
@@ -47,10 +54,17 @@ export interface Cloud {
   listAccessApps(hostname: string): AccessApp[];
   /** Returns the new application's ID. */
   createAccessApp(body: Record<string, unknown>): string;
+  /** Replaces the application's settings with `body`. */
+  updateAccessApp(id: string, body: Record<string, unknown>): void;
   deleteAccessApp(id: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   workerExists(name: string): boolean;
-  deployWorker(name: string, hostname: string, configPath: string): void;
+  /**
+   * Uploads the Worker and builds and pushes its container images, built with `buildEpoch`
+   * (Unix seconds) as their timestamp (BuildKit's SOURCE_DATE_EPOCH). The same sources and
+   * epoch give the same digests; another epoch gives new ones.
+   */
+  deployWorker(name: string, hostname: string, configPath: string, buildEpoch: number): void;
   deleteWorker(name: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
@@ -205,15 +219,25 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     let record = intent;
 
     // Access before the Worker: the hostname never serves traffic without the owner-only gate.
+    const body = accessAppBody(name, hostname, ctx.config);
     const app = claimAccessApp(ctx.cloud.listAccessApps(hostname), record);
     if (app) {
       assertOwnerOnly(app, hostname, ctx.config.ownerEmail);
       if (record.accessAppId !== app.id) record = put(ctx, { ...record, accessAppId: app.id });
+      if (app.same_site_cookie_attribute !== ACCESS_SAME_SITE) {
+        ctx.cloud.updateAccessApp(app.id, body);
+        ctx.log(`set SameSite=${ACCESS_SAME_SITE} on the Access application for ${hostname}`);
+      }
     } else {
-      const id = ctx.cloud.createAccessApp(accessAppBody(name, hostname, ctx.config));
+      const id = ctx.cloud.createAccessApp(body);
       record = put(ctx, { ...record, accessAppId: id });
       ctx.log(`created Access application for ${hostname}`);
     }
+    // What Access holds now, not what was sent, decides.
+    const confirmed = claimAccessApp(ctx.cloud.listAccessApps(hostname), record);
+    if (!confirmed) throw new Error(`${hostname} has no Access application after writing one`);
+    assertOwnerOnly(confirmed, hostname, ctx.config.ownerEmail);
+    assertSameSite(confirmed, hostname);
 
     // Buckets before the Worker binds them, so Wrangler never provisions one itself. A bucket
     // that exists here is one this record already owned (checked above), or one an
@@ -225,10 +249,18 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       }
     }
 
+    // Wrangler skips pushing an image whose digest the registry answers for, and the registry
+    // keeps answering for a digest after the image is deleted. An identical rebuild after a
+    // teardown would then never be pushed, and creating its application fails (DC-36). Images
+    // are therefore built with the record's creation time as their timestamp: every redeploy of
+    // a live deployment rebuilds identical images and starts no container rollout, and a
+    // teardown removes the record, so the next deployment's images get new digests.
+    const buildEpoch = Math.floor(Date.parse(record.createdAt) / 1000);
+
     // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
     // still appear, and the next command marks the upload interrupted.
     record = put(ctx, { ...record, uploadStartedAt: ctx.now().toISOString() });
-    ctx.cloud.deployWorker(name, hostname, request.configPath);
+    ctx.cloud.deployWorker(name, hostname, request.configPath, buildEpoch);
     if (!ctx.cloud.workerExists(name)) {
       throw new Error(
         `${name}: Wrangler reported success, but the staging account has no such Worker`,

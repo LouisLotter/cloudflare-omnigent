@@ -34,6 +34,8 @@ export interface RunOptions {
   /** Show the command's output to the user instead of capturing it. */
   readonly inherit: boolean;
   readonly cwd?: string;
+  /** Added to the child's environment. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export type Runner = (
@@ -65,7 +67,7 @@ function spawnRunner(accountId: string): Runner {
   return (command, args, options) => {
     const child = spawnSync(command, args, {
       encoding: "utf8",
-      env: childEnv(accountId),
+      env: { ...childEnv(accountId), ...options.env },
       stdio: childStdio(options.inherit),
       maxBuffer: 64 * 1024 * 1024,
       ...(options.cwd ? { cwd: options.cwd } : {}),
@@ -161,9 +163,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     if (result.status !== 0) throw new Error(`cf ${args[0]} failed: ${firstLine(result.stderr)}`);
     return resultOf(result.stdout);
   };
-  const wrangler = (args: string[], cwd: string): void => {
+  const wrangler = (args: string[], cwd: string, env: Record<string, string> = {}): void => {
     const cli = ["--no-warnings", wranglerCli(workerDir), ...args];
-    const result = run(process.execPath, cli, { inherit: true, cwd });
+    const result = run(process.execPath, cli, { inherit: true, cwd, env });
     if (result.status !== 0) throw new Error(`wrangler ${args[0]} exited with ${result.status}`);
   };
   return {
@@ -190,6 +192,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       if (typeof created?.id !== "string") throw new Error("Access did not return an app ID");
       return created.id;
     },
+    updateAccessApp: (id, body) => {
+      cf(["zero-trust", "access", "applications", "update", id, "--body", JSON.stringify(body)]);
+    },
     // --force skips cf's interactive confirmation; the child has no terminal to answer it.
     deleteAccessApp: (id) => {
       cf(["zero-trust", "access", "applications", "delete", id, "--force"]);
@@ -197,8 +202,14 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     workerExists: (name) =>
       workerLookup(run("cf", ["workers", "get", name], { inherit: false }), name),
     // validateDeployConfig has checked this configuration's account, routes and resources.
-    deployWorker: (name, hostname, configPath) =>
-      wrangler(["deploy", "--config", configPath, "--name", name, "--domain", hostname], workerDir),
+    // Wrangler runs `docker build` with its own environment, and BuildKit takes the image
+    // timestamp from SOURCE_DATE_EPOCH.
+    deployWorker: (name, hostname, configPath, buildEpoch) =>
+      wrangler(
+        ["deploy", "--config", configPath, "--name", name, "--domain", hostname],
+        workerDir,
+        { SOURCE_DATE_EPOCH: String(buildEpoch) },
+      ),
     // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
     // --config it reads whatever configuration its working directory holds. A generated
     // configuration in an empty directory pins the staging account.

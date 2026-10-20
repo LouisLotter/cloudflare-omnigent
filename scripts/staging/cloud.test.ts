@@ -116,6 +116,19 @@ describe("CLI wiring", () => {
     expect(calls.at(-1)?.options.inherit).toBe(false);
   });
 
+  it("updates an Access application by ID with the full body", () => {
+    cloud.updateAccessApp("app-1", { name: "cfo-stg-a", same_site_cookie_attribute: "lax" });
+    expect(calls.at(-1)?.args).toEqual([
+      "zero-trust",
+      "access",
+      "applications",
+      "update",
+      "app-1",
+      "--body",
+      '{"name":"cfo-stg-a","same_site_cookie_attribute":"lax"}',
+    ]);
+  });
+
   it("asks Access only about the exact hostname", () => {
     cloud.listAccessApps("cfo-stg-a.example.com");
     expect(calls.at(-1)?.args).toEqual([
@@ -133,7 +146,9 @@ describe("CLI wiring", () => {
     const cli = wranglerCli(WORKER);
     expect(cli).toMatch(/wrangler-dist\/cli\.js$/);
     expect(existsSync(cli)).toBe(true);
-    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc");
+    cloud.deployWorker("cfo-stg-a", "cfo-stg-a.example.com", "/w/wrangler.jsonc", 1792400000);
+    // The build epoch reaches Wrangler, and through it `docker build`, as SOURCE_DATE_EPOCH
+    // (DC-36).
     expect(calls.at(-1)).toEqual({
       command: process.execPath,
       args: [
@@ -147,7 +162,7 @@ describe("CLI wiring", () => {
         "--domain",
         "cfo-stg-a.example.com",
       ],
-      options: { inherit: true, cwd: WORKER },
+      options: { inherit: true, cwd: WORKER, env: { SOURCE_DATE_EPOCH: "1792400000" } },
     });
   });
 
@@ -243,7 +258,7 @@ describe("CLI wiring", () => {
     expect(cloud.accountIds()).toEqual(["a".repeat(32)]);
     const broken = cliCloud(config, WORKER, () => failed("│ [10000] Authentication error"));
     expect(() => broken.accountIds()).toThrow("Authentication error");
-    expect(() => broken.deployWorker("cfo-stg-a", "h", "/c")).toThrow("wrangler deploy exited");
+    expect(() => broken.deployWorker("cfo-stg-a", "h", "/c", 1)).toThrow("wrangler deploy exited");
   });
 
   it("pins the account and drops CLOUDFLARE_ENV for every child process", () => {
