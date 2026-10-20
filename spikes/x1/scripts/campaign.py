@@ -38,6 +38,7 @@ MINUTE_MS = 60_000
 DEPLOYS = (("ui", 45), ("transport", 75))
 PRECHECK_LEAD_MS = 3 * MINUTE_MS
 END_GRACE_MS = 15 * MINUTE_MS
+TAIL_MS = 60_000
 
 
 def staging_dir() -> Path:
@@ -69,6 +70,7 @@ class Campaign:
     t0: int | None = None
     soak_start: int | None = None
     soak_end: int | None = None
+    tail_end: int | None = None
     deploys: list[dict] = field(default_factory=list)
     refused: list[dict] = field(default_factory=list)
     end: dict | None = None
@@ -80,6 +82,7 @@ class Campaign:
             "t0": self.t0,
             "soakStart": self.soak_start,
             "soakEnd": self.soak_end,
+            "tailEnd": self.tail_end,
             "deploys": self.deploys,
             "refused": self.refused,
             "end": self.end,
@@ -128,7 +131,9 @@ def run_campaign(ports: Ports, started_ms: int, t0_wait_ms: int) -> Campaign:
     current = wait_for_t0(ports, started_ms, t0_wait_ms)
     c.run_id, c.t0 = current["runId"], current["t0"]
     c.soak_start, c.soak_end = current["soakStart"], current["soakEnd"]
-    ports.say(f"T0 {c.t0} ({c.run_id}); soak {c.soak_start}..{c.soak_end}")
+    # Amendment 1, item 7: the probe and RunDO run 60 s past the soak's end.
+    c.tail_end = current.get("tailEnd", c.soak_end + TAIL_MS)
+    ports.say(f"T0 {c.t0} ({c.run_id}); soak {c.soak_start}..{c.soak_end}, tail to {c.tail_end}")
     for target, minutes in DEPLOYS:
         planned = c.soak_start + minutes * MINUTE_MS
         reasons: list[str] = []
@@ -163,14 +168,14 @@ def run_campaign(ports: Ports, started_ms: int, t0_wait_ms: int) -> Campaign:
         )
         if parsed.get("rollout"):
             ports.say(f"the {target} deploy started a container rollout: the run fails setup")
-    while ports.now_ms() < c.soak_end + END_GRACE_MS:
+    while ports.now_ms() < c.tail_end + END_GRACE_MS:
         end = ports.get_object(f"runs/{c.run_id}/end.json")
         if end is not None:
             c.end = end
             break
         ports.sleep(30.0)
     else:
-        c.notes.append("no end.json within 15 minutes of the soak's end")
+        c.notes.append("no end.json within 15 minutes of the recovery tail's end")
     return c
 
 

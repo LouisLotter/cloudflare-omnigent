@@ -902,6 +902,7 @@ function currentPointer(run) {
     t0: run.t0,
     soakStart: run.soakStart,
     soakEnd: run.soakEnd,
+    tailEnd: run.tailEnd,
     status: run.status,
     build: run.build,
   };

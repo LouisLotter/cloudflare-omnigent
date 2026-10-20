@@ -72,11 +72,13 @@ describe("the schedule (section 5)", () => {
     const plan = schedule("run", 1000);
     expect(plan.soakStart).toBe(1000 + 5 * MIN);
     expect(plan.soakEnd).toBe(plan.soakStart + 120 * MIN);
+    // Amendment 1, item 7: RunDO and the probe run 60 s past the soak's end.
+    expect(plan.tailEnd).toBe(plan.soakEnd + 60_000);
     expect(plan.events.map((e) => [e.kind, (e.at - plan.soakStart) / MIN])).toEqual([
       ["reset", 30],
       ["reset", 60],
       ["reset", 90],
-      ["end", 120],
+      ["end", 121],
     ]);
     expect(plan.deploysPlanned).toEqual({
       ui: plan.soakStart + 45 * MIN,
@@ -88,7 +90,7 @@ describe("the schedule (section 5)", () => {
     const plan = schedule("preflight", 0);
     expect(plan.events.map((e) => [e.kind, e.at / MIN])).toEqual([
       ["reset", 5],
-      ["end", 10],
+      ["end", 11],
     ]);
     expect(() => schedule("other", 0)).toThrow();
     expect(() => schedule("run", Number.NaN)).toThrow();
@@ -177,6 +179,10 @@ describe("ComputerDO", () => {
       instance: "standard-1",
       enableInternet: true,
     });
+    const run = h.env.RUN.state("run").store.get("run");
+    expect(start.env.X1_SOAK_END).toBe(String(run.soakEnd));
+    expect(start.env.X1_END).toBe(String(run.soakEnd + 60_000));
+    expect(run.events.at(-1)).toMatchObject({ kind: "end", at: run.soakEnd + 60_000 });
     expect(start.env).toMatchObject({
       X1_MODE: "run",
       X1_GENERATION: "1",
@@ -652,11 +658,11 @@ describe("RunDO: forced resets and the end", () => {
   it("at the end waits for the probe's manifest, then stops both containers and writes end.json", async () => {
     await begin("preflight");
     const run = h.env.RUN.state("run").store.get("run");
-    const now = vi.spyOn(Date, "now").mockReturnValue(run.soakEnd + 1);
+    const now = vi.spyOn(Date, "now").mockReturnValue(run.tailEnd + 1);
     await h.env.RUN.get("run").alarm();
     let stored = h.env.RUN.state("run").store.get("run");
     expect(stored.status).toBe("ending");
-    expect(h.env.RUN.state("run").alarm).toBe(run.soakEnd + 1 + 10_000);
+    expect(h.env.RUN.state("run").alarm).toBe(run.tailEnd + 1 + 10_000);
     expect(h.bucket.objects.has(`runs/${run.runId}/end.json`)).toBe(false);
     // Batches arrive (several pages of keys), then the manifest.
     for (let n = 1; n <= 3; n++)
@@ -664,7 +670,7 @@ describe("RunDO: forced resets and the end", () => {
     await h.env.RUN.get("run").alarm();
     expect(h.bucket.objects.has(`runs/${run.runId}/end.json`)).toBe(false);
     await h.bucket.put(manifestKey(run.runId, "g1-0a1b2c3d-00a1b2"), "{}");
-    now.mockReturnValue(run.soakEnd + 20_000);
+    now.mockReturnValue(run.tailEnd + 20_000);
     h.effects.length = 0;
     await h.env.RUN.get("run").alarm();
     stored = h.env.RUN.state("run").store.get("run");
@@ -687,9 +693,9 @@ describe("RunDO: forced resets and the end", () => {
   it("finishes without a manifest after the grace period", async () => {
     await begin("preflight");
     const run = h.env.RUN.state("run").store.get("run");
-    const now = vi.spyOn(Date, "now").mockReturnValue(run.soakEnd + 1);
+    const now = vi.spyOn(Date, "now").mockReturnValue(run.tailEnd + 1);
     await h.env.RUN.get("run").alarm();
-    now.mockReturnValue(run.soakEnd + 6 * MIN);
+    now.mockReturnValue(run.tailEnd + 6 * MIN);
     vi.spyOn(h.env.SERVER.object("server"), "stop").mockRejectedValueOnce(new Error("gone"));
     await h.env.RUN.get("run").alarm();
     const end = h.bucket.json(`runs/${run.runId}/end.json`);
@@ -830,6 +836,7 @@ describe("pure helpers", () => {
       t0: 1,
       soakStart: 2,
       soakEnd: 3,
+      tailEnd: 4,
       routes: ["p1"],
       publicRoutes: false,
       zone: "z.test",
@@ -839,7 +846,8 @@ describe("pure helpers", () => {
       X1_MODE: "run",
       X1_T0: "1",
       X1_SOAK_START: "2",
-      X1_END: "3",
+      X1_SOAK_END: "3",
+      X1_END: "4",
       X1_GENERATION: "1",
       X1_ROUTES: "p1",
     });

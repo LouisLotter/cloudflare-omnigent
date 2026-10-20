@@ -39,12 +39,15 @@ export function routesFor(publicRoutes) {
 }
 
 const MINUTE = 60_000;
+/** Amendment 1, item 7: the probe and RunDO run this long past the soak's end. */
+export const TAIL_MS = 60_000;
 
 /**
  * The run's schedule from T0, section 5. Times are Worker milliseconds.
- *   run:       5 min warm-up, soak S..S+120 min, resets at S+30, S+60, S+90, end at S+120.
- *              The laptop deploys the UI at S+45 and the transport at S+75 (recorded as planned).
- *   preflight: about 10 minutes from T0, one reset at T0+5 min.
+ *   run:       5 min warm-up, soak S..S+120 min, resets at S+30, S+60, S+90, then the 60 s
+ *              recovery tail; the end at S+120 min + 60 s. The laptop deploys the UI at S+45
+ *              and the transport at S+75 (recorded as planned).
+ *   preflight: about 10 minutes from T0, one reset at T0+5 min, then the same tail.
  */
 export function schedule(mode, t0) {
   if (!Number.isFinite(t0)) throw new Error("t0 must be a number");
@@ -56,13 +59,14 @@ export function schedule(mode, t0) {
       t0,
       soakStart,
       soakEnd,
+      tailEnd: soakEnd + TAIL_MS,
       events: [
         ...[30, 60, 90].map((m) => ({
           id: `reset-s${m}`,
           kind: "reset",
           at: soakStart + m * MINUTE,
         })),
-        { id: "end", kind: "end", at: soakEnd },
+        { id: "end", kind: "end", at: soakEnd + TAIL_MS },
       ],
       deploysPlanned: { ui: soakStart + 45 * MINUTE, transport: soakStart + 75 * MINUTE },
     };
@@ -74,9 +78,10 @@ export function schedule(mode, t0) {
       t0,
       soakStart: t0,
       soakEnd,
+      tailEnd: soakEnd + TAIL_MS,
       events: [
         { id: "reset-t5", kind: "reset", at: t0 + 5 * MINUTE },
-        { id: "end", kind: "end", at: soakEnd },
+        { id: "end", kind: "end", at: soakEnd + TAIL_MS },
       ],
       deploysPlanned: {},
     };
@@ -307,7 +312,9 @@ export function computerEnv(run, generation, credential, secrets) {
     X1_MODE: run.mode,
     X1_T0: String(run.t0),
     X1_SOAK_START: String(run.soakStart),
-    X1_END: String(run.soakEnd),
+    X1_SOAK_END: String(run.soakEnd),
+    // The probe stops at the end of the recovery tail (Amendment 1, item 7).
+    X1_END: String(run.tailEnd),
     X1_GENERATION: String(generation),
     X1_ROUTES: run.routes.join(","),
   };

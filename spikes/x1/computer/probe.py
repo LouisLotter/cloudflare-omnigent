@@ -139,7 +139,14 @@ def config_from_env(env: dict[str, str]) -> Config:
         recorder=env.get("X1_RECORDER_URL", RECORDER),
         log_dir=env.get("X1_LOG_DIR", "/x1/data"),
         blocked=blocked,
-        extra={k: env.get(v) for k, v in (("t0", "X1_T0"), ("soakStart", "X1_SOAK_START"))},
+        extra={
+            k: env.get(v)
+            for k, v in (
+                ("t0", "X1_T0"),
+                ("soakStart", "X1_SOAK_START"),
+                ("soakEnd", "X1_SOAK_END"),
+            )
+        },
     )
 
 
@@ -190,6 +197,7 @@ class Batcher:
         instance: str,
         params: Params,
         post: Callable[[str, bytes, float], tuple[bool, str]] = http_post,
+        start: dict | None = None,
     ) -> None:
         self.log = log
         self.config = config
@@ -201,9 +209,13 @@ class Batcher:
         self.number = 0
         self.stored = 0
         self.events = 0
+        # The span each batch accounts for runs from the previous cut (the first from the probe's
+        # start) to its own cut, so the analysis can tell which time a missing batch held.
+        self.span_from = start or {"wall": wall_ms(), "mono": mono_ms()}
 
     def cut(self) -> int:
         lines = self.log.take()
+        cut = {"wall": wall_ms(), "mono": mono_ms()}
         self.number += 1
         self.events += len(lines)
         header = {
@@ -211,8 +223,12 @@ class Batcher:
             "instance": self.instance,
             "runId": self.config.run_id,
             "events": len(lines),
-            "cutWall": wall_ms(),
+            "fromWall": self.span_from["wall"],
+            "fromMono": self.span_from["mono"],
+            "cutWall": cut["wall"],
+            "cutMono": cut["mono"],
         }
+        self.span_from = cut
         body = "\n".join([json.dumps(header, separators=(",", ":")), *lines]) + "\n"
         self.queue.append((self.number, body.encode()))
         self.wake.set()
@@ -616,7 +632,7 @@ async def run_probe(
     boot = boot_id()
     instance = instance or f"g{config.generation}-{boot}-{secrets.token_hex(3)}"
     log = Log(Path(config.log_dir) / f"probe-{instance}.jsonl")
-    log.event(
+    started = log.event(
         "probe-start",
         instance=instance,
         runId=config.run_id,
@@ -628,7 +644,7 @@ async def run_probe(
         params=params.__dict__,
         **config.extra,
     )
-    batcher = Batcher(log, config, instance, params, post)
+    batcher = Batcher(log, config, instance, params, post, start=started)
     stop = asyncio.Event()
     background = [asyncio.create_task(batcher.cutter(stop)), asyncio.create_task(batcher.sender())]
     probes = []

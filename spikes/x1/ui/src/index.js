@@ -21,9 +21,9 @@ const PAGE_HEADERS = {
 };
 const PAGE_TEXT = {
   preflight:
-    "Starts the preflight: both containers, all six routes, one forced ServerDO reset at 5 minutes and the block-list check. About 10 minutes, then both containers stop.",
+    "Starts the preflight: both containers, all six routes, one forced ServerDO reset at 5 minutes and the block-list check. About 10 minutes and a 60-second tail, then both containers stop.",
   start:
-    "Starts the run. This moment is T0: 5 minutes of warm-up, then the 120-minute soak with forced resets at 30, 60 and 90 minutes. The laptop's campaign script deploys this UI at 45 minutes and the transport at 75 minutes. Both containers stop at the end.",
+    "Starts the run. This moment is T0: 5 minutes of warm-up, then the 120-minute soak with forced resets at 30, 60 and 90 minutes. The laptop's campaign script deploys this UI at 45 minutes and the transport at 75 minutes. At 120 minutes the probe keeps running for a 60-second recovery tail, then both containers stop.",
   stop: "Stops the run or preflight now: the schedule, both containers and their keep-alive alarms. Teardown is still done with the staging tool.",
 };
 

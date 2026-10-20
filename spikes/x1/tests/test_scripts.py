@@ -245,6 +245,8 @@ def test_campaign_deploys_at_s45_and_s75_and_waits_for_the_end():
     assert c.end == {"reason": "end"} and c.refused == [] and c.notes == []
     record = c.record()
     assert record["runId"] == current["runId"] and record["t0"] == current["t0"]
+    # Amendment 1, item 7: without a tailEnd in the pointer, the tail is 60 s past the soak.
+    assert record["tailEnd"] == current["soakEnd"] + 60_000
     assert said[0].startswith("T0 ")
 
 
@@ -296,7 +298,7 @@ def test_campaign_notes_a_late_deploy_a_missing_record_and_a_missing_end():
     c = campaign.run_campaign(ports, clock.now, 60 * MIN)
     assert any("ui deploy started" in n and "late" in n for n in c.notes)
     assert "the transport deploy left no record" in c.notes
-    assert "no end.json within 15 minutes of the soak's end" in c.notes
+    assert "no end.json within 15 minutes of the recovery tail's end" in c.notes
 
 
 def test_campaign_helpers(tmp_path, monkeypatch):

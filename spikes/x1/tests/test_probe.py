@@ -73,6 +73,11 @@ class Recorder:
             out.extend(json.loads(line) for line in lines[1:])
         return out
 
+    def headers(self) -> list[dict]:
+        batches = [p for p in self.stored if "/batch/" in p]
+        ordered = sorted(batches, key=lambda p: int(p.rsplit("/", 1)[1]))
+        return [json.loads(self.stored[p].decode().splitlines()[0]) for p in ordered]
+
     def manifest(self) -> dict | None:
         for path, body in self.stored.items():
             if "/manifest/" in path:
@@ -158,6 +163,19 @@ def test_happy_path_batches_and_manifest(tmp_path):
         == len([p for p in rec.stored if "/batch/" in p])
     )
     assert rec.manifest()["events"] == len(events)
+    # Each batch names the span it accounts for: contiguous, from the probe's start to its cut,
+    # and every event it holds lies in it.
+    headers = rec.headers()
+    assert headers[0]["fromMono"] == of(events, "probe-start")[0]["mono"]
+    for before, after in zip(headers, headers[1:], strict=False):
+        assert after["fromMono"] == before["cutMono"] and after["fromWall"] == before["cutWall"]
+    for path, header in zip(
+        sorted((p for p in rec.stored if "/batch/" in p), key=lambda p: int(p.rsplit("/", 1)[1])),
+        headers,
+        strict=True,
+    ):
+        lines = [json.loads(line) for line in rec.stored[path].decode().splitlines()[1:]]
+        assert all(header["fromMono"] <= e["mono"] <= header["cutMono"] for e in lines)
     for route in ("p1", "p6"):
         sends, replies = of(events, "send", route), of(events, "reply", route)
         assert len(sends) >= 3 and len(replies) == len(sends)
