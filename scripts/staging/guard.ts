@@ -24,6 +24,8 @@ export interface Deployment {
   readonly state: DeploymentState;
   /** Set as soon as the Access application exists. */
   readonly accessAppId?: string;
+  /** A create intent for the Access application (see CreateIntent). */
+  readonly accessCreateStartedAt?: string;
   /**
    * Set just before a Worker upload and cleared when it succeeds. If the next command finds it
    * still set, that upload was interrupted, and the command records `uploadInterruptedAt`.
@@ -66,6 +68,7 @@ export interface TunnelRecord {
   /** The Tunnel's name: the deployment's. */
   readonly name: string;
   readonly id?: string;
+  readonly createStartedAt?: string;
   /**
    * The public hostname `<deployment>-tunnel.<zone>`, when the manifest asks for one. It has
    * its own owner-only Access application, a proxied DNS record to the Tunnel, and a route to
@@ -73,7 +76,9 @@ export interface TunnelRecord {
    */
   readonly hostname?: string;
   readonly accessAppId?: string;
+  readonly accessCreateStartedAt?: string;
   readonly dnsRecordId?: string;
+  readonly dnsCreateStartedAt?: string;
 }
 
 /** An HTTP Workers VPC service on the deployment's Tunnel, to 127.0.0.1:<port>. */
@@ -83,7 +88,17 @@ export interface VpcServiceRecord {
   readonly binding: string;
   readonly port: number;
   readonly id?: string;
+  readonly createStartedAt?: string;
 }
+
+/*
+ * Create intents. Each `…CreateStartedAt` is written before the tool asks Cloudflare to create
+ * the resource and removed together with recording its ID. A command that finds one set does
+ * not know whether that create took effect, or will: it lists the resource, waits the settle
+ * time once if it is not there, and lists again (ops.ts, settleCreates). It adopts only a
+ * resource with exactly the name and properties the tool gave it, and refuses anything else.
+ * Without an intent, an unrecorded resource under the tool's name is never adopted.
+ */
 
 export interface StagingConfig {
   readonly accountId: string;
@@ -735,29 +750,12 @@ export function validateDeployConfig(
 }
 
 /**
- * Picks the Access application that protects a deployment's hostname, or returns undefined when
- * there is none and one must be created. An application without a recorded ID is claimed only
- * if it carries the deployment's own name: that is the one an interrupted deploy created before
- * it could record the ID. Any other application on the hostname is refused.
+ * Whether an Access application has the name and type the tool gives the one on `target`. Only
+ * such an application is adopted, and only while a create intent for it is recorded: a name
+ * alone proves nothing (ops.ts, settleCreates).
  */
-export function claimAccessApp(
-  apps: readonly AccessApp[],
-  target: ProtectedHost,
-): AccessApp | undefined {
-  const onHost = apps.filter((app) => app.domain === target.hostname);
-  if (onHost.length === 0) return undefined;
-  const [only] = onHost;
-  const ours =
-    onHost.length === 1 &&
-    only !== undefined &&
-    (only.id === target.accessAppId ||
-      (target.accessAppId === undefined && only.name === target.name));
-  if (!ours) {
-    throw new Error(
-      `${target.hostname} has an Access application this tool did not record; inspect it in the Zero Trust dashboard`,
-    );
-  }
-  return only;
+export function accessAppFits(app: AccessApp, target: ProtectedHost): boolean {
+  return app.domain === target.hostname && app.name === target.name && app.type === "self_hosted";
 }
 
 /**
@@ -772,23 +770,24 @@ export interface ProtectedHost {
 
 /**
  * Picks the resource a deployment owns among those Cloudflare lists under the name the tool
- * gave it: the one with the recorded ID, or, when an interrupted run created it before its ID
- * was recorded, the only one, if `unrecorded` accepts it. Returns undefined when there is none.
- * Anything else under the name, such as a second resource or one whose ID differs from the
- * record, belongs to someone else and is refused, never adopted.
+ * gave it: the one with the recorded ID, or none. Returns undefined when there is none. Without
+ * a recorded ID, the only one is adopted only if `adoptable` is given, which a caller does only
+ * while a create intent is recorded, and accepts it. Anything else under the name, such as a
+ * second resource or one whose ID differs from the record, belongs to someone else and is
+ * refused, never adopted.
  */
 export function claimNamed<T extends { readonly id: string }>(
   found: readonly T[],
   recordedId: string | undefined,
   label: string,
-  unrecorded: (resource: T) => boolean = () => true,
+  adoptable?: (resource: T) => boolean,
 ): T | undefined {
   if (found.length === 0) return undefined;
   const [only] = found;
   const ours =
     found.length === 1 &&
     only !== undefined &&
-    (recordedId === undefined ? unrecorded(only) : only.id === recordedId);
+    (recordedId === undefined ? adoptable?.(only) === true : only.id === recordedId);
   if (!ours) {
     throw new Error(
       `${label} exists but this deployment did not record it; inspect it in the dashboard`,
@@ -1075,6 +1074,7 @@ const DEPLOYMENT_KEYS = [
   "expiresAt",
   "state",
   "accessAppId",
+  "accessCreateStartedAt",
   "uploadStartedAt",
   "uploadInterruptedAt",
   "containers",
@@ -1084,7 +1084,15 @@ const DEPLOYMENT_KEYS = [
   "vpcServices",
 ];
 
-const TUNNEL_IDS = ["id", "hostname", "accessAppId", "dnsRecordId"];
+const TUNNEL_IDS = [
+  "id",
+  "createStartedAt",
+  "hostname",
+  "accessAppId",
+  "accessCreateStartedAt",
+  "dnsRecordId",
+  "dnsCreateStartedAt",
+];
 
 function validTunnel(value: unknown): boolean {
   if (value === undefined) return true;
@@ -1106,12 +1114,13 @@ function validVpcServices(value: unknown): boolean {
     value.every(
       (s) =>
         isObject(s) &&
-        keysOutside(s, ["name", "binding", "port", "id"]).length === 0 &&
+        keysOutside(s, ["name", "binding", "port", "id", "createStartedAt"]).length === 0 &&
         typeof s.name === "string" &&
         s.name.startsWith(STAGING_PREFIX) &&
         typeof s.binding === "string" &&
         isPort(s.port) &&
-        (s.id === undefined || (typeof s.id === "string" && s.id !== "")),
+        (s.id === undefined || (typeof s.id === "string" && s.id !== "")) &&
+        (s.createStartedAt === undefined || typeof s.createStartedAt === "string"),
     )
   );
 }
@@ -1159,6 +1168,7 @@ export function parseRegistry(json: unknown): Deployment[] {
       !text("expiresAt") ||
       !STATES.includes(d.state as string) ||
       (d.accessAppId !== undefined && !text("accessAppId")) ||
+      (d.accessCreateStartedAt !== undefined && !text("accessCreateStartedAt")) ||
       (d.uploadStartedAt !== undefined && !text("uploadStartedAt")) ||
       (d.uploadInterruptedAt !== undefined && !text("uploadInterruptedAt")) ||
       !names(d.containers) ||

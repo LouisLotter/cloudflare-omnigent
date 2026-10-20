@@ -210,6 +210,16 @@ function text(entry: Record<string, unknown>, key: string, what: string): string
   return value;
 }
 
+/** Access applications, each with the ID, name and domain the guard needs, as listed. */
+export function accessAppsOf(listing: unknown): AccessApp[] {
+  return entries(listing, "Access application").map((app) => {
+    text(app, "id", "an Access application");
+    text(app, "name", "an Access application");
+    if (typeof app.domain !== "string") throw new Error("an Access application without a domain");
+    return app as unknown as AccessApp;
+  });
+}
+
 /** The Cloudflare Tunnels in a `cf tunnels list` page that exist: not deleted, cloudflared. */
 export function tunnelsOf(listing: unknown): TunnelInfo[] {
   return entries(listing, "Tunnel").flatMap((t) => {
@@ -411,15 +421,9 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
   return {
     accountIds: () => (cf(["accounts", "list"]) as { id: string }[]).map((a) => a.id),
     listAccessApps: (hostname) =>
-      cf([
-        "zero-trust",
-        "access",
-        "applications",
-        "list",
-        "--domain",
-        hostname,
-        "--exact",
-      ]) as AccessApp[],
+      accessAppsOf(
+        listAll(["zero-trust", "access", "applications", "list", "--domain", hostname, "--exact"]),
+      ).filter((app) => app.domain === hostname),
     createAccessApp: (body) => {
       const created = cf([
         "zero-trust",

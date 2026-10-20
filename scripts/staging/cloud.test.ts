@@ -434,7 +434,7 @@ describe("CLI wiring", () => {
     ]);
   });
 
-  it("asks Access only about the exact hostname", () => {
+  it("asks Access only about the exact hostname, page by page, and keeps only that hostname", () => {
     cloud.listAccessApps("cfo-stg-a.example.com");
     expect(calls.at(-1)?.args).toEqual([
       "zero-trust",
@@ -444,7 +444,26 @@ describe("CLI wiring", () => {
       "--domain",
       "cfo-stg-a.example.com",
       "--exact",
+      "--per-page",
+      "100",
+      "--page",
+      "1",
     ]);
+    const listing = cliCloud(config, WORKER, () =>
+      ok(
+        JSON.stringify({
+          result: [
+            { id: "a1", name: "cfo-stg-a", domain: "cfo-stg-a.example.com" },
+            { id: "a2", name: "Other", domain: "other.example.com" },
+          ],
+        }),
+      ),
+    );
+    expect(listing.listAccessApps("cfo-stg-a.example.com").map((app) => app.id)).toEqual(["a1"]);
+    const broken = cliCloud(config, WORKER, () =>
+      ok(JSON.stringify({ result: [{ id: "a1", name: "x" }] })),
+    );
+    expect(() => broken.listAccessApps("h")).toThrow("without a domain");
   });
 
   it("runs Wrangler's CLI directly, with exactly the guarded arguments", () => {

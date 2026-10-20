@@ -125,6 +125,9 @@ class FakeCloud implements Cloud {
   readonly secrets = new Map<string, Record<string, string>>();
   /** The process dies right after the call that starts with this takes effect. */
   crashAfter: string | undefined;
+  /** The next create whose call starts with `prefix` takes effect only `delay` later. */
+  lateCreate: { prefix: string; delay: number; die: boolean } | undefined;
+  readonly lateEffects: { landAt: number; apply: () => void }[] = [];
   /** Deletes that report success but leave the resource in place. */
   tunnelDeleteKeeps = false;
   dnsDeleteKeeps = false;
@@ -148,6 +151,24 @@ class FakeCloud implements Cloud {
     this.calls.push(call);
     this.check();
     if (this.crashAfter !== undefined && call.startsWith(this.crashAfter)) this.die();
+  }
+
+  /**
+   * A create's effect. With `lateCreate` set for this call, the effect lands `delay` later and
+   * the caller never hears back: its process dies, or its request fails.
+   */
+  private effect(call: string, apply: () => void): void {
+    const late = this.lateCreate;
+    if (late === undefined || !call.startsWith(late.prefix)) {
+      apply();
+      this.did(call);
+      return;
+    }
+    this.lateCreate = undefined;
+    this.calls.push(call);
+    this.lateEffects.push({ landAt: real + late.delay, apply });
+    if (late.die) this.die();
+    throw new Error(`${call}: no answer`);
   }
 
   private protectedByOwner(hostname: string): boolean {
@@ -182,6 +203,11 @@ class FakeCloud implements Cloud {
       this.lateUploads.splice(this.lateUploads.indexOf(late), 1);
       this.workers.set(late.name, late.hostname);
     }
+    for (const late of [...this.lateEffects]) {
+      if (late.landAt > real) continue;
+      this.lateEffects.splice(this.lateEffects.indexOf(late), 1);
+      late.apply();
+    }
     this.check();
   }
 
@@ -199,8 +225,9 @@ class FakeCloud implements Cloud {
   createAccessApp(body: Record<string, unknown>): string {
     this.tick();
     const id = `app-${this.nextId++}`;
-    this.apps.set(id, { ...(body as unknown as AccessApp), id });
-    this.did(`access.create ${String(body.name)}`);
+    this.effect(`access.create ${String(body.name)}`, () =>
+      this.apps.set(id, { ...(body as unknown as AccessApp), id }),
+    );
     if (this.deployFault === "crash-after-access") this.die();
     return id;
   }
@@ -345,8 +372,9 @@ class FakeCloud implements Cloud {
   createTunnel(name: string): string {
     this.tick();
     const id = `tunnel-${this.nextId++}`;
-    this.tunnels_.set(id, { name, ingress: [], token: `${TOKEN}-${id}` });
-    this.did(`tunnel.create ${name}`);
+    this.effect(`tunnel.create ${name}`, () =>
+      this.tunnels_.set(id, { name, ingress: [], token: `${TOKEN}-${id}` }),
+    );
     return id;
   }
   tunnelIngress(id: string): IngressRule[] {
@@ -381,8 +409,9 @@ class FakeCloud implements Cloud {
   createDnsRecord(name: string, target: string, _comment: string): string {
     this.tick();
     const id = `dns-${this.nextId++}`;
-    this.dns.set(id, { id, name, type: "CNAME", content: target, proxied: true });
-    this.did(`dns.create ${name}`);
+    this.effect(`dns.create ${name}`, () =>
+      this.dns.set(id, { id, name, type: "CNAME", content: target, proxied: true }),
+    );
     return id;
   }
   deleteDnsRecord(id: string): void {
@@ -399,8 +428,9 @@ class FakeCloud implements Cloud {
   createVpcService(name: string, tunnelId: string, port: number): string {
     this.tick();
     const id = `vpc-${this.nextId++}`;
-    this.vpc.set(id, { id, name, type: "http", ipv4: "127.0.0.1", tunnelId, httpPort: port });
-    this.did(`vpc.create ${name}`);
+    this.effect(`vpc.create ${name}`, () =>
+      this.vpc.set(id, { id, name, type: "http", ipv4: "127.0.0.1", tunnelId, httpPort: port }),
+    );
     return id;
   }
   deleteVpcService(id: string): void {
@@ -567,6 +597,7 @@ function restart(): void {
   cloud.imageDeleteKeeps = false;
   cloud.containerDeleteKeeps = false;
   cloud.crashAfter = undefined;
+  cloud.lateCreate = undefined;
   cloud.tunnelDeleteKeeps = false;
   cloud.dnsDeleteKeeps = false;
   cloud.vpcDeleteKeeps = false;
@@ -1384,7 +1415,7 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
   it.each([
     ["the Tunnel", "tunnelDeleteKeeps", "Cloudflare Tunnel cfo-stg-a still exists"],
     ["the DNS record", "dnsDeleteKeeps", `DNS record ${HOST} still exists`],
-    ["a VPC service", "vpcDeleteKeeps", "a Workers VPC service still exists"],
+    ["a VPC service", "vpcDeleteKeeps", "Workers VPC service cfo-stg-a-x1-vpc still exists"],
   ] as const)("keeps Access and the record while %s survives its delete", (_, fault, message) => {
     deploy(ctx, request("a", 7, withManifest("a")));
     cloud[fault] = true;
@@ -1446,7 +1477,9 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
         type: "self_hosted",
         policies: [{ decision: "allow", include: [{ email: { email: OWNER } }] }],
       });
-      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("did not record");
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(
+        "this deployment did not create",
+      );
       expect(
         cloud.calls.some((c) => c.startsWith("tunnel.create") || c.startsWith("dns.create")),
       ).toBe(false);
@@ -1625,6 +1658,125 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
   });
 });
 
+describe("review r1, finding 6: creates whose effect shows up late", () => {
+  const POINTS = [
+    "access.create cfo-stg-a ",
+    "access.create cfo-stg-a-tunnel",
+    "tunnel.create",
+    "dns.create",
+    "vpc.create",
+  ];
+  const everything = () => cloud.tunnelResources() + cloud.apps.size + cloud.workers.size;
+  // The Worker's application is created first, so its prefix catches it before the Tunnel's.
+  const slept = () => cloud.calls.filter((c) => c.startsWith("sleep")).length;
+
+  it.each(POINTS.flatMap((point) => [[point, true] as const, [point, false] as const]))(
+    "a rerun waits for %s that lands late (process died: %s), adopts it and creates no other",
+    (point, die) => {
+      const path = withManifest("a");
+      cloud.lateCreate = { prefix: point.trim(), delay: SETTLE / 2, die };
+      expect(() => deploy(ctx, request("a", 7, path))).toThrow(die ? ProcessLost : "no answer");
+      restart();
+      expect(cloud.lateEffects).toHaveLength(1);
+      cloud.calls.length = 0;
+      deploy(ctx, request("a", 7, path));
+      expect(slept()).toBe(1);
+      expect([cloud.apps.size, cloud.tunnels_.size, cloud.dns.size, cloud.vpc.size]).toEqual([
+        2, 1, 1, 1,
+      ]);
+      expect(record()?.state).toBe("deployed");
+      expect(JSON.stringify(record())).not.toContain("StartedAt");
+      teardown(ctx, "cfo-stg-a");
+      elapse(SETTLE);
+      cloud.tick();
+      expect(everything()).toBe(0);
+      expect(cloud.violations).toEqual([]);
+    },
+  );
+
+  it.each(POINTS.map((point) => [point]))(
+    "a teardown waits for %s that lands late, then removes it with the rest",
+    (point) => {
+      cloud.lateCreate = { prefix: point.trim(), delay: SETTLE - 1_000, die: true };
+      expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+      restart();
+      teardown(ctx, "cfo-stg-a");
+      expect(store.load()).toEqual([]);
+      // Nothing the interrupted run started can land after the record is gone.
+      elapse(SETTLE);
+      cloud.tick();
+      expect(everything()).toBe(0);
+      expect(cloud.violations).toEqual([]);
+    },
+  );
+
+  it("waits once for a create that never lands, then creates afresh", () => {
+    const path = withManifest("a");
+    cloud.createTunnel = function (this: FakeCloud) {
+      this.calls.push("tunnel.create (refused)");
+      throw new Error("cf tunnels failed: [1000]");
+    };
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("[1000]");
+    expect(record()?.tunnel?.createStartedAt).toBeDefined();
+    delete (cloud as Partial<FakeCloud>).createTunnel;
+    cloud.calls.length = 0;
+    deploy(ctx, request("a", 7, path));
+    expect(slept()).toBe(1);
+    expect(cloud.tunnels_.size).toBe(1);
+    expect(record()?.tunnel?.createStartedAt).toBeUndefined();
+  });
+
+  it("a teardown that waited for an interrupted upload does not wait again", () => {
+    cloud.lateCreate = { prefix: "vpc.create", delay: SETTLE - 1_000, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    // The record also shows an interrupted upload, as if one had been started.
+    const current = record();
+    if (!current) throw new Error("missing record");
+    store.update((all) =>
+      all.map((d) => ({ ...d, uploadStartedAt: new Date(clock).toISOString() })),
+    );
+    cloud.calls.length = 0;
+    teardown(ctx, "cfo-stg-a");
+    expect(slept()).toBe(1);
+    expect(everything()).toBe(0);
+  });
+
+  it("refuses to adopt a late resource that is not what it started to create", () => {
+    cloud.lateCreate = { prefix: "dns.create", delay: 1_000, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    elapse(2_000);
+    cloud.tick();
+    const [id, dns] = [...cloud.dns][0] ?? [];
+    if (!id || !dns) throw new Error("missing record");
+    cloud.dns.set(id, { ...dns, content: "elsewhere.example.net" });
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+      "is not what this deployment started to create",
+    );
+    expect(record()?.state).toBe("deleting");
+    expect(cloud.apps.size).toBe(2);
+    expect(cloud.dns.has(id)).toBe(true);
+  });
+
+  it("keeps the record while a create intent cannot be resolved", () => {
+    cloud.lateCreate = { prefix: "tunnel.create", delay: SETTLE / 2, die: true };
+    expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow(ProcessLost);
+    restart();
+    cloud.tunnels = () => {
+      throw new Error("cf tunnels failed: [10000]");
+    };
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("[10000]");
+    expect(record()?.tunnel?.createStartedAt).toBeDefined();
+    expect(cloud.apps.size).toBe(2);
+    delete (cloud as Partial<FakeCloud>).tunnels;
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect(everything()).toBe(0);
+  });
+});
+
 describe("IR-002: only closed Wrangler configurations deploy", () => {
   const open: Record<string, Partial<DeployConfigView>> = {
     "workers.dev enabled": { effective: { workers_dev: true, preview_urls: false } },
@@ -1784,23 +1936,44 @@ describe("Access applications the tool cannot vouch for", () => {
   };
   const deployedWorker = () => cloud.calls.some((call) => call.startsWith("worker.deploy"));
 
-  it("refuses an application on the hostname with another name, and teardown leaves it alone", () => {
+  it("refuses an application on the hostname with another name, before recording anything", () => {
     foreign({ name: "someone-else" });
-    expect(() => deploy(ctx, request())).toThrow("did not record");
+    expect(() => deploy(ctx, request())).toThrow("this deployment did not create");
     expect(deployedWorker()).toBe(false);
-    teardown(ctx, "cfo-stg-a");
-    expect(cloud.apps.has("foreign")).toBe(true);
     expect(store.load()).toEqual([]);
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("no recorded deployment");
+    expect(cloud.apps.has("foreign")).toBe(true);
   });
 
+  // Review r1, finding 2: a name alone proves nothing. Owner-only or not, an application the
+  // tool did not record is never adopted, rewritten or deleted.
   it.each([
+    ["an owner-only policy", {}],
     ["a bypass policy", { policies: [{ decision: "bypass", include: [{ everyone: {} }] }] }],
     ["an everyone rule", { policies: [{ decision: "allow", include: [{ everyone: {} }] }] }],
     ["no policies", { policies: [] }],
-  ])("refuses a same-named application with %s", (_, overrides) => {
-    foreign(overrides);
-    expect(() => deploy(ctx, request())).toThrow("not owner-only");
+  ])("refuses a same-named application with %s and leaves it alone", (_, overrides) => {
+    foreign({ same_site_cookie_attribute: "none", ...overrides });
+    const before = cloud.apps.get("foreign");
+    expect(() => deploy(ctx, request())).toThrow("this deployment did not create");
     expect(deployedWorker()).toBe(false);
+    expect(cloud.calls.filter((c) => /^access\.(create|update|delete)/.test(c))).toEqual([]);
+    expect(cloud.apps.get("foreign")).toEqual(before);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("refuses an application that appears under a recorded hostname without an intent", () => {
+    deploy(ctx, request());
+    teardown(ctx, "cfo-stg-a");
+    // Recorded, then gone, then someone else's appears: a redeploy records nothing of it.
+    deploy(ctx, request("b"));
+    const app = cloud.apps.get("app-2");
+    if (!app) throw new Error("missing app");
+    cloud.apps.delete("app-2");
+    cloud.apps.set("theirs", { ...app, id: "theirs" });
+    expect(() => deploy(ctx, request("b"))).toThrow("did not record");
+    expect(() => teardown(ctx, "cfo-stg-b")).not.toThrow();
+    expect(cloud.apps.has("theirs")).toBe(true);
   });
 
   it("refuses to redeploy behind a recorded application whose policy was widened", () => {
@@ -1949,6 +2122,10 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         "dns.create",
         "vpc.create",
       ),
+      // One create takes effect late, and its caller dies or hears nothing.
+      late: fc.constantFrom("none", "access.create", "tunnel.create", "dns.create", "vpc.create"),
+      lateCreateDelay: fc.integer({ min: 0, max: SETTLE - 1 }),
+      lateDies: fc.boolean(),
       overlap: fc.constantFrom("none", "teardown", "sweep"),
     }),
     fc.record({
@@ -1995,6 +2172,10 @@ describe("model check: no Worker is ever reachable without its Access applicatio
               const crash =
                 op.crash === "tunnel-app" ? `access.create cfo-stg-${op.suffix}-tunnel` : op.crash;
               cloud.crashAfter = op.crash === "none" ? undefined : crash;
+              cloud.lateCreate =
+                op.late === "none"
+                  ? undefined
+                  : { prefix: op.late, delay: op.lateCreateDelay, die: op.lateDies };
               const path = op.manifest
                 ? withManifest(op.suffix, TUNNEL_MANIFEST, op.resources)
                 : op.resources
@@ -2050,10 +2231,11 @@ describe("model check: no Worker is ever reachable without its Access applicatio
         expect(cloud.violations).toEqual([]);
         expect(store.load()).toEqual([]);
         expect(cloud.workers.size + cloud.apps.size).toBe(0);
-        // Every lost upload has had its time; none may land after the cleanup.
+        // Every lost upload and late create has had its time; none may land after the cleanup.
         elapse(SETTLE);
         cloud.tick();
-        expect(cloud.workers.size).toBe(0);
+        expect(cloud.workers.size + cloud.apps.size).toBe(0);
+        expect(cloud.lateEffects).toEqual([]);
         expect(cloud.buckets.size + cloud.containerApps_.size + cloud.images.size).toBe(0);
         expect(cloud.tunnelResources()).toBe(0);
         expect(cloud.violations).toEqual([]);

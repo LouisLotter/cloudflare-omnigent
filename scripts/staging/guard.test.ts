@@ -4,12 +4,12 @@ import {
   type AccessApp,
   ALLOWED_CONFIG_KEYS,
   accessAppBody,
+  accessAppFits,
   appNameFor,
   assertAccount,
   assertManaged,
   assertOwnerOnly,
   assertSameSite,
-  claimAccessApp,
   claimNamed,
   type DeployConfigView,
   type Deployment,
@@ -523,22 +523,15 @@ describe("interrupted uploads", () => {
 });
 
 describe("Access application checks", () => {
-  it("creates a new application when the hostname has none", () => {
-    expect(claimAccessApp([], deployment)).toBeUndefined();
-    expect(claimAccessApp([app({ domain: "other.example.com" })], deployment)).toBeUndefined();
-  });
-
-  it("claims the recorded application, or an unrecorded one with the deployment's name", () => {
-    expect(claimAccessApp([app()], { ...deployment, accessAppId: "app-1" })?.id).toBe("app-1");
-    expect(claimAccessApp([app()], deployment)?.id).toBe("app-1");
-  });
-
-  it("refuses applications it did not record", () => {
-    expect(() => claimAccessApp([app({ name: "someone-else" })], deployment)).toThrow();
-    expect(() => claimAccessApp([app()], { ...deployment, accessAppId: "app-2" })).toThrow();
-    expect(() =>
-      claimAccessApp([app(), app({ id: "app-2" })], { ...deployment, accessAppId: "app-1" }),
-    ).toThrow();
+  it("recognises only the application the tool would have created on the hostname", () => {
+    expect(accessAppFits(app(), deployment)).toBe(true);
+    for (const other of [
+      app({ name: "someone-else" }),
+      app({ domain: "other.example.com" }),
+      app({ type: "bookmark" }),
+    ]) {
+      expect(accessAppFits(other, deployment)).toBe(false);
+    }
   });
 
   it("accepts only owner-only applications on the exact hostname", () => {
@@ -708,15 +701,18 @@ describe("names and shapes of the manifest's resources", () => {
     ).toBe(false);
   });
 
-  it("claims only the recorded resource, or an unrecorded one the caller accepts", () => {
+  it("claims only the recorded resource, or, while a create is pending, one the caller accepts", () => {
     const a = { id: "a" };
     const b = { id: "b" };
     expect(claimNamed([], "a", "X")).toBeUndefined();
+    expect(claimNamed([], undefined, "X")).toBeUndefined();
     expect(claimNamed([a], "a", "X")).toBe(a);
-    expect(claimNamed([a], undefined, "X")).toBe(a);
-    expect(() => claimNamed([a], undefined, "X", () => false)).toThrow(
+    expect(claimNamed([a], undefined, "X", () => true)).toBe(a);
+    // A name alone adopts nothing.
+    expect(() => claimNamed([a], undefined, "X")).toThrow(
       "X exists but this deployment did not record it",
     );
+    expect(() => claimNamed([a], undefined, "X", () => false)).toThrow("did not record");
     expect(() => claimNamed([b], "a", "X")).toThrow("did not record");
     expect(() => claimNamed([a, b], "a", "X")).toThrow("did not record");
     expect(() => claimNamed([a, b], undefined, "X")).toThrow("did not record");
@@ -841,6 +837,34 @@ describe("registry file", () => {
       { ...deployment, name: "cfo-stg-b", accessAppId: "x", state: "deployed" as const },
     ];
     expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
+  });
+
+  it("round-trips create intents and refuses malformed ones", () => {
+    const at = "2026-10-20T12:00:00.000Z";
+    const list = [
+      {
+        ...deployment,
+        accessCreateStartedAt: at,
+        tunnel: {
+          name: "cfo-stg-a",
+          createStartedAt: at,
+          hostname: "cfo-stg-a-tunnel.example.com",
+          accessCreateStartedAt: at,
+          dnsCreateStartedAt: at,
+        },
+        vpcServices: [{ name: "cfo-stg-a-x", binding: "X", port: 1, createStartedAt: at }],
+      },
+    ];
+    expect(parseRegistry(JSON.parse(serializeRegistry(list)))).toEqual(list);
+    for (const bad of [
+      { accessCreateStartedAt: "" },
+      { tunnel: { name: "cfo-stg-a", dnsCreateStartedAt: 7 } },
+      { vpcServices: [{ name: "cfo-stg-a-x", binding: "X", port: 1, createStartedAt: 7 }] },
+    ]) {
+      expect(() => parseRegistry({ version: 3, deployments: [{ ...deployment, ...bad }] })).toThrow(
+        "malformed",
+      );
+    }
   });
 
   it("round-trips the manifest's resources and refuses malformed ones", () => {
