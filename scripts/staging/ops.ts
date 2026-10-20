@@ -8,7 +8,9 @@
 //     overlap, even when started from different worktrees. The lock outlives a crashed command
 //     until its child processes exit (lock.ts). Registry updates are atomic (Store.update).
 //   - The Worker configuration is checked before the first cloud call (validateDeployConfig):
-//     the staging account, no other route, no resource the tool does not manage.
+//     the staging account, no other route, no resource the tool does not manage. The one way
+//     out of the deployment it allows is a Durable Object binding to another deployment of the
+//     same owner, which the registry shows deployed.
 //   - Access is created, or claimed and checked, before the Worker is deployed, and a deploy
 //     counts only once the Worker is found in the staging account.
 //   - Teardown removes Access only after Cloudflare confirms that the Worker no longer exists.
@@ -136,14 +138,21 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const name = resourceName(request.suffix);
   const hostname = hostnameFor(name, ctx.config.zone);
   // Local checks first: nothing below runs for a configuration that could reach outside
-  // staging.
+  // staging. A cross-script Durable Object binding is checked against the registry here, and
+  // again under the lock just before anything is created.
   const view = ctx.readConfig(request.configPath);
-  validateDeployConfig(view, ctx.config.accountId, name);
+  const check = (deployments: readonly Deployment[]) =>
+    validateDeployConfig(view, ctx.config.accountId, name, {
+      registry: { owner: request.owner, deployments },
+    });
+  check(ctx.store.load());
   const declared = declaredResources(view.raw, name);
   return locked(ctx, name, () => {
     const now = ctx.now();
     const expiresAt = expiry(now, request.days);
-    const found = ctx.store.load().find((d) => d.name === name);
+    const registry = ctx.store.load();
+    check(registry);
+    const found = registry.find((d) => d.name === name);
     const existing = found && markInterrupted(found, now);
     if (existing?.state === "deleting") {
       throw new Error(`${name} is being torn down; run teardown --suffix ${request.suffix} first`);

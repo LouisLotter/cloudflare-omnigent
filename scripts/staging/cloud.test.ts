@@ -320,6 +320,30 @@ describe("Wrangler's own reading of a configuration", () => {
     expect(() => check(write("policy-ssh.json", sshPolicy))).toThrow('"ssh"');
   });
 
+  it("accepts a Durable Object of another deployed deployment only with the registry", () => {
+    const path = write("cross-script.json", {
+      ...closed,
+      durable_objects: {
+        bindings: [{ name: "RUN", class_name: "RunDO", script_name: "cfo-stg-y" }],
+      },
+    });
+    const y: Deployment = {
+      name: "cfo-stg-y",
+      hostname: "cfo-stg-y.example.com",
+      owner: "lead",
+      createdAt: "2026-10-20T12:00:00.000Z",
+      expiresAt: "2026-10-22T12:00:00.000Z",
+      state: "deployed",
+    };
+    const view = readWranglerConfig(path, WORKER);
+    const registry = { owner: "lead", deployments: [y] };
+    expect(() => validateDeployConfig(view, ACCOUNT, "cfo-stg-x", { registry })).not.toThrow();
+    expect(() => check(path)).toThrow('"script_name"');
+    expect(() =>
+      validateDeployConfig(view, ACCOUNT, "cfo-stg-x", { registry: { ...registry, owner: "z" } }),
+    ).toThrow("belongs to lead");
+  });
+
   it("accepts the checked-in Worker configuration", () => {
     expect(() => check(join(WORKER, "wrangler.jsonc"))).not.toThrow();
   });

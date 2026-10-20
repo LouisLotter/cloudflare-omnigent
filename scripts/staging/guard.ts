@@ -272,24 +272,82 @@ function keysOutside(value: unknown, allowed: readonly string[]): string[] {
   return Object.keys(value).filter((key) => !allowed.includes(key));
 }
 
+function doBindings(raw: Readonly<Record<string, unknown>>): unknown[] {
+  const objects = raw.durable_objects as { bindings?: unknown } | undefined;
+  return Array.isArray(objects?.bindings) ? objects.bindings : [];
+}
+
+/**
+ * A Durable Object binding to another Worker reaches that Worker's stored objects, so it may
+ * name only a staging deployment of the same owner that is deployed: one this tool created,
+ * whose objects belong to the same work, and whose teardown is recorded.
+ */
+function crossScriptProblems(
+  raw: Readonly<Record<string, unknown>>,
+  name: string,
+  registry: NonNullable<ConfigAllowances["registry"]>,
+): string[] {
+  const problems: string[] = [];
+  for (const [i, entry] of doBindings(raw).entries()) {
+    const script = (entry as Record<string, unknown> | null)?.script_name;
+    if (script === undefined) continue;
+    const target = registry.deployments.find((d) => d.name === script);
+    let why: string | undefined;
+    if (typeof script !== "string" || !script.startsWith(STAGING_PREFIX)) {
+      why = "is not a staging deployment";
+    } else if (script === name) {
+      why = "is this deployment itself; leave script_name out";
+    } else if (!target) {
+      why = "has no record in the staging registry";
+    } else if (target.owner !== registry.owner) {
+      why = `belongs to ${target.owner}, not ${registry.owner}`;
+    } else if (target.state !== "deployed") {
+      why = `is ${target.state}, not deployed`;
+    }
+    if (why) {
+      problems.push(
+        `durable_objects.bindings[${i}] "script_name" ${JSON.stringify(script)} ${why}`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * What a configuration may use besides its own resources, given by the caller because it
+ * depends on state outside the file.
+ */
+export interface ConfigAllowances {
+  /**
+   * The registry and the deploying owner. With them, a Durable Object binding may name another
+   * Worker in `script_name`, if that Worker is a staging deployment of the same owner in state
+   * `deployed`. The bound Worker keeps its own migrations.
+   */
+  readonly registry?: { readonly owner: string; readonly deployments: readonly Deployment[] };
+}
+
 /**
  * The nested structures of the allowed keys that could still reach outside the deployment,
  * each with the keys it may use:
- *   - a Durable Object binding names only its own class: no `script_name` or `environment`,
- *     which would bind another Worker's objects;
+ *   - a Durable Object binding names only its own class: no `environment`, and no
+ *     `script_name` unless the registry allows it (crossScriptProblems), since either would
+ *     bind another Worker's objects;
  *   - a migration only creates, renames or deletes this Worker's own classes: no
  *     `transferred_classes`, which would move another Worker's stored objects into this one;
  *   - observability stays inside the Worker: no `destinations`, which would export logs or
  *     traces to existing account-level destinations.
  */
-function nestedShapes(raw: Readonly<Record<string, unknown>>): [string, unknown, string[]][] {
+function nestedShapes(
+  raw: Readonly<Record<string, unknown>>,
+  allowances: ConfigAllowances,
+): [string, unknown, string[]][] {
   const shapes: [string, unknown, string[]][] = [];
   const objects = raw.durable_objects as { bindings?: unknown } | undefined;
   shapes.push(["durable_objects", objects, ["bindings"]]);
-  const bindings = Array.isArray(objects?.bindings) ? objects.bindings : [];
-  bindings.forEach((binding, i) => {
-    shapes.push([`durable_objects.bindings[${i}]`, binding, ["name", "class_name"]]);
-  });
+  const bindingKeys = ["name", "class_name", ...(allowances.registry ? ["script_name"] : [])];
+  for (const [i, binding] of doBindings(raw).entries()) {
+    shapes.push([`durable_objects.bindings[${i}]`, binding, bindingKeys]);
+  }
   const migrations = Array.isArray(raw.migrations) ? raw.migrations : [];
   migrations.forEach((migration, i) => {
     shapes.push([
@@ -450,11 +508,13 @@ function resourceProblems(
  *     default to on.
  *   - Another resource: anything outside ALLOWED_CONFIG_KEYS, the nested structures in
  *     nestedShapes, and containers or buckets that do not carry the deployment's name.
+ *     `allowances` widens this only as each of its fields describes.
  */
 export function validateDeployConfig(
   view: DeployConfigView,
   accountId: string,
   name: string,
+  allowances: ConfigAllowances = {},
 ): void {
   assertManaged(name);
   const problems: string[] = [];
@@ -465,13 +525,16 @@ export function validateDeployConfig(
   if (extra.length > 0) {
     problems.push(`the staging tool does not manage ${extra.map((k) => `"${k}"`).join(", ")}`);
   }
-  for (const [path, value, allowed] of nestedShapes(view.raw)) {
+  for (const [path, value, allowed] of nestedShapes(view.raw, allowances)) {
     const outside = keysOutside(value, allowed);
     if (outside.length > 0) {
       problems.push(
         `${path} uses ${outside.map((k) => `"${k}"`).join(", ")}, which the staging tool does not manage`,
       );
     }
+  }
+  if (allowances.registry) {
+    problems.push(...crossScriptProblems(view.raw, name, allowances.registry));
   }
   problems.push(...resourceProblems(view.raw, name, accountId));
   if (view.redirected) problems.push("it redirects to another configuration file");

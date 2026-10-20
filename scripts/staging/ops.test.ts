@@ -973,6 +973,86 @@ describe("IR-002: only closed Wrangler configurations deploy", () => {
   });
 });
 
+describe("cross-script Durable Object bindings", () => {
+  /** A UI Worker whose RunDO binding lives in the deployment `script`. */
+  const boundTo = (script: string): string => {
+    const path = `/w/ui-${script}.jsonc`;
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: {
+          bindings: [{ name: "RUN", class_name: "RunDO", script_name: script }],
+        },
+      },
+    };
+    return path;
+  };
+  const deployedWorker = (name: string) =>
+    cloud.calls.some((call) => call.startsWith(`worker.deploy ${name}`));
+
+  it("deploys a Worker bound to another deployed deployment of the same owner", () => {
+    deploy(ctx, request("x1-transport"));
+    expect(deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport"))).state).toBe(
+      "deployed",
+    );
+    expect(cloud.violations).toEqual([]);
+  });
+
+  it.each([
+    ["a non-staging Worker", "production", "is not a staging deployment"],
+    ["an unknown deployment", "cfo-stg-x1-missing", "has no record"],
+  ])("refuses a binding to %s before any cloud call", (_, script, message) => {
+    expect(() => deploy(ctx, request("x1-ui", 7, boundTo(script)))).toThrow(message);
+    expect(cloud.calls).toEqual([]);
+    expect(store.load()).toEqual([]);
+  });
+
+  it("refuses a binding to another owner's deployment", () => {
+    deploy(ctx, { ...request("x1-transport"), owner: "wp9.9" });
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")))).toThrow(
+      "belongs to wp9.9",
+    );
+    expect(cloud.calls).toEqual([]);
+  });
+
+  it("refuses a binding to a deployment that is not deployed", () => {
+    cloud.deployFault = "before-upload";
+    expect(() => deploy(ctx, request("x1-transport"))).toThrow();
+    restart();
+    expect(record("cfo-stg-x1-transport")?.state).toBe("pending");
+    cloud.calls.length = 0;
+    expect(() => deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")))).toThrow(
+      "is pending, not deployed",
+    );
+    expect(deployedWorker("cfo-stg-x1-ui")).toBe(false);
+  });
+
+  it("checks the registry again under the lock, just before anything is created", () => {
+    deploy(ctx, request("x1-transport"));
+    cloud.calls.length = 0;
+    // The bound deployment starts its teardown between the first check and the lock.
+    ctx = {
+      ...ctx,
+      lock: (name) => {
+        store.update((all) =>
+          all.map((d) =>
+            d.name === "cfo-stg-x1-transport" ? { ...d, state: "deleting" as const } : d,
+          ),
+        );
+        return locks.lock(name);
+      },
+    };
+    expect(() => deploy(ctx, request("x1-ui", 7, boundTo("cfo-stg-x1-transport")))).toThrow(
+      "is deleting",
+    );
+    expect(cloud.calls).toEqual([]);
+    expect(record("cfo-stg-x1-ui")).toBeUndefined();
+  });
+});
+
 describe("Access applications the tool cannot vouch for", () => {
   const foreign = (overrides: Partial<AccessApp>): void => {
     cloud.apps.set("foreign", {

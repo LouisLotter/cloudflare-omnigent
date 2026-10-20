@@ -410,6 +410,70 @@ describe("Wrangler configuration check", () => {
     }
   });
 
+  describe("cross-script Durable Object bindings", () => {
+    const bound = (script: unknown) =>
+      raw({
+        durable_objects: {
+          bindings: [{ name: "RUN", class_name: "RunDO", script_name: script }],
+        },
+      });
+    const target: Deployment = {
+      name: "cfo-stg-x1-transport",
+      hostname: "cfo-stg-x1-transport.example.com",
+      owner: "lead",
+      createdAt: "2026-10-20T12:00:00.000Z",
+      expiresAt: "2026-10-22T12:00:00.000Z",
+      state: "deployed",
+    };
+    const registry = (deployments: Deployment[], owner = "lead") => ({
+      registry: { owner, deployments },
+    });
+
+    it("accepts a binding to a deployed staging deployment of the same owner", () => {
+      expect(() =>
+        validateDeployConfig(bound(target.name), ACCOUNT, "cfo-stg-x1-ui", registry([target])),
+      ).not.toThrow();
+      // Bindings without script_name stay as they were.
+      expect(() => validateDeployConfig(closed, ACCOUNT, NAME, registry([]))).not.toThrow();
+    });
+
+    it("refuses every other target, naming the reason", () => {
+      const refused: [string, unknown, Deployment[], string][] = [
+        ["a non-staging Worker", "production", [target], "is not a staging deployment"],
+        ["a lookalike without the prefix", "Cfo-stg-x1-transport", [target], "not a staging"],
+        ["a non-string", 7, [target], "is not a staging deployment"],
+        ["an unknown deployment", "cfo-stg-x1-other", [target], "has no record"],
+        ["another owner's deployment", target.name, [{ ...target, owner: "wp9.9" }], "wp9.9"],
+        ["a pending deployment", target.name, [{ ...target, state: "pending" }], "is pending"],
+        ["a deployment being removed", target.name, [{ ...target, state: "deleting" }], "deleting"],
+        ["itself", "cfo-stg-x1-ui", [{ ...target, name: "cfo-stg-x1-ui" }], "itself"],
+      ];
+      for (const [label, script, deployments, message] of refused) {
+        expect(
+          () =>
+            validateDeployConfig(bound(script), ACCOUNT, "cfo-stg-x1-ui", registry(deployments)),
+          label,
+        ).toThrow(message);
+      }
+    });
+
+    it("refuses script_name without the registry, and environment always", () => {
+      expect(() => validateDeployConfig(bound(target.name), ACCOUNT, NAME)).toThrow(
+        '"script_name"',
+      );
+      const environment = raw({
+        durable_objects: {
+          bindings: [
+            { name: "RUN", class_name: "RunDO", script_name: target.name, environment: "x" },
+          ],
+        },
+      });
+      expect(() =>
+        validateDeployConfig(environment, ACCOUNT, "cfo-stg-x1-ui", registry([target])),
+      ).toThrow('"environment"');
+    });
+  });
+
   it("only names that equal the deployment or extend it with a hyphen belong to it", () => {
     expect(ownedBy("cfo-stg-a", "cfo-stg-a")).toBe(true);
     expect(ownedBy("cfo-stg-a-x", "cfo-stg-a")).toBe(true);
