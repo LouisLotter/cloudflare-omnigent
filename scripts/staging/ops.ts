@@ -842,7 +842,10 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
 
 /**
  * Deletes a resource the record holds by ID and checks it is gone. A resource that is gone
- * already is skipped. Anything else under its name belongs to someone else and is refused.
+ * already is skipped. Anything else under its name belongs to someone else and is refused. So
+ * is the recorded resource itself if it no longer has the properties the tool gave it: someone
+ * changed it, and deleting it could cut off what they made it serve. It stays, and so do the
+ * record entry and Access, for the owner to reconcile.
  */
 function removeOwned<T extends { readonly id: string }>(
   record: Deployment,
@@ -851,6 +854,11 @@ function removeOwned<T extends { readonly id: string }>(
 ): void {
   const found = claimNamed(owned.list(), owned.id, owned.label);
   if (!found) return;
+  if (!owned.fits(found)) {
+    throw new Error(
+      `${record.name}: ${owned.label} has changed since this deployment created it, so it was left in place with Access and the record; inspect it in the dashboard`,
+    );
+  }
   remove(found.id);
   if (owned.list().some((r) => r.id === found.id)) {
     throw new Error(`${record.name}: ${owned.label} still exists`);

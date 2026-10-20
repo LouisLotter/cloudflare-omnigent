@@ -1520,15 +1520,45 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
       expect(everything()).toBe(0);
     });
 
-    it("a DNS record that no longer points to the Tunnel, which teardown leaves alone", () => {
+    // Review r1, finding 3: the recorded ID alone does not license a delete.
+    it.each([
+      ["pointing elsewhere", { content: "elsewhere.example.net" }],
+      ["of another type", { type: "A", content: "192.0.2.1" }],
+      ["no longer proxied", { proxied: false }],
+    ])("a DNS record now %s, which deploy and teardown both leave alone", (_, change) => {
       deploy(ctx, request("a", 7, withManifest("a")));
       const dns = cloud.dns.get("dns-4");
       if (!dns) throw new Error("missing record");
-      cloud.dns.set("dns-4", { ...dns, content: "elsewhere.example.net" });
+      cloud.dns.set("dns-4", { ...dns, ...change });
       expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("no longer points");
-      // Recorded by ID, so teardown still owns it.
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+        `DNS record ${HOST} has changed since this deployment created it`,
+      );
+      expect(cloud.dns.get("dns-4")).toEqual({ ...dns, ...change });
+      expect(record()).toMatchObject({ state: "deleting", tunnel: { dnsRecordId: "dns-4" } });
+      expect(cloud.apps.size).toBe(2);
+      expect(cloud.violations).toEqual([]);
+      // Once the owner restores or removes it, teardown finishes.
+      cloud.dns.delete("dns-4");
       teardown(ctx, "cfo-stg-a");
       expect(everything()).toBe(0);
+    });
+
+    it.each([
+      ["another Tunnel", { tunnelId: "tunnel-other" }],
+      ["another host", { ipv4: "10.0.0.1" }],
+      ["another port", { httpPort: 22 }],
+    ])("a VPC service moved to %s, which teardown leaves alone", (_, change) => {
+      deploy(ctx, request("a", 7, withManifest("a")));
+      const service = cloud.vpc.get("vpc-5");
+      if (!service) throw new Error("missing service");
+      cloud.vpc.set("vpc-5", { ...service, ...change });
+      expect(() => teardown(ctx, "cfo-stg-a")).toThrow(
+        "Workers VPC service cfo-stg-a-x1-vpc has changed since this deployment created it",
+      );
+      expect(cloud.vpc.get("vpc-5")).toEqual({ ...service, ...change });
+      expect(record()?.vpcServices?.[0]?.id).toBe("vpc-5");
+      expect(cloud.tunnels_.size + cloud.dns.size + cloud.apps.size).toBe(4);
     });
 
     it("an unrecorded DNS record that replaced ours, which teardown refuses to delete", () => {
