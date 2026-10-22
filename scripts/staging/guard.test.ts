@@ -42,6 +42,7 @@ import {
   VPC_NONCE_SEPARATOR,
   validateDeployConfig,
   vpcServiceName,
+  withStagingNames,
 } from "./guard.ts";
 
 const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "owner@example.com" };
@@ -414,7 +415,11 @@ describe("Wrangler configuration check", () => {
     const bucket = (extra: Record<string, unknown>) =>
       raw({ r2_buckets: [{ binding: "D", bucket_name: "cfo-stg-a", ...extra }] });
     const refused: [string, DeployConfigView, string][] = [
-      ["an unnamed container", container({ name: undefined }), "lowercase"],
+      [
+        "an unnamed container without a class",
+        container({ name: undefined, class_name: undefined }),
+        "lowercase",
+      ],
       ["another deployment's container", container({ name: "cfo-stg-b" }), "lowercase"],
       ["a prefix lookalike", container({ name: "cfo-stg-ab" }), "lowercase"],
       ["an unprefixed container", container({ name: "production-host" }), "lowercase"],
@@ -434,6 +439,109 @@ describe("Wrangler configuration check", () => {
     for (const [label, view, message] of refused) {
       expect(() => validateDeployConfig(view, ACCOUNT, NAME), label).toThrow(message);
     }
+  });
+
+  describe("the checked-in production configuration (staging names)", () => {
+    const unnamed = (extra: Record<string, unknown> = {}) => ({
+      class_name: "OmnigentServer",
+      image: "../images/server/Dockerfile",
+      image_build_context: "..",
+      instance_type: "basic",
+      max_instances: 1,
+      ...extra,
+    });
+
+    it("names an unnamed container for the deployment, as Wrangler derives a default name", () => {
+      const staged = withStagingNames({ containers: [unnamed()] }, NAME);
+      expect(staged).toEqual({ containers: [{ ...unnamed(), name: "cfo-stg-a-omnigentserver" }] });
+      expect(withStagingNames(staged, NAME)).toBe(staged); // idempotent
+      const policy = {
+        class_name: "Workspace_DO",
+        scheduling_policy: "durable_object",
+        images: {},
+      };
+      expect(withStagingNames({ containers: [policy] }, NAME)).toEqual({
+        containers: [{ ...policy, name: "cfo-stg-a-workspace-do" }],
+      });
+    });
+
+    it("leaves named containers, other entries and configurations without containers as they are", () => {
+      const named = { containers: [unnamed({ name: "production-server" }), null, "x"] };
+      expect(withStagingNames(named, NAME)).toBe(named);
+      const none = { workers_dev: false };
+      expect(withStagingNames(none, NAME)).toBe(none);
+      const noClass = { containers: [{ image: "./D" }, { class_name: "!!!" }] };
+      expect(withStagingNames(noClass, NAME)).toBe(noClass);
+    });
+
+    it("accepts an unnamed container, and still refuses every name that is not the deployment's", () => {
+      expect(() =>
+        validateDeployConfig(raw({ containers: [unnamed()] }), ACCOUNT, NAME),
+      ).not.toThrow();
+      const refused: [string, DeployConfigView, string][] = [
+        [
+          "a production name",
+          raw({ containers: [unnamed({ name: "omnigent-server" })] }),
+          "lowercase",
+        ],
+        [
+          "another deployment's name",
+          raw({ containers: [unnamed({ name: "cfo-stg-b-server" })] }),
+          "lowercase",
+        ],
+        ["the same class twice", raw({ containers: [unnamed(), unnamed()] }), "repeats"],
+        [
+          "a name too long",
+          raw({ containers: [unnamed({ class_name: "C".repeat(60) })] }),
+          "lowercase",
+        ],
+        [
+          "a production bucket beside it",
+          raw({
+            containers: [unnamed()],
+            r2_buckets: [{ binding: "D", bucket_name: "omnigent-db" }],
+          }),
+          "bucket_name",
+        ],
+      ];
+      for (const [label, view, message] of refused) {
+        expect(() => validateDeployConfig(view, ACCOUNT, NAME), label).toThrow(message);
+      }
+    });
+
+    it("declares the staged names for the record and the teardown", () => {
+      const declared = declaredResources(withStagingNames({ containers: [unnamed()] }, NAME), NAME);
+      expect(declared.containers).toEqual(["cfo-stg-a-omnigentserver"]);
+      expect(declared.repositories).toEqual(["cfo-stg-a-omnigentserver"]);
+    });
+  });
+
+  describe("cron triggers", () => {
+    it("accepts cron schedules and nothing broader", () => {
+      for (const triggers of [
+        { crons: ["* * * * *"] },
+        { crons: ["*/10 * * * *", "0 3 * * 1-5"] },
+        null,
+      ]) {
+        expect(() => validateDeployConfig(raw({ triggers }), ACCOUNT, NAME)).not.toThrow();
+      }
+      const refused: [string, unknown, string][] = [
+        ["another trigger kind", { crons: ["* * * * *"], queues: [] }, '"queues"'],
+        ["no schedule", { crons: [] }, "triggers.crons"],
+        ["too many schedules", { crons: Array(4).fill("* * * * *") }, "triggers.crons"],
+        ["a named schedule", { crons: ["@daily"] }, "triggers.crons"],
+        ["four fields", { crons: ["* * * *"] }, "triggers.crons"],
+        ["named days", { crons: ["0 3 * * MON"] }, "triggers.crons"],
+        ["not text", { crons: [5] }, "triggers.crons"],
+        ["a list", [{ crons: ["* * * * *"] }], '"triggers" must be an object'],
+        ["text", "* * * * *", '"triggers" must be an object'],
+      ];
+      for (const [label, triggers, message] of refused) {
+        expect(() => validateDeployConfig(raw({ triggers }), ACCOUNT, NAME), label).toThrow(
+          message,
+        );
+      }
+    });
   });
 
   describe("cross-script Durable Object bindings", () => {

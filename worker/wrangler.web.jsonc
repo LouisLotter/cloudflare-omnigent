@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The web Worker (AR-17): the public hostname, ingress, the forwarding path to Omnigent and,
+  // later, the platform pages. No Durable Object class, no container, no migration: it reaches
+  // the platform Worker's objects through cross-script bindings to "cloudflare-omnigent"
+  // (wrangler.jsonc), so its deploys never drop a computer's connection. Deploy it after the
+  // platform Worker. The installation (WP2.4) adds the custom domain and ingress's variables.
+  "name": "cloudflare-omnigent-web",
+  "main": "src/web.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer", "script_name": "cloudflare-omnigent" }
+    ]
+  },
+  "observability": { "enabled": true }
+}

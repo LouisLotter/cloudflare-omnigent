@@ -7,7 +7,14 @@ import { defineConfig } from "vitest/config";
  * module under src/ counts as pure and must meet the unit thresholds below. Add a module here
  * only if it cannot run in plain Node, for example a future `container-port.ts`.
  */
-export const runtimeModules = ["src/index.ts", "src/**/*DO.ts", "src/shared/sql.ts"];
+export const runtimeModules = [
+  "src/index.ts",
+  "src/web.ts",
+  "src/**/*DO.ts",
+  "src/shared/sql.ts",
+  "src/server/OmnigentServer.ts",
+  "src/server/platform-internal.ts",
+];
 
 // Pure modules only: nothing here may import from "cloudflare:workers".
 export default defineConfig({

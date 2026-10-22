@@ -400,6 +400,8 @@ export const ALLOWED_CONFIG_KEYS: readonly string[] = [
   "upload_source_maps",
   "containers",
   "r2_buckets",
+  // Cron triggers only (triggerProblems): they schedule this Worker and go with it at teardown.
+  "triggers",
 ];
 
 /**
@@ -448,6 +450,63 @@ function isPolicyContainer(entry: unknown): boolean {
  * The containers, R2 buckets and registry repositories a configuration declares, for the
  * deployment `name`, which is also the Worker's name.
  */
+/**
+ * The configuration as a staging deploy uploads it: a container without a `name` gets
+ * `<deployment>-<class name>`, lowercased, the name Wrangler would derive from the Worker's
+ * name and the class. So the checked-in production configuration, which leaves its container
+ * names to Wrangler, deploys to staging under the deployment's names, as its Worker does under
+ * `--name`. A container that names itself keeps its name, which must then be the deployment's
+ * (resourceProblems), so nothing is deployed under another or a production name. Idempotent.
+ */
+export function withStagingNames(
+  raw: Readonly<Record<string, unknown>>,
+  name: string,
+): Readonly<Record<string, unknown>> {
+  if (!Array.isArray(raw.containers)) return raw;
+  let changed = false;
+  const containers = raw.containers.map((entry: unknown) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const c = entry as Record<string, unknown>;
+    if (c.name !== undefined || typeof c.class_name !== "string") return c;
+    const slug = c.class_name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (slug === "") return c;
+    changed = true;
+    return { ...c, name: `${name}-${slug}` };
+  });
+  return changed ? { ...raw, containers } : raw;
+}
+
+/** True when a staging deploy uploads this configuration with names it did not carry. */
+export function needsStagingNames(raw: Readonly<Record<string, unknown>>, name: string): boolean {
+  return withStagingNames(raw, name) !== raw;
+}
+
+/** A cron expression of five fields, numbers and the plain operators only. */
+const CRON = /^[0-9*/,-]+( [0-9*/,-]+){4}$/;
+const MAX_CRONS = 3;
+
+/** `triggers` may hold cron schedules and nothing else (ALLOWED_CONFIG_KEYS). */
+function triggerProblems(triggers: unknown): string[] {
+  if (triggers === undefined || triggers === null) return [];
+  if (triggers === null || typeof triggers !== "object" || Array.isArray(triggers)) {
+    return ['"triggers" must be an object with "crons" only'];
+  }
+  const crons = (triggers as { crons?: unknown }).crons;
+  if (
+    !Array.isArray(crons) ||
+    crons.length === 0 ||
+    crons.length > MAX_CRONS ||
+    !crons.every((cron) => typeof cron === "string" && CRON.test(cron))
+  ) {
+    return [`"triggers.crons" must list 1 to ${MAX_CRONS} cron expressions of five numeric fields`];
+  }
+  return [];
+}
+
 export function declaredResources(
   raw: Readonly<Record<string, unknown>>,
   name: string,
@@ -710,6 +769,7 @@ function nestedShapes(
     observability?.traces,
     ["enabled", "head_sampling_rate", "persist"],
   ]);
+  shapes.push(["triggers", raw.triggers, ["crons"]]);
   const containers = Array.isArray(raw.containers) ? raw.containers : [];
   containers.forEach((container, i) => {
     if (!isPolicyContainer(container)) {
@@ -798,11 +858,14 @@ function resourceProblems(
       problems.push(`"${key}" must be a list`);
   }
   const containers = Array.isArray(raw.containers) ? raw.containers : [];
+  const seen = new Set<string>();
   containers.forEach((entry, i) => {
     const c = (entry ?? {}) as Record<string, unknown>;
     if (typeof c.name !== "string" || !RESOURCE_NAME.test(c.name) || !ownedBy(c.name, name)) {
       problems.push(`containers[${i}] needs a lowercase "name" of ${name} or ${name}-…`);
-    }
+    } else if (seen.has(c.name)) {
+      problems.push(`containers[${i}] repeats the name ${c.name}`);
+    } else seen.add(c.name);
     if (c.scheduling_policy !== undefined && c.scheduling_policy !== "durable_object") {
       problems.push(`containers[${i}] "scheduling_policy" may only be "durable_object"`);
     }
@@ -878,7 +941,9 @@ export function validateDeployConfig(
     problems.push(...crossScriptProblems(view.raw, name, allowances.registry));
   }
   if (rendered) problems.push(...renderedProblems(view, rendered));
-  problems.push(...resourceProblems(view.raw, name, accountId));
+  // Containers are checked under the names a staging deploy gives them (withStagingNames).
+  problems.push(...resourceProblems(withStagingNames(view.raw, name), name, accountId));
+  problems.push(...triggerProblems(view.raw.triggers));
   if (view.redirected) problems.push("it redirects to another configuration file");
   if ("env" in view.raw) problems.push("it defines environments; use a separate file instead");
   if (view.effective.targetEnvironment !== undefined) {

@@ -1456,6 +1456,36 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     expect(views[path]?.raw).not.toHaveProperty("routes");
   });
 
+  it("deploys a configuration that leaves its containers unnamed under the deployment's names", () => {
+    const path = "/w/production.jsonc";
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "HOST", class_name: "Host" }] },
+        containers: [{ class_name: "Host", image: "./Dockerfile", max_instances: 1 }],
+        triggers: { crons: ["* * * * *"] },
+      },
+    };
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.uploads.at(-1)?.configPath).toBe(RENDERED);
+    const uploaded = JSON.parse(written[0]?.text ?? "{}");
+    expect(uploaded.containers).toEqual([
+      { name: "cfo-stg-a-host", class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+    ]);
+    expect(record()).toMatchObject({ containers: ["cfo-stg-a-host"], state: "deployed" });
+    expect([...cloud.containerApps_.values()]).toEqual(["cfo-stg-a-host"]);
+    expect(files.size).toBe(0);
+    // The checked configuration keeps its unnamed container.
+    expect(views[path]?.raw.containers).toEqual([
+      { class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+    ]);
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.containerApps_.size).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
   it("removes the rendered copy when the upload fails", () => {
     cloud.deployFault = "before-upload";
     expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("wrangler deploy");

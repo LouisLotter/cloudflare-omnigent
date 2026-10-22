@@ -1,0 +1,24 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP2.2 staging: the production web Worker (src/web.ts), bound cross-script to the harness's
+  // platform Worker. Deploy it after cfo-stg-wp22-platform, only with run.sh. Without
+  // ingress's variables it answers every request 503 (fail closed); run.sh deploys it once so
+  // the staging tool creates its Access application, then again with the variables
+  // config-web.ts writes to generated/ (gitignored), as WP2.1's harness does.
+  "name": "cfo-stg-wp22-web",
+  "main": "../../../src/web.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer", "script_name": "cfo-stg-wp22-platform" }
+    ]
+  }
+}
