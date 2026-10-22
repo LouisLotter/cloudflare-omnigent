@@ -1,19 +1,20 @@
 {
- "free_bytes": 319352872960,
- "size_bytes": 2414429716,
- "index_s": 2.341,
- "upload_ms": 18510,
- "stored_bytes": 901658280,
- "restore_ms": 24664,
+ "profile": "large",
+ "free_bytes": 320016674816,
+ "size_bytes": 2414429997,
+ "index_s": 11.717,
+ "upload_ms": 22068,
+ "stored_bytes": 901652610,
+ "upload_mb_s": 109.4,
+ "restore_ms": 23164,
  "verify": {
   "equal": true,
-  "entries": 82651,
+  "entries": 82653,
   "missing": 0,
   "extra": 0,
   "mismatched": 0,
   "examples": [],
-  "verify_s": 2.63
+  "verify_s": 2.593
  },
- "upload_mb_s": 130.4,
- "restore_mb_s": 97.9
+ "restore_mb_s": 104.2
 }

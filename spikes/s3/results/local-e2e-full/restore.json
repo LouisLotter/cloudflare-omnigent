@@ -1,60 +1,62 @@
 {
  "chain": {
   "layers": 21,
-  "total_ms": 14067,
+  "work_ms": 8750,
+  "wall_ms": 9438,
+  "resumed_layers": 0,
   "verify": {
    "equal": true,
-   "entries": 13059,
+   "entries": 13061,
    "missing": 0,
    "extra": 0,
    "mismatched": 0,
    "examples": [],
-   "verify_s": 0.581
+   "verify_s": 0.64
   },
   "rows": [
    {
     "layer": 0,
-    "stored_bytes": 435463061,
-    "restore_ms": 9407,
+    "stored_bytes": 435450102,
+    "restore_ms": 6075,
     "merge": {
      "seq": "0",
      "base": true,
      "deleted": 0,
      "moved": 4,
      "stripped_credential_members": [],
-     "merge_s": 0.298
+     "merge_s": 0.333
     }
    },
    {
     "layer": 1,
-    "stored_bytes": 87550,
-    "restore_ms": 49,
+    "stored_bytes": 87384,
+    "restore_ms": 292,
     "merge": {
      "seq": "1",
      "base": false,
      "deleted": 0,
      "moved": 3,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    },
    {
     "layer": 2,
-    "stored_bytes": 116730,
-    "restore_ms": 3012,
+    "stored_bytes": 116397,
+    "restore_ms": 1237,
     "merge": {
      "seq": "2",
      "base": false,
      "deleted": 0,
      "moved": 26,
      "stripped_credential_members": [],
-     "merge_s": 0.003
+     "merge_s": 0.005
     }
    },
    {
     "layer": 3,
-    "stored_bytes": 65669,
-    "restore_ms": 35,
+    "stored_bytes": 65619,
+    "restore_ms": 79,
     "merge": {
      "seq": "3",
      "base": false,
@@ -66,8 +68,8 @@
    },
    {
     "layer": 4,
-    "stored_bytes": 91765,
-    "restore_ms": 37,
+    "stored_bytes": 91332,
+    "restore_ms": 97,
     "merge": {
      "seq": "4",
      "base": false,
@@ -79,8 +81,8 @@
    },
    {
     "layer": 5,
-    "stored_bytes": 76197,
-    "restore_ms": 33,
+    "stored_bytes": 76232,
+    "restore_ms": 36,
     "merge": {
      "seq": "5",
      "base": false,
@@ -92,8 +94,8 @@
    },
    {
     "layer": 6,
-    "stored_bytes": 107641,
-    "restore_ms": 36,
+    "stored_bytes": 107025,
+    "restore_ms": 38,
     "merge": {
      "seq": "6",
      "base": false,
@@ -105,8 +107,8 @@
    },
    {
     "layer": 7,
-    "stored_bytes": 150509,
-    "restore_ms": 36,
+    "stored_bytes": 150520,
+    "restore_ms": 37,
     "merge": {
      "seq": "7",
      "base": false,
@@ -118,8 +120,8 @@
    },
    {
     "layer": 8,
-    "stored_bytes": 165046,
-    "restore_ms": 37,
+    "stored_bytes": 164255,
+    "restore_ms": 39,
     "merge": {
      "seq": "8",
      "base": false,
@@ -131,8 +133,8 @@
    },
    {
     "layer": 9,
-    "stored_bytes": 104917,
-    "restore_ms": 36,
+    "stored_bytes": 105246,
+    "restore_ms": 37,
     "merge": {
      "seq": "9",
      "base": false,
@@ -144,21 +146,21 @@
    },
    {
     "layer": 10,
-    "stored_bytes": 162437,
-    "restore_ms": 36,
+    "stored_bytes": 163403,
+    "restore_ms": 37,
     "merge": {
      "seq": "10",
      "base": false,
      "deleted": 0,
-     "moved": 7,
+     "moved": 6,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    },
    {
     "layer": 11,
-    "stored_bytes": 114316,
-    "restore_ms": 34,
+    "stored_bytes": 115122,
+    "restore_ms": 36,
     "merge": {
      "seq": "11",
      "base": false,
@@ -170,21 +172,21 @@
    },
    {
     "layer": 12,
-    "stored_bytes": 170155,
-    "restore_ms": 37,
+    "stored_bytes": 170818,
+    "restore_ms": 38,
     "merge": {
      "seq": "12",
      "base": false,
      "deleted": 0,
      "moved": 6,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    },
    {
     "layer": 13,
-    "stored_bytes": 123508,
-    "restore_ms": 34,
+    "stored_bytes": 124902,
+    "restore_ms": 36,
     "merge": {
      "seq": "13",
      "base": false,
@@ -196,21 +198,21 @@
    },
    {
     "layer": 14,
-    "stored_bytes": 173708,
-    "restore_ms": 39,
+    "stored_bytes": 174147,
+    "restore_ms": 35,
     "merge": {
      "seq": "14",
      "base": false,
      "deleted": 0,
-     "moved": 7,
+     "moved": 6,
      "stripped_credential_members": [],
      "merge_s": 0.003
     }
    },
    {
     "layer": 15,
-    "stored_bytes": 193331,
-    "restore_ms": 35,
+    "stored_bytes": 194490,
+    "restore_ms": 37,
     "merge": {
      "seq": "15",
      "base": false,
@@ -222,21 +224,21 @@
    },
    {
     "layer": 16,
-    "stored_bytes": 207354,
-    "restore_ms": 36,
+    "stored_bytes": 209406,
+    "restore_ms": 38,
     "merge": {
      "seq": "16",
      "base": false,
      "deleted": 0,
      "moved": 6,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    },
    {
     "layer": 17,
-    "stored_bytes": 148435,
-    "restore_ms": 37,
+    "stored_bytes": 149842,
+    "restore_ms": 38,
     "merge": {
      "seq": "17",
      "base": false,
@@ -248,20 +250,20 @@
    },
    {
     "layer": 18,
-    "stored_bytes": 221571,
-    "restore_ms": 36,
+    "stored_bytes": 221537,
+    "restore_ms": 39,
     "merge": {
      "seq": "18",
      "base": false,
      "deleted": 0,
      "moved": 6,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    },
    {
     "layer": 19,
-    "stored_bytes": 158897,
+    "stored_bytes": 160034,
     "restore_ms": 36,
     "merge": {
      "seq": "19",
@@ -274,33 +276,33 @@
    },
    {
     "layer": 20,
-    "stored_bytes": 232751,
-    "restore_ms": 37,
+    "stored_bytes": 233994,
+    "restore_ms": 39,
     "merge": {
      "seq": "20",
      "base": false,
      "deleted": 0,
      "moved": 6,
      "stripped_credential_members": [],
-     "merge_s": 0.002
+     "merge_s": 0.003
     }
    }
   ]
  },
  "full": {
-  "stored_bytes": 435992696,
-  "upload_ms": 20255,
-  "restore_ms": 16246,
+  "stored_bytes": 436000389,
+  "upload_ms": 5143,
+  "files": 12469,
+  "restore_ms": 3776,
   "verify": {
    "equal": true,
-   "entries": 13059,
+   "entries": 13061,
    "missing": 0,
    "extra": 0,
    "mismatched": 0,
    "examples": [],
-   "verify_s": 0.617
-  },
-  "files": 12467
+   "verify_s": 0.618
+  }
  },
  "reopen": {
   "claude_rc": 0,
@@ -310,10 +312,12 @@
  },
  "summary": {
   "chain_layers": 21,
-  "chain_total_ms": 14067,
+  "chain_work_ms": 8750,
+  "chain_wall_ms": 9438,
+  "chain_resumed_layers": 0,
   "chain_verify_equal": true,
-  "chain_restore_ms_median": 36,
-  "full_restore_ms": 16246,
+  "chain_restore_ms_median": 38,
+  "full_restore_ms": 3776,
   "full_verify_equal": true,
   "reopen": {
    "claude_rc": 0,
@@ -321,5 +325,6 @@
    "claude_history": true,
    "codex_history": true
   }
- }
+ },
+ "failed": []
 }

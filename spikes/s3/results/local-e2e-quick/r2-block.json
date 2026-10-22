@@ -2,22 +2,24 @@
  "rows": [
   {
    "case": "held-then-recovers",
+   "expect": "published",
    "hold_ms": 10000,
    "deadline_ms": 120000,
-   "layer_bytes": 131193418,
+   "layer_bytes": 131215393,
    "hold_observed": {
-    "first_part_after_ms": 337,
-    "longest_wait_ms": 10000,
+    "first_part_after_ms": 301,
+    "promised_max_ms": 10000,
+    "observed_max_ms": 10040,
     "parts_held": 2
    },
    "upload": {
     "ok": true,
-    "ms": 10413,
-    "stored_bytes": 28956130
+    "ms": 10364,
+    "stored_bytes": 28944799
    },
    "pointer_before": null,
    "pointer_after": {
-    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "id": "5480b208-3e0f-448a-b200-0ba4eff1d3e0",
     "case": "held-then-recovers"
    },
    "objects_before": 0,
@@ -27,24 +29,24 @@
     "turns_ok": 4,
     "turn_s": {
      "n": 4,
-     "median": 0.32,
-     "worst": 0.37,
-     "best": 0.3
+     "median": 0.295,
+     "worst": 0.3,
+     "best": 0.29
     },
     "capture": {
      "method": "rsync-2phase",
      "outcome": "snapshot_ready",
-     "pause_s": 0.3619,
-     "pause_s_by_guard": 0.3619,
-     "freeze_s": 0.0035,
-     "copy_s": 0.358,
+     "pause_s": 0.3496,
+     "pause_s_by_guard": 0.3495,
+     "freeze_s": 0.0023,
+     "copy_s": 0.3468,
      "release_s": 0.0005,
-     "precopy_s": 0.8445,
-     "size_bytes": 131511772,
-     "files": 4457,
-     "snapshot_bytes": 131204181,
-     "budget_check_s": 0.0189,
-     "free_bytes": 321352683520,
+     "precopy_s": 0.7225,
+     "size_bytes": 131533746,
+     "files": 4459,
+     "snapshot_bytes": 131226155,
+     "budget_check_s": 0.0759,
+     "free_bytes": 321994035200,
      "reused_snapshot": null,
      "stopped_by_kind": {
       "omnigent-host": 1,
@@ -62,12 +64,12 @@
       "supervisor": 1
      },
      "running_after_freeze": [],
-     "total_s": 1.3943,
-     "worker_wall_s": 1.518,
+     "total_s": 1.3149,
+     "worker_wall_s": 1.365,
      "stopped": 17,
      "freeze_passes": 2,
-     "copy_mb_s": 367.4,
-     "at_s": 6.5
+     "copy_mb_s": 379.3,
+     "at_s": 6.4
     },
     "host": {
      "states": [
@@ -81,48 +83,51 @@
      {
       "at_s": 0,
       "ok": true,
-      "s": 0.33
+      "s": 0.3
      },
      {
       "at_s": 5,
       "ok": true,
-      "s": 0.37
+      "s": 0.3
      },
      {
       "at_s": 10,
       "ok": true,
-      "s": 0.31
+      "s": 0.29
      },
      {
       "at_s": 15,
       "ok": true,
-      "s": 0.3
+      "s": 0.29
      }
     ]
    },
-   "blocked_long_enough": true
+   "pointer_moved": true,
+   "failed": []
   },
   {
    "case": "held-past-the-deadline",
+   "expect": "aborted",
    "hold_ms": 10000,
    "deadline_ms": 5000,
-   "layer_bytes": 131193418,
+   "layer_bytes": 131215393,
    "hold_observed": {
-    "first_part_after_ms": 346,
-    "longest_wait_ms": 10000,
+    "first_part_after_ms": 301,
+    "promised_max_ms": 10000,
+    "observed_max_ms": 0,
     "parts_held": 2
    },
    "upload": {
     "ok": false,
-    "ms": 5002,
+    "ms": 5001,
     "error": "TimeoutError 23: The operation was aborted due to timeout"
    },
    "pointer_before": {
-    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "id": "5480b208-3e0f-448a-b200-0ba4eff1d3e0",
     "case": "held-then-recovers"
    },
    "pointer_after": {
-    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "id": "5480b208-3e0f-448a-b200-0ba4eff1d3e0",
     "case": "held-then-recovers"
    },
    "objects_before": 1,
@@ -132,24 +137,24 @@
     "turns_ok": 4,
     "turn_s": {
      "n": 4,
-     "median": 0.32,
-     "worst": 0.37,
-     "best": 0.3
+     "median": 0.29,
+     "worst": 0.3,
+     "best": 0.29
     },
     "capture": {
      "method": "rsync-2phase",
      "outcome": "snapshot_ready",
-     "pause_s": 0.3609,
-     "pause_s_by_guard": 0.3609,
-     "freeze_s": 0.0027,
-     "copy_s": 0.3575,
-     "release_s": 0.0006,
-     "precopy_s": 0.7491,
-     "size_bytes": 131511772,
-     "files": 4457,
-     "snapshot_bytes": 131204181,
-     "budget_check_s": 0.019,
-     "free_bytes": 321309765632,
+     "pause_s": 0.3495,
+     "pause_s_by_guard": 0.3495,
+     "freeze_s": 0.0025,
+     "copy_s": 0.3466,
+     "release_s": 0.0004,
+     "precopy_s": 0.6264,
+     "size_bytes": 131533746,
+     "files": 4459,
+     "snapshot_bytes": 131226155,
+     "budget_check_s": 0.0554,
+     "free_bytes": 321961304064,
      "reused_snapshot": null,
      "stopped_by_kind": {
       "omnigent-host": 1,
@@ -166,12 +171,12 @@
       "supervisor": 1
      },
      "running_after_freeze": [],
-     "total_s": 1.3062,
-     "worker_wall_s": 1.418,
+     "total_s": 1.1992,
+     "worker_wall_s": 1.265,
      "stopped": 17,
      "freeze_passes": 2,
-     "copy_mb_s": 367.9,
-     "at_s": 6.4
+     "copy_mb_s": 379.5,
+     "at_s": 6.3
     },
     "host": {
      "states": [
@@ -185,39 +190,40 @@
      {
       "at_s": 0,
       "ok": true,
-      "s": 0.33
+      "s": 0.29
      },
      {
       "at_s": 5,
       "ok": true,
-      "s": 0.37
+      "s": 0.29
      },
      {
       "at_s": 10,
       "ok": true,
-      "s": 0.31
+      "s": 0.3
      },
      {
       "at_s": 15,
       "ok": true,
-      "s": 0.3
+      "s": 0.29
      }
     ]
    },
-   "blocked_long_enough": true
+   "pointer_moved": false,
+   "failed": []
   }
  ],
  "summary": [
   {
    "case": "held-then-recovers",
-   "blocked_long_enough": true,
-   "longest_wait_ms": 10000,
+   "first_part_after_ms": 301,
+   "observed_max_wait_ms": 10040,
    "upload_ok": true,
-   "upload_ms": 10413,
+   "upload_ms": 10364,
    "pointer_moved": true,
    "objects_added": 1,
    "turns": "4/4",
-   "capture_pause_s": 0.3619,
+   "capture_pause_s": 0.3496,
    "capture_outcome": "snapshot_ready",
    "host": {
     "states": [
@@ -226,19 +232,20 @@
     "polls": 20,
     "not_online_s": 0,
     "poll_errors": 0
-   }
+   },
+   "failed": []
   },
   {
    "case": "held-past-the-deadline",
-   "blocked_long_enough": true,
-   "longest_wait_ms": 10000,
+   "first_part_after_ms": 301,
+   "observed_max_wait_ms": 0,
    "upload_ok": false,
-   "upload_ms": 5002,
+   "upload_ms": 5001,
    "error": "TimeoutError 23: The operation was aborted due to timeout",
    "pointer_moved": false,
    "objects_added": 0,
    "turns": "4/4",
-   "capture_pause_s": 0.3609,
+   "capture_pause_s": 0.3495,
    "capture_outcome": "snapshot_ready",
    "host": {
     "states": [
@@ -247,7 +254,8 @@
     "polls": 20,
     "not_online_s": 0,
     "poll_errors": 0
-   }
+   },
+   "failed": []
   }
  ],
  "failed": []

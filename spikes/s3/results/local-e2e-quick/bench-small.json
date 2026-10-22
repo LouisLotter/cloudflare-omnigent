@@ -3,10 +3,10 @@
   "profile": "small",
   "generation": {
    "profile": "small",
-   "gen_s": 5.1
+   "gen_s": 3.2
   },
-  "size_bytes": 127131438,
-  "files": 4313,
+  "size_bytes": 127131807,
+  "files": 4314,
   "budget_s": 60,
   "rsync-2phase-warm": {
    "runs": 1,
@@ -15,21 +15,21 @@
    ],
    "pause_s": {
     "n": 1,
-    "median": 0.363,
-    "worst": 0.363,
-    "best": 0.363
+    "median": 0.35,
+    "worst": 0.35,
+    "best": 0.35
    },
    "copy_s": {
     "n": 1,
-    "median": 0.353,
-    "worst": 0.353,
-    "best": 0.353
+    "median": 0.341,
+    "worst": 0.341,
+    "best": 0.341
    },
    "precopy_s": {
     "n": 1,
-    "median": 0.611,
-    "worst": 0.611,
-    "best": 0.611
+    "median": 2.589,
+    "worst": 2.589,
+    "best": 2.589
    },
    "over_20s": 0,
    "over_40s": 0,
@@ -62,21 +62,21 @@
    ],
    "pause_s": {
     "n": 1,
-    "median": 0.373,
-    "worst": 0.373,
-    "best": 0.373
+    "median": 0.36,
+    "worst": 0.36,
+    "best": 0.36
    },
    "copy_s": {
     "n": 1,
-    "median": 0.363,
-    "worst": 0.363,
-    "best": 0.363
+    "median": 0.351,
+    "worst": 0.351,
+    "best": 0.351
    },
    "precopy_s": {
     "n": 1,
-    "median": 2.722,
-    "worst": 2.722,
-    "best": 2.722
+    "median": 2.862,
+    "worst": 2.862,
+    "best": 2.862
    },
    "over_20s": 0,
    "over_40s": 0,
@@ -109,15 +109,15 @@
    ],
    "pause_s": {
     "n": 1,
-    "median": 0.453,
-    "worst": 0.453,
-    "best": 0.453
+    "median": 0.399,
+    "worst": 0.399,
+    "best": 0.399
    },
    "copy_s": {
     "n": 1,
-    "median": 0.444,
-    "worst": 0.444,
-    "best": 0.444
+    "median": 0.391,
+    "worst": 0.391,
+    "best": 0.391
    },
    "precopy_s": {},
    "over_20s": 0,
@@ -151,15 +151,15 @@
    ],
    "pause_s": {
     "n": 1,
-    "median": 0.536,
-    "worst": 0.536,
-    "best": 0.536
+    "median": 0.399,
+    "worst": 0.399,
+    "best": 0.399
    },
    "copy_s": {
     "n": 1,
-    "median": 0.526,
-    "worst": 0.526,
-    "best": 0.526
+    "median": 0.391,
+    "worst": 0.391,
+    "best": 0.391
    },
    "precopy_s": {},
    "over_20s": 0,
@@ -186,24 +186,24 @@
     "supervisor": 1
    }
   },
-  "bench_s": 14.7
+  "bench_s": 18.7
  },
  "rows": [
   {
    "temp": "warm",
    "method": "rsync-2phase",
    "outcome": "snapshot_ready",
-   "pause_s": 0.3627,
-   "pause_s_by_guard": 0.3627,
-   "freeze_s": 0.0086,
-   "copy_s": 0.3527,
-   "release_s": 0.0015,
-   "precopy_s": 0.6108,
-   "size_bytes": 127131438,
-   "files": 4313,
-   "snapshot_bytes": 127132865,
+   "pause_s": 0.35,
+   "pause_s_by_guard": 0.35,
+   "freeze_s": 0.0076,
+   "copy_s": 0.3413,
+   "release_s": 0.0011,
+   "precopy_s": 2.5889,
+   "size_bytes": 127131807,
+   "files": 4314,
+   "snapshot_bytes": 127135214,
    "budget_check_s": 0.0169,
-   "free_bytes": 321468334080,
+   "free_bytes": 322091937792,
    "reused_snapshot": null,
    "stopped_by_kind": {
     "idle-sleep": 50,
@@ -222,16 +222,16 @@
     "supervisor": 1
    },
    "running_after_freeze": [],
-   "total_s": 1.1641,
-   "worker_wall_s": 1.215,
+   "total_s": 3.115,
+   "worker_wall_s": 3.2,
    "stopped": 68,
    "freeze_passes": 2,
-   "copy_mb_s": 360.5,
+   "copy_mb_s": 372.5,
    "host": {
     "states": [
      "online"
     ],
-    "polls": 2,
+    "polls": 4,
     "not_online_s": 0,
     "poll_errors": 0
    },
@@ -239,13 +239,13 @@
    "consistency": {
     "prefix": true,
     "complete_last_record": true,
-    "last_seq": 167,
-    "gap_after_snapshot_s": 0.359,
+    "last_seq": 257,
+    "gap_after_snapshot_s": 0.349,
     "live_contiguous": true
    },
    "turn_after": {
     "ok": true,
-    "s": 0.3,
+    "s": 0.29,
     "status": "idle",
     "send_attempts": 1
    },
@@ -255,17 +255,17 @@
    "temp": "cold",
    "method": "rsync-2phase",
    "outcome": "snapshot_ready",
-   "pause_s": 0.3731,
-   "pause_s_by_guard": 0.3731,
-   "freeze_s": 0.0088,
-   "copy_s": 0.3628,
-   "release_s": 0.0015,
-   "precopy_s": 2.7218,
-   "size_bytes": 127134936,
-   "files": 4313,
-   "snapshot_bytes": 127140213,
-   "budget_check_s": 0.0167,
-   "free_bytes": 321466634240,
+   "pause_s": 0.3602,
+   "pause_s_by_guard": 0.3602,
+   "freeze_s": 0.0076,
+   "copy_s": 0.3515,
+   "release_s": 0.0011,
+   "precopy_s": 2.8616,
+   "size_bytes": 127141949,
+   "files": 4314,
+   "snapshot_bytes": 127147622,
+   "budget_check_s": 0.0178,
+   "free_bytes": 322091466752,
    "reused_snapshot": null,
    "stopped_by_kind": {
     "idle-sleep": 50,
@@ -284,11 +284,11 @@
     "supervisor": 1
    },
    "running_after_freeze": [],
-   "total_s": 3.3133,
-   "worker_wall_s": 3.369,
+   "total_s": 3.3997,
+   "worker_wall_s": 3.468,
    "stopped": 68,
    "freeze_passes": 2,
-   "copy_mb_s": 350.4,
+   "copy_mb_s": 361.7,
    "host": {
     "states": [
      "online"
@@ -298,19 +298,19 @@
     "poll_errors": 0
    },
    "evict": {
-    "evicted_files": 7054,
-    "s": 0.25
+    "evicted_files": 7049,
+    "s": 2.4
    },
    "consistency": {
     "prefix": true,
     "complete_last_record": true,
-    "last_seq": 501,
-    "gap_after_snapshot_s": 0.378,
+    "last_seq": 821,
+    "gap_after_snapshot_s": 0.361,
     "live_contiguous": true
    },
    "turn_after": {
     "ok": true,
-    "s": 0.31,
+    "s": 0.29,
     "status": "idle",
     "send_attempts": 1
    },
@@ -320,17 +320,17 @@
    "temp": "warm",
    "method": "reflink",
    "outcome": "snapshot_ready",
-   "pause_s": 0.4528,
-   "pause_s_by_guard": 0.4527,
-   "freeze_s": 0.0078,
-   "copy_s": 0.4435,
-   "release_s": 0.0014,
+   "pause_s": 0.399,
+   "pause_s_by_guard": 0.399,
+   "freeze_s": 0.0068,
+   "copy_s": 0.3909,
+   "release_s": 0.0013,
    "precopy_s": null,
-   "size_bytes": 127141734,
-   "files": 4313,
-   "snapshot_bytes": 127141797,
-   "budget_check_s": 0.017,
-   "free_bytes": 321464745984,
+   "size_bytes": 127149011,
+   "files": 4314,
+   "snapshot_bytes": 127149074,
+   "budget_check_s": 0.0159,
+   "free_bytes": 322071162880,
    "reused_snapshot": null,
    "stopped_by_kind": {
     "idle-sleep": 50,
@@ -349,11 +349,11 @@
     "supervisor": 1
    },
    "running_after_freeze": [],
-   "total_s": 0.7049,
-   "worker_wall_s": 0.765,
+   "total_s": 0.6459,
+   "worker_wall_s": 0.714,
    "stopped": 68,
    "freeze_passes": 2,
-   "copy_mb_s": 286.7,
+   "copy_mb_s": 325.3,
    "host": {
     "states": [
      "online"
@@ -366,13 +366,13 @@
    "consistency": {
     "prefix": true,
     "complete_last_record": true,
-    "last_seq": 573,
-    "gap_after_snapshot_s": 0.455,
+    "last_seq": 887,
+    "gap_after_snapshot_s": 0.403,
     "live_contiguous": true
    },
    "turn_after": {
     "ok": true,
-    "s": 0.3,
+    "s": 0.29,
     "status": "idle",
     "send_attempts": 1
    },
@@ -382,17 +382,17 @@
    "temp": "cold",
    "method": "reflink",
    "outcome": "snapshot_ready",
-   "pause_s": 0.5364,
-   "pause_s_by_guard": 0.5363,
-   "freeze_s": 0.0091,
-   "copy_s": 0.5256,
-   "release_s": 0.0017,
+   "pause_s": 0.399,
+   "pause_s_by_guard": 0.399,
+   "freeze_s": 0.0069,
+   "copy_s": 0.391,
+   "release_s": 0.0011,
    "precopy_s": null,
-   "size_bytes": 127143956,
-   "files": 4313,
-   "snapshot_bytes": 127144063,
-   "budget_check_s": 0.02,
-   "free_bytes": 321463988224,
+   "size_bytes": 127155151,
+   "files": 4314,
+   "snapshot_bytes": 127155218,
+   "budget_check_s": 0.0165,
+   "free_bytes": 322091626496,
    "reused_snapshot": null,
    "stopped_by_kind": {
     "idle-sleep": 50,
@@ -411,11 +411,11 @@
     "supervisor": 1
    },
    "running_after_freeze": [],
-   "total_s": 0.8151,
-   "worker_wall_s": 0.865,
+   "total_s": 0.6311,
+   "worker_wall_s": 0.714,
    "stopped": 68,
    "freeze_passes": 2,
-   "copy_mb_s": 241.9,
+   "copy_mb_s": 325.2,
    "host": {
     "states": [
      "online"
@@ -425,19 +425,19 @@
     "poll_errors": 0
    },
    "evict": {
-    "evicted_files": 7054,
-    "s": 0.23
+    "evicted_files": 7049,
+    "s": 2.28
    },
    "consistency": {
     "prefix": true,
     "complete_last_record": true,
-    "last_seq": 676,
-    "gap_after_snapshot_s": 0.538,
+    "last_seq": 1159,
+    "gap_after_snapshot_s": 0.404,
     "live_contiguous": true
    },
    "turn_after": {
     "ok": true,
-    "s": 0.31,
+    "s": 0.29,
     "status": "idle",
     "send_attempts": 1
    },
