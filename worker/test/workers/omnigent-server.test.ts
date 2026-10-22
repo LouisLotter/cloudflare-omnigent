@@ -580,6 +580,30 @@ describe("OmnigentServer: bootstrap status (G1BR-002, R-30)", () => {
     expect(statusEvents().at(-1)?.reason).toBe("boot_changed");
   });
 
+  it("restarts the comparison when the server's boot changes (a replaced or restored server)", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 2, "a".repeat(32)); // boot A: target 5, replica at 2
+    await check(stub);
+    await nextCheck(stub);
+    expect(statusEvents().at(-1)?.reason).toBe("not_replicated");
+    // Boot B: its replica (6) passes boot A's target (5), but says nothing about B's own owner
+    // commit: the target is B's position after /v1/info, 20.
+    fake.position = position(20, 6, "b".repeat(32));
+    await nextCheck(stub);
+    expect((await stub.bootstrapStatus(call))?.initialized).toBe(false);
+    expect(statusEvents().at(-1)?.reason).toBe("not_replicated");
+    fake.position = position(31, 20, "b".repeat(32));
+    await nextCheck(stub);
+    expect((await stub.bootstrapStatus(call))?.initialized).toBe(true);
+    const target = await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+      state.storage.sql
+        .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'bootstrap_target'")
+        .one(),
+    );
+    expect(JSON.parse(target.value)).toEqual({ bootId: "b".repeat(32), txid: 20 });
+  });
+
   it("stops checking once the owner is durable and the secret is gone", async () => {
     const { stub, fake } = await freshServer();
     fake.info = { accounts_enabled: true, needs_setup: false };
