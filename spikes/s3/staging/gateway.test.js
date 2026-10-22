@@ -4,7 +4,7 @@
 //   pnpm exec vitest run --config spikes/s3/staging/vitest.config.mjs
 
 import { describe, expect, it } from "vitest";
-import { gatewayFor, HoldingGateway, noteHold } from "./gateway.js";
+import { gatewayFor, HoldingGateway, noteHold, noteWaited } from "./gateway.js";
 
 // Workers' FixedLengthStream, which the SDK's part handler uses, for Node.
 globalThis.FixedLengthStream ??= class FixedLengthStream {
@@ -50,8 +50,13 @@ describe("noteHold", () => {
       first: 1_000,
       until: 121_000,
       parts: 2,
-      longestWaitMs: 120_000,
+      promisedMaxMs: 120_000,
+      observedMaxMs: 0,
     });
+    noteWaited(holds, "a", 119_000);
+    noteWaited(holds, "a", 100_000);
+    noteWaited(holds, "missing", 5);
+    expect(holds.get("a").observedMaxMs).toBe(119_000);
     expect(noteHold(holds, "b", 10, 50)).toBe(60);
   });
 });
@@ -79,6 +84,7 @@ describe("HoldingGateway", () => {
             asked.push([key, ms]);
             return noteHold(holds, key, ms, Date.now());
           },
+          holdWaited: async (key, ms) => noteWaited(holds, key, ms),
         }),
       },
     };
@@ -95,9 +101,36 @@ describe("HoldingGateway", () => {
       ["r2-0-1", 150],
     ]);
     expect(holds.get("r2-0-1").parts).toBe(2);
+    expect(holds.get("r2-0-1").observedMaxMs).toBeGreaterThanOrEqual(140);
     expect(Math.min(...parts.map((p) => p.at))).toBeGreaterThanOrEqual(
       holds.get("r2-0-1").until - 5,
     );
+  });
+
+  it("a held part that cannot be stored afterwards (an abandoned request) is not counted", async () => {
+    const holds = new Map();
+    const env = {
+      CKPT: {
+        ...fakeBucket([]),
+        resumeMultipartUpload: () => ({
+          uploadPart: async () => {
+            throw new Error("the upload was aborted");
+          },
+        }),
+      },
+      BENCH: {
+        idFromName: (name) => name,
+        get: () => ({
+          holdUntil: async (key, ms) => noteHold(holds, key, ms, Date.now()),
+          holdWaited: async (key, ms) => noteWaited(holds, key, ms),
+        }),
+      },
+    };
+    const props = { ...grant, holdKey: "gone", holdMs: 30 };
+    const res = await new HoldingGateway({ props }, env).fetch(part(1, "x"));
+    expect(res.status).toBe(502);
+    expect(holds.get("gone").observedMaxMs).toBe(0);
+    expect(holds.get("gone").promisedMaxMs).toBeGreaterThan(0);
   });
 
   it("without a Durable Object, the process keeps the hold itself", async () => {

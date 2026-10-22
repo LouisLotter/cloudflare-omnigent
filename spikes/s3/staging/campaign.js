@@ -66,8 +66,20 @@ export const PLANS = {
     largeProfile: "large",
     deltas: 20,
     r2: [
-      { name: "held-then-recovers", holdMs: 120_000, deadlineMs: 480_000, load: 150 },
-      { name: "held-past-the-deadline", holdMs: 120_000, deadlineMs: 60_000, load: 150 },
+      {
+        name: "held-then-recovers",
+        expect: "published",
+        holdMs: 120_000,
+        deadlineMs: 480_000,
+        load: 150,
+      },
+      {
+        name: "held-past-the-deadline",
+        expect: "aborted",
+        holdMs: 120_000,
+        deadlineMs: 60_000,
+        load: 150,
+      },
     ],
     // A case proves "R2 blocked for more than 90 s" only if a part really waited that long.
     r2MinHoldMs: 90_000,
@@ -89,8 +101,20 @@ export const PLANS = {
     largeProfile: "small",
     deltas: 3,
     r2: [
-      { name: "held-then-recovers", holdMs: 10_000, deadlineMs: 120_000, load: 20 },
-      { name: "held-past-the-deadline", holdMs: 10_000, deadlineMs: 5_000, load: 20 },
+      {
+        name: "held-then-recovers",
+        expect: "published",
+        holdMs: 10_000,
+        deadlineMs: 120_000,
+        load: 20,
+      },
+      {
+        name: "held-past-the-deadline",
+        expect: "aborted",
+        holdMs: 10_000,
+        deadlineMs: 5_000,
+        load: 20,
+      },
     ],
     r2MinHoldMs: 7_500,
     holds: [5],
@@ -109,6 +133,38 @@ function median(xs) {
   if (s.length === 0) return null;
   const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/** What an R2 case must show; each failed check is a string. */
+export function r2Checks(plan, spec, row) {
+  const failed = [];
+  const hold = row.hold_observed;
+  const added = row.objects_after - row.objects_before;
+  if (spec.expect === "published") {
+    if (!((hold?.observed_max_ms ?? 0) >= plan.r2MinHoldMs)) {
+      failed.push(`no part was seen to wait ${plan.r2MinHoldMs} ms, so R2 was not shown blocked`);
+    }
+    if (!row.upload.ok) failed.push("the upload did not complete after the hold");
+    if (!row.pointer_moved || added !== 1)
+      failed.push("the completed upload was not published once");
+  } else {
+    if (!hold || hold.first_part_after_ms >= spec.deadlineMs) {
+      failed.push("the block did not start before the deadline");
+    }
+    if (row.upload.ok) failed.push("the upload completed despite the deadline");
+    if (row.pointer_moved || added !== 0) failed.push("something was published");
+  }
+  const load = row.load;
+  if (load.error) failed.push(`the load failed: ${load.error}`);
+  else {
+    if (!(load.turns > 0 && load.turns_ok === load.turns)) {
+      failed.push(`turns during the block: ${load.turns_ok}/${load.turns}`);
+    }
+    if (load.capture?.outcome !== "snapshot_ready") {
+      failed.push(`the capture during the block: ${load.capture?.outcome ?? "none"}`);
+    }
+  }
+  return failed;
 }
 
 /** Starts a campaign: records it and sets the first alarm. Refuses while one runs. */
@@ -147,16 +203,38 @@ export async function startCampaign(ports, planName) {
  */
 export async function stopCampaign(ports, reason) {
   await ports.storage.put("stopRequested", reason);
+  // An alarm records the stop even if none was pending (its retries ran out, for example).
+  await ports.storage.setAlarm(ports.now() + STEP_ALARM_MS);
+}
+
+/**
+ * A result file in R2. A failed write never stops the campaign: the summary stays in storage
+ * and in Workers Logs, and the failure is logged.
+ */
+async function publish(ports, key, value, log) {
+  try {
+    await ports.results.put(key, value);
+  } catch (error) {
+    log("result_write_failed", { key, error: errorText(error) });
+  }
 }
 
 async function finish(ports, campaign, status) {
   campaign.status = status;
   campaign.endedAt = ports.now();
   await ports.storage.put("campaign", campaign);
-  await ports.results.put(`results/${campaign.id}/campaign.json`, campaign);
   ports.log("campaign_ended", { campaign: campaign.id, status, steps: campaign.steps });
-  // Done, stopped or expired: nothing of the campaign may keep running.
-  await ports.container.stop().catch(() => undefined);
+  // Done, stopped or expired: nothing of the campaign may keep running. Stopping comes before
+  // the result file, and a failed stop is retried by a later alarm.
+  try {
+    await ports.container.stop();
+  } catch (error) {
+    ports.log("container_stop_failed", { campaign: campaign.id, error: errorText(error) });
+    campaign.stopPending = true;
+    await ports.storage.put("campaign", campaign);
+    await ports.storage.setAlarm(ports.now() + POLL_MS);
+  }
+  await publish(ports, `results/${campaign.id}/campaign.json`, campaign, ports.log);
 }
 
 function recordStep(ports, campaign, step, outcome, log) {
@@ -170,7 +248,7 @@ function recordStep(ports, campaign, step, outcome, log) {
     at: ports.now(),
   };
   log("step_done", { ok, failed, summary: campaign.steps[step].summary });
-  return ports.results.put(`results/${campaign.id}/${step}.json`, result);
+  return publish(ports, `results/${campaign.id}/${step}.json`, result, log);
 }
 
 /**
@@ -180,6 +258,17 @@ function recordStep(ports, campaign, step, outcome, log) {
 export async function tick(ports) {
   const tickStart = ports.now();
   const campaign = await ports.storage.get("campaign");
+  if (campaign?.stopPending) {
+    // The campaign ended but its container did not stop: try again.
+    try {
+      await ports.container.stop();
+      campaign.stopPending = false;
+      await ports.storage.put("campaign", campaign);
+    } catch {
+      await ports.storage.setAlarm(ports.now() + POLL_MS);
+    }
+    return;
+  }
   if (campaign?.status !== "running") return;
   const plan = PLANS[campaign.plan];
   const stop = await ports.storage.get("stopRequested");
@@ -370,6 +459,8 @@ const STEPS = {
       }
       return finishLayer(ctx);
     }
+    // Every layer is done (a reset after the last one was stored): summarise, no new turn.
+    if (sub.n > plan.deltas) return summarizeTurns(sub);
     const n = sub.n;
     const row = { n };
     if (n > 0) {
@@ -433,54 +524,83 @@ const STEPS = {
     if (!sub.phase) {
       await ports.sup.post("/restore/reset", {});
       Object.assign(sub, { phase: "chain", i: 0, rows: [], wallStart: ports.now() });
+      await save();
     }
     if (sub.phase === "chain") {
+      // A reset after a merge but before its progress was stored: the container knows which
+      // layer it merged last, and a layer is never merged twice (a replayed delta can fail).
+      const merged = boot.restore_merged == null ? -1 : Number(boot.restore_merged);
+      if (merged >= sub.i) {
+        log("restore_resumed", { merged, stored: sub.i });
+        for (let k = sub.i; k <= merged; k++) sub.rows.push({ layer: k, resumed: true });
+        sub.i = merged + 1;
+      }
       while (sub.i < records.length && remaining() > 3 * 60_000) {
         const record = records[sub.i];
         const t = ports.now();
         await ports.backups("layers/").restore(record, { dir: LAYER_DIR, signal: deadline() });
         const restoreMs = ports.now() - t;
-        const merge = await ports.sup.post("/restore/merge", {});
+        const merge = await ports.sup.post("/restore/merge", { seq: sub.i });
         sub.rows.push({ layer: sub.i, stored_bytes: record.size, restore_ms: restoreMs, merge });
         sub.i += 1;
         await save();
       }
       if (sub.i < records.length) return { done: false };
       const verify = await ports.sup.post("/restore/verify", { seq: records.length - 1 });
+      const timed = sub.rows.filter((r) => !r.resumed);
       sub.chain = {
         layers: records.length,
-        work_ms: sub.rows.reduce((a, r) => a + r.restore_ms + r.merge.merge_s * 1000, 0),
+        work_ms: timed.reduce((a, r) => a + r.restore_ms + r.merge.merge_s * 1000, 0),
         wall_ms: ports.now() - sub.wallStart,
+        resumed_layers: sub.rows.length - timed.length,
         verify,
         rows: sub.rows,
       };
-      sub.phase = "full";
+      sub.phase = "full-upload";
       log("restore_chain", { chain: sub.chain });
       return { done: false };
     }
-    const layer = await ports.sup.post("/layer", {
-      seq: "final-full",
-      base: true,
-      standalone: true,
-    });
-    const up = await upload(ports, "full/", "/snap/.stage/final-full", {
-      name: "final-full",
-      signal: deadline(),
-    });
-    await ports.sup.post("/layer/discard", { seq: "final-full" });
-    const full = { stored_bytes: up.record?.size, upload_ms: up.ms, upload_error: up.error };
-    if (up.ok) {
-      const t = ports.now();
-      await ports.backups("full/").restore(up.record, {
-        dir: "/restore-staging/full",
+    // The same final state as one full layer, then the sessions; one alarm each.
+    if (sub.phase === "full-upload") {
+      const layer = await ports.sup.post("/layer", {
+        seq: "final-full",
+        base: true,
+        standalone: true,
+      });
+      const up = await upload(ports, "full/", "/snap/.stage/final-full", {
+        name: "final-full",
         signal: deadline(),
       });
-      full.restore_ms = ports.now() - t;
-      full.verify = await ports.sup.post("/restore/verify", { tree: "full", seq: "final-full" });
+      await ports.sup.post("/layer/discard", { seq: "final-full" });
+      sub.full = {
+        stored_bytes: up.record?.size,
+        upload_ms: up.ms,
+        upload_error: up.error,
+        files: layer.changed_files,
+        record: up.record ?? null,
+      };
+      sub.phase = "full-restore";
+      return { done: false };
     }
-    full.files = layer.changed_files;
+    if (sub.phase === "full-restore") {
+      if (sub.full.record) {
+        const t = ports.now();
+        await ports.backups("full/").restore(sub.full.record, {
+          dir: "/restore-staging/full",
+          signal: deadline(),
+        });
+        sub.full.restore_ms = ports.now() - t;
+        sub.full.verify = await ports.sup.post("/restore/verify", {
+          tree: "full",
+          seq: "final-full",
+        });
+      }
+      sub.phase = "reopen";
+      return { done: false };
+    }
     const reopen = await ports.sup.post("/restore/reopen", { canary: campaign.turnsCanary ?? "" });
     await ports.sup.post("/restore/reset", {});
+    const { record: _record, ...full } = sub.full;
     const failed = [];
     if (records.length !== plan.deltas + 1) {
       failed.push(`${records.length} layers, not ${plan.deltas + 1}`);
@@ -493,6 +613,7 @@ const STEPS = {
       chain_layers: sub.chain.layers,
       chain_work_ms: Math.round(sub.chain.work_ms),
       chain_wall_ms: sub.chain.wall_ms,
+      chain_resumed_layers: sub.chain.resumed_layers,
       chain_verify_equal: sub.chain.verify.equal,
       chain_restore_ms_median: median(sub.chain.rows.map((r) => r.restore_ms)),
       full_restore_ms: full.restore_ms,
@@ -504,13 +625,15 @@ const STEPS = {
   },
 
   /**
-   * RC-15 with R2 blocked over 90 s: the gateway holds every part upload until holdMs after the
-   * first part arrives, while conversation turns and one capture run in the container. Case 1
-   * waits it out (does the helper survive a 120 s stall?); case 2's deadline aborts the upload.
-   * The "pointer" moves only after a completed, verified upload. A case counts as a block only if
-   * the gateway saw a part wait at least r2MinHoldMs.
+   * RC-15 with R2 blocked over 90 s: from the first part's arrival, the gateway holds every part
+   * upload for holdMs, while conversation turns and one capture run in the container. Case 1
+   * should wait it out and publish (does the helper survive the stall?); case 2's deadline should
+   * abort it, with nothing published. The "pointer" moves only after a completed, verified
+   * upload. Each case lists the checks it failed: case 1 needs a part to have actually waited
+   * r2MinHoldMs (observed, not just promised); case 2 needs the block to have started before its
+   * deadline; both need every turn and the capture to succeed.
    */
-  async "r2-block"({ ports, plan, sub, log, boot, deadline }) {
+  async "r2-block"({ ports, plan, sub, log, boot, deadline, remaining }) {
     sub.case = sub.case ?? 0;
     const spec = plan.r2[sub.case];
     const seq = `r2-${sub.case}`;
@@ -535,20 +658,25 @@ const STEPS = {
     });
     if (up.ok) await ports.storage.put("pointer:r2", { id: up.record.id, case: spec.name });
     let loadState = await ports.sup.get(`/jobs/${load.job}`);
-    while (loadState.state === "running") {
+    while (loadState.state === "running" && remaining() > 60_000) {
       await ports.sleep(5_000);
       loadState = await ports.sup.get(`/jobs/${load.job}`);
     }
     await ports.sup.post("/layer/discard", { seq });
     const hold = (await ports.holdRecord(holdKey)) ?? null;
+    const loadResult = loadState.result ?? {
+      error: loadState.error ?? `load still ${loadState.state}`,
+    };
     const row = {
       case: spec.name,
+      expect: spec.expect,
       hold_ms: spec.holdMs,
       deadline_ms: spec.deadlineMs,
       layer_bytes: layer.changed_bytes,
       hold_observed: hold && {
         first_part_after_ms: hold.first - t0,
-        longest_wait_ms: hold.longestWaitMs,
+        promised_max_ms: hold.promisedMaxMs,
+        observed_max_ms: hold.observedMaxMs ?? null,
         parts_held: hold.parts,
       },
       upload: { ok: up.ok, ms: up.ms, stored_bytes: up.record?.size, error: up.error },
@@ -556,30 +684,30 @@ const STEPS = {
       pointer_after: (await ports.storage.get("pointer:r2")) ?? null,
       objects_before: objectsBefore,
       objects_after: await ports.results.count("r2block/"),
-      load: loadState.result ?? { error: loadState.error },
+      load: loadResult,
     };
-    row.blocked_long_enough = (hold?.longestWaitMs ?? 0) >= plan.r2MinHoldMs;
+    row.pointer_moved = JSON.stringify(row.pointer_before) !== JSON.stringify(row.pointer_after);
+    row.failed = r2Checks(plan, spec, row);
     log("r2_case", { row: { ...row, load: { ...row.load, rows: undefined } } });
     sub.rows = [...(sub.rows ?? []), row];
     sub.case += 1;
     if (sub.case < plan.r2.length) return { done: false };
     const summary = sub.rows.map((r) => ({
       case: r.case,
-      blocked_long_enough: r.blocked_long_enough,
-      longest_wait_ms: r.hold_observed?.longest_wait_ms ?? null,
+      first_part_after_ms: r.hold_observed?.first_part_after_ms ?? null,
+      observed_max_wait_ms: r.hold_observed?.observed_max_ms ?? null,
       upload_ok: r.upload.ok,
       upload_ms: r.upload.ms,
       error: r.upload.error,
-      pointer_moved: JSON.stringify(r.pointer_before) !== JSON.stringify(r.pointer_after),
+      pointer_moved: r.pointer_moved,
       objects_added: r.objects_after - r.objects_before,
       turns: `${r.load.turns_ok}/${r.load.turns}`,
       capture_pause_s: r.load.capture?.pause_s,
       capture_outcome: r.load.capture?.outcome,
       host: r.load.host,
+      failed: r.failed,
     }));
-    const failed = sub.rows
-      .filter((r) => !r.blocked_long_enough)
-      .map((r) => `${r.case}: no part waited ${plan.r2MinHoldMs} ms, so R2 was not shown blocked`);
+    const failed = sub.rows.flatMap((r) => r.failed.map((f) => `${r.case}: ${f}`));
     return { done: true, result: { rows: sub.rows, summary, failed }, summary };
   },
 
@@ -613,48 +741,65 @@ const STEPS = {
       sub.phase = "capture";
     }
     if (!sub.df) sub.df = await ports.sup.post("/df", { path: "/snap" });
-    const df = sub.df;
-    // Minutes for 2.4 GB cold, so the capture runs as a job polled across alarms.
-    const out = await job(ctx, "/capture", { method: "rsync-2phase", budget_s: 60, as_job: true });
-    if (!out.done) return out;
-    const cap = out.result ?? {};
-    if (cap.outcome !== "snapshot_ready") {
-      return { done: true, result: { error: `capture: ${cap.outcome ?? cap.error}` } };
-    }
-    const result = { profile: plan.largeProfile, free_bytes: df.free, size_bytes: cap.size_bytes };
-    if (df.free < cap.size_bytes * 2.5) {
-      await ports.sup.post("/rm", { path: cap.snapshot_dir });
-      result.skipped = "not enough free disk for a restore beside the snapshot";
-      return { done: true, result, summary: result };
-    }
-    const layer = await ports.sup.post("/layer", {
-      seq: "large",
-      base: true,
-      standalone: true,
-      snapshot_dir: cap.snapshot_dir,
-    });
-    result.index_s = layer.index_s;
-    const up = await upload(ports, "full/", "/snap/.stage/large", {
-      name: "large",
-      signal: deadline(),
-    });
-    await ports.sup.post("/layer/discard", { seq: "large" });
-    await ports.sup.post("/rm", { path: cap.snapshot_dir });
-    Object.assign(result, { upload_ms: up.ms, stored_bytes: up.record?.size, error: up.error });
-    if (up.ok) {
-      const t = ports.now();
-      await ports.backups("full/").restore(up.record, {
-        dir: "/restore-staging/large",
+    if (sub.phase === "capture") {
+      // Minutes for 2.4 GB cold, so the capture runs as a job polled across alarms.
+      const out = await job(ctx, "/capture", {
+        method: "rsync-2phase",
+        budget_s: 60,
+        as_job: true,
+      });
+      if (!out.done) return out;
+      const cap = out.result ?? {};
+      if (cap.outcome !== "snapshot_ready") {
+        return { done: true, result: { error: `capture: ${cap.outcome ?? cap.error}` } };
+      }
+      sub.result = {
+        profile: plan.largeProfile,
+        free_bytes: sub.df.free,
+        size_bytes: cap.size_bytes,
+      };
+      if (sub.df.free < cap.size_bytes * 2.5) {
+        await ports.sup.post("/rm", { path: cap.snapshot_dir });
+        sub.result.skipped = "not enough free disk for a restore beside the snapshot";
+        return { done: true, result: sub.result, summary: sub.result };
+      }
+      // Upload in this alarm, restore in the next: each within one alarm's budget.
+      const layer = await ports.sup.post("/layer", {
+        seq: "large",
+        base: true,
+        standalone: true,
+        snapshot_dir: cap.snapshot_dir,
+      });
+      sub.result.index_s = layer.index_s;
+      const up = await upload(ports, "full/", "/snap/.stage/large", {
+        name: "large",
         signal: deadline(),
       });
-      result.restore_ms = ports.now() - t;
-      result.verify = await ports.sup.post("/restore/verify", { tree: "large", seq: "large" });
-      await ports.sup.post("/restore/reset", {});
-      result.upload_mb_s = Math.round((cap.size_bytes / 1e6 / (up.ms / 1000)) * 10) / 10;
-      result.restore_mb_s =
-        Math.round((cap.size_bytes / 1e6 / (result.restore_ms / 1000)) * 10) / 10;
-      if (!result.verify.equal) result.failed = ["the large layer did not restore equal"];
+      await ports.sup.post("/layer/discard", { seq: "large" });
+      await ports.sup.post("/rm", { path: cap.snapshot_dir });
+      Object.assign(sub.result, {
+        upload_ms: up.ms,
+        stored_bytes: up.record?.size,
+        error: up.error,
+      });
+      if (!up.ok) return { done: true, result: sub.result, summary: sub.result };
+      sub.result.upload_mb_s = Math.round((cap.size_bytes / 1e6 / (up.ms / 1000)) * 10) / 10;
+      sub.record = up.record;
+      sub.phase = "restore";
+      return { done: false };
     }
+    const result = sub.result;
+    const t = ports.now();
+    await ports.backups("full/").restore(sub.record, {
+      dir: "/restore-staging/large",
+      signal: deadline(),
+    });
+    result.restore_ms = ports.now() - t;
+    result.verify = await ports.sup.post("/restore/verify", { tree: "large", seq: "large" });
+    await ports.sup.post("/restore/reset", {});
+    result.restore_mb_s =
+      Math.round((result.size_bytes / 1e6 / (result.restore_ms / 1000)) * 10) / 10;
+    if (!result.verify.equal) result.failed = ["the large layer did not restore equal"];
     log("throughput", { result });
     return { done: true, result, summary: result };
   },
@@ -672,7 +817,11 @@ async function finishLayer(ctx) {
   await save();
   log("turn_layer", { row });
   if (sub.n <= plan.deltas) return { done: false };
+  return summarizeTurns(sub);
+}
 
+/** The turns step's result, from the stored rows. */
+function summarizeTurns(sub) {
   const deltas = sub.rows.slice(1);
   const base = sub.rows[0].upload.stored_bytes;
   let cumulative = 0;

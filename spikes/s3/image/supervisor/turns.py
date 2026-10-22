@@ -154,7 +154,7 @@ def save_state(state: dict[str, str]) -> None:
         json.dump(state, fh)
 
 
-def run(argv: list[str], env: dict[str, str], cwd: str, timeout: float = 300) -> subprocess.CompletedProcess[str]:
+def run(argv: list[str], env: dict[str, str], cwd: str, timeout: float = 150) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, env={**os.environ, **env}, cwd=cwd, capture_output=True, text=True,
                           timeout=timeout, stdin=subprocess.DEVNULL)
 

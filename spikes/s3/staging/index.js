@@ -10,7 +10,7 @@ import { DurableObject } from "cloudflare:workers";
 import { DirectoryBackup } from "@cloudflare/sandbox";
 import { PLANS, startCampaign, stopCampaign, tick } from "./campaign.js";
 import { handle } from "./controls.js";
-import { gatewayFor, noteHold } from "./gateway.js";
+import { gatewayFor, noteHold, noteWaited } from "./gateway.js";
 
 // The SDK's gateway for control calls, and the holding gateway for the container's transfers;
 // reached only through ctx.exports by DirectoryBackup. No route leads to either.
@@ -23,6 +23,8 @@ const SUPERVISOR_PORT = 7070;
 // container (the first start pulls an image of about 3 GB) 15 minutes over several alarms.
 const READY_WAIT_MS = 60_000;
 const BOOT_REQUEST_MS = 5_000;
+// No single supervisor request may hold an alarm longer than this (a hung container).
+const SUP_CALL_MS = 6 * 60_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,7 +60,7 @@ export class Bench extends DurableObject {
       body === undefined
         ? { method }
         : { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } };
-    const res = await this.supFetch(path, init);
+    const res = await this.supFetch(path, { ...init, signal: AbortSignal.timeout(SUP_CALL_MS) });
     const text = await res.text();
     if (!res.ok) throw new Error(`supervisor ${path}: ${res.status} ${text.slice(0, 300)}`);
     return JSON.parse(text);
@@ -117,6 +119,11 @@ export class Bench extends DurableObject {
    */
   holdUntil(key, holdMs) {
     return noteHold(this.holds, key, holdMs, Date.now());
+  }
+
+  /** RPC from the HoldingGateway: a part finished waiting `waitedMs` in the hold `key`. */
+  holdWaited(key, waitedMs) {
+    noteWaited(this.holds, key, waitedMs);
   }
 
   holdRecord(key) {

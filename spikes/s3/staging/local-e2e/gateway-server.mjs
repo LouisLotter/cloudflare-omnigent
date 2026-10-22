@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { HoldingGateway, noteHold } from "../gateway.js";
+import { HoldingGateway, noteHold, noteWaited } from "../gateway.js";
 import { fileBucket } from "./fake-r2.mjs";
 
 const root = process.env.R2_ROOT ?? "/r2";
@@ -27,6 +27,10 @@ const BENCH = {
       const until = noteHold(holds, key, ms, Date.now());
       writeFileSync(`${root}/holds.json`, JSON.stringify(Object.fromEntries(holds)));
       return until;
+    },
+    holdWaited: async (key, waited) => {
+      noteWaited(holds, key, waited);
+      writeFileSync(`${root}/holds.json`, JSON.stringify(Object.fromEntries(holds)));
     },
   }),
 };

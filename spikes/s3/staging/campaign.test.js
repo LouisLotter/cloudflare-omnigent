@@ -23,6 +23,12 @@ let commitHook;
 let holds;
 let stopped;
 let box;
+let mergeHook;
+let resultsFail;
+let stopFails;
+let holdNotWaited;
+let ignoreDeadline;
+let putHook;
 
 function fakeSupervisor() {
   const jobs = new Map();
@@ -71,11 +77,17 @@ function fakeSupervisor() {
         case "/calibrate":
           return startJob({ rows: body.holds.map((h) => ({ hold_s: h, pause_s: h })) });
         case "/load":
-          return startJob({ turns: 4, turns_ok: 4, capture: { pause_s: 0.6 }, host: {} });
+          return startJob({
+            turns: 4,
+            turns_ok: 4,
+            capture: { pause_s: 0.6, outcome: "snapshot_ready" },
+            host: {},
+          });
         case "/rm":
           if (body.all) box.kept = null;
           return {};
         case "/restore/reset":
+          box.merged = null;
           return {};
         case "/turn":
           return { rc: 0, cli: body.cli, n: body.n };
@@ -97,7 +109,9 @@ function fakeSupervisor() {
         case "/layer/discard":
           return { seq: String(body.seq) };
         case "/restore/merge":
-          return { moved: 1, merge_s: 0.01 };
+          box.merged = String(body.seq);
+          mergeHook?.(body.seq);
+          return { seq: String(body.seq), moved: 1, merge_s: 0.01 };
         case "/restore/verify":
           return { equal: true };
         case "/restore/reopen":
@@ -123,6 +137,7 @@ function ports() {
       get: async (key) => structuredClone(map.get(key)),
       put: async (key, value) => {
         map.set(key, structuredClone(value));
+        putHook?.(key, value);
       },
       delete: async (key) => map.delete(key),
       setAlarm: async (time) => {
@@ -138,12 +153,17 @@ function ports() {
               published_layer: box.published,
               kept_snapshot: box.kept,
               profile: box.profile,
+              restore_merged: box.merged,
             }
           : null,
       keepAlive: async () => {
         calls.push("keepAlive");
       },
       stop: async () => {
+        if (stopFails > 0) {
+          stopFails -= 1;
+          throw new Error("destroy failed");
+        }
         stopped = true;
       },
     },
@@ -151,9 +171,24 @@ function ports() {
     backups: (prefix, hold) => ({
       backup: async ({ dir, name, signal }) => {
         calls.push(`backup ${prefix}${name}`);
-        if (hold) holds.set(hold.key, { first: clock + 500, longestWaitMs: hold.ms, parts: 16 });
+        if (hold) {
+          holds.set(hold.key, {
+            first: clock + 500,
+            until: clock + 500 + hold.ms,
+            parts: 16,
+            promisedMaxMs: hold.ms,
+            observedMaxMs: 0,
+          });
+        }
         const outcome = uploadHook?.({ prefix, dir, name, signal, hold });
         if (outcome instanceof Error) throw outcome;
+        // A deadline that ends inside the hold aborts the upload, as on Cloudflare.
+        if (hold && signal?.deadlineMs < hold.ms + 500 && !ignoreDeadline) {
+          throw new Error("TimeoutError: The operation was aborted due to timeout");
+        }
+        if (hold && holds.get(hold.key).observedMaxMs === 0 && !holdNotWaited) {
+          holds.get(hold.key).observedMaxMs = hold.ms + 400;
+        }
         clock += 2_000;
         const record = {
           id: `${name}-id`,
@@ -172,6 +207,10 @@ function ports() {
     }),
     results: {
       put: async (key, value) => {
+        if (resultsFail > 0) {
+          resultsFail -= 1;
+          throw new Error("R2 unavailable");
+        }
         objects.set(key, value);
       },
       count: async (prefix) => [...objects.keys()].filter((k) => k.startsWith(prefix)).length,
@@ -208,7 +247,13 @@ beforeEach(() => {
   commitHook = null;
   holds = new Map();
   stopped = false;
-  box = { published: null, kept: null, profile: null };
+  box = { published: null, kept: null, profile: null, merged: null };
+  mergeHook = null;
+  resultsFail = 0;
+  stopFails = 0;
+  holdNotWaited = false;
+  ignoreDeadline = false;
+  putHook = null;
   fakeSupervisor.current = fakeSupervisor();
 });
 
@@ -265,7 +310,11 @@ describe("the quick plan, end to end against fakes", () => {
     expect(stopped).toBe(true);
     expect(Object.keys(campaign().steps)).toEqual(PLANS.quick.steps);
     for (const step of PLANS.quick.steps) {
-      expect(campaign().steps[step].ok).toBe(true);
+      expect([step, campaign().steps[step].ok, campaign().steps[step].failed]).toEqual([
+        step,
+        true,
+        undefined,
+      ]);
       expect(result(step)).toBeDefined();
     }
     expect(objects.has(`results/${campaign().id}/campaign.json`)).toBe(true);
@@ -303,13 +352,13 @@ describe("the quick plan, end to end against fakes", () => {
     expect(restores).toEqual(
       [0, 1, 2, 3].map((n) => `restore layers/layer-${n}-id -> /restore-staging/layer`),
     );
-    expect(calls.filter((c) => c === "POST /restore/merge")).toHaveLength(4);
+    expect(calls.filter((c) => c.startsWith("POST /restore/merge"))).toHaveLength(4);
     expect(result("restore").summary.chain_verify_equal).toBe(true);
     expect(result("restore").summary.full_verify_equal).toBe(true);
     expect(result("restore").failed).toEqual([]);
   });
 
-  it("r2-block: the pointer moves only after a completed upload; a real block is recorded", async () => {
+  it("r2-block: the pointer moves only after a completed upload; both cases meet their checks", async () => {
     await startCampaign(ports(), "quick");
     uploadHook = ({ prefix, signal, hold }) => {
       if (prefix !== "r2block/") return undefined;
@@ -318,26 +367,54 @@ describe("the quick plan, end to end against fakes", () => {
     };
     await runAlarms();
     const summary = result("r2-block").summary;
-    expect(
-      summary.map((r) => [r.case, r.upload_ok, r.pointer_moved, r.blocked_long_enough]),
-    ).toEqual([
-      ["held-then-recovers", true, true, true],
-      ["held-past-the-deadline", false, false, true],
+    expect(summary.map((r) => [r.case, r.upload_ok, r.pointer_moved, r.failed])).toEqual([
+      ["held-then-recovers", true, true, []],
+      ["held-past-the-deadline", false, false, []],
     ]);
+    expect(summary[0].observed_max_wait_ms).toBeGreaterThanOrEqual(10_000);
     expect(summary[1].objects_added).toBe(0);
     expect(summary[0].turns).toBe("4/4");
     expect(campaign().steps["r2-block"].ok).toBe(true);
   });
 
-  it("r2-block: a hold no part waited out does not count as R2 blocked", async () => {
+  it("r2-block: a hold no part was seen to wait out does not show R2 blocked", async () => {
     await startCampaign(ports(), "quick");
-    uploadHook = ({ prefix, hold }) => {
-      if (prefix === "r2block/") holds.set(hold.key, { first: clock, longestWaitMs: 0, parts: 0 });
-      return undefined;
-    };
+    holdNotWaited = true;
+    uploadHook = ({ prefix, signal }) =>
+      prefix === "r2block/" && signal.deadlineMs < 10_000 ? new Error("TimeoutError") : undefined;
     await runAlarms();
     expect(campaign().steps["r2-block"].ok).toBe(false);
-    expect(campaign().steps["r2-block"].failed).toHaveLength(2);
+    expect(campaign().steps["r2-block"].failed).toEqual([
+      "held-then-recovers: no part was seen to wait 7500 ms, so R2 was not shown blocked",
+    ]);
+  });
+
+  it("r2-block: an unexpected publication, failed turns or a failed capture are reported", async () => {
+    await startCampaign(ports(), "quick");
+    ignoreDeadline = true;
+    const sup = fakeSupervisor.current;
+    const post = sup.post;
+    sup.post = async (path, body) => {
+      if (path === "/load") {
+        calls.push("POST /load");
+        return post("/setup", {}).then(() => ({ job: "load-bad" }));
+      }
+      return post(path, body);
+    };
+    const get = sup.get;
+    sup.get = async (path) =>
+      path === "/jobs/load-bad"
+        ? {
+            state: "done",
+            result: { turns: 4, turns_ok: 0, capture: { outcome: "worker_died" }, host: {} },
+          }
+        : get(path);
+    await runAlarms();
+    const failed = campaign().steps["r2-block"].failed;
+    expect(failed).toContain("held-past-the-deadline: the upload completed despite the deadline");
+    expect(failed).toContain("held-past-the-deadline: something was published");
+    expect(failed).toContain("held-then-recovers: turns during the block: 0/4");
+    expect(failed).toContain("held-then-recovers: the capture during the block: worker_died");
   });
 });
 
@@ -367,6 +444,75 @@ describe("the full plan, against fakes", () => {
 });
 
 describe("failures", () => {
+  it("R2 failing to take the result files neither stops nor strands the campaign", async () => {
+    resultsFail = 1_000_000;
+    await startCampaign(ports(), "quick");
+    await runAlarms();
+    expect(campaign().status).toBe("done");
+    expect(stopped).toBe(true);
+    expect(logs.filter((l) => l.event === "result_write_failed").length).toBeGreaterThan(5);
+  });
+
+  it("a stop request is recorded even when no alarm is pending", async () => {
+    await startCampaign(ports(), "quick");
+    await runAlarms(1);
+    alarm = null; // the runtime gave up retrying the alarm
+    await stopCampaign(ports(), "disarmed by the owner");
+    expect(alarm).not.toBe(null);
+    await runAlarms();
+    expect(campaign().status).toBe("stopped: disarmed by the owner");
+    expect((await startCampaign(ports(), "quick")).ok).toBe(true);
+  });
+
+  it("a container that does not stop at the end is stopped by a later alarm", async () => {
+    stopFails = 2;
+    await startCampaign(ports(), "quick");
+    await runAlarms();
+    expect(campaign().status).toBe("done");
+    expect(stopped).toBe(true);
+    expect(campaign().stopPending).toBe(false);
+    expect(logs.some((l) => l.event === "container_stop_failed")).toBe(true);
+  });
+
+  it("a reset after the last layer's progress was stored summarises without another turn", async () => {
+    await startCampaign(ports(), "quick");
+    let before = null;
+    putHook = (key, value) => {
+      const done = value.sub?.n === PLANS.quick.deltas + 1 && !value.sub.pending;
+      if (key === "campaign" && value.index === 3 && done && !before)
+        before = structuredClone(value);
+    };
+    for (let i = 0; i < 300 && !before; i++) await runAlarms(1);
+    expect(before).not.toBe(null);
+    const turnsBefore = calls.filter((c) => c === "POST /turn").length;
+    map.set("campaign", before);
+    alarm = clock;
+    await runAlarms();
+    expect(calls.filter((c) => c === "POST /turn").length).toBe(turnsBefore);
+    expect(map.get(`layers:${campaign().id}`)).toHaveLength(PLANS.quick.deltas + 1);
+    expect(campaign().steps.turns.ok).toBe(true);
+    expect(campaign().steps.restore.ok).toBe(true);
+  });
+
+  it("a reset after a merge, before its progress was stored, never merges that layer twice", async () => {
+    await startCampaign(ports(), "quick");
+    let before = null;
+    mergeHook = (seq) => {
+      if (String(seq) === "2" && !before) before = structuredClone(map.get("campaign"));
+    };
+    for (let i = 0; i < 300 && !before; i++) await runAlarms(1);
+    // The alarm that merged layer 2 completed; the reset brings back the earlier state.
+    map.set("campaign", before);
+    alarm = clock;
+    await runAlarms();
+    const merges = calls.filter((c) => c.startsWith("POST /restore/merge"));
+    expect(merges).toEqual([0, 1, 2, 3].map((n) => `POST /restore/merge ${n}`));
+    expect(logs.some((l) => l.event === "restore_resumed")).toBe(true);
+    expect(campaign().steps.restore.ok).toBe(true);
+    // Layers 2 and 3 were merged in the alarm the reset undid; neither is merged again.
+    expect(result("restore").summary.chain_resumed_layers).toBe(2);
+  });
+
   it("a failing step is recorded and the campaign goes on", async () => {
     failPaths.add("/calibrate");
     await startCampaign(ports(), "quick");

@@ -217,7 +217,7 @@ def do_turn(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("cli must be claude or codex")
     p = subprocess.run(
         as_agent(["/opt/venv/bin/python", "-m", "supervisor.turns", cli, str(int(body["n"])), str(body["canary"])]),
-        env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=600)
+        env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=330)
     if p.returncode != 0:
         return {"cli": cli, "n": body["n"], "rc": p.returncode, "error": p.stderr[-800:]}
     return json.loads(p.stdout.strip().splitlines()[-1])
@@ -276,9 +276,13 @@ def do_restore(path: str, body: dict[str, Any]) -> dict[str, Any]:
     if path == "/restore/reset":
         for name in ("tree", "layer", "full", "large"):
             subprocess.run(["rm", "-rf", restore_path(name)], check=False)
+        STATE["restore_merged"] = None
         return {"reset": True}
     if path == "/restore/merge":
-        return layers.merge(restore_path(body.get("layer", "layer")), restore_path(body.get("tree", "tree")), ROOTS)
+        res = layers.merge(restore_path(body.get("layer", "layer")), restore_path(body.get("tree", "tree")), ROOTS)
+        # The last layer merged into the tree, so a resumed restore never merges one twice.
+        STATE["restore_merged"] = res["seq"]
+        return res
     if path == "/restore/verify":
         expected = layers.load_index(os.path.join(INDEX_DIR, f"{body['seq']}.json"))
         return layers.verify(restore_path(body.get("tree", "tree")), expected)
@@ -287,7 +291,7 @@ def do_restore(path: str, body: dict[str, Any]) -> dict[str, Any]:
         p = subprocess.run(
             as_agent(["/opt/venv/bin/python", "-m", "supervisor.turns", "reopen", os.path.join(tree, "claude"),
                       os.path.join(tree, "codex"), str(body["canary"])]),
-            env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=600)
+            env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=330)
         if p.returncode != 0:
             return {"rc": p.returncode, "error": p.stderr[-800:]}
         return json.loads(p.stdout.strip().splitlines()[-1])
@@ -361,6 +365,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"boot_id": STATE["boot_id"], "started": STATE["started"],
                              "all_in_one": STATE.get("aio"), "host_pids": STATE["workload_pids"],
                              "kept_snapshot": STATE["kept_snapshot"], "profile": steps.PROFILE["current"],
+                             "restore_merged": STATE.get("restore_merged"),
                              "published_layer": LAYERS["published"]["seq"] if LAYERS["published"] else None})
         elif self.path == "/runners":
             t0 = time.monotonic()
