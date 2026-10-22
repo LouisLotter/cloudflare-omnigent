@@ -8,7 +8,7 @@
 //       [--platform-worker cloudflare-omnigent] [--web-worker cloudflare-omnigent-web] [--state <file>]
 //   node scripts/bootstrap/bootstrap.ts run [--platform-worker <name> | --state <file>]
 //       [--secrets-stdin] [--wait-minutes 30] [--no-verify]
-//   node scripts/bootstrap/bootstrap.ts status [--platform-worker <name> | --state <file>]
+//   node scripts/bootstrap/bootstrap.ts status [--platform-worker <name> | --state <file>] [--logs]
 //
 // For the guarded staging tool instead of an account (cfo-stg-<base>-platform and -web, the
 // account, zone and owner address from the staging tool's config; a file replica, which lives
@@ -38,9 +38,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
-import { readWranglerConfig } from "../staging/cloud.ts";
+import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
 import { acquireLock } from "../staging/lock.ts";
-import { accountCloud } from "./cloud.ts";
+import { accountCloud, queryWorkerLogs } from "./cloud.ts";
+import { decide, parseLogs } from "./events.ts";
 import {
   BootstrapRefusal,
   type BootstrapState,
@@ -283,10 +284,31 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
   }
 }
 
-function status(path: string): void {
+async function status(path: string, withLogs: boolean): Promise<void> {
   const { installation, journal } = fileStateStore(path).load();
   const { ownerPin: _pin, ...shown } = installation;
   console.log(JSON.stringify({ installation: shown, journal }, null, 2));
+  if (!withLogs) return;
+  // The watchdog's statuses of the last 15 minutes, read-only: no secret is in them.
+  const now = Date.now();
+  const events = queryWorkerLogs(
+    spawnRunner(installation.accountId),
+    installation.platformWorker,
+    now - 15 * 60_000,
+    now,
+  );
+  const logs = parseLogs(events, installation.platformWorker);
+  for (const e of [...logs.statuses].sort((a, b) => a.loggedAt - b.loggedAt)) {
+    console.log(
+      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"}`,
+    );
+  }
+  const decision = decide(logs.statuses, { installationId: installation.installationId, now });
+  console.log(
+    decision.accepted
+      ? "the bootstrap would release now"
+      : `the bootstrap would wait: ${decision.why}${logs.malformed > 0 ? ` (${logs.malformed} lines ignored)` : ""}`,
+  );
 }
 
 async function main(): Promise<number> {
@@ -309,6 +331,7 @@ async function main(): Promise<number> {
       "secrets-stdin": { type: "boolean" },
       "wait-minutes": { type: "string" },
       "no-verify": { type: "boolean" },
+      logs: { type: "boolean" },
     },
   });
   const statePath = () =>
@@ -324,7 +347,7 @@ async function main(): Promise<number> {
     case "run":
       return run(values, statePath());
     case "status":
-      status(statePath());
+      await status(statePath(), values.logs === true);
       return 0;
     default:
       throw new Error("usage: bootstrap.ts plan|run|status (see the header comment)");
