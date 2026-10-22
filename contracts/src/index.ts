@@ -5,6 +5,7 @@ import { SupervisorHello } from "./computer-protocol.ts";
 import { DurabilityUnconfirmed, DurabilityUnconfirmedAuth } from "./durability.ts";
 import { ErrorBody } from "./errors.ts";
 import { OutageRecord } from "./outage.ts";
+import { ReplicationPosition } from "./replication.ts";
 
 export * from "./access.ts";
 export * from "./bootstrap.ts";
@@ -13,6 +14,7 @@ export * from "./durability.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
 export * from "./outage.ts";
+export * from "./replication.ts";
 
 /**
  * Every wire schema, by name. The JSON Schema export, the golden fixtures and
@@ -25,6 +27,7 @@ export const wireSchemas = {
   DurabilityUnconfirmedAuth,
   ErrorBody,
   OutageRecord,
+  ReplicationPosition,
   SupervisorHello,
 } as const satisfies Record<string, z.ZodType>;
 
