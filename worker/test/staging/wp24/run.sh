@@ -70,7 +70,7 @@ case "${1:-}" in
     logged teardown-list pnpm -s --dir "$root" stg list
     logged teardown-sweep pnpm -s --dir "$root" stg sweep
     rm -f "$secrets" "${CFO_INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cloudflare-omnigent/installations}/cfo-stg-wp24-platform.json"
-    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/cloudflare-omnigent/bootstrap-locks/"*.cfo-stg-wp24-*.lock*
+    # Lock files stay: deleting one would let two holders coexist (scripts/staging/lock.ts).
     ;;
   *) sed -n '2,17p' "$0"; exit 2 ;;
 esac
