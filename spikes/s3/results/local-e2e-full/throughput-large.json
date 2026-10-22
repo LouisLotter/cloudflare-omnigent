@@ -1,0 +1,19 @@
+{
+ "free_bytes": 319352872960,
+ "size_bytes": 2414429716,
+ "index_s": 2.341,
+ "upload_ms": 18510,
+ "stored_bytes": 901658280,
+ "restore_ms": 24664,
+ "verify": {
+  "equal": true,
+  "entries": 82651,
+  "missing": 0,
+  "extra": 0,
+  "mismatched": 0,
+  "examples": [],
+  "verify_s": 2.63
+ },
+ "upload_mb_s": 130.4,
+ "restore_mb_s": 97.9
+}

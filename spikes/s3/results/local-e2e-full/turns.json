@@ -1,0 +1,1616 @@
+{
+ "rows": [
+  {
+   "n": 0,
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6316,
+    "precopy_s": 8.9858,
+    "copy_s": 0.6286,
+    "reused": false,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "0",
+    "base": true,
+    "entries": 12905,
+    "files": 12369,
+    "bytes": 723849749,
+    "hashed_files": 12369,
+    "hashed_bytes": 723849749,
+    "index_s": 0.572,
+    "changed_entries": 12905,
+    "changed_files": 12369,
+    "changed_bytes": 723849749,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 42087877,
+     "codex": 42073928,
+     "omnigent": 522,
+     "work": 639687422
+    },
+    "largest": [
+     {
+      "path": "work/omnigent/.git/objects/pack/pack-0000000000000000000000000000000000000000.pack",
+      "bytes": 314572800
+     },
+     {
+      "path": "work/omnigent/.git/objects/pack/pack-0000000000000000000000000000000000000001.pack",
+      "bytes": 31457280
+     },
+     {
+      "path": "work/omnigent/.git/objects/pack/pack-0000000000000000000000000000000000000002.pack",
+      "bytes": 10485760
+     },
+     {
+      "path": "codex/sessions/2026/10/01/rollout-2026-10-01T00-00-02-synthetic2.jsonl",
+      "bytes": 2113974
+     },
+     {
+      "path": "claude/projects/-home-agent-work-history/00000000-0000-4000-8000-000000000000.jsonl",
+      "bytes": 2113713
+     },
+     {
+      "path": "codex/sessions/2026/10/01/rollout-2026-10-01T00-00-08-synthetic8.jsonl",
+      "bytes": 2113161
+     },
+     {
+      "path": "claude/projects/-home-agent-work-history/00000013-0000-4000-8000-000000000000.jsonl",
+      "bytes": 2112889
+     },
+     {
+      "path": "claude/projects/-home-agent-work-history/0000000b-0000-4000-8000-000000000000.jsonl",
+      "bytes": 2109875
+     }
+    ],
+    "stage_s": 0.292,
+    "index_bytes": 1933979,
+    "index_zstd_bytes": 569012
+   },
+   "upload": {
+    "ok": true,
+    "ms": 5347,
+    "stored_bytes": 435463061
+   }
+  },
+  {
+   "n": 1,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 0,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 0 done.             const if interf",
+    "s": 1.06,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6109,
+    "precopy_s": 0.3026,
+    "copy_s": 0.608,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "1",
+    "base": false,
+    "entries": 12969,
+    "files": 12406,
+    "bytes": 724093377,
+    "hashed_files": 37,
+    "hashed_bytes": 243628,
+    "index_s": 0.075,
+    "changed_entries": 64,
+    "changed_files": 37,
+    "changed_bytes": 243628,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 177348,
+     "work": 66280
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 177348
+     },
+     {
+      "path": "work/claude-project/src/mod_4.py",
+      "bytes": 6000
+     },
+     {
+      "path": "work/claude-project/src/mod_3.py",
+      "bytes": 6000
+     },
+     {
+      "path": "work/claude-project/src/mod_2.py",
+      "bytes": 6000
+     },
+     {
+      "path": "work/claude-project/src/mod_1.py",
+      "bytes": 6000
+     },
+     {
+      "path": "work/claude-project/src/mod_0.py",
+      "bytes": 6000
+     },
+     {
+      "path": "work/claude-project/.git/hooks/pre-rebase.sample",
+      "bytes": 4898
+     },
+     {
+      "path": "work/claude-project/.git/hooks/fsmonitor-watchman.sample",
+      "bytes": 4726
+     }
+    ],
+    "stage_s": 0.002,
+    "index_bytes": 1942082,
+    "index_zstd_bytes": 570810
+   },
+   "upload": {
+    "ok": true,
+    "ms": 40,
+    "stored_bytes": 87550
+   }
+  },
+  {
+   "n": 2,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 0,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.45,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6008,
+    "precopy_s": 0.3057,
+    "copy_s": 0.598,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "2",
+    "base": false,
+    "entries": 13055,
+    "files": 12465,
+    "bytes": 727848186,
+    "hashed_files": 59,
+    "hashed_bytes": 3754809,
+    "index_s": 0.074,
+    "changed_entries": 86,
+    "changed_files": 59,
+    "changed_bytes": 3754809,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 3688458,
+     "work": 66351
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 2488512
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 502672
+     },
+     {
+      "path": "codex/logs_2.sqlite-wal",
+      "bytes": 115392
+     },
+     {
+      "path": "codex/memories_1.sqlite-wal",
+      "bytes": 86552
+     },
+     {
+      "path": "codex/queue_1.sqlite-wal",
+      "bytes": 82432
+     },
+     {
+      "path": "codex/goals_1.sqlite-wal",
+      "bytes": 74192
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 72115
+     },
+     {
+      "path": "codex/logs_2.sqlite",
+      "bytes": 49152
+     }
+    ],
+    "stage_s": 0.003,
+    "index_bytes": 1953169,
+    "index_zstd_bytes": 572441
+   },
+   "upload": {
+    "ok": true,
+    "ms": 39,
+    "stored_bytes": 116730
+   }
+  },
+  {
+   "n": 3,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 1,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 1 done.     else lambda session con",
+    "s": 0.37,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6012,
+    "precopy_s": 0.298,
+    "copy_s": 0.598,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "3",
+    "base": false,
+    "entries": 13055,
+    "files": 12465,
+    "bytes": 727914203,
+    "hashed_files": 3,
+    "hashed_bytes": 249858,
+    "index_s": 0.07,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 249365,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 243365,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 243365
+     },
+     {
+      "path": "work/claude-project/src/mod_1.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953169,
+    "index_zstd_bytes": 572449
+   },
+   "upload": {
+    "ok": true,
+    "ms": 37,
+    "stored_bytes": 65669
+   }
+  },
+  {
+   "n": 4,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 1,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.3,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6014,
+    "precopy_s": 0.3082,
+    "copy_s": 0.5984,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "4",
+    "base": false,
+    "entries": 13055,
+    "files": 12465,
+    "bytes": 728795776,
+    "hashed_files": 12,
+    "hashed_bytes": 4197125,
+    "index_s": 0.113,
+    "changed_entries": 10,
+    "changed_files": 10,
+    "changed_bytes": 4147480,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 4141479,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 3061192
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 766352
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 117327
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/queue_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/memories_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/logs_2.sqlite-shm",
+      "bytes": 32768
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953170,
+    "index_zstd_bytes": 572787
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 91765
+   }
+  },
+  {
+   "n": 5,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 2,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "num_turns": 5,
+    "result": "Turn 2 done.             runner result f",
+    "s": 0.45,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6016,
+    "precopy_s": 0.2971,
+    "copy_s": 0.5984,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "5",
+    "base": false,
+    "entries": 13055,
+    "files": 12465,
+    "bytes": 728864670,
+    "hashed_files": 2,
+    "hashed_bytes": 318259,
+    "index_s": 0.079,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 318259,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 312259,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 312259
+     },
+     {
+      "path": "work/claude-project/src/mod_2.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953170,
+    "index_zstd_bytes": 572793
+   },
+   "upload": {
+    "ok": true,
+    "ms": 37,
+    "stored_bytes": 76197
+   }
+  },
+  {
+   "n": 6,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 2,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "s": 0.35,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6018,
+    "precopy_s": 0.3082,
+    "copy_s": 0.5985,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "6",
+    "base": false,
+    "entries": 13055,
+    "files": 12465,
+    "bytes": 729905696,
+    "hashed_files": 11,
+    "hashed_bytes": 5237657,
+    "index_s": 0.074,
+    "changed_entries": 6,
+    "changed_files": 6,
+    "changed_bytes": 5057433,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 5051432,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 3736872
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 1083592
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 165432
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_2.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953171,
+    "index_zstd_bytes": 572771
+   },
+   "upload": {
+    "ok": true,
+    "ms": 39,
+    "stored_bytes": 107641
+   }
+  },
+  {
+   "n": 7,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 3,
+    "edit_bytes": 6000,
+    "heavy_output": 1,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 3 done.             host result def",
+    "s": 0.48,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.683,
+    "precopy_s": 0.3157,
+    "copy_s": 0.6786,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "7",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 730215958,
+    "hashed_files": 3,
+    "hashed_bytes": 628521,
+    "index_s": 0.084,
+    "changed_entries": 5,
+    "changed_files": 3,
+    "changed_bytes": 628521,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 622521,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 402231
+     },
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107/tool-results/bj52p12yx.txt",
+      "bytes": 220290
+     },
+     {
+      "path": "work/claude-project/src/mod_3.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953656,
+    "index_zstd_bytes": 573190
+   },
+   "upload": {
+    "ok": true,
+    "ms": 40,
+    "stored_bytes": 150509
+   }
+  },
+  {
+   "n": 8,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 3,
+    "edit_bytes": 6000,
+    "heavy_output": 1,
+    "commit": 0,
+    "rc": 0,
+    "s": 1.07,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6022,
+    "precopy_s": 0.4178,
+    "copy_s": 0.5988,
+    "reused": true,
+    "stopped": {
+     "codex": 2,
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1,
+     "other:git": 1,
+     "other:git-remote-http": 1
+    }
+   },
+   "layer": {
+    "seq": "8",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 731299716,
+    "hashed_files": 12,
+    "hashed_bytes": 6325510,
+    "index_s": 0.079,
+    "changed_entries": 7,
+    "changed_files": 7,
+    "changed_bytes": 6145286,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 6139285,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 1409072
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 278381
+     },
+     {
+      "path": "codex/state_5.sqlite",
+      "bytes": 262144
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_3.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574214
+   },
+   "upload": {
+    "ok": true,
+    "ms": 40,
+    "stored_bytes": 165046
+   }
+  },
+  {
+   "n": 9,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 4,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 4 done.         items true config r",
+    "s": 0.42,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6017,
+    "precopy_s": 0.3027,
+    "copy_s": 0.5986,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "9",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 731365115,
+    "hashed_files": 2,
+    "hashed_bytes": 473630,
+    "index_s": 0.072,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 473630,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 467630,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 467630
+     },
+     {
+      "path": "work/claude-project/src/mod_4.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574215
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 104917
+   }
+  },
+  {
+   "n": 10,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 4,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.87,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6016,
+    "precopy_s": 0.3102,
+    "copy_s": 0.5985,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "10",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 731669572,
+    "hashed_files": 11,
+    "hashed_bytes": 6367822,
+    "index_s": 0.074,
+    "changed_entries": 7,
+    "changed_files": 7,
+    "changed_bytes": 6220366,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 6214365,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 1668632
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 323277
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/logs_2.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_4.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574235
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 162437
+   }
+  },
+  {
+   "n": 11,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 5,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "num_turns": 5,
+    "result": "Turn 5 done.     payload else type paylo",
+    "s": 0.43,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.601,
+    "precopy_s": 0.308,
+    "copy_s": 0.5979,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "11",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 731738856,
+    "hashed_files": 2,
+    "hashed_bytes": 542914,
+    "index_s": 0.075,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 542914,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 536914,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 536914
+     },
+     {
+      "path": "work/claude-project/src/mod_0.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574247
+   },
+   "upload": {
+    "ok": true,
+    "ms": 37,
+    "stored_bytes": 114316
+   }
+  },
+  {
+   "n": 12,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 5,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "s": 0.51,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6041,
+    "precopy_s": 0.3044,
+    "copy_s": 0.6003,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "12",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 732084505,
+    "hashed_files": 11,
+    "hashed_bytes": 6713471,
+    "index_s": 0.084,
+    "changed_entries": 6,
+    "changed_files": 6,
+    "changed_bytes": 6533247,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 6527246,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 1965272
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 372286
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_0.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574238
+   },
+   "upload": {
+    "ok": true,
+    "ms": 41,
+    "stored_bytes": 170155
+   }
+  },
+  {
+   "n": 13,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 6,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 6 done. runner interface none paylo",
+    "s": 0.4,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6013,
+    "precopy_s": 0.3081,
+    "copy_s": 0.5982,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "13",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 732150083,
+    "hashed_files": 2,
+    "hashed_bytes": 608492,
+    "index_s": 0.071,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 608492,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 602492,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 602492
+     },
+     {
+      "path": "work/claude-project/src/mod_1.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574233
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 123508
+   }
+  },
+  {
+   "n": 14,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 6,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.32,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6016,
+    "precopy_s": 0.3077,
+    "copy_s": 0.5985,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "14",
+    "base": false,
+    "entries": 13058,
+    "files": 12466,
+    "bytes": 732446398,
+    "hashed_files": 11,
+    "hashed_bytes": 7009786,
+    "index_s": 0.08,
+    "changed_entries": 7,
+    "changed_files": 7,
+    "changed_bytes": 6862330,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 6856329,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 2216592
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 417281
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/logs_2.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_1.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953658,
+    "index_zstd_bytes": 574230
+   },
+   "upload": {
+    "ok": true,
+    "ms": 42,
+    "stored_bytes": 173708
+   }
+  },
+  {
+   "n": 15,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 7,
+    "edit_bytes": 6000,
+    "heavy_output": 1,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 7 done.         number request for ",
+    "s": 0.43,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6019,
+    "precopy_s": 0.3031,
+    "copy_s": 0.5988,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "15",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 732756561,
+    "hashed_files": 3,
+    "hashed_bytes": 918655,
+    "index_s": 0.071,
+    "changed_entries": 3,
+    "changed_files": 3,
+    "changed_bytes": 918655,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 912656,
+     "work": 5999
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 692366
+     },
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107/tool-results/bcx5mnfan.txt",
+      "bytes": 220290
+     },
+     {
+      "path": "work/claude-project/src/mod_2.py",
+      "bytes": 5999
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 573008
+   },
+   "upload": {
+    "ok": true,
+    "ms": 37,
+    "stored_bytes": 193331
+   }
+  },
+  {
+   "n": 16,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 7,
+    "edit_bytes": 6000,
+    "heavy_output": 1,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.33,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.5919,
+    "precopy_s": 0.3077,
+    "copy_s": 0.5887,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "16",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 733195033,
+    "hashed_files": 11,
+    "hashed_bytes": 7448258,
+    "index_s": 0.09,
+    "changed_entries": 6,
+    "changed_files": 6,
+    "changed_bytes": 7268034,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 7262033,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 2542072
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 530273
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_2.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 573006
+   },
+   "upload": {
+    "ok": true,
+    "ms": 44,
+    "stored_bytes": 207354
+   }
+  },
+  {
+   "n": 17,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 8,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "num_turns": 5,
+    "result": "Turn 8 done.         lambda type value c",
+    "s": 0.43,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6008,
+    "precopy_s": 0.2991,
+    "copy_s": 0.5981,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "17",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 733262968,
+    "hashed_files": 2,
+    "hashed_bytes": 766301,
+    "index_s": 0.071,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 766301,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 760301,
+     "work": 6000
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 760301
+     },
+     {
+      "path": "work/claude-project/src/mod_3.py",
+      "bytes": 6000
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 572994
+   },
+   "upload": {
+    "ok": true,
+    "ms": 37,
+    "stored_bytes": 148435
+   }
+  },
+  {
+   "n": 18,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 8,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 1,
+    "rc": 0,
+    "s": 0.35,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6011,
+    "precopy_s": 0.3076,
+    "copy_s": 0.5982,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "18",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 733616170,
+    "hashed_files": 11,
+    "hashed_bytes": 7801460,
+    "index_s": 0.077,
+    "changed_entries": 6,
+    "changed_files": 6,
+    "changed_bytes": 7621236,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 7615235,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 2846952
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 578595
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_3.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 572996
+   },
+   "upload": {
+    "ok": true,
+    "ms": 39,
+    "stored_bytes": 221571
+   }
+  },
+  {
+   "n": 19,
+   "cli": "claude",
+   "turn": {
+    "cli": "claude",
+    "n": 9,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "num_turns": 4,
+    "result": "Turn 9 done.     items error lambda erro",
+    "s": 0.4,
+    "session": "52725399-ccf0-465a-bfab-02c55e899107"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6013,
+    "precopy_s": 0.3031,
+    "copy_s": 0.5982,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "19",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 733682202,
+    "hashed_files": 2,
+    "hashed_bytes": 832333,
+    "index_s": 0.076,
+    "changed_entries": 2,
+    "changed_files": 2,
+    "changed_bytes": 832333,
+    "deleted": 0,
+    "bytes_by_root": {
+     "claude": 826334,
+     "work": 5999
+    },
+    "largest": [
+     {
+      "path": "claude/projects/-home-agent-work-claude-project/52725399-ccf0-465a-bfab-02c55e899107.jsonl",
+      "bytes": 826334
+     },
+     {
+      "path": "work/claude-project/src/mod_4.py",
+      "bytes": 5999
+     }
+    ],
+    "stage_s": 0,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 573001
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 158897
+   }
+  },
+  {
+   "n": 20,
+   "cli": "codex",
+   "turn": {
+    "cli": "codex",
+    "n": 9,
+    "edit_bytes": 6000,
+    "heavy_output": 0,
+    "commit": 0,
+    "rc": 0,
+    "s": 0.33,
+    "session": "01a16306-6777-7ed0-a1e4-f954821b499f"
+   },
+   "capture": {
+    "outcome": "snapshot_ready",
+    "pause_s": 0.6007,
+    "precopy_s": 0.2978,
+    "copy_s": 0.598,
+    "reused": true,
+    "stopped": {
+     "omnigent-host": 1,
+     "omnigent-runner-or-harness": 6,
+     "omnigent-terminal": 9,
+     "omnigent-zygote": 1
+    }
+   },
+   "layer": {
+    "seq": "20",
+    "base": false,
+    "entries": 13059,
+    "files": 12467,
+    "bytes": 733986537,
+    "hashed_files": 11,
+    "hashed_bytes": 8105795,
+    "index_s": 0.074,
+    "changed_entries": 6,
+    "changed_files": 6,
+    "changed_bytes": 7925571,
+    "deleted": 0,
+    "bytes_by_root": {
+     "codex": 7919570,
+     "work": 6001
+    },
+    "largest": [
+     {
+      "path": "codex/state_5.sqlite-wal",
+      "bytes": 4124152
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-wal",
+      "bytes": 3106512
+     },
+     {
+      "path": "codex/sessions/2026/10/22/rollout-2026-10-22T09-52-06-01a16306-6777-7ed0-a1e4-f954821b499f.jsonl",
+      "bytes": 623370
+     },
+     {
+      "path": "codex/thread_history_1.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "codex/state_5.sqlite-shm",
+      "bytes": 32768
+     },
+     {
+      "path": "work/codex-project/src/mod_4.py",
+      "bytes": 6001
+     }
+    ],
+    "stage_s": 0.001,
+    "index_bytes": 1953888,
+    "index_zstd_bytes": 573008
+   },
+   "upload": {
+    "ok": true,
+    "ms": 38,
+    "stored_bytes": 232751
+   }
+  }
+ ],
+ "summary": {
+  "base_files": 12369,
+  "base_bytes": 723849749,
+  "base_stored_bytes": 435463061,
+  "base_upload_ms": 5347,
+  "index_zstd_bytes": 573008,
+  "claude": {
+   "turns": 10,
+   "changed_bytes_median": 575703,
+   "changed_bytes_worst": 918655,
+   "stored_bytes_median": 118912,
+   "stored_bytes_worst": 193331,
+   "upload_ms_median": 37.5,
+   "pause_s_median": 0.60145,
+   "pause_s_worst": 0.683,
+   "index_s_median": 0.0735
+  },
+  "codex": {
+   "turns": 10,
+   "changed_bytes_median": 6376806.5,
+   "changed_bytes_worst": 7925571,
+   "stored_bytes_median": 167600.5,
+   "stored_bytes_worst": 232751,
+   "upload_ms_median": 39,
+   "pause_s_median": 0.6015,
+   "pause_s_worst": 0.6041,
+   "index_s_median": 0.078
+  },
+  "deltas_stored_bytes": 2872487,
+  "rule_new_base_after_delta": null
+ }
+}

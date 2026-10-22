@@ -1,0 +1,1173 @@
+{
+ "summary": {
+  "profile": "large",
+  "generation": {
+   "profile": "large",
+   "gen_s": 37.4
+  },
+  "size_bytes": 2413684344,
+  "files": 79410,
+  "budget_s": 60,
+  "rsync-2phase-warm": {
+   "runs": 5,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 5,
+    "median": 8.077,
+    "worst": 18.744,
+    "best": 5.383
+   },
+   "copy_s": {
+    "n": 5,
+    "median": 7.237,
+    "worst": 18.735,
+    "best": 5.373
+   },
+   "precopy_s": {
+    "n": 5,
+    "median": 18.862,
+    "worst": 21.852,
+    "best": 17.821
+   },
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "host_redials": 0,
+   "turns_ok": 5,
+   "writer_prefix_consistent": 5,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "rsync-2phase-cold": {
+   "runs": 5,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 5,
+    "median": 23.821,
+    "worst": 39.517,
+    "best": 22.581
+   },
+   "copy_s": {
+    "n": 5,
+    "median": 23.812,
+    "worst": 39.507,
+    "best": 22.572
+   },
+   "precopy_s": {
+    "n": 5,
+    "median": 48.285,
+    "worst": 63.591,
+    "best": 33.831
+   },
+   "over_20s": 5,
+   "over_40s": 0,
+   "host_always_online": true,
+   "host_redials": 0,
+   "turns_ok": 5,
+   "writer_prefix_consistent": 5,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "reflink-warm": {
+   "runs": 3,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 3,
+    "median": 3.741,
+    "worst": 3.762,
+    "best": 3.721
+   },
+   "copy_s": {
+    "n": 3,
+    "median": 3.732,
+    "worst": 3.753,
+    "best": 3.713
+   },
+   "precopy_s": {},
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "host_redials": 0,
+   "turns_ok": 3,
+   "writer_prefix_consistent": 3,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "reflink-cold": {
+   "runs": 3,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 3,
+    "median": 3.722,
+    "worst": 3.743,
+    "best": 3.711
+   },
+   "copy_s": {
+    "n": 3,
+    "median": 3.713,
+    "worst": 3.734,
+    "best": 3.703
+   },
+   "precopy_s": {},
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "host_redials": 0,
+   "turns_ok": 3,
+   "writer_prefix_consistent": 3,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "bench_s": 667.7
+ },
+ "rows": [
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 6.9536,
+   "pause_s_by_guard": 6.9536,
+   "freeze_s": 0.0078,
+   "copy_s": 6.9444,
+   "release_s": 0.0014,
+   "precopy_s": 17.9668,
+   "size_bytes": 2413684344,
+   "files": 79410,
+   "snapshot_bytes": 2413391427,
+   "budget_check_s": 0.3147,
+   "free_bytes": 319611322368,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 27.5987,
+   "worker_wall_s": 27.679,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 347.6,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 768,
+    "gap_after_snapshot_s": 6.956,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 18.7442,
+   "pause_s_by_guard": 18.7442,
+   "freeze_s": 0.0075,
+   "copy_s": 18.7352,
+   "release_s": 0.0015,
+   "precopy_s": 18.8616,
+   "size_bytes": 2413709160,
+   "files": 79410,
+   "snapshot_bytes": 2413422867,
+   "budget_check_s": 0.2916,
+   "free_bytes": 319593357312,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 40.2457,
+   "worker_wall_s": 40.331,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 128.8,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 2145,
+    "gap_after_snapshot_s": 18.75,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 9.965,
+   "pause_s_by_guard": 9.965,
+   "freeze_s": 0.0084,
+   "copy_s": 9.9548,
+   "release_s": 0.0019,
+   "precopy_s": 17.8213,
+   "size_bytes": 2413740969,
+   "files": 79410,
+   "snapshot_bytes": 2413452772,
+   "budget_check_s": 0.2939,
+   "free_bytes": 318992695296,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 30.5162,
+   "worker_wall_s": 30.603,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 242.5,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": false,
+    "last_seq": 3446,
+    "gap_after_snapshot_s": 0.01,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 5.3828,
+   "pause_s_by_guard": 5.3828,
+   "freeze_s": 0.0082,
+   "copy_s": 5.3732,
+   "release_s": 0.0014,
+   "precopy_s": 20.6744,
+   "size_bytes": 2413771168,
+   "files": 79410,
+   "snapshot_bytes": 2413482161,
+   "budget_check_s": 0.3204,
+   "free_bytes": 319354843136,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 28.78,
+   "worker_wall_s": 28.827,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 449.2,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 4723,
+    "gap_after_snapshot_s": 5.38,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 8.0767,
+   "pause_s_by_guard": 8.0766,
+   "freeze_s": 0.8385,
+   "copy_s": 7.2369,
+   "release_s": 0.0014,
+   "precopy_s": 21.8519,
+   "size_bytes": 2413800217,
+   "files": 79410,
+   "snapshot_bytes": 2413510962,
+   "budget_check_s": 0.304,
+   "free_bytes": 319353864192,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 32.8241,
+   "worker_wall_s": 32.914,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 333.5,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": false,
+    "last_seq": 5976,
+    "gap_after_snapshot_s": 0.01,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 23.8213,
+   "pause_s_by_guard": 23.8212,
+   "freeze_s": 0.0078,
+   "copy_s": 23.8119,
+   "release_s": 0.0016,
+   "precopy_s": 49.0955,
+   "size_bytes": 2413837224,
+   "files": 79410,
+   "snapshot_bytes": 2413616133,
+   "budget_check_s": 0.2979,
+   "free_bytes": 319368310784,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 75.7671,
+   "worker_wall_s": 75.822,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 101.4,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 4.13
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 10525,
+    "gap_after_snapshot_s": 23.82,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 39.517,
+   "pause_s_by_guard": 39.517,
+   "freeze_s": 0.0083,
+   "copy_s": 39.5074,
+   "release_s": 0.0013,
+   "precopy_s": 48.285,
+   "size_bytes": 2413938172,
+   "files": 79410,
+   "snapshot_bytes": 2413725981,
+   "budget_check_s": 0.3017,
+   "free_bytes": 319361970176,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 90.7355,
+   "worker_wall_s": 90.782,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 61.1,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.32
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 15102,
+    "gap_after_snapshot_s": 39.517,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 24.5147,
+   "pause_s_by_guard": 24.5147,
+   "freeze_s": 0.0081,
+   "copy_s": 24.5053,
+   "release_s": 0.0013,
+   "precopy_s": 38.91,
+   "size_bytes": 2414048332,
+   "files": 79410,
+   "snapshot_bytes": 2413817277,
+   "budget_check_s": 0.2905,
+   "free_bytes": 319360229376,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 66.2198,
+   "worker_wall_s": 66.267,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 98.5,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.22
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 18906,
+    "gap_after_snapshot_s": 24.512,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 23.3662,
+   "pause_s_by_guard": 23.3661,
+   "freeze_s": 0.0072,
+   "copy_s": 23.3575,
+   "release_s": 0.0014,
+   "precopy_s": 63.5907,
+   "size_bytes": 2414139076,
+   "files": 79410,
+   "snapshot_bytes": 2413947741,
+   "budget_check_s": 0.3122,
+   "free_bytes": 319359893504,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 89.5706,
+   "worker_wall_s": 89.658,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 103.4,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.23
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 24342,
+    "gap_after_snapshot_s": 23.366,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 22.5809,
+   "pause_s_by_guard": 22.5809,
+   "freeze_s": 0.0079,
+   "copy_s": 22.5716,
+   "release_s": 0.0014,
+   "precopy_s": 33.8313,
+   "size_bytes": 2414270812,
+   "files": 79410,
+   "snapshot_bytes": 2414033229,
+   "budget_check_s": 0.2894,
+   "free_bytes": 319348518912,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 59.0248,
+   "worker_wall_s": 59.088,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 107,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.87
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 27904,
+    "gap_after_snapshot_s": 22.585,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.7414,
+   "pause_s_by_guard": 3.7414,
+   "freeze_s": 0.0079,
+   "copy_s": 3.7321,
+   "release_s": 0.0013,
+   "precopy_s": null,
+   "size_bytes": 2414351836,
+   "files": 79410,
+   "snapshot_bytes": 2414045013,
+   "budget_check_s": 0.2901,
+   "free_bytes": 319348363264,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.4501,
+   "worker_wall_s": 6.522,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 646.9,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 28395,
+    "gap_after_snapshot_s": 3.738,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.721,
+   "pause_s_by_guard": 3.721,
+   "freeze_s": 0.0069,
+   "copy_s": 3.7127,
+   "release_s": 0.0014,
+   "precopy_s": null,
+   "size_bytes": 2414363236,
+   "files": 79410,
+   "snapshot_bytes": 2414056413,
+   "budget_check_s": 0.2945,
+   "free_bytes": 319351644160,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.4948,
+   "worker_wall_s": 6.572,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 650.3,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 28870,
+    "gap_after_snapshot_s": 3.72,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.7618,
+   "pause_s_by_guard": 3.7617,
+   "freeze_s": 0.0075,
+   "copy_s": 3.7528,
+   "release_s": 0.0014,
+   "precopy_s": null,
+   "size_bytes": 2414374684,
+   "files": 79410,
+   "snapshot_bytes": 2414067861,
+   "budget_check_s": 0.2936,
+   "free_bytes": 319354347520,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.6802,
+   "worker_wall_s": 6.729,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 643.4,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 29347,
+    "gap_after_snapshot_s": 3.76,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.7219,
+   "pause_s_by_guard": 3.7219,
+   "freeze_s": 0.0075,
+   "copy_s": 3.713,
+   "release_s": 0.0014,
+   "precopy_s": null,
+   "size_bytes": 2414389468,
+   "files": 79410,
+   "snapshot_bytes": 2414082669,
+   "budget_check_s": 0.3084,
+   "free_bytes": 319353270272,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.4657,
+   "worker_wall_s": 6.522,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 650.3,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.3
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 29964,
+    "gap_after_snapshot_s": 3.725,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.7432,
+   "pause_s_by_guard": 3.7432,
+   "freeze_s": 0.0076,
+   "copy_s": 3.7341,
+   "release_s": 0.0015,
+   "precopy_s": null,
+   "size_bytes": 2414405236,
+   "files": 79410,
+   "snapshot_bytes": 2414098389,
+   "budget_check_s": 0.291,
+   "free_bytes": 319353090048,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.495,
+   "worker_wall_s": 6.572,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 646.6,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 1.89
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 30619,
+    "gap_after_snapshot_s": 3.747,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 3.7114,
+   "pause_s_by_guard": 3.7114,
+   "freeze_s": 0.0069,
+   "copy_s": 3.7031,
+   "release_s": 0.0014,
+   "precopy_s": null,
+   "size_bytes": 2414418652,
+   "files": 79410,
+   "snapshot_bytes": 2414111829,
+   "budget_check_s": 0.2921,
+   "free_bytes": 319353057280,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 6.4245,
+   "worker_wall_s": 6.472,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 652,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "not_online_s": 0
+   },
+   "evict": {
+    "evicted_files": 82506,
+    "s": 0.82
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 31179,
+    "gap_after_snapshot_s": 3.715,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  }
+ ]
+}

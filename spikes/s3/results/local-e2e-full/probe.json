@@ -1,0 +1,145 @@
+{
+ "kernel": "7.2.5-3-omarchy",
+ "cpus": 16,
+ "nproc": "16",
+ "meminfo": {
+  "MemTotal": 66509881344,
+  "MemAvailable": 49196810240,
+  "Cached": 32100806656,
+  "SwapTotal": 133019754496,
+  "Dirty": 41177088
+ },
+ "cgroup_limits": "memory.max: 6442450944\nmemory.high: max\ncpu.max: 100000 100000\nio.max:",
+ "mounts": "/ overlay overlay rw,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4402/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4377/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4376/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4375/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4172/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4171/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4170/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4169/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4168/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4167/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4115/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4114/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4113/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4112/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4111/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4110/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4072/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4071/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4068/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4066/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/work,index=off\n/ overlay overlay rw,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4402/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4377/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4376/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4375/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4172/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4171/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4170/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4169/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4168/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4167/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4115/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4114/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4113/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4112/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4111/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4110/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4072/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4071/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4068/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4066/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/work,index=off\n/ overlay overlay rw,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4402/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4377/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4376/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4375/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4172/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4171/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4170/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4169/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4168/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4167/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4115/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4114/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4113/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4112/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4111/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4110/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4072/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4071/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4068/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4066/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/work,index=off\n/ overlay overlay rw,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4402/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4377/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4376/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4375/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4172/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4171/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4170/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4169/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4168/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4167/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4115/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4114/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4113/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4112/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4111/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4110/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4072/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4071/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4068/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4066/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/work,index=off\n/ overlay overlay rw,relatime,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4402/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4377/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4376/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4375/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4172/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4171/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4170/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4169/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4168/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4167/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4115/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4114/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4113/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4112/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4111/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4110/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4072/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4071/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4068/fs:/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4066/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/4403/work,index=off\n/sys/fs/cgroup cgroup cgroup2 ro,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting",
+ "df": "Mounted on Type       1B-blocks        Avail\n/          overlay 497941479424 322168627200\n/          overlay 497941479424 322168627200\n/          overlay 497941479424 322168627200",
+ "block_devices": "NAME          SIZE ROTA TYPE MOUNTPOINT\nsda         465.8G    0 disk \n├─sda1          2G    0 part \n└─sda2      463.8G    0 part \nzram0        61.9G    0 disk [SWAP]\nnvme0n1       1.8T    0 disk \n├─nvme0n1p1   100M    0 part \n├─nvme0n1p2    16M    0 part \n├─nvme0n1p3   1.8T    0 part \n└─nvme0n1p4   915M    0 part \n0\n0\n0\n0",
+ "caps": {
+  "CapPrm": {
+   "CAP_CHOWN": true,
+   "CAP_DAC_OVERRIDE": true,
+   "CAP_DAC_READ_SEARCH": false,
+   "CAP_FOWNER": true,
+   "CAP_KILL": true,
+   "CAP_SETGID": true,
+   "CAP_SETUID": true,
+   "CAP_NET_ADMIN": false,
+   "CAP_SYS_PTRACE": false,
+   "CAP_SYS_ADMIN": false,
+   "CAP_SYS_RESOURCE": false
+  },
+  "CapEff": {
+   "CAP_CHOWN": true,
+   "CAP_DAC_OVERRIDE": true,
+   "CAP_DAC_READ_SEARCH": false,
+   "CAP_FOWNER": true,
+   "CAP_KILL": true,
+   "CAP_SETGID": true,
+   "CAP_SETUID": true,
+   "CAP_NET_ADMIN": false,
+   "CAP_SYS_PTRACE": false,
+   "CAP_SYS_ADMIN": false,
+   "CAP_SYS_RESOURCE": false
+  },
+  "CapBnd": {
+   "CAP_CHOWN": true,
+   "CAP_DAC_OVERRIDE": true,
+   "CAP_DAC_READ_SEARCH": false,
+   "CAP_FOWNER": true,
+   "CAP_KILL": true,
+   "CAP_SETGID": true,
+   "CAP_SETUID": true,
+   "CAP_NET_ADMIN": false,
+   "CAP_SYS_PTRACE": false,
+   "CAP_SYS_ADMIN": false,
+   "CAP_SYS_RESOURCE": false
+  }
+ },
+ "sigstop_other_uid": {
+  "stopped_state": "T",
+  "resumed_state": "S"
+ },
+ "cgroup_freezer": {
+  "controllers": "cpuset cpu io memory hugetlb pids rdma misc dmem",
+  "self": "0::/",
+  "writable": "no: [Errno 30] Read-only file system: '/sys/fs/cgroup/s3probe'"
+ },
+ "reflink": {
+  "within_snapshot_area": "ok",
+  "workspace_to_snapshot": "ok"
+ },
+ "proc_fd_other_uid": "denied",
+ "disk": {
+  "write_fdatasync_mb_s": 48.2,
+  "read_after_fadvise_mb_s": 372.8,
+  "read_warm_mb_s": 25880.8,
+  "drop_caches": "not writable: Read-only file system"
+ },
+ "small_files": {
+  "files": 10000,
+  "create_and_sync_per_s": 7249,
+  "stat_per_s": 353720
+ },
+ "ctime_granularity": {
+  "rewrites": 2000,
+  "same_ctime": 0,
+  "min_ctime_step_ns": 12544,
+  "median_ctime_step_ns": 12845
+ },
+ "processes": [
+  {
+   "pid": 1,
+   "ppid": 0,
+   "uid": 0,
+   "kind": "init",
+   "comm": "tini",
+   "in_entrypoint_tree": true,
+   "self": false
+  },
+  {
+   "pid": 7,
+   "ppid": 1,
+   "uid": 0,
+   "kind": "supervisor",
+   "comm": "python",
+   "in_entrypoint_tree": true,
+   "self": true
+  },
+  {
+   "pid": 8,
+   "ppid": 7,
+   "uid": 0,
+   "kind": "omnigent-server",
+   "comm": "omnigent",
+   "in_entrypoint_tree": true,
+   "self": false
+  },
+  {
+   "pid": 9,
+   "ppid": 7,
+   "uid": 0,
+   "kind": "mock-llm",
+   "comm": "python",
+   "in_entrypoint_tree": true,
+   "self": false
+  },
+  {
+   "pid": 26,
+   "ppid": 7,
+   "uid": 1000,
+   "kind": "omnigent-host",
+   "comm": "python",
+   "in_entrypoint_tree": true,
+   "self": false
+  },
+  {
+   "pid": 56,
+   "ppid": 26,
+   "uid": 1000,
+   "kind": "omnigent-zygote",
+   "comm": "python",
+   "in_entrypoint_tree": true,
+   "self": false
+  }
+ ],
+ "probe_s": 29.6
+}

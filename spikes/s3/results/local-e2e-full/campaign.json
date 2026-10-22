@@ -1,0 +1,778 @@
+{
+ "id": "c20261022094634",
+ "plan": "full",
+ "status": "done",
+ "index": 10,
+ "sub": {},
+ "startedAt": 1792662394436,
+ "armedUntil": 1792676794436,
+ "bootId": "470dd8a7523943bca1e10ba05b699de6",
+ "steps": {
+  "probe": {
+   "ok": true,
+   "summary": {
+    "kernel": "7.2.5-3-omarchy",
+    "reflink": {
+     "within_snapshot_area": "ok",
+     "workspace_to_snapshot": "ok"
+    },
+    "cgroup_writable": "no: [Errno 30] Read-only file system: '/sys/fs/cgroup/s3probe'",
+    "sigstop": {
+     "stopped_state": "T",
+     "resumed_state": "S"
+    },
+    "cap_kill": true,
+    "cap_sys_ptrace": false,
+    "read_cold_mb_s": 372.8,
+    "write_mb_s": 48.2,
+    "same_ctime": 0,
+    "df": "Mounted on Type       1B-blocks        Avail\n/          overlay 497941479424 322168627200\n/          overlay 497941479424 322168627200\n/          overlay 497941479424 322168627200"
+   },
+   "at": 1792662431442
+  },
+  "setup": {
+   "ok": true,
+   "summary": {
+    "host": "online",
+    "sessions": 3,
+    "launch_s": [
+     0.44,
+     0.79,
+     1.19
+    ],
+    "first_turns_ok": true,
+    "setup_s": 5.6
+   },
+   "at": 1792662447456
+  },
+  "bench-realistic": {
+   "ok": true,
+   "summary": {
+    "profile": "realistic",
+    "generation": {
+     "profile": "realistic",
+     "gen_s": 15.4
+    },
+    "size_bytes": 723851908,
+    "files": 12373,
+    "budget_s": 60,
+    "rsync-2phase-warm": {
+     "runs": 5,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 5,
+      "median": 1.073,
+      "worst": 2.03,
+      "best": 0.644
+     },
+     "copy_s": {
+      "n": 5,
+      "median": 0.624,
+      "worst": 0.679,
+      "best": 0.614
+     },
+     "precopy_s": {
+      "n": 5,
+      "median": 8.454,
+      "worst": 19.204,
+      "best": 4.257
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 5,
+     "writer_prefix_consistent": 5,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "rsync-2phase-cold": {
+     "runs": 5,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 5,
+      "median": 0.641,
+      "worst": 0.652,
+      "best": 0.623
+     },
+     "copy_s": {
+      "n": 5,
+      "median": 0.633,
+      "worst": 0.643,
+      "best": 0.613
+     },
+     "precopy_s": {
+      "n": 5,
+      "median": 14.232,
+      "worst": 31.376,
+      "best": 12.682
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": false,
+     "host_redials": 0,
+     "turns_ok": 5,
+     "writer_prefix_consistent": 5,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-warm": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 0.793,
+      "worst": 0.802,
+      "best": 0.782
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 0.784,
+      "worst": 0.794,
+      "best": 0.773
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-cold": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 0.814,
+      "worst": 0.924,
+      "best": 0.771
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 0.804,
+      "worst": 0.915,
+      "best": 0.763
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "bench_s": 212.5
+   },
+   "at": 1792662673549
+  },
+  "turns": {
+   "ok": true,
+   "summary": {
+    "base_files": 12369,
+    "base_bytes": 723849749,
+    "base_stored_bytes": 435463061,
+    "base_upload_ms": 5347,
+    "index_zstd_bytes": 573008,
+    "claude": {
+     "turns": 10,
+     "changed_bytes_median": 575703,
+     "changed_bytes_worst": 918655,
+     "stored_bytes_median": 118912,
+     "stored_bytes_worst": 193331,
+     "upload_ms_median": 37.5,
+     "pause_s_median": 0.60145,
+     "pause_s_worst": 0.683,
+     "index_s_median": 0.0735
+    },
+    "codex": {
+     "turns": 10,
+     "changed_bytes_median": 6376806.5,
+     "changed_bytes_worst": 7925571,
+     "stored_bytes_median": 167600.5,
+     "stored_bytes_worst": 232751,
+     "upload_ms_median": 39,
+     "pause_s_median": 0.6015,
+     "pause_s_worst": 0.6041,
+     "index_s_median": 0.078
+    },
+    "deltas_stored_bytes": 2872487,
+    "rule_new_base_after_delta": null
+   },
+   "at": 1792662789871
+  },
+  "restore": {
+   "ok": true,
+   "summary": {
+    "chain_layers": 21,
+    "chain_total_ms": 14067,
+    "chain_verify_equal": true,
+    "chain_restore_ms_median": 36,
+    "full_restore_ms": 16246,
+    "full_verify_equal": true,
+    "reopen": {
+     "claude_rc": 0,
+     "codex_rc": 0,
+     "claude_history": true,
+     "codex_history": true
+    }
+   },
+   "at": 1792662846230
+  },
+  "r2-block": {
+   "ok": true,
+   "summary": [
+    {
+     "case": "held-then-recovers",
+     "upload_ok": true,
+     "upload_ms": 129638,
+     "pointer_moved": true,
+     "objects_added": 1,
+     "turns": "30/30",
+     "capture_pause_s": 0.6323,
+     "capture_outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "not_online_s": 0
+     }
+    },
+    {
+     "case": "held-past-the-deadline",
+     "upload_ok": false,
+     "upload_ms": 60008,
+     "error": "TimeoutError 23: The operation was aborted due to timeout",
+     "pointer_moved": false,
+     "objects_added": 0,
+     "turns": "30/30",
+     "capture_pause_s": 0.6324,
+     "capture_outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "error:TimeoutError",
+       "online"
+      ],
+      "not_online_s": 1
+     }
+    }
+   ],
+   "at": 1792663160286
+  },
+  "calibrate": {
+   "ok": true,
+   "summary": [
+    {
+     "hold_s": 40,
+     "pause_s": 40.0563,
+     "outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "not_online_s": 0
+     },
+     "host_connects": 0,
+     "turn_after": true,
+     "stopped": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     }
+    },
+    {
+     "hold_s": 60,
+     "pause_s": 60.057,
+     "outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "not_online_s": 0
+     },
+     "host_connects": 0,
+     "turn_after": true,
+     "stopped": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     }
+    }
+   ],
+   "at": 1792663326466
+  },
+  "bench-large": {
+   "ok": true,
+   "summary": {
+    "profile": "large",
+    "generation": {
+     "profile": "large",
+     "gen_s": 37.4
+    },
+    "size_bytes": 2413684344,
+    "files": 79410,
+    "budget_s": 60,
+    "rsync-2phase-warm": {
+     "runs": 5,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 5,
+      "median": 8.077,
+      "worst": 18.744,
+      "best": 5.383
+     },
+     "copy_s": {
+      "n": 5,
+      "median": 7.237,
+      "worst": 18.735,
+      "best": 5.373
+     },
+     "precopy_s": {
+      "n": 5,
+      "median": 18.862,
+      "worst": 21.852,
+      "best": 17.821
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 5,
+     "writer_prefix_consistent": 5,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "rsync-2phase-cold": {
+     "runs": 5,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 5,
+      "median": 23.821,
+      "worst": 39.517,
+      "best": 22.581
+     },
+     "copy_s": {
+      "n": 5,
+      "median": 23.812,
+      "worst": 39.507,
+      "best": 22.572
+     },
+     "precopy_s": {
+      "n": 5,
+      "median": 48.285,
+      "worst": 63.591,
+      "best": 33.831
+     },
+     "over_20s": 5,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 5,
+     "writer_prefix_consistent": 5,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-warm": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 3.741,
+      "worst": 3.762,
+      "best": 3.721
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 3.732,
+      "worst": 3.753,
+      "best": 3.713
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-cold": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 3.722,
+      "worst": 3.743,
+      "best": 3.711
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 3.713,
+      "worst": 3.734,
+      "best": 3.703
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "bench_s": 667.7
+   },
+   "at": 1792664003465
+  },
+  "throughput-large": {
+   "ok": true,
+   "summary": {
+    "free_bytes": 319352872960,
+    "size_bytes": 2414429716,
+    "index_s": 2.341,
+    "upload_ms": 18510,
+    "stored_bytes": 901658280,
+    "restore_ms": 24664,
+    "verify": {
+     "equal": true,
+     "entries": 82651,
+     "missing": 0,
+     "extra": 0,
+     "mismatched": 0,
+     "examples": [],
+     "verify_s": 2.63
+    },
+    "upload_mb_s": 130.4,
+    "restore_mb_s": 97.9
+   },
+   "at": 1792664120737
+  },
+  "bench-many-small": {
+   "ok": true,
+   "summary": {
+    "profile": "many-small",
+    "generation": {
+     "profile": "many-small",
+     "gen_s": 33.5
+    },
+    "size_bytes": 346108169,
+    "files": 102690,
+    "budget_s": 60,
+    "rsync-2phase-warm": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 2.128,
+      "worst": 2.132,
+      "best": 2.121
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 2.119,
+      "worst": 2.122,
+      "best": 2.112
+     },
+     "precopy_s": {
+      "n": 3,
+      "median": 7.001,
+      "worst": 10.432,
+      "best": 6.977
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "rsync-2phase-cold": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 2.162,
+      "worst": 2.37,
+      "best": 2.141
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 2.135,
+      "worst": 2.152,
+      "best": 2.132
+     },
+     "precopy_s": {
+      "n": 3,
+      "median": 12.228,
+      "worst": 13.009,
+      "best": 11.852
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-warm": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 4.668,
+      "worst": 13.829,
+      "best": 4.637
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 4.659,
+      "worst": 13.82,
+      "best": 4.628
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-cold": {
+     "runs": 3,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 3,
+      "median": 4.637,
+      "worst": 4.678,
+      "best": 4.63
+     },
+     "copy_s": {
+      "n": 3,
+      "median": 4.628,
+      "worst": 4.669,
+      "best": 4.621
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "host_redials": 0,
+     "turns_ok": 3,
+     "writer_prefix_consistent": 3,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "bench_s": 227.5
+   },
+   "at": 1792664361874
+  }
+ },
+ "turnsCanary": "S3Wmvjd2kc7",
+ "endedAt": 1792664362876
+}
