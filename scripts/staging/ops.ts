@@ -91,6 +91,7 @@ import {
   STAGING_PREFIX,
   type StagingConfig,
   sameIngress,
+  secretNameProblems,
   type TokenHostname,
   type TunnelInfo,
   type TunnelRecord,
@@ -149,6 +150,13 @@ export interface Cloud {
     secrets?: Readonly<Record<string, string>>,
   ): void;
   deleteWorker(name: string): void;
+  /** The names of the Worker's secrets; never their values. */
+  secretNames(name: string): string[];
+  /**
+   * One change of the Worker's secrets, as a new version (`wrangler secret bulk`): a value sets
+   * a secret, null deletes it. The values reach Wrangler as on deploy, never argv or the output.
+   */
+  updateSecrets(name: string, changes: Readonly<Record<string, string | null>>): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
   /** The names of every R2 bucket whose name starts with `prefix`. */
@@ -233,6 +241,18 @@ export interface DeployRequest {
   readonly owner: string;
   readonly configPath: string;
   readonly days: number;
+  /**
+   * Secrets to upload with this version (`deploy --secrets-stdin`), besides the manifest's.
+   * Secrets set earlier stay set; their names are logged, never their values.
+   */
+  readonly secrets?: Readonly<Record<string, string>>;
+}
+
+export interface SecretsRequest {
+  readonly suffix: string;
+  readonly owner: string;
+  /** A value sets a secret, null deletes it. */
+  readonly changes: Readonly<Record<string, string | null>>;
 }
 
 function put(ctx: Context, deployment: Deployment): Deployment {
@@ -1019,6 +1039,8 @@ function ensureVpcServices(
 export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const name = resourceName(request.suffix);
   const hostname = hostnameFor(name, ctx.config.zone);
+  const secretProblems = secretNameProblems(Object.keys(request.secrets ?? {}));
+  if (secretProblems.length > 0) throw new Error(secretProblems.join("; "));
   // Local checks first: nothing below runs for a configuration that could reach outside
   // staging. A cross-script Durable Object binding is checked against the registry here, and
   // again under the lock just before anything is created.
@@ -1249,6 +1271,17 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         secrets[plan.serviceToken.clientIdSecret] = tokenCredentials.clientId;
         secrets[plan.serviceToken.clientSecretSecret] = tokenCredentials.clientSecret;
       }
+      // The caller's own secrets, which may never stand in for the ones the tool delivers.
+      const reserved = [
+        ...(plan?.tunnel ? [plan.tunnel.tokenSecret] : []),
+        ...(plan?.serviceToken
+          ? [plan.serviceToken.clientIdSecret, plan.serviceToken.clientSecretSecret]
+          : []),
+      ];
+      for (const [key, value] of Object.entries(request.secrets ?? {})) {
+        if (reserved.includes(key)) throw new Error(`the secret ${key} is the staging tool's own`);
+        secrets[key] = value;
+      }
 
       // If the upload throws, the record keeps uploadStartedAt: the Worker may exist, or may
       // still appear, and the next command marks the upload interrupted.
@@ -1291,6 +1324,58 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     ctx.log(`deployed ${name} at https://${hostname} (expires ${expiresAt})`);
     return record;
   });
+}
+
+/**
+ * Changes secrets of a deployed staging Worker: one new version, as `wrangler secret bulk`
+ * makes it. Only for a deployment the registry shows deployed, by the owner that deployed it,
+ * whose Worker Cloudflare confirms; never one of the secrets the tool delivers itself (the
+ * service token's). Names are logged, never values.
+ */
+export function updateSecrets(ctx: Context, request: SecretsRequest): void {
+  const name = resourceName(request.suffix);
+  const names = Object.keys(request.changes).sort();
+  if (names.length === 0) throw new Error("no secret to change");
+  const problems = secretNameProblems(names);
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  locked(ctx, name, () => {
+    const record = ctx.store.load().find((d) => d.name === name);
+    if (record === undefined) throw new Error(`${name} is not a recorded staging deployment`);
+    if (record.owner !== request.owner) {
+      throw new Error(`${name} belongs to ${record.owner}, not ${request.owner}`);
+    }
+    if (record.state !== "deployed" || record.uploadStartedAt !== undefined) {
+      throw new Error(`${name} is not deployed; deploy it first`);
+    }
+    const reserved = record.serviceToken?.deliveredTo ?? [];
+    const clash = names.filter((n) => reserved.includes(n));
+    if (clash.length > 0)
+      throw new Error(`the secrets ${clash.join(", ")} are the staging tool's own`);
+    assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
+    if (!ctx.cloud.workerExists(name)) {
+      throw new Error(`${name} is recorded, but the staging account has no such Worker`);
+    }
+    ctx.cloud.updateSecrets(name, request.changes);
+    const set = names.filter((n) => request.changes[n] !== null);
+    const deleted = names.filter((n) => request.changes[n] === null);
+    ctx.log(
+      `changed the secrets of ${name}:${set.length > 0 ? ` set ${set.join(", ")}` : ""}${
+        deleted.length > 0 ? ` deleted ${deleted.join(", ")}` : ""
+      }`,
+    );
+  });
+}
+
+/**
+ * The names of a staging Worker's secrets, or null when the registry records no such deployment
+ * or Cloudflare has no such Worker. Read-only.
+ */
+export function listSecretNames(ctx: Context, suffix: string): string[] | null {
+  const name = resourceName(suffix);
+  if (!ctx.store.load().some((d) => d.name === name)) return null;
+  assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
+  if (!ctx.cloud.workerExists(name)) return null;
+  return ctx.cloud.secretNames(name);
 }
 
 /**

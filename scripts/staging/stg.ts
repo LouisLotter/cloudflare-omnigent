@@ -6,9 +6,18 @@
 //   node scripts/staging/stg.ts init --account <id> --zone <zone> --owner-email <email> [--idp <id>]
 //   node scripts/staging/stg.ts check
 //   node scripts/staging/stg.ts deploy --suffix <s> --owner <wp> [--config worker/wrangler.jsonc] [--days 7]
+//                                      [--secrets-stdin]
+//   node scripts/staging/stg.ts secrets --suffix <s> --owner <wp>      (changes as JSON on stdin)
+//   node scripts/staging/stg.ts secret-names --suffix <s>
 //   node scripts/staging/stg.ts list
 //   node scripts/staging/stg.ts teardown --suffix <s>
 //   node scripts/staging/stg.ts sweep [--yes]
+//
+// deploy --secrets-stdin uploads the secrets in a JSON object on stdin, {"NAME": "value", …},
+// with the version, as the manifest's are. secrets changes a deployed Worker's secrets in one
+// new version (`wrangler secret bulk`): {"NAME": "value"} sets one, {"NAME": null} deletes one.
+// Values come only from stdin and never reach argv, the output or a file that stays; names are
+// logged. secret-names prints the Worker's secret names as JSON, or null when it has none.
 //
 // sweep lists expired deployments (removed with --yes) and reports every staging bucket, Access
 // application, service token, Tunnel, VPC service and DNS record that no record owns. Of those
@@ -73,7 +82,7 @@ import {
 } from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
-import { type Context, deploy, sweep, teardown } from "./ops.ts";
+import { type Context, deploy, listSecretNames, sweep, teardown, updateSecrets } from "./ops.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -119,6 +128,28 @@ function context(config: StagingConfig, command: string): Context {
   };
 }
 
+/**
+ * A JSON object of secrets from stdin: string values, and with `deletions` also nulls. An error
+ * names no value.
+ */
+function secretsFromStdin(deletions: boolean): Record<string, string | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    throw new Error("stdin is not a JSON object of secrets");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("stdin is not a JSON object of secrets");
+  }
+  for (const [name, value] of Object.entries(parsed)) {
+    const ok = typeof value === "string" ? value !== "" : deletions && value === null;
+    if (!ok)
+      throw new Error(`the secret ${name} needs ${deletions ? "a value or null" : "a value"}`);
+  }
+  return parsed as Record<string, string | null>;
+}
+
 function main(): void {
   // A run killed in the instant between writing its secrets file and unlinking it leaves
   // the file behind; remove any such leftovers first.
@@ -136,6 +167,7 @@ function main(): void {
       config: { type: "string", default: join(WORKER, "wrangler.jsonc") },
       days: { type: "string", default: "7" },
       yes: { type: "boolean", default: false },
+      "secrets-stdin": { type: "boolean", default: false },
     },
   });
 
@@ -171,7 +203,24 @@ function main(): void {
         owner: values.owner,
         configPath: resolve(values.config),
         days: Number(values.days),
+        ...(values["secrets-stdin"]
+          ? { secrets: secretsFromStdin(false) as Record<string, string> }
+          : {}),
       });
+      return;
+    }
+    case "secrets": {
+      if (!values.suffix || !values.owner) throw new Error("secrets needs --suffix and --owner");
+      updateSecrets(context(loadConfig(), command), {
+        suffix: values.suffix,
+        owner: values.owner,
+        changes: secretsFromStdin(true),
+      });
+      return;
+    }
+    case "secret-names": {
+      if (!values.suffix) throw new Error("secret-names needs --suffix");
+      console.log(JSON.stringify(listSecretNames(context(loadConfig(), command), values.suffix)));
       return;
     }
     case "list": {
@@ -197,7 +246,7 @@ function main(): void {
     }
     default:
       throw new Error(
-        "usage: stg.ts init|check|deploy|list|teardown|sweep (see the header comment)",
+        "usage: stg.ts init|check|deploy|secrets|secret-names|list|teardown|sweep (see the header comment)",
       );
   }
 }

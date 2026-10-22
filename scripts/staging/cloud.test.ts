@@ -33,6 +33,7 @@ import {
   readStagingManifest,
   readWranglerConfig,
   removeStaleSecretDirs,
+  secretNamesOf,
   secretsBase,
   spawnRunner,
   tunnelsOf,
@@ -616,6 +617,58 @@ describe("CLI wiring", () => {
     expect(seen?.config).toEqual({ name: "cfo-stg-a", account_id: "a".repeat(32) });
     // The generated directory is removed afterwards.
     expect(existsSync(seen?.cwd ?? "/")).toBe(false);
+  });
+
+  it("lists secret names and changes secrets through the same pinned configuration (WP2.4)", () => {
+    const seen: { args: readonly string[]; config: unknown; fd3?: string; inherit: boolean }[] = [];
+    const secrets = cliCloud(config, WORKER, (_command, args, options) => {
+      const file = args[args.indexOf("--config") + 1] ?? "";
+      const fd = options.fds?.[0];
+      seen.push({
+        args: args.slice(2),
+        config: JSON.parse(readFileSync(file, "utf8")),
+        inherit: options.inherit,
+        ...(fd === undefined ? {} : { fd3: readFileSync(`/proc/self/fd/${fd}`, "utf8") }),
+      });
+      return ok('[{"name":"B","type":"secret_text"}]');
+    });
+    expect(secrets.secretNames("cfo-stg-a")).toEqual(["B"]);
+    secrets.updateSecrets("cfo-stg-a", { A: "1", B: null });
+    expect(seen.map((s) => s.config)).toEqual([
+      { name: "cfo-stg-a", account_id: "a".repeat(32) },
+      { name: "cfo-stg-a", account_id: "a".repeat(32) },
+    ]);
+    expect(seen[0]).toMatchObject({
+      args: [
+        "secret",
+        "list",
+        "--config",
+        expect.any(String),
+        "--name",
+        "cfo-stg-a",
+        "--format",
+        "json",
+      ],
+      inherit: false,
+    });
+    expect(seen[1]).toMatchObject({
+      args: ["secret", "bulk", "/dev/fd/3", "--config", expect.any(String), "--name", "cfo-stg-a"],
+      inherit: true,
+    });
+    expect(JSON.parse(seen[1]?.fd3 ?? "{}")).toEqual({ A: "1", B: null });
+    expect(seen[1]?.args.join(" ")).not.toContain('"1"');
+    const failing = cliCloud(config, WORKER, () => failed("boom"));
+    expect(() => failing.secretNames("cfo-stg-a")).toThrow("wrangler secret list exited with 1");
+    expect(() => failing.updateSecrets("cfo-stg-a", { A: null })).toThrow(
+      /wrangler secret exited with 1/,
+    );
+  });
+
+  it("reads secret names only from Wrangler's JSON listing", () => {
+    expect(secretNamesOf('[{"name":"A","type":"secret_text"}]')).toEqual(["A"]);
+    expect(() => secretNamesOf("Secret Name: A")).toThrow(/other than JSON/);
+    expect(() => secretNamesOf('{"name":"A"}')).toThrow(/unexpected secret listing/);
+    expect(() => secretNamesOf("[{}]")).toThrow(/a secret without a name/);
   });
 
   it("passes the held staging locks to every child process", () => {

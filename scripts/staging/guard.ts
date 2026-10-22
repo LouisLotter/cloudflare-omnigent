@@ -434,6 +434,20 @@ const RESOURCE_NAME = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/;
 const PINNED_IMAGE =
   /^registry\.cloudflare\.com\/([0-9a-f]{32})\/([a-z0-9._-]+)@sha256:[0-9a-f]{64}$/;
 
+/**
+ * The names a deployment's secrets may have, as a Worker binding: what Wrangler and the Worker's
+ * environment accept. The values are never checked or shown here.
+ */
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+/** Problems with secret names given to deploy --secrets-stdin or the secrets command. */
+export function secretNameProblems(names: readonly string[]): string[] {
+  const bad = names.filter((name) => !SECRET_NAME.test(name));
+  return bad.length > 0
+    ? [`invalid secret names: ${bad.map((n) => JSON.stringify(n.slice(0, 40))).join(", ")}`]
+    : [];
+}
+
 /** Wrangler's repository for a `durable_object`-policy image: `<worker>-<class>-<image>`, sanitised. */
 export function policyRepository(worker: string, className: string, image: string): string {
   return `${worker}-${className}-${image}`
