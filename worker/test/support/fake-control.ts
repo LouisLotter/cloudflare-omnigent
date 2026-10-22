@@ -18,6 +18,7 @@ import {
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
 import type { ControlRpc } from "../../src/shared/rpc.ts";
+import { OperationJournal } from "./operation-journal.ts";
 
 const base32 = "0123456789abcdefghjkmnpqrstvwxyz";
 
@@ -36,9 +37,10 @@ export class FakeControl implements ControlRpc {
   readonly computers = new Map<string, ComputerId>();
   /** `${computerId}/${generation}` slots. */
   readonly slots = new Set<string>();
-  /** Outcomes of mutating calls, by operation ID: a repeat returns the recorded answer, even
-   * after capacity frees (a refused reservation replayed must not take a slot nobody starts). */
-  readonly #outcomes = new Map<string, ControlResult>();
+  /** Mutating calls by operation ID, each bound to its request: a repeat returns the recorded
+   * answer, even after capacity frees (a refused reservation replayed must not take a slot nobody
+   * starts), and an ID reused for another request is `conflict`. */
+  readonly #operations = new OperationJournal<ControlResult>();
   #next = 0;
 
   async control(raw: ControlCall): Promise<ControlResult> {
@@ -51,13 +53,11 @@ export class FakeControl implements ControlRpc {
     if (this.unavailable) throw platformError("unavailable", "ControlDO is unavailable");
     this.calls.push(call);
     const operationId = operationIdOf(call);
-    const recorded = operationId === undefined ? undefined : this.#outcomes.get(operationId);
-    if (recorded && recorded.method !== call.method) {
-      throw platformError("conflict", "operation ID reused for another call");
-    }
+    const recorded =
+      operationId === undefined ? undefined : this.#operations.begin(operationId, call);
     if (recorded) return recorded;
     const result = this.#answer(call);
-    if (operationId !== undefined) this.#outcomes.set(operationId, result);
+    if (operationId !== undefined) this.#operations.settle(operationId, result);
     return result;
   }
 

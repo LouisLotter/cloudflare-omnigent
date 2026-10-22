@@ -251,6 +251,31 @@ describe("FakeControl", () => {
     });
   });
 
+  it("binds an operation ID to its request: reuse for another computer is refused", async () => {
+    const control = new FakeControl();
+    const x = fresh();
+    await control.control({
+      method: "reserve",
+      ...rpc,
+      operationId: x,
+      computerId: CMP,
+      generation: 1,
+    });
+    const other = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4";
+    expect(
+      await codeOf(
+        control.control({
+          method: "reserve",
+          ...rpc,
+          operationId: x,
+          computerId: other,
+          generation: 1,
+        }),
+      ),
+    ).toBe("conflict");
+    expect([...control.slots]).toEqual([`${CMP}/1`]);
+  });
+
   it("replays a recorded refusal, even after capacity frees", async () => {
     const control = new FakeControl();
     control.maxAwakeComputers = 1;
@@ -383,6 +408,86 @@ describe("FakeWorkspace", () => {
     workspace.fire("stop_prepared");
     workspace.fire("container_stopped");
     expect(await workspace.launcher(again)).toEqual({ operation: "suspend", outcome: "stopped" });
+  });
+
+  it("refuses an operation ID reused while its sleep is pending, without touching the record", async () => {
+    const workspace = new FakeWorkspace(CMP);
+    await workspace.launcher(call({ operation: "resume" }));
+    workspace.fire("container_running");
+    workspace.fire("restore_confirmed");
+    const sleep = call({ operation: "suspend" });
+    await workspace.launcher(sleep);
+    const reuse = {
+      ...sleep,
+      request: { ...sleep.request, operation: "claim_start" } as LauncherRequest,
+    };
+    expect(await codeOf(workspace.launcher(reuse))).toBe("conflict");
+    expect(await workspace.launcher(sleep)).toEqual({
+      operation: "suspend",
+      outcome: "in_progress",
+    });
+    workspace.fire("stop_prepared");
+    workspace.fire("container_stopped");
+    expect(await workspace.launcher(sleep)).toEqual({ operation: "suspend", outcome: "stopped" });
+    expect(await codeOf(workspace.launcher(reuse))).toBe("conflict");
+  });
+
+  it("never publishes a copy taken before this generation's credentials were installed", async () => {
+    const workspace = new FakeWorkspace(CMP);
+    const declared = [
+      ".claude/.credentials.json",
+      ".claude/.device-keys.json",
+      ".codex/auth.json",
+      ".codex/.credentials.json",
+    ];
+    const bundle = (generation: number, order: number, claude: "present" | "tombstone") => ({
+      formatVersion: 1,
+      computerId: CMP,
+      generation,
+      order,
+      files: Object.fromEntries(
+        declared.map((path) => [
+          path,
+          path === ".claude/.credentials.json" && claude === "present"
+            ? { state: "present", mode: 0o600, copyOrder: order, contentBase64: "e30=" }
+            : { state: "tombstone", copyOrder: 1 },
+        ]),
+      ),
+    });
+    const publish = (generation: number, b: ReturnType<typeof bundle>) =>
+      workspace.computer({
+        interfaceVersion,
+        props: { propsVersion: 1, computerId: CMP, generation, hostId: null },
+        message: {
+          type: "credential_checkpoint",
+          protocolVersion: 1,
+          computerId: CMP,
+          generation,
+          operationId: "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+          bundle: b,
+        } as never,
+      });
+    const wake = async () => {
+      await workspace.launcher(call({ operation: "resume" }));
+      workspace.fire("container_running");
+      workspace.fire("restore_confirmed");
+    };
+    // Generation 1 publishes a login.
+    await wake();
+    expect(await publish(1, bundle(1, 2, "present"))).toMatchObject({ outcome: "published" });
+    workspace.fire("suspend");
+    workspace.fire("stop_prepared");
+    workspace.fire("container_stopped");
+    // Generation 2: a tombstone copied before the restored login was installed.
+    await workspace.launcher(call({ operation: "resume" }));
+    const early = bundle(2, 1, "tombstone");
+    expect(await codeOf(publish(2, early))).toBe("conflict");
+    workspace.fire("container_running");
+    workspace.fire("restore_confirmed");
+    workspace.installCredentials(1);
+    expect(await publish(2, early)).toMatchObject({ outcome: "superseded" });
+    expect(workspace.credentialPointer?.generation).toBe(1);
+    expect(await publish(2, bundle(2, 2, "present"))).toMatchObject({ outcome: "published" });
   });
 
   it("resolves every sleep operation that joined, and replays it after the computer woke again", async () => {

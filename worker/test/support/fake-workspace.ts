@@ -47,6 +47,7 @@ import {
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
 import type { WorkspaceRpc } from "../../src/shared/rpc.ts";
+import { OperationJournal } from "./operation-journal.ts";
 
 type Recorded = { readonly result: LauncherResult } | { readonly error: ErrorCode };
 
@@ -81,13 +82,11 @@ export class FakeWorkspace implements WorkspaceRpc {
   readonly computerCalls: ComputerCall[] = [];
   readonly pageCalls: PagesCall[] = [];
   readonly effects: Effect[] = [];
-  /** Outcomes by operation ID, with the operation that recorded them: an ID reused for another
-   * operation is refused with `conflict`. */
-  readonly #outcomes = new Map<
-    string,
-    { readonly operation: string; readonly outcome: Recorded }
-  >();
-  readonly #pageOutcomes = new Map<string, PagesResult>();
+  /** Launcher operations recorded by operation ID, each bound to its request when it began. */
+  readonly #operations = new OperationJournal<Recorded>();
+  readonly #pageOperations = new OperationJournal<PagesResult>();
+  /** The order floor of this generation's credential install, if one was simulated. */
+  #orderFloor: { readonly generation: number; readonly floor: number } | null = null;
   /** Every operation waiting on the sleep in progress: they share its outcome. */
   readonly #sleepOperations = new Set<string>();
 
@@ -95,6 +94,15 @@ export class FakeWorkspace implements WorkspaceRpc {
 
   constructor(computerId: ComputerId) {
     this.computerId = computerId;
+  }
+
+  /**
+   * Simulates `install_credentials` in the current generation: the supervisor's reply gives the
+   * order floor, and a bundle of this generation at or below it predates the restored
+   * credentials, so it is `superseded`, never published.
+   */
+  installCredentials(orderFloor: number): void {
+    this.#orderFloor = { generation: this.generation, floor: orderFloor };
   }
 
   /** Applies one of the computer's own events, as WorkspaceDO's steps would. */
@@ -118,9 +126,8 @@ export class FakeWorkspace implements WorkspaceRpc {
         outcome = { result: { operation: "suspend", outcome: "stopped" } };
       }
       if (outcome) {
-        for (const operationId of this.#sleepOperations) {
-          this.#outcomes.set(operationId, { operation: "suspend", outcome });
-        }
+        for (const operationId of this.#sleepOperations)
+          this.#operations.settle(operationId, outcome);
         this.#sleepOperations.clear();
       }
     }
@@ -139,11 +146,9 @@ export class FakeWorkspace implements WorkspaceRpc {
     }
     this.launcherCalls.push(request);
     const byOperationId = LAUNCHER_OPERATIONS[request.operation].idempotency === "operation_id";
-    const entry = byOperationId ? this.#outcomes.get(request.operationId) : undefined;
-    if (entry && entry.operation !== request.operation) {
-      throw platformError("conflict", "operation ID reused for another operation");
-    }
-    const recorded = entry?.outcome;
+    const recorded = byOperationId
+      ? this.#operations.begin(request.operationId, request)
+      : undefined;
     if (recorded) {
       if ("error" in recorded) throw platformError(recorded.error, "recorded outcome");
       return recorded.result;
@@ -161,9 +166,7 @@ export class FakeWorkspace implements WorkspaceRpc {
       outcome.result.operation === "suspend" &&
       outcome.result.outcome === "in_progress"
     );
-    if (byOperationId && settled) {
-      this.#outcomes.set(request.operationId, { operation: request.operation, outcome });
-    }
+    if (byOperationId && settled) this.#operations.settle(request.operationId, outcome);
     if (!settled) this.#sleepOperations.add(request.operationId);
     if ("error" in outcome) throw platformError(outcome.error, `${request.operation} refused`);
     return outcome.result;
@@ -292,7 +295,12 @@ export class FakeWorkspace implements WorkspaceRpc {
         if (!rule.effects?.includes("publish_credentials")) {
           throw platformError("conflict", `no credential checkpoint in ${this.context.state}`);
         }
-        if (!credentialIsNewer(message.bundle, this.credentialPointer)) {
+        const floor = this.#orderFloor;
+        const predatesInstall =
+          floor !== null &&
+          floor.generation === message.bundle.generation &&
+          message.bundle.order <= floor.floor;
+        if (predatesInstall || !credentialIsNewer(message.bundle, this.credentialPointer)) {
           return { type: "credential_checkpoint", outcome: "superseded", checkpointId: null };
         }
         this.credentialPointer = message.bundle;
@@ -321,13 +329,11 @@ export class FakeWorkspace implements WorkspaceRpc {
     const call = parsed.data;
     this.pageCalls.push(call);
     const operationId = operationIdOf(call);
-    const recorded = operationId === undefined ? undefined : this.#pageOutcomes.get(operationId);
-    if (recorded && recorded.action !== call.action) {
-      throw platformError("conflict", "operation ID reused for another action");
-    }
+    const recorded =
+      operationId === undefined ? undefined : this.#pageOperations.begin(operationId, call);
     if (recorded) return recorded;
     const result = this.#page(call);
-    if (operationId !== undefined) this.#pageOutcomes.set(operationId, result);
+    if (operationId !== undefined) this.#pageOperations.settle(operationId, result);
     return result;
   }
 
