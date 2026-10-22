@@ -4,7 +4,7 @@ import { runtimeModules } from "./vitest.unit.config.ts";
 
 // Runs inside workerd with real Durable Object storage, alarms and eviction.
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.test.jsonc" } })],
   test: {
     name: "workers",
     include: ["test/workers/**/*.test.ts"],
