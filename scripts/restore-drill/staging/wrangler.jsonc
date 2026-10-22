@@ -1,0 +1,41 @@
+// WP2.5's staging harness: the server image measured against real R2 from one `basic`
+// container. Deploy and remove it only with the guarded staging tool, after building the
+// server image under the tag in image_vars (the harness image starts FROM it):
+//
+//   docker build -f images/server/Dockerfile -t cfo-wp25-server:dev .
+//   pnpm stg deploy --suffix wp25-drill --owner WP2.5 --config scripts/restore-drill/staging/wrangler.jsonc --days 1
+//   pnpm stg teardown --suffix wp25-drill   (also empties and deletes the bucket)
+//
+// The owner's part (an R2 token for this bucket only, then Run) is in the WP2.5 evidence.
+{
+  "$schema": "../../../worker/node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-wp25-drill",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "REPLICA_BUCKET": "cfo-stg-wp25-drill-db",
+    "DRILL_PLAN": "all",
+    "DRILL_BARRIER_WRITES": "300",
+    "DRILL_BARRIER_ITEMS": "150",
+    "DRILL_IDLE_S": "480"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "DRILL", "class_name": "DrillRun" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DrillRun"] }],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp25-drill-db" }],
+  "containers": [
+    {
+      "name": "cfo-stg-wp25-drill-harness",
+      "class_name": "DrillRun",
+      "image": "./Dockerfile",
+      "image_build_context": "../../..",
+      "image_vars": { "SERVER_IMAGE": "cfo-wp25-server:dev" },
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ]
+}
