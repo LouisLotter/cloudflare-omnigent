@@ -1,0 +1,101 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP3.3 staging, mode "full": the production OmnigentServer with a stand-in server container,
+  // four stand-in computers (one per container configuration), the routes under test and the
+  // start bench (platform.ts). Deploy only with run.sh, which stamps build.ts and calls the
+  // guarded staging tool. The cron starts a run by itself; no owner step.
+  "name": "cfo-stg-wp33-platform",
+  "main": "platform.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "COMPUTER_DEF_OFF", "class_name": "ComputerDefOff" },
+      { "name": "COMPUTER_DEF_ON", "class_name": "ComputerDefOn" },
+      { "name": "COMPUTER_DO_ON", "class_name": "ComputerDoOn" },
+      { "name": "COMPUTER_DO_OFF", "class_name": "ComputerDoOff" },
+      { "name": "BENCH", "class_name": "StartBench" },
+      { "name": "RUN", "class_name": "StagingRun" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OmnigentServer",
+        "ComputerDefOff",
+        "ComputerDefOn",
+        "ComputerDoOn",
+        "ComputerDoOff",
+        "StartBench",
+        "StagingRun"
+      ]
+    }
+  ],
+  "containers": [
+    {
+      "name": "cfo-stg-wp33-platform-server",
+      "class_name": "OmnigentServer",
+      "image": "./server/Dockerfile",
+      "image_build_context": "./server",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-wp33-platform-def-off",
+      "class_name": "ComputerDefOff",
+      "image": "./computer/Dockerfile",
+      "image_build_context": "./computer",
+      "max_instances": 1,
+      "instance_type": "lite"
+    },
+    {
+      "name": "cfo-stg-wp33-platform-def-on",
+      "class_name": "ComputerDefOn",
+      "image": "./computer/Dockerfile",
+      "image_build_context": "./computer",
+      "max_instances": 1,
+      "instance_type": "lite"
+    },
+    {
+      "name": "cfo-stg-wp33-platform-do-on",
+      "class_name": "ComputerDoOn",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "probe": { "dockerfile": "./computer/Dockerfile", "build_context": "./computer" }
+      }
+    },
+    {
+      "name": "cfo-stg-wp33-platform-do-off",
+      "class_name": "ComputerDoOff",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "probe": { "dockerfile": "./computer/Dockerfile", "build_context": "./computer" }
+      }
+    },
+    {
+      "name": "cfo-stg-wp33-platform-bench",
+      "class_name": "StartBench",
+      "scheduling_policy": "durable_object",
+      "images": { "bench": { "dockerfile": "./bench/Dockerfile", "build_context": "./bench" } }
+    }
+  ],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp33-platform-results" }],
+  // Synthetic values only. WP33_RUN_TAG names the run: a new tag starts a new run at the next
+  // cron tick; a redeploy with the same tag continues the run.
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary",
+    "WP33_MODE": "full",
+    "WP33_RUN_TAG": "diag-1"
+  }
+}
