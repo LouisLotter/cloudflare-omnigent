@@ -92,3 +92,33 @@ def test_masks_values_used_in_paths(tmp_path: Path) -> None:
     assert path == "cache/<a login value>/state.json"
     where = report["files_holding_a_login_value"][path]["matches"][0]["where"]
     assert where == ["<a login value>.x", "<top level>.<key holds the value>"]
+
+
+def test_review_r1_nothing_printable_leaks_through_names(tmp_path: Path) -> None:
+    """Review s6-fu-r1: dotted secrets used as keys, dotted address keys, address-shaped claim
+    names, JSONL record types and SQLite names must all print masked."""
+    home = tmp_path
+    (home / ".codex").mkdir()
+    secret = P + "dotted.secret.0123456789abcdef.0123456789abcdef"
+    address = "first.last-person@example.invalid"
+    idt = "h." + b64u({"email": address, address: "claim-value-0123", "sub": "user-0123456789"}) + ".s"
+    auth = home / ".codex/auth.json"
+    auth.write_text(json.dumps({"tokens": {"access_token": secret, "id_token": idt}}))
+    # A file that uses the secret and the address as keys, with a matching value beneath each.
+    (home / "keys.json").write_text(json.dumps({secret: {"x": secret}, address: {"y": address}}))
+    (home / "records.jsonl").write_text(json.dumps({"type": address, "payload": {"type": secret, "v": secret}}) + "\n")
+    con = sqlite3.connect(home / "db.sqlite")
+    con.execute(f'create table "{address}" ("{secret}" text)')
+    con.execute(f'insert into "{address}" values (?)', (secret,))
+    con.commit()
+    con.close()
+    report, raw = run(home, auth)
+    for leak in (secret, address, "first.last", "first", "last-person", "dotted.secret", "0123456789abcdef",
+                 "claim-value-0123", "user-0123456789"):
+        assert leak not in raw, leak
+    keys = report["files_holding_a_login_value"]["keys.json"]["matches"]
+    assert {w for m in keys for w in m["where"]} >= {"<a login value>.x", "<a login value>.y"}
+    classes = {m["class"] for f in report["files_holding_a_login_value"].values() for m in f["matches"]}
+    assert "jwt-claim:<address>" in classes or all(":" not in c or "@" not in c for c in classes)
+    db = report["files_holding_a_login_value"]["db.sqlite"]["matches"]
+    assert any("table <a login value>, column <a login value>" in w for m in db for w in m["where"])

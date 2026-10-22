@@ -48,6 +48,9 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
         elif pattern[i] == "*":
             out.append("[^/]*")
             i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
         else:
             out.append(re.escape(pattern[i]))
             i += 1
@@ -256,6 +259,24 @@ def restore_layers(layers: list[Path], home: Path, *, tmp_rel: str | None = None
 
                     shutil.rmtree(target)
     return {"stripped": stripped}
+
+
+def prune_layer(src: Path, dst: Path, *, tmp_rel: str | None = None) -> dict:
+    """Prune: rewrite a layer without any member the policy excludes (an older or foreign
+    snapshot), keeping everything else byte for byte. Returns what was removed."""
+    removed: list[dict] = []
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(src.read_bytes())), mode="r") as tin, \
+            tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tout:
+        for m in tin.getmembers():
+            if m.name != ".s6-layer.json":
+                d = decide(m.name, tmp_rel=tmp_rel)
+                if d.action in ("exclude", "unclassified"):
+                    removed.append({"path": m.name, "rule": d.rule})
+                    continue
+            tout.addfile(m, tin.extractfile(m) if m.isreg() else None)
+    dst.write_bytes(gzip.compress(raw.getvalue(), mtime=0))
+    return {"removed": removed}
 
 
 # ---------------------------------------------------------------------------------------------

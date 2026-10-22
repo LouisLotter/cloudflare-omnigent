@@ -84,6 +84,7 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import bridge_policy as bp
     from omnigent.harnesses.claude_native import bridge as cb
+    from omnigent.harnesses.claude_native import forwarder as cfw
     from omnigent.harnesses.codex_native import app_server, forwarder
     from omnigent.harnesses.codex_native import bridge as xb
     from omnigent.harnesses.codex_native import main as xmain
@@ -234,10 +235,14 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
     canaries.update({"claude delegated token (permission_hook.json)": claude_delegated, "claude apiKeyHelper value": helper})
     crelay = cb.start_tool_relay(bridge_dir=CB, tools=[], tool_executor=no_tool, loop=loop)
     canaries["claude bridge tool relay token"] = json.loads((CB / "tool_relay.json").read_text())["token"]
+    # A continuation file in the Claude bridge: the forwarder's cursor, by its own writer.
+    cursor = CB / "transcript_forwarder.json"
+    cfw._write_json_atomic(cursor, {"byte_offset": 1, "seen_source_ids": ["s6"]})
 
     # ------------------------------------------------------------- 1. inventory
     inventory: dict[str, dict] = {}
     unclassified: list[str] = []
+    decided: list[tuple[str, str]] = []  # (path relative to the home, action) for home paths
     roots = [home] + ([tmp] if tmp_rel is None else [])
     for base in roots:
         for p in sorted(base.rglob("*")):
@@ -247,6 +252,7 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
             if base == home:
                 d = bp.decide(rel, tmp_rel=tmp_rel)
                 rule, action = d.rule, d.action
+                decided.append((rel, action))
             else:
                 rule, action = _tmp_rule(bp, str(p.relative_to(tmp)))
             kind = "link" if p.is_symlink() else "dir" if p.is_dir() else "socket" if p.is_socket() else "file"
@@ -257,6 +263,15 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
             if action == "unclassified":
                 unclassified.append(_mask(rel))
     check("every path in a Codex bridge is classified", not unclassified)
+    # The capture's own traversal must agree with every per-path decision (review s6-fu-r1: an
+    # excluded ancestor must never hide a member the classification saves).
+    captured_index, _ = bp.scan_tree(home, tmp_rel=tmp_rel)
+    disagree = [_mask(rel) for rel, action in decided
+                if (action in ("save", "save-link", "decide")) != (rel in captured_index)]
+    check("the capture takes exactly the paths the classification saves", not disagree)
+    if tmp_rel is not None:
+        check("the Claude forwarder cursor is captured when $TMPDIR is inside the home",
+              str(cursor.relative_to(home)) in captured_index)
 
     real_decide = bp.decide
     # The scan finds what it looks for: a layer that saves everything holds the planted values.
@@ -272,6 +287,21 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
     scan_control = sorted({f["canary"] for f in bp.scan_layer(A, canaries)})
     check("control: the scan finds the logins and the bridge tokens when nothing is excluded",
           any(c.startswith("login ") for c in scan_control) and "router token" in scan_control)
+    # Prune, the third use of the one policy: the save-everything layer, pruned, is clean and
+    # keeps what the classification saves.
+    PR = layers_dir / "control-pruned.tar.gz"
+    pruned = bp.prune_layer(A, PR, tmp_rel=tmp_rel)
+    prune_scan = bp.scan_layer(PR, canaries)
+    check("prune: the pruned layer holds no planted value", not prune_scan)
+    import gzip as _gz
+    import io as _io
+    import tarfile as _tf
+
+    with _tf.open(fileobj=_io.BytesIO(_gz.decompress(PR.read_bytes()))) as t:
+        pruned_names = set(t.getnames())
+    check("prune: it keeps the queue and the private config",
+          str((B / "dead_letter.jsonl").relative_to(home)) in pruned_names
+          and str((B / "codex-home/config.toml").relative_to(home)) in pruned_names)
 
 
     # ------------------------------------------------------------- 3. Codex's restore test
@@ -340,6 +370,8 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
         return home
 
     restore1 = await reconcile(replace_disk())
+    if tmp_rel is not None:
+        check("restore: the Claude forwarder cursor came back", (home / cursor.relative_to(home)).exists())
     after_first = fake.snapshot()
     # The same checkpoint again (taken before the replay): a crash before the next save.
     restore2 = await reconcile(replace_disk())
@@ -455,6 +487,8 @@ async def run(home: Path, tmp: Path, variant: str, launch_token: str) -> dict:
         "server_after_restore_2": after_second,
         "negative_control_whole_bridge_excluded": control,
         "control_scan_save_everything": scan_control,
+        "prune_of_the_save_everything_layer": {"removed": len(pruned["removed"]), "planted_values_left": prune_scan},
+        "capture_agrees_with_classification": not disagree,
         "control_exact_final_names_only": exact_control,
         "decide_case_key_provider": {"key_in_layer": key_found, "paused_temporary": key_paused,
                                      "note": "Expected: the classification saves config.toml, so a literal provider key is captured; the lead decides (fork change, scrub, or an RC-53 exception)."},

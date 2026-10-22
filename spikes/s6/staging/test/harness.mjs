@@ -218,20 +218,47 @@ class FakeContainer {
     this.refuseWithinMs = 0;
     this.lastStopAt = null;
     this.ignoreDestroy = false;
+    // Review s6-fu-r1: start() returns after validating its options, and a placement refusal
+    // can arrive later, through monitor(); destroy() can fail; other start errors exist.
+    this.refuseLateStarts = 0;
+    this.destroyThrows = false;
+    this.startErrors = [];
+    this.monitorPromise = null;
+    this.resolveMonitor = null;
   }
   start() {
     const sinceStop = this.lastStopAt === null ? Infinity : Date.now() - this.lastStopAt;
+    if (this.startErrors.length) {
+      this.world.log("container-start-error");
+      throw new Error(this.startErrors.shift());
+    }
     if (this.refuseStarts > 0 || sinceStop < this.refuseWithinMs) {
       if (this.refuseStarts > 0) this.refuseStarts--;
       this.world.log("container-start-refused");
       throw new Error(START_REFUSED_TEXT);
     }
+    if (this.refuseLateStarts > 0) {
+      this.refuseLateStarts--;
+      this.world.log("container-start-refused-late");
+      this.monitorPromise = new Promise((_, reject) =>
+        queueMicrotask(() => reject(new Error(START_REFUSED_TEXT))),
+      );
+      this.monitorPromise.catch(() => {});
+      return;
+    }
     this.world.log("container-start");
     this.running = true;
     this.homes = new Map();
+    this.monitorPromise = new Promise((resolve) => {
+      this.resolveMonitor = resolve;
+    });
+  }
+  monitor() {
+    return this.monitorPromise ?? new Promise(() => {});
   }
   async destroy() {
     this.world.log("container-destroy");
+    if (this.destroyThrows) throw new Error("destroy failed (test)");
     if (this.ignoreDestroy) return;
     this.stopNow("container stopped");
   }
@@ -243,6 +270,8 @@ class FakeContainer {
   stopNow(why) {
     if (this.running) this.lastStopAt = Date.now();
     this.running = false;
+    this.resolveMonitor?.();
+    this.resolveMonitor = null;
     this.homes = new Map();
     for (const t of this.ttyd) t.end(1006, why);
   }

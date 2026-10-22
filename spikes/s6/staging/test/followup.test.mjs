@@ -83,7 +83,7 @@ test("DC-37 and DC-38: a start refused beyond every retry fails as 'could not st
   assert.equal(st.revocations_confirmed.length, 0, "no revocation had to be recorded");
 });
 
-test("DC-38: a stop recorded but not confirmed (the object was interrupted) is a planned stop", async () => {
+test("DC-38 (review s6-fu-r1): a stop intent that was never confirmed proves nothing: a computer gone after it is recorded as lost", async () => {
   const world = await makeWorld();
   await partTwoUpToB(world);
   const gen = (await world.state()).generation;
@@ -93,11 +93,124 @@ test("DC-38: a stop recorded but not confirmed (the object was interrupted) is a
     JSON.stringify({ generation: gen, reason: "test", intent_at: Date.now(), confirmed_at: null }),
   );
   world.container.stopNow("container stopped");
+  const rec = await world.phase("name=recover&fake=1");
+  assert.ok(!rec.done, "Recover must not claim a verified sign-out");
   const st = await world.state();
-  assert.equal(st.credentials_may_be_lost, false);
+  assert.equal(st.credentials_may_be_lost, true);
+  assert.match(st.credentials_lost.reason, /before it was confirmed/);
+});
+
+test("DC-38 (review s6-fu-r1, P1): destroy() fails, the computer keeps running and refreshes, then crashes: lost, Recover does not verify, Wipe refuses", async () => {
+  const world = await makeWorld();
+  await partTwoUpToB(world); // both logins checkpointed after their refresh
+  world.container.destroyThrows = true;
+  const stop = await world.phase("name=stop&fake=1");
+  assert.ok(!stop.done, "the stop failed");
+  assert.equal(world.container.running, true);
+  assert.equal((await world.state()).last_stop, null, "the failed stop's record was withdrawn");
+  world.container.destroyThrows = false;
+  // Both logins refresh in the still-running computer, and nothing checkpoints them.
+  const home = world.container.home("/root");
+  world.container.rotate(home, "claude");
+  world.container.rotate(home, "codex");
+  world.container.crash();
+  const rec = await world.phase("name=recover&fake=1");
+  assert.ok(!rec.done, "Recover must end unresolved");
+  assert.ok(
+    !rec.lines.some((l) => l.ok === true && /verified signed out/.test(l.step ?? "")),
+    "no verified sign-out is claimed",
+  );
+  assert.equal(world.active.size, 2, "the refreshed logins are still active at the provider");
+  assert.ok(
+    !(await world.phase("name=wipe")).done,
+    "Wipe refuses until the revocation is recorded",
+  );
+});
+
+test("DC-38 (review s6-fu-r1): an intent left by an interrupted stop is withdrawn as soon as the computer is seen running", async () => {
+  const world = await makeWorld();
+  await partTwoUpToB(world);
+  const gen = (await world.state()).generation;
+  world.obj.meta(
+    "stop_record",
+    JSON.stringify({ generation: gen, reason: "test", intent_at: Date.now(), confirmed_at: null }),
+  );
+  const close = await world.phase("name=close-terminal");
+  assert.ok(close.done);
+  assert.equal((await world.state()).last_stop, null, "withdrawn: the computer did not stop");
+  world.container.crash();
+  await world.phase("name=recover&fake=1");
+  assert.equal((await world.state()).credentials_may_be_lost, true);
+});
+
+test("DC-37 (review s6-fu-r1): a refusal that arrives after start() returns, through monitor(), is retried", async () => {
+  const world = await makeWorld();
+  await partTwoUpToB(world);
+  world.container.refuseLateStarts = 2;
   const b = await world.phase("name=restore-b&fake=1");
   assert.ok(b.done, `restore-b: ${b.error}`);
+  const start = stepLine(b, /^start computer B$/);
+  assert.deepEqual(
+    start.attempts.map((a) => a.result),
+    ["refused: no container instance", "refused: no container instance", "started"],
+  );
   assert.equal((await world.state()).credentials_may_be_lost, false);
+});
+
+test("DC-37 (review s6-fu-r1): another error that says 'try again later' is not retried, and loses nothing", async () => {
+  const world = await makeWorld();
+  world.container.startErrors = ["Internal error, try again later"];
+  const a = await world.phase("name=start&fake=1");
+  assert.ok(!a.done);
+  const start = stepLine(a, /^start computer A$/);
+  assert.equal(start.attempts.length, 1);
+  assert.match(start.attempts[0].result, /^error: Internal error/);
+  assert.equal(start.started, false);
+  assert.equal((await world.state()).credentials_may_be_lost, false);
+  const again = await world.phase("name=start&fake=1");
+  assert.ok(again.done, `start again: ${again.error}`);
+});
+
+test("review s6-fu-r1 (P2): Recover's sign-out fails in a running computer: Stop, the owner's revocation covers the signed-in checkpoint, Wipe works", async () => {
+  const world = await makeWorld({ injection: true });
+  await partTwoUpToB(world);
+  const rec = await world.phase("name=recover&fake=1&fail=logout");
+  assert.ok(!rec.done, "Recover fails when the logouts fail");
+  assert.equal(world.container.running, true, "the computer that holds the login keeps running");
+  const early = await world.phase("name=confirm-revoked&confirm=revoked-at-providers");
+  assert.match(early.error, /stop the computer first/);
+  const stop = await world.phase("name=stop&fake=1");
+  assert.ok(stop.done, `stop: ${stop.error}`);
+  const wipe1 = await world.phase("name=wipe");
+  assert.match(wipe1.error, /still signed in/, "Wipe refuses a signed-in checkpoint");
+  const conf = await world.phase("name=confirm-revoked&confirm=revoked-at-providers");
+  assert.ok(conf.done, `confirm-revoked: ${conf.error}`);
+  assert.match(conf.lines.find((l) => l.recorded).recorded.cleared, /still holds a login/);
+  const wipe2 = await world.phase("name=wipe");
+  assert.ok(wipe2.done, `wipe after the recorded revocation: ${wipe2.error}`);
+  const st = await world.state();
+  assert.equal(st.objects, 0);
+  assert.equal(st.revocations_confirmed.length, 1, "the record survives the wipe");
+});
+
+test("review s6-fu-r1 (P2): Force stop after a checkpoint: the revocation clears the loss and covers the signed-in checkpoint", async () => {
+  const world = await makeWorld();
+  await partTwoUpToB(world);
+  const fs = await world.phase("name=force-stop&fake=1&confirm=credentials-may-be-lost");
+  assert.ok(fs.done);
+  assert.ok(!(await world.phase("name=wipe")).done);
+  const conf = await world.phase("name=confirm-revoked&confirm=revoked-at-providers");
+  assert.ok(conf.done, `confirm-revoked: ${conf.error}`);
+  const cleared = conf.lines.find((l) => l.recorded).recorded.cleared;
+  assert.match(cleared, /force stop/);
+  assert.match(cleared, /still holds a login/);
+  assert.ok((await world.phase("name=wipe")).done);
+});
+
+test("control: with nothing at risk, a revocation statement is refused", async () => {
+  const world = await makeWorld();
+  const conf = await world.phase("name=confirm-revoked&confirm=revoked-at-providers");
+  assert.match(conf.error, /nothing to record/);
 });
 
 test("DC-38 control: a stop that did not happen withdraws its record, so a later crash is still unexpected", async () => {

@@ -14,7 +14,12 @@ Values searched, from each login file given (missing files are skipped):
   partly logged copy) and its base64 forms at each alignment (an encoded copy).
 
 Each source key gets a class from its name: "secret" (tokens, keys), "identifier" (account and
-organisation ids), "plan" (tier, subscription, scopes) or "jwt-claim:<claim>".
+organisation ids), "plan" (tier, subscription, scopes), "jwt-claim" or "other".
+
+Everything printed that comes from a file (key names, claim names, record types, table and
+column names, file names) is masked one component at a time, before any component is joined
+into a path: a component that holds a login value, or a piece of one, prints as "<a login
+value>", and addresses, UUIDs and long identifiers are masked too (review s6-fu-r1).
 
   python3 -I login_values.py --home ~ ~/.claude/.credentials.json ~/.codex/auth.json ...
 """
@@ -35,19 +40,24 @@ TIMESTAMP_KEYS = {"expiresAt", "refreshTokenExpiresAt", "last_refresh", "expires
 SKIP_CLAIMS = {"iss", "aud", "scp", "scope", "amr", "exp", "iat", "nbf", "auth_time"}
 MIN_LEN = 16
 MIN_CLAIM_LEN = 8
+MIN_PIECE = 12  # a printed component this long that is part of a secret or an id is masked
 SECRET_KEY = re.compile(r"(token|secret|password|private|apikey|api_key|cookie|credential|key$)", re.I)
 IDENT_KEY = re.compile(r"(account|organi[sz]ation|user|uuid|_id$|^id$|Id$)", re.I)
 PLAN_KEY = re.compile(r"(tier|subscription|plan|scope)", re.I)
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 LONG_ID = re.compile(r"[A-Za-z0-9_\-+/=.]{24,}")
-EMAIL = re.compile(r"[^\s@]+@[^\s@]+")
+EMAIL = re.compile(r"\S*@\S*")
+LIST = "[]"
+
+Parts = tuple[str, ...]
 
 
-def classify(key_path: str) -> str:
-    last = key_path.split(".")[-1].replace("[]", "")
+def classify(parts: Parts) -> str:
+    names = [p for p in parts if p != LIST]
+    last = names[-1] if names else ""
     if SECRET_KEY.search(last) and not IDENT_KEY.search(last):
         return "secret"
-    if PLAN_KEY.search(key_path):
+    if any(PLAN_KEY.search(n) for n in names):
         return "plan"
     if IDENT_KEY.search(last):
         return "identifier"
@@ -66,23 +76,24 @@ def jwt_claims(value: str) -> dict | None:
     return claims if isinstance(claims, dict) else None
 
 
-def leaves(value, path: str = ""):
-    """(key path, string) for every string leaf; list indices are written as []."""
+def leaves(value, path: Parts = ()):
+    """(key path as components, string) for every string leaf; a list item adds "[]"."""
     if isinstance(value, dict):
         for k, v in value.items():
-            yield from leaves(v, f"{path}.{k}" if path else str(k))
+            yield from leaves(v, (*path, str(k)))
     elif isinstance(value, list):
         for v in value:
-            yield from leaves(v, f"{path}[]")
+            yield from leaves(v, (*path, LIST))
     elif isinstance(value, str):
         yield path, value
 
 
 def needles_for(source: str, data) -> list[dict]:
-    """The searched forms of every value in one login file: [{source, key, class, form, bytes}]."""
+    """The searched forms of every value in one login file:
+    [{source, key (parts), claim (parts or None), class, form, bytes}]."""
     out: list[dict] = []
 
-    def add(key: str, cls: str, value: str, secret: bool) -> None:
+    def add(key: Parts, claim: Parts | None, cls: str, value: str, secret: bool) -> None:
         forms = {"whole": value.encode()}
         if secret and len(value) >= 40:
             mid = len(value) // 2
@@ -94,68 +105,77 @@ def needles_for(source: str, data) -> list[dict]:
                 forms[f"base64 (offset {shift})"] = enc
                 forms[f"base64url (offset {shift})"] = enc.replace(b"+", b"-").replace(b"/", b"_")
         for form, b in forms.items():
-            out.append({"source": source, "key": key, "class": cls, "form": form, "bytes": b})
+            out.append({"source": source, "key": key, "claim": claim, "class": cls, "form": form, "bytes": b})
 
     for key, value in leaves(data):
-        if key.split(".")[-1].replace("[]", "") in TIMESTAMP_KEYS:
+        if key and key[-1] in TIMESTAMP_KEYS:
             continue
         cls = classify(key)
         if len(value) >= MIN_LEN:
-            add(key, cls, value, cls == "secret")
+            add(key, None, cls, value, cls == "secret")
         claims = jwt_claims(value)
         if claims:
             for ckey, cval in leaves(claims):
-                top = ckey.split(".")[0].split("[")[0]
-                if top in SKIP_CLAIMS or len(cval) < MIN_CLAIM_LEN or cval.startswith("http"):
+                if not ckey or ckey[0] in SKIP_CLAIMS or len(cval) < MIN_CLAIM_LEN or cval.startswith("http"):
                     continue
-                add(f"{key}#{ckey}", f"jwt-claim:{ckey}", cval, False)
+                add(key, ckey, "jwt-claim", cval, False)
     return out
 
 
-def masked(segment: str, values: list[bytes]) -> str:
-    """A key or record label as it may be printed: never a login value, id or address."""
-    b = segment.encode()
-    if any(v and v in b for v in values):
-        return "<a login value>"
-    segment = UUID.sub("<uuid>", segment)
-    segment = EMAIL.sub("<address>", segment)
-    return LONG_ID.sub("<id>", segment)
+class Masker:
+    """Masks every printable component; knows every searched value and piece of one."""
+
+    def __init__(self, values: list[bytes], private: list[bytes]):
+        self.values = [v for v in values if v]  # every searched form
+        self.private = [v for v in private if v]  # whole secrets, ids and claims
+
+    def component(self, segment: str) -> str:
+        b = segment.encode()
+        if any(v in b for v in self.values) or (
+            len(b) >= MIN_PIECE and any(b in v for v in self.private)
+        ):
+            return "<a login value>"
+        if "@" in segment:
+            return EMAIL.sub("<address>", segment) if len(segment) < 80 else "<address>"
+        segment = UUID.sub("<uuid>", segment)
+        return LONG_ID.sub("<id>", segment)
+
+    def path(self, parts: Parts) -> str:
+        out = ""
+        for p in parts:
+            out += LIST if p == LIST else (("." if out else "") + self.component(p))
+        return out
 
 
-def mask_path(key_path: str, values: list[bytes]) -> str:
-    return ".".join(masked(s, values) for s in key_path.split("."))
-
-
-def where_json(obj, needle: bytes, values: list[bytes]) -> set[str]:
+def where_json(obj, needle: bytes, m: Masker) -> set[str]:
     found = set()
     for key, value in leaves(obj):
         if needle in value.encode():
-            found.add(mask_path(key, values) or "<top level>")
-    if isinstance(obj, dict):  # a value used as a key
-        stack = [("", obj)]
-        while stack:
-            path, o = stack.pop()
-            if isinstance(o, dict):
-                for k, v in o.items():
-                    if needle in str(k).encode():
-                        found.add(f"{mask_path(path, values) or '<top level>'}.<key holds the value>")
-                    stack.append((f"{path}.{k}" if path else str(k), v))
-            elif isinstance(o, list):
-                stack.extend((f"{path}[]", v) for v in o)
+            found.add(m.path(key) or "<top level>")
+    stack: list[tuple[Parts, object]] = [((), obj)]
+    while stack:  # a value used as a key
+        path, o = stack.pop()
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if needle in str(k).encode():
+                    found.add(f"{m.path(path) or '<top level>'}.<key holds the value>")
+                stack.append(((*path, str(k)), v))
+        elif isinstance(o, list):
+            stack.extend(((*path, LIST), v) for v in o)
     return found
 
 
-def record_label(rec, values: list[bytes]) -> str:
+def record_label(rec, m: Masker) -> str:
     if not isinstance(rec, dict):
         return "<not an object>"
-    parts = [str(rec.get("type", "?"))]
+    parts = [m.component(str(rec.get("type", "?")))]
     payload = rec.get("payload")
     if isinstance(payload, dict) and "type" in payload:
-        parts.append(str(payload["type"]))
-    return masked("/".join(parts), values)
+        parts.append(m.component(str(payload["type"])))
+    return "/".join(parts)
 
 
-def locate(path: Path, data: bytes, needle: bytes, values: list[bytes]) -> tuple[str, list[str]]:
+def locate(path: Path, data: bytes, needle: bytes, m: Masker) -> tuple[str, list[str]]:
     """The file's kind and where in it the needle sits, as printable labels."""
     if data.startswith(b"SQLite format 3\x00"):
         spots = []
@@ -170,7 +190,7 @@ def locate(path: Path, data: bytes, needle: bytes, values: list[bytes]) -> tuple
                             f'SELECT count(*) FROM "{t}" WHERE instr(CAST("{c}" AS BLOB), ?) > 0', (needle,)
                         ).fetchone()[0]
                         if n:
-                            spots.append(f"table {masked(t, values)}, column {masked(c, values)} ({n} rows)")
+                            spots.append(f"table {m.component(t)}, column {m.component(c)} ({n} rows)")
             finally:
                 con.close()
         except sqlite3.Error as e:
@@ -178,7 +198,7 @@ def locate(path: Path, data: bytes, needle: bytes, values: list[bytes]) -> tuple
         return "sqlite", spots or ["raw bytes only (free pages or an index)"]
     text = data.decode("utf-8", "replace")
     try:
-        return "json", sorted(where_json(json.loads(text), needle, values)) or ["raw bytes only"]
+        return "json", sorted(where_json(json.loads(text), needle, m)) or ["raw bytes only"]
     except ValueError:
         pass
     lines = [ln for ln in text.splitlines() if needle in ln.encode()]
@@ -192,8 +212,8 @@ def locate(path: Path, data: bytes, needle: bytes, values: list[bytes]) -> tuple
     if parsed is not None and lines:
         spots: dict[str, int] = {}
         for rec in parsed:
-            for kp in where_json(rec, needle, values) or {"raw bytes only"}:
-                label = f"record {record_label(rec, values)}: {kp}"
+            for kp in where_json(rec, needle, m) or {"raw bytes only"}:
+                label = f"record {record_label(rec, m)}: {kp}"
                 spots[label] = spots.get(label, 0) + 1
         return "jsonl", [f"{k} ({n} lines)" for k, n in sorted(spots.items())]
     return "other", [f"raw bytes ({len(lines)} lines)" if lines else "raw bytes"]
@@ -208,19 +228,28 @@ def main() -> int:
     home = Path(a.home).resolve()
     sources = {Path(f).resolve(): f for f in a.files}
     needles: list[dict] = []
-    keys: dict[str, list[dict]] = {}
     for p in sources:
         rel = str(p.relative_to(home)) if p.is_relative_to(home) else p.name
         try:
             data = json.loads(p.read_bytes())
         except (FileNotFoundError, ValueError):
             continue
-        found = needles_for(rel, data)
-        needles.extend(found)
-        keys[rel] = sorted(
-            {(n["key"], n["class"]) for n in found if n["form"] == "whole"}, key=lambda kc: kc[0]
-        )
-    values = [n["bytes"] for n in needles]
+        needles.extend(needles_for(rel, data))
+    m = Masker(
+        [n["bytes"] for n in needles],
+        [n["bytes"] for n in needles if n["form"] == "whole" and n["class"] != "plan"],
+    )
+
+    def describe(n: dict) -> dict:
+        cls = n["class"] if n["claim"] is None else f"jwt-claim:{m.path(n['claim'])}"
+        key = m.path(n["key"]) + ("" if n["claim"] is None else f"#{m.path(n['claim'])}")
+        return {"source": "/".join(m.component(s) for s in Path(n["source"]).parts), "key": key, "class": cls}
+
+    keys: dict[str, set[tuple[str, str]]] = {}
+    for n in needles:
+        if n["form"] == "whole":
+            d = describe(n)
+            keys.setdefault(d["source"], set()).add((d["key"], d["class"]))
     report: dict[str, dict] = {}
     scanned = 0
     for dirpath, dirnames, filenames in os.walk(home):
@@ -239,29 +268,19 @@ def main() -> int:
             hits = [n for n in needles if n["bytes"] in data]
             if not hits:
                 continue
-            rel = "/".join(masked(s, values) for s in p.relative_to(home).parts)
+            rel = "/".join(m.component(s) for s in p.relative_to(home).parts)
             entry = report.setdefault(rel, {"kind": None, "matches": []})
             for n in hits:
-                kind, spots = locate(p, data, n["bytes"], values)
+                kind, spots = locate(p, data, n["bytes"], m)
                 entry["kind"] = kind
-                entry["matches"].append(
-                    {
-                        "source": n["source"],
-                        "key": mask_path(n["key"], values),
-                        "class": n["class"],
-                        "form": n["form"],
-                        "where": spots,
-                    }
-                )
+                entry["matches"].append({**describe(n), "form": n["form"], "where": spots})
     summary = {
         "values_checked": len({n["bytes"] for n in needles}),
-        "source_keys": {
-            s: [{"key": mask_path(k, values), "class": c} for k, c in kc] for s, kc in keys.items()
-        },
+        "source_keys": {s: [{"key": k, "class": c} for k, c in sorted(kc)] for s, kc in keys.items()},
         "files_scanned": scanned,
         "files_holding_a_login_value": report,
         "secrets_outside_login_files": sorted(
-            {f for f, e in report.items() if any(m["class"] == "secret" for m in e["matches"])}
+            {f for f, e in report.items() if any(x["class"] == "secret" for x in e["matches"])}
         ),
     }
     print(json.dumps(summary, sort_keys=True))

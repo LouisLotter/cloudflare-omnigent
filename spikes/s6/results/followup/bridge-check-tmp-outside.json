@@ -1,4 +1,5 @@
 {
+ "capture_agrees_with_classification": true,
  "control_exact_final_names_only": {
   "secret_found": true,
   "temporary_in_layer": true
@@ -208,13 +209,24 @@
     "work (dir)"
    ]
   },
-  "tmp-claude-bridge-runtime (outside the home: not captured)": {
+  "tmp-claude-bridge-continuation (outside the home: not captured)": {
+   "action": "outside",
+   "paths": [
+    "$TMPDIR/omnigent-<uid>/claude-native/<hash>/transcript_forwarder.json (file)"
+   ]
+  },
+  "tmp-claude-bridge-dirs (outside the home: not captured)": {
    "action": "outside",
    "paths": [
     "$TMPDIR/omnigent-<uid> (dir)",
     "$TMPDIR/omnigent-<uid>/claude-native (dir)",
+    "$TMPDIR/omnigent-<uid>/claude-native/<hash> (dir)"
+   ]
+  },
+  "tmp-claude-bridge-runtime (outside the home: not captured)": {
+   "action": "outside",
+   "paths": [
     "$TMPDIR/omnigent-<uid>/claude-native/.locks (dir)",
-    "$TMPDIR/omnigent-<uid>/claude-native/<hash> (dir)",
     "$TMPDIR/omnigent-<uid>/claude-native/<hash>/owner.pid (file)",
     "$TMPDIR/omnigent-<uid>/claude-native/approval-waits (dir)"
    ]
@@ -231,8 +243,8 @@
   }
  },
  "layer_bytes": {
-  "w-base.tar.gz": 2352,
-  "w-delta1.tar.gz": 681
+  "w-base.tar.gz": 2314,
+  "w-delta1.tar.gz": 679
  },
  "negative_control_whole_bridge_excluded": {
   "auth_link_restored_as_symlink": true,
@@ -374,6 +386,10 @@
    "writer_target": ".omnigent/codex-native/<hash>/codex-home/config.toml"
   }
  ],
+ "prune_of_the_save_everything_layer": {
+  "planted_values_left": [],
+  "removed": 19
+ },
  "rc53_layer_scan": {
   "w-base.tar.gz": [],
   "w-delta1.tar.gz": []
@@ -402,24 +418,24 @@
  },
  "server_after_restore_1": {
   "items_per_source": {
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_1:item_1": 1,
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_2:item_2": 1
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_1:item_1": 1,
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_2:item_2": 1
   },
   "items_total": 3,
   "posts_per_source": {
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_1:item_1": 1,
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_2:item_2": 1
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_1:item_1": 1,
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_2:item_2": 1
   }
  },
  "server_after_restore_2": {
   "items_per_source": {
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_1:item_1": 1,
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_2:item_2": 1
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_1:item_1": 1,
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_2:item_2": 1
   },
   "items_total": 3,
   "posts_per_source": {
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_1:item_1": 2,
-   "7277d09b-08e5-4d79-8816-0f122079dbfe:turn_2:item_2": 2
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_1:item_1": 2,
+   "30a41e9f-d69d-4116-9d81-8cb0afe98c77:turn_2:item_2": 2
   }
  },
  "tmpdir_inside_home": false,

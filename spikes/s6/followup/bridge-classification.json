@@ -5,7 +5,7 @@
   "notes": [
     "One classification of every file the claude-native and codex-native harnesses write under the computer's home, from the fork's source (file:line in `evidence`) and checked by running the fork's own writers under a throwaway home (spikes/s6/followup/bridge_check.py).",
     "Patterns are relative to the home directory, or to the temporary directory for root \"tmp\" (Claude-native's bridge lives in $TMPDIR/omnigent-<uid>/claude-native, outside the home; its rules apply only if $TMPDIR lies inside a checkpointed directory).",
-    "`*` matches within one path segment, `**` any number of segments. The first matching rule wins, so specific rules come first.",
+    "`*` matches within one path segment, `?` one character in a segment, `**` any number of segments. The first matching rule wins, so specific rules come first. A directory a rule saves is traversed, and each member is decided on its own; a directory a rule excludes is skipped whole.",
     "Actions: exclude (never in a workspace checkpoint; stripped with an alert if found in a layer), save (continuation state), save-link (a symbolic link kept as a link, never followed), decide (saved today, but can hold a secret: the lead decides; RC-53 flags it).",
     "Every family lists its temporary-write variants: a capture can pause between a write and its rename."
   ],
@@ -438,12 +438,26 @@
       "why": "Forwarder cursors. A cold resume starts the forwarder at the end of the transcript and rebuilds it from server history, so they are useful, not required."
     },
     {
+      "id": "tmp-claude-bridge-dirs",
+      "harness": "claude-native",
+      "root": "tmp",
+      "class": "continuation (directories only)",
+      "action": "save",
+      "patterns": [
+        "omnigent-*",
+        "omnigent-*/claude-native",
+        "omnigent-*/claude-native/????????????????????????????????"
+      ],
+      "evidence": "claude_native/bridge.py:186-188, 1465-1474 (the bridge root and its sha256[:32] directories)",
+      "why": "The directories that lead to the forwarder cursors, so a capture reaches them; every other member is decided by the rules around this one (review s6-fu-r1)."
+    },
+    {
       "id": "tmp-claude-bridge-runtime",
       "harness": "claude-native",
       "root": "tmp",
       "class": "runtime",
       "action": "exclude",
-      "patterns": ["omnigent-*", "omnigent-*/**"],
+      "patterns": ["omnigent-*/**"],
       "evidence": "claude_native/bridge.py:124-128, 1499-1525, 2866-2919, 4069-4099; status.py:174-191; runtime/harnesses/paths.py:16-24 (mcp-<pid>.sock)",
       "why": "Locks, approval waits, sockets, hook logs, tmux targets, the forwarders' temporaries and the rest: per-process state."
     }

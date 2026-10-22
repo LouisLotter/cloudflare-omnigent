@@ -53,7 +53,8 @@ const LOGIN_VALUES_STEP = "login values in other files, by key (DC-45)";
 // spike then waits 30 and 60 s more, and records whether the design's minute was enough.
 const START_RETRY_WAITS_MS = [5_000, 10_000, 20_000, 20_000];
 const START_RETRY_EXTRA_MS = [30_000, 60_000];
-const START_REFUSED = /no container instance|try again later/i;
+// Only this answer is retried; any other start error is reported at once (review s6-fu-r1).
+const START_REFUSED = /There is no container instance that can be provided to this Durable Object/i;
 const START_REFUSED_TEXT =
   "There is no container instance that can be provided to this Durable Object, try again later";
 const PHASES = new Set([
@@ -256,24 +257,18 @@ export class S6Computer extends DurableObject {
     );
   }
 
-  // A computer this Worker started, and has not stopped itself, that no longer runs: it took any
-  // login it held, checkpointed or not, with it. DC-38 (S6 follow-up): a computer of the current
-  // generation whose stop this Worker recorded before stopping it is a planned stop, never an
-  // unexpected one; and a start that Cloudflare refused leaves no computer behind (start()).
+  // A computer that ran, and that this Worker has not seen stop, no longer runs: it took any
+  // login it held, checkpointed or not, with it. computer_live is "1" from the moment a computer
+  // is seen running until stop() confirms it stopped. DC-38 (S6 follow-up): a start that never
+  // produced a running computer leaves no computer behind, so it never sets the flag; a stop that
+  // was recorded but not confirmed proves nothing (review s6-fu-r1) and still counts as a loss.
   computerMissing() {
-    if (this.meta("computer_live") !== "1" || this.ctx.container.running) return false;
-    return !this.plannedStop();
+    return this.meta("computer_live") === "1" && !this.ctx.container.running;
   }
 
   stopRecord() {
     const v = this.meta("stop_record");
     return v ? JSON.parse(v) : null;
-  }
-
-  // The recorded stop of the current generation, if any (an intent, or a confirmed stop).
-  plannedStop() {
-    const s = this.stopRecord();
-    return s && s.generation === this.generation() ? s : null;
   }
 
   // ---------------------------------------------------------------- terminal lifetime (finding 4)
@@ -390,18 +385,21 @@ export class S6Computer extends DurableObject {
   }
 
   noteUnplannedStop() {
-    const planned = this.plannedStop();
-    if (planned && !planned.confirmed_at && !this.ctx.container.running) {
-      // A planned stop whose confirmation was not recorded (the object was interrupted): the
-      // computer is gone because this Worker stopped it.
-      this.meta("stop_record", JSON.stringify({ ...planned, confirmed_at: Date.now() }));
-      this.meta("computer_live", "0");
+    const pending = this.stopRecord();
+    const unconfirmed = pending && !pending.confirmed_at;
+    if (this.ctx.container.running) {
+      // A computer that runs may hold a login; one whose stop intent is still pending did not stop.
+      this.meta("computer_live", "1");
+      if (unconfirmed) this.deleteMeta("stop_record");
       return;
     }
     if (!this.computerMissing()) return;
     this.markCredentialsLost(
-      "the computer stopped unexpectedly, without a final credential checkpoint",
+      unconfirmed
+        ? "the computer stopped while a stop was in progress, before it was confirmed"
+        : "the computer stopped unexpectedly, without a final credential checkpoint",
     );
+    if (unconfirmed) this.deleteMeta("stop_record");
     this.meta("computer_live", "0");
   }
 
@@ -502,6 +500,13 @@ export class S6Computer extends DurableObject {
       .toArray()[0];
   }
 
+  // The owner recorded a revocation at the providers after the latest credential checkpoint was
+  // published, so the logins it holds are dead (review s6-fu-r1).
+  revocationCoversLatest(computer = PC) {
+    const ptr = this.current(computer, "credential");
+    return Boolean(ptr) && Number(this.meta("revoked_covers_checkpoint") ?? -1) === ptr.seq;
+  }
+
   // True when the latest credential checkpoint records every declared file as absent.
   // True when the latest credential checkpoint records every login file as absent. (A device
   // key that survives a logout is reported in the state, but is not a login.)
@@ -585,8 +590,10 @@ export class S6Computer extends DurableObject {
   }
 
   // Starts a new generation's computer. A start Cloudflare refuses right after a stop is retried
-  // (DC-37); the result lists every attempt with the time since the last confirmed stop, so the
-  // run measures the start-after-stop gap. It never throws for a refusal: the step reports it.
+  // (DC-37), whether the refusal comes from start() itself or later, while the computer starts
+  // (start() returns after validating its options; monitor() reports a later failure). The result
+  // lists every attempt with the time since the last confirmed stop, so the run measures the
+  // start-after-stop gap. It never throws for a start that failed: the step reports it.
   async start(o = {}) {
     if (this.ctx.container.running) throw new Error("a computer is already running");
     const generation = this.generation() + 1;
@@ -598,72 +605,94 @@ export class S6Computer extends DurableObject {
     const waits = [...START_RETRY_WAITS_MS, ...START_RETRY_EXTRA_MS];
     // Dry runs with fault injection on: refuse the first N starts, as Cloudflare did on 19 Oct.
     const m = o.fake ? /^refuse-start(?::(\d+))?$/.exec(o.fail ?? "") : null;
-    let toRefuse = m ? Number(m[1] ?? 1e9) : 0;
+    const inject = { refusals: m ? Number(m[1] ?? 1e9) : 0 };
     const attempts = [];
     for (let i = 0; ; i++) {
-      // Live from the moment a start is attempted (a start whose answer is lost still counts),
-      // until a refused start or a confirmed stop (DC-38).
-      this.meta("computer_live", "1");
-      try {
-        if (toRefuse > 0) {
-          toRefuse--;
-          throw new Error(`${START_REFUSED_TEXT} (injected)`);
-        }
-        this.ctx.container.start({ enableInternet: true });
-        await this.ctx.container.setInactivityTimeout(30 * 60 * 1000);
-        attempts.push({ attempt: i + 1, since_stop_ms: sinceStop(), result: "started" });
-        break;
-      } catch (e) {
-        const msg = String(e?.message ?? e);
-        const refused = START_REFUSED.test(msg);
-        attempts.push({
-          attempt: i + 1,
-          since_stop_ms: sinceStop(),
-          result: refused ? "refused: no container instance" : `error: ${msg.slice(0, 120)}`,
-        });
-        if (this.ctx.container.running) break; // it started after all
-        this.meta("computer_live", "0"); // nothing started, so nothing can hold a login
-        if (!refused || i >= waits.length) {
-          this.meta(
-            "last_start_failure",
-            JSON.stringify({ generation, at: new Date().toISOString(), attempts }),
-          );
-          return {
-            generation,
-            started: false,
-            attempts,
-            advice: refused
+      const at = sinceStop();
+      const r = await this.startAttempt(inject);
+      attempts.push({ attempt: i + 1, since_stop_ms: at, result: r.result });
+      if (this.ctx.container.running) {
+        this.meta("computer_live", "1"); // from now on it may hold a login
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        return {
+          generation,
+          started: true,
+          attempts,
+          ...(attempts.length > 1
+            ? { within_design_retry_budget: attempts.length <= START_RETRY_WAITS_MS.length + 1 }
+            : {}),
+          ...(r.result === "started" ? { ready_after_s: r.ready_after_s } : { ready: false }),
+        };
+      }
+      // No computer runs: nothing was restored into it and no terminal opened, so it holds no login.
+      if (r.result !== "refused: no container instance" || i >= waits.length) {
+        this.meta(
+          "last_start_failure",
+          JSON.stringify({ generation, at: new Date().toISOString(), attempts }),
+        );
+        return {
+          generation,
+          started: false,
+          attempts,
+          advice:
+            r.result === "refused: no container instance"
               ? "Cloudflare refused every start. Nothing was lost: wait a minute, then click the same button again."
               : "The start failed. Click the same button again; if it fails again, run Recover.",
-          };
-        }
-        await sleep(waits[i]);
+        };
       }
+      await sleep(waits[i]);
     }
-    const designBudget = START_RETRY_WAITS_MS.length + 1;
-    const started = {
-      generation,
-      started: true,
-      attempts,
-      ...(attempts.length > 1
-        ? { within_design_retry_budget: attempts.length <= designBudget }
-        : {}),
-    };
-    await this.ctx.storage.setAlarm(Date.now() + 60_000);
-    for (let i = 0; i < 180; i++) {
-      try {
-        const r = await this.ctx.container.getTcpPort(TERM_PORT).fetch("http://container/term/");
-        if (r.ok) return { ...started, ready_after_s: i };
-      } catch {}
-      await sleep(1000);
-    }
-    return { ...started, ready: false };
   }
 
-  // DC-38 (S6 follow-up): the stop is recorded, with its reason, before the container is asked
-  // to stop, and confirmed once it has stopped. A computer later found gone in this generation is
-  // a planned stop. If it does not stop, the record is withdrawn, so a later disappearance still
-  // counts as unexpected.
+  // One start attempt, observed until the terminal answers, the container is gone, or 180 s pass.
+  async startAttempt(inject) {
+    const classify = (e) =>
+      START_REFUSED.test(String(e?.message ?? e))
+        ? "refused: no container instance"
+        : `error: ${String(e?.message ?? e).slice(0, 120)}`;
+    let ended = null; // set when monitor() settles: the container exited or failed
+    try {
+      if (inject.refusals > 0) {
+        inject.refusals--;
+        throw new Error(`${START_REFUSED_TEXT} (injected)`);
+      }
+      this.ctx.container.start({ enableInternet: true });
+      this.ctx.container.monitor?.().then(
+        () => {
+          ended ??= new Error("the container exited while starting");
+        },
+        (e) => {
+          ended ??= e ?? new Error("the container failed while starting");
+        },
+      );
+      await this.ctx.container.setInactivityTimeout(30 * 60 * 1000);
+    } catch (e) {
+      if (!this.ctx.container.running) return { result: classify(e) };
+    }
+    let last = null;
+    for (let s = 0; s < 180; s++) {
+      if (ended && !this.ctx.container.running) return { result: classify(ended) };
+      try {
+        const r = await this.ctx.container.getTcpPort(TERM_PORT).fetch("http://container/term/");
+        if (r.ok) return { result: "started", ready_after_s: s };
+      } catch (e) {
+        last = e;
+        if (START_REFUSED.test(String(e?.message ?? e)) && !this.ctx.container.running) {
+          return { result: "refused: no container instance" };
+        }
+      }
+      await sleep(1000);
+    }
+    if (this.ctx.container.running) return { result: "running, terminal not ready" };
+    return {
+      result: ended || last ? classify(ended ?? last) : "error: the container did not start",
+    };
+  }
+
+  // DC-38 (S6 follow-up): the stop is recorded, with its reason and the final credential
+  // checkpoint before it, before the container is asked to stop, and confirmed once it has
+  // stopped. Only a confirmed stop clears computer_live. If the container does not stop, or
+  // destroy() fails, the record is withdrawn at once, so later work never inherits it.
   async stop(reason = "planned stop", checkpoint = null) {
     const record = {
       generation: this.generation(),
@@ -673,8 +702,15 @@ export class S6Computer extends DurableObject {
       confirmed_at: null,
     };
     this.meta("stop_record", JSON.stringify(record));
-    if (this.ctx.container.running) await this.ctx.container.destroy();
-    for (let i = 0; i < 60 && this.ctx.container.running; i++) await sleep(1000);
+    try {
+      if (this.ctx.container.running) await this.ctx.container.destroy();
+      for (let i = 0; i < 60 && this.ctx.container.running; i++) await sleep(1000);
+    } catch (e) {
+      if (this.ctx.container.running) {
+        this.deleteMeta("stop_record");
+        return { stopped: false, error: String(e?.message ?? e).slice(0, 120) };
+      }
+    }
     if (this.ctx.container.running) {
       this.deleteMeta("stop_record");
       return { stopped: false };
@@ -1328,27 +1364,45 @@ export class S6Computer extends DurableObject {
             "confirm-revoked needs confirm=revoked-at-providers, and only after revoking the sessions in the Claude and ChatGPT account settings",
           );
         }
-        const unresolved = this.lostCredentials();
-        if (!unresolved) throw new Error("nothing to record: no credentials are recorded as lost");
         if (this.ctx.container.running)
-          throw new Error("stop the computer first (Stop or Recover)");
+          throw new Error(
+            "stop the computer first (Stop, or Force stop if Stop cannot checkpoint)",
+          );
+        // What the statement covers: credentials recorded as lost, and/or a latest checkpoint that
+        // still holds a login (a Recover whose sign-out failed; review s6-fu-r1). Revoked at the
+        // providers, those logins are dead, so Wipe may delete them.
+        const unresolved = this.lostCredentials();
+        const ptr = this.current(PC, "credential");
+        const signedIn = !this.signedOutInCheckpoint();
+        if (!unresolved && !signedIn) {
+          throw new Error(
+            "nothing to record: no credentials are recorded as lost and the latest checkpoint is signed out",
+          );
+        }
+        const cleared = [
+          unresolved?.reason,
+          signedIn ? `the latest credential checkpoint (${ptr.seq}) still holds a login` : null,
+        ]
+          .filter(Boolean)
+          .join("; ");
         const at = new Date().toISOString();
         this.sql.exec(
           "INSERT INTO owner_confirmations VALUES (?, ?, ?, ?)",
           at,
           "revoked-at-providers",
-          unresolved.reason,
-          unresolved.since,
+          cleared,
+          unresolved?.since ?? null,
         );
         this.deleteMeta("credentials_lost");
         this.deleteMeta("credentials_may_be_lost");
+        if (signedIn) this.meta("revoked_covers_checkpoint", ptr.seq);
         await emit({
           phase: name,
           recorded: {
             at,
             what: "the owner revoked the Claude and ChatGPT sessions in the account settings",
-            cleared: unresolved.reason,
-            lost_since: unresolved.since,
+            cleared,
+            lost_since: unresolved?.since ?? null,
           },
         });
         break;
@@ -1370,8 +1424,10 @@ export class S6Computer extends DurableObject {
         break;
       case "wipe":
         if (this.ctx.container.running) throw new Error("stop the computer first (or run Recover)");
-        if (!this.signedOutInCheckpoint()) {
-          throw new Error("the latest checkpoint is still signed in: run Recover first");
+        if (!this.signedOutInCheckpoint() && !this.revocationCoversLatest()) {
+          throw new Error(
+            "the latest checkpoint is still signed in: run Recover first, or, if Recover cannot sign out, revoke the sessions in the Claude and ChatGPT account settings and record it with 'I revoked both sessions'",
+          );
         }
         await step(
           "delete all stored checkpoints and state",
@@ -1649,7 +1705,7 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 </ol>
 <p><button data-phase="recover">Recover: sign out and verify</button> only if a step failed.
  <button data-phase="stop">Stop</button> <button data-phase="force-stop" data-confirm="credentials-may-be-lost" data-question="Stop without a final checkpoint? A login not yet checkpointed is lost, and you will have to revoke the sessions in the Claude and ChatGPT account settings.">Force stop (credentials may be lost)</button></p>
-<p>If the page says credentials are unresolved: revoke the sessions in the Claude and ChatGPT account settings (sign out of all devices or sessions there), then
+<p>If the page says credentials are unresolved, or Recover cannot sign out (stop the computer first: Stop, or Force stop if Stop cannot checkpoint): revoke the sessions in the Claude and ChatGPT account settings (sign out of all devices or sessions there), then
  <button data-phase="confirm-revoked" data-confirm="revoked-at-providers" data-question="Have you revoked the sessions in both the Claude and the ChatGPT account settings? This is recorded.">I revoked both sessions</button></p>
 <pre id="out"></pre>
 <script>
