@@ -653,7 +653,8 @@ describe("watchdog simulation", () => {
     expect(seen.restarts).toBeGreaterThan(100);
     expect(seen.recoveries).toBeGreaterThan(20);
     expect(seen.stops).toBeGreaterThan(20);
-  });
+    // 300 simulated hours take a few seconds; CI runners are slower than the default 5 s allows.
+  }, 60_000);
 });
 
 describe("watchdog: any stored state", () => {
