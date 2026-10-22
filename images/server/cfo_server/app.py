@@ -25,6 +25,7 @@ import importlib.util
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -221,6 +222,9 @@ def main() -> None:
     The entrypoint passes the database path and Litestream's socket in ``CFO_DB_PATH`` and
     ``CFO_LITESTREAM_SOCKET``; the database URL must name the same file Litestream replicates.
     """
+    # Each stage of the start is logged with its time, so a slow start shows where it went
+    # (WP2.5's diagnosis needed py-spy for that); the entrypoint logs ``app.ready``.
+    started = time.monotonic()
     install_sql_hooks()
     config = image_config.load(for_app=True)
     db_path = os.environ.get("CFO_DB_PATH", str(image_config.DB_PATH))
@@ -229,7 +233,9 @@ def main() -> None:
     resolved = ep._resolve_config()
     if resolved.database_url != f"sqlite:///{db_path}":
         raise RuntimeError("the database URL does not name the file Litestream replicates")
+    log("app.configured", seconds=round(time.monotonic() - started, 2))
     ep.run_migrations(resolved.database_url)
+    log("app.migrated", seconds=round(time.monotonic() - started, 2))
 
     waiter = ReplicationWaiter(socket_path, db_path)
     app = build_app(config, resolved, waiter=waiter, docker_entrypoint=ep)
@@ -237,7 +243,11 @@ def main() -> None:
     # first-visitor setup; the entrypoint already refuses that case, and this checks it.
     if not check_database(Path(db_path)).initialized:
         raise RuntimeError("no owner after Omnigent's bootstrap; refusing to serve setup")
-    log("app.built", sharing_mode=config.sharing.sharing_mode)
+    log(
+        "app.built",
+        sharing_mode=config.sharing.sharing_mode,
+        seconds=round(time.monotonic() - started, 2),
+    )
 
     import uvicorn
     from omnigent.server.graceful_shutdown import SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_S, serve

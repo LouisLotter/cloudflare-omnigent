@@ -162,8 +162,11 @@ export class FakeServerContainer implements ServerContainer {
             finalSync: null,
           });
     }
+    // Port 8000 refuses connections until the app listens: through the restore and while it
+    // initializes (the entrypoint's `initializing`, WP2.6).
     const restoring =
-      port === 8000 && ["starting", "restoring"].includes(this.entrypointPhase ?? "");
+      port === 8000 &&
+      ["starting", "restoring", "initializing"].includes(this.entrypointPhase ?? "");
     if (!this.listening || restoring) {
       throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
     }

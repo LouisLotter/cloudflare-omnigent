@@ -2,8 +2,9 @@
 //
 //   - Always on. The watchdog alarm checks the server every minute (every few seconds while it
 //     starts or is down), keeps its inactivity timeout armed, starts it whenever it is found
-//     stopped, waits 120 s for readiness after each start, retries a refused start (DC-37), and
-//     restarts a server that stopped answering. Its decisions are the pure `watchdog.ts`.
+//     stopped, follows the entrypoint's phases after each start (a restore allowance, then an
+//     app-start budget, AIR2-010), retries a refused start (DC-37), and restarts a server that
+//     stopped answering. Its decisions are the pure `watchdog.ts`.
 //   - Outage records. Every interval in which the server did not answer is stored as an
 //     `OutageRecord`, from the last time it answered to the first time it answered again.
 //   - Bootstrap status. While the server answers, the watchdog reads `/v1/info` and the
@@ -116,6 +117,7 @@ const WatchdogStateSchema = z.strictObject({
   signalledAt: Millis.nullable().default(null),
   killedAt: Millis.nullable().default(null),
   bootSeenAt: Millis.nullable().default(null),
+  initSeenAt: Millis.nullable().default(null),
   bootEndedAt: Millis.nullable().default(null),
   outage: z
     .strictObject({
@@ -132,7 +134,15 @@ const WatchdogStateSchema = z.strictObject({
 
 /** The fields of the entrypoint's `GET :8001/status` the watchdog reads (WP2.3); others ignored. */
 const EntrypointStatus = z.object({
-  phase: z.enum(["starting", "restoring", "recovery", "running", "stopping", "stopped"]),
+  phase: z.enum([
+    "starting",
+    "restoring",
+    "recovery",
+    "initializing",
+    "running",
+    "stopping",
+    "stopped",
+  ]),
   recovery: z
     .object({ reason: z.string().max(200), transient: z.boolean() })
     .nullable()

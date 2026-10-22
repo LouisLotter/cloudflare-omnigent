@@ -6,9 +6,12 @@
 // with the server image's facts (WP2.3, its evidence's "Container environment"):
 //   - the server is always on: a container found stopped is started again, and the watchdog
 //     itself never stops a server that answers;
-//   - after each start it waits at least 120 s for readiness before it records a failed start,
-//     and longer while the image's entrypoint reports a restore in progress (port 8000 refuses
-//     connections until the restore deadline, 300 s by default);
+//   - after each start it follows the entrypoint's phases (`GET :8001/status`) before it records
+//     a failed start (AIR2-010): a boot and restore get the restore allowance from the start
+//     (the restore deadline, the database check and Litestream's start); the app's
+//     initialization (migrations, its construction, the owner check) gets the app-start budget
+//     from its first sight; an app the entrypoint reports running, or a start the entrypoint
+//     says nothing about, gets the readiness wait of at least 120 s. Every budget is finite;
 //   - a server in the image's recovery mode is never restarted: it needs the owner, and the
 //     entrypoint retries a transient cause itself;
 //   - a restart stops the container with SIGTERM, so the entrypoint can confirm a final sync,
@@ -28,10 +31,23 @@ export interface WatchdogTiming {
   readonly intervalMs: number;
   /** The check cadence while it starts, stops, retries or is in an outage. */
   readonly pollMs: number;
-  /** How long a start may take to answer before it counts as failed (DC-47: at least 120 s). */
+  /**
+   * How long a start may take to answer when the entrypoint does not say what it is doing (an
+   * older image, or its status unreadable), and how long an app the entrypoint reports running
+   * may take to answer the watchdog (DC-47: at least 120 s).
+   */
   readonly readinessWaitMs: number;
-  /** How long a start may take while the entrypoint reports a restore (WP2.3). */
+  /**
+   * How long a start may take, from `start()`, while the entrypoint reports its boot or a
+   * restore: the restore deadline, the database check after it and Litestream's start (WP2.3).
+   */
   readonly restoreWaitMs: number;
+  /**
+   * How long the app may take to answer from the first sight of the entrypoint reporting it
+   * `initializing`: Python's imports, Omnigent's migrations, `create_app` and the owner check.
+   * Qualified for a 1 GB database on `basic` (WP2.6); finite, so a hung start is restarted.
+   */
+  readonly appStartWaitMs: number;
   /** How long a running server may stay silent before it is restarted. */
   readonly hungAfterMs: number;
   /** How long a SIGTERM stop may take before the container is killed (WP2.3: final sync). */
@@ -46,8 +62,11 @@ export const WATCHDOG_TIMING: WatchdogTiming = {
   intervalMs: 60_000,
   pollMs: 5_000,
   readinessWaitMs: 120_000,
-  // CFO_RESTORE_DEADLINE_S (300) + CFO_LITESTREAM_READY_TIMEOUT_S (60) + a minute's margin.
-  restoreWaitMs: 420_000,
+  // CFO_RESTORE_DEADLINE_S (300) + the database check (DATABASE_CHECK_ALLOWANCE_S, 120) +
+  // CFO_LITESTREAM_READY_TIMEOUT_S (60) + a minute's margin (server-env.ts computes it from the
+  // settings the container runs with).
+  restoreWaitMs: 540_000,
+  appStartWaitMs: 300_000,
   hungAfterMs: 120_000,
   // 2 × CFO_FINAL_SYNC_TIMEOUT_S (300) + a minute's margin.
   stopGraceMs: 660_000,
@@ -105,7 +124,9 @@ export interface WatchdogState {
   readonly killedAt: number | null;
   /** While `starting`: the last time the entrypoint reported a boot or a restore. */
   readonly bootSeenAt: number | null;
-  /** While `starting`: when the entrypoint was first seen past its boot (`running`). */
+  /** While `starting`: when the entrypoint was first seen reporting the app `initializing`. */
+  readonly initSeenAt: number | null;
+  /** While `starting`: when the entrypoint was first seen reporting the app `running`. */
   readonly bootEndedAt: number | null;
   readonly outage: OngoingOutage | null;
 }
@@ -121,15 +142,23 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   signalledAt: null,
   killedAt: null,
   bootSeenAt: null,
+  initSeenAt: null,
   bootEndedAt: null,
   outage: null,
 };
 
-/** The phases the server image's entrypoint reports on `GET :8001/status` (WP2.3). */
+/**
+ * The phases the server image's entrypoint reports on `GET :8001/status` (WP2.3), in order:
+ * `starting`, then `restoring` (the restore, the database check and Litestream's start), then
+ * `initializing` while the app starts and before it answers its health check (WP2.6; an older
+ * image reports `running` from the app's start), then `running`; `recovery` instead of a start;
+ * `stopping` and `stopped` at the end.
+ */
 export type EntrypointPhase =
   | "starting"
   | "restoring"
   | "recovery"
+  | "initializing"
   | "running"
   | "stopping"
   | "stopped";
@@ -160,6 +189,7 @@ export const ANSWERING: Observation = { kind: "answering" };
 export type WatchdogEventName =
   | "found_stopped"
   | "start"
+  | "start_phase"
   | "start_stopped"
   | "start_not_ready"
   | "start_failing"
@@ -462,42 +492,82 @@ function silent(
   }
 
   const booting = phase === "starting" || phase === "restoring";
+  const initializing = phase === "initializing";
   if (state.phase === "starting") {
     const since = state.phaseSince ?? now;
     const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
+    // Each phase's first sight is logged once, so a start's progress shows in the logs.
+    const progress = (seenBefore: number | null) => {
+      if (seenBefore === null) b.event("start_phase", { phase, sinceStartMs: now - since });
+    };
+    let budget: "restore" | "app_start" | "readiness";
     if (booting) {
-      // A restore may take the image's restore deadline; the app's own start follows it.
+      // A boot and a restore may take the restore allowance, counted from the start.
+      progress(state.bootSeenAt);
+      budget = "restore";
       if (now - since < restoreAllowance) {
-        return b.done(state, now + timing.pollMs, { bootSeenAt: now, bootEndedAt: null });
+        return b.done(state, now + timing.pollMs, {
+          bootSeenAt: now,
+          initSeenAt: null,
+          bootEndedAt: null,
+        });
       }
-    } else if (state.bootSeenAt !== null && phase === null && state.bootEndedAt === null) {
+    } else if (
+      initializing ||
+      (phase === null && state.initSeenAt !== null && state.bootEndedAt === null)
+    ) {
+      // The app is initializing: Python's imports, Omnigent's migrations, `create_app` and the
+      // owner check. It gets the app-start budget from its first sight, also while its status
+      // is unknown (AIR2-010).
+      if (initializing) progress(state.initSeenAt);
+      const initSeenAt = state.initSeenAt ?? now;
+      budget = "app_start";
+      if (now - initSeenAt < timing.appStartWaitMs) {
+        return b.done(state, now + timing.pollMs, { initSeenAt });
+      }
+    } else if (phase === null && state.bootSeenAt !== null && state.bootEndedAt === null) {
       // Seen restoring, now unknown: keep the restore's allowance (Codex WP2.2 r4-3).
+      budget = "restore";
       if (now - since < restoreAllowance) return b.done(state, now + timing.pollMs);
     } else {
-      // The app gets the full readiness wait from the moment the entrypoint was first seen past
-      // its boot (Codex WP2.2 r3-4, r4-3), or from the start if no boot was seen.
-      const bootEndedAt = state.bootSeenAt === null ? null : (state.bootEndedAt ?? now);
-      if (now - (bootEndedAt ?? since) < timing.readinessWaitMs) {
+      // The app is `running` (it answered the entrypoint's health check; an older image says so
+      // from the app's start), or nothing was seen since the start. The readiness wait counts
+      // from the first sight of `running` once the entrypoint was seen before it (Codex WP2.2
+      // r3-4, r4-3), otherwise from the start.
+      if (phase === "running") progress(state.bootEndedAt);
+      const bootEndedAt = phase === "running" ? (state.bootEndedAt ?? now) : state.bootEndedAt;
+      const seenBefore = state.bootSeenAt !== null || state.initSeenAt !== null;
+      budget = "readiness";
+      if (
+        now - (seenBefore && bootEndedAt !== null ? bootEndedAt : since) <
+        timing.readinessWaitMs
+      ) {
         return b.done(state, now + timing.pollMs, { bootEndedAt });
       }
     }
-    // Running, but not answering within the wait: a failed start.
+    // Not answering within its budget: a failed start.
     const failedStarts = state.failedStarts + 1;
     b.openFor(state, "start_failed", since);
-    b.event("start_not_ready", { waitedMs: now - since, failedStarts, entrypoint: phase });
+    b.event("start_not_ready", {
+      waitedMs: now - since,
+      failedStarts,
+      entrypoint: phase,
+      budget,
+    });
     return stopForRestart(
       state,
       now,
       timing,
       b,
-      "not ready within the readiness wait",
+      `not ready within the ${budget} budget`,
       failedStarts,
     );
   }
 
-  if (state.phase === "waiting" || state.phase === "held" || booting) {
+  if (state.phase === "waiting" || state.phase === "held" || booting || initializing) {
     // A container runs that the watchdog did not just start (one it was waiting to start, or a
-    // platform restart now booting): adopt it and wait for it to answer.
+    // platform restart now booting or initializing): adopt it and wait for it to answer, with
+    // the budgets of a start from now.
     if (state.lastAnsweredAt !== null) {
       b.openFor(state, "container_stopped", now);
       b.recordOutage();
@@ -507,6 +577,9 @@ function silent(
       phaseSince: now,
       startDueAt: null,
       startsSince: state.startsSince ?? now,
+      bootSeenAt: booting ? now : null,
+      initSeenAt: initializing ? now : null,
+      bootEndedAt: null,
     });
   }
 
@@ -640,6 +713,7 @@ function start(
     signalledAt: null,
     killedAt: null,
     bootSeenAt: null,
+    initSeenAt: null,
     bootEndedAt: null,
   });
 }

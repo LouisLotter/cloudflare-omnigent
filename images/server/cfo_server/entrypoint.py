@@ -15,7 +15,9 @@ In order (code-structure plan, ``images/server``):
    domains, an empty server config; stale sharing override files are removed.
 5. **Litestream, then Omnigent.** ``litestream replicate`` starts first; once its control
    socket lists the database, the app starts (:mod:`cfo_server.app`). Both are supervised: if
-   either exits, the other is stopped.
+   either exits, the other is stopped. ``/status`` says ``initializing`` while the app starts
+   (Python's imports, Omnigent's migrations, ``create_app``, the owner check) and ``running``
+   once it answers ``GET /health``, so the watchdog can give each its own budget (AIR2-010).
 6. **Final sync.** On SIGTERM: stop the app, then wait until Litestream's replica covers every
    commit (``replicated_txid >= txid``, the same check the barriers use), then stop
    Litestream, whose own shutdown sync is the backstop. A final sync that is not confirmed
@@ -29,6 +31,7 @@ never became ready; 71 the app exited on its own; 78 a setting is missing or mal
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import os
 import shutil
@@ -49,6 +52,7 @@ from cfo_server.events import log
 from cfo_server.httpd import (
     REPLICATION_POSITION_PORT,
     StatusBoard,
+    now_iso,
     start_control_server,
     start_recovery_responder,
 )
@@ -90,6 +94,8 @@ class Layout:
     bind_host: str = "0.0.0.0"
     #: Omnigent's graceful shutdown is 5 s; this is the most the entrypoint waits for it.
     app_stop_timeout_s: float = 30.0
+    #: How long one look at the starting app's ``GET /health`` may take.
+    app_probe_timeout_s: float = 1.0
     recovery_retry_s: float = 60.0
     #: Overrides applied to the app's environment after the pinned values (tests only).
     app_env_overrides: tuple[tuple[str, str], ...] = ()
@@ -189,6 +195,20 @@ def redact(text: str, env: Mapping[str, str]) -> str:
         if value and len(value) >= 4:
             text = text.replace(value, "[redacted]")
     return text
+
+
+def app_answers(port: int, timeout_s: float) -> bool:
+    """Whether the app answers ``GET /health`` on the loopback interface with a 2xx."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout_s)
+    try:
+        conn.request("GET", "/health")
+        response = conn.getresponse()
+        response.read()
+        return 200 <= response.status < 300
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
 
 
 def _signal_group(proc: subprocess.Popen[Any], sig: int) -> None:
@@ -470,12 +490,14 @@ class Supervisor:
         self.board.litestream = lambda: BlockingClient(
             str(layout.litestream_socket), str(layout.db_path), timeout_s=2.0
         )
-        self.board.update(phase="running")
 
         app_env = image_config.app_environment(self.config, self.env)
         app_env["CFO_DB_PATH"] = str(layout.db_path)
         app_env["CFO_LITESTREAM_SOCKET"] = str(layout.litestream_socket)
         app_env.update(dict(layout.app_env_overrides))
+        # Until the app answers its health check it is initializing: imports, migrations,
+        # create_app and the owner check, which take minutes on a large database (AIR2-010).
+        self.board.update(phase="initializing", app={"startedAt": now_iso(), "readyAt": None})
         app = self._spawn(layout.app_command, app_env)
         log("started", litestream_pid=litestream.pid, app_pid=app.pid)
 
@@ -501,6 +523,8 @@ class Supervisor:
     def _wait_for_exit(
         self, litestream: subprocess.Popen[bytes], app: subprocess.Popen[bytes]
     ) -> str:
+        spawned = time.monotonic()
+        ready = False
         while True:
             self._event.wait(1.0)
             self._event.clear()
@@ -513,6 +537,13 @@ class Supervisor:
             if litestream.poll() is not None:
                 log("litestream.exited", returncode=litestream.returncode)
                 return "litestream_exited"
+            if not ready and app_answers(self.layout.app_port, self.layout.app_probe_timeout_s):
+                # The app serves: from here a silent app is a hung one, not a starting one.
+                ready = True
+                app_state = dict(self.board.get("app") or {})
+                app_state["readyAt"] = now_iso()
+                self.board.update(phase="running", app=app_state)
+                log("app.ready", seconds=round(time.monotonic() - spawned, 2))
 
     def _shutdown(
         self, why: str, litestream: subprocess.Popen[bytes], app: subprocess.Popen[bytes]

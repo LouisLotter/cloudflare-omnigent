@@ -10,8 +10,12 @@ the forwarding path and the computers reach port 8000 alone.
   Litestream cannot say: before it runs, in recovery mode, after it stopped, or when the call
   fails. WP2.2's watchdog counts the owner as durable once a ``replicatedTxid`` of the same
   boot reaches a ``txid`` read after ``/v1/info`` first showed the owner (G1BR-002).
-- ``GET /status`` is diagnostics for the platform page: the phase, recovery mode with its
-  reason, the final sync's outcome, and the replication lag.
+- ``GET /status`` is for the watchdog and the platform page: the phase, recovery mode with its
+  reason, the app's start and first health answer, the final sync's outcome, and the
+  replication lag. The phases, in order: ``starting``; ``restoring`` (the restore, the
+  database check and Litestream's start); ``initializing`` (the app starts: imports,
+  migrations, ``create_app``, the owner check) until the app answers ``GET /health``;
+  ``running``; or ``recovery`` instead of a start; then ``stopping`` and ``stopped``.
 
 **Recovery responder** (port 8000, only in recovery mode): every request gets 503
 ``recovery_mode``. Omnigent is not started, so no public setup page, no login and no
@@ -69,6 +73,7 @@ class StatusBoard:
             "installationId": installation_id,
             "installationInitializedExpected": initialized_expected,
             "recovery": None,
+            "app": None,
             "finalSync": None,
         }
         #: Opens a control-socket client while Litestream runs; ``None`` otherwise.

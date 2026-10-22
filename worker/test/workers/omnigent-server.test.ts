@@ -655,6 +655,45 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     expect(fake.starts).toHaveLength(2);
   });
 
+  it("gives an initializing app its app-start budget, past the readiness wait (AIR2-010)", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "restoring";
+    const startedAt = testServers.clock.now();
+    while (testServers.clock.now() - startedAt < 90_000) await nextCheck(stub);
+    // Migrations, create_app and the owner check: port 8000 refuses connections meanwhile.
+    fake.entrypointPhase = "initializing";
+    const initAt = testServers.clock.now();
+    while (testServers.clock.now() - initAt < T.readinessWaitMs + 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(await forward(stub, "/v1/sessions")).toHaveProperty("status", 503);
+    fake.entrypointPhase = "running";
+    await nextCheck(stub);
+    const [record] = await stub.outages(everything);
+    expect(record?.endedAt).not.toBeNull();
+    expect(fake.starts).toHaveLength(2);
+    const phases = events("watchdog").filter((e) => e.event === "start_phase");
+    expect(phases.map((e) => e.phase)).toEqual(["restoring", "initializing"]);
+  });
+
+  it("restarts an initialization that never ends once its app-start budget is used up", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "initializing";
+    await nextCheck(stub); // first sight
+    const seenAt = testServers.clock.now();
+    while (testServers.clock.now() - seenAt < T.appStartWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint stops the app, confirms the sync
+    const failed = events("watchdog").find((e) => e.event === "start_not_ready");
+    expect(failed).toMatchObject({ budget: "app_start", entrypoint: "initializing" });
+  });
+
   it("never restarts a server in recovery mode, and records the outage as recovery", async () => {
     const { stub, fake } = await runningServer();
     fake.entrypointPhase = "recovery";

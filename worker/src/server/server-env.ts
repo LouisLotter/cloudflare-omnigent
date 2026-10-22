@@ -93,9 +93,17 @@ function seconds(env: Readonly<Record<string, unknown>>, name: string, fallback:
 }
 
 /**
+ * The entrypoint's database check after a restore (`PRAGMA integrity_check`) has no deadline of
+ * its own: it reads the whole file. Measured at 1 GB: 71 s on `basic` (its disk and a quarter
+ * CPU), 1 s on `standard-1` (WP2.5); this allowance covers it at the supported size (WP2.6).
+ */
+export const DATABASE_CHECK_ALLOWANCE_S = 120;
+
+/**
  * The server image's own deadlines, from the settings it reads (WP2.3), for the watchdog:
- * - a restore may take `CFO_RESTORE_DEADLINE_S` (300) after Litestream is ready
- *   (`CFO_LITESTREAM_READY_TIMEOUT_S`, 60), with a minute's margin;
+ * - the boot and restore may take `CFO_RESTORE_DEADLINE_S` (300), then the database check
+ *   (`DATABASE_CHECK_ALLOWANCE_S`), then Litestream's start (`CFO_LITESTREAM_READY_TIMEOUT_S`,
+ *   60), with a minute's margin;
  * - a stop may take about twice `CFO_FINAL_SYNC_TIMEOUT_S` (300) while R2 is down: the
  *   entrypoint's confirmation, then Litestream's own retry, with a minute's margin.
  */
@@ -107,7 +115,7 @@ export function serverDeadlines(env: Readonly<Record<string, unknown>>): {
   const ready = seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60);
   const finalSync = seconds(env, "CFO_FINAL_SYNC_TIMEOUT_S", 300);
   return {
-    restoreWaitMs: Math.ceil((restore + ready + 60) * 1000),
+    restoreWaitMs: Math.ceil((restore + DATABASE_CHECK_ALLOWANCE_S + ready + 60) * 1000),
     stopGraceMs: Math.ceil((2 * finalSync + 60) * 1000),
   };
 }

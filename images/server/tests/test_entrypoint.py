@@ -471,6 +471,35 @@ def test_start_order_then_clean_stop_confirms_the_final_sync(rig: Rig) -> None:
 
 
 @requires_litestream
+def test_status_says_initializing_until_the_app_answers_its_health_check(rig: Rig) -> None:
+    rig.start(rig.env(), app_env={"FAKE_APP_START_DELAY_S": "4"})
+    status = rig.wait_phase("initializing")
+    assert status["app"]["startedAt"] and status["app"]["readyAt"] is None
+    # Litestream already runs: the position answers while the app initializes.
+    assert _position(rig).status_code == 200
+    with pytest.raises(httpx.HTTPError):
+        httpx.get(f"http://127.0.0.1:{rig.app_port}/health", timeout=2)
+    status = rig.wait_phase("running")
+    assert status["app"]["readyAt"] >= status["app"]["startedAt"]
+    rig.wait_app()
+    assert rig.stop() == entrypoint.EXIT_OK
+    (ready,) = rig.events("app.ready")
+    assert ready["seconds"] >= 4
+
+
+@requires_litestream
+def test_hung_initialization_stays_initializing_and_stops_cleanly(rig: Rig) -> None:
+    rig.start(rig.env(), app_env={"FAKE_APP_HANG": "1"})
+    rig.wait_phase("initializing")
+    time.sleep(3)
+    assert rig.status()["phase"] == "initializing"  # never "running": the watchdog's budget ends it
+    assert rig.stop() == entrypoint.EXIT_OK
+    final = rig.events("final_sync")[-1]
+    assert final["why"] == "signal" and final["confirmed"] is True
+    assert not rig.events("app.ready")
+
+
+@requires_litestream
 def test_unconfirmed_final_sync_is_reported_by_exit_code_and_log(rig: Rig) -> None:
     rig.start(rig.env(CFO_FINAL_SYNC_TIMEOUT_S="2"))
     rig.wait_phase("running")
