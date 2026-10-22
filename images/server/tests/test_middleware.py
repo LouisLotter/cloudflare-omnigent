@@ -149,6 +149,21 @@ def test_an_unconfirmed_commit_becomes_424_in_the_route_familys_shape(
     assert [m["type"] for m in result["messages"]] == ["http.response.start", "http.response.body"]
 
 
+@pytest.mark.parametrize("status", [301, 302, 303, 307])
+def test_an_unconfirmed_redirect_is_replaced_too(status: int) -> None:
+    """A redirect is a success: a magic-link redemption answers 302 with a session cookie."""
+    app = ResponseBarrierMiddleware(
+        make_app(commit={"account_tokens"}, status=status, cookie=True),
+        wait=ScriptedWait(TIMEOUT),
+        timeout_s=1,
+    )
+    result = run(call(app, method="GET", path="/auth/magic/redeem"))
+    assert result["status"] == 424
+    assert json.loads(result["body"])["code"] == "durability_unconfirmed"
+    assert "location" not in result["headers"]
+    assert result["set_cookie"] == ["session=rotated; HttpOnly"]
+
+
 def test_an_unconfirmed_error_response_is_passed_through() -> None:
     app = ResponseBarrierMiddleware(
         make_app(commit={"hosts"}, status=409), wait=ScriptedWait(TIMEOUT), timeout_s=1

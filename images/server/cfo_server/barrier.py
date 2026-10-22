@@ -8,8 +8,8 @@ spike S4):
   columns (:data:`IGNORED_UPDATE_COLUMNS`). Nothing blocks in a commit hook: S4 showed that
   freezes Omnigent's event loop and that Omnigent swallows or masks the hook's error.
 - :class:`ResponseBarrierMiddleware`, the outermost ASGI middleware, holds such a request's
-  response until Litestream's ``replicated_txid`` covers the commit. On timeout a 2xx answer
-  becomes 424 ``durability_unconfirmed`` with ``"applied": true``, in the error shape each
+  response until Litestream's ``replicated_txid`` covers the commit. On timeout a 2xx or 3xx
+  answer becomes 424 ``durability_unconfirmed`` with ``"applied": true``, in the error shape each
   route family already parses (``contracts/src/durability.ts``), keeping ``Set-Cookie``.
 
 **The transcript barrier** (core change 14, WP3.9 part 2): :func:`make_transcript_barrier`
@@ -257,7 +257,9 @@ class ResponseBarrierMiddleware:
             )
             headers = list(message.get("headers", []))
             verdict = b"confirmed" if outcome.ok else b"unconfirmed"
-            if outcome.ok or not 200 <= status < 300:
+            # Every success, a redirect included (a magic-link redemption answers 302 with a
+            # session cookie), acknowledges the change; only an error passes through.
+            if outcome.ok or status >= 400:
                 headers.append((DURABILITY_HEADER, verdict))
                 await send({**message, "headers": headers})
                 return

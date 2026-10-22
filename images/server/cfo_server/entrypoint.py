@@ -116,6 +116,8 @@ class Ready:
 
     source: str  # "local", "restored" or "fresh"
     detail: str
+    #: Whether the database already has an owner (a password user).
+    owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,7 +278,28 @@ def prepare_database(
     env: Mapping[str, str],
     should_stop: Callable[[], bool] = lambda: False,
 ) -> Ready | Recovery:
-    """Restore if needed, then decide: start, or recovery mode."""
+    """Restore if needed, then decide: start, or recovery mode.
+
+    Omnigent never starts without an owner or the means to create one: a database with no
+    owner and no bootstrap credentials would offer first-visitor setup.
+    """
+    decision = _prepare_database(config, layout, env, should_stop)
+    if isinstance(decision, Ready) and not decision.owner and not config.bootstrap_credentials:
+        return Recovery(
+            "owner_missing",
+            "the database has no owner and no bootstrap credentials are set "
+            "(OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME and _PASSWORD)",
+            transient=False,
+        )
+    return decision
+
+
+def _prepare_database(
+    config: image_config.ServerImageConfig,
+    layout: Layout,
+    env: Mapping[str, str],
+    should_stop: Callable[[], bool],
+) -> Ready | Recovery:
     initialized = config.installation_initialized
     db = layout.db_path
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -286,7 +309,7 @@ def prepare_database(
             return Recovery("database_corrupt", check.detail, transient=False)
         if initialized and not check.initialized:
             return Recovery("not_initialized", check.detail, transient=False)
-        return Ready("local", check.detail)
+        return Ready("local", check.detail, owner=check.initialized)
 
     remove_local_database_state(layout)
     outcome = restore(layout, env, config.restore_deadline_s, should_stop)
@@ -327,7 +350,7 @@ def prepare_database(
     if initialized and not check.initialized:
         # A valid replica from before the owner's creation: never public setup.
         return Recovery("not_initialized", check.detail, transient=False)
-    return Ready("restored", check.detail)
+    return Ready("restored", check.detail, owner=check.initialized)
 
 
 # ── Settings files ────────────────────────────────────────────────────────────────────

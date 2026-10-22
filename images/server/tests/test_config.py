@@ -50,6 +50,7 @@ def test_unset_settings_are_the_restrictive_defaults(env: dict[str, str]) -> Non
         ("OMNIGENT_ACCOUNTS_COOKIE_SECRET", "ab" * 31, "64 hex"),
         ("OMNIGENT_ACCOUNTS_COOKIE_SECRET", "zz" * 40, "64 hex"),
         ("OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME", "", "INIT_ADMIN_USERNAME is required"),
+        ("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD", "short", "at least 8 characters"),
         ("CFO_REPLICA_URL", "", "CFO_REPLICA_URL is required"),
         ("CFO_REPLICA_URL", "gs://bucket/x", "s3://"),
         ("CFO_REPLICA_URL", "s3:///no-bucket", "name a bucket"),
@@ -162,3 +163,10 @@ def test_installation_id_is_optional_and_checked(env: dict[str, str]) -> None:
     assert load(env).installation_id is None
     env["CFO_INSTALLATION_ID"] = "ins_0123456789abcdefghjkmnpqrs"
     assert load(env).installation_id == "ins_0123456789abcdefghjkmnpqrs"
+
+
+def test_bootstrap_credentials_are_reported(env: dict[str, str]) -> None:
+    assert load(env).bootstrap_credentials is True
+    del env["OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD"]
+    del env["OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME"]
+    assert load(env).bootstrap_credentials is False  # allowed: the database may have an owner

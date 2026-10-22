@@ -2,7 +2,7 @@
 
 Run from the repository root, after building the image:
 
-    docker build -f images/server/Dockerfile --target runtime -t cfo-wp23-server:dev .
+    docker build -f images/server/Dockerfile -t cfo-wp23-server:dev .   (no --target, as Wrangler)
     uv run --no-project --with pytest==9.1.1 --with httpx==0.28.1 --with boto3==1.40.0 \\
       --with jsonschema==4.26.0 pytest -p no:cacheprovider images/server/tests/integration
 
@@ -59,6 +59,8 @@ class Stack:
     toxi_url: str
     workdir: Path
     servers: list[Server] = field(default_factory=list)
+    #: More exact values the log scan must not find, such as issued magic-link tokens.
+    extra_canaries: list[str] = field(default_factory=list)
 
     def s3(self):  # noqa: ANN201
         import boto3
@@ -135,7 +137,7 @@ class Stack:
         return [
             self.env[k]
             for k in ("CFO_IT_S3_PASSWORD", "CFO_IT_COOKIE_SECRET", "CFO_IT_OWNER_PASSWORD")
-        ]
+        ] + self.extra_canaries
 
 
 class Server:

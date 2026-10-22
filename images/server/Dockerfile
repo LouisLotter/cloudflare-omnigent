@@ -3,8 +3,9 @@
 # The Omnigent server image for Omnigent on Cloudflare (WP2.3).
 #
 # Build context: the repository root (Wrangler's `image_build_context`), for example
-#   docker build -f images/server/Dockerfile -t cfo-server:dev .
+#   docker build -f images/server/Dockerfile -t cfo-server:dev .              (the server)
 #   docker build -f images/server/Dockerfile --target test -t cfo-server:test .
+# The last stage is the server, so a build without --target (Wrangler's) gets the server.
 #
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
@@ -125,3 +126,6 @@ ENV CFO_TEST_LITESTREAM_BIN=/usr/local/bin/litestream \
     CFO_REPO_ROOT=/opt/cfo
 WORKDIR /opt/cfo
 CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "--ignore=tests/integration"]
+
+# ── The server (the default target: the last stage) ──────────────────────────────────────
+FROM runtime AS server

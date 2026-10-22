@@ -160,6 +160,21 @@ def test_password_change_is_held_and_keeps_its_cookie_while_blocked(blocked: App
     assert_confirmed(back)
 
 
+def test_magic_link_redemption_answers_424_not_its_redirect_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    minted = blocked.client.post("/auth/magic", headers=bearer)
+    assert_confirmed(minted)
+    token = minted.json()["redeem_url"].split("t=", 1)[1]
+    _block(blocked)
+    redeemed = blocked.client.get("/auth/magic/redeem", params={"t": token}, follow_redirects=False)
+    blocked.client.cookies.clear()
+    assert_unconfirmed(redeemed, "/auth/magic/redeem")
+    assert "location" not in redeemed.headers
+    assert "set-cookie" in redeemed.headers  # applied: the sign-in happened
+
+
 def test_admin_invite_is_held_while_blocked(blocked: AppHarness) -> None:
     bearer = blocked.bearer()
     _block(blocked)

@@ -55,6 +55,8 @@ _FALSE = frozenset({"0", "false", "no", "off"})
 # 14): 5 s for a native forwarder's item POST, 30 s for the runner's ``event.ack``. One barrier
 # serves both, so the smaller bound applies.
 SENDER_ACK_TIMEOUT_S = 5.0
+#: Omnigent's minimum password length at login (``accounts_auth._MIN_PASSWORD_LENGTH``).
+MIN_PASSWORD_LENGTH = 8
 
 #: Environment variables the image removes before starting Omnigent. They would select
 #: integrations this image does not wire: Databricks Connect and the credential-store ciphers
@@ -146,6 +148,9 @@ class ServerImageConfig:
     litestream_ready_timeout_s: float = 60.0
     #: The installation this server belongs to (``CFO_INSTALLATION_ID``, set by the Worker).
     installation_id: str | None = None
+    #: Whether the bootstrap owner's username and password are set, so Omnigent creates the
+    #: owner on a database without one instead of offering first-visitor setup.
+    bootstrap_credentials: bool = False
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -307,12 +312,18 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
     if secret is None or len(secret) < 64 or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", secret):
         raise ConfigError("OMNIGENT_ACCOUNTS_COOKIE_SECRET is required: at least 64 hex characters")
 
-    if _get(env, "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD") is not None and (
-        _get(env, "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME") is None
-    ):
+    bootstrap_password = _get(env, "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD")
+    bootstrap_username = _get(env, "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME")
+    if bootstrap_password is not None and bootstrap_username is None:
         # Otherwise the container's OS user, root, becomes the owner.
         raise ConfigError(
             "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME is required with the bootstrap password"
+        )
+    if bootstrap_password is not None and len(bootstrap_password) < MIN_PASSWORD_LENGTH:
+        # Omnigent would create an owner who can never sign in.
+        raise ConfigError(
+            "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD must be at least "
+            f"{MIN_PASSWORD_LENGTH} characters"
         )
 
     origins_raw = _get(env, "OMNIGENT_WS_ALLOWED_ORIGINS")
@@ -360,6 +371,7 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
         final_sync_timeout_s=parse_seconds(env, "CFO_FINAL_SYNC_TIMEOUT_S", 300.0),
         litestream_ready_timeout_s=parse_seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60.0),
         installation_id=installation_id,
+        bootstrap_credentials=bootstrap_password is not None,
         warnings=tuple(warnings),
     )
 

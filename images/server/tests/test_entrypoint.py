@@ -306,6 +306,38 @@ def test_replica_without_owner_is_fine_before_initialization(rig: Rig) -> None:
     assert isinstance(decision, Ready) and decision.source == "restored"
 
 
+def _without_bootstrap(env: dict[str, str]) -> dict[str, str]:
+    env.pop("OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME")
+    env.pop("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD")
+    return env
+
+
+@requires_litestream
+def test_new_installation_without_bootstrap_credentials_is_recovery_never_setup(
+    rig: Rig,
+) -> None:
+    env = _without_bootstrap(rig.env(initialized="false"))
+    decision = prepare_database(rig.config(env), _with_config(rig, env), env)
+    assert isinstance(decision, Recovery) and decision.reason == "owner_missing"
+    assert not decision.transient
+
+
+@requires_litestream
+def test_restored_owner_needs_no_bootstrap_credentials(rig: Rig) -> None:
+    rig.seed(with_owner=True)
+    env = _without_bootstrap(rig.env(initialized="true"))
+    decision = prepare_database(rig.config(env), _with_config(rig, env), env)
+    assert isinstance(decision, Ready) and decision.owner
+
+
+@requires_litestream
+def test_restored_database_without_owner_or_credentials_is_recovery(rig: Rig) -> None:
+    rig.seed(with_owner=False)
+    env = _without_bootstrap(rig.env(initialized="false"))
+    decision = prepare_database(rig.config(env), _with_config(rig, env), env)
+    assert isinstance(decision, Recovery) and decision.reason == "owner_missing"
+
+
 def test_corrupt_local_database_is_recovery(rig: Rig) -> None:
     rig.db.parent.mkdir(parents=True)
     rig.db.write_bytes(b"SQLite format 3\x00" + os.urandom(8192))

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -373,3 +374,34 @@ def test_malformed_setting_stops_the_container_with_78(
     server = link.server(prefix, initialized=False, **{variable: "everyone"}).start()
     assert server.wait_exit(60) == 78
     assert variable in server.events("config.error")[-1]["message"]
+
+
+def test_request_logs_never_carry_query_strings(link: Stack, prefix: str) -> None:
+    """Magic-link tokens travel in the query string; the teardown's canary scan checks every
+    server log for the issued token and for a canary built here."""
+    server = link.server(prefix, initialized=False).start()
+    server.wait_healthy()
+    with server.client() as c:
+        minted = c.post("/auth/magic", headers=server.bearer())
+        token = minted.json()["redeem_url"].split("t=", 1)[1]
+        link.extra_canaries.append(token)
+        canary = "CFO_CANARY_" + uuid.uuid4().hex  # built at run time, never in source
+        c.get("/auth/magic/redeem", params={"t": canary}, follow_redirects=False)
+        redeemed = c.get("/auth/magic/redeem", params={"t": token}, follow_redirects=False)
+    assert redeemed.status_code == 302
+    logs = server.logs()
+    assert "/auth/magic/redeem" in logs  # the access line is there, without its query
+    assert token not in logs and canary not in logs
+
+
+def test_new_installation_without_bootstrap_credentials_never_offers_setup(
+    link: Stack, prefix: str
+) -> None:
+    server = link.server(prefix, initialized=False)
+    server.env.pop("OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME")
+    server.env.pop("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD")
+    server.start()
+    status = server.wait_phase("recovery")
+    assert status["recovery"]["reason"] == "owner_missing"
+    assert httpx.get(f"{server.url}/v1/info", timeout=10).status_code == 503
+    assert link.objects(prefix) == []

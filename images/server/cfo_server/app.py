@@ -30,7 +30,9 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from cfo_server import config as image_config
+from cfo_server import logfilter
 from cfo_server.barrier import ResponseBarrierMiddleware, install_sql_hooks, make_transcript_barrier
+from cfo_server.dbcheck import check_database
 from cfo_server.events import log
 from cfo_server.launcher import sandbox_deployment
 from cfo_server.litestream import ReplicationWaiter
@@ -231,6 +233,10 @@ def main() -> None:
 
     waiter = ReplicationWaiter(socket_path, db_path)
     app = build_app(config, resolved, waiter=waiter, docker_entrypoint=ep)
+    # create_app ran Omnigent's bootstrap. Without an owner, Omnigent would offer
+    # first-visitor setup; the entrypoint already refuses that case, and this checks it.
+    if not check_database(Path(db_path)).initialized:
+        raise RuntimeError("no owner after Omnigent's bootstrap; refusing to serve setup")
     log("app.built", sharing_mode=config.sharing.sharing_mode)
 
     import uvicorn
@@ -244,6 +250,8 @@ def main() -> None:
         **uvicorn_tunnel_kwargs(),
         timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_S,
     )
+    # uvicorn.Config configured logging; keep query strings (magic-link tokens) out of it.
+    logfilter.install()
     serve(uvicorn_config)
 
 

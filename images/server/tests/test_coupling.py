@@ -226,3 +226,21 @@ def test_the_only_sync_body_is_path_only() -> None:
     from cfo_server.litestream import sync_request_body
 
     assert sync_request_body("/data/omnigent.db") == {"path": "/data/omnigent.db"}
+
+
+@requires_omnigent
+def test_bootstrap_password_minimum_is_omnigents_login_minimum() -> None:
+    from omnigent.server.routes import accounts_auth
+
+    from cfo_server.config import MIN_PASSWORD_LENGTH
+
+    assert accounts_auth._MIN_PASSWORD_LENGTH == MIN_PASSWORD_LENGTH
+
+
+def test_a_build_without_a_target_is_the_server() -> None:
+    """Wrangler builds the Dockerfile without --target, so the last stage must be the server."""
+    stages = re.findall(
+        r"^FROM\s+(\S+)(?:\s+AS\s+(\S+))?", (IMAGE_DIR / "Dockerfile").read_text(), re.M
+    )
+    base, name = stages[-1]
+    assert base == "runtime" and name == "server"
