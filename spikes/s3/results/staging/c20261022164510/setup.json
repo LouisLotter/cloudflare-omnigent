@@ -1,0 +1,11 @@
+{
+ "host": "online",
+ "sessions": 3,
+ "launch_s": [
+  0.9,
+  1.43,
+  2.33
+ ],
+ "first_turns_ok": true,
+ "setup_s": 19.7
+}

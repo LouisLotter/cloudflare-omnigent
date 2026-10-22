@@ -1,0 +1,92 @@
+{
+ "id": "c20261022164510",
+ "plan": "ar25",
+ "status": "done",
+ "index": 3,
+ "sub": {},
+ "startedAt": 1792687510541,
+ "armedUntil": 1792691110541,
+ "bootId": "da9c3d42cda3404fb216978ab593caa7",
+ "steps": {
+  "setup": {
+   "ok": true,
+   "summary": {
+    "host": "online",
+    "sessions": 3,
+    "launch_s": [
+     0.9,
+     1.43,
+     2.33
+    ],
+    "first_turns_ok": true,
+    "setup_s": 19.7
+   },
+   "at": 1792687557000
+  },
+  "turns": {
+   "ok": true,
+   "summary": {
+    "base_files": 12369,
+    "base_bytes": 723849749,
+    "base_stored_bytes": 435479604,
+    "base_upload_ms": 5978,
+    "index_zstd_bytes": 573162,
+    "claude": {
+     "turns": 10,
+     "changed_bytes_median": 576011,
+     "changed_bytes_worst": 919500,
+     "stored_bytes_median": 119795.5,
+     "stored_bytes_worst": 194384,
+     "upload_ms_median": 945.5,
+     "pause_s_median": 0.76525,
+     "pause_s_worst": 0.8817,
+     "index_s_median": 0.1315
+    },
+    "codex": {
+     "turns": 10,
+     "changed_bytes_median": 7038937.5,
+     "changed_bytes_worst": 8620564,
+     "stored_bytes_median": 161940.5,
+     "stored_bytes_worst": 240930,
+     "upload_ms_median": 1064.5,
+     "pause_s_median": 0.7562,
+     "pause_s_worst": 0.8242,
+     "index_s_median": 0.133
+    },
+    "deltas_stored_bytes": 2921160,
+    "rule_new_base_after_delta": null,
+    "repeated_turns": [
+     4,
+     6
+    ]
+   },
+   "at": 1792687788324
+  },
+  "restore": {
+   "ok": true,
+   "summary": {
+    "chain_layers": 21,
+    "chain_work_ms": 17328,
+    "chain_wall_ms": 20215,
+    "chain_resumed_layers": 0,
+    "chain_verify_equal": true,
+    "chain_restore_ms_median": 460,
+    "full_restore_ms": 6270,
+    "full_verify_equal": true,
+    "reopen": {
+     "claude_rc": 0,
+     "codex_rc": 0,
+     "claude_history": true,
+     "codex_history": true
+    }
+   },
+   "at": 1792687835253
+  }
+ },
+ "waitingSince": null,
+ "turnsCanary": "S3Wmvjrvww5",
+ "transients": {
+  "turns": 2
+ },
+ "endedAt": 1792687836399
+}
