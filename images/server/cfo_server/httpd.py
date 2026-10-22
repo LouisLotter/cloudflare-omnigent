@@ -11,11 +11,12 @@ the forwarding path and the computers reach port 8000 alone.
   fails. WP2.2's watchdog counts the owner as durable once a ``replicatedTxid`` of the same
   boot reaches a ``txid`` read after ``/v1/info`` first showed the owner (G1BR-002).
 - ``GET /status`` is for the watchdog and the platform page: the phase, recovery mode with its
-  reason, the app's start and first health answer, the final sync's outcome, and the
-  replication lag. The phases, in order: ``starting``; ``restoring`` (the restore, the
-  database check and Litestream's start); ``initializing`` (the app starts: imports,
-  migrations, ``create_app``, the owner check) until the app answers ``GET /health``;
-  ``running``; or ``recovery`` instead of a start; then ``stopping`` and ``stopped``.
+  reason, the app's start and first health answer, the final sync's outcome, the replication
+  lag, and the image's build (the fork commit its Omnigent was built from). The phases, in
+  order: ``starting``; ``restoring`` (the restore, the database check and Litestream's
+  start); ``initializing`` (the app starts: imports, migrations, ``create_app``, the owner
+  check) until the app answers ``GET /health``; ``running``; or ``recovery`` instead of a
+  start; then ``stopping`` and ``stopped``.
 
 **Recovery responder** (port 8000, only in recovery mode): every request gets 503
 ``recovery_mode``. Omnigent is not started, so no public setup page, no login and no
@@ -65,6 +66,7 @@ class StatusBoard:
         initialized_expected: bool | None,
         installation_id: str | None = None,
         boot_id: str | None = None,
+        build: dict[str, str] | None = None,
     ) -> None:
         self.boot_id = boot_id or secrets.token_hex(16)
         self._lock = threading.Lock()
@@ -72,6 +74,8 @@ class StatusBoard:
             "phase": "starting",
             "installationId": installation_id,
             "installationInitializedExpected": initialized_expected,
+            # What the image was built from: the fork commit and Litestream's version.
+            "build": build,
             "recovery": None,
             "app": None,
             "finalSync": None,

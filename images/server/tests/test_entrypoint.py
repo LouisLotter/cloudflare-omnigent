@@ -471,6 +471,21 @@ def test_start_order_then_clean_stop_confirms_the_final_sync(rig: Rig) -> None:
 
 
 @requires_litestream
+def test_status_and_boot_line_report_the_image_build(rig: Rig) -> None:
+    record = {
+        "omnigentRepo": "https://example.test/fork.git",
+        "omnigentCommit": "35ac1ebd2405264de7c0456084f45c4af1e657ca",
+        "litestream": "0.5.17",
+    }
+    (rig.root / "build.json").write_text(json.dumps(record))
+    rig.start(rig.env(), build_info_path=str(rig.root / "build.json"))
+    assert rig.wait_phase("running")["build"] == record
+    assert rig.stop() == entrypoint.EXIT_OK
+    (boot,) = rig.events("boot")
+    assert boot["omnigent_commit"] == record["omnigentCommit"]
+
+
+@requires_litestream
 def test_status_says_initializing_until_the_app_answers_its_health_check(rig: Rig) -> None:
     rig.start(rig.env(), app_env={"FAKE_APP_START_DELAY_S": "4"})
     status = rig.wait_phase("initializing")

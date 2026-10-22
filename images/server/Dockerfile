@@ -6,10 +6,14 @@
 #   docker build -f images/server/Dockerfile -t cfo-server:dev .              (the server)
 #   docker build -f images/server/Dockerfile --target test -t cfo-server:test .
 # The last stage is the server, so a build without --target (Wrangler's) gets the server.
+#   docker build -f images/server/Dockerfile --target fork-tests -t cfo-server:fork-tests .
+#   docker run --rm cfo-server:fork-tests     (the fork's Stop tests against this image's Omnigent)
 #
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
-#     commit. The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
+#     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
+#     entrypoint's GET /status (`build`) and boot log line. 35ac1ebd2 (22 Oct 2026) has the
+#     Stop fix (AIR2-007: a Stop is sent once, its delivery reported) and core changes 20 and 21. The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
 #     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Two
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
 #     resolves them afresh), and psycopg is left out (this image uses SQLite only).
@@ -21,7 +25,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=af3e49de2b169a8593e2d91e7ab98e2581f9f90a
+ARG OMNIGENT_COMMIT=35ac1ebd2405264de7c0456084f45c4af1e657ca
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 
@@ -29,6 +33,8 @@ ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10feca
 FROM scratch AS omnigent-src
 ARG OMNIGENT_REPO
 ARG OMNIGENT_COMMIT
+# A full commit ID only (checked in the runtime stage): BuildKit fetches exactly that commit, so
+# the revision the image records is the source it was built from.
 ADD ${OMNIGENT_REPO}#${OMNIGENT_COMMIT} /
 
 # ── Web UI (mirrors the fork's `web-builder` stage) ──────────────────────────────────────
@@ -112,9 +118,19 @@ RUN python -m compileall -q -f -j 0 --invalidation-mode checked-hash \
       /opt/venv /build/omnigent /opt/cfo /app \
  && mkdir -p /data /run/cfo \
  && python -c "import cfo_server.entrypoint, cfo_server.app"
+# What the image was built from (AIR2-007 at artifact scope): the fork commit, which must be a
+# full commit ID, and the Litestream binary's own version. Read by the entrypoint (/status).
+ARG OMNIGENT_REPO
+ARG OMNIGENT_COMMIT
+RUN echo "${OMNIGENT_COMMIT}" | grep -Eqx '[0-9a-f]{40}' \
+ && python -c 'import json, subprocess, sys; json.dump({"omnigentRepo": sys.argv[1], "omnigentCommit": sys.argv[2], "litestream": subprocess.check_output(["litestream", "version"], text=True).strip()}, open("/opt/cfo/build.json", "w"), indent=2)' \
+      "${OMNIGENT_REPO}" "${OMNIGENT_COMMIT}" \
+ && python -m cfo_server.buildinfo
 WORKDIR /app
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="af3e49de2b169a8593e2d91e7ab98e2581f9f90a" \
+      org.opencontainers.image.revision="${OMNIGENT_COMMIT}" \
+      cloudflare-omnigent.omnigent-repo="${OMNIGENT_REPO}" \
+      cloudflare-omnigent.omnigent-commit="${OMNIGENT_COMMIT}" \
       cloudflare-omnigent.litestream="0.5.17"
 # 8000: Omnigent (or the recovery responder). 8001: the control port (GET /position, the
 # ReplicationPosition contract, and GET /status), reached only by the OmnigentServer object.
@@ -135,6 +151,30 @@ ENV CFO_TEST_LITESTREAM_BIN=/usr/local/bin/litestream \
     CFO_REPO_ROOT=/opt/cfo
 WORKDIR /opt/cfo
 CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "--ignore=tests/integration"]
+
+# ── The fork's Stop tests, against the Omnigent installed in this image (AIR2-007) ──────────
+# The fork's `test` dependency group, pinned by its uv.lock like the runtime's packages (so pip
+# finds the runtime's own versions already installed), and its tests at the same commit. Never
+# deployed: run it to check the built artifact, not the fork's source checkout.
+FROM builder AS fork-test-requirements
+# The test group, plus asgiref at its locked version (the Stop-over-tunnel test drives the app
+# with its ApplicationCommunicator; the fork's own environment has it through OpenTelemetry).
+RUN uv export --frozen --only-group test --no-emit-project --no-emit-workspace --no-hashes \
+      -o /tmp/fork-test-requirements.txt \
+ && python -c 'import tomllib; lock = tomllib.load(open("uv.lock", "rb")); print(*(f"{p["name"]}=={p["version"]}" for p in lock["package"] if p["name"] == "asgiref"))' \
+      | grep -E '^asgiref==' >> /tmp/fork-test-requirements.txt
+
+FROM runtime AS fork-tests
+COPY --from=fork-test-requirements /tmp/fork-test-requirements.txt /tmp/
+RUN /opt/venv/bin/python -m pip install --no-cache-dir --no-deps \
+      -r /tmp/fork-test-requirements.txt
+COPY --from=omnigent-src /tests/ /build/tests/
+WORKDIR /build
+ENV HOME=/tmp/fork-tests-home \
+    OMNIGENT_DISABLE_CATALOG_LOOKUP=1
+CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", \
+     "tests/server/integration/test_stop_over_tunnel.py", \
+     "tests/server/integration/test_sessions_endpoints.py", "-k", "interrupt or stop"]
 
 # ── The server (the default target: the last stage) ──────────────────────────────────────
 FROM runtime AS server

@@ -55,8 +55,9 @@ def test_every_module_has_a_current_hash_checked_pyc() -> None:
 
 @in_image
 def test_the_server_imports_from_bytecode_and_writes_none() -> None:
-    import cfo_server.app
     import omnigent.server.app
+
+    import cfo_server.app
 
     assert sys.flags.dont_write_bytecode  # nothing is written at run time
     for module in (cfo_server.app, omnigent.server.app):

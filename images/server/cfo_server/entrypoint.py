@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from cfo_server import buildinfo
 from cfo_server import config as image_config
 from cfo_server.dbcheck import check_database
 from cfo_server.events import log
@@ -99,6 +100,8 @@ class Layout:
     recovery_retry_s: float = 60.0
     #: Overrides applied to the app's environment after the pinned values (tests only).
     app_env_overrides: tuple[tuple[str, str], ...] = ()
+    #: The image's build record (``cfo_server.buildinfo``), reported in ``/status``.
+    build_info_path: Path = buildinfo.BUILD_INFO_PATH
 
     @classmethod
     def production(cls) -> Layout:
@@ -599,11 +602,18 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
     """Everything after configuration. Returns the process's exit code."""
     for warning in config.warnings:
         log("config.warning", message=warning)
+    build = buildinfo.load(layout.build_info_path)
     board = StatusBoard(
         initialized_expected=config.installation_initialized,
         installation_id=config.installation_id,
+        build=build,
     )
-    log("boot", boot_id=board.boot_id, installation_id=config.installation_id)
+    log(
+        "boot",
+        boot_id=board.boot_id,
+        installation_id=config.installation_id,
+        omnigent_commit=None if build is None else build["omnigentCommit"],
+    )
     supervisor = Supervisor(config, layout, env, board)
     supervisor.install_signal_handlers()
     status = start_control_server(board, layout.control_port, layout.bind_host)
