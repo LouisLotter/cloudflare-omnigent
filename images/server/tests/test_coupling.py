@@ -163,6 +163,37 @@ def test_initialized_check_agrees_with_omnigents_bootstrap(tmp_path: Path) -> No
     agree(True)
 
 
+def test_the_app_never_checks_the_whole_database_again() -> None:
+    """The entrypoint's integrity check is the start's only full read of the file (WP2.5: a
+    second one in the app took 275 s of a 1 GB start on basic). The app asks for the owner."""
+    tree = ast.parse((IMAGE_DIR / "cfo_server" / "app.py").read_text())
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "has_owner" in called
+    assert "check_database" not in called
+
+
+def test_owner_check_runs_only_the_initialized_query(tmp_path: Path) -> None:
+    import sqlite3
+
+    from cfo_server.dbcheck import has_owner
+
+    db = tmp_path / "omnigent.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE users (workspace_id, id, deleted_at, password_hash)")
+        conn.execute("INSERT INTO users VALUES (0, 'local', NULL, NULL)")
+    assert has_owner(db) is False
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO users VALUES (0, 'owner', NULL, 'synthetic-hash')")
+    assert has_owner(db) is True
+    assert has_owner(tmp_path / "missing.db") is False
+    (tmp_path / "garbage.db").write_bytes(b"not a database" * 100)
+    assert has_owner(tmp_path / "garbage.db") is False
+
+
 def test_initialized_query_names_only_the_pinned_columns() -> None:
     assert re.findall(r"\b(workspace_id|id|deleted_at|password_hash)\b", INITIALIZED_SQL)
 

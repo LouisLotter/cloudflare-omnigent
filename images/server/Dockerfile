@@ -104,7 +104,13 @@ COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY images/server/cfo_server/ /opt/cfo/cfo_server/
 ENV PYTHONPATH=/opt/cfo \
     CFO_OMNIGENT_DOCKER_ENTRYPOINT=/app/entrypoint.py
-RUN mkdir -p /data /run/cfo \
+# Bytecode for everything the server imports, compiled here once: with PYTHONDONTWRITEBYTECODE
+# and no .pyc files, Python compiled Omnigent's sources at every start (WP2.5: most of the
+# imports' 80 s in a 1 GB start on basic). Hash-checked .pyc files stay valid whatever the files'
+# times in the layers, and a changed source is never run from a stale one.
+RUN python -m compileall -q -f -j 0 --invalidation-mode checked-hash \
+      /opt/venv /build/omnigent /opt/cfo /app \
+ && mkdir -p /data /run/cfo \
  && python -c "import cfo_server.entrypoint, cfo_server.app"
 WORKDIR /app
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
@@ -117,6 +123,9 @@ CMD ["python", "-m", "cfo_server.entrypoint"]
 
 # ── Tests: the image's own suite, run inside the image ───────────────────────────────────
 FROM runtime AS test
+# The runtime's Python sources, listed before the test tools join them (test_bytecode.py).
+RUN find /opt/venv /build/omnigent /opt/cfo/cfo_server /app -name '*.py' \
+      -not -path '*/__pycache__/*' | sort > /opt/runtime-python-sources.txt
 RUN /opt/venv/bin/python -m pip install --no-cache-dir \
       pytest==9.1.1 hypothesis==6.169.0 jsonschema==4.26.0
 COPY images/server/tests/ /opt/cfo/tests/
