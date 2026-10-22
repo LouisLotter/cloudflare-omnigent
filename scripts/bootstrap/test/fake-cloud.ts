@@ -56,6 +56,16 @@ export class FakeWorld {
     aud: "a".repeat(64),
   });
   crash: CrashPoint | undefined;
+  /** Time a call takes, once: the clock moves on while it runs (a slow query, a suspended laptop). */
+  slow: { call: string; nth: number; ms: number } | undefined;
+  /** Something that happens just before a call, once: another hand acting meanwhile. */
+  before: { call: string; nth: number; run: () => void } | undefined;
+  /** Secrets a deploy loses (a broken upload). */
+  dropOnDeploy: string[] = [];
+  /** A secret change that reports success and changes nothing. */
+  bulkKeeps = false;
+  /** Workers Logs without versions, and no version listed by Cloudflare. */
+  noVersions = false;
   /** Workers Logs loses this share of lines (0..1), deterministically by time. */
   lossEvery = 0;
   readonly counts = new Map<string, number>();
@@ -71,6 +81,15 @@ export class FakeWorld {
     this.calls.push(call);
     const n = (this.counts.get(call) ?? 0) + 1;
     this.counts.set(call, n);
+    if (this.before?.call === call && this.before.nth === n) {
+      const run = this.before.run;
+      this.before = undefined;
+      run();
+    }
+    if (this.slow?.call === call && this.slow.nth === n) {
+      this.now += this.slow.ms;
+      this.slow = undefined;
+    }
     if (this.crash?.call === call && this.crash.nth === n && this.crash.when === "before") {
       this.crash = undefined;
       throw new Crash(`crash before ${call}`);
@@ -128,6 +147,7 @@ export class FakeWorld {
         const n = world.#enter("deployPlatform");
         const kept = new Map(world.secretsOf(plan.platformWorker) ?? []);
         for (const [key, value] of Object.entries(secrets)) kept.set(key, value);
+        for (const key of world.dropOnDeploy) kept.delete(key);
         world.#newVersion(plan.platformWorker, kept);
         world.configs.set(plan.platformWorker, [
           ...(world.configs.get(plan.platformWorker) ?? []),
@@ -144,15 +164,22 @@ export class FakeWorld {
       async updateSecrets(worker, changes) {
         const n = world.#enter("updateSecrets");
         const current = world.secretsOf(worker);
-        if (current === undefined) throw new Error("wrangler would create a draft Worker here");
+        // Like cf workers secrets bulk: a missing Worker is an error, never created.
+        if (current === undefined) throw new Error("cf workers secrets bulk failed: [10007]");
         const next = new Map(current);
-        for (const [key, value] of Object.entries(changes)) {
+        for (const [key, value] of Object.entries(world.bulkKeeps ? {} : changes)) {
           if (value === null) next.delete(key);
           else next.set(key, value);
         }
         world.#newVersion(worker, next);
         world.secretChanges.push({ at: world.now, worker, changes });
         world.#leave("updateSecrets", n);
+      },
+      async activeVersion(worker) {
+        const n = world.#enter("activeVersion");
+        const id = world.noVersions ? undefined : world.latest(worker)?.id;
+        world.#leave("activeVersion", n);
+        return id;
       },
       async logs(worker, fromMs, toMs) {
         const n = world.#enter("logs");
@@ -178,7 +205,7 @@ export class FakeWorld {
       if (version === undefined) continue;
       const $workers = {
         scriptName: worker,
-        scriptVersion: { id: version.id },
+        scriptVersion: { id: this.noVersions ? "" : version.id },
         eventType: "alarm",
         entrypoint: "OmnigentServer",
       };

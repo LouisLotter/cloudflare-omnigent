@@ -35,6 +35,8 @@ export interface Invocation {
   readonly loggedAt: number;
   readonly versionId: string | undefined;
   readonly eventType: string | undefined;
+  /** The class or entrypoint that ran, such as "OmnigentServer". */
+  readonly entrypoint: string | undefined;
 }
 
 export interface ParsedLogs {
@@ -96,7 +98,8 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
     const version = record(workers.scriptVersion)?.id;
     const versionId = typeof version === "string" && version !== "" ? version : undefined;
     const eventType = typeof workers.eventType === "string" ? workers.eventType : undefined;
-    invocations.push({ loggedAt, versionId, eventType });
+    const entrypoint = typeof workers.entrypoint === "string" ? workers.entrypoint : undefined;
+    invocations.push({ loggedAt, versionId, eventType, entrypoint });
     const line = logLine(event.source);
     if (line?.cfo !== "bootstrap" || line.event !== "status") continue;
     const status = BootstrapStatus.safeParse(line.bootstrapStatus);
@@ -121,8 +124,15 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
 
 export interface AcceptanceRules {
   readonly installationId: string;
-  /** The laptop's clock, in milliseconds. */
+  /** The laptop's clock, in milliseconds, read after the query returned. */
   readonly now: number;
+  /**
+   * The newest status of this installation seen before this query, in this run or an earlier
+   * one (the watermark). An older status never overrides it, so a status seen once cannot be
+   * forgotten by a later query that misses it (lost lines, a clock moved back). It can only
+   * hold the bootstrap back: acceptance needs a status in this query's answer.
+   */
+  readonly seen?: StatusEvent | undefined;
   /** How old the newest status may be (default ten minutes; the watchdog logs every minute). */
   readonly freshMs?: number;
   /** How far ahead of the laptop's clock a status may claim to be (clock skew). */
@@ -139,11 +149,42 @@ export type Decision =
       readonly latest: StatusEvent | undefined;
     };
 
-const FRESH_MS = 10 * 60_000;
-const SKEW_MS = 5 * 60_000;
+export const FRESH_MS = 10 * 60_000;
+export const SKEW_MS = 5 * 60_000;
 
 function time(status: BootstrapStatus): number {
   return Date.parse(status.checkedAt);
+}
+
+/** Whether `b` is newer than `a`: by the watchdog's own clock, then by Workers Logs' time. */
+function newer(b: StatusEvent, a: StatusEvent): boolean {
+  return (
+    time(b.status) > time(a.status) ||
+    (time(b.status) === time(a.status) && b.loggedAt > a.loggedAt)
+  );
+}
+
+/** The newest of these statuses, or undefined. */
+export function newest(statuses: readonly StatusEvent[]): StatusEvent | undefined {
+  return statuses.reduce<StatusEvent | undefined>(
+    (a, b) => (a === undefined || newer(b, a) ? b : a),
+    undefined,
+  );
+}
+
+/** Problems with a status's age at `now`: too old, or from the future; undefined when fresh. */
+export function staleness(
+  event: StatusEvent,
+  now: number,
+  freshMs: number = FRESH_MS,
+  skewMs: number = SKEW_MS,
+): string | undefined {
+  const age = now - time(event.status);
+  if (age > freshMs) return "the newest bootstrap status is too old";
+  if (-age > skewMs) {
+    return "the newest bootstrap status is from the future: check this laptop's clock";
+  }
+  return undefined;
 }
 
 const REASONS: Readonly<Record<string, string>> = {
@@ -155,43 +196,38 @@ const REASONS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Whether the bootstrap may release: the newest status of this installation says initialized
- * (owner present and durable), it is fresh, and nothing contradicts it.
+ * Whether the bootstrap may release: the newest status of this installation, in this answer
+ * and no older than any seen before, says initialized (owner present and durable) for the
+ * reason "durable", and it is fresh.
  */
 export function decide(statuses: readonly StatusEvent[], rules: AcceptanceRules): Decision {
   const mine = statuses.filter((e) => e.status.installationId === rules.installationId);
   const others = statuses.length - mine.length;
-  if (mine.length === 0) {
+  const answered = newest(mine);
+  const seen = rules.seen?.status.installationId === rules.installationId ? rules.seen : undefined;
+  if (answered === undefined && seen === undefined) {
     const why =
       others > 0
         ? "the only bootstrap statuses are another installation's"
         : "no bootstrap status yet (the server starts within a minute or two of the deploy)";
     return { accepted: false, why, latest: undefined };
   }
-  // Newest by the watchdog's own clock, then by Workers Logs' time.
-  const latest = mine.reduce((a, b) =>
-    time(b.status) > time(a.status) ||
-    (time(b.status) === time(a.status) && b.loggedAt > a.loggedAt)
-      ? b
-      : a,
-  );
-  const age = rules.now - time(latest.status);
-  if (age > (rules.freshMs ?? FRESH_MS)) {
-    return { accepted: false, why: "the newest bootstrap status is too old", latest };
+  if (answered === undefined || (seen !== undefined && newer(seen, answered))) {
+    // Only a status seen earlier: it can hold the bootstrap back, never release it.
+    const why = seen?.status.initialized
+      ? "waiting for the watchdog's next status"
+      : (REASONS[seen?.reason ?? ""] ?? "the owner is not initialized and durable yet");
+    return { accepted: false, why, latest: seen };
   }
-  if (-age > (rules.skewMs ?? SKEW_MS)) {
-    return {
-      accepted: false,
-      why: "the newest bootstrap status is from the future: check this laptop's clock",
-      latest,
-    };
-  }
+  const latest = answered;
+  const stale = staleness(latest, rules.now, rules.freshMs, rules.skewMs);
+  if (stale !== undefined) return { accepted: false, why: stale, latest };
   if (!latest.status.initialized) {
     const why = REASONS[latest.reason ?? ""] ?? "the owner is not initialized and durable yet";
     return { accepted: false, why, latest };
   }
-  // A line that says initialized but gives another reason contradicts itself: not accepted.
-  if (latest.reason !== undefined && latest.reason !== "durable") {
+  // The watchdog gives "durable" with every initialized status: anything else contradicts it.
+  if (latest.reason !== "durable") {
     return { accepted: false, why: "the newest bootstrap status contradicts itself", latest };
   }
   return { accepted: true, event: latest };
@@ -202,45 +238,51 @@ export type Verification =
   | { readonly verified: false; readonly why: string };
 
 /**
- * After the release (R-27): the platform Worker's objects run a version that never reported
- * the bootstrap password (they switch about 300 s after a version is deployed), and nothing has
- * reported it since. Versions that reported it are known from their own status lines, and the
- * accepted status's version is one of them. The secret listing already shows the release; this
- * checks that the running objects follow it.
+ * After the release (R-27): the OmnigentServer object runs the version the release deployed
+ * (objects switch about 300 s after a version is deployed), that version has never reported
+ * the bootstrap password, and nothing has reported it since the object first ran on it. While
+ * the password exists the watchdog reports it on every check, so a version whose checks run
+ * without reporting it does not hold it. The secret listing already shows the release; this
+ * checks that the running object follows it.
  */
 export function verifyRelease(
   logs: ParsedLogs,
   rules: {
     readonly installationId: string;
-    /** The version that logged the accepted status. */
-    readonly acceptedVersionId: string | undefined;
+    /** The version the release deployed, as Cloudflare listed it right after. */
+    readonly releasedVersionId: string | undefined;
     /** When the release's change was confirmed, in milliseconds. */
     readonly releasedAt: number;
   },
 ): Verification {
-  if (rules.acceptedVersionId === undefined) {
-    return { verified: false, why: "Workers Logs did not say which version logged the status" };
+  const released = rules.releasedVersionId;
+  if (released === undefined) {
+    return { verified: false, why: "Cloudflare did not say which version the release deployed" };
   }
   const reported = logs.statuses.filter(
     (e) => e.status.installationId === rules.installationId && e.secretPresent === true,
   );
-  const withPassword = new Set<string | undefined>([rules.acceptedVersionId]);
-  for (const e of reported) withPassword.add(e.versionId);
-  const lastReported = Math.max(Number.NEGATIVE_INFINITY, ...reported.map((e) => e.loggedAt));
-  const clean = logs.invocations.some(
-    (i) =>
-      i.eventType === "alarm" &&
-      i.loggedAt >= rules.releasedAt &&
-      i.loggedAt > lastReported &&
-      i.versionId !== undefined &&
-      !withPassword.has(i.versionId),
-  );
-  if (clean) return { verified: true };
-  return {
-    verified: false,
-    why:
-      lastReported >= rules.releasedAt
-        ? "the server's object still runs a version with the bootstrap password (it switches about 5 minutes after the release)"
-        : "the server's object has not run on the new version yet (it switches about 5 minutes after the release)",
-  };
+  if (reported.some((e) => e.versionId === released)) {
+    return { verified: false, why: "the released version still reports the bootstrap password" };
+  }
+  const runs = logs.invocations
+    .filter(
+      (i) =>
+        i.entrypoint === STATUS_ENTRYPOINT &&
+        i.eventType === "alarm" &&
+        i.versionId === released &&
+        i.loggedAt >= rules.releasedAt,
+    )
+    .map((i) => i.loggedAt);
+  if (runs.length === 0) {
+    return {
+      verified: false,
+      why: "the server's object has not run on the released version yet (it switches about 5 minutes after the release)",
+    };
+  }
+  const firstRun = Math.min(...runs);
+  if (reported.some((e) => e.loggedAt >= firstRun)) {
+    return { verified: false, why: "the bootstrap password was reported after the switch" };
+  }
+  return { verified: true };
 }

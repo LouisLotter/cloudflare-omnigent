@@ -183,7 +183,11 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     const config = { name: plan.platformWorker, main: "src/index.ts" };
     await cloud.deployPlatform(plan, config, { [PASSWORD_SECRET]: OWNER_PASSWORD });
     const call = calls[0] as Call;
-    const path = `${WORKER}/.cfo-bootstrap.cloudflare-omnigent.jsonc`;
+    const path = call.args[4] as string;
+    // Next to the checked-in configurations, under a name unique to this run (review r1, F2).
+    expect(path).toMatch(
+      new RegExp(`^${WORKER}/\\.cfo-bootstrap\\.cloudflare-omnigent\\.[0-9a-f]{12}\\.jsonc$`),
+    );
     expect(wranglerArgs(call)).toEqual(["deploy", "--config", path, "--secrets-file", "/dev/fd/3"]);
     expect(call.options).toMatchObject({ inherit: true, cwd: WORKER });
     expect(JSON.parse(call.fd3 ?? "{}")).toEqual({ [PASSWORD_SECRET]: OWNER_PASSWORD });
@@ -191,51 +195,110 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     expect(call.files[path]).toEqual({ text: `${JSON.stringify(config, null, 2)}\n`, mode: 0o600 });
     expect(existsSync(path)).toBe(false);
     await cloud.deployWeb(plan, { name: plan.webWorker });
-    expect(wranglerArgs(calls[1] as Call)).toEqual([
+    const web = calls[1] as Call;
+    expect(wranglerArgs(web)).toEqual([
       "deploy",
       "--config",
-      `${WORKER}/.cfo-bootstrap.cloudflare-omnigent-web.jsonc`,
+      expect.stringContaining(".cfo-bootstrap.cloudflare-omnigent-web."),
     ]);
-    expect(calls[1]?.options.fds).toBeUndefined();
+    expect(web.options.fds).toBeUndefined();
+  });
+
+  it("gives every deploy its own rendered file, even for the same Worker name", async () => {
+    const plan = await accountPlan();
+    const { runner, calls } = fakeRunner(() => ({}));
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    await cloud.deployWeb(plan, { name: "same" });
+    await cloud.deployWeb(plan, { name: "same" });
+    expect(calls[0]?.args[4]).not.toBe(calls[1]?.args[4]);
   });
 
   it("removes the rendered configuration when the deploy fails", async () => {
     const plan = await accountPlan();
-    const { runner } = fakeRunner(() => ({ status: 1 }));
+    const { runner, calls } = fakeRunner(() => ({ status: 1 }));
     await expect(
       accountCloud(plan, { workerDir: WORKER, runner }).deployWeb(plan, { name: "w" }),
     ).rejects.toThrow("wrangler deploy exited with 1");
-    expect(existsSync(`${WORKER}/.cfo-bootstrap.w.jsonc`)).toBe(false);
+    expect(existsSync(calls[0]?.args[4] as string)).toBe(false);
   });
 
-  it("releases in one wrangler secret bulk, the changes on descriptor 3", async () => {
+  it("releases with one cf workers secrets bulk, which fails for a missing Worker (review r1, F7)", async () => {
     const plan = await accountPlan();
-    const { runner, calls } = fakeRunner(() => ({}));
+    const { runner, calls } = fakeRunner(() => ({ stdout: "{}" }));
     await accountCloud(plan, { workerDir: WORKER, runner }).updateSecrets(
       plan.platformWorker,
       RELEASE_CHANGES,
     );
     const call = calls[0] as Call;
-    expect(wranglerArgs(call)).toEqual([
-      "secret",
+    expect([call.command, ...call.args]).toEqual([
+      "cf",
+      "workers",
+      "secrets",
       "bulk",
-      "/dev/fd/3",
-      "--config",
-      expect.any(String),
-      "--name",
+      "--worker",
       plan.platformWorker,
+      "--secrets",
+      "@/dev/fd/3",
     ]);
     expect(JSON.parse(call.fd3 ?? "{}")).toEqual({
-      [INITIALIZED_SECRET]: "true",
+      [INITIALIZED_SECRET]: { name: INITIALIZED_SECRET, type: "secret_text", text: "true" },
       [PASSWORD_SECRET]: null,
     });
-    const failing = fakeRunner(() => ({ status: 2 }));
+    const missing = fakeRunner(() => ({
+      status: 1,
+      stderr: "[10007] This Worker does not exist on your account.",
+    }));
     await expect(
-      accountCloud(plan, { workerDir: WORKER, runner: failing.runner }).updateSecrets(
+      accountCloud(plan, { workerDir: WORKER, runner: missing.runner }).updateSecrets(
         "w",
         RELEASE_CHANGES,
       ),
-    ).rejects.toThrow("wrangler secret bulk exited with 2");
+    ).rejects.toThrow("cf workers secrets bulk failed: [10007] This Worker does not exist");
+    // A secret value set this way also reaches cf only on descriptor 3.
+    const set = fakeRunner(() => ({ stdout: "{}" }));
+    await accountCloud(plan, { workerDir: WORKER, runner: set.runner }).updateSecrets("w", {
+      [PASSWORD_SECRET]: OWNER_PASSWORD,
+    });
+    expect(set.calls[0]?.args.join(" ")).not.toContain(OWNER_PASSWORD);
+  });
+
+  it("reads the version serving all traffic from the newest deployment", async () => {
+    const plan = await accountPlan();
+    const answers: unknown[] = [
+      {
+        deployments: [
+          { versions: [{ version_id: "v9", percentage: 100 }] },
+          { versions: [{ version_id: "v1", percentage: 100 }] },
+        ],
+      },
+      {
+        result: {
+          deployments: [
+            {
+              versions: [
+                { version_id: "a", percentage: 60 },
+                { version_id: "b", percentage: 40 },
+              ],
+            },
+          ],
+        },
+      },
+      { deployments: [] },
+      { deployments: [{ versions: [{ version_id: "", percentage: 100 }] }] },
+    ];
+    const { runner, calls } = fakeRunner(() => ({ stdout: JSON.stringify(answers.shift()) }));
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    expect(await cloud.activeVersion(plan.platformWorker)).toBe("v9");
+    expect(await cloud.activeVersion(plan.platformWorker)).toBeUndefined();
+    expect(await cloud.activeVersion(plan.platformWorker)).toBeUndefined();
+    expect(await cloud.activeVersion(plan.platformWorker)).toBeUndefined();
+    expect(calls[0]?.args).toEqual([
+      "workers",
+      "deployments",
+      "list",
+      "--worker",
+      plan.platformWorker,
+    ]);
   });
 
   it("reads Access and Workers Logs with cf, read-only", async () => {
@@ -326,7 +389,8 @@ describe("stagingCloud: through the guarded staging tool", () => {
       { [PASSWORD_SECRET]: OWNER_PASSWORD },
     );
     const [deploy] = tool;
-    const path = `${WORKER}/.cfo-bootstrap.cfo-stg-wp24-platform.jsonc`;
+    const path = deploy?.args[6] as string;
+    expect(path).toMatch(/\/worker\/\.cfo-bootstrap\.cfo-stg-wp24-platform\.[0-9a-f]{12}\.jsonc$/);
     expect(deploy?.args).toEqual([
       "deploy",
       "--suffix",

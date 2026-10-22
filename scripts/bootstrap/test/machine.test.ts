@@ -121,7 +121,13 @@ describe("runBootstrap: the whole bootstrap", () => {
 
     // Platform first, then Access, then the web Worker; the release only after the wait.
     const order = h.world.calls.filter((c) => c !== "secretNames" && c !== "logs");
-    expect(order).toEqual(["deployPlatform", "access", "deployWeb", "updateSecrets"]);
+    expect(order).toEqual([
+      "deployPlatform",
+      "access",
+      "deployWeb",
+      "updateSecrets",
+      "activeVersion",
+    ]);
     const versions = h.world.versions.get(plan.platformWorker) ?? [];
     expect(versions).toHaveLength(2);
     const first = versions[0]?.secrets;
@@ -275,6 +281,9 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(await h.run()).toEqual({ kind: "done" });
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.calls.slice(calls)).toEqual(["secretNames", "secretNames"]);
+    expect(h.store.state.journal.releasedVersionId).toBe(
+      h.world.latest(h.world.plan.platformWorker)?.id,
+    );
     expect(h.world.secretChanges).toHaveLength(1);
     expect(h.asked).toBe(1);
   });
@@ -311,10 +320,163 @@ describe("runBootstrap: the whole bootstrap", () => {
     h.world.lossEvery = 1;
     expect(await h.run({ verifyWaitMs: 60_000 })).toMatchObject({
       kind: "released",
-      why: expect.stringContaining("has not run on the new version"),
+      why: expect.stringContaining("has not run on the released version"),
     });
     h.world.lossEvery = 0;
     expect(await h.run()).toEqual({ kind: "done" });
+  });
+});
+
+describe("runBootstrap: Codex review r1", () => {
+  it("F4: refuses a web Worker of that name that this plan did not create, before any deploy", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan);
+    await h.world.cloud().deployWeb(plan, {});
+    h.world.calls.length = 0;
+    await expect(h.run()).rejects.toThrow(
+      /cloudflare-omnigent-web exists, and this plan did not create it/,
+    );
+    expect(h.world.calls.filter((c) => c !== "secretNames")).toEqual([]);
+    expect(h.world.versions.has(plan.platformWorker)).toBe(false);
+  });
+
+  it("F4: claims the web Worker before Access, so a crash in between resumes", async () => {
+    const plan = await stagingPlan();
+    const h = harness(plan);
+    h.world.crash = { call: "access", nth: 1, when: "after" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    expect(h.store.state.journal.webDeployStartedAt).toBeDefined();
+    // The staging adapter's Access step may have deployed the web Worker: that is ours now.
+    await h.world.cloud().deployWeb(plan, {});
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
+  it("F3: a status seen once is never rolled back by an answer that misses it", async () => {
+    const plan = await accountPlan();
+    const fresh = harness(plan);
+    // A first run sees the server restarting between reads (not durable).
+    fresh.world.truth = () => ({ initialized: false, reason: "boot_changed" });
+    expect((await fresh.run({ waitMs: 3 * 60_000 })).kind).toBe("waiting");
+    const remembered = fresh.store.state.journal.newestStatus;
+    expect(remembered).toMatchObject({ reason: "boot_changed", status: { initialized: false } });
+    // The laptop's clock moves back to just before that status, and the logs now show only the
+    // older lines, durable: without the watermark they would be accepted.
+    const seenAt = Date.parse(remembered?.status.checkedAt ?? "");
+    fresh.world.truth = (t) =>
+      t < seenAt
+        ? { initialized: true, reason: "durable" }
+        : { initialized: false, reason: "boot_changed" };
+    fresh.world.now = seenAt - 1_000;
+    const answer = fresh.world.logEvents(plan.platformWorker, 0, fresh.world.now);
+    expect(
+      answer.some((e) => (e as { source?: { reason?: string } }).source?.reason === "durable"),
+    ).toBe(true);
+    expect(await fresh.run({ waitMs: 0 })).toEqual({
+      kind: "waiting",
+      why: "the server restarted between the watchdog's reads",
+    });
+    expect(fresh.world.secretChanges).toEqual([]);
+    // Once a newer durable status arrives, the bootstrap releases.
+    fresh.world.now += 4 * 60_000;
+    fresh.world.truth = () => ({ initialized: true, reason: "durable" });
+    expect((await fresh.run()).kind).toBe("done");
+  });
+
+  it("F5: a status that grew too old during a slow query or a slow check is not released on", async () => {
+    const h = harness(await accountPlan());
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    // The first answer takes eleven minutes: its statuses are stale when it arrives.
+    h.world.slow = { call: "logs", nth: 1, ms: 11 * 60_000 };
+    expect(await h.run({ verify: false })).toMatchObject({ kind: "released" });
+    const change = h.world.secretChanges[0];
+    expect(h.world.counts.get("logs")).toBeGreaterThanOrEqual(2);
+    // Released on a status at most ten minutes old at the moment of the release.
+    const events = h.world.logEvents(h.world.plan.platformWorker, 0, change?.at ?? 0);
+    const newest = Math.max(...events.map((e) => (e as { timestamp: number }).timestamp));
+    expect((change?.at ?? 0) - newest).toBeLessThanOrEqual(10 * 60_000);
+
+    const k = harness(await accountPlan());
+    k.world.truth = () => ({ initialized: true, reason: "durable" });
+    // The secret listing just before the release stalls for eleven minutes: wait again.
+    k.world.slow = { call: "secretNames", nth: 5, ms: 11 * 60_000 };
+    expect(await k.run({ verify: false })).toMatchObject({ kind: "released" });
+    expect(
+      k.lines.some((l) => l.startsWith("waiting again: the newest bootstrap status is too old")),
+    ).toBe(true);
+  });
+
+  it("F7: a release to a Worker that vanished fails, and creates nothing", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan);
+    const cloud = h.world.cloud();
+    await expect(cloud.updateSecrets(plan.platformWorker, RELEASE_CHANGES)).rejects.toThrow(
+      /10007/,
+    );
+    expect(h.world.versions.has(plan.platformWorker)).toBe(false);
+  });
+});
+
+describe("runBootstrap: Cloudflare misbehaving", () => {
+  it("stops when a deploy did not leave every secret, and the next run deploys again", async () => {
+    const h = harness(await accountPlan());
+    h.world.dropOnDeploy = [COOKIE_SECRET];
+    await expect(h.run()).rejects.toThrow(
+      `after the deploy, cloudflare-omnigent lacks ${COOKIE_SECRET}; run again`,
+    );
+    expect(h.store.state.journal.platformDeployedAt).toBeUndefined();
+    h.world.dropOnDeploy = [];
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
+  });
+
+  it("stops when the platform Worker vanishes before the release", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan);
+    h.world.before = {
+      call: "secretNames",
+      nth: 5,
+      run: () => h.world.versions.delete(plan.platformWorker),
+    };
+    await expect(h.run()).rejects.toThrow("cloudflare-omnigent no longer exists");
+    expect(h.world.secretChanges).toEqual([]);
+  });
+
+  it("stops when a release reports success without taking effect, and sends it again next run", async () => {
+    const h = harness(await accountPlan());
+    h.world.bulkKeeps = true;
+    await expect(h.run()).rejects.toThrow("the release has not taken effect yet; run again");
+    expect(h.store.state.journal.releasedAt).toBeUndefined();
+    h.world.bulkKeeps = false;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.released()).toBe(true);
+  });
+
+  it("releases without version information, and says it cannot check the switch", async () => {
+    const h = harness(await accountPlan());
+    h.world.noVersions = true;
+    expect(await h.run({ verifyWaitMs: 60_000 })).toEqual({
+      kind: "released",
+      why: "Cloudflare did not say which version the release deployed",
+    });
+    expect(h.store.state.journal.accepted?.versionId).toBeUndefined();
+    // Once Cloudflare names the version, a later run checks the switch.
+    h.world.noVersions = false;
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
+  it("reports bootstrap lines it ignores, and never accepts them", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan);
+    h.world.truth = () => ({ initialized: false, reason: "not_replicated" });
+    h.world.foreign.push({
+      timestamp: h.world.now + 120_000,
+      $workers: { scriptName: plan.platformWorker },
+      source: { cfo: "bootstrap", event: "status", reason: "durable", bootstrapStatus: {} },
+    });
+    expect((await h.run({ waitMs: 5 * 60_000 })).kind).toBe("waiting");
+    expect(h.lines.some((l) => l.includes("1 bootstrap lines ignored: not the watchdog's"))).toBe(
+      true,
+    );
   });
 });
 

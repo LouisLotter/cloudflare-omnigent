@@ -5,7 +5,7 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 ## Rules
 
 - [ ] No secret, login file, account ID or personal email address is committed. Local state that identifies the owner lives outside the repository (the staging directory below) or in gitignored files (`.env*`, `.dev.vars*`).
-- [ ] Worker secrets are set from the owner's laptop, with `wrangler secret put`, by the staging tool, or by the bootstrap script (`scripts/bootstrap/`). The tools upload them with the Worker version (`wrangler deploy --secrets-file`) or change them in one request (`wrangler secret bulk`), through an unlinked file on descriptor 3, never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
+- [ ] Worker secrets are set from the owner's laptop, with `wrangler secret put`, by the staging tool, or by the bootstrap script (`scripts/bootstrap/`). The tools upload them with the Worker version (`wrangler deploy --secrets-file`) or change them in one request (`cf workers secrets bulk`, which never creates a missing Worker), through an unlinked file on descriptor 3, never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
 - [ ] CI holds no secrets. It runs on `pull_request` with a read-only token and no persisted checkout credentials, so code from a fork gets nothing.
 - [ ] Staging uses staging-only values. Deleting a staging Worker deletes its secrets with it.
 - [ ] A cloud computer never holds platform secrets, connected-account credentials or storage keys. It holds only the person's own Omnigent, Claude and Codex logins.

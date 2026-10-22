@@ -224,8 +224,42 @@ describe("decide", () => {
       accepted: false,
       why: "the newest bootstrap status contradicts itself",
     });
+    // The watchdog always gives the reason: a line without one is not accepted (review r1).
     const noReason = { ...status(NOW, true, "durable"), reason: undefined };
-    expect(decide([noReason], rules).accepted).toBe(true);
+    expect(decide([noReason], rules)).toMatchObject({
+      accepted: false,
+      why: "the newest bootstrap status contradicts itself",
+    });
+  });
+
+  it("never lets an older answer roll back a status seen earlier (review r1, F3)", () => {
+    const seenNegative = status(NOW - 30_000, false, "boot_changed");
+    const olderPositive = status(NOW - 60_000, true, "durable");
+    expect(decide([olderPositive], { ...rules, seen: seenNegative })).toMatchObject({
+      accepted: false,
+      why: "the server restarted between the watchdog's reads",
+      latest: seenNegative,
+    });
+    // A remembered positive holds back too: acceptance needs a status in this answer.
+    expect(decide([], { ...rules, seen: status(NOW - 30_000, true, "durable") })).toMatchObject({
+      accepted: false,
+      why: "waiting for the watchdog's next status",
+    });
+    expect(decide([], { ...rules, seen: { ...seenNegative, reason: "new" } })).toMatchObject({
+      why: "the owner is not initialized and durable yet",
+    });
+    // The same status seen again, or a newer one, decides as usual.
+    expect(decide([seenNegative], { ...rules, seen: seenNegative }).accepted).toBe(false);
+    const again = status(NOW - 30_000, true, "durable");
+    expect(decide([again], { ...rules, seen: again }).accepted).toBe(true);
+    expect(
+      decide([status(NOW - 10_000, true, "durable")], { ...rules, seen: seenNegative }).accepted,
+    ).toBe(true);
+    // Another installation's remembered status does not count.
+    expect(
+      decide([olderPositive], { ...rules, seen: status(NOW, false, "boot_changed", OTHER) })
+        .accepted,
+    ).toBe(true);
   });
 
   it("property: accepts exactly when this installation's newest status is fresh and durable", () => {
@@ -266,10 +300,10 @@ describe("decide", () => {
 
 describe("verifyRelease", () => {
   const released = NOW;
-  const rules = { installationId: INSTALLATION, acceptedVersionId: "v1", releasedAt: released };
+  const rules = { installationId: INSTALLATION, releasedVersionId: "v2", releasedAt: released };
   const logsOf = (events: unknown[]) => parseLogs(events, SCRIPT);
 
-  it("passes once a version that never reported the password runs, and nothing reports it after", () => {
+  it("passes once OmnigentServer runs the released version, and nothing reports the password after", () => {
     const logs = logsOf([
       event(released - 60_000, line(released - 60_000, true, "durable")),
       event(released + 60_000, line(released + 60_000, true, "durable")),
@@ -278,13 +312,16 @@ describe("verifyRelease", () => {
     expect(verifyRelease(logs, rules)).toEqual({ verified: true });
   });
 
-  it("waits while the old version runs, or another version still reports the password", () => {
+  it("waits while the old version runs, and fails while the released one reports the password", () => {
     expect(
       verifyRelease(
         logsOf([event(released + 60_000, line(released + 60_000, true, "durable"))]),
         rules,
       ),
-    ).toMatchObject({ verified: false, why: expect.stringContaining("still runs a version with") });
+    ).toMatchObject({
+      verified: false,
+      why: expect.stringContaining("has not run on the released version"),
+    });
     expect(
       verifyRelease(
         logsOf([
@@ -293,27 +330,42 @@ describe("verifyRelease", () => {
         ]),
         rules,
       ),
-    ).toMatchObject({ verified: false });
-    expect(verifyRelease(logsOf([]), rules)).toMatchObject({
+    ).toMatchObject({
       verified: false,
-      why: expect.stringContaining("has not run on the new version"),
+      why: "the released version still reports the bootstrap password",
+    });
+    expect(
+      verifyRelease(
+        logsOf([
+          event(released + 300_000, { cfo: "watchdog" }, "v2"),
+          event(released + 360_000, line(released + 360_000, true, "durable"), "v3"),
+        ]),
+        rules,
+      ),
+    ).toMatchObject({
+      verified: false,
+      why: "the bootstrap password was reported after the switch",
     });
   });
 
-  it("does not count invocations before the release, other than alarms, or without a version", () => {
+  it("counts only OmnigentServer's alarms on the released version, after the release (review r1, F6)", () => {
+    const controlAlarm = event(released + 400_000, { cfo: "x" }, "v2");
+    (controlAlarm.$workers as Record<string, unknown>).entrypoint = "ControlDO";
     const logs = logsOf([
+      controlAlarm,
       event(released - 1, { cfo: "x" }, "v2"),
       event(released + 400_000, { cfo: "x" }, "v2", SCRIPT, "scheduled"),
+      event(released + 400_000, { cfo: "x" }, "v9"),
       {
         ...event(released + 400_000, { cfo: "x" }),
-        $workers: { scriptName: SCRIPT, eventType: "alarm" },
+        $workers: { scriptName: SCRIPT, eventType: "alarm", entrypoint: "OmnigentServer" },
       },
     ]);
     expect(verifyRelease(logs, rules).verified).toBe(false);
   });
 
-  it("cannot check without the accepted status's version", () => {
-    expect(verifyRelease(logsOf([]), { ...rules, acceptedVersionId: undefined })).toMatchObject({
+  it("cannot check without the released version", () => {
+    expect(verifyRelease(logsOf([]), { ...rules, releasedVersionId: undefined })).toMatchObject({
       verified: false,
       why: expect.stringContaining("did not say which version"),
     });

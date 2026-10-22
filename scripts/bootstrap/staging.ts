@@ -12,10 +12,9 @@
 //     everything) before the bootstrap reads the application's AUD.
 
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { type Runner, spawnRunner, writePrivateFile } from "../staging/cloud.ts";
-import { cfJson, queryWorkerLogs, readAccess } from "./cloud.ts";
+import { type Runner, spawnRunner } from "../staging/cloud.ts";
+import { activeVersion, cfJson, queryWorkerLogs, readAccess, withRenderedConfig } from "./cloud.ts";
 import type { BootstrapCloud } from "./machine.ts";
 import { type Installation, renderWebConfig } from "./settings.ts";
 
@@ -69,9 +68,7 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
     secrets?: Readonly<Record<string, string>>,
   ) => {
     // Next to the checked-in configuration, so that its relative paths resolve.
-    const path = join(options.root, "worker", `.cfo-bootstrap.${worker}.jsonc`);
-    writePrivateFile(path, `${JSON.stringify(config, null, 2)}\n`);
-    try {
+    withRenderedConfig(join(options.root, "worker"), config, (path) => {
       const args = [
         "deploy",
         "--suffix",
@@ -86,9 +83,7 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
       if (secrets !== undefined && Object.keys(secrets).length > 0) {
         tool([...args, "--secrets-stdin"], JSON.stringify(secrets));
       } else tool(args);
-    } finally {
-      rmSync(path, { force: true });
-    }
+    });
   };
   const accessApps = () =>
     cfJson(run, [
@@ -133,6 +128,7 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
         JSON.stringify(changes),
       );
     },
+    activeVersion: async (worker) => activeVersion(run, worker),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };
 }

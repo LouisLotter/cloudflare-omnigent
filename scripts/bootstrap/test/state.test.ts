@@ -6,7 +6,9 @@ import type { BootstrapState } from "../machine.ts";
 import {
   fileStateStore,
   installationsDir,
+  locksDir,
   parseState,
+  resourceLockPaths,
   statePathFor,
   writeAtomic,
 } from "../state.ts";
@@ -140,6 +142,52 @@ describe("the state file", () => {
 
   it("says to plan first when there is no state file", () => {
     expect(() => fileStateStore(join(dir, "none.json")).load()).toThrow(/run plan first/);
+  });
+
+  it("locks by account and Worker, wherever the state file is (review r1, F1)", async () => {
+    const plan = await accountPlan();
+    expect(resourceLockPaths(plan, "/l")).toEqual([
+      `/l/${plan.accountId}.cloudflare-omnigent-web.lock`,
+      `/l/${plan.accountId}.cloudflare-omnigent.lock`,
+    ]);
+    expect(locksDir({ XDG_CONFIG_HOME: "/cfg", CFO_INSTALL_DIR: "/elsewhere" })).toBe(
+      "/cfg/cloudflare-omnigent/bootstrap-locks",
+    );
+    expect(locksDir({})).toMatch(/\.config\/cloudflare-omnigent\/bootstrap-locks$/);
+  });
+
+  it("round-trips the watermark and the released version", async () => {
+    const state = await fullState();
+    const path = join(dir, "w.json");
+    const withMore = {
+      ...state,
+      journal: {
+        ...state.journal,
+        newestStatus: {
+          loggedAt: 5,
+          versionId: "v1",
+          reason: "durable",
+          status: state.journal.accepted?.status,
+        },
+        releasedVersionId: "v2",
+      },
+    } as BootstrapState;
+    fileStateStore(path).save(withMore);
+    expect(fileStateStore(path).load()).toEqual(withMore);
+    const good = JSON.parse(JSON.stringify(withMore));
+    for (const [journal, message] of [
+      [
+        { ...good.journal, newestStatus: { ...good.journal.newestStatus, loggedAt: "5" } },
+        /newest status is malformed/,
+      ],
+      [
+        { ...good.journal, newestStatus: { ...good.journal.newestStatus, reason: 3 } },
+        /newest status reason is not text/,
+      ],
+      [{ ...good.journal, releasedVersionId: 2 }, /released version is not text/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
   });
 
   it("lives outside the repository, by platform Worker", () => {

@@ -34,6 +34,28 @@ export function statePathFor(platformWorker: string, dir: string = installations
   return join(dir, `${platformWorker}.json`);
 }
 
+/**
+ * Where the bootstrap's locks live: one place per laptop user, whatever state file or
+ * $CFO_INSTALL_DIR a run uses, so that two runs against the same Workers always meet.
+ */
+export function locksDir(env: NodeJS.ProcessEnv = process.env): string {
+  const config = env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(config, "cloudflare-omnigent", "bootstrap-locks");
+}
+
+/**
+ * The locks a run holds for its whole length: one per Worker it may change, keyed by account
+ * and Worker name, in a fixed order (Codex WP2.4 r1, finding 1).
+ */
+export function resourceLockPaths(
+  plan: Pick<Installation, "accountId" | "platformWorker" | "webWorker">,
+  dir: string = locksDir(),
+): string[] {
+  return [plan.platformWorker, plan.webWorker]
+    .map((worker) => join(dir, `${plan.accountId}.${worker}.lock`))
+    .sort();
+}
+
 function object(value: unknown, what: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`the state file's ${what} is not an object`);
@@ -124,6 +146,30 @@ function parseJournal(value: unknown): Journal {
       aud: str(a, "aud", "journal.access"),
       checkedAt: str(a, "checkedAt", "journal.access"),
     };
+  }
+  if (j.newestStatus !== undefined) {
+    const n = object(j.newestStatus, "journal.newestStatus");
+    const status = BootstrapStatus.safeParse(n.status);
+    if (!status.success || typeof n.loggedAt !== "number") {
+      throw new Error("the state file's newest status is malformed");
+    }
+    for (const key of ["versionId", "reason"] as const) {
+      if (n[key] !== undefined && typeof n[key] !== "string") {
+        throw new Error(`the state file's newest status ${key} is not text`);
+      }
+    }
+    journal.newestStatus = {
+      loggedAt: n.loggedAt,
+      status: status.data,
+      ...(n.versionId === undefined ? {} : { versionId: n.versionId }),
+      ...(n.reason === undefined ? {} : { reason: n.reason }),
+    };
+  }
+  if (j.releasedVersionId !== undefined) {
+    if (typeof j.releasedVersionId !== "string") {
+      throw new Error("the state file's released version is not text");
+    }
+    journal.releasedVersionId = j.releasedVersionId;
   }
   if (j.accepted !== undefined) {
     const a = object(j.accepted, "journal.accepted");

@@ -12,23 +12,27 @@
 //      owner initialized and durable (events.ts). The cron starts the server within a minute:
 //      no browser and no request to the installation is needed, and none is made;
 //   5. releases: one change of the platform Worker's secrets that sets `INITIALIZED=true` and
-//      deletes the password, a deliberate platform release (R-27);
-//   6. checks, after the objects switch to the new version (about 300 s), that the new version
-//      runs and no longer reports the password.
+//      deletes the password, a deliberate platform release (R-27), sent only while the
+//      accepted status is still fresh;
+//   6. checks, after the objects switch to the released version (about 300 s), that the
+//      OmnigentServer object runs it and no longer reports the password.
 //
 // Crash safety. The journal in the state file is written before each effect and after it.
 // A run re-reads the platform Worker's secret names first, so a step whose effect landed
 // before a crash is recognised, and a step whose effect did not land is repeated. Deploys and
 // the release are idempotent: secrets are only ever added when missing, and the release is sent
 // only while the password still exists. The release always follows an acceptance made in the
-// same run, never one remembered from an earlier run. Once a release is recorded, or the Worker
-// shows one, the password is never uploaded again.
+// same run, never one remembered from an earlier run; the newest status ever seen is kept, so a
+// later query that misses it cannot bring back an older one. Once a release is recorded, or the
+// Worker shows one, the password is never uploaded again. Neither Worker is deployed over one
+// this plan did not create. Runs against the same Workers are serialised by the caller
+// (bootstrap.ts takes a lock per account and Worker name, whatever the state file).
 //
 // Never: a request to the installation (`POST /auth/setup` included), an Access bypass or
 // service token, a secret value in the journal or the log.
 
 import type { BootstrapStatus } from "../../contracts/src/index.ts";
-import { decide, parseLogs, type StatusEvent, verifyRelease } from "./events.ts";
+import { decide, newest, parseLogs, type StatusEvent, staleness, verifyRelease } from "./events.ts";
 import {
   type AccessSettings,
   accessProblems,
@@ -65,10 +69,23 @@ export interface BootstrapCloud {
     secrets: Readonly<Record<string, string>>,
   ): Promise<void>;
   deployWeb(plan: Installation, config: Readonly<Record<string, unknown>>): Promise<void>;
-  /** One change of the Worker's secrets: a value sets one, null deletes one. */
+  /**
+   * One change of the Worker's secrets, a new deployed version: a value sets one, null deletes
+   * one. Fails, and creates nothing, when the Worker does not exist.
+   */
   updateSecrets(worker: string, changes: Readonly<Record<string, string | null>>): Promise<void>;
+  /** The version serving all of the Worker's traffic now, or undefined if not one. Read-only. */
+  activeVersion(worker: string): Promise<string | undefined>;
   /** Workers Logs events of the Worker between two times, in milliseconds. */
   logs(worker: string, fromMs: number, toMs: number): Promise<unknown[]>;
+}
+
+/** A status as the journal keeps it: the newest seen, so no later query can roll it back. */
+export interface SeenStatus {
+  readonly loggedAt: number;
+  readonly versionId?: string;
+  readonly status: BootstrapStatus;
+  readonly reason?: string;
 }
 
 /** Progress, kept in the state file. Times are the laptop's, ISO 8601. No secret. */
@@ -78,7 +95,9 @@ export interface Journal {
   readonly access?: AccessSettings & { readonly checkedAt: string };
   readonly webDeployStartedAt?: string;
   readonly webDeployedAt?: string;
-  /** The last status accepted, and the version that logged it (for the check after release). */
+  /** The newest status of this installation seen so far (the watermark). */
+  readonly newestStatus?: SeenStatus;
+  /** The last status accepted, and the version that logged it. */
   readonly accepted?: {
     readonly at: string;
     readonly status: BootstrapStatus;
@@ -86,6 +105,8 @@ export interface Journal {
   };
   readonly releaseStartedAt?: string;
   readonly releasedAt?: string;
+  /** The version the release deployed, as Cloudflare listed it right after. */
+  readonly releasedVersionId?: string;
   readonly verifiedAt?: string;
 }
 
@@ -155,6 +176,27 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function seenOf(event: StatusEvent): SeenStatus {
+  return {
+    loggedAt: event.loggedAt,
+    status: event.status,
+    ...(event.versionId === undefined ? {} : { versionId: event.versionId }),
+    ...(event.reason === undefined ? {} : { reason: event.reason }),
+  };
+}
+
+function eventOf(seen: SeenStatus | undefined): StatusEvent | undefined {
+  return seen === undefined
+    ? undefined
+    : {
+        loggedAt: seen.loggedAt,
+        versionId: seen.versionId,
+        status: seen.status,
+        reason: seen.reason,
+        secretPresent: undefined,
+      };
+}
+
 /** A deliberate stop: the installer must look before anything else happens. */
 export class BootstrapRefusal extends Error {}
 
@@ -171,8 +213,8 @@ export async function runBootstrap(
     state = { ...state, journal: { ...state.journal, ...change } };
     ctx.store.save(state);
   };
-  const names = async () => {
-    const listed = await ctx.cloud.secretNames(plan.platformWorker);
+  const names = async (worker = plan.platformWorker) => {
+    const listed = await ctx.cloud.secretNames(worker);
     return listed === null ? null : new Set(listed);
   };
 
@@ -185,7 +227,7 @@ export async function runBootstrap(
     }
   }
   if (state.journal.releasedAt !== undefined) {
-    return verifyAfterRelease(ctx, state, options, record);
+    return verifyAfterRelease(ctx, () => state, options, record);
   }
   if (secrets?.has(INITIALIZED_SECRET) && !secrets.has(PASSWORD_SECRET)) {
     throw new BootstrapRefusal(
@@ -193,7 +235,7 @@ export async function runBootstrap(
     );
   }
 
-  // 1. The platform Worker.
+  // Neither Worker is deployed over one that this plan did not create.
   if (secrets === null && state.journal.platformDeployedAt !== undefined) {
     throw new BootstrapRefusal(
       `${plan.platformWorker} was deployed by this plan but no longer exists; plan a new installation`,
@@ -204,6 +246,17 @@ export async function runBootstrap(
       `a Worker named ${plan.platformWorker} exists, and this plan did not create it; choose another name`,
     );
   }
+  const webUnclaimed = async () => {
+    if (state.journal.webDeployStartedAt !== undefined) return;
+    if ((await names(plan.webWorker)) !== null) {
+      throw new BootstrapRefusal(
+        `a Worker named ${plan.webWorker} exists, and this plan did not create it; choose another name`,
+      );
+    }
+  };
+  await webUnclaimed();
+
+  // 1. The platform Worker.
   if (secrets === null || state.journal.platformDeployedAt === undefined) {
     const present = secrets ?? new Set<string>();
     const needsInstaller =
@@ -237,8 +290,11 @@ export async function runBootstrap(
     record({ platformDeployedAt: iso(ctx.now()) });
   }
 
-  // 2. Access, read and checked just before; 3. the web Worker behind it.
+  // 2. Access, read and checked just before; 3. the web Worker behind it. The staging adapter
+  // may deploy the web Worker to create its Access application, so the claim comes first.
   if (state.journal.webDeployedAt === undefined) {
+    await webUnclaimed();
+    record({ webDeployStartedAt: state.journal.webDeployStartedAt ?? iso(ctx.now()) });
     const found = await ctx.cloud.access(plan);
     const accessIssues = accessProblems(plan, found);
     if (accessIssues.length > 0) {
@@ -247,31 +303,36 @@ export async function runBootstrap(
     const access = { ...found, checkedAt: iso(ctx.now()) };
     record({ access });
     const config = renderWebConfig(ctx.baseConfigs.web, plan, access);
-    record({ webDeployStartedAt: state.journal.webDeployStartedAt ?? iso(ctx.now()) });
     ctx.log(`deploying the web Worker ${plan.webWorker} for https://${plan.hostname}`);
     await ctx.cloud.deployWeb(plan, config);
     record({ webDeployedAt: iso(ctx.now()) });
   }
 
-  // 4. The watchdog's status in Workers Logs.
-  const accepted = await waitForOwner(ctx, plan, options);
-  if (!accepted.ok) return { kind: "waiting", why: accepted.why };
-  record({
-    accepted: {
-      at: iso(ctx.now()),
-      status: accepted.event.status,
-      ...(accepted.event.versionId === undefined ? {} : { versionId: accepted.event.versionId }),
-    },
-  });
+  // 4. The watchdog's status in Workers Logs, still fresh when the release is sent.
+  const deadline = ctx.now() + options.waitMs;
+  for (;;) {
+    const accepted = await waitForOwner(ctx, () => state, record, options, deadline);
+    if (!accepted.ok) return { kind: "waiting", why: accepted.why };
+    record({
+      accepted: {
+        at: iso(ctx.now()),
+        status: accepted.event.status,
+        ...(accepted.event.versionId === undefined ? {} : { versionId: accepted.event.versionId }),
+      },
+    });
+    secrets = await names();
+    if (secrets === null) throw new Error(`${plan.platformWorker} no longer exists`);
+    if (!secrets.has(PASSWORD_SECRET)) {
+      throw new BootstrapRefusal(
+        `${plan.platformWorker} no longer holds the bootstrap password, but no release is recorded; check the installation by hand`,
+      );
+    }
+    const stale = staleness(accepted.event, ctx.now());
+    if (stale === undefined) break;
+    ctx.log(`waiting again: ${stale}`);
+  }
 
   // 5. The release.
-  secrets = await names();
-  if (secrets === null) throw new Error(`${plan.platformWorker} no longer exists`);
-  if (!secrets.has(PASSWORD_SECRET)) {
-    throw new BootstrapRefusal(
-      `${plan.platformWorker} no longer holds the bootstrap password, but no release is recorded; check the installation by hand`,
-    );
-  }
   record({ releaseStartedAt: state.journal.releaseStartedAt ?? iso(ctx.now()) });
   ctx.log(
     `releasing: ${INITIALIZED_SECRET}=true and the bootstrap password deleted, in one platform release`,
@@ -281,25 +342,38 @@ export async function runBootstrap(
   if (secrets === null || secrets.has(PASSWORD_SECRET) || !secrets.has(INITIALIZED_SECRET)) {
     throw new Error("the release has not taken effect yet; run again");
   }
-  record({ releasedAt: iso(ctx.now()) });
+  const releasedVersionId = await ctx.cloud.activeVersion(plan.platformWorker);
+  record({
+    releasedAt: iso(ctx.now()),
+    ...(releasedVersionId === undefined ? {} : { releasedVersionId }),
+  });
   ctx.log("released: the bootstrap password is gone and the installation is marked initialized");
-  return verifyAfterRelease(ctx, state, options, record);
+  return verifyAfterRelease(ctx, () => state, options, record);
 }
 
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };
 
 async function waitForOwner(
   ctx: RunContext,
-  plan: Installation,
+  current: () => BootstrapState,
+  record: (change: Partial<Journal>) => void,
   options: RunOptions,
+  deadline: number,
 ): Promise<Accepted> {
-  const deadline = ctx.now() + options.waitMs;
+  const plan = current().installation;
   let said: string | undefined;
   for (;;) {
+    const from = ctx.now() - LOOKBACK_MS;
+    const events = await ctx.cloud.logs(plan.platformWorker, from, ctx.now());
+    // Freshness is judged when the answer is in, not when the query was sent.
     const now = ctx.now();
-    const events = await ctx.cloud.logs(plan.platformWorker, now - LOOKBACK_MS, now);
     const logs = parseLogs(events, plan.platformWorker);
-    const decision = decide(logs.statuses, { installationId: plan.installationId, now });
+    const seen = eventOf(current().journal.newestStatus);
+    const decision = decide(logs.statuses, { installationId: plan.installationId, now, seen });
+    // Keep the newest status of this installation, so a later answer cannot roll it back.
+    const mine = logs.statuses.filter((e) => e.status.installationId === plan.installationId);
+    const newer = newest([...mine, ...(seen === undefined ? [] : [seen])]);
+    if (newer !== undefined && newer !== seen) record({ newestStatus: seenOf(newer) });
     if (decision.accepted) {
       ctx.log(`the owner is initialized and durable (checked ${decision.event.status.checkedAt})`);
       return { ok: true, event: decision.event };
@@ -317,32 +391,37 @@ async function waitForOwner(
 
 async function verifyAfterRelease(
   ctx: RunContext,
-  state: BootstrapState,
+  current: () => BootstrapState,
   options: RunOptions,
   record: (change: Partial<Journal>) => void,
 ): Promise<Outcome> {
-  const { journal, installation: plan } = state;
-  if (journal.verifiedAt !== undefined) return { kind: "done" };
+  if (current().journal.verifiedAt !== undefined) return { kind: "done" };
   if (!options.verify) return { kind: "released", why: "the check after the release was skipped" };
-  const releasedAt = Date.parse(journal.releasedAt ?? "");
+  if (current().journal.releasedVersionId === undefined) {
+    // A release whose run stopped before it could ask: the version serving now has no
+    // password either, since secrets carry over to every later version.
+    const version = await ctx.cloud.activeVersion(current().installation.platformWorker);
+    if (version !== undefined) record({ releasedVersionId: version });
+  }
+  const { journal, installation: plan } = current();
+  const releasedAt = Date.parse(String(journal.releasedAt));
   const switchAt = releasedAt + options.switchMs;
   if (ctx.now() < switchAt) {
-    ctx.log("waiting for the platform objects to switch to the new version (about 5 minutes)");
+    ctx.log("waiting for the platform objects to switch to the released version (about 5 minutes)");
     await ctx.sleep(switchAt - ctx.now());
   }
   const deadline = ctx.now() + options.verifyWaitMs;
   for (;;) {
-    const now = ctx.now();
-    const events = await ctx.cloud.logs(plan.platformWorker, releasedAt - LOOKBACK_MS, now);
+    const events = await ctx.cloud.logs(plan.platformWorker, releasedAt - LOOKBACK_MS, ctx.now());
     const logs = parseLogs(events, plan.platformWorker);
     const result = verifyRelease(logs, {
       installationId: plan.installationId,
-      acceptedVersionId: journal.accepted?.versionId,
+      releasedVersionId: journal.releasedVersionId,
       releasedAt,
     });
     if (result.verified) {
       record({ verifiedAt: iso(ctx.now()) });
-      ctx.log("checked: the platform runs the new version, without the bootstrap password");
+      ctx.log("checked: the server's object runs the released version, without the password");
       return { kind: "done" };
     }
     if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };

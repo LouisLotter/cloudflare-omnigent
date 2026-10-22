@@ -1,18 +1,20 @@
 // The bootstrap's Cloudflare adapter for the installer's own account (WP2.4): Wrangler, with the
-// installer's Wrangler login, for deploys and secrets; the `cf` CLI, read-only, for Workers
-// Logs and the Access application. Wrangler has no command that reads Workers Logs.
+// installer's Wrangler login, for deploys and reading secret names; the `cf` CLI for Workers
+// Logs, the Access application and the deployed version (read-only), and for the release.
+// Wrangler has no command that reads Workers Logs.
 //
-// Secret values reach Wrangler only as an unlinked file on descriptor 3 (the staging tool's
-// withSecretsDescriptor), never in argv, the output or a file that stays. Wrangler runs with
-// sanitised logging and writes no log file (WRANGLER_QUIET_LOGS). Rendered configurations,
-// which hold no secret, are written next to the checked-in ones, mode 0600, and removed after
-// the deploy.
+// Secret values reach Wrangler and cf only as an unlinked file on descriptor 3 (the staging
+// tool's withSecretsDescriptor), never in argv, the output or a file that stays. Wrangler runs
+// with sanitised logging and writes no log file (WRANGLER_QUIET_LOGS). Rendered configurations,
+// which hold no secret, are written next to the checked-in ones under a name unique to the run,
+// mode 0600, and removed after the deploy.
 //
 // What it never does: create, change or delete an Access application, policy or service
-// token; send a request to the installation's hostname; create a Worker by a secret change
-// (`wrangler secret bulk` would create a draft Worker for a missing one, so the machine only
-// sends the release to a Worker it has listed).
+// token; send a request to the installation's hostname; create a Worker by a secret change.
+// The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`), which fails for
+// a missing Worker, where `wrangler secret bulk` would create a draft one.
 
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,11 +23,11 @@ import {
   diagnostic,
   type Runner,
   secretNamesOf,
+  secretsBulkBody,
   spawnRunner,
   WRANGLER_QUIET_LOGS,
   withSecretsDescriptor,
   wranglerCli,
-  writePrivateFile,
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
 import type { BootstrapCloud } from "./machine.ts";
@@ -110,6 +112,61 @@ export async function readAccess(run: Runner, plan: Installation) {
   );
 }
 
+/**
+ * One change of a Worker's secrets: `cf workers secrets bulk`, one request, one new deployed
+ * version. It fails for a missing Worker. The changes reach cf only as an unlinked file on
+ * descriptor 3; an error carries only the first line of cf's output, masked.
+ */
+export function bulkSecrets(
+  run: Runner,
+  worker: string,
+  changes: Readonly<Record<string, string | null>>,
+): void {
+  const result = withSecretsDescriptor(secretsBulkBody(changes), (fd) =>
+    run("cf", ["workers", "secrets", "bulk", "--worker", worker, "--secrets", "@/dev/fd/3"], {
+      inherit: false,
+      fds: [fd],
+    }),
+  );
+  if (result.status !== 0) {
+    throw new Error(`cf workers secrets bulk failed: ${diagnostic(result.stderr)}`);
+  }
+}
+
+/** The version serving all of the Worker's traffic now, from its newest deployment. Read-only. */
+export function activeVersion(run: Runner, worker: string): string | undefined {
+  const answer = cfJson(run, ["workers", "deployments", "list", "--worker", worker]) as {
+    deployments?: unknown;
+  } | null;
+  const deployments = Array.isArray(answer?.deployments) ? answer.deployments : [];
+  const versions = (deployments[0] as { versions?: unknown } | undefined)?.versions;
+  const whole = (Array.isArray(versions) ? versions : []).find(
+    (v) => (v as { percentage?: unknown } | null)?.percentage === 100,
+  ) as { version_id?: unknown } | undefined;
+  return typeof whole?.version_id === "string" && whole.version_id !== ""
+    ? whole.version_id
+    : undefined;
+}
+
+/**
+ * A rendered configuration next to the checked-in ones, so that their relative paths resolve,
+ * under a name no other run uses: created exclusively, mode 0600, removed after `use`.
+ */
+export function withRenderedConfig<T>(
+  dir: string,
+  config: Readonly<Record<string, unknown>>,
+  use: (path: string) => T,
+): T {
+  const unique = randomBytes(6).toString("hex");
+  const path = join(dir, `.cfo-bootstrap.${String(config.name)}.${unique}.jsonc`);
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  try {
+    return use(path);
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
+
 /** Whether Wrangler's failure says the Worker does not exist. */
 export function workerMissing(result: CommandResult): boolean {
   return /not found|does not exist|\[code: 10007\]/i.test(`${result.stdout}\n${result.stderr}`);
@@ -153,10 +210,8 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
   const deploy = (
     config: Readonly<Record<string, unknown>>,
     secrets: Readonly<Record<string, string>>,
-  ) => {
-    const path = join(options.workerDir, `.cfo-bootstrap.${String(config.name)}.jsonc`);
-    writePrivateFile(path, `${JSON.stringify(config, null, 2)}\n`);
-    try {
+  ) =>
+    withRenderedConfig(options.workerDir, config, (path) => {
       const args = ["deploy", "--config", path];
       const result =
         Object.keys(secrets).length === 0
@@ -165,10 +220,7 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
               wrangler([...args, "--secrets-file", "/dev/fd/3"], options.workerDir, [fd]),
             );
       if (result.status !== 0) throw new Error(`wrangler deploy exited with ${result.status}`);
-    } finally {
-      rmSync(path, { force: true });
-    }
-  };
+    });
   return {
     secretNames: async (worker) =>
       pinned(worker, (file, dir) => {
@@ -185,14 +237,8 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
     access: (p) => readAccess(run, p),
     deployPlatform: async (_plan, config, secrets) => deploy(config, secrets),
     deployWeb: async (_plan, config) => deploy(config, {}),
-    updateSecrets: async (worker, changes) =>
-      pinned(worker, (file, dir) => {
-        const result = withSecretsDescriptor(changes, (fd) =>
-          wrangler(["secret", "bulk", "/dev/fd/3", "--config", file, "--name", worker], dir, [fd]),
-        );
-        if (result.status !== 0)
-          throw new Error(`wrangler secret bulk exited with ${result.status}`);
-      }),
+    updateSecrets: async (worker, changes) => bulkSecrets(run, worker, changes),
+    activeVersion: async (worker) => activeVersion(run, worker),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };
 }

@@ -1,6 +1,8 @@
 // The installer's bootstrap script (WP2.4). It runs on the installer's laptop, with the
-// installer's Wrangler login (deploys and secrets) and `cf` login (read-only: Workers Logs and
-// the Access application), and makes an installation's owner exist before anyone can reach it.
+// installer's Wrangler login (deploys, secret names) and `cf` login (Workers Logs, the Access
+// application and the deployed version, read-only; and the release, one bulk secrets change),
+// and makes an installation's owner exist before anyone can reach it. One run at a time per
+// account and Worker name: a second one stops at once ("busy").
 //
 //   node scripts/bootstrap/bootstrap.ts plan --hostname <host> --account <id> \
 //       --owner-email <address> --owner-username <name> \
@@ -58,7 +60,7 @@ import {
   usernameProblem,
 } from "./settings.ts";
 import { stagingCloud } from "./staging.ts";
-import { fileStateStore, statePathFor } from "./state.ts";
+import { fileStateStore, resourceLockPaths, statePathFor } from "./state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -214,8 +216,14 @@ async function suppliedSecrets(
 
 async function run(values: Record<string, string | boolean | undefined>, path: string) {
   const store = fileStateStore(path);
-  const release = acquireLock(`${path}.lock`, 0, `pid ${process.pid}, bootstrap run`);
+  // Serialise every run against the same Workers, whatever its state file: the locks are keyed
+  // by account and Worker name. Held until the run ends; a crashed run's lock goes with it.
+  const holder = `pid ${process.pid}, bootstrap run, ${path}`;
+  const releases: (() => void)[] = [];
   try {
+    for (const lock of resourceLockPaths(store.load().installation)) {
+      releases.push(acquireLock(lock, 0, holder));
+    }
     const installation = store.load().installation;
     // The secrets are read once, before anything else, only if this run will upload them.
     const fromStdin = values["secrets-stdin"] === true;
@@ -280,7 +288,7 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
         return 2;
     }
   } finally {
-    release();
+    for (const release of releases.reverse()) release();
   }
 }
 

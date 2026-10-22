@@ -11,7 +11,7 @@
 //   - the platform Worker's secrets: Omnigent's cookie secret, the replica's credentials, the
 //     pre-provisioned owner's password, and `CFO_INSTALLATION_INITIALIZED`. The last one is not
 //     secret, but held as a Worker secret so that the bootstrap can flip it and delete the
-//     password in one atomic change (`wrangler secret bulk`), one platform release (R-27), and
+//     password in one atomic change (one bulk secrets request), one platform release (R-27), and
 //     so that no later deploy of the plain configuration can reset it (Wrangler deletes
 //     variables a configuration leaves out; it never deletes secrets);
 //   - the web Worker's variables: ingress's team domain, AUD, hostname and owner pin (WP2.1).
