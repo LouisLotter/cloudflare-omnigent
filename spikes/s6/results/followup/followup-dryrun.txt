@@ -1,0 +1,22 @@
+PASS start A
+PASS synthetic sign-in
+PASS after sign-in
+PASS A: three key reports (DC-45)
+PASS A: conversation for B to resume, Claude
+PASS A: conversation for B to resume, Codex
+PASS B with two refused starts completes
+PASS B: started on the third attempt
+PASS B: within the design retry budget
+PASS B: Claude resumed A's conversation from W1
+PASS B: Codex resumed A's conversation from W1
+PASS C with every start refused fails
+PASS C: seven attempts
+PASS C: says nothing was lost
+PASS no credentials recorded as lost (DC-38)
+PASS the stop before C is recorded with its checkpoint
+PASS C clicked again completes
+PASS D restores signed out
+PASS wipe
+PASS nothing left after the wipe
+PASS no revocation had to be recorded
+failures: 0
