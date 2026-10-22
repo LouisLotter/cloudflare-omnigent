@@ -40,6 +40,16 @@ export class FakeServerContainer implements ServerContainer {
   readonly requests: RecordedRequest[] = [];
   /** Starts, stops, intercepts and timeouts, in the order they happened. */
   readonly ops: string[] = [];
+  /**
+   * Answers for the next health checks, in order (true: 200, false: 503); once used up, health
+   * follows `listening`. Lets a test say exactly when the server stops or starts answering.
+   */
+  healthResults: boolean[] = [];
+  /**
+   * How long `destroy` takes, so a test can act while the watchdog stops the server. A timer, not
+   * a promise the test resolves: promises do not cross workerd's request contexts.
+   */
+  destroyMs = 0;
   /** What `/v1/info` reports. */
   info = { accounts_enabled: true, needs_setup: true };
   /** What `/position` reports, or null for a 503. */
@@ -70,6 +80,7 @@ export class FakeServerContainer implements ServerContainer {
   async destroy(reason: string): Promise<void> {
     this.destroys.push(reason);
     this.ops.push("destroy");
+    if (this.destroyMs > 0) await new Promise((resolve) => setTimeout(resolve, this.destroyMs));
     this.running = false;
   }
 
@@ -104,7 +115,12 @@ export class FakeServerContainer implements ServerContainer {
       throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
     }
     const path = new URL(request.url).pathname;
-    if (port === 8000 && path === "/health") return Response.json({ status: "ok" });
+    if (port === 8000 && path === "/health") {
+      const ok = this.healthResults.shift();
+      return ok === false
+        ? Response.json({ status: "unavailable" }, { status: 503 })
+        : Response.json({ status: "ok" });
+    }
     if (port === 8000 && path === "/v1/info") return Response.json({ ...this.info, extra: 1 });
     if (port === 8001 && path === "/position") {
       this.#positionReads += 1;

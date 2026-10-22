@@ -119,10 +119,11 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 
 /** The outage as the contract records it; `endedAt` null while it lasts. */
 export function outageRecord(outage: OngoingOutage, endedAt: number | null): OutageRecord {
+  // Kept in the contract's order whatever the stored times say, so a record always persists.
   return {
     outageId: outage.outageId,
     cause: outage.cause,
-    startedAt: iso(outage.startedAt),
+    startedAt: iso(Math.min(outage.startedAt, outage.detectedAt)),
     detectedAt: iso(outage.detectedAt),
     endedAt: endedAt === null ? null : iso(Math.max(endedAt, outage.detectedAt)),
     restarts: Math.min(outage.restarts, 1000),

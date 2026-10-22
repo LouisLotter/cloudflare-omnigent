@@ -51,6 +51,17 @@ describe("watchdog: first start", () => {
     expect(s.nextCheckAt).toBe(T0 + T.pollMs);
   });
 
+  it("dates a failed first start from the first start, through refused retries", () => {
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, "stopped"], // first start
+      [T0 + 5_000, "stopped"], // refused: retry due in 5 s
+      [T0 + 10_000, "stopped"], // second start
+      [T0 + 10_000 + T.readinessWaitMs, "silent"], // never ready
+    ]);
+    const record = outages(defined(steps[3]))[0];
+    expect(record).toMatchObject({ cause: "start_failed", startedAt: new Date(T0).toISOString() });
+  });
+
   it("waits the full readiness wait for a first start, then records it as failed", () => {
     const [, waiting, failed] = run(INITIAL_WATCHDOG_STATE, [
       [T0, "stopped"],
@@ -394,12 +405,13 @@ describe("watchdog: any stored state", () => {
       fc.property(stateArb, observationArb, time, (state, observation, now) => {
         const s = step(state, observation, now, T, nextId);
         return outages(s).every((record) => {
+          if (!OutageRecord.safeParse(record).success) return false;
           if (state.outage !== null && record.outageId === state.outage.outageId) {
             return true; // an older record: its times were the earlier step's
           }
-          const parsed = OutageRecord.safeParse(record);
+          // A new outage starts no later than the last answer, nor than now.
           const bound = Math.min(state.lastAnsweredAt ?? now, now);
-          return parsed.success && Date.parse(record.startedAt) <= Math.max(bound, now);
+          return Date.parse(record.startedAt) <= bound;
         });
       }),
       { numRuns: 3000 },

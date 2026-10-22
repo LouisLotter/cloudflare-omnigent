@@ -174,21 +174,24 @@ interface RunRecord {
 
 /** The run: one per deployment, started by the owner's click. */
 export class StagingRun extends DurableObject<StagingEnv> {
-  #intent: { value: string; issuedAt: number } | null = null;
-
-  intentToken(): string {
-    if (!this.#intent || Date.now() - this.#intent.issuedAt > INTENT_TTL_MS) {
-      this.#intent = { value: randomHex(32), issuedAt: Date.now() };
-    }
-    return this.#intent.value;
+  /**
+   * The request-intent token for Start: random, valid for 10 minutes, used once. Kept in storage,
+   * so a new instance between the page and the click still knows it (Codex WP2.2 r1-3).
+   */
+  async intentToken(): Promise<string> {
+    const held = await this.ctx.storage.get<{ value: string; issuedAt: number }>("intent");
+    if (held && Date.now() - held.issuedAt <= INTENT_TTL_MS) return held.value;
+    const value = randomHex(32);
+    await this.ctx.storage.put("intent", { value, issuedAt: Date.now() });
+    return value;
   }
 
   async start(presented: string): Promise<{ started: boolean; reason?: string; runId?: string }> {
-    const held = this.#intent;
+    const held = await this.ctx.storage.get<{ value: string; issuedAt: number }>("intent");
     if (!held || Date.now() - held.issuedAt > INTENT_TTL_MS || presented !== held.value) {
       return { started: false, reason: "bad_intent" };
     }
-    this.#intent = null;
+    await this.ctx.storage.delete("intent"); // spent before anything else happens
     const current = await this.ctx.storage.get<RunRecord>("run");
     if (current?.status === "active")
       return { started: false, reason: "a run is active", runId: current.runId };

@@ -30,6 +30,14 @@ describe("checkBootstrap", () => {
       target: { bootId: BOOT_A, txid: 41 },
       status: { initialized: false, installationId: INSTALLATION },
     });
+    // One short of the target is not enough.
+    const short = checkBootstrap(
+      INSTALLATION,
+      held.target,
+      { before: pos(BOOT_A, 60, 40), info: OWNER, after: pos(BOOT_A, 61, 40) },
+      NOW + 30_000,
+    );
+    expect(short).toMatchObject({ reason: "not_replicated", status: { initialized: false } });
     // Later writes move txid on, but the target stays: the replica catching up to it suffices.
     const caughtUp = checkBootstrap(
       INSTALLATION,

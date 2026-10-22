@@ -23,6 +23,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   type BootstrapStatus,
   BootstrapStatus as BootstrapStatusSchema,
+  OutageId,
   OutageRecord,
   outageOverlaps,
   REPLICATION_POSITION_PATH,
@@ -91,20 +92,23 @@ export const SERVER_TIMING: ServerTiming = {
   requestPollMs: 500,
 };
 
+/** A time a `Date` can hold, in milliseconds since the epoch. */
+const Millis = z.number().int().min(0).max(8.64e15);
+
 const WatchdogStateSchema = z.strictObject({
   phase: z.enum(["idle", "starting", "waiting"]),
-  phaseSince: z.number().nullable(),
-  startDueAt: z.number().nullable(),
-  failedStarts: z.number().int().min(0),
-  lastAnsweredAt: z.number().nullable(),
-  startsSince: z.number().nullable(),
+  phaseSince: Millis.nullable(),
+  startDueAt: Millis.nullable(),
+  failedStarts: z.number().int().min(0).max(1_000_000),
+  lastAnsweredAt: Millis.nullable(),
+  startsSince: Millis.nullable(),
   outage: z
     .strictObject({
-      outageId: z.string(),
+      outageId: OutageId,
       cause: z.enum(["container_stopped", "not_answering", "start_failed"]),
-      startedAt: z.number(),
-      detectedAt: z.number(),
-      restarts: z.number().int().min(0),
+      startedAt: Millis,
+      detectedAt: Millis,
+      restarts: z.number().int().min(0).max(1_000_000),
     })
     .nullable(),
 });
@@ -136,6 +140,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   readonly #container: ServerContainer | null;
   /** The last health check or forwarded request reached the server. In memory only. */
   #ready = false;
+  /** When a health check or a forwarded request last reached the server. In memory only. */
+  #answeredAt = 0;
+  /** The watchdog is stopping the container: no request is passed on meanwhile. */
+  #stopping = false;
+  /** The running container's intercept registration failed and is retried at each check. */
+  #interceptPending = false;
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
   #checks: Promise<void> = Promise.resolve();
@@ -150,7 +160,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         // A new instance (a deploy's version switch, a reset, an eviction) keeps the container:
         // renew its timeout and register the intercepts again, with this build's props.
         await this.#keepRunning(container);
-        await this.#registerIntercepts(container);
+        this.#interceptPending = !(await this.#registerIntercepts(container));
       }
       if ((await ctx.storage.getAlarm()) === null) {
         await ctx.storage.setAlarm(this.now() + this.timing().firstCheckDelayMs);
@@ -195,11 +205,14 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       logEvent("server", "forward_refused", { reason: "no_container" });
       return errorResponse(503, "unavailable", "Omnigent is not available.", false);
     }
-    if (!this.#ready && !(await this.#waitUntilReady(container))) {
-      return errorResponse(503, "unavailable", "Omnigent is starting. Try again shortly.", true, {
+    const starting = () =>
+      errorResponse(503, "unavailable", "Omnigent is starting. Try again shortly.", true, {
         "retry-after": "5",
       });
-    }
+    if (this.#stopping) return starting();
+    if (!this.#ready && !(await this.#waitUntilReady(container))) return starting();
+    // The watchdog may have begun a restart while this request waited.
+    if (this.#stopping) return starting();
     return this.#forward(container, request);
   }
 
@@ -239,6 +252,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           );
     }
     this.#ready = true;
+    this.#answeredAt = Date.now();
     const socket = response.webSocket;
     if (socket) {
       logEvent("server", "upgrade", { path: url.pathname });
@@ -269,7 +283,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // A stopped server is started now, if its next start is due (DC-37's backoff holds).
     if (!container.running) await this.#check();
     for (;;) {
-      if (container.running && (await this.#healthy(container))) {
+      if (!this.#stopping && container.running && (await this.#healthy(container))) {
         this.#ready = true;
         // Let the watchdog record the end of an outage now rather than at its next poll.
         await this.ctx.storage.setAlarm(this.now());
@@ -303,14 +317,42 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         nextCheckAt = this.now() + timing.intervalMs;
         return;
       }
+      const observedFrom = Date.now();
       const observation = await this.#observe(container);
-      const result = step(this.#loadState(), observation, this.now(), timing, randomOutageId);
+      let result = step(this.#loadState(), observation, this.now(), timing, randomOutageId);
       this.#persist(result.state, result.effects);
       nextCheckAt = result.nextCheckAt;
       this.#ready = observation === "answering";
-      if (container.running) await this.#keepRunning(container);
-      await this.#apply(container, result.effects);
-      if (observation === "answering") await this.#bootstrapCheck(container);
+      if (result.effects.some((effect) => effect.type === "destroy")) {
+        // A restart decided on silence. Admit nothing from here, then take a last look: if the
+        // server answered meanwhile, a request or a health check saw it, so the restart is
+        // called off and the answer recorded instead (Codex WP2.2 r1, finding 1).
+        this.#stopping = true;
+        if (this.#answeredAt >= observedFrom || (await this.#healthy(container))) {
+          this.#stopping = false;
+          await this.#apply(
+            container,
+            result.effects.filter((effect) => effect.type !== "destroy"),
+          );
+          logEvent("watchdog", "restart_called_off");
+          result = step(result.state, "answering", this.now(), timing, randomOutageId);
+          this.#persist(result.state, result.effects);
+          nextCheckAt = result.nextCheckAt;
+          this.#ready = true;
+        }
+      }
+      try {
+        await this.#apply(container, result.effects);
+      } finally {
+        this.#stopping = false;
+      }
+      if (container.running) {
+        await this.#keepRunning(container);
+        if (this.#interceptPending) {
+          this.#interceptPending = !(await this.#registerIntercepts(container));
+        }
+      }
+      if (this.#ready) await this.#bootstrapCheck(container);
     } catch (error) {
       logEvent("watchdog", "check_error", { error: describeError(error) });
     } finally {
@@ -331,6 +373,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     try {
       const response = await this.#get(container, OMNIGENT_PORT, "/health");
       await response.body?.cancel();
+      if (response.ok) this.#answeredAt = Date.now();
       return response.ok;
     } catch {
       return false;
@@ -380,7 +423,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
 
   async #start(container: ServerContainer): Promise<void> {
     if (container.running) return;
-    await this.#registerIntercepts(container);
+    // The server needs platform.internal from its first moment: no start without it. The
+    // watchdog finds the server still stopped and tries again after its backoff.
+    if (!(await this.#registerIntercepts(container))) return;
+    this.#interceptPending = false;
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
     try {
@@ -407,7 +453,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     }
   }
 
-  async #registerIntercepts(container: ServerContainer): Promise<void> {
+  /** Registers `platform.internal` for this container. False when the call failed. */
+  async #registerIntercepts(container: ServerContainer): Promise<boolean> {
     const props: PlatformInternalProps = {
       propsVersion: PLATFORM_INTERNAL_PROPS_VERSION,
       caller: "omnigent-server",
@@ -417,8 +464,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         PLATFORM_INTERNAL_HOST,
         this.ctx.exports.PlatformInternal({ props }),
       );
+      return true;
     } catch (error) {
       logEvent("watchdog", "intercept_error", { error: describeError(error) });
+      return false;
     }
   }
 

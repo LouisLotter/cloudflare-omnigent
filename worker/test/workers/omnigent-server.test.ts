@@ -1,8 +1,11 @@
 import {
+  createExecutionContext,
+  createScheduledController,
   evictAllDurableObjects,
   evictDurableObject,
   runDurableObjectAlarm,
   runInDurableObject,
+  waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
@@ -13,13 +16,18 @@ import {
   type ReplicationPosition,
 } from "@cfo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import platform from "../../src/index.ts";
 import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
-import { FORWARD_VERSION_HEADER, OMNIGENT_SERVER_INTERFACE_VERSION } from "../../src/shared/rpc.ts";
+import {
+  FORWARD_VERSION_HEADER,
+  OMNIGENT_SERVER_INTERFACE_VERSION,
+  OMNIGENT_SERVER_OBJECT_NAME,
+} from "../../src/shared/rpc.ts";
 import { defined, gaps } from "../support/defined.ts";
 import { stepsWithEviction } from "../support/eviction.ts";
 import { unconfirmedResponse } from "../support/fake-omnigent-server.ts";
-import type { FakeServerContainer } from "../support/fake-server-container.ts";
+import { FakeServerContainer } from "../support/fake-server-container.ts";
 import { TEST_TIMING, testServers } from "../support/server-harness.ts";
 
 const INSTALLATION = "ins_01hs3f9q2m8z4w7k6t5r1n0ybc";
@@ -85,6 +93,7 @@ async function buffered(response: Response): Promise<Response> {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * The error a call refuses with, called on the instance itself. Not through RPC: with
@@ -129,13 +138,13 @@ describe("OmnigentServer: always on", () => {
   it("registers platform.internal, then starts with only the server's variables, and keeps it running", async () => {
     const { stub, fake } = await freshServer();
     await check(stub);
-    expect(fake.ops).toEqual(["intercept:platform.internal", "start", "timeout"]);
+    expect(fake.ops.slice(0, 3)).toEqual(["intercept:platform.internal", "start", "timeout"]);
     expect(fake.starts[0]?.env).toEqual({
       OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner-canary",
       OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: "cfo-canary-bootstrap-password",
       CFO_INSTALLATION_ID: INSTALLATION,
     });
-    expect(fake.inactivityTimeouts).toEqual([T.inactivityTimeoutMs]);
+    expect(new Set(fake.inactivityTimeouts)).toEqual(new Set([T.inactivityTimeoutMs]));
     // The secret's value never reaches a log line.
     expect(logs.join("\n")).not.toContain("cfo-canary-bootstrap-password");
   });
@@ -264,6 +273,73 @@ describe("OmnigentServer: always on", () => {
     expect(record?.endedAt).not.toBeNull();
   });
 
+  it("calls off a restart when the server answers again before it is stopped (Codex r1-1)", async () => {
+    const { stub, fake } = await runningServer();
+    fake.healthResults = Array.from({ length: 200 }, () => false); // silent, but running
+    const silentFrom = testServers.clock.now();
+    // Checks up to the one that decides the restart: the server answers its last look.
+    while (testServers.clock.now() - silentFrom < T.hungAfterMs - T.pollMs) await nextCheck(stub);
+    fake.healthResults = [false, false, true];
+    await nextCheck(stub);
+    expect(fake.destroys).toEqual([]);
+    expect(events("watchdog").map((e) => e.event)).toContain("restart_called_off");
+    const [record] = await stub.outages(everything);
+    expect(record).toMatchObject({ cause: "not_answering", restarts: 0 });
+    expect(record?.endedAt).not.toBeNull();
+    expect(fake.starts).toHaveLength(1);
+  });
+
+  it("passes no request on while the watchdog stops the server (Codex r1-1)", async () => {
+    const { stub, fake } = await runningServer();
+    fake.healthResults = Array.from({ length: 200 }, () => false);
+    const silentFrom = testServers.clock.now();
+    while (testServers.clock.now() - silentFrom < T.hungAfterMs - T.pollMs) await nextCheck(stub);
+    // The deciding check: two failed probes and a failed last look. From then on the server
+    // would answer health checks, so only the stop itself keeps a request out.
+    fake.healthResults = [false, false, false];
+    fake.destroyMs = 300;
+    const at = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
+    testServers.clock.advance(Math.max(0, (at ?? 0) - testServers.clock.now()));
+    const alarm = runDurableObjectAlarm(stub);
+    for (let i = 0; i < 200 && fake.destroys.length === 0; i += 1) await sleep(5);
+    expect(fake.destroys).toHaveLength(1); // the watchdog is stopping the server now
+    const during = await forward(stub, "/v1/sessions", { method: "POST", body: "{}" });
+    expect(during.status).toBe(503);
+    expect(ErrorBody.parse(await during.json()).error.retryable).toBe(true);
+    expect(fake.forwarded()).toEqual([]);
+    expect(await alarm).toBe(true);
+    expect(fake.destroys).toEqual(["not answering"]);
+  });
+
+  it("does not start without platform.internal, and retries a failed registration (Codex r1-2)", async () => {
+    const { stub, fake } = await freshServer();
+    const register = fake.interceptOutboundHttp.bind(fake);
+    let failures = 1;
+    fake.interceptOutboundHttp = async (host, target) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("intercept registration failed");
+      }
+      return register(host, target);
+    };
+    await check(stub);
+    expect(fake.starts).toEqual([]);
+    await nextCheck(stub); // the start found not to have happened
+    await nextCheck(stub); // retried after the backoff, with the intercept
+    expect(fake.starts).toHaveLength(1);
+    expect(fake.ops.slice(0, 2)).toEqual(["intercept:platform.internal", "start"]);
+    // A running container whose new instance failed to register: retried at the next check.
+    await nextCheck(stub);
+    failures = 1;
+    await evictDurableObject(stub);
+    await stub.bootstrapStatus(call);
+    const registered = fake.intercepts.length;
+    await nextCheck(stub);
+    expect(fake.intercepts.length).toBe(registered + 1);
+    await nextCheck(stub);
+    expect(fake.intercepts.length).toBe(registered + 1);
+  });
+
   it("re-arms its alarm even when a check fails", async () => {
     const { stub, fake } = await runningServer();
     Object.defineProperty(fake, "running", {
@@ -287,7 +363,11 @@ describe("OmnigentServer: always on", () => {
     fake.setInactivityTimeout = fail("timeout");
     fake.destroy = fail("destroy");
     await check(stub);
-    expect(fake.starts).toHaveLength(1); // started even though the intercept call failed
+    expect(fake.starts).toEqual([]); // no start without platform.internal
+    fake.interceptOutboundHttp = FakeServerContainer.prototype.interceptOutboundHttp.bind(fake);
+    await nextCheck(stub);
+    await nextCheck(stub);
+    expect(fake.starts).toHaveLength(1);
     fake.listening = false;
     for (
       let i = 0;
@@ -308,6 +388,38 @@ describe("OmnigentServer: always on", () => {
     expect(events("watchdog").map((e) => e.event)).toContain("start_error");
     const alarm = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
     expect(alarm).not.toBeNull();
+  });
+
+  it("is started by the platform Worker's cron trigger, without a browser", async () => {
+    const stub = env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME) as Stub;
+    const fake = testServers.create(stub.id);
+    const ctx = createExecutionContext();
+    await platform.scheduled?.(createScheduledController(), env, ctx);
+    await waitOnExecutionContext(ctx);
+    await check(stub);
+    expect(fake.starts).toHaveLength(1);
+  });
+
+  it("starts over from damaged state rather than stop watching", async () => {
+    const { stub, fake } = await freshServer();
+    await runInDurableObject(stub, (_i: OmnigentServer, state) => {
+      const damaged = {
+        phase: "waiting",
+        phaseSince: 1e20,
+        startDueAt: 1e20,
+        failedStarts: 0,
+        lastAnsweredAt: null,
+        startsSince: null,
+        outage: null,
+      };
+      state.storage.sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES ('watchdog', ?)",
+        JSON.stringify(damaged),
+      );
+    });
+    await check(stub);
+    expect(fake.starts).toHaveLength(1);
+    expect(events("watchdog").some((e) => e.event === "state_unreadable")).toBe(true);
   });
 
   it("starts over from unreadable state rather than stop watching", async () => {
