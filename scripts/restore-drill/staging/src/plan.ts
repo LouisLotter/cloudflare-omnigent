@@ -229,26 +229,34 @@ export type Action =
   | { readonly kind: "finish"; readonly outcome: Outcome };
 
 /**
- * What the alarm does next, from the run and what it just observed (``status`` is null when
- * the harness did not answer). New results are stored first, and nothing irreversible (a
- * replacement, which kills the container, or the end of a run) happens while a result the
- * harness reported is not yet in R2: the container holds its only copy. Only the run window's
- * end overrides that; the summary then names what is missing.
+ * What the alarm does next, from the run, what it just observed (``status`` is null when the
+ * harness did not answer) and whether the container runs.
+ *
+ * New results are stored first. While a result the harness reported is not yet in R2 and the
+ * container that holds its only copy still runs, nothing irreversible happens: no replacement,
+ * which kills the container, and no end of the run, whether done or failed. Only the run
+ * window's end overrides that; the summary then names what is missing. A replacement still in
+ * progress is polled for health either way: that kills nothing.
  */
-export function decide(run: RunRecord, status: HarnessStatus | null, now: number): Action[] {
+export function decide(
+  run: RunRecord,
+  status: HarnessStatus | null,
+  running: boolean,
+  now: number,
+): Action[] {
   if (run.outcome !== undefined) return [];
   const fresh = status === null ? [] : status.results.filter((name) => !run.stored.includes(name));
   const actions: Action[] = fresh.length > 0 ? [{ kind: "store", names: fresh }] : [];
   if (now >= run.armedUntil) return [...actions, { kind: "finish", outcome: "expired" }];
   const replacement = run.replacement;
-  if (replacement !== undefined && replacement.healthyAt === undefined) {
-    if (replacement.error !== undefined) return [...actions, { kind: "finish", outcome: "failed" }];
-    if (now - replacement.requestedAt > REPLACEMENT_HEALTH_TIMEOUT_MS) {
-      return [...actions, { kind: "finish", outcome: "failed" }];
-    }
-    return [...actions, { kind: "await-health" }];
-  }
-  if (fresh.length > 0) return actions;
+  const replacing = replacement !== undefined && replacement.healthyAt === undefined;
+  const broken =
+    replacing &&
+    (replacement.error !== undefined ||
+      now - replacement.requestedAt > REPLACEMENT_HEALTH_TIMEOUT_MS);
+  if (replacing && !broken) return [...actions, { kind: "await-health" }];
+  if (running && missingResults(run).length + fresh.length > 0) return actions;
+  if (broken) return [...actions, { kind: "finish", outcome: "failed" }];
   if (status === null) {
     // The caller counts this poll as missed; a harness silent for MAX_MISSED_POLLS has failed.
     return run.missedPolls + 1 >= MAX_MISSED_POLLS ? [{ kind: "finish", outcome: "failed" }] : [];

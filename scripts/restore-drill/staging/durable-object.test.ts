@@ -67,6 +67,8 @@ class FakeContainer {
   failStart = false;
   /** Runs inside destroy(), between its start and its end: another event arriving meanwhile. */
   duringDestroy: (() => Promise<void>) | null = null;
+  /** Runs inside a status fetch, before it answers: another event arriving meanwhile. */
+  duringStatus: (() => Promise<void>) | null = null;
   start(options: { enableInternet: boolean; env?: Record<string, string> }): void {
     expect(options.enableInternet).toBe(true);
     if (this.failStart) throw new Error("synthetic start failure");
@@ -89,7 +91,13 @@ class FakeContainer {
         const path = new URL(input).pathname;
         if (port === 8000) return new Response("", { status: this.healthy ? 200 : 503 });
         if (port !== 8002 || this.harness === null) throw new Error("connection refused");
-        if (path === "/status") return Response.json(this.harness.status);
+        if (path === "/status") {
+          const answer = this.harness.status;
+          const interleaved = this.duringStatus;
+          this.duringStatus = null;
+          if (interleaved !== null) await interleaved();
+          return Response.json(answer);
+        }
         const name = path.replace("/results/", "");
         const result = this.harness.results[name];
         return result === undefined ? new Response("{}", { status: 404 }) : Response.json(result);
@@ -317,6 +325,66 @@ describe("alarm", () => {
     const summary = JSON.parse(r2.objects.get(`results/${runId}/summary.json`) ?? "{}");
     expect(summary.outcome).toBe("expired");
     expect(summary.missingResults).toEqual(["env", "drill"]);
+  });
+
+  it("a stale alarm never touches a newer run's container or token (Codex review r2)", async () => {
+    const first = await started();
+    container.harness = { status: status({ done: true, results: [] }), results: {} };
+    let second = "";
+    // Run A's alarm waits on the harness; meanwhile the owner stops A and starts B.
+    container.duringStatus = async () => {
+      await drill.stop();
+      const result = await drill.run(CREDS);
+      second = String(result.body.runId);
+    };
+    await drill.alarm(); // A's alarm resumes with A's "done"
+    const run = await storage.get<Record<string, unknown>>("run");
+    expect(second).not.toBe(first);
+    expect(run?.runId).toBe(second);
+    expect(run?.outcome).toBeUndefined();
+    expect(container.running).toBe(true);
+    expect(container.starts).toHaveLength(2);
+    expect(storage.data.has("creds")).toBe(true);
+    expect(storage.alarm).not.toBeNull();
+  });
+
+  it("keeps the replacement's timing and its alarm when R2 fails (Codex review r2)", async () => {
+    await started();
+    const awaiting = { prefix: "restore-1000mb", manifest: "{}", filler_rows: 9 };
+    container.harness = {
+      status: status({ results: ["cf-replacement"], awaiting_replacement: awaiting }),
+      results: { "cf-replacement": {} },
+    };
+    await drill.alarm(); // stored
+    await drill.alarm(); // replaced
+    container.harness = { status: status({ mode: "replaced", phase: "replaced" }), results: {} };
+    container.healthy = true;
+    r2.failing = true;
+    await drill.alarm();
+    const run = await storage.get<{ replacement?: { healthyAt?: number }; outcome?: string }>(
+      "run",
+    );
+    expect(run?.replacement?.healthyAt).toBeGreaterThan(0);
+    expect(run?.outcome).toBeUndefined();
+    expect(storage.alarm).not.toBeNull();
+    expect(storage.data.has("creds")).toBe(true);
+  });
+
+  it("reschedules itself when something in the alarm throws", async () => {
+    await started();
+    container.harness = { status: status({ results: ["env"] }), results: { env: {} } };
+    const original = storage.put.bind(storage);
+    let calls = 0;
+    storage.put = async (key: string | Record<string, unknown>, value?: unknown) => {
+      calls += 1;
+      if (key === "run") throw new Error("synthetic storage failure");
+      return original(key, value);
+    };
+    await drill.alarm();
+    storage.put = original;
+    expect(calls).toBeGreaterThan(0);
+    expect(storage.alarm).not.toBeNull();
+    expect(storage.data.has("creds")).toBe(true);
   });
 
   it("expires a run at the end of its window", async () => {

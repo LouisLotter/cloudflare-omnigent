@@ -204,41 +204,54 @@ function status(fields: Partial<HarnessStatus> = {}): HarnessStatus {
 
 describe("decide", () => {
   it("stores new results and waits", () => {
-    expect(decide({ ...RUN, stored: ["env"] }, status({ results: ["env", "drill"] }), NOW)).toEqual(
-      [{ kind: "store", names: ["drill"] }],
-    );
-    expect(decide(RUN, status(), NOW)).toEqual([]);
+    expect(
+      decide({ ...RUN, stored: ["env"] }, status({ results: ["env", "drill"] }), true, NOW),
+    ).toEqual([{ kind: "store", names: ["drill"] }]);
+    expect(decide(RUN, status(), true, NOW)).toEqual([]);
   });
 
   it("does nothing for a finished run", () => {
-    expect(decide({ ...RUN, outcome: "done" }, status({ done: true }), NOW)).toEqual([]);
+    expect(decide({ ...RUN, outcome: "done" }, status({ done: true }), true, NOW)).toEqual([]);
   });
 
   it("replaces the container only once every reported result is stored", () => {
     const awaiting = { prefix: "restore-1000mb", manifest: "{}", fillerRows: 1 };
     const asking = status({ results: ["cf-replacement"], awaiting });
-    expect(decide(RUN, asking, NOW)).toEqual([{ kind: "store", names: ["cf-replacement"] }]);
-    expect(decide({ ...RUN, stored: ["cf-replacement"] }, asking, NOW)).toEqual([
-      { kind: "replace", awaiting },
-    ]);
+    expect(decide(RUN, asking, true, NOW)).toEqual([{ kind: "store", names: ["cf-replacement"] }]);
+    const stored = { ...RUN, stored: ["cf-replacement"], reported: ["cf-replacement"] };
+    expect(decide(stored, asking, true, NOW)).toEqual([{ kind: "replace", awaiting }]);
   });
 
   it("polls health until the replaced server answers, and gives up after its timeout", () => {
     const started = { prefix: "p", requestedAt: NOW, startCalledAt: NOW + 5 };
     const replacing: RunRecord = { ...RUN, mode: "replaced", replacement: started };
-    expect(decide(replacing, null, NOW + ALARM_MS)).toEqual([{ kind: "await-health" }]);
-    expect(decide(replacing, null, NOW + REPLACEMENT_HEALTH_TIMEOUT_MS + 1)).toEqual([
+    expect(decide(replacing, null, true, NOW + ALARM_MS)).toEqual([{ kind: "await-health" }]);
+    expect(decide(replacing, null, true, NOW + REPLACEMENT_HEALTH_TIMEOUT_MS + 1)).toEqual([
       { kind: "finish", outcome: "failed" },
     ]);
     const broken = { ...replacing, replacement: { ...started, error: "x" } };
-    expect(decide(broken, null, NOW)).toEqual([{ kind: "finish", outcome: "failed" }]);
-    const healthy = {
-      ...replacing,
-      replacement: { ...started, healthyAt: NOW + 9 },
-    };
-    expect(decide(healthy, status({ mode: "replaced" }), NOW)).toEqual([]);
-    expect(decide(healthy, status({ mode: "replaced", done: true }), NOW)).toEqual([
+    expect(decide(broken, null, true, NOW)).toEqual([{ kind: "finish", outcome: "failed" }]);
+    const healthy = { ...replacing, replacement: { ...started, healthyAt: NOW + 9 } };
+    expect(decide(healthy, status({ mode: "replaced" }), true, NOW)).toEqual([]);
+    expect(decide(healthy, status({ mode: "replaced", done: true }), true, NOW)).toEqual([
       { kind: "finish", outcome: "done" },
+    ]);
+  });
+
+  it("never ends a broken replacement while a result waits for R2 (Codex review r2)", () => {
+    const old = { prefix: "p", requestedAt: NOW - REPLACEMENT_HEALTH_TIMEOUT_MS - 1 };
+    const run: RunRecord = { ...RUN, mode: "replaced", replacement: old };
+    const reporting = status({ mode: "replaced", results: ["cf-replacement-container"] });
+    expect(decide(run, reporting, true, NOW)).toEqual([
+      { kind: "store", names: ["cf-replacement-container"] },
+    ]);
+    // A silent harness whose earlier result is still unstored: the container still holds it.
+    const silent = { ...RUN, reported: ["drill"], missedPolls: MAX_MISSED_POLLS };
+    expect(decide(silent, null, true, NOW)).toEqual([]);
+    // Once the container is gone, nothing is left to wait for.
+    expect(decide(silent, null, false, NOW)).toEqual([{ kind: "finish", outcome: "failed" }]);
+    expect(decide({ ...run, reported: ["x"] }, null, false, NOW)).toEqual([
+      { kind: "finish", outcome: "failed" },
     ]);
   });
 
@@ -249,13 +262,13 @@ describe("decide", () => {
       mode: "replaced" as const,
       replacement: { prefix: "p", requestedAt: NOW, healthyAt: NOW + 1 },
     };
-    expect(decide(replaced, status({ awaiting }), NOW)).toEqual([]);
+    expect(decide(replaced, status({ awaiting }), true, NOW)).toEqual([]);
   });
 
   it("finishes a run only once every reported result is stored", () => {
     const done = status({ done: true, results: ["env"] });
-    expect(decide(RUN, done, NOW)).toEqual([{ kind: "store", names: ["env"] }]);
-    expect(decide({ ...RUN, stored: ["env"] }, done, NOW)).toEqual([
+    expect(decide(RUN, done, true, NOW)).toEqual([{ kind: "store", names: ["env"] }]);
+    expect(decide({ ...RUN, stored: ["env"], reported: ["env"] }, done, true, NOW)).toEqual([
       { kind: "finish", outcome: "done" },
     ]);
   });
@@ -268,46 +281,74 @@ describe("decide", () => {
   });
 
   it("expires at the end of the window, after storing", () => {
-    expect(decide(RUN, status({ results: ["env"] }), RUN.armedUntil)).toEqual([
+    expect(decide(RUN, status({ results: ["env"] }), true, RUN.armedUntil)).toEqual([
       { kind: "store", names: ["env"] },
       { kind: "finish", outcome: "expired" },
     ]);
   });
 
   it("fails a run whose harness stays silent", () => {
-    expect(decide({ ...RUN, missedPolls: MAX_MISSED_POLLS - 2 }, null, NOW)).toEqual([]);
-    expect(decide({ ...RUN, missedPolls: MAX_MISSED_POLLS - 1 }, null, NOW)).toEqual([
+    expect(decide({ ...RUN, missedPolls: MAX_MISSED_POLLS - 2 }, null, true, NOW)).toEqual([]);
+    expect(decide({ ...RUN, missedPolls: MAX_MISSED_POLLS - 1 }, null, true, NOW)).toEqual([
       { kind: "finish", outcome: "failed" },
     ]);
   });
 
-  it("never finishes twice and always stores before finishing (property)", () => {
+  it("never finishes twice, stores first, and acts irreversibly only with every result stored (property)", () => {
     fc.assert(
       fc.property(
         fc.record({
           missed: fc.nat(20),
           done: fc.boolean(),
           silent: fc.boolean(),
+          running: fc.boolean(),
           results: fc.subarray(["env", "drill", "barrier-1s", "summary"]),
           stored: fc.subarray(["env", "drill"]),
+          reported: fc.subarray(["env", "drill", "barrier-1s"]),
+          replacement: fc.constantFrom("none", "pending", "error", "late", "healthy"),
+          awaiting: fc.boolean(),
           late: fc.boolean(),
         }),
-        ({ missed, done, silent, results, stored, late }) => {
-          const run = { ...RUN, missedPolls: missed, stored };
-          const actions = decide(
-            run,
-            silent ? null : status({ done, results }),
-            late ? RUN.armedUntil : NOW,
-          );
+        (g) => {
+          const replacement =
+            g.replacement === "none"
+              ? undefined
+              : {
+                  prefix: "p",
+                  requestedAt:
+                    g.replacement === "late" ? NOW - REPLACEMENT_HEALTH_TIMEOUT_MS - 1 : NOW,
+                  ...(g.replacement === "error" ? { error: "x" } : {}),
+                  ...(g.replacement === "healthy" ? { healthyAt: NOW } : {}),
+                };
+          const run: RunRecord = {
+            ...RUN,
+            missedPolls: g.missed,
+            stored: g.stored,
+            reported: g.reported,
+            ...(replacement ? { replacement, mode: "replaced" as const } : {}),
+          };
+          const harness = g.silent
+            ? null
+            : status({
+                done: g.done,
+                results: g.results,
+                awaiting: g.awaiting ? { prefix: "p", manifest: "{}", fillerRows: 1 } : null,
+              });
+          const running = g.silent ? g.running : true;
+          const actions = decide(run, harness, running, g.late ? RUN.armedUntil : NOW);
           const finishes = actions.filter((a) => a.kind === "finish");
           const storeIndex = actions.findIndex((a) => a.kind === "store");
           const finishIndex = actions.findIndex((a) => a.kind === "finish");
           const irreversible = actions.some((a) => a.kind === "finish" || a.kind === "replace");
+          const unstored =
+            [...g.reported, ...(harness?.results ?? [])].filter((n) => !g.stored.includes(n))
+              .length > 0;
           return (
             finishes.length <= 1 &&
             (storeIndex === -1 || finishIndex === -1 || storeIndex < finishIndex) &&
-            // Nothing irreversible while a result waits for R2, unless the window is over.
-            (storeIndex === -1 || late || !irreversible)
+            // Nothing irreversible while a running container holds an unstored result,
+            // unless the window is over.
+            (!irreversible || g.late || !running || !unstored)
           );
         },
       ),

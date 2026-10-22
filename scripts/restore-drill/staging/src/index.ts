@@ -174,38 +174,49 @@ export class DrillRun extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    let run = await this.ctx.storage.get<RunRecord>("run");
-    if (run === undefined || run.outcome !== undefined) return;
-    const runId = run.runId;
-    const port = this.port();
-    const status = port.running ? await this.harnessStatus(port) : null;
-    run = {
-      ...run,
-      missedPolls: status === null ? run.missedPolls + 1 : 0,
-      phase: status?.phase ?? run.phase,
-      reported: status?.results ?? run.reported ?? [],
-      errors: status ? { ...run.errors, ...status.errors } : run.errors,
-    };
-    for (const action of decide(run, status, Date.now())) {
-      if (action.kind === "store") {
-        run = await this.store(run, port, action.names);
-      } else if (action.kind === "replace") {
-        run = await this.replace(run, port, action.awaiting);
-      } else if (action.kind === "await-health") {
-        run = await this.awaitHealth(run, port);
-      } else {
-        await this.finish(run, action.outcome);
-        return;
+    const stored = await this.ctx.storage.get<RunRecord>("run");
+    if (stored === undefined || stored.outcome !== undefined) return;
+    const runId = stored.runId;
+    // A safety alarm before any outside work: whatever fails below, the run comes back here
+    // and ends by its window at the latest, so the token is never stranded.
+    await this.ctx.storage.setAlarm(Date.now() + ALARM_MS);
+    let next = ALARM_MS;
+    try {
+      const port = this.port();
+      const status = port.running ? await this.harnessStatus(port) : null;
+      let run: RunRecord = {
+        ...stored,
+        missedPolls: status === null ? stored.missedPolls + 1 : 0,
+        phase: status?.phase ?? stored.phase,
+        reported: status?.results ?? stored.reported ?? [],
+        errors: status ? { ...stored.errors, ...status.errors } : stored.errors,
+      };
+      for (const action of decide(run, status, port.running, Date.now())) {
+        if (action.kind === "store") {
+          run = await this.store(run, port, action.names);
+        } else if (action.kind === "replace") {
+          run = await this.replace(run, port, action.awaiting);
+        } else if (action.kind === "await-health") {
+          run = await this.awaitHealth(run, port);
+        } else {
+          await this.finish(run, action.outcome);
+          return;
+        }
+      }
+      // A run stopped while this alarm waited keeps the stop's record; and if a newer run
+      // owns the container by now, this stale alarm must not touch it.
+      if ((await this.active(runId)) === undefined) return;
+      await this.ctx.storage.put("run", run);
+      if (run.replacement !== undefined && run.replacement.healthyAt === undefined) {
+        next = HEALTH_POLL_MS;
+      }
+    } catch (error) {
+      log("alarm.error", { runId, error: String(error).slice(0, 200) });
+    } finally {
+      if ((await this.active(runId)) !== undefined) {
+        await this.ctx.storage.setAlarm(Date.now() + next);
       }
     }
-    if ((await this.active(runId)) === undefined) {
-      // Stopped while this alarm waited: the stop's record stands, and nothing may run on.
-      if (port.running) await port.kill();
-      return;
-    }
-    const pending = run.replacement !== undefined && run.replacement.healthyAt === undefined;
-    await this.ctx.storage.put("run", run);
-    await this.ctx.storage.setAlarm(Date.now() + (pending ? HEALTH_POLL_MS : ALARM_MS));
   }
 
   private async harnessStatus(port: ContainerPort): Promise<HarnessStatus | null> {
@@ -250,6 +261,7 @@ export class DrillRun extends DurableObject<Env> {
     awaiting: Awaiting,
   ): Promise<RunRecord> {
     const requestedAt = Date.now();
+    if ((await this.active(run.runId)) === undefined) return run; // never kill another run's
     log("replacement.kill", { runId: run.runId });
     await port.kill();
     const stoppedAt = Date.now();
@@ -294,13 +306,21 @@ export class DrillRun extends DurableObject<Env> {
     while (Date.now() < until) {
       if (await port.serverHealthy()) {
         const done = { ...replacement, healthyAt: Date.now() };
-        await this.env.RESULTS.put(
-          resultKey(run.runId, "cf-replacement-do"),
-          JSON.stringify({ ...done, timings: replacementTimings(done) }, null, 2),
-          { httpMetadata: { contentType: "application/json" } },
-        );
+        const timed: RunRecord = { ...run, replacement: done };
+        // The measurement first, in the run record; its copy in R2 may fail and retry nothing.
+        if ((await this.active(run.runId)) === undefined) return timed;
+        await this.ctx.storage.put("run", timed);
         log("replacement.healthy", { runId: run.runId, ...replacementTimings(done) });
-        return { ...run, replacement: done };
+        try {
+          await this.env.RESULTS.put(
+            resultKey(run.runId, "cf-replacement-do"),
+            JSON.stringify({ ...done, timings: replacementTimings(done) }, null, 2),
+            { httpMetadata: { contentType: "application/json" } },
+          );
+        } catch {
+          // The summary carries the same timings.
+        }
+        return timed;
       }
       await sleep(HEALTH_POLL_MS);
     }
@@ -308,9 +328,9 @@ export class DrillRun extends DurableObject<Env> {
   }
 
   /**
-   * Ends a run: its outcome and the deletion of the token are written first, in one step,
-   * then the container is stopped and the summary stored. A run already ended keeps its
-   * first outcome.
+   * Ends a run: its outcome and the deletion of the token are written first, then the
+   * container is stopped and the summary stored. Only the active run is ended this way; a run
+   * already ended keeps its first outcome.
    */
   private async finish(run: RunRecord, outcome: Outcome): Promise<void> {
     const current = await this.active(run.runId);
@@ -346,12 +366,8 @@ export class DrillRun extends DurableObject<Env> {
       }
       return;
     }
-    await this.forgetSecrets();
-    try {
-      await this.port().kill();
-    } catch {
-      // Already gone.
-    }
+    // Already ended (by Stop, or another alarm), or a newer run owns the container and the
+    // token by now: nothing here is this run's to clean up.
   }
 
   private async forgetSecrets(): Promise<void> {
