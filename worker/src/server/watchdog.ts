@@ -35,9 +35,10 @@ export interface WatchdogTiming {
   /** The check cadence while it starts, stops, retries or is in an outage. */
   readonly pollMs: number;
   /**
-   * How long a start may take to answer when the entrypoint does not say what it is doing (an
-   * older image, or its status unreadable), and how long an app the entrypoint reports running
-   * may take to answer the watchdog (DC-47: at least 120 s).
+   * How long an app the entrypoint reports `running` (it answered the entrypoint, or an older
+   * image's app started) may take to answer the watchdog, from that sight (DC-47: at least
+   * 120 s). While the status cannot be read, a start gets this on top of the budgets of the
+   * stages it may still be in (see `starting`).
    */
   readonly readinessWaitMs: number;
   /**
@@ -584,7 +585,10 @@ function silent(
  *     app-start budget and the readiness wait from `initializing`; with nothing seen past the
  *     boot: the restore allowance, the app-start budget and the readiness wait, from the start.
  * A boot with another ID than the one this start follows is a new container (the platform
- * replaced it unseen): it starts its budgets again (Codex WP2.6 r1-2).
+ * replaced it unseen): the earlier one counts as a failed start, recorded on the outage, and the
+ * new one gets budgets of its own (Codex WP2.6 r1-2). Only while the failed starts stay within
+ * DC-37's backoff: beyond it, a new boot no longer renews the start's budgets, so the watchdog's
+ * own stop and restart take over, with their bounded backoff (Codex WP2.6 r2-1).
  */
 function starting(
   observed: WatchdogState,
@@ -597,10 +601,28 @@ function starting(
   const bootId = entrypoint?.bootId ?? null;
   let state = observed;
   if (bootId !== null && state.bootId !== null && bootId !== state.bootId) {
-    b.event("start_reboot", { phase, sinceStartMs: now - (state.phaseSince ?? now) });
+    // The container this start followed is gone, replaced before it answered: a failed start.
+    const failedStarts = state.failedStarts + 1;
+    const renews = failedStarts <= timing.startRetryMs.length;
+    b.openFor(state, "start_failed", state.phaseSince ?? now);
+    b.countRestart();
+    b.recordOutage();
+    b.event("start_reboot", {
+      phase,
+      sinceStartMs: now - (state.phaseSince ?? now),
+      failedStarts,
+      renewed: renews,
+    });
+    if (failedStarts === timing.startRetryMs.length + 1) {
+      b.event("start_failing", {
+        failedStarts,
+        sinceFirstStartMs: now - (state.startsSince ?? state.phaseSince ?? now),
+      });
+    }
     state = {
       ...state,
-      phaseSince: now,
+      phaseSince: renews ? now : state.phaseSince,
+      failedStarts,
       bootId,
       bootSeenAt: null,
       initSeenAt: null,

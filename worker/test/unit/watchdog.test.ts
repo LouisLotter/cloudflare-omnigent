@@ -310,7 +310,12 @@ describe("watchdog: the app's initialization has its own budget (AIR2-010)", () 
       [T0 + 535_000 + T.restoreWaitMs, boot("restoring", B)],
     ]);
     expect(events(defined(steps[3]))).toContain("start_reboot");
-    expect(defined(steps[3]).state).toMatchObject({ phaseSince: T0 + 535_000, bootId: B });
+    expect(defined(steps[3]).state).toMatchObject({
+      phaseSince: T0 + 535_000,
+      bootId: B,
+      failedStarts: 1, // the replaced container never answered: a failed start (r2-1)
+    });
+    expect(outages(defined(steps[3]))[0]).toMatchObject({ cause: "start_failed", restarts: 1 });
     expect(stops(steps.slice(0, 6))).toEqual([]);
     expect(types(defined(steps[6]))).toContain("stop"); // the new boot's own allowance, bounded
     // The same boot read again after the object's state was stored and reloaded: no reset.
@@ -321,6 +326,31 @@ describe("watchdog: the app's initialization has its own budget (AIR2-010)", () 
     ]);
     expect(types(defined(same[2]))).toContain("stop");
     expect(same.flatMap(events)).not.toContain("start_reboot");
+  });
+
+  it("records every unseen reboot as a failed start, and stops renewing the budgets after DC-37's backoff (Codex WP2.6 r2-1)", () => {
+    // Codex's example: a new boot ID every 500 s, for good.
+    let state = step(INITIAL_WATCHDOG_STATE, STOPPED, T0, T, nextId).state;
+    let stoppedAt: number | null = null;
+    for (let k = 1; k < 10_000 && stoppedAt === null; k += 1) {
+      const at = T0 + k * T.pollMs;
+      const bootId = (Math.floor((at - T0) / 500_000) % 2 === 0 ? "c" : "d").repeat(32);
+      const s = step(
+        state,
+        { kind: "silent", entrypoint: { phase: "restoring", recovery: null, bootId } },
+        at,
+        T,
+        nextId,
+      );
+      if (types(s).includes("stop")) stoppedAt = at;
+      state = s.state;
+    }
+    expect(stoppedAt).not.toBeNull();
+    // Renewed while the failed starts stay within the backoff, then bounded by the last renewal.
+    const renewals = T.startRetryMs.length;
+    expect(stoppedAt).toBeLessThanOrEqual(T0 + (renewals + 1) * 500_000 + T.restoreWaitMs);
+    expect(state.failedStarts).toBeGreaterThan(renewals);
+    expect(state.outage).toMatchObject({ cause: "start_failed" });
   });
 
   it("adopts a container it finds initializing, with the app-start budget from then", () => {
