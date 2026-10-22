@@ -3,17 +3,21 @@
 // controls.test.js drives it with fake ports.
 //
 // - GET and HEAD never change anything: no container start, no bench, no write.
-//   A GET to a control URL shows a confirmation page with buttons.
+//   A GET to a control URL shows a confirmation page with buttons; GET
+//   /results shows the campaign's stored progress.
 // - A change is a POST with an Origin exactly equal to this deployment's origin
 //   (Sec-Fetch-Site, when sent, must be "same-origin") and the request-intent
 //   token from the page, compared in constant time.
-// - /probe and /bench run only while a campaign is armed by such a POST; it
-//   disarms itself after ARM_MS.
+// - POST /campaign arms an unattended campaign (campaign.js) for a bounded time
+//   and starts it; POST /disarm stops it. The manual /probe and /bench run only
+//   while armed by POST /arm, which disarms itself after ARM_MS, and never
+//   while a campaign runs.
 
 export const ARM_MS = 30 * 60 * 1000;
 const PROFILES = ["small", "realistic", "large", "many-small"];
 const METHODS = ["rsync", "rsync-2phase", "rsync-incremental", "reflink"];
-const CONTROL_PATHS = new Set(["/", "/arm", "/disarm", "/probe", "/bench"]);
+const CAMPAIGN_PLANS = ["full", "quick"];
+const CONTROL_PATHS = new Set(["/", "/arm", "/disarm", "/probe", "/bench", "/campaign"]);
 
 export function sameToken(a, b) {
   if (typeof a !== "string" || typeof b !== "string" || a.length === 0 || a.length !== b.length) {
@@ -35,20 +39,42 @@ function escapeHtml(s) {
   );
 }
 
-export function confirmationPage(state, now, running) {
+function campaignLine(view) {
+  const c = view?.campaign;
+  if (!c) return "No campaign yet.";
+  const step = c.status === "running" ? `, step ${c.index + 1} of ${c.stepCount}: ${c.step}` : "";
+  return `Campaign ${c.id} (${c.plan}): ${c.status}${step}.`;
+}
+
+export function confirmationPage(state, now, running, view) {
   const armed = state.armedUntil > now;
   const form = (action, label, extra = "") =>
     `<form method="post" action="${action}"><input type="hidden" name="intent" value="${escapeHtml(state.token)}">${extra}<button>${label}</button></form>`;
   const bench = `<select name="profile">${PROFILES.map((p) => `<option>${p}</option>`).join("")}</select>
-<input name="runs" value="5" size="2"> <input name="methods" value="rsync,rsync-2phase">`;
+<input name="runs" value="5" size="2"> <input name="methods" value="rsync-2phase,reflink">`;
   const body = `<!doctype html><meta charset="utf-8"><title>S3 capture bench</title>
 <h1>S3 capture bench</h1>
-<p>Campaign: ${armed ? `armed until ${new Date(state.armedUntil).toISOString()}` : "not armed"}. Container: ${running ? "running" : "stopped"}.</p>
-${form("/arm", "Arm the campaign (30 minutes)")}
-${form("/disarm", "Disarm")}
+<p>${escapeHtml(campaignLine(view))} Container: ${running ? "running" : "stopped"}. <a href="/results">Results</a></p>
+<h2>Staging campaign</h2>
+${form("/campaign", "Start the staging campaign (about 90 minutes, unattended)", '<input type="hidden" name="plan" value="full">')}
+${form("/campaign", "Rehearse every step quickly (about 10 minutes)", '<input type="hidden" name="plan" value="quick">')}
+${form("/disarm", "Stop the campaign and disarm")}
+<h2>Manual controls</h2>
+<p>Manual: ${armed ? `armed until ${new Date(state.armedUntil).toISOString()}` : "not armed"}.</p>
+${form("/arm", "Arm the manual controls (30 minutes)")}
 ${form("/probe", "Run the environment probe")}
 ${form("/bench", "Start a capture bench", bench)}
 <p>Results: GET /jobs/&lt;id&gt; while the container runs.</p>`;
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+function resultsPage(view) {
+  const body = `<!doctype html><meta charset="utf-8"><title>S3 campaign results</title>
+<h1>S3 campaign results</h1><p>${escapeHtml(campaignLine(view))} <a href="/">Controls</a></p>
+<pre>${escapeHtml(JSON.stringify(view ?? {}, null, 1))}</pre>`;
   return new Response(body, {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
@@ -79,23 +105,32 @@ export async function refuseUnlessIntended(request, state) {
 function benchBody(form) {
   const profile = form.get("profile") ?? "realistic";
   const runs = Number(form.get("runs") ?? "5");
-  const methods = (form.get("methods") ?? "rsync,rsync-2phase").split(",").map((m) => m.trim());
+  const methods = (form.get("methods") ?? "rsync-2phase,reflink").split(",").map((m) => m.trim());
   if (!PROFILES.includes(profile)) return null;
   if (!Number.isInteger(runs) || runs < 1 || runs > 10) return null;
   if (methods.length === 0 || !methods.every((m) => METHODS.includes(m))) return null;
-  return { profile, runs, methods };
+  return { profile, plan: methods.map((method) => ({ method, runs })) };
 }
 
-// ports: { container: { running(), start(), keepAlive(), fetch(path, init) }, now() }
-// state: { token, armedUntil } kept in the Durable Object's memory.
+// ports: {
+//   now(),
+//   container: { running(), start(), keepAlive(), fetch(path, init) },
+//   campaign: { view(), start(plan) -> { ok, reason }, stop(reason) },
+//   saveArm(armedUntil),
+// }
+// state: { token, armedUntil }; the token lives only in the Durable Object's memory.
 export async function handle(request, state, ports) {
   const url = new URL(request.url);
   const path = url.pathname;
   const now = ports.now();
 
   if (request.method === "GET" || request.method === "HEAD") {
-    if (CONTROL_PATHS.has(path)) {
-      const page = confirmationPage(state, now, ports.container.running());
+    if (CONTROL_PATHS.has(path) || path === "/results") {
+      const view = await ports.campaign.view();
+      const page =
+        path === "/results"
+          ? resultsPage(view)
+          : confirmationPage(state, now, ports.container.running(), view);
       return request.method === "HEAD"
         ? new Response(null, { status: 200, headers: page.headers })
         : page;
@@ -114,14 +149,28 @@ export async function handle(request, state, ports) {
 
   if (path === "/arm") {
     state.armedUntil = now + ARM_MS;
+    await ports.saveArm(state.armedUntil);
     return new Response(null, { status: 303, headers: { location: "/" } });
   }
   if (path === "/disarm") {
     state.armedUntil = 0;
+    await ports.saveArm(0);
+    await ports.campaign.stop("disarmed by the owner");
     return new Response(null, { status: 303, headers: { location: "/" } });
   }
+  if (path === "/campaign") {
+    const form = new URLSearchParams(await request.text());
+    const plan = form.get("plan") ?? "full";
+    if (!CAMPAIGN_PLANS.includes(plan)) return text(400, "unknown campaign plan");
+    const started = await ports.campaign.start(plan);
+    if (!started.ok) return text(409, `refused: ${started.reason}`);
+    return new Response(null, { status: 303, headers: { location: "/results" } });
+  }
   if (path !== "/probe" && path !== "/bench") return text(404, "not found");
-  if (!(state.armedUntil > now)) return text(409, "the campaign is not armed");
+  if (!(state.armedUntil > now)) return text(409, "the manual controls are not armed");
+  if ((await ports.campaign.view())?.campaign?.status === "running") {
+    return text(409, "a campaign is running");
+  }
 
   let init = { method: "GET" };
   if (path === "/bench") {
@@ -134,7 +183,7 @@ export async function handle(request, state, ports) {
       headers: { "content-type": "application/json" },
     };
   }
-  if (!ports.container.running()) ports.container.start();
+  if (!ports.container.running()) await ports.container.start();
   await ports.container.keepAlive();
   return ports.container.fetch(path, init);
 }
