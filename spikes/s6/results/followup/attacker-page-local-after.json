@@ -3,10 +3,10 @@
   "sent: foreign-form-post (simple form)",
   "sent: foreign-fetch-post (no-cors POST with cookies)",
   "sent: null-form-post",
-  "sent: null-fetch-post",
-  "refused or blocked: null-websocket",
   "refused or blocked: foreign-websocket",
   "blocked by the browser: foreign-fetch-header (TypeError)",
+  "sent: null-fetch-post",
+  "refused or blocked: null-websocket",
   "done: now click the top-level link above, then go back to the S6 page and click Q5"
  ],
  "top_level_get_showed_confirmation": true,
@@ -22,12 +22,12 @@
    "reason": "foreign origin"
   },
   {
-   "method": "POST",
-   "path": "/api/phase",
-   "case_tag": "null-fetch-post",
-   "origin": "null origin",
-   "fetch_site": "cross-site",
-   "reason": "null origin"
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "foreign-websocket",
+   "origin": "foreign origin",
+   "fetch_site": null,
+   "reason": "terminal: foreign origin"
   },
   {
    "method": "OPTIONS",
@@ -38,20 +38,12 @@
    "reason": "method"
   },
   {
-   "method": "GET",
-   "path": "/term/ws",
-   "case_tag": "foreign-websocket",
-   "origin": "foreign origin",
-   "fetch_site": null,
-   "reason": "terminal: foreign origin"
-  },
-  {
-   "method": "GET",
-   "path": "/term/ws",
-   "case_tag": "null-websocket",
+   "method": "POST",
+   "path": "/api/phase",
+   "case_tag": "null-fetch-post",
    "origin": "null origin",
-   "fetch_site": null,
-   "reason": "terminal: null origin"
+   "fetch_site": "cross-site",
+   "reason": "null origin"
   },
   {
    "method": "POST",
@@ -60,6 +52,14 @@
    "origin": "null origin",
    "fetch_site": "cross-site",
    "reason": "null origin"
+  },
+  {
+   "method": "GET",
+   "path": "/term/ws",
+   "case_tag": "null-websocket",
+   "origin": "null origin",
+   "fetch_site": null,
+   "reason": "terminal: null origin"
   },
   {
    "method": "POST",

@@ -33,6 +33,8 @@ print(eval('''$2''') if s else 'missing')"
 }
 state_field() { curl -sS "$BASE/api/state" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(eval('''$1'''))"; }
 
+# Revocation records survive wipes by design; count only the ones this run adds.
+REVOKED_BEFORE=$(state_field "len(d['revocations_confirmed'])")
 phase start ""; check "start A" done_ok
 phase fake-sign-in ""; check "synthetic sign-in" done_ok
 phase after-sign-in ""; check "after sign-in" done_ok
@@ -56,6 +58,6 @@ phase restore-c-sign-out ""; check "C clicked again completes" done_ok
 phase restore-d ""; check "D restores signed out" done_ok
 phase wipe ""; check "wipe" done_ok
 check "nothing left after the wipe" '[ "$(state_field "d[\"objects\"]")" = 0 ]'
-check "no revocation had to be recorded" '[ "$(state_field "len(d[\"revocations_confirmed\"])")" = 0 ]'
+check "no revocation had to be recorded" '[ "$(state_field "len(d[\"revocations_confirmed\"])")" = "$REVOKED_BEFORE" ]'
 echo "failures: $failures"
 [ "$failures" = 0 ]

@@ -314,8 +314,8 @@
       }
      ]
     },
-    ".codex/state_5.sqlite-wal": {
-     "kind": "other",
+    ".codex/state_5.sqlite": {
+     "kind": "sqlite",
      "matches": [
       {
        "class": "jwt-claim:https://api.openai.com/auth.chatgpt_user_id",
@@ -323,7 +323,7 @@
        "key": "tokens.id_token#https://api.openai.com/auth.chatgpt_user_id",
        "source": ".codex/auth.json",
        "where": [
-        "raw bytes (6 lines)"
+        "table threads, column creator_user_id (1 rows)"
        ]
       },
       {
@@ -332,7 +332,7 @@
        "key": "tokens.id_token#https://api.openai.com/auth.chatgpt_account_id",
        "source": ".codex/auth.json",
        "where": [
-        "raw bytes (6 lines)"
+        "table threads, column creator_account_id (1 rows)"
        ]
       },
       {
@@ -341,7 +341,7 @@
        "key": "tokens.access_token#https://api.openai.com/auth.chatgpt_user_id",
        "source": ".codex/auth.json",
        "where": [
-        "raw bytes (6 lines)"
+        "table threads, column creator_user_id (1 rows)"
        ]
       },
       {
@@ -350,13 +350,13 @@
        "key": "tokens.access_token#https://api.openai.com/auth.chatgpt_account_id",
        "source": ".codex/auth.json",
        "where": [
-        "raw bytes (6 lines)"
+        "table threads, column creator_account_id (1 rows)"
        ]
       }
      ]
     }
    },
-   "files_scanned": 77,
+   "files_scanned": 69,
    "secrets_outside_login_files": [],
    "source_keys": {
     ".claude/.credentials.json": [
@@ -593,7 +593,7 @@
      ]
     }
    },
-   "files_scanned": 75,
+   "files_scanned": 73,
    "secrets_outside_login_files": [],
    "source_keys": {
     ".claude/.credentials.json": [

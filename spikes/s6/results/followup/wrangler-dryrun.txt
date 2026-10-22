@@ -1,5 +1,3 @@
-
-Total Upload: 64.25 KiB / gzip: 17.65 KiB
 Your Worker has access to the following bindings:
 Binding                                  Resource                  
 env.COMPUTER (S6Computer)                Durable Object            
@@ -9,4 +7,4 @@ The following containers are available:
 - cfo-stg-s6-creds-pc (<worktree>/spikes/s6/image/Dockerfile)
 
 --dry-run: exiting now.
-Untagged: cfo-stg-s6-creds-pc:wrangler-d193f931-23d0-4a22-96ff-065609aaa591
+Untagged: cfo-stg-s6-creds-pc:wrangler-afcfab39-008d-4302-92f5-c4aa1bb8ee5b

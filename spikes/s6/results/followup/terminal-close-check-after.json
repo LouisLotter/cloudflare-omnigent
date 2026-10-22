@@ -34,7 +34,7 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662307241,
+    "at": 1792664884744,
     "code": 4001,
     "reason": "terminal closed: its window has closed"
    },
@@ -74,15 +74,15 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662339804,
+    "at": 1792664917307,
     "code": 4001,
     "reason": "terminal closed: after-sign-in began"
    },
    "ended": false,
    "protocol": "tty",
    "upgrade_headers": 1,
-   "close_after_post_ms": 6,
-   "first_step_after_post_ms": 62
+   "close_after_post_ms": 16,
+   "first_step_after_post_ms": 71
   },
   {
    "name": "after-sign-in: nothing typed afterwards runs",
@@ -106,15 +106,15 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662350161,
+    "at": 1792664927703,
     "code": 4001,
     "reason": "terminal closed: recover began"
    },
    "ended": false,
    "protocol": "tty",
    "upgrade_headers": 1,
-   "close_after_post_ms": 6,
-   "first_step_after_post_ms": 60
+   "close_after_post_ms": 8,
+   "first_step_after_post_ms": 65
   },
   {
    "name": "recover: nothing typed afterwards runs",
@@ -142,15 +142,15 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662363197,
+    "at": 1792664946494,
     "code": 4001,
     "reason": "terminal closed: stop began"
    },
    "ended": false,
    "protocol": "tty",
    "upgrade_headers": 1,
-   "close_after_post_ms": 20,
-   "first_step_after_post_ms": 129
+   "close_after_post_ms": 361,
+   "first_step_after_post_ms": 441
   },
   {
    "name": "stop: nothing typed afterwards runs",
@@ -182,15 +182,15 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662377512,
+    "at": 1792664961605,
     "code": 4001,
     "reason": "terminal closed: wipe began"
    },
    "ended": false,
    "protocol": "tty",
    "upgrade_headers": 1,
-   "close_after_post_ms": 5,
-   "first_step_after_post_ms": 9
+   "close_after_post_ms": 147,
+   "first_step_after_post_ms": 153
   },
   {
    "name": "wipe: nothing typed afterwards runs",
@@ -214,15 +214,15 @@
    "ok": true,
    "status": 101,
    "close": {
-    "at": 1792662382353,
+    "at": 1792664964077,
     "code": 4001,
     "reason": "terminal closed: force-stop began"
    },
    "ended": false,
    "protocol": "tty",
    "upgrade_headers": 1,
-   "close_after_post_ms": 5,
-   "first_step_after_post_ms": 234
+   "close_after_post_ms": 6,
+   "first_step_after_post_ms": 663
   },
   {
    "name": "force-stop: nothing typed afterwards runs",
