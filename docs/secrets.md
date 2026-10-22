@@ -12,6 +12,7 @@ Every secret the project uses or will use: what it is for, where it lives, who c
 - [ ] Platform code copies the computer's login files as opaque bytes. It never parses or logs them.
 - [ ] Real-account test runs use reviewed revisions only, are recorded in the work package's evidence, and end with a sign-out that is checked.
 - [ ] Tests use synthetic values and runtime-generated canaries, never real credentials.
+- [ ] No credential travels in a request header to a Worker with invocation logs on. Workers Logs' invocation log records every request header; Cloudflare redacts `Cookie`, `Cf-Access-Jwt-Assertion` and `Cf-Access-Authenticated-User-Email` (seen as `REDACTED`), but not custom headers such as Omnigent's `X-Omnigent-Host-Token`, `X-Omnigent-Runner-Tunnel-Token` or `x-api-key`. Both production Workers therefore run with `observability.logs.invocation_logs: false` and keep their structured console logs, which carry no header; staging harnesses do the same, or send secrets in the body (WP2.6).
 
 ## On the owner's laptop (now)
 
