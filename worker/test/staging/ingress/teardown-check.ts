@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cf, generated, NAME, STATE, stagingConfig } from "./config.ts";
+import { cf, generated, NAME, run, STATE, stagingConfig } from "./config.ts";
 
 async function main(): Promise<void> {
   const out = process.argv[2];
@@ -48,4 +48,4 @@ async function main(): Promise<void> {
   if (!gone) process.exitCode = 1;
 }
 
-await main();
+await run(main);

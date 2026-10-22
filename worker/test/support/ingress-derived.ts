@@ -72,7 +72,7 @@ export function leakedIdentity(request: Request): string | undefined {
     if (name.startsWith("cf-access-") || IDENTITY_HEADERS.includes(name)) return name;
   }
   const cookie = request.headers.get("cookie") ?? "";
-  if (/(^|[;,]\s*)cf_authorization=/i.test(cookie)) return "cookie CF_Authorization";
+  if (/(^|[;,])\s*cf_authorization\s*=/i.test(cookie)) return "cookie CF_Authorization";
   return undefined;
 }
 
@@ -280,6 +280,12 @@ export async function deriveCases(input: DeriveInput): Promise<DerivedCase[]> {
         "remote-user": "spoof",
         cookie: `theme=dark; CF_Authorization=${token}; session=kept`,
       },
+    },
+    {
+      name: "a comma-joined Access cookie, spaced before its =, is stripped",
+      group: "wp2.1",
+      expected: "ok",
+      headers: { cookie: `theme=dark, CF_Authorization =${token}; session=kept` },
     },
     {
       name: "rate limit (a second request against a burst of one)",

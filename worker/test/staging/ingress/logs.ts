@@ -8,7 +8,7 @@
 // domain and AUD tag are redacted.
 
 import { writeFileSync } from "node:fs";
-import { cf, generated, NAME, redact, stagingConfig } from "./config.ts";
+import { cf, generated, NAME, redact, run, stagingConfig } from "./config.ts";
 
 const EVENTS = new Set(["ingress_selftest", "ingress_echo", "ingress_refused"]);
 
@@ -80,4 +80,4 @@ function main(): void {
   console.log(text);
 }
 
-main();
+await run(main);

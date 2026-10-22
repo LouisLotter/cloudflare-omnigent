@@ -4,22 +4,33 @@
 const HOSTNAME =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/** Hostnames of local end-to-end runs, which `wrangler dev` serves over plain HTTP on a port. */
+const LOOPBACK = new Set(["localhost", "127.0.0.1"]);
+
 /**
  * The installation's hostnames from a comma-separated list, lowercased. Undefined if the list is
  * empty or any entry is not a plain hostname (no scheme, port, path, wildcard or trailing dot).
+ * `localhost` and `127.0.0.1` are accepted for local runs.
  */
 export function parseHostnames(text: string | undefined): readonly string[] | undefined {
   const names = (text ?? "")
     .split(",")
     .map((name) => name.trim().toLowerCase())
     .filter((name) => name !== "");
-  if (names.length === 0 || !names.every((name) => HOSTNAME.test(name))) return undefined;
+  const valid = (name: string) => HOSTNAME.test(name) || LOOPBACK.has(name);
+  if (names.length === 0 || !names.every(valid)) return undefined;
   return names;
 }
 
-/** Exact match of the request's hostname. `URL` has already lowercased it. */
+/**
+ * Whether the request is for one of the installation's own origins: an allowed hostname, matched
+ * exactly (`URL` has already lowercased it), over HTTPS on the default port, so that the exact
+ * origin is `https://<hostname>`. A loopback hostname, if configured, may use HTTP and a port.
+ */
 export function isAllowedHost(url: URL, allowed: readonly string[]): boolean {
-  return allowed.includes(url.hostname);
+  if (!allowed.includes(url.hostname)) return false;
+  if (LOOPBACK.has(url.hostname)) return url.protocol === "http:" || url.protocol === "https:";
+  return url.protocol === "https:" && url.port === "";
 }
 
 /**
@@ -53,21 +64,25 @@ export const IDENTITY_HEADERS: readonly string[] = [
 const ACCESS_HEADER_PREFIX = "cf-access-";
 /** The Access cookie's name, matched case-insensitively. */
 const ACCESS_COOKIE = /^cf_authorization$/i;
+const ACCESS_COOKIE_INSIDE = /,\s*cf_authorization\s*=/i;
 
 /**
  * The Cookie header without the `CF_Authorization` cookie, and only that cookie; undefined when
- * nothing else is left. Pairs are split on `;`, and also on `,` where a new `name=` pair starts,
- * in case a client or proxy joined several Cookie headers with commas.
+ * nothing else is left. Pairs are split on `;`, and also on `,` where a new `name=` pair starts
+ * (whitespace allowed around the name), in case a client or proxy joined several Cookie headers
+ * with commas.
  */
 export function withoutAccessCookie(cookie: string): string | undefined {
   const pairs = cookie
-    .split(/;|,(?=\s*[^\s=;,]+=)/)
+    .split(/;|,(?=\s*[^\s=;,]+\s*=)/)
     .map((pair) => pair.trim())
     .filter((pair) => pair !== "");
   const kept = pairs.filter((pair) => {
     const eq = pair.indexOf("=");
     const name = (eq === -1 ? pair : pair.slice(0, eq)).trim();
-    return !ACCESS_COOKIE.test(name);
+    // The second test is a backstop: a pair that still holds a comma-joined Access cookie, in a
+    // spelling the split did not foresee, is dropped whole.
+    return !ACCESS_COOKIE.test(name) && !ACCESS_COOKIE_INSIDE.test(pair);
   });
   return kept.length > 0 ? kept.join("; ") : undefined;
 }

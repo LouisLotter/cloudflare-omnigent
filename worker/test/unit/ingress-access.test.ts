@@ -548,6 +548,30 @@ describe("JwksCache", () => {
     expect(s.calls).toHaveLength(2);
   });
 
+  it("never lets a fetch that finished after a newer one bring back the older key set", async () => {
+    let now = 0;
+    let finishA: (r: Response) => void = () => {};
+    const a = new Promise<Response>((resolve) => {
+      finishA = resolve;
+    });
+    let wait: () => Promise<void> = async () => {};
+    const s = server([() => a, () => jwksResponse(key)]);
+    const cache = make(
+      s,
+      () => now,
+      () => wait(),
+    );
+    expect(await cache.key("kid-previous")).toBe(KEYS_UNAVAILABLE); // A outlives its deadline
+    now = TEST.minRefetchMs + 1;
+    wait = never;
+    expect(await cache.key("kid-current")).toBeDefined(); // B installs the new set
+    finishA(jwksResponse(other)); // A, the old set with the withdrawn key, lands late
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await cache.key("kid-previous")).toBeUndefined();
+    expect(await cache.key("kid-current")).toBeDefined();
+    expect(s.calls).toHaveLength(2);
+  });
+
   it("validates end to end through the cache", async () => {
     const cache = make(server([() => jwksResponse(key)]), () => 0);
     const r = await validateAssertion(await sign(key, claims(NOW)), settings, cache, NOW);

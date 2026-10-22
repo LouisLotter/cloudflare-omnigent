@@ -254,13 +254,15 @@ const MAX_JWKS_KEYS = 16;
  *   - A good fetch replaces the whole set, so a key Cloudflare withdrew stops working.
  *   - Concurrent lookups share one fetch. Each waits at most `refreshDeadlineMs`, measured in its
  *     own request, so a fetch stranded by another request's cancellation cannot hold up later
- *     requests.
+ *     requests. Only the newest fetch may publish its keys.
  */
 export class JwksCache implements KeySource {
   private keys = new Map<string, CryptoKey>();
   private fetchedAt = Number.NEGATIVE_INFINITY;
   private attemptedAt = Number.NEGATIVE_INFINITY;
   private inflight: { readonly promise: Promise<void>; readonly startedAt: number } | undefined;
+  /** The newest fetch started; an older one that finishes later publishes nothing. */
+  private generation = 0;
   /** Fetches started, for tests and the staging harness. */
   fetches = 0;
 
@@ -303,7 +305,7 @@ export class JwksCache implements KeySource {
     if (now - this.attemptedAt < this.options.minRefetchMs) return;
     this.attemptedAt = now;
     this.fetches++;
-    const promise = this.load();
+    const promise = this.load(++this.generation);
     const entry = { promise, startedAt: now };
     this.inflight = entry;
     void promise.then(() => {
@@ -312,8 +314,11 @@ export class JwksCache implements KeySource {
     await Promise.race([promise, this.wait(deadline)]);
   }
 
-  /** Never rejects: a failure keeps the previous keys. */
-  private async load(): Promise<void> {
+  /**
+   * Never rejects: a failure keeps the previous keys. Publishes only while it is the newest fetch,
+   * so a fetch that outlived its deadline cannot bring back a key set a newer fetch replaced.
+   */
+  private async load(generation: number): Promise<void> {
     try {
       const response = await this.fetcher(this.certsUrl);
       if (!response.ok) {
@@ -331,7 +336,7 @@ export class JwksCache implements KeySource {
         const imported = await importJwk(entry);
         if (imported && !next.has(imported[0])) next.set(imported[0], imported[1]);
       }
-      if (next.size === 0) return;
+      if (next.size === 0 || generation !== this.generation) return;
       this.keys = next;
       this.fetchedAt = this.clockMs();
     } catch {

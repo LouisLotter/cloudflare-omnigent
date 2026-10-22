@@ -14,7 +14,7 @@
 //
 // In order, `admit` refuses:
 //   1. an unconfigured or misconfigured Worker: 503, fail closed;
-//   2. a hostname outside the allowlist: 404;
+//   2. a hostname outside the allowlist, or another scheme or port than HTTPS on 443: 404;
 //   3. a client over its coarse rate limit: 429 with Retry-After;
 //   4. a missing, malformed, forged, expired, foreign or otherwise invalid Access assertion,
 //      read from the `Cf-Access-Jwt-Assertion` header only, never the cookie: 403
@@ -26,7 +26,7 @@
 // A refusal answers with an `ErrorBody` that names no reason; the reason is logged, with the
 // path but never the query string, the assertion or the email.
 
-import type { ErrorBody, ErrorCode } from "@cfo/contracts";
+import type { AccessAssertionClaims, ErrorBody, ErrorCode } from "@cfo/contracts";
 import {
   type AccessSettings,
   certsUrlFor,
@@ -66,8 +66,10 @@ export interface OwnerIdentity {
   /** Access's user ID (`sub`), stable for this person in this Access account. */
   readonly sub: string;
   /**
-   * The Access session this request belongs to: a hash of `sub` and the assertion's `iat` (its
-   * `exp` when `iat` is absent). Capabilities bind to it (WP3.5). Not secret.
+   * The Access session this request belongs to: a hash of `sub`, the assertion's `iat` (its
+   * `exp` when `iat` is absent) and Access's `identity_nonce`. Capabilities bind to it (WP3.5).
+   * Not secret, and not a credential: it names a session, it does not prove one. Its stability
+   * across one session's requests is checked on staging.
    */
   readonly sessionId: string;
   /** When Access issued the assertion, in seconds since the epoch, if it says. */
@@ -106,7 +108,10 @@ export interface Admitted {
    * cookie pass through.
    */
   readonly request: Request;
-  /** This installation's exact browser origin for this request, `https://<hostname>`. */
+  /**
+   * This installation's exact browser origin for this request: `https://<hostname>` (ingress
+   * admits no other scheme or port, except on a configured loopback hostname for local runs).
+   */
   readonly origin: string;
 }
 
@@ -213,8 +218,9 @@ export interface IngressDeps {
 
 const MAX_LOGGED_PATH = 256;
 
-async function sessionIdOf(sub: string, issuedOrExpires: number): Promise<string> {
-  const text = `cfo-ingress-session/v1\n${sub}\n${issuedOrExpires}`;
+async function sessionIdOf(claims: AccessAssertionClaims): Promise<string> {
+  const nonce = typeof claims.identity_nonce === "string" ? claims.identity_nonce : "";
+  const text = `cfo-ingress-session/v2\n${claims.sub}\n${claims.iat ?? claims.exp}\n${nonce}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -263,7 +269,7 @@ export function createIngress(config: IngressConfig | undefined, deps: IngressDe
         ok: true,
         identity: {
           sub,
-          sessionId: await sessionIdOf(sub, iat ?? exp),
+          sessionId: await sessionIdOf(assertion.claims),
           issuedAt: iat,
           expiresAt: exp,
         },

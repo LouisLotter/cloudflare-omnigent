@@ -256,7 +256,9 @@ describe("createIngress", () => {
         .sessionId;
     const first = await id(genuine);
     expect(await id(genuine)).toBe(first);
-    expect(await id(await sign(key, claims(NOW, { identity_nonce: "other" })))).toBe(first);
+    // Two sign-ins in the same second differ by Access's identity nonce.
+    expect(await id(await sign(key, claims(NOW, { identity_nonce: "other" })))).not.toBe(first);
+    expect(await id(await sign(key, claims(NOW, { country: "YY" })))).toBe(first);
     expect(await id(await sign(key, claims(NOW, { iat: NOW - 20 })))).not.toBe(first);
     const noIat = await id(await sign(key, claims(NOW, { iat: undefined })));
     expect(noIat).not.toBe(first);
@@ -302,6 +304,8 @@ describe("createIngress", () => {
       `https://${HOST}.evil.example/`,
       `https://x.${HOST}/`,
       "https://cfo-stg.workers.dev/",
+      `http://${HOST}/`,
+      `https://${HOST}:8443/`,
     ]) {
       const result = await h.admit(
         new Request(url, { headers: { "cf-access-jwt-assertion": genuine } }),

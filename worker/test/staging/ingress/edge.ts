@@ -16,7 +16,7 @@
 import { writeFileSync } from "node:fs";
 import { JwksCache, validateAssertion } from "../../../src/ingress/access.ts";
 import { makeKey, sign } from "../../support/access-keys.ts";
-import { accessApp, generated, redact, stagingConfig } from "./config.ts";
+import { accessApp, generated, redact, run, stagingConfig } from "./config.ts";
 
 const MARK = "x-cfo-ingress-harness";
 
@@ -148,7 +148,21 @@ async function main(): Promise<void> {
   };
 
   const app = accessApp(config, g.hostname);
-  const policies = (app.policies as { decision?: string; include?: object[] }[] | undefined) ?? [];
+  const policies =
+    (app.policies as
+      | { decision?: string; include?: object[]; exclude?: object[]; require?: object[] }[]
+      | undefined) ?? [];
+  // Owner-only means exactly one policy, allowing exactly one rule: the owner's address. The
+  // address is compared here and never printed.
+  const owner = config.ownerEmail.trim().toLowerCase();
+  const only = policies[0];
+  const rule = only?.include?.[0] as { email?: { email?: unknown } } | undefined;
+  const ownerOnly =
+    policies.length === 1 &&
+    only?.decision === "allow" &&
+    only.include?.length === 1 &&
+    typeof rule?.email?.email === "string" &&
+    rule.email.email.trim().toLowerCase() === owner;
   const access = {
     same_site_cookie_attribute: app.same_site_cookie_attribute ?? "<not set>",
     http_only_cookie_attribute: app.http_only_cookie_attribute ?? "<not set>",
@@ -158,7 +172,11 @@ async function main(): Promise<void> {
     policies: policies.map((p) => ({
       decision: p.decision,
       includeKinds: [...new Set((p.include ?? []).flatMap((i) => Object.keys(i)))].sort(),
+      includeRules: p.include?.length ?? 0,
+      excludeRules: p.exclude?.length ?? 0,
+      requireRules: p.require?.length ?? 0,
     })),
+    ownerOnly,
   };
 
   const pass =
@@ -170,9 +188,7 @@ async function main(): Promise<void> {
     teamKeys.tokenWithUnknownKid === "unknown_kid" &&
     access.same_site_cookie_attribute === "lax" &&
     access.options_preflight_bypass !== true &&
-    policies.length === 1 &&
-    access.policies[0]?.decision === "allow" &&
-    access.policies[0]?.includeKinds.join() === "email";
+    ownerOnly;
   const report = { at: new Date().toISOString(), pass, probes: results, teamKeys, access };
   const text = redact(JSON.stringify(report, null, 2), g);
   if (out) writeFileSync(out, `${text}\n`);
@@ -181,4 +197,4 @@ async function main(): Promise<void> {
   if (!pass) process.exitCode = 1;
 }
 
-await main();
+await run(main);

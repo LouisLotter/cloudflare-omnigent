@@ -49,16 +49,61 @@ export function generated(): Generated {
   return JSON.parse(readFileSync(join(GENERATED, "staging.json"), "utf8")) as Generated;
 }
 
-/** One `cf` call, its JSON answer without the `result` wrapper older versions add. */
+/**
+ * One `cf` call, its JSON answer without the `result` wrapper older versions add. A failure is
+ * reported by subcommand and exit status only: the child's output and arguments can hold the
+ * hostname, the team domain, the AUD tag or the owner's address.
+ */
 export function cf(args: string[], accountId: string): unknown {
-  const out = execFileSync("cf", args, {
-    encoding: "utf8",
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const parsed = JSON.parse(out) as { result?: unknown };
+  let out: string;
+  try {
+    out = execFileSync("cf", args, {
+      encoding: "utf8",
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    const status = (error as { status?: unknown }).status;
+    throw new Error(`cf ${args.slice(0, 2).join(" ")} failed (exit ${String(status ?? "?")})`);
+  }
+  let parsed: { result?: unknown };
+  try {
+    parsed = JSON.parse(out) as { result?: unknown };
+  } catch {
+    throw new Error(`cf ${args.slice(0, 2).join(" ")} did not answer JSON`);
+  }
   return parsed && typeof parsed === "object" && "result" in parsed ? parsed.result : parsed;
+}
+
+/**
+ * Runs a script's main step. An error is printed as its message only, with every identifying
+ * value this laptop's staging configuration knows redacted, and never with its cause or output.
+ */
+export async function run(main: () => Promise<void> | void): Promise<void> {
+  try {
+    await main();
+  } catch (error) {
+    let message = error instanceof Error ? error.message : "unknown error";
+    const values: string[] = [];
+    try {
+      const c = stagingConfig();
+      values.push(c.accountId, c.zone, c.ownerEmail);
+    } catch {
+      // no staging configuration: nothing of it to redact
+    }
+    try {
+      const g = generated();
+      values.push(g.hostname, g.team, g.aud);
+    } catch {
+      // not generated yet
+    }
+    for (const value of values.filter((v) => typeof v === "string" && v.length >= 4)) {
+      message = message.replaceAll(value, "<redacted>");
+    }
+    console.error(`error: ${message}`);
+    process.exitCode = 1;
+  }
 }
 
 /** This deployment's Access application, exactly one, or an error. */
@@ -127,4 +172,4 @@ async function main(): Promise<void> {
   );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) await run(main);

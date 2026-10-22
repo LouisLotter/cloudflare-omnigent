@@ -22,7 +22,7 @@ describe("parseHostnames", () => {
       undefined,
       "",
       " , ",
-      "localhost",
+      "cfo",
       "https://cfo.example.com",
       "cfo.example.com:443",
       "cfo.example.com/",
@@ -43,7 +43,10 @@ describe("isAllowedHost", () => {
   it.each([
     ["https://cfo-stg-wp21-ingress.example.com/x", true],
     ["https://CFO-STG-WP21-INGRESS.example.com/", true],
-    ["https://cfo-stg-wp21-ingress.example.com:8443/", true],
+    ["https://cfo-stg-wp21-ingress.example.com:443/", true],
+    ["https://cfo-stg-wp21-ingress.example.com:8443/", false],
+    ["http://cfo-stg-wp21-ingress.example.com/", false],
+    ["ws://cfo-stg-wp21-ingress.example.com/", false],
     ["https://cfo-stg-wp21-ingress.example.com./", false],
     ["https://cfo-stg-wp21-ingress.example.com.evil.test/", false],
     ["https://evil-cfo-stg-wp21-ingress.example.com/", false],
@@ -52,6 +55,18 @@ describe("isAllowedHost", () => {
     ["https://example.com/", false],
   ])("%s -> %s", (url, ok) => {
     expect(isAllowedHost(new URL(url), allowed)).toBe(ok);
+  });
+});
+
+describe("loopback hostnames, for local runs only when configured", () => {
+  it("accepts localhost and 127.0.0.1 in the list, over HTTP or HTTPS and on any port", () => {
+    expect(parseHostnames("localhost,127.0.0.1")).toEqual(["localhost", "127.0.0.1"]);
+    const allowed = ["localhost", "127.0.0.1"];
+    for (const url of ["http://localhost:8787/", "http://127.0.0.1:8787/x", "https://localhost/"]) {
+      expect(isAllowedHost(new URL(url), allowed), url).toBe(true);
+    }
+    expect(isAllowedHost(new URL("ftp://localhost/"), allowed)).toBe(false);
+    expect(isAllowedHost(new URL("http://localhost:8787/"), ["cfo.example.com"])).toBe(false);
   });
 });
 
@@ -101,6 +116,10 @@ describe("withoutAccessCookie", () => {
     ["a=1;CF_Authorization=t;b=2", "a=1; b=2"],
     ["cf_authorization=t; CF_AUTHORIZATION=u; a=1", "a=1"],
     ["a=1, CF_Authorization=t, b=2", "a=1; b=2"],
+    ["theme=dark, CF_Authorization =t; session=kept", "theme=dark; session=kept"],
+    ["theme=dark,\tCF_Authorization\t= t, x=1", "theme=dark; x=1"],
+    // A quoted value holding a comma-joined Access cookie is cut there: the token never survives.
+    ['q="a, CF_Authorization=t"; b=2', 'q="a; b=2'],
     ["CF_Authorization; a=1", "a=1"],
     [" CF_Authorization =t; a=1", "a=1"],
     ["CF_Authorization_x=1; xCF_Authorization=2", "CF_Authorization_x=1; xCF_Authorization=2"],
@@ -120,12 +139,15 @@ describe("withoutAccessCookie", () => {
       fc.property(
         fc.array(fc.tuple(name, value), { maxLength: 6 }),
         fc.array(fc.tuple(fc.nat(6), accessName, value), { minLength: 1, maxLength: 3 }),
-        fc.constantFrom("; ", ";", ", "),
-        (others, access, separator) => {
+        fc.constantFrom("; ", ";", ", ", ","),
+        fc.constantFrom("=", " =", "= ", " = ", "\t="),
+        (others, access, separator, equals) => {
           const pairs = others.map(([n, v]) => `${n}=${v}`);
-          for (const [at, n, v] of access) pairs.splice(Math.min(at, pairs.length), 0, `${n}=${v}`);
+          for (const [at, n, v] of access) {
+            pairs.splice(Math.min(at, pairs.length), 0, `${n}${equals}${v}`);
+          }
           const out = withoutAccessCookie(pairs.join(separator));
-          expect(out ?? "").not.toMatch(/(^|[;,]\s*)cf_authorization=/i);
+          expect(out ?? "").not.toMatch(/cf_authorization\s*=/i);
           // Every other cookie is kept, in order.
           expect(out).toBe(
             others.length > 0 ? others.map(([n, v]) => `${n}=${v}`).join("; ") : undefined,
