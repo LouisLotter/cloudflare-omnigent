@@ -2,7 +2,21 @@
 // (code-structure plan, module rules). Owned by the integration lead: change it through a pull
 // request to the lead, together with its fake in test/support/.
 
-import type { BootstrapStatus, OutageRecord, Timestamp } from "@cfo/contracts";
+import type {
+  BootstrapStatus,
+  ComputerCall,
+  ComputerId,
+  ControlCall,
+  ControlResult,
+  LauncherCall,
+  LauncherResult,
+  OutageRecord,
+  PagesCall,
+  PagesResult,
+  ReservationState,
+  SupervisorReply,
+  Timestamp,
+} from "@cfo/contracts";
 
 // ---------------------------------------------------------------------------------------------
 // OmnigentServer (WP2.2), in the platform Worker. The web Worker reaches it through a
@@ -66,4 +80,49 @@ export interface OmnigentServerRpc {
    * recovery mode, held after exit 78, or inside DC-37's backoff is not started.
    */
   ensureStarted(call: OmnigentServerCall): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// M3 (3.C): WorkspaceDO, one per cloud computer (WP3.1), and ControlDO, the installation's
+// computers, limits and reservations (WP3.2). Both in the platform Worker. The same versioning
+// rules as above apply, because a deploy runs new Worker code against Durable Objects still on
+// the old version for about 300 s, and the web Worker calls the pages interface from another
+// deployment. The payloads, with their zod schemas, are in `@cfo/contracts` (`controllers.ts`);
+// each receiver parses its argument with them, checks `interfaceVersion` first, and answers a
+// newer one with `unsupported_version`. Failures are `platformError` codes.
+
+export { CONTROL_INTERFACE_VERSION, WORKSPACE_INTERFACE_VERSION } from "@cfo/contracts";
+
+/** WorkspaceDO's name for a computer: `env.WORKSPACE.getByName(computerId)`. */
+export function workspaceObjectName(computerId: ComputerId): string {
+  return computerId;
+}
+
+/** The one ControlDO object: `env.CONTROL.getByName(CONTROL_OBJECT_NAME)`. */
+export const CONTROL_OBJECT_NAME = "control";
+
+/**
+ * WorkspaceDO. Four callers, four narrow methods:
+ * - `launcher`: `internal/platform-api.ts`, after the HMAC and the request's schema are checked
+ *   (WP3.3). A repeated operation ID returns the recorded outcome (LAUNCHER_OPERATIONS).
+ * - `computer`: `internal/computer-api.ts`, with the intercept's trusted props (WP3.3).
+ * - `pages`: the web Worker's pages (WP3.5), never the launcher's operations.
+ * - `reservation`: ControlDO's reconciliation (WP3.2).
+ * The setup terminal's stream goes through `fetch` (WP3.5).
+ */
+export interface WorkspaceRpc {
+  launcher(call: LauncherCall): Promise<LauncherResult>;
+  computer(call: ComputerCall): Promise<SupervisorReply>;
+  pages(call: PagesCall): Promise<PagesResult>;
+  reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null>;
+}
+
+/**
+ * ControlDO: one entry point for its calls, by `method` (`ControlCall`). Reservations are
+ * idempotent by (computer, generation); a wake at the limit is refused at once, with no queue
+ * (R-20); a slot is released only once WorkspaceDO's `reservation` shows the generation's
+ * container confirmed stopped or its start fenced.
+ */
+export interface ControlRpc {
+  control(call: ControlCall): Promise<ControlResult>;
 }
