@@ -1,0 +1,15 @@
+# Tool settings for the server image's Python code (cfo_server and its tests), matching
+# python/pyproject.toml. Nothing is installed from here: the Dockerfile copies cfo_server.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cfo_server"]
+known-local-folder = ["conftest", "fake_litestream", "sharing_variants"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
