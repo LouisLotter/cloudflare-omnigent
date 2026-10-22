@@ -7,4 +7,4 @@ The following containers are available:
 - cfo-stg-s6-creds-pc (<worktree>/spikes/s6/image/Dockerfile)
 
 --dry-run: exiting now.
-Untagged: cfo-stg-s6-creds-pc:wrangler-afcfab39-008d-4302-92f5-c4aa1bb8ee5b
+Untagged: cfo-stg-s6-creds-pc:wrangler-859d1c94-e925-4027-b233-28e95843fe4c
