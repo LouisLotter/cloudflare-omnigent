@@ -6,7 +6,7 @@
 //   node --test spikes/s6/staging/test/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeWorld, START_REFUSED_TEXT, until } from "./harness.mjs";
+import { makeWorld, ORIGIN, START_REFUSED_TEXT, until } from "./harness.mjs";
 
 const stepLine = (r, re) => r.lines.find((l) => re.test(l.step ?? ""));
 
@@ -314,4 +314,21 @@ test("the Part 2 steps run the resume and key-report actions in A, B and C", asy
   assert.ok(order("codex-remember") < order("login-values A at W1"));
   const w1 = execs.findIndex((e) => /cli\.py export --kind workspace/.test(e));
   assert.ok(order("login-values A at W1") < w1, "the A-at-W1 report runs before W1 is taken");
+});
+
+test("a click from a page older than the last wipe is refused, and the page says to reload (22 Oct sitting)", async () => {
+  const world = await makeWorld();
+  const html = await (await world.obj.fetch(new Request(`${ORIGIN}/`))).text();
+  const stale = world.token();
+  assert.ok((await world.phase("name=wipe")).done, "a wipe replaces the request-intent token");
+  const r = await world.phase("name=confirm-revoked&confirm=revoked-at-providers", {
+    "x-s6-intent": stale,
+  });
+  assert.equal(r.status, 403);
+  const hint = /const STALE=(\/[^/]+\/);const STALE_HINT="([^"]+)"/.exec(html);
+  assert.ok(
+    hint && new RegExp(hint[1].slice(1, -1)).test(r.text),
+    "the page recognises the refusal",
+  );
+  assert.match(hint[2], /reload it, then click again/);
 });

@@ -1717,6 +1717,7 @@ code{background:#eee;padding:1px 4px;border-radius:3px}pre{background:#111;color
 <pre id="out"></pre>
 <script>
 const out=document.getElementById("out");const lines=[];const intent=document.body.dataset.intent;
+const STALE=/request-intent token/;const STALE_HINT=" (this page is out of date, probably from before a wipe: reload it, then click again)";
 const log=(l)=>{lines.push(l);out.textContent+=l+"\\n";out.scrollTop=out.scrollHeight;};
 async function state(){const s=await (await fetch("/api/state")).json();document.getElementById("state").textContent=JSON.stringify(s);
  const u=document.getElementById("unresolved");u.hidden=!s.credentials_may_be_lost;
@@ -1728,7 +1729,7 @@ for(const b of document.querySelectorAll("button[data-phase]")){b.onclick=async(
  for(const x of document.querySelectorAll("button"))x.disabled=true;
  const q="name="+b.dataset.phase+(b.dataset.fake?"&fake=1":"")+(b.dataset.confirm?"&confirm="+b.dataset.confirm:"");
  try{const r=await fetch("/api/phase?"+q,{method:"POST",headers:{"X-S6-Intent":intent}});
- if(!r.ok){log(r.status+" "+(await r.text()).trim());}else{const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
+ if(!r.ok){const t=(await r.text()).trim();log(r.status+" "+t+(STALE.test(t)?STALE_HINT:""));}else{const rd=r.body.getReader();const dec=new TextDecoder();let buf="";
  for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});let i;
   while((i=buf.indexOf("\\n"))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);if(l)log(l);}}}}
  finally{for(const x of document.querySelectorAll("button"))x.disabled=false;state();}};}
