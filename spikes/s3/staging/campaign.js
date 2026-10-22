@@ -526,11 +526,16 @@ const STEPS = {
   },
 
   /** VD-14: container-to-R2 throughput for the large workspace, if the disk has room. */
-  async "throughput-large"({ ports, log }) {
-    const df = await ports.sup.post("/df", { path: "/snap" });
-    const cap = await ports.sup.post("/capture", { method: "rsync-2phase", budget_s: 60 });
+  async "throughput-large"(ctx) {
+    const { ports, sub, log } = ctx;
+    if (!sub.df) sub.df = await ports.sup.post("/df", { path: "/snap" });
+    const df = sub.df;
+    // Minutes for 2.4 GB cold, so the capture runs as a job polled across alarms.
+    const out = await job(ctx, "/capture", { method: "rsync-2phase", budget_s: 60, as_job: true });
+    if (!out.done) return out;
+    const cap = out.result ?? {};
     if (cap.outcome !== "snapshot_ready") {
-      return { done: true, result: { error: `capture: ${cap.outcome}` } };
+      return { done: true, result: { error: `capture: ${cap.outcome ?? cap.error}` } };
     }
     const result = { free_bytes: df.free, size_bytes: cap.size_bytes };
     if (df.free < cap.size_bytes * 2.5) {

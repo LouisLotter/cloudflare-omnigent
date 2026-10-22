@@ -67,7 +67,7 @@ function fakeSupervisor() {
         case "/turn":
           return { rc: 0, cli: body.cli, n: body.n };
         case "/capture":
-          return capture(body);
+          return body.as_job ? startJob(capture(body)) : capture(body);
         case "/layer":
           return {
             seq: String(body.seq),
@@ -292,6 +292,32 @@ describe("the quick plan, end to end against fakes", () => {
     ]);
     expect(result.summary[1].objects_added).toBe(0);
     expect(result.summary[0].turns).toBe("4/4");
+  });
+});
+
+describe("the full plan, against fakes", () => {
+  it("runs all ten steps, with the 120 s holds, the 40 s and 60 s pauses and the large throughput", async () => {
+    const holds = [];
+    uploadHook = ({ prefix, hold, signal }) => {
+      if (prefix === "r2block/") holds.push([hold.until - hold.from, signal.deadlineMs]);
+      return undefined;
+    };
+    await startCampaign(ports(), "full");
+    await runAlarms(2000);
+    const campaign = map.get("campaign");
+    expect(campaign.status).toBe("done");
+    expect(Object.keys(campaign.steps)).toEqual(PLANS.full.steps);
+    expect(Object.values(campaign.steps).every((s) => s.ok)).toBe(true);
+    expect(holds).toEqual([
+      [120_000, 600_000],
+      [120_000, 60_000],
+    ]);
+    expect(calls.filter((c) => c.startsWith("restore layers/"))).toHaveLength(21);
+    const throughput = objects.get(`results/${campaign.id}/throughput-large.json`);
+    expect(throughput.verify.equal).toBe(true);
+    expect(calls).toContain("restore full/large-id -> /restore-staging/large");
+    const calibrate = objects.get(`results/${campaign.id}/calibrate.json`);
+    expect(calibrate.rows.map((r) => r.hold_s)).toEqual([40, 60]);
   });
 });
 

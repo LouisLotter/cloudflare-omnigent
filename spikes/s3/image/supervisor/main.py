@@ -402,7 +402,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         try:
             if self.path == "/capture":
-                self._send(200, run_capture(body))
+                # A long capture (minutes for a large cold workspace) can run as a job.
+                if body.get("as_job"):
+                    self._send(200, {"job": start_job(run_capture, body)})
+                else:
+                    self._send(200, run_capture(body))
             elif self.path == "/upload":
                 self._send(200, {"job": start_job(do_upload, body)})
             elif self.path == "/exec":
