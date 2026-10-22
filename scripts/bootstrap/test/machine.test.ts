@@ -659,7 +659,16 @@ describe("runBootstrap: refusals", () => {
 });
 
 // Every call, before and after its effect, and every journal write.
-const CALLS = ["secretNames", "deployPlatform", "access", "deployWeb", "logs", "updateSecrets"];
+const CALLS = [
+  "secretNames",
+  "workerInstallation",
+  "deployPlatform",
+  "access",
+  "deployWeb",
+  "logs",
+  "updateSecrets",
+  "activeVersion",
+];
 const CRASH_POINTS: (CrashPoint | { journal: number })[] = [
   ...CALLS.flatMap((call) =>
     [1, 2, 3, 4].flatMap((nth) =>
