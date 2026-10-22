@@ -120,7 +120,9 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(await h.run()).toEqual({ kind: "done" });
 
     // Platform first, then Access, then the web Worker; the release only after the wait.
-    const order = h.world.calls.filter((c) => c !== "secretNames" && c !== "logs");
+    const order = h.world.calls.filter(
+      (c) => c !== "secretNames" && c !== "logs" && c !== "workerInstallation",
+    );
     expect(order).toEqual([
       "deployPlatform",
       "access",
@@ -334,21 +336,104 @@ describe("runBootstrap: Codex review r1", () => {
     await h.world.cloud().deployWeb(plan, {});
     h.world.calls.length = 0;
     await expect(h.run()).rejects.toThrow(
-      /cloudflare-omnigent-web exists, and this plan did not create it/,
+      "a Worker named cloudflare-omnigent-web exists and is not this installation's",
     );
-    expect(h.world.calls.filter((c) => c !== "secretNames")).toEqual([]);
+    expect(h.world.calls.filter((c) => c !== "secretNames" && c !== "workerInstallation")).toEqual(
+      [],
+    );
     expect(h.world.versions.has(plan.platformWorker)).toBe(false);
   });
 
-  it("F4: claims the web Worker before Access, so a crash in between resumes", async () => {
+  it("r2-1: a failed Access check claims nothing; a web Worker created meanwhile is refused", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan);
+    const good = h.world.access;
+    h.world.access = () => {
+      throw new Error("expected exactly one Access application on omnigent.example.test, found 0");
+    };
+    await expect(h.run()).rejects.toThrow(/found 0/);
+    expect(h.store.state.journal.webDeployStartedAt).toBeUndefined();
+    // Someone else deploys a Worker under the web name; Access is fixed; the bootstrap resumes.
+    await h.world.cloud().deployWeb(plan, { name: plan.webWorker });
+    h.world.access = good;
+    h.world.calls.length = 0;
+    await expect(h.run()).rejects.toThrow(
+      "cloudflare-omnigent-web exists and is not this installation's",
+    );
+    expect(h.world.calls).not.toContain("deployWeb");
+  });
+
+  it("r2-1: a web Worker this installation deployed, with no journal entry, is resumed", async () => {
     const plan = await stagingPlan();
     const h = harness(plan);
+    // The staging adapter's Access step deploys the web Worker with the installation's ID; the
+    // run stops right after.
+    const deployedByAccess = () =>
+      h.world.cloud().deployWeb(plan, { vars: { CFO_INSTALLATION_ID: plan.installationId } });
+    h.world.before = { call: "access", nth: 1, run: () => void deployedByAccess() };
     h.world.crash = { call: "access", nth: 1, when: "after" };
     await expect(h.run()).rejects.toThrow(Crash);
-    expect(h.store.state.journal.webDeployStartedAt).toBeDefined();
-    // The staging adapter's Access step may have deployed the web Worker: that is ours now.
-    await h.world.cloud().deployWeb(plan, {});
+    expect(h.store.state.journal.webDeployStartedAt).toBeUndefined();
     expect(await h.run()).toEqual({ kind: "done" });
+  });
+
+  it("r2-2: a release whose window passes during the tool's own checks is not sent, and waits again", async () => {
+    const h = harness(await accountPlan());
+    // The guarded update stalls eleven minutes before its request (the staging tool's checks).
+    h.world.slow = { call: "updateSecrets", nth: 1, ms: 11 * 60_000 };
+    expect(await h.run({ verify: false })).toMatchObject({ kind: "released" });
+    expect(h.lines).toContain(
+      "waiting again: the accepted status grew too old before the release was sent",
+    );
+    expect(h.world.counts.get("updateSecrets")).toBe(2);
+    expect(h.world.secretChanges).toHaveLength(1);
+  });
+
+  it("r2-3: repeated stale acceptances stop at the wait's deadline", async () => {
+    const h = harness(await accountPlan());
+    // Every secret listing before a release stalls eleven minutes.
+    const stall = () => {
+      h.world.slow = {
+        call: "secretNames",
+        nth: (h.world.counts.get("secretNames") ?? 0) + 1,
+        ms: 11 * 60_000,
+      };
+    };
+    const real = h.world.cloud();
+    const startedAt = h.world.now;
+    let listings = 0;
+    const cloud = {
+      ...real,
+      secretNames: async (worker: string) => {
+        listings++;
+        if (listings > 20) throw new Error("the bootstrap keeps retrying past its deadline");
+        if (listings >= 3) stall();
+        return real.secretNames(worker);
+      },
+    };
+    const outcome = await runBootstrap(
+      {
+        cloud,
+        store: h.store,
+        baseConfigs: BASE,
+        secrets: () => ({
+          ownerPassword: OWNER_PASSWORD,
+          replicaAccessKeyId: REPLICA_KEY_ID,
+          replicaSecretAccessKey: REPLICA_SECRET,
+        }),
+        random: (n) => new Uint8Array(n).fill(1),
+        now: () => h.world.now,
+        sleep: async (ms) => {
+          h.world.now += ms;
+        },
+        log: () => {},
+      },
+      { ...OPTIONS, waitMs: 5 * 60_000 },
+    );
+    expect(outcome).toEqual({ kind: "waiting", why: "the newest bootstrap status is too old" });
+    expect(h.world.secretChanges).toEqual([]);
+    // One stale attempt, then the deadline: not an endless loop holding the locks.
+    expect(h.world.now - startedAt).toBeLessThan(30 * 60_000);
   });
 
   it("F3: a status seen once is never rolled back by an answer that misses it", async () => {
@@ -398,7 +483,7 @@ describe("runBootstrap: Codex review r1", () => {
     const k = harness(await accountPlan());
     k.world.truth = () => ({ initialized: true, reason: "durable" });
     // The secret listing just before the release stalls for eleven minutes: wait again.
-    k.world.slow = { call: "secretNames", nth: 5, ms: 11 * 60_000 };
+    k.world.slow = { call: "secretNames", nth: 3, ms: 11 * 60_000 };
     expect(await k.run({ verify: false })).toMatchObject({ kind: "released" });
     expect(
       k.lines.some((l) => l.startsWith("waiting again: the newest bootstrap status is too old")),
@@ -434,7 +519,7 @@ describe("runBootstrap: Cloudflare misbehaving", () => {
     const h = harness(plan);
     h.world.before = {
       call: "secretNames",
-      nth: 5,
+      nth: 3,
       run: () => h.world.versions.delete(plan.platformWorker),
     };
     await expect(h.run()).rejects.toThrow("cloudflare-omnigent no longer exists");
@@ -487,8 +572,10 @@ describe("runBootstrap: refusals", () => {
     await h.world.cloud().deployPlatform(plan, {}, { OTHER: "x" });
     h.world.calls.length = 0;
     await expect(h.run()).rejects.toThrow(BootstrapRefusal);
-    await expect(h.run()).rejects.toThrow(/exists, and this plan did not create it/);
-    expect(h.world.calls.filter((c) => c !== "secretNames")).toEqual([]);
+    await expect(h.run()).rejects.toThrow(/exists and is not this installation's/);
+    expect(h.world.calls.filter((c) => c !== "secretNames" && c !== "workerInstallation")).toEqual(
+      [],
+    );
   });
 
   it("refuses to upload the password again to an installation that looks released", async () => {

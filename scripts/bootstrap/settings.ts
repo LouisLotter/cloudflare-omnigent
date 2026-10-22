@@ -24,6 +24,9 @@ import { serverContainerEnv } from "../../worker/src/server/server-env.ts";
 
 export const SERVER_ENV = "SERVER_ENV_";
 
+/** The variable that names the installation, on both Workers: how a Worker is known as ours. */
+export const INSTALLATION_ID_VAR = "CFO_INSTALLATION_ID";
+
 /** The bootstrap password, as the platform Worker holds it (WP2.2's BOOTSTRAP_PASSWORD_SECRET). */
 export const PASSWORD_SECRET = `${SERVER_ENV}OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD`;
 /** Whether the owner exists and is durable (WP2.3): "false" at first, "true" from the release. */
@@ -212,7 +215,7 @@ export function installationProblems(plan: Installation): string[] {
 /** The platform Worker's variables: the installation ID and the server's plain settings. */
 export function platformVars(plan: Installation): Record<string, string> {
   const vars: Record<string, string> = {
-    CFO_INSTALLATION_ID: plan.installationId,
+    [INSTALLATION_ID_VAR]: plan.installationId,
     [`${SERVER_ENV}OMNIGENT_ACCOUNTS_BASE_URL`]: `https://${plan.hostname}`,
     [`${SERVER_ENV}OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`]: plan.ownerUsername,
     [`${SERVER_ENV}CFO_REPLICA_URL`]: plan.replica.url,
@@ -363,8 +366,9 @@ export function renderPlatformConfig(base: Raw, plan: Installation): Record<stri
 
 /**
  * The web Worker's configuration: the checked-in one (worker/wrangler.web.jsonc) bound to this
- * installation's platform Worker, with ingress's variables and, in the installer's own account,
- * the public hostname as a custom domain. The staging tool adds the hostname itself.
+ * installation's platform Worker, with the installation's ID, ingress's variables once Access is
+ * known and, in the installer's own account, the public hostname as a custom domain. The
+ * staging tool adds the hostname itself.
  */
 export function renderWebConfig(
   base: Raw,
@@ -393,6 +397,11 @@ export function renderWebConfig(
     ...(plan.target.kind === "account"
       ? { routes: [{ pattern: plan.hostname, custom_domain: true }] }
       : {}),
-    ...(access === undefined ? {} : { vars: webVars(plan, access) }),
+    // The installation's ID always, so that this Worker is known as ours (machine.ts); ingress
+    // reads only its own four variables, and answers 503 to everything until they are set.
+    vars: {
+      [INSTALLATION_ID_VAR]: plan.installationId,
+      ...(access === undefined ? {} : webVars(plan, access)),
+    },
   };
 }

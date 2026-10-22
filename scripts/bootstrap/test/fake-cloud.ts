@@ -161,8 +161,22 @@ export class FakeWorld {
         world.configs.set(plan.webWorker, [...(world.configs.get(plan.webWorker) ?? []), config]);
         world.#leave("deployWeb", n);
       },
-      async updateSecrets(worker, changes) {
+      async workerInstallation(worker) {
+        const n = world.#enter("workerInstallation");
+        const exists = world.versions.has(worker);
+        const vars = (world.configs.get(worker)?.at(-1)?.vars ?? {}) as Record<string, unknown>;
+        world.#leave("workerInstallation", n);
+        if (!exists) return { exists: false };
+        const id = vars.CFO_INSTALLATION_ID;
+        return { exists: true, installationId: typeof id === "string" ? id : undefined };
+      },
+      async updateSecrets(worker, changes, notAfter) {
         const n = world.#enter("updateSecrets");
+        // Like the adapters: the window is checked after every read, just before the request.
+        if (notAfter !== undefined && world.now > notAfter) {
+          world.#leave("updateSecrets", n);
+          return "expired";
+        }
         const current = world.secretsOf(worker);
         // Like cf workers secrets bulk: a missing Worker is an error, never created.
         if (current === undefined) throw new Error("cf workers secrets bulk failed: [10007]");
@@ -174,6 +188,7 @@ export class FakeWorld {
         world.#newVersion(worker, next);
         world.secretChanges.push({ at: world.now, worker, changes });
         world.#leave("updateSecrets", n);
+        return "sent";
       },
       async activeVersion(worker) {
         const n = world.#enter("activeVersion");

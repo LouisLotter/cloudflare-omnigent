@@ -30,15 +30,19 @@ import {
   wranglerCli,
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
-import type { BootstrapCloud } from "./machine.ts";
-import type { Installation } from "./settings.ts";
+import type { BootstrapCloud, WorkerIdentity } from "./machine.ts";
+import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
 
 /** At most this many pages of 100 Workers Logs events per query. */
 const MAX_LOG_PAGES = 20;
 const LOG_PAGE = 100;
 
 export function cfJson(run: Runner, args: readonly string[]): unknown {
-  const result = run("cf", args, { inherit: false });
+  return cfAnswer(run("cf", args, { inherit: false }), args);
+}
+
+/** cf's JSON answer without the `result` wrapper, or an error naming the command only. */
+function cfAnswer(result: CommandResult, args: readonly string[]): unknown {
   if (result.status !== 0) {
     throw new Error(`cf ${args.slice(0, 3).join(" ")} failed: ${diagnostic(result.stderr)}`);
   }
@@ -121,7 +125,11 @@ export function bulkSecrets(
   run: Runner,
   worker: string,
   changes: Readonly<Record<string, string | null>>,
-): void {
+  notAfter?: number,
+  now: () => number = Date.now,
+): "sent" | "expired" {
+  // Nothing is read between this check and the request.
+  if (notAfter !== undefined && now() > notAfter) return "expired";
   const result = withSecretsDescriptor(secretsBulkBody(changes), (fd) =>
     run("cf", ["workers", "secrets", "bulk", "--worker", worker, "--secrets", "@/dev/fd/3"], {
       inherit: false,
@@ -131,13 +139,42 @@ export function bulkSecrets(
   if (result.status !== 0) {
     throw new Error(`cf workers secrets bulk failed: ${diagnostic(result.stderr)}`);
   }
+  return "sent";
+}
+
+/** Whether cf's failure says the Worker does not exist (Cloudflare's error 10007). */
+export function missingWorker(result: CommandResult): boolean {
+  return /\[10007\]/.test(result.stderr);
 }
 
 /** The version serving all of the Worker's traffic now, from its newest deployment. Read-only. */
 export function activeVersion(run: Runner, worker: string): string | undefined {
-  const answer = cfJson(run, ["workers", "deployments", "list", "--worker", worker]) as {
-    deployments?: unknown;
+  return activeVersionOf(cfJson(run, ["workers", "deployments", "list", "--worker", worker]));
+}
+
+/** Which installation a Worker belongs to: its active version's CFO_INSTALLATION_ID. Read-only. */
+export function workerInstallation(run: Runner, worker: string): WorkerIdentity {
+  const args = ["workers", "deployments", "list", "--worker", worker];
+  const listed = run("cf", args, { inherit: false });
+  if (listed.status !== 0 && missingWorker(listed)) return { exists: false };
+  const version = activeVersionOf(cfAnswer(listed, args));
+  if (version === undefined) return { exists: true, installationId: undefined };
+  const answer = cfJson(run, ["workers", "versions", "get", "--worker-id", worker, version]) as {
+    bindings?: unknown;
   } | null;
+  const bindings = Array.isArray(answer?.bindings) ? answer.bindings : [];
+  const named = bindings.find((b) => {
+    const binding = b as { type?: unknown; name?: unknown } | null;
+    return binding?.type === "plain_text" && binding.name === INSTALLATION_ID_VAR;
+  }) as { text?: unknown } | undefined;
+  return {
+    exists: true,
+    installationId: typeof named?.text === "string" ? named.text : undefined,
+  };
+}
+
+function activeVersionOf(listing: unknown): string | undefined {
+  const answer = listing as { deployments?: unknown } | null;
   const deployments = Array.isArray(answer?.deployments) ? answer.deployments : [];
   const versions = (deployments[0] as { versions?: unknown } | undefined)?.versions;
   const whole = (Array.isArray(versions) ? versions : []).find(
@@ -237,7 +274,8 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
     access: (p) => readAccess(run, p),
     deployPlatform: async (_plan, config, secrets) => deploy(config, secrets),
     deployWeb: async (_plan, config) => deploy(config, {}),
-    updateSecrets: async (worker, changes) => bulkSecrets(run, worker, changes),
+    workerInstallation: async (worker) => workerInstallation(run, worker),
+    updateSecrets: async (worker, changes, notAfter) => bulkSecrets(run, worker, changes, notAfter),
     activeVersion: async (worker) => activeVersion(run, worker),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };

@@ -262,6 +262,56 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     expect(set.calls[0]?.args.join(" ")).not.toContain(OWNER_PASSWORD);
   });
 
+  it("knows a Worker as this installation's by its active version's CFO_INSTALLATION_ID (r2-1)", async () => {
+    const plan = await accountPlan();
+    const deployments = { deployments: [{ versions: [{ version_id: "v7", percentage: 100 }] }] };
+    const version = (text?: string) => ({
+      bindings: [
+        { type: "durable_object_namespace", name: "OMNIGENT" },
+        ...(text === undefined ? [] : [{ type: "plain_text", name: "CFO_INSTALLATION_ID", text }]),
+      ],
+    });
+    const answers: Partial<CommandResult>[] = [
+      { stdout: JSON.stringify(deployments) },
+      { stdout: JSON.stringify({ result: version(plan.installationId) }) },
+      { stdout: JSON.stringify(deployments) },
+      { stdout: JSON.stringify(version()) },
+      { status: 1, stderr: "│ [10007] This Worker does not exist on your account." },
+      { stdout: JSON.stringify({ deployments: [] }) },
+      { status: 1, stderr: "│ [10000] Authentication error" },
+    ];
+    const { runner, calls } = fakeRunner(() => answers.shift() ?? {});
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    expect(await cloud.workerInstallation("w")).toEqual({
+      exists: true,
+      installationId: plan.installationId,
+    });
+    expect(calls[1]?.args).toEqual(["workers", "versions", "get", "--worker-id", "w", "v7"]);
+    expect(await cloud.workerInstallation("w")).toEqual({
+      exists: true,
+      installationId: undefined,
+    });
+    expect(await cloud.workerInstallation("w")).toEqual({ exists: false });
+    expect(await cloud.workerInstallation("w")).toEqual({
+      exists: true,
+      installationId: undefined,
+    });
+    await expect(cloud.workerInstallation("w")).rejects.toThrow(
+      /cf workers deployments list failed/,
+    );
+  });
+
+  it("does not send a release whose window has passed (r2-2)", async () => {
+    const plan = await accountPlan();
+    const { runner, calls } = fakeRunner(() => ({ stdout: "{}" }));
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    expect(await cloud.updateSecrets("w", RELEASE_CHANGES, Date.now() - 1)).toBe("expired");
+    expect(calls).toEqual([]);
+    expect(await cloud.updateSecrets("w", RELEASE_CHANGES, Date.now() + 60_000)).toBe("sent");
+    expect(await cloud.updateSecrets("w", RELEASE_CHANGES)).toBe("sent");
+    expect(calls).toHaveLength(2);
+  });
+
   it("reads the version serving all traffic from the newest deployment", async () => {
     const plan = await accountPlan();
     const answers: unknown[] = [
@@ -420,7 +470,8 @@ describe("stagingCloud: through the guarded staging tool", () => {
     });
     expect(tool).toHaveLength(1);
     const rendered = JSON.parse(Object.values(tool[0]?.files ?? {})[0] ?? "{}");
-    expect(rendered.vars).toBeUndefined();
+    // No ingress variables yet (the Worker answers 503), but the installation's ID.
+    expect(rendered.vars).toEqual({ CFO_INSTALLATION_ID: plan.installationId });
     expect(rendered.routes).toBeUndefined();
     expect(rendered.durable_objects.bindings[0].script_name).toBe(plan.platformWorker);
     // Once it exists, Access is only read.
@@ -439,6 +490,31 @@ describe("stagingCloud: through the guarded staging tool", () => {
     expect(tool[1]?.args).toEqual(["secrets", "--suffix", "wp24-platform", "--owner", "WP2.4"]);
     expect(JSON.parse(tool[1]?.input ?? "{}")).toEqual(RELEASE_CHANGES);
     expect(await cloud.logs(plan.platformWorker, 0, 1)).toEqual([]);
+  });
+
+  it("passes the release's window to the tool, and reads its 'window passed' exit as expired", async () => {
+    const { plan, cloud, tool } = await staging((args) =>
+      args[0] === "secrets"
+        ? { status: args.includes("--not-after") ? 3 : 0, stdout: "" }
+        : { status: 0, stdout: "" },
+    );
+    expect(await cloud.updateSecrets(plan.platformWorker, RELEASE_CHANGES, 1792670000000.6)).toBe(
+      "expired",
+    );
+    expect(tool[0]?.args).toEqual([
+      "secrets",
+      "--suffix",
+      "wp24-platform",
+      "--owner",
+      "WP2.4",
+      "--not-after",
+      "1792670000000",
+    ]);
+    expect(await cloud.updateSecrets(plan.platformWorker, RELEASE_CHANGES)).toBe("sent");
+    expect(await cloud.workerInstallation(plan.webWorker)).toEqual({
+      exists: true,
+      installationId: undefined,
+    });
   });
 
   it("answers null for no Worker, and fails on a refusal or an odd answer", async () => {

@@ -32,7 +32,15 @@
 // service token, a secret value in the journal or the log.
 
 import type { BootstrapStatus } from "../../contracts/src/index.ts";
-import { decide, newest, parseLogs, type StatusEvent, staleness, verifyRelease } from "./events.ts";
+import {
+  decide,
+  FRESH_MS,
+  newest,
+  parseLogs,
+  type StatusEvent,
+  staleness,
+  verifyRelease,
+} from "./events.ts";
 import {
   type AccessSettings,
   accessProblems,
@@ -70,15 +78,31 @@ export interface BootstrapCloud {
   ): Promise<void>;
   deployWeb(plan: Installation, config: Readonly<Record<string, unknown>>): Promise<void>;
   /**
-   * One change of the Worker's secrets, a new deployed version: a value sets one, null deletes
-   * one. Fails, and creates nothing, when the Worker does not exist.
+   * Which installation a Worker belongs to: its active version's `CFO_INSTALLATION_ID`
+   * variable, which every Worker the bootstrap deploys carries. Read-only.
    */
-  updateSecrets(worker: string, changes: Readonly<Record<string, string | null>>): Promise<void>;
+  workerInstallation(worker: string): Promise<WorkerIdentity>;
+  /**
+   * One change of the Worker's secrets, a new deployed version: a value sets one, null deletes
+   * one. Fails, and creates nothing, when the Worker does not exist. Sent only if `notAfter`
+   * (milliseconds) has not passed once every check before it is done; otherwise nothing is
+   * sent and the answer is "expired".
+   */
+  updateSecrets(
+    worker: string,
+    changes: Readonly<Record<string, string | null>>,
+    notAfter?: number,
+  ): Promise<"sent" | "expired">;
   /** The version serving all of the Worker's traffic now, or undefined if not one. Read-only. */
   activeVersion(worker: string): Promise<string | undefined>;
   /** Workers Logs events of the Worker between two times, in milliseconds. */
   logs(worker: string, fromMs: number, toMs: number): Promise<unknown[]>;
 }
+
+/** Whether a Worker exists, and the installation its active version names, if any. */
+export type WorkerIdentity =
+  | { readonly exists: false }
+  | { readonly exists: true; readonly installationId: string | undefined };
 
 /** A status as the journal keeps it: the newest seen, so no later query can roll it back. */
 export interface SeenStatus {
@@ -241,20 +265,19 @@ export async function runBootstrap(
       `${plan.platformWorker} was deployed by this plan but no longer exists; plan a new installation`,
     );
   }
-  if (secrets !== null && state.journal.platformDeployStartedAt === undefined) {
-    throw new BootstrapRefusal(
-      `a Worker named ${plan.platformWorker} exists, and this plan did not create it; choose another name`,
-    );
-  }
-  const webUnclaimed = async () => {
-    if (state.journal.webDeployStartedAt !== undefined) return;
-    if ((await names(plan.webWorker)) !== null) {
+  // A Worker that exists is this installation's only if it says so itself: every Worker the
+  // bootstrap deploys carries the installation's ID. The journal alone is no proof: a step
+  // recorded as started may never have run, and the name taken meanwhile (Codex WP2.4 r2-1).
+  const ours = async (worker: string) => {
+    const identity = await ctx.cloud.workerInstallation(worker);
+    if (identity.exists && identity.installationId !== plan.installationId) {
       throw new BootstrapRefusal(
-        `a Worker named ${plan.webWorker} exists, and this plan did not create it; choose another name`,
+        `a Worker named ${worker} exists and is not this installation's; choose another name`,
       );
     }
   };
-  await webUnclaimed();
+  await ours(plan.platformWorker);
+  if (state.journal.webDeployedAt === undefined) await ours(plan.webWorker);
 
   // 1. The platform Worker.
   if (secrets === null || state.journal.platformDeployedAt === undefined) {
@@ -291,10 +314,9 @@ export async function runBootstrap(
   }
 
   // 2. Access, read and checked just before; 3. the web Worker behind it. The staging adapter
-  // may deploy the web Worker to create its Access application, so the claim comes first.
+  // may deploy the web Worker to create its Access application; that deploy carries the
+  // installation's ID too, so the check before the web deploy recognises it.
   if (state.journal.webDeployedAt === undefined) {
-    await webUnclaimed();
-    record({ webDeployStartedAt: state.journal.webDeployStartedAt ?? iso(ctx.now()) });
     const found = await ctx.cloud.access(plan);
     const accessIssues = accessProblems(plan, found);
     if (accessIssues.length > 0) {
@@ -302,13 +324,17 @@ export async function runBootstrap(
     }
     const access = { ...found, checkedAt: iso(ctx.now()) };
     record({ access });
+    await ours(plan.webWorker);
+    record({ webDeployStartedAt: state.journal.webDeployStartedAt ?? iso(ctx.now()) });
     const config = renderWebConfig(ctx.baseConfigs.web, plan, access);
     ctx.log(`deploying the web Worker ${plan.webWorker} for https://${plan.hostname}`);
     await ctx.cloud.deployWeb(plan, config);
     record({ webDeployedAt: iso(ctx.now()) });
   }
 
-  // 4. The watchdog's status in Workers Logs, still fresh when the release is sent.
+  // 4. The watchdog's status in Workers Logs; 5. the release, sent only while that status is
+  // fresh, judged after the last read before it (Codex WP2.4 r1-5, r2-2). An acceptance that
+  // grew stale sends the bootstrap back to waiting, within the same deadline (r2-3).
   const deadline = ctx.now() + options.waitMs;
   for (;;) {
     const accepted = await waitForOwner(ctx, () => state, record, options, deadline);
@@ -327,17 +353,20 @@ export async function runBootstrap(
         `${plan.platformWorker} no longer holds the bootstrap password, but no release is recorded; check the installation by hand`,
       );
     }
-    const stale = staleness(accepted.event, ctx.now());
-    if (stale === undefined) break;
+    let stale = staleness(accepted.event, ctx.now());
+    if (stale === undefined) {
+      record({ releaseStartedAt: state.journal.releaseStartedAt ?? iso(ctx.now()) });
+      ctx.log(
+        `releasing: ${INITIALIZED_SECRET}=true and the bootstrap password deleted, in one platform release`,
+      );
+      const notAfter = Date.parse(accepted.event.status.checkedAt) + FRESH_MS;
+      const sent = await ctx.cloud.updateSecrets(plan.platformWorker, RELEASE_CHANGES, notAfter);
+      if (sent === "sent") break;
+      stale = "the accepted status grew too old before the release was sent";
+    }
     ctx.log(`waiting again: ${stale}`);
+    if (ctx.now() + options.pollMs > deadline) return { kind: "waiting", why: stale };
   }
-
-  // 5. The release.
-  record({ releaseStartedAt: state.journal.releaseStartedAt ?? iso(ctx.now()) });
-  ctx.log(
-    `releasing: ${INITIALIZED_SECRET}=true and the bootstrap password deleted, in one platform release`,
-  );
-  await ctx.cloud.updateSecrets(plan.platformWorker, RELEASE_CHANGES);
   secrets = await names();
   if (secrets === null || secrets.has(PASSWORD_SECRET) || !secrets.has(INITIALIZED_SECRET)) {
     throw new Error("the release has not taken effect yet; run again");

@@ -14,7 +14,14 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { type Runner, spawnRunner } from "../staging/cloud.ts";
-import { activeVersion, cfJson, queryWorkerLogs, readAccess, withRenderedConfig } from "./cloud.ts";
+import {
+  activeVersion,
+  cfJson,
+  queryWorkerLogs,
+  readAccess,
+  withRenderedConfig,
+  workerInstallation,
+} from "./cloud.ts";
 import type { BootstrapCloud } from "./machine.ts";
 import { type Installation, renderWebConfig } from "./settings.ts";
 
@@ -57,6 +64,8 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
     if (worker === plan.webWorker) return target.webSuffix;
     throw new Error(`${worker} is not one of this installation's Workers`);
   };
+  /** The tool's exit status when a change's window had passed and nothing was sent. */
+  const WINDOW_PASSED = 3;
   const tool = (args: readonly string[], input?: string) => {
     const result = stg(args, input);
     if (result.status !== 0) throw new Error(`stg ${args[0]} exited with ${result.status}`);
@@ -122,11 +131,15 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
     },
     deployPlatform: async (p, config, secrets) => deploy(p.platformWorker, config, secrets),
     deployWeb: async (p, config) => deploy(p.webWorker, config),
-    updateSecrets: async (worker, changes) => {
-      tool(
-        ["secrets", "--suffix", suffixOf(worker), "--owner", target.owner],
-        JSON.stringify(changes),
-      );
+    workerInstallation: async (worker) => workerInstallation(run, worker),
+    // The tool checks the window after its own guard reads, just before the request.
+    updateSecrets: async (worker, changes, notAfter) => {
+      const args = ["secrets", "--suffix", suffixOf(worker), "--owner", target.owner];
+      if (notAfter !== undefined) args.push("--not-after", String(Math.floor(notAfter)));
+      const result = stg(args, JSON.stringify(changes));
+      if (result.status === WINDOW_PASSED) return "expired";
+      if (result.status !== 0) throw new Error(`stg secrets exited with ${result.status}`);
+      return "sent";
     },
     activeVersion: async (worker) => activeVersion(run, worker),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),

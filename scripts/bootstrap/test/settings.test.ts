@@ -261,12 +261,12 @@ describe("rendering the configurations", () => {
     const plan = await accountPlan();
     expect(renderWebConfig(BASE.web, plan, ACCESS)).toMatchObject({
       routes: [{ pattern: plan.hostname, custom_domain: true }],
-      vars: webVars(plan, ACCESS),
+      vars: { CFO_INSTALLATION_ID: plan.installationId, ...webVars(plan, ACCESS) },
     });
     const staging = await stagingPlan();
     const rendered = renderWebConfig(BASE.web, staging, undefined);
     expect(rendered).not.toHaveProperty("routes");
-    expect(rendered).not.toHaveProperty("vars");
+    expect(rendered.vars).toEqual({ CFO_INSTALLATION_ID: staging.installationId });
     expect(rendered.durable_objects).toEqual({
       bindings: [
         { name: "OMNIGENT", class_name: "OmnigentServer", script_name: staging.platformWorker },
