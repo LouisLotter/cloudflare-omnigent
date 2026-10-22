@@ -41,12 +41,21 @@ export interface Generated {
   readonly aud: string;
 }
 
+/** A JSON file, or an error that names the file but none of its content. */
+function readJson(path: string, what: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch {
+    throw new Error(`could not read ${what}`);
+  }
+}
+
 export function stagingConfig(): StagingConfig {
-  return JSON.parse(readFileSync(join(STATE, "config.json"), "utf8")) as StagingConfig;
+  return readJson(join(STATE, "config.json"), "the staging tool's config") as StagingConfig;
 }
 
 export function generated(): Generated {
-  return JSON.parse(readFileSync(join(GENERATED, "staging.json"), "utf8")) as Generated;
+  return readJson(join(GENERATED, "staging.json"), "generated/staging.json") as Generated;
 }
 
 /**
@@ -98,7 +107,9 @@ export async function run(main: () => Promise<void> | void): Promise<void> {
     } catch {
       // not generated yet
     }
-    for (const value of values.filter((v) => typeof v === "string" && v.length >= 4)) {
+    // Longest first, so that a value holding another (an address holding the zone) goes whole.
+    const known = values.filter((v) => typeof v === "string" && v.length >= 4);
+    for (const value of known.sort((a, b) => b.length - a.length)) {
       message = message.replaceAll(value, "<redacted>");
     }
     console.error(`error: ${message}`);
