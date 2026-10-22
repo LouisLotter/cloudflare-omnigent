@@ -1,0 +1,8 @@
+# The build context is the repository root; the image needs only these paths.
+*
+!images/server/cfo_server/
+!images/server/tests/
+!images/server/Dockerfile
+!contracts/schema/
+**/__pycache__/
+**/*.pyc
