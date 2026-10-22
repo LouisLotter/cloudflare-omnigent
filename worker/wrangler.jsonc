@@ -5,11 +5,9 @@
   // name, so deploy this one first. Deployed names come from scripts/deploy.ts, which enforces
   // the cfo-stg- prefix for staging.
   //
-  // OmnigentServer's container entry joins once the server image exists (WP2.3):
-  //   "containers": [{ "class_name": "OmnigentServer", "image": "../images/server/Dockerfile",
-  //                    "image_build_context": "..", "instance_type": "basic", "max_instances": 1 }]
-  // Until then the class has no container and answers 503; Wrangler refuses a Dockerfile path
-  // that does not exist, in a dry run too.
+  // OmnigentServer's container: the server image (WP2.3), built from the repository root with
+  // BuildKit (its Dockerfile uses `ADD <git>`, `ADD --checksum` and a `# syntax` line, and reads
+  // images/server/Dockerfile.dockerignore). The default scheduling policy, one `basic` instance.
   "name": "cloudflare-omnigent",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
@@ -17,6 +15,15 @@
   // Closed by default: no route of its own, no workers.dev or preview URL.
   "workers_dev": false,
   "preview_urls": false,
+  "containers": [
+    {
+      "class_name": "OmnigentServer",
+      "image": "../images/server/Dockerfile",
+      "image_build_context": "..",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "CONTROL", "class_name": "ControlDO" },
