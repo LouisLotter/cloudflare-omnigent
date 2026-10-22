@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bootId": {
+      "pattern": "^[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "protocolVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "replicatedTxid": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "txid": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "bootId",
+    "txid",
+    "replicatedTxid"
+  ],
+  "title": "ReplicationPosition",
+  "type": "object"
+}
