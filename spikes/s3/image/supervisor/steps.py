@@ -94,7 +94,12 @@ class HostPoller:
         self._t.join()
 
     def summary(self) -> dict[str, Any]:
-        return {"states": sorted(set(self.states)), "not_online_s": sum(1 for s in self.states if s != "online")}
+        """States seen; seconds the server reported the host not online; polls the server did
+        not answer in 5 s (it shares the container's one vCPU with the capture's copy)."""
+        errors = sum(1 for s in self.states if s.startswith(("error:", "http-")))
+        return {"states": sorted(set(self.states)), "polls": len(self.states),
+                "not_online_s": sum(1 for s in self.states if s != "online" and not s.startswith(("error:", "http-"))),
+                "poll_errors": errors}
 
 
 def start_load(as_agent: AsAgent) -> None:
@@ -194,7 +199,8 @@ def bench(body: dict[str, Any], run_capture: RunCapture, as_agent: AsAgent) -> d
                 "precopy_s": stats([r["precopy_s"] for r in ok]),
                 "over_20s": sum(1 for r in ok if (r["pause_s"] or 0) > 20),
                 "over_40s": sum(1 for r in ok if (r["pause_s"] or 0) > 40),
-                "host_always_online": all(r["host"]["states"] == ["online"] for r in sel),
+                "host_always_online": all(r["host"]["not_online_s"] == 0 for r in sel),
+                "server_poll_errors": sum(r["host"]["poll_errors"] for r in sel),
                 "host_redials": sum(r["host_connects"] for r in sel),
                 "turns_ok": sum(1 for r in sel if r["turn_after"].get("ok")),
                 "writer_prefix_consistent": sum(1 for r in ok if r["consistency"].get("prefix")),
