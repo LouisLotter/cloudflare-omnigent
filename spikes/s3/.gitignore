@@ -1,2 +1,4 @@
 # Build-time copy of S6's credential policy (bench/sync_policy.py); the source is spikes/s6/credsync/core.py.
 image/s6credsync/
+# Build-time copy of Omnigent's mock LLM server (bench/prepare_staging.py); the source is the fork at af3e49de2.
+image/mockllm/

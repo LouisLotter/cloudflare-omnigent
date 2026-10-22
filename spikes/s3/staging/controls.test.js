@@ -2,7 +2,16 @@
 // have zero effect: no container start, no forward, no arming.
 //   pnpm exec vitest run --config spikes/s3/staging/vitest.config.mjs
 import { beforeEach, describe, expect, it } from "vitest";
-import { ARM_MS, handle, sameToken } from "./controls.js";
+import {
+  ARM_MS,
+  handle,
+  INTENT_TTL_MS,
+  intentMatches,
+  MAX_INTENTS,
+  pruneIntents,
+  sameToken,
+  sha256Hex,
+} from "./controls.js";
 
 const ORIGIN = "https://cfo-stg-s3-capture.example.test";
 const TOKEN = "a".repeat(64);
@@ -11,10 +20,41 @@ let state;
 let calls;
 let clock;
 let running;
+let campaignStatus;
+let lastBody;
+// Stands in for the Durable Object's storage of intent hashes (it survives eviction).
+let intents;
+let issued;
 
 function ports() {
   return {
     now: () => clock,
+    intents: {
+      issue: async () => {
+        const token = `t${issued.length}`.padEnd(64, "0");
+        issued.push(token);
+        intents = pruneIntents(intents, clock);
+        intents.push({ hash: await sha256Hex(token), expiresAt: clock + INTENT_TTL_MS });
+        return token;
+      },
+      check: (token) => intentMatches(token, intents, clock),
+    },
+    saveArm: async (armedUntil) => {
+      calls.push(`saveArm ${armedUntil}`);
+    },
+    campaign: {
+      view: async () =>
+        campaignStatus ? { campaign: { id: "c1", status: campaignStatus } } : null,
+      start: async (plan) => {
+        calls.push(`campaign start ${plan}`);
+        if (campaignStatus === "running") return { ok: false, reason: "a campaign is running" };
+        campaignStatus = "running";
+        return { ok: true };
+      },
+      stop: async (reason) => {
+        calls.push(`campaign stop ${reason}`);
+      },
+    },
     container: {
       running: () => running,
       start: () => {
@@ -26,6 +66,7 @@ function ports() {
       },
       fetch: async (path, init) => {
         calls.push(`fetch ${init.method} ${path}`);
+        lastBody = init.body;
         return new Response(JSON.stringify({ ok: true, path }), { status: 200 });
       },
     },
@@ -54,11 +95,15 @@ function noEffects() {
   expect(state.armedUntil).toBe(0);
 }
 
-beforeEach(() => {
-  state = { token: TOKEN, armedUntil: 0 };
+beforeEach(async () => {
+  state = { armedUntil: 0 };
+  issued = [];
   calls = [];
   clock = 1_000_000;
   running = false;
+  // A page served earlier gave out TOKEN.
+  intents = [{ hash: await sha256Hex(TOKEN), expiresAt: clock + INTENT_TTL_MS }];
+  campaignStatus = null;
 });
 
 describe("refusals have zero effect", () => {
@@ -77,8 +122,8 @@ describe("refusals have zero effect", () => {
     noEffects();
   });
 
-  it("a simple cross-site form posting to /probe and /bench", async () => {
-    for (const path of ["/probe", "/bench"]) {
+  it("a simple cross-site form posting to /probe, /bench and /campaign", async () => {
+    for (const path of ["/probe", "/bench", "/campaign"]) {
       const res = await handle(
         post(path, { origin: "https://attacker.example", body: { profile: "large" } }),
         state,
@@ -90,7 +135,7 @@ describe("refusals have zero effect", () => {
   });
 
   it("a cross-site top-level GET of every control URL only shows the page", async () => {
-    for (const path of ["/", "/arm", "/disarm", "/probe", "/bench"]) {
+    for (const path of ["/", "/arm", "/disarm", "/probe", "/bench", "/campaign"]) {
       const res = await handle(
         get(path, { "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate" }),
         state,
@@ -105,6 +150,24 @@ describe("refusals have zero effect", () => {
   it("HEAD never acts", async () => {
     const res = await handle(new Request(ORIGIN + "/probe", { method: "HEAD" }), state, ports());
     expect(res.status).toBe(200);
+    noEffects();
+  });
+
+  it("GET /results only reads the stored campaign", async () => {
+    campaignStatus = "running";
+    const res = await handle(get("/results", { "Sec-Fetch-Site": "cross-site" }), state, ports());
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Campaign c1");
+    noEffects();
+  });
+
+  it("a cross-site POST /campaign with a valid-looking body starts nothing", async () => {
+    const res = await handle(
+      post("/campaign", { site: "cross-site", body: { plan: "full" } }),
+      state,
+      ports(),
+    );
+    expect(res.status).toBe(403);
     noEffects();
   });
 
@@ -132,10 +195,12 @@ describe("refusals have zero effect", () => {
 });
 
 describe("valid same-origin controls", () => {
-  it("arm, probe, bench, then the campaign disarms itself", async () => {
+  it("arm, probe, bench, then the manual arming expires", async () => {
     let res = await handle(post("/arm"), state, ports());
     expect(res.status).toBe(303);
     expect(state.armedUntil).toBe(clock + ARM_MS);
+    expect(calls).toEqual([`saveArm ${clock + ARM_MS}`]);
+    calls = [];
 
     res = await handle(post("/probe"), state, ports());
     expect(res.status).toBe(200);
@@ -148,6 +213,13 @@ describe("valid same-origin controls", () => {
     );
     expect(res.status).toBe(200);
     expect(calls.at(-1)).toBe("fetch POST /bench");
+    expect(JSON.parse(lastBody)).toEqual({
+      profile: "realistic",
+      plan: [
+        { method: "rsync", runs: 5 },
+        { method: "rsync-2phase", runs: 5 },
+      ],
+    });
 
     clock += ARM_MS + 1;
     calls = [];
@@ -175,11 +247,75 @@ describe("valid same-origin controls", () => {
     expect(calls).toEqual([]);
   });
 
-  it("disarm stops the campaign", async () => {
+  it("disarm disarms and stops the campaign", async () => {
     await handle(post("/arm"), state, ports());
     const res = await handle(post("/disarm"), state, ports());
     expect(res.status).toBe(303);
     expect(state.armedUntil).toBe(0);
+    expect(calls).toContain("campaign stop disarmed by the owner");
+  });
+
+  it("starts a campaign, refuses a second, and refuses the manual controls meanwhile", async () => {
+    let res = await handle(post("/campaign", { body: { plan: "full" } }), state, ports());
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/results");
+    expect(calls).toEqual(["campaign start full"]);
+    res = await handle(post("/campaign", { body: { plan: "quick" } }), state, ports());
+    expect(res.status).toBe(409);
+    await handle(post("/arm"), state, ports());
+    calls = [];
+    res = await handle(post("/probe"), state, ports());
+    expect(res.status).toBe(409);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an unknown campaign plan", async () => {
+    const res = await handle(post("/campaign", { body: { plan: "forever" } }), state, ports());
+    expect(res.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("request-intent tokens kept as hashes", () => {
+  it("a page's token works after the Durable Object lost its memory", async () => {
+    const page = await handle(get("/"), state, ports());
+    const token = (await page.text()).match(/name="intent" value="([0-9a-z]{64})"/)[1];
+    expect(token).toBe(issued.at(-1));
+    expect(JSON.stringify(intents)).not.toContain(token); // only its hash is stored
+    state = { armedUntil: 0 }; // a new instance: nothing in memory
+    const res = await handle(post("/arm", { token }), state, ports());
+    expect(res.status).toBe(303);
+  });
+
+  it("an expired token is refused", async () => {
+    clock += INTENT_TTL_MS + 1;
+    const res = await handle(post("/arm"), state, ports());
+    expect(res.status).toBe(403);
+    expect(state.armedUntil).toBe(0);
+  });
+
+  it("HEAD and /results issue no token", async () => {
+    await handle(new Request(`${ORIGIN}/`, { method: "HEAD" }), state, ports());
+    await handle(get("/results"), state, ports());
+    expect(issued).toEqual([]);
+  });
+
+  it("keeps at most MAX_INTENTS unexpired hashes", async () => {
+    for (let i = 0; i < MAX_INTENTS + 5; i++) await handle(get("/"), state, ports());
+    expect(intents.length).toBe(MAX_INTENTS);
+    const oldest = issued[0];
+    const res = await handle(post("/arm", { token: oldest }), state, ports());
+    expect(res.status).toBe(403);
+    const newest = issued.at(-1);
+    expect((await handle(post("/arm", { token: newest }), state, ports())).status).toBe(303);
+  });
+
+  it("offers the AR-25 rerun", async () => {
+    const page = await (await handle(get("/"), state, ports())).text();
+    expect(page).toContain('name="plan" value="ar25"');
+    const res = await handle(post("/campaign", { body: { plan: "ar25" } }), state, ports());
+    expect(res.status).toBe(303);
+    expect(calls).toEqual(["campaign start ar25"]);
   });
 });
 

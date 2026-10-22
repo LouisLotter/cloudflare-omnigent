@@ -1,0 +1,9 @@
+{
+  "name": "cfo-spike-s3-staging",
+  "private": true,
+  "type": "module",
+  "description": "Spike S3 staging Worker only: the Sandbox SDK's DirectoryBackup. Not part of the pnpm workspace; install with `npm ci --prefix spikes/s3/staging`.",
+  "dependencies": {
+    "@cloudflare/sandbox": "1.0.0"
+  }
+}

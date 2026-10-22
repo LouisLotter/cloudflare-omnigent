@@ -1,0 +1,20 @@
+{
+ "profile": "large",
+ "free_bytes": 6638899200,
+ "size_bytes": 2408328137,
+ "index_s": 5.69,
+ "upload_ms": 14632,
+ "stored_bytes": 901324997,
+ "upload_mb_s": 164.6,
+ "restore_ms": 16920,
+ "verify": {
+  "equal": true,
+  "entries": 82647,
+  "missing": 0,
+  "extra": 0,
+  "mismatched": 0,
+  "examples": [],
+  "verify_s": 4.621
+ },
+ "restore_mb_s": 142.3
+}
