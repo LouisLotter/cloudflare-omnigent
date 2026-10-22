@@ -33,6 +33,8 @@ build/
 .staging/
 # Wrangler configurations the staging tool renders next to a checked one for one deploy
 .stg-rendered.*.jsonc
+# Wrangler configurations the bootstrap script renders for one installation's deploy
+.cfo-bootstrap.*.jsonc
 
 # Process documents: reviews (including the Codex active review), plans, the tracker and
 # evidence live outside this repository and are never committed. These are the paths the
