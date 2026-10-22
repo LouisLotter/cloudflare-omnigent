@@ -99,8 +99,11 @@ case "${1:-}" in
     ;;
   collect) collect "${2:?bench or platform}" "${3:?run ID}" ;;
   teardown)
-    (cd "$root" && pnpm stg teardown --suffix wp33-platform) 2>&1 | "${redact[@]}" | tee "$results/teardown-platform.log"
-    (cd "$root" && pnpm stg teardown --suffix wp33-bench) 2>&1 | "${redact[@]}" | tee "$results/teardown-bench.log"
+    # Each one even if the other was never deployed (the tool exits 1 for an unknown name).
+    for target in platform bench; do
+      (cd "$root" && pnpm stg teardown --suffix "wp33-$target") 2>&1 | "${redact[@]}" |
+        tee "$results/teardown-$target.log" || true
+    done
     ;;
   *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
