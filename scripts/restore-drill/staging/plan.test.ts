@@ -7,16 +7,20 @@ import {
   type HarnessStatus,
   harnessEnv,
   MAX_MISSED_POLLS,
+  MAX_START_ATTEMPTS,
   missingResults,
   newRunId,
   parseCredentials,
   parseHarnessStatus,
   REPLACEMENT_HEALTH_TIMEOUT_MS,
+  REPLACEMENT_START_DELAY_MS,
   type RunRecord,
   type RunSettings,
   replacedEnv,
+  replacementStep,
   replacementTimings,
   resultKey,
+  START_CHECK_MS,
 } from "./src/plan.ts";
 
 // Synthetic values in R2's formats; no real account or token.
@@ -363,14 +367,49 @@ describe("replacementTimings", () => {
         prefix: "p",
         requestedAt: 10,
         stoppedAt: 30,
-        startCalledAt: 31,
+        startCalledAt: 50,
+        lastStartAt: 80,
+        startAttempts: 2,
         healthyAt: 100,
       }),
-    ).toEqual({ stopMs: 20, startToHealthyMs: 69, lossToHealthyMs: 90 });
+    ).toEqual({
+      stopMs: 20,
+      startToHealthyMs: 50,
+      lastStartToHealthyMs: 20,
+      lossToHealthyMs: 90,
+      startAttempts: 2,
+    });
     expect(replacementTimings({ prefix: "p", requestedAt: 10 })).toEqual({
       stopMs: null,
       startToHealthyMs: null,
+      lastStartToHealthyMs: null,
       lossToHealthyMs: null,
+      startAttempts: 0,
     });
+  });
+});
+
+describe("replacementStep (UC-03)", () => {
+  const killed = { prefix: "p", requestedAt: NOW, stoppedAt: NOW + 500 };
+  it("waits after the kill, then starts", () => {
+    expect(replacementStep(killed, false, NOW + 1000)).toBe("wait");
+    expect(replacementStep(killed, false, NOW + 500 + REPLACEMENT_START_DELAY_MS)).toBe("start");
+  });
+  it("polls a running start, and starts again one that never came up", () => {
+    const started = {
+      ...killed,
+      startCalledAt: NOW + 30_000,
+      lastStartAt: NOW + 30_000,
+      startAttempts: 1,
+    };
+    expect(replacementStep(started, true, NOW + 90_000)).toBe("poll");
+    expect(replacementStep(started, false, NOW + 30_000 + START_CHECK_MS - 1)).toBe("poll");
+    expect(replacementStep(started, false, NOW + 30_000 + START_CHECK_MS)).toBe("start");
+    const spent = { ...started, startAttempts: MAX_START_ATTEMPTS };
+    expect(replacementStep(spent, false, NOW + 30_000 + START_CHECK_MS)).toBe("fail");
+  });
+  it("fails a broken or finished replacement", () => {
+    expect(replacementStep({ ...killed, error: "x" }, true, NOW)).toBe("fail");
+    expect(replacementStep({ ...killed, healthyAt: NOW }, true, NOW)).toBe("fail");
   });
 });

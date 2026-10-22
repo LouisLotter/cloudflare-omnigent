@@ -47,15 +47,19 @@ import {
   type RunRecord,
   type RunSettings,
   replacedEnv,
+  replacementStep,
   replacementTimings,
   resultKey,
 } from "./plan.ts";
 
 export interface Env {
   readonly DRILL: DurableObjectNamespace<DrillRun>;
+  /** Optional: a second run on a larger instance type, started by the same Run (comparison). */
+  readonly DRILL_LARGE?: DurableObjectNamespace<DrillRun>;
   readonly RESULTS: R2Bucket;
   readonly REPLICA_BUCKET: string;
   readonly DRILL_PLAN: string;
+  readonly DRILL_PLAN_LARGE?: string;
   readonly DRILL_BARRIER_WRITES: string;
   readonly DRILL_BARRIER_ITEMS: string;
   readonly DRILL_IDLE_S: string;
@@ -63,8 +67,11 @@ export interface Env {
 
 const MAX_BODY_BYTES = 4096;
 const HEALTH_POLL_MS = 1000;
-/** How long one alarm keeps polling the replaced server before it yields. */
-const HEALTH_SLICE_MS = 60_000;
+/**
+ * How long one alarm keeps polling the replaced server before it yields: under the safety
+ * alarm's ALARM_MS, which otherwise cancels a long handler (seen in the R2 run).
+ */
+const HEALTH_SLICE_MS = 10_000;
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value, null, 2), {
@@ -83,6 +90,11 @@ function log(event: string, fields: Record<string, unknown> = {}): void {
 }
 
 export class DrillRun extends DurableObject<Env> {
+  /** The harness plan this class's container runs. */
+  protected plan(): string {
+    return this.env.DRILL_PLAN;
+  }
+
   private port(): ContainerPort {
     return containerPort(this.ctx);
   }
@@ -126,7 +138,7 @@ export class DrillRun extends DurableObject<Env> {
       ownerPassword: randomHex(16),
       cookieSecret: randomHex(32),
       bucket: this.env.REPLICA_BUCKET,
-      plan: this.env.DRILL_PLAN,
+      plan: this.plan(),
       barrierWrites: this.env.DRILL_BARRIER_WRITES,
       barrierItems: this.env.DRILL_BARRIER_ITEMS,
       idleSeconds: this.env.DRILL_IDLE_S,
@@ -254,7 +266,10 @@ export class DrillRun extends DurableObject<Env> {
     return { ...run, stored };
   }
 
-  /** The loss of the server on Cloudflare: kill the container, start a new one on the replica. */
+  /**
+   * The loss of the server on Cloudflare: kill the container. The new one starts later, from
+   * awaitHealth(), REPLACEMENT_START_DELAY_MS after the kill (UC-03).
+   */
   private async replace(
     run: RunRecord,
     port: ContainerPort,
@@ -265,43 +280,62 @@ export class DrillRun extends DurableObject<Env> {
     log("replacement.kill", { runId: run.runId });
     await port.kill();
     const stoppedAt = Date.now();
-    // Re-read after the wait: a stop meanwhile ended the run and deleted the token.
-    const still = await this.active(run.runId);
-    const settings = await this.ctx.storage.get<RunSettings>("settings");
-    const creds = await this.ctx.storage.get<R2Credentials>("creds");
-    if (still === undefined || settings === undefined || creds === undefined) {
-      return {
-        ...run,
-        replacement: { prefix: awaiting.prefix, requestedAt, stoppedAt, error: "run ended" },
-      };
-    }
-    try {
-      port.start(replacedEnv(settings, creds, awaiting));
-    } catch (error) {
-      return {
-        ...run,
-        mode: "replaced",
-        replacement: {
-          prefix: awaiting.prefix,
-          requestedAt,
-          stoppedAt,
-          error: String(error).slice(0, 200),
-        },
-      };
-    }
-    const startCalledAt = Date.now();
-    log("replacement.started", { runId: run.runId });
+    await this.ctx.storage.put("awaiting", awaiting);
     return {
       ...run,
       mode: "replaced",
       missedPolls: 0,
-      replacement: { prefix: awaiting.prefix, requestedAt, stoppedAt, startCalledAt },
+      replacement: { prefix: awaiting.prefix, requestedAt, stoppedAt },
     };
   }
 
-  private async awaitHealth(run: RunRecord, port: ContainerPort): Promise<RunRecord> {
+  /** Starts the replaced container (again), if this run still owns it and holds the token. */
+  private async startReplaced(run: RunRecord, port: ContainerPort): Promise<RunRecord> {
     const replacement = run.replacement;
     if (replacement === undefined) return run;
+    const still = await this.active(run.runId);
+    const settings = await this.ctx.storage.get<RunSettings>("settings");
+    const creds = await this.ctx.storage.get<R2Credentials>("creds");
+    const awaiting = await this.ctx.storage.get<Awaiting>("awaiting");
+    if (still === undefined || settings === undefined || creds === undefined || !awaiting) {
+      return { ...run, replacement: { ...replacement, error: "run ended" } };
+    }
+    const now = Date.now();
+    const attempt = {
+      startCalledAt: replacement.startCalledAt ?? now,
+      lastStartAt: now,
+      startAttempts: (replacement.startAttempts ?? 0) + 1,
+    };
+    try {
+      if (port.running) await port.kill(); // what a failed attempt left behind
+      port.start(replacedEnv(settings, creds, awaiting));
+    } catch {
+      // Refused at once; replacementStep() starts again after START_CHECK_MS.
+      log("replacement.start_refused", { runId: run.runId, attempt: attempt.startAttempts });
+      return { ...run, replacement: { ...replacement, ...attempt } };
+    }
+    log("replacement.started", { runId: run.runId, attempt: attempt.startAttempts });
+    return { ...run, replacement: { ...replacement, ...attempt } };
+  }
+
+  private async awaitHealth(run: RunRecord, port: ContainerPort): Promise<RunRecord> {
+    let replacement = run.replacement;
+    if (replacement === undefined) return run;
+    const step = replacementStep(replacement, port.running, Date.now());
+    if (step === "wait") return run;
+    if (step === "fail") {
+      return {
+        ...run,
+        replacement: { ...replacement, error: replacement.error ?? "never started" },
+      };
+    }
+    if (step === "start") {
+      run = await this.startReplaced(run, port);
+      replacement = run.replacement;
+      if (replacement === undefined || replacement.error !== undefined) return run;
+      return run; // its health is polled from the next alarm on
+    }
+    if (!port.running) return run; // nothing to poll until a start takes
     const until = Date.now() + HEALTH_SLICE_MS;
     while (Date.now() < until) {
       if (await port.serverHealthy()) {
@@ -371,11 +405,21 @@ export class DrillRun extends DurableObject<Env> {
   }
 
   private async forgetSecrets(): Promise<void> {
-    await this.ctx.storage.delete(["creds", "settings"]);
+    await this.ctx.storage.delete(["creds", "settings", "awaiting"]);
   }
 }
 
 /** The body as JSON, refusing more than MAX_BODY_BYTES bytes before buffering them. */
+/**
+ * The same run on the comparison container (`instance_type` standard-1 in wrangler.jsonc): its
+ * own Durable Object, container and run id, its own plan, the same bucket and token.
+ */
+export class DrillRunLarge extends DrillRun {
+  protected override plan(): string {
+    return this.env.DRILL_PLAN_LARGE ?? this.env.DRILL_PLAN;
+  }
+}
+
 async function readJson(request: Request): Promise<unknown> {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) throw new Error("body too large");
@@ -405,6 +449,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const drill = env.DRILL.get(env.DRILL.idFromName("drill"));
+    const large =
+      env.DRILL_LARGE !== undefined && env.DRILL_PLAN_LARGE
+        ? env.DRILL_LARGE.get(env.DRILL_LARGE.idFromName("drill"))
+        : undefined;
     if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/") {
       return new Response(page(await drill.issueIntent()), {
         headers: {
@@ -416,7 +464,11 @@ export default {
       });
     }
     if (request.method === "GET" && url.pathname === "/api/status") {
-      return json(await drill.status());
+      return json(
+        large === undefined
+          ? await drill.status()
+          : { basic: await drill.status(), large: await large.status() },
+      );
     }
     if (
       request.method === "POST" &&
@@ -429,6 +481,7 @@ export default {
       }
       if (url.pathname === "/api/stop") {
         await drill.stop();
+        if (large !== undefined) await large.stop();
         return json({ stopped: true });
       }
       let body: unknown;
@@ -438,7 +491,9 @@ export default {
         return json({ error: "the body must be a small JSON object" }, 400);
       }
       const result = await drill.run(body);
-      return json(result.body, result.status);
+      if (large === undefined || result.status !== 202) return json(result.body, result.status);
+      const second = await large.run(body);
+      return json({ ...result.body, large: second.body }, result.status);
     }
     return json({ error: "not found" }, 404);
   },

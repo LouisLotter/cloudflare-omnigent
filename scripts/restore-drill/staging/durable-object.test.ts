@@ -17,7 +17,7 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 
-const { DrillRun, default: worker } = await import("./src/index.ts");
+const { DrillRun, DrillRunLarge, default: worker } = await import("./src/index.ts");
 
 const ACCOUNT = `${"0".repeat(31)}1`; // synthetic
 const SECRET = "5".repeat(64); // synthetic
@@ -65,6 +65,8 @@ class FakeContainer {
   harness: Harness | null = null;
   healthy = false;
   failStart = false;
+  /** UC-03: start() returns, but no container comes up. */
+  refuseSilently = 0;
   /** Runs inside destroy(), between its start and its end: another event arriving meanwhile. */
   duringDestroy: (() => Promise<void>) | null = null;
   /** Runs inside a status fetch, before it answers: another event arriving meanwhile. */
@@ -72,8 +74,12 @@ class FakeContainer {
   start(options: { enableInternet: boolean; env?: Record<string, string> }): void {
     expect(options.enableInternet).toBe(true);
     if (this.failStart) throw new Error("synthetic start failure");
-    this.running = true;
     this.starts.push(options.env ?? {});
+    if (this.refuseSilently > 0) {
+      this.refuseSilently -= 1;
+      return;
+    }
+    this.running = true;
   }
   async monitor(): Promise<void> {}
   signal(signo: number): void {
@@ -156,6 +162,16 @@ beforeEach(() => {
   });
 });
 
+/** Moves the replacement's recorded times back by ``ms``, as if that much time had passed. */
+async function age(ms: number): Promise<void> {
+  const run = (await storage.get<Record<string, unknown>>("run")) ?? {};
+  const r = (run.replacement ?? {}) as Record<string, number>;
+  const shifted = Object.fromEntries(
+    Object.entries(r).map(([k, v]) => [k, typeof v === "number" && k.endsWith("At") ? v - ms : v]),
+  );
+  await storage.put("run", { ...run, replacement: shifted });
+}
+
 function everythingKept(): string {
   return [JSON.stringify([...storage.data.entries()]), ...r2.objects.values(), ...logs].join("\n");
 }
@@ -229,6 +245,11 @@ describe("alarm", () => {
     expect(container.signals).toEqual([]); // nothing irreversible in the alarm that stored
     await drill.alarm();
     expect(container.signals).toEqual([9]);
+    expect(container.starts).toHaveLength(1); // not right after the kill (UC-03)
+    await drill.alarm();
+    expect(container.starts).toHaveLength(1);
+    await age(21_000);
+    await drill.alarm(); // 20 s after the kill: the replaced container starts
     const replaced = container.starts[1] ?? {};
     expect(replaced).toMatchObject({
       DRILL_MODE: "replaced",
@@ -246,7 +267,8 @@ describe("alarm", () => {
     container.healthy = true;
     await drill.alarm();
     const timing = JSON.parse(r2.objects.get(`results/${runId}/cf-replacement-do.json`) ?? "{}");
-    expect(timing.timings.lossToHealthyMs).toBeGreaterThanOrEqual(0);
+    expect(timing.timings.lossToHealthyMs).toBeGreaterThanOrEqual(20_000);
+    expect(timing.timings.startAttempts).toBe(1);
     expect(timing.healthyAt).toBeGreaterThanOrEqual(timing.startCalledAt);
 
     // Done: the result is stored, the container stopped, the token deleted.
@@ -269,6 +291,58 @@ describe("alarm", () => {
     expect(everythingKept()).not.toContain(String(container.starts[0]?.DRILL_OWNER_PASSWORD));
     await drill.alarm(); // a stray alarm after the end does nothing
     expect(container.starts).toHaveLength(2);
+  });
+
+  it("starts the replaced container again while Cloudflare refuses it (UC-03)", async () => {
+    const runId = await started();
+    const awaiting = { prefix: "restore-100mb", manifest: "{}", filler_rows: 1 };
+    container.harness = {
+      status: status({ results: ["cf-replacement"], awaiting_replacement: awaiting }),
+      results: { "cf-replacement": {} },
+    };
+    await drill.alarm(); // stores
+    await drill.alarm(); // kills
+    container.harness = null; // nothing answers on 8002 meanwhile
+    container.refuseSilently = 2;
+    await age(21_000);
+    await drill.alarm(); // first start: refused
+    expect(container.starts).toHaveLength(2);
+    expect(container.running).toBe(false);
+    await drill.alarm(); // too early to try again
+    expect(container.starts).toHaveLength(2);
+    await age(16_000);
+    await drill.alarm(); // second start: refused
+    await age(16_000);
+    await drill.alarm(); // third start: it runs
+    expect(container.starts).toHaveLength(4);
+    expect(container.running).toBe(true);
+    container.healthy = true;
+    await drill.alarm();
+    const timing = JSON.parse(r2.objects.get(`results/${runId}/cf-replacement-do.json`) ?? "{}");
+    expect(timing.timings.startAttempts).toBe(3);
+    expect(timing.timings.lastStartToHealthyMs).toBeLessThan(timing.timings.startToHealthyMs);
+  });
+
+  it("gives up after its start attempts, and ends the run", async () => {
+    await started();
+    const awaiting = { prefix: "restore-100mb", manifest: "{}", filler_rows: 1 };
+    container.harness = {
+      status: status({ results: ["cf-replacement"], awaiting_replacement: awaiting }),
+      results: { "cf-replacement": {} },
+    };
+    await drill.alarm();
+    await drill.alarm();
+    container.harness = null;
+    container.refuseSilently = 100;
+    await age(21_000);
+    for (let i = 0; i < 8; i++) {
+      await drill.alarm();
+      await age(16_000);
+    }
+    const run = await storage.get<Record<string, unknown>>("run");
+    expect(run?.outcome).toBe("failed");
+    expect(storage.data.has("creds")).toBe(false);
+    expect(container.starts.length).toBe(1 + 6); // the first container and six attempts
   });
 
   it("never starts the replaced container after a stop that came in during the kill", async () => {
@@ -356,7 +430,9 @@ describe("alarm", () => {
       results: { "cf-replacement": {} },
     };
     await drill.alarm(); // stored
-    await drill.alarm(); // replaced
+    await drill.alarm(); // killed
+    await age(21_000);
+    await drill.alarm(); // started
     container.harness = { status: status({ mode: "replaced", phase: "replaced" }), results: {} };
     container.healthy = true;
     r2.failing = true;
@@ -479,6 +555,46 @@ describe("routes", () => {
     });
     expect((await worker.fetch(stop, env as never)).status).toBe(200);
     expect(storage.data.has("creds")).toBe(false);
+  });
+
+  it("starts the comparison run on the large container with the same Run, and stops both", async () => {
+    const largeStorage = new FakeStorage();
+    const largeContainer = new FakeContainer();
+    const large = new DrillRunLarge(
+      { storage: largeStorage, container: largeContainer, waitUntil: () => undefined } as never,
+      env as never,
+    );
+    env.DRILL_LARGE = { idFromName: () => "id", get: () => large };
+    env.DRILL_PLAN_LARGE = "env,restore-1000mb";
+    try {
+      const intent = await page();
+      const response = await worker.fetch(
+        run({ origin: ORIGIN, "x-drill-intent": intent }),
+        env as never,
+      );
+      expect(response.status).toBe(202);
+      const body = (await response.json()) as { runId: string; large: { runId: string } };
+      expect(body.large.runId).toMatch(/^run-/);
+      expect(container.starts[0]?.DRILL_PLAN).toBe("all");
+      expect(largeContainer.starts[0]?.DRILL_PLAN).toBe("env,restore-1000mb");
+      expect(largeContainer.starts[0]?.LITESTREAM_SECRET_ACCESS_KEY).toBe(SECRET);
+      const shown = await (
+        await worker.fetch(new Request(`${ORIGIN}/api/status`), env as never)
+      ).text();
+      expect(shown).toContain('"large"');
+      expect(shown).not.toContain(SECRET);
+      const stop = new Request(`${ORIGIN}/api/stop`, {
+        method: "POST",
+        headers: { origin: ORIGIN, "x-drill-intent": intent },
+      });
+      expect((await worker.fetch(stop, env as never)).status).toBe(200);
+      expect(largeStorage.data.has("creds")).toBe(false);
+      expect(storage.data.has("creds")).toBe(false);
+      expect(largeContainer.running).toBe(false);
+    } finally {
+      delete env.DRILL_LARGE;
+      delete env.DRILL_PLAN_LARGE;
+    }
   });
 
   it("answers anything else with 404", async () => {

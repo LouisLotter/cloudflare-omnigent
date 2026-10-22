@@ -14,6 +14,11 @@
 # beside it, nothing else.
 ARG SERVER_IMAGE=cfo-wp25-server:dev
 FROM ${SERVER_IMAGE}
+# py-spy, hash-pinned, for the harness's stack samples of a slow server start (it reads the
+# app's stacks from outside; nothing in Omnigent or the server image changes).
+RUN printf 'py-spy==0.4.1 --hash=sha256:6a80ec05eb8a6883863a367c6a4d4f2d57de68466f7956b6367d4edd5c61bb29\n' > /tmp/py-spy.txt \
+ && python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/py-spy.txt \
+ && rm /tmp/py-spy.txt && py-spy --version
 COPY scripts/restore-drill/cfo_drill/ /opt/drill/cfo_drill/
 ENV PYTHONPATH=/opt/cfo:/opt/drill
 RUN python -c "import cfo_drill.drill, cfo_drill.canaries, cfo_drill.harness"

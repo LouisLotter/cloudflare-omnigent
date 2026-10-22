@@ -33,6 +33,7 @@ import contextlib
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import sqlite3
@@ -231,6 +232,8 @@ class Server:
     proc: subprocess.Popen[str] | None = None
     events: list[Event] = field(default_factory=list)
     tail: deque[str] = field(default_factory=lambda: deque(maxlen=40))
+    #: (seconds since start, line) for the startup's own log lines, request logs left out.
+    lines: list[tuple[float, str]] = field(default_factory=list)
     started_mono: float = 0.0
 
     @property
@@ -275,6 +278,14 @@ class Server:
         for line in self.proc.stdout:
             line = line.rstrip("\n")
             self.tail.append(_redact(line)[:400])
+            if (
+                len(self.lines) < MAX_STARTUP_LINES
+                and line.strip()
+                and not _REQUEST_LINE.search(line)
+            ):
+                self.lines.append(
+                    (round(time.monotonic() - self.started_mono, 2), _redact(line)[:200])
+                )
             if line.startswith("{"):
                 try:
                     data = json.loads(line)
@@ -329,11 +340,180 @@ class Server:
         raise TimeoutError(f"not replicated within {timeout_s:g} s")
 
 
+MAX_STARTUP_LINES = 600
+#: Request logs (uvicorn's access lines), left out of the startup timeline.
+_REQUEST_LINE = re.compile(r'"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) /')
+
+
+class StartupProbe:
+    """Where a server's start goes: resource samples every 5 s and Python stacks every 20 s.
+
+    Reads /proc (CPU, including steal and iowait; load; memory; disk sectors; each server
+    process's CPU time and state) and, when the container allows ptrace, ``py-spy dump`` of
+    the app process. Stops at the first healthy answer. Holds no environment and no secret:
+    process names, numbers and stack frames only.
+    """
+
+    SAMPLE_S = 5.0
+    STACK_EVERY_S = 20.0
+
+    def __init__(self, server: Server) -> None:
+        self.server = server
+        self.samples: list[dict[str, Any]] = []
+        self.stacks: list[dict[str, Any]] = []
+        self.stack_error: str | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> StartupProbe:
+        self._thread.start()
+        return self
+
+    def stop(self) -> dict[str, Any]:
+        self._stop.set()
+        self._thread.join(timeout=60)
+        return {
+            "samples": self.samples,
+            "stacks": self.stacks,
+            "stack_error": self.stack_error,
+            "lines": [{"at_s": t, "line": line} for t, line in self.server.lines],
+            "events": [
+                {"event": e.name, "at_s": round(e.mono - self.server.started_mono, 2)}
+                for e in self.server.events
+                if e.name
+                in ("boot", "restore", "database.ready", "started", "app.built", "recovery")
+            ],
+        }
+
+    @staticmethod
+    def _cpu() -> list[int]:
+        fields = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+        return [int(x) for x in fields]
+
+    @staticmethod
+    def _disk() -> tuple[int, int]:
+        read = written = 0
+        for line in Path("/proc/diskstats").read_text().splitlines():
+            parts = line.split()
+            if len(parts) > 9 and re.fullmatch(
+                r"(vd|sd|xvd|nvme\d+n)[a-z0-9]*?[a-z]|nvme\d+n\d+", parts[2]
+            ):
+                read += int(parts[5])
+                written += int(parts[9])
+        return read, written
+
+    @staticmethod
+    def _processes() -> dict[str, dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit() or entry.name == "1":
+                continue
+            try:
+                cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                stat = (entry / "stat").read_text().split(") ", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            name = (
+                "app"
+                if "cfo_server.app" in cmd
+                else "litestream"
+                if "litestream" in cmd
+                else "entrypoint"
+                if "cfo_server.entrypoint" in cmd
+                else None
+            )
+            if name is None:
+                continue
+            found[name] = {
+                "pid": int(entry.name),
+                "state": stat[0],
+                "cpu_ticks": int(stat[11]) + int(stat[12]),
+                "rss_mb": round(int(stat[21]) * 4096 / 1e6, 1),
+            }
+        return found
+
+    def _run(self) -> None:
+        started = self.server.started_mono
+        last_cpu = self._cpu()
+        last_disk = self._disk()
+        last_procs = self._processes()
+        last_stack = 0.0
+        while not self._stop.wait(self.SAMPLE_S):
+            try:
+                cpu = self._cpu()
+                delta = [b - a for a, b in zip(last_cpu, cpu, strict=False)]
+                total = sum(delta) or 1
+                disk = self._disk()
+                procs = self._processes()
+                sample: dict[str, Any] = {
+                    "at_s": round(time.monotonic() - started, 1),
+                    "cpu_pct": {
+                        k: round(100 * delta[i] / total, 1)
+                        for i, k in enumerate(
+                            ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
+                        )
+                        if i < len(delta)
+                    },
+                    "load1": float(Path("/proc/loadavg").read_text().split()[0]),
+                    "mem_available_mb": next(
+                        round(int(line.split()[1]) / 1024)
+                        for line in Path("/proc/meminfo").read_text().splitlines()
+                        if line.startswith("MemAvailable")
+                    ),
+                    "disk_read_mb": round((disk[0] - last_disk[0]) * 512 / 1e6, 1),
+                    "disk_write_mb": round((disk[1] - last_disk[1]) * 512 / 1e6, 1),
+                    "processes": {
+                        name: {
+                            "state": p["state"],
+                            "cpu_s": round(
+                                (p["cpu_ticks"] - last_procs.get(name, {}).get("cpu_ticks", 0))
+                                / os.sysconf("SC_CLK_TCK"),
+                                2,
+                            ),
+                            "rss_mb": p["rss_mb"],
+                        }
+                        for name, p in procs.items()
+                    },
+                }
+                with contextlib.suppress(OSError):
+                    sample["cgroup_cpu"] = Path("/sys/fs/cgroup/cpu.stat").read_text().split()[:12]
+                self.samples.append(sample)
+                last_cpu, last_disk, last_procs = cpu, disk, procs
+                app = procs.get("app")
+                now = time.monotonic()
+                if app and self.stack_error is None and now - last_stack >= self.STACK_EVERY_S:
+                    last_stack = now
+                    self._stack(app["pid"], round(now - started, 1))
+            except Exception as exc:  # noqa: BLE001 - a missed sample, not a failed phase
+                self.samples.append({"error": f"{type(exc).__name__}: {exc}"[:200]})
+
+    def _stack(self, pid: int, at_s: float) -> None:
+        try:
+            result = subprocess.run(  # noqa: S603
+                ["py-spy", "dump", "--pid", str(pid), "--nonblocking"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.stack_error = f"{type(exc).__name__}: {exc}"[:200]
+            return
+        if result.returncode != 0:
+            self.stack_error = _redact(result.stderr or result.stdout)[:300]
+            return
+        frames = [line for line in result.stdout.splitlines() if line.strip()][:40]
+        self.stacks.append({"at_s": at_s, "frames": [_redact(f)[:160] for f in frames]})
+
+
 def _redact(text: str) -> str:
     for name in SECRET_NAMES:
         value = os.environ.get(name)
         if value and len(value) >= 4:
             text = text.replace(value, "[redacted]")
+    # The R2 endpoint names the account; Litestream logs it. Not a secret, but kept out too.
+    host = os.environ.get("DRILL_ENDPOINT", "").split("//", 1)[-1]
+    if len(host) >= 4:
+        text = text.replace(host, "[endpoint]")
     return text
 
 
@@ -565,15 +745,18 @@ class Harness:
         server = Server(self.s, prefix, initialized=True, **kw).start()
         self.server = server
         self.probe = None
+        startup = StartupProbe(server).start()
         timing: dict[str, Any] = {}
         try:
             timing["to_healthy_s"] = round(
-                server.wait_healthy(kw.get("restore_deadline_s", 300) + 300), 2
+                server.wait_healthy(kw.get("restore_deadline_s", 300) + 900), 2
             )
             timing["healthy_at"] = time.time()
             self.probe = ResnapshotProbe(server, self.password).start()
         except RecoveryMode as exc:
             timing["recovery"] = json.loads(str(exc))
+        finally:
+            timing["startup"] = startup.stop()
         restores = server.of("restore")
         if restores:
             timing["restore_s"] = restores[-1].get("seconds")

@@ -9,6 +9,15 @@ export const ALARM_MS = 15_000;
 export const MAX_MISSED_POLLS = 12;
 /** How long the replaced container may take to serve Omnigent's /health. */
 export const REPLACEMENT_HEALTH_TIMEOUT_MS = 20 * 60_000;
+/**
+ * A start right after a kill fails on Cloudflare ("There is no container instance that can be
+ * provided to this Durable Object, try again later", UC-03; seen again in WP2.5's R2 run), so
+ * the replacement starts this long after the kill, and starts again while it does not run.
+ */
+export const REPLACEMENT_START_DELAY_MS = 20_000;
+/** How long after a start the container must be running, or the start is tried again. */
+export const START_CHECK_MS = 15_000;
+export const MAX_START_ATTEMPTS = 6;
 
 const ENDPOINT = /^https:\/\/[0-9a-f]{32}\.(?:(?:eu|fedramp)\.)?r2\.cloudflarestorage\.com$/;
 const ACCESS_KEY_ID = /^[0-9a-f]{32}$/;
@@ -200,9 +209,27 @@ export interface Replacement {
   readonly prefix: string;
   readonly requestedAt: number;
   readonly stoppedAt?: number;
+  /** The first start. */
   readonly startCalledAt?: number;
+  /** The latest start, and how many there were. */
+  readonly lastStartAt?: number;
+  readonly startAttempts?: number;
   readonly healthyAt?: number;
   readonly error?: string;
+}
+
+export type ReplacementStep = "wait" | "start" | "poll" | "fail";
+
+/** The next step of a replacement in progress: start (again), poll its health, or give up. */
+export function replacementStep(r: Replacement, running: boolean, now: number): ReplacementStep {
+  if (r.error !== undefined || r.healthyAt !== undefined) return "fail";
+  if (r.startCalledAt === undefined) {
+    return now >= (r.stoppedAt ?? r.requestedAt) + REPLACEMENT_START_DELAY_MS ? "start" : "wait";
+  }
+  if (!running && now - (r.lastStartAt ?? r.startCalledAt) >= START_CHECK_MS) {
+    return (r.startAttempts ?? 1) >= MAX_START_ATTEMPTS ? "fail" : "start";
+  }
+  return "poll";
 }
 
 /** A run as the Durable Object keeps it. No credential is ever part of it. */
@@ -279,6 +306,8 @@ export function replacementTimings(r: Replacement): Record<string, number | null
   return {
     stopMs: span(r.requestedAt, r.stoppedAt),
     startToHealthyMs: span(r.startCalledAt, r.healthyAt),
+    lastStartToHealthyMs: span(r.lastStartAt ?? r.startCalledAt, r.healthyAt),
     lossToHealthyMs: span(r.requestedAt, r.healthyAt),
+    startAttempts: r.startAttempts ?? (r.startCalledAt === undefined ? 0 : 1),
   };
 }

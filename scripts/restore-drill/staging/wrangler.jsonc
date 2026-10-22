@@ -7,6 +7,10 @@
 //   pnpm stg teardown --suffix wp25-drill   (also empties and deletes the bucket)
 //
 // The owner's part (an R2 token for this bucket only, then Run) is in the WP2.5 evidence.
+//
+// The second run's plans: on `basic`, a diagnosed 1 GB restore, then 100 MB and the Cloudflare
+// container replacement; on `standard-1` (DrillRunLarge), the same 1 GB restore for comparison.
+// The same Run starts both. (The first run, run-20261022t140557z-dedab7, used DRILL_PLAN "all".)
 {
   "$schema": "../../../worker/node_modules/wrangler/config-schema.json",
   "name": "cfo-stg-wp25-drill",
@@ -17,15 +21,22 @@
   "observability": { "enabled": true },
   "vars": {
     "REPLICA_BUCKET": "cfo-stg-wp25-drill-db",
-    "DRILL_PLAN": "all",
+    "DRILL_PLAN": "env,restore-1000mb,restore-100mb,cf-replacement",
+    "DRILL_PLAN_LARGE": "env,restore-1000mb",
     "DRILL_BARRIER_WRITES": "300",
     "DRILL_BARRIER_ITEMS": "150",
     "DRILL_IDLE_S": "480"
   },
   "durable_objects": {
-    "bindings": [{ "name": "DRILL", "class_name": "DrillRun" }]
+    "bindings": [
+      { "name": "DRILL", "class_name": "DrillRun" },
+      { "name": "DRILL_LARGE", "class_name": "DrillRunLarge" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DrillRun"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DrillRun"] },
+    { "tag": "v2", "new_sqlite_classes": ["DrillRunLarge"] }
+  ],
   "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp25-drill-db" }],
   "containers": [
     {
@@ -36,6 +47,15 @@
       "image_vars": { "SERVER_IMAGE": "cfo-wp25-server:dev" },
       "max_instances": 1,
       "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-wp25-drill-large",
+      "class_name": "DrillRunLarge",
+      "image": "./Dockerfile",
+      "image_build_context": "../../..",
+      "image_vars": { "SERVER_IMAGE": "cfo-wp25-server:dev" },
+      "max_instances": 1,
+      "instance_type": "standard-1"
     }
   ]
 }
