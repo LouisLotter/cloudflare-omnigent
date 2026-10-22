@@ -5,11 +5,24 @@
 import { createExecutionContext, evictAllDurableObjects } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { DurabilityUnconfirmed, ErrorBody } from "@cfo/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
+import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import { OMNIGENT_SERVER_OBJECT_NAME } from "../../src/shared/rpc.ts";
 import web, { routeAdmitted } from "../../src/web.ts";
+import {
+  AUD,
+  claims,
+  HOST,
+  jwksResponse,
+  makeKey,
+  OWNER_EMAIL,
+  SALT,
+  sign,
+  TEAM,
+  type TestKey,
+} from "../support/access-keys.ts";
 import { defined } from "../support/defined.ts";
 import { unconfirmedResponse } from "../support/fake-omnigent-server.ts";
 import type { FakeServerContainer } from "../support/fake-server-container.ts";
@@ -144,6 +157,104 @@ describe("web Worker: the forwarding path", () => {
     const response = await route("/v1/sessions/s/resources/r/content");
     for (const [name, value] of Object.entries(headers))
       expect(response.headers.get(name)).toBe(value);
+  });
+});
+
+describe("web Worker: with WP2.1's real ingress", () => {
+  let key: TestKey;
+  let ingressEnv: WebEnv;
+  const ownOrigin = `https://${HOST}`;
+
+  beforeAll(async () => {
+    key = await makeKey("kid-web-test");
+    ingressEnv = {
+      OMNIGENT: env.OMNIGENT,
+      ACCESS_TEAM_DOMAIN: TEAM,
+      ACCESS_AUD: AUD,
+      ALLOWED_HOSTNAMES: HOST,
+      OWNER_EMAIL_HASH: await makeOwnerPin(OWNER_EMAIL, SALT),
+    } as unknown as WebEnv;
+  });
+
+  /** web.ts's own handler, the certs endpoint served from memory. */
+  async function visit(path: string, init: RequestInit = {}, owner = true): Promise<Response> {
+    vi.stubGlobal("fetch", async () => jwksResponse(key));
+    const now = Math.floor(Date.now() / 1000);
+    const headers = new Headers(init.headers);
+    if (owner) headers.set("cf-access-jwt-assertion", await sign(key, claims(now)));
+    const response = await web.fetch(
+      new Request(`${ownOrigin}${path}`, { ...init, headers, redirect: "manual" }),
+      ingressEnv,
+      createExecutionContext(),
+    );
+    if (response.webSocket) return response;
+    const body = await response.arrayBuffer();
+    return new Response(body, { status: response.status, headers: response.headers });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("forwards the owner's request once, without Access's cookie or any identity header", async () => {
+    const response = await visit("/v1/sessions?limit=1", {
+      method: "POST",
+      headers: {
+        origin: ownOrigin,
+        cookie: "CF_Authorization=canary-access-cookie; __Host-ap_session=s",
+        "cf-access-authenticated-user-email": OWNER_EMAIL,
+        "x-forwarded-email": "attacker@example.invalid",
+      },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    const sent = fake.forwarded();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.url).toBe(`http://${HOST}/v1/sessions?limit=1`);
+    expect(sent[0]?.headers.cookie).toBe("__Host-ap_session=s");
+    const leaked = Object.keys(sent[0]?.headers ?? {}).filter((h) =>
+      /^(cf-access-|x-forwarded-email|x-cfo-)/.test(h),
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it("refuses a stranger, a foreign origin and a foreign upgrade before the server", async () => {
+    expect((await visit("/v1/sessions", {}, false)).status).toBe(403);
+    const foreign = await visit("/v1/sessions", {
+      method: "POST",
+      headers: { origin: "https://evil.example" },
+      body: "{}",
+    });
+    expect(foreign.status).toBe(403);
+    const upgrade = await visit("/v1/sessions/updates", {
+      headers: { upgrade: "websocket", origin: "null" },
+    });
+    expect(upgrade.status).toBe(403);
+    expect(fake.requests).toEqual([]);
+  });
+
+  it("carries the owner's WebSocket end to end under a bare 101, and a 424 untouched", async () => {
+    const socketResponse = await visit("/v1/sessions/updates", {
+      headers: { upgrade: "websocket", origin: ownOrigin, "sec-websocket-protocol": "omnigent.v1" },
+    });
+    expect(socketResponse.status).toBe(101);
+    expect([...socketResponse.headers.keys()]).toEqual(["sec-websocket-protocol"]);
+    const socket = defined(socketResponse.webSocket, "a WebSocket");
+    socket.accept();
+    const echoed = new Promise<unknown>((resolve) =>
+      socket.addEventListener("message", (event) => resolve(event.data)),
+    );
+    socket.send("ping");
+    expect(await echoed).toBe("ping");
+    socket.close(1000, "done");
+    fake.handler = (_port, request) => unconfirmedResponse(new URL(request.url).pathname);
+    const unconfirmed = await visit("/auth/password", {
+      method: "POST",
+      headers: { origin: ownOrigin },
+      body: "{}",
+    });
+    expect(unconfirmed.status).toBe(424);
+    expect(fake.forwarded().filter((r) => r.method === "POST")).toHaveLength(1);
   });
 });
 
