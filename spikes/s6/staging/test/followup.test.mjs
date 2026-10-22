@@ -6,7 +6,7 @@
 //   node --test spikes/s6/staging/test/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeWorld, START_REFUSED_TEXT } from "./harness.mjs";
+import { makeWorld, START_REFUSED_TEXT, until } from "./harness.mjs";
 
 const stepLine = (r, re) => r.lines.find((l) => re.test(l.step ?? ""));
 
@@ -125,6 +125,36 @@ test("DC-38 (review s6-fu-r1, P1): destroy() fails, the computer keeps running a
     !(await world.phase("name=wipe")).done,
     "Wipe refuses until the revocation is recorded",
   );
+});
+
+test("DC-38 (review s6-fu-r2, P1): destroy() pending, the computer refreshes and crashes, then destroy() rejects: a possible loss, never a confirmed stop", async () => {
+  const world = await makeWorld();
+  await partTwoUpToB(world);
+  world.container.holdDestroy = true;
+  const stopping = world.phase("name=stop&fake=1");
+  assert.ok(await until(() => world.container.heldDestroy !== null), "destroy() is pending");
+  const home = world.container.home("/root");
+  world.container.rotate(home, "claude");
+  world.container.rotate(home, "codex");
+  world.container.crash();
+  world.container.heldDestroy.reject(new Error("destroy failed (test)"));
+  world.container.holdDestroy = false;
+  const stop = await stopping;
+  assert.ok(!stop.done, "Stop must not report success");
+  let st = await world.state();
+  assert.equal(st.last_stop, null, "no confirmed stop is recorded");
+  assert.equal(st.credentials_may_be_lost, true);
+  assert.match(st.credentials_lost.reason, /stop failed/);
+  const rec = await world.phase("name=recover&fake=1");
+  assert.ok(!rec.done, "Recover ends unresolved");
+  assert.ok(!rec.lines.some((l) => l.ok === true && /verified signed out/.test(l.step ?? "")));
+  assert.ok(
+    !(await world.phase("name=wipe")).done,
+    "Wipe refuses until the revocation is recorded",
+  );
+  assert.equal(world.active.size, 2, "the refreshed logins are still active at the provider");
+  st = await world.state();
+  assert.equal(st.credentials_may_be_lost, true);
 });
 
 test("DC-38 (review s6-fu-r1): an intent left by an interrupted stop is withdrawn as soon as the computer is seen running", async () => {

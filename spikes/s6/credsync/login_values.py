@@ -40,7 +40,7 @@ TIMESTAMP_KEYS = {"expiresAt", "refreshTokenExpiresAt", "last_refresh", "expires
 SKIP_CLAIMS = {"iss", "aud", "scp", "scope", "amr", "exp", "iat", "nbf", "auth_time"}
 MIN_LEN = 16
 MIN_CLAIM_LEN = 8
-MIN_PIECE = 12  # a printed component this long that is part of a secret or an id is masked
+MIN_PIECE = 12  # a printed component holding this many characters of a secret or an id is masked
 SECRET_KEY = re.compile(r"(token|secret|password|private|apikey|api_key|cookie|credential|key$)", re.I)
 IDENT_KEY = re.compile(r"(account|organi[sz]ation|user|uuid|_id$|^id$|Id$)", re.I)
 PLAN_KEY = re.compile(r"(tier|subscription|plan|scope)", re.I)
@@ -127,13 +127,19 @@ class Masker:
 
     def __init__(self, values: list[bytes], private: list[bytes]):
         self.values = [v for v in values if v]  # every searched form
-        self.private = [v for v in private if v]  # whole secrets, ids and claims
+        # Every MIN_PIECE-long piece of a secret, an id or a claim (and of a secret's encoded
+        # forms): a component that holds any of them, wherever and however decorated, is masked
+        # whole (review s6-fu-r2).
+        self.pieces = {
+            v[i : i + MIN_PIECE] for v in private if v for i in range(len(v) - MIN_PIECE + 1)
+        }
+
+    def holds_piece(self, b: bytes) -> bool:
+        return any(b[i : i + MIN_PIECE] in self.pieces for i in range(len(b) - MIN_PIECE + 1))
 
     def component(self, segment: str) -> str:
         b = segment.encode()
-        if any(v in b for v in self.values) or (
-            len(b) >= MIN_PIECE and any(b in v for v in self.private)
-        ):
+        if any(v in b for v in self.values) or self.holds_piece(b):
             return "<a login value>"
         if "@" in segment:
             return EMAIL.sub("<address>", segment) if len(segment) < 80 else "<address>"
@@ -237,7 +243,7 @@ def main() -> int:
         needles.extend(needles_for(rel, data))
     m = Masker(
         [n["bytes"] for n in needles],
-        [n["bytes"] for n in needles if n["form"] == "whole" and n["class"] != "plan"],
+        [n["bytes"] for n in needles if n["class"] != "plan" and n["form"] != "middle piece"],
     )
 
     def describe(n: dict) -> dict:

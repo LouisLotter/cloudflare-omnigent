@@ -706,10 +706,17 @@ export class S6Computer extends DurableObject {
       if (this.ctx.container.running) await this.ctx.container.destroy();
       for (let i = 0; i < 60 && this.ctx.container.running; i++) await sleep(1000);
     } catch (e) {
-      if (this.ctx.container.running) {
-        this.deleteMeta("stop_record");
-        return { stopped: false, error: String(e?.message ?? e).slice(0, 120) };
+      // A rejected destroy() confirms nothing, whether or not the container is still there
+      // (review s6-fu-r2): the computer may have gone by itself, with a login newer than its
+      // final checkpoint. Withdraw the record; if the computer is gone, record a possible loss.
+      this.deleteMeta("stop_record");
+      if (!this.ctx.container.running) {
+        this.markCredentialsLost(
+          "the computer disappeared while its stop failed, so the stop is unconfirmed",
+        );
+        this.meta("computer_live", "0");
       }
+      return { stopped: false, error: String(e?.message ?? e).slice(0, 120) };
     }
     if (this.ctx.container.running) {
       this.deleteMeta("stop_record");

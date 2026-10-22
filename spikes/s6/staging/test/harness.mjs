@@ -222,6 +222,8 @@ class FakeContainer {
     // can arrive later, through monitor(); destroy() can fail; other start errors exist.
     this.refuseLateStarts = 0;
     this.destroyThrows = false;
+    this.holdDestroy = false;
+    this.heldDestroy = null;
     this.startErrors = [];
     this.monitorPromise = null;
     this.resolveMonitor = null;
@@ -258,6 +260,13 @@ class FakeContainer {
   }
   async destroy() {
     this.world.log("container-destroy");
+    if (this.holdDestroy) {
+      // The test settles it: resolve, or reject after whatever it does meanwhile.
+      await new Promise((resolve, reject) => {
+        this.heldDestroy = { resolve, reject };
+      });
+      this.heldDestroy = null;
+    }
     if (this.destroyThrows) throw new Error("destroy failed (test)");
     if (this.ignoreDestroy) return;
     this.stopNow("container stopped");

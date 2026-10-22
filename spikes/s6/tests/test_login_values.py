@@ -122,3 +122,31 @@ def test_review_r1_nothing_printable_leaks_through_names(tmp_path: Path) -> None
     assert "jwt-claim:<address>" in classes or all(":" not in c or "@" not in c for c in classes)
     db = report["files_holding_a_login_value"]["db.sqlite"]["matches"]
     assert any("table <a login value>, column <a login value>" in w for m in db for w in m["where"])
+
+
+def test_review_r2_decorated_pieces_are_masked(tmp_path: Path) -> None:
+    """Review s6-fu-r2: a piece of a token inside a longer printable name, with text around it,
+    is masked in key paths, record types, SQLite names and file names."""
+    home = tmp_path
+    (home / ".codex").mkdir()
+    token = P + "header0123456789" + "middle-abcdefghijklmnop" + "trailer9876543210"
+    account = str(uuid.uuid4())
+    auth = home / ".codex/auth.json"
+    auth.write_text(json.dumps({"tokens": {"access_token": token, "account_id": account}}))
+    piece, id_piece = "header0123456789", account[9:23]
+    (home / "keys.json").write_text(json.dumps({f"prefix {piece} suffix": {"x": token}}))
+    (home / "records.jsonl").write_text(json.dumps({"type": f"kind {id_piece} end", "v": token}) + "\n")
+    con = sqlite3.connect(home / "db.sqlite")
+    con.execute(f'create table "t {piece} u" ("c {id_piece} d" text)')
+    con.execute(f'insert into "t {piece} u" values (?)', (account,))
+    con.commit()
+    con.close()
+    d = home / f"dir {piece} x"
+    d.mkdir()
+    (d / "f.json").write_text(json.dumps({"y": account}))
+    report, raw = run(home, auth)
+    for leak in (piece, id_piece, token, account):
+        assert leak not in raw, leak
+    files = report["files_holding_a_login_value"]
+    assert "<a login value>/f.json" in files
+    assert files["keys.json"]["matches"][0]["where"] == ["<a login value>.x"]
