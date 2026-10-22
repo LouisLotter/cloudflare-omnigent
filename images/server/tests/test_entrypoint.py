@@ -444,6 +444,7 @@ def test_unconfirmed_final_sync_is_reported_by_exit_code_and_log(rig: Rig) -> No
     rig.wait_phase("running")
     rig.wait_app()
     rig.write("before-block")
+    _wait_replicated(rig)
     # Block the replica: a regular file where its directory was, so every upload fails
     # (a read-only directory, as WP3.9's lab used, does not stop root inside the image).
     moved = rig.replica.with_name("replica.moved")
@@ -617,3 +618,14 @@ def test_every_entrypoint_start_has_a_new_boot_id(rig: Rig) -> None:
         boots.append(rig.wait_phase("running")["bootId"])
         assert rig.stop() == entrypoint.EXIT_OK
     assert boots[0] != boots[1]
+
+
+def _wait_replicated(rig: Rig, timeout: float = 20) -> None:
+    """Wait until the replica covers every commit made so far (the watchdog's check)."""
+    target = _position(rig).json()["txid"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _position(rig).json()["replicatedTxid"] >= target:
+            return
+        time.sleep(0.1)
+    raise AssertionError("never replicated")
