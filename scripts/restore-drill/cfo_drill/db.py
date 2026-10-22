@@ -16,6 +16,7 @@ integrity_check`` while rows are missing.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -265,9 +266,17 @@ class Canary:
     acknowledged: bool
     expect: str = "present"
     status: int | None = None
+    #: The row's digest as the live server held it once acknowledged and replicated, for a
+    #: check without the live database (a replacement): the row must come back exactly so.
+    expected: str | None = None
 
     def key_digest(self) -> str:
         return key_digest(self.table, self.key)
+
+    def with_expected(self, snap: Snapshot) -> Canary:
+        """This canary, carrying its row's digest in ``snap`` (a confirmed live snapshot)."""
+        digest_ = _rows_of(snap, self.table).get(self.key_digest())
+        return dataclasses.replace(self, expected=digest_)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -277,6 +286,7 @@ class Canary:
             "acknowledged": self.acknowledged,
             "expect": self.expect,
             "status": self.status,
+            "expected": self.expected,
         }
 
     @classmethod
@@ -292,6 +302,7 @@ class Canary:
             acknowledged=bool(data["acknowledged"]),
             expect=str(data.get("expect", "present")),
             status=data.get("status"),
+            expected=data.get("expected"),
         )
 
 
@@ -304,7 +315,8 @@ def check_canaries(
 ) -> Check:
     """Every acknowledged canary is in the restore as the live server held it.
 
-    Without a live snapshot (``expected``), presence alone is checked.
+    The expected row comes from the live snapshot, or else from the digest the canary carries
+    (:meth:`Canary.with_expected`); a canary with neither is checked for presence only.
     """
     missing: list[str] = []
     differ: list[str] = []
@@ -323,10 +335,13 @@ def check_canaries(
         if not found:
             missing.append(canary.label)
             continue
-        if expected is not None:
-            live = _rows_of(expected, canary.table).get(digest_)
-            if live is not None and live != restored:
-                differ.append(canary.label)
+        live = (
+            _rows_of(expected, canary.table).get(digest_)
+            if expected is not None
+            else canary.expected
+        )
+        if live is not None and live != restored:
+            differ.append(canary.label)
     acknowledged = sum(1 for c in canaries if c.acknowledged)
     return Check(
         "acknowledged_changes",

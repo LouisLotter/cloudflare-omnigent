@@ -34,6 +34,9 @@ from harness_stack import BUCKET, PROJECT, Stack, docker, docker_ok  # noqa: E40
 
 requires_docker = pytest.mark.skipif(not docker_ok(), reason="needs Docker and the drill image")
 
+#: The in-process tests run inside the image (test_fence_suite.py starts them), never here.
+collect_ignore = ["inprocess"]
+
 
 def _create_bucket(stack: Stack) -> None:
     import boto3

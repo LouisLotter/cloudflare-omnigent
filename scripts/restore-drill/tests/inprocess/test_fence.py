@@ -212,6 +212,32 @@ def test_suspend_stops_only_once_the_revocation_is_replicated(world: World) -> N
     assert restored["sleep_operation_id"] == operation  # the token was revoked durably first
 
 
+def test_a_repeated_suspend_reports_its_recorded_outcome_even_while_blocked(
+    world: World,
+) -> None:
+    """A repeat (Omnigent resolving an unknown sleep) must not become a refusal just because
+    the wait fails now: the first call may have stopped the computer."""
+    from cfo_drill.fence import RecordingStubLauncher
+
+    launcher = RecordingStubLauncher(world.fence, world.effects)
+    operation = uuid.uuid4().hex
+    assert launcher.suspend("sb-repeat", operation_id=operation).outcome == "stopped"
+    effects = len(world.effects.of("suspend"))
+    world.block()
+    try:
+        # A commit the replica cannot have now: a new operation's wait must fail on it.
+        bearer = world.bearer()
+        agents = world.client.get("/v1/agents", headers=bearer).json()
+        agent = (agents.get("data") or agents)[0]["id"]
+        world.client.post("/v1/sessions", json={"agent_id": agent}, headers=bearer)
+        assert launcher.suspend("sb-repeat", operation_id=operation).outcome == "stopped"
+        assert launcher.suspend("sb-repeat", operation_id=uuid.uuid4().hex).outcome == "refused"
+    finally:
+        world.unblock()
+    world.wait_caught_up()
+    assert len(world.effects.of("suspend")) == effects
+
+
 def test_terminate_waits_for_the_tombstone_and_the_reaper_retries(world: World) -> None:
     from omnigent.server import persistent_hosts
     from omnigent.server.managed_sandbox_reaper import ManagedSandboxReaper

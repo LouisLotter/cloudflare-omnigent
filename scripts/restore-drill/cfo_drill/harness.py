@@ -356,6 +356,107 @@ def filler_rows(path: Path = DATA / "omnigent.db") -> int:
         conn.close()
 
 
+class ResnapshotProbe:
+    """After a restore, how long until a new commit can be durable (D1's window).
+
+    Started the moment the replaced server first answers healthy, it measures two views of
+    the same window, both from that moment:
+
+    - **the replica's:** one ordinary commit at once, then the time until the replica's
+      position covers it (Litestream must first upload a whole new snapshot, spike S4);
+    - **a person's:** a security write every 2 s, each answering 424 until the upload is
+      done, as S4 measured it ("first confirmed security write after a restore").
+    """
+
+    def __init__(self, server: Server, password: str) -> None:
+        self.server = server
+        self.password = password
+        self.started = time.monotonic()
+        self.writes: list[dict[str, Any]] = []
+        self.commit_sent_s: float | None = None
+        self.durable_after_s: float | None = None
+        self.error: str | None = None
+        self._stop = threading.Event()
+        self._threads = [
+            threading.Thread(target=self._replica_view, daemon=True),
+            threading.Thread(target=self._person_view, daemon=True),
+        ]
+
+    def start(self) -> ResnapshotProbe:
+        for thread in self._threads:
+            thread.start()
+        return self
+
+    def _since(self) -> float:
+        return round(time.monotonic() - self.started, 2)
+
+    def _replica_view(self) -> None:
+        try:
+            with canaries.Omnigent(APP) as client:
+                bearer = client.bearer(self.password)
+                agent = client.agent_id(bearer)
+                self.commit_sent_s = self._since()
+                client.http.post(
+                    "/v1/sessions", json={"agent_id": agent}, headers=bearer
+                ).raise_for_status()
+            self.server.wait_replicated(3600)  # a position read after that commit
+            self.durable_after_s = self._since()
+        except Exception as exc:  # noqa: BLE001 - reported in the result
+            self.error = f"{type(exc).__name__}: {exc}"[:300]
+
+    def _person_view(self) -> None:
+        try:
+            with canaries.Omnigent(APP) as client:
+                bearer = client.bearer(self.password)
+                agent = client.agent_id(bearer)
+                n = 0
+                while not self._stop.is_set():
+                    sent = time.monotonic()
+                    response = client.http.post(
+                        "/v1/scheduled-tasks",
+                        headers=bearer,
+                        json={
+                            "name": f"resnapshot-{n}",
+                            "prompt": "window",
+                            "rrule": canaries.RRULE,
+                            "agent_id": agent,
+                            "timezone": "UTC",
+                        },
+                    )
+                    self.writes.append(
+                        {
+                            "at_s": round(sent - self.started, 2),
+                            "status": response.status_code,
+                            "ms": round((time.monotonic() - sent) * 1000, 1),
+                        }
+                    )
+                    n += 1
+                    if response.status_code == 200:
+                        return
+                    self._stop.wait(2.0)
+        except Exception as exc:  # noqa: BLE001 - reported in the result
+            self.error = f"{type(exc).__name__}: {exc}"[:300]
+
+    def result(self, timeout_s: float = 3600) -> dict[str, Any]:
+        self._threads[0].join(timeout=timeout_s)
+        self._threads[1].join(timeout=120)  # the next write after the upload is confirmed
+        self._stop.set()
+        self._threads[1].join(timeout=60)
+        confirmed = next((w for w in self.writes if w["status"] == 200), None)
+        return {
+            "measured_from": "first healthy answer",
+            "commit_sent_s": self.commit_sent_s,
+            "new_commit_durable_after_s": self.durable_after_s,
+            "first_confirmed_write_sent_s": confirmed["at_s"] if confirmed else None,
+            "first_confirmed_write_answered_s": (
+                round(confirmed["at_s"] + confirmed["ms"] / 1000, 2) if confirmed else None
+            ),
+            "unconfirmed_writes_before": sum(1 for w in self.writes if w["status"] == 424),
+            "writes": self.writes,
+            "error": self.error,
+        }
+
+
 # ── The harness ────────────────────────────────────────────────────────────────────────
 
 
@@ -376,6 +477,7 @@ class Harness:
             "started_at": time.time(),
         }
         self.server: Server | None = None
+        self.probe: ResnapshotProbe | None = None
         self.password = settings.owner_password
 
     # Status ------------------------------------------------------------------------------
@@ -454,15 +556,22 @@ class Harness:
         return time.monotonic()
 
     def replace(self, prefix: str, **kw: Any) -> tuple[Server, dict[str, Any]]:
-        """A new server on the same replica after a loss, with its timings."""
+        """A new server on the same replica after a loss, with its timings.
+
+        The re-snapshot probe (:class:`ResnapshotProbe`) starts the moment the server first
+        answers healthy, before any check reads or writes anything; ``self.probe`` holds it.
+        """
         wipe()
         server = Server(self.s, prefix, initialized=True, **kw).start()
         self.server = server
+        self.probe = None
         timing: dict[str, Any] = {}
         try:
             timing["to_healthy_s"] = round(
                 server.wait_healthy(kw.get("restore_deadline_s", 300) + 300), 2
             )
+            timing["healthy_at"] = time.time()
+            self.probe = ResnapshotProbe(server, self.password).start()
         except RecoveryMode as exc:
             timing["recovery"] = json.loads(str(exc))
         restores = server.of("restore")
@@ -528,7 +637,7 @@ class Harness:
         with self.client() as client:
             checks = canaries.verify_http(client, first) + canaries.verify_http(client, second)
         result["http_checks"] = [c.to_json() for c in checks]
-        result["resnapshot"] = self.resnapshot_window(server)
+        result["resnapshot"] = self.resnapshot()
         both = first.canaries + second.canaries
         conversations = [c for c in (first.conversation, second.conversation) if c]
         result["drill_after_replacement"] = drill.run_drill(
@@ -610,12 +719,15 @@ class Harness:
         return {
             "prefix": server.prefix,
             "sync_interval": sync,
-            "writes": stats.summary(s["ms"] for s in samples["write"]),
-            "writes_unconfirmed": sum(1 for s in samples["write"] if s["status"] != 200),
-            "items": stats.summary(s["ms"] for s in samples["item"]),
-            "items_refused": sum(1 for s in samples["item"] if s["status"] >= 300),
-            "plain": stats.summary(s["ms"] for s in samples["plain"]),
+            # The server's own wait for each held security write (cfo.barrier.response).
             "barrier_wait_ms": stats.summary(waits),
+            # Client-side request latencies: the waits plus Omnigent's own handling. The image
+            # logs only failed transcript waits, so the items' wait is seen through these.
+            "write_latency_ms": stats.summary(s["ms"] for s in samples["write"]),
+            "writes_unconfirmed": sum(1 for s in samples["write"] if s["status"] != 200),
+            "item_latency_ms": stats.summary(s["ms"] for s in samples["item"]),
+            "items_refused": sum(1 for s in samples["item"] if s["status"] >= 300),
+            "unheld_latency_ms": stats.summary(s["ms"] for s in samples["plain"]),
             "raw": {
                 "write_ms": [s["ms"] for s in samples["write"]],
                 "item_ms": [s["ms"] for s in samples["item"]],
@@ -680,84 +792,19 @@ class Harness:
         if "recovery" in timing:
             result["ok"] = False
             return result
+        result["resnapshot"] = self.resnapshot()
         result["filler_rows_after_replacement"] = filler_rows()
-        result["resnapshot"] = self.resnapshot_window(server)
         result["disk_after_replacement"] = disk_usage()
         result["ok"] = result["filler_rows_after_replacement"] == rows
         if not keep_running:
             self.lose()
         return result
 
-    def resnapshot_window(self, server: Server) -> dict[str, Any]:
-        """After a restore, how long until a new commit can be durable (D1's window).
-
-        Called as soon as the replaced server is healthy. Two views of the same window:
-
-        - **the replica's:** one ordinary commit, then the time until the replica's position
-          covers it (Litestream must first upload a whole new snapshot, spike S4);
-        - **a person's:** a security write every 2 s, each answering 424 until the upload is
-          done, as S4 measured it ("first confirmed security write after a restore").
-        """
-        started = time.monotonic()
-        writes: list[dict[str, Any]] = []
-        stop = threading.Event()
-
-        def write_loop() -> None:
-            with self.client() as client:
-                bearer = client.bearer(self.password)
-                agent = client.agent_id(bearer)
-                n = 0
-                while not stop.is_set():
-                    sent = time.monotonic()
-                    response = client.http.post(
-                        "/v1/scheduled-tasks",
-                        headers=bearer,
-                        json={
-                            "name": f"resnapshot-{n}",
-                            "prompt": "window",
-                            "rrule": canaries.RRULE,
-                            "agent_id": agent,
-                            "timezone": "UTC",
-                        },
-                    )
-                    writes.append(
-                        {
-                            "at_s": round(sent - started, 2),
-                            "status": response.status_code,
-                            "ms": round((time.monotonic() - sent) * 1000, 1),
-                        }
-                    )
-                    n += 1
-                    if response.status_code == 200:
-                        return
-                    stop.wait(2.0)
-
-        thread = threading.Thread(target=write_loop, daemon=True)
-        thread.start()
-        durable_after: float | None = None
-        try:
-            with self.client() as client:
-                bearer = client.bearer(self.password)
-                agent = client.agent_id(bearer)
-                client.http.post(
-                    "/v1/sessions", json={"agent_id": agent}, headers=bearer
-                ).raise_for_status()
-            server.wait_replicated(3600)  # covers that commit: read after it
-            durable_after = time.monotonic() - started
-            thread.join(timeout=120)  # the next write after the upload is confirmed
-        finally:
-            stop.set()
-            thread.join(timeout=60)
-        confirmed = next((w for w in writes if w["status"] == 200), None)
-        return {
-            "new_commit_durable_after_s": round(durable_after, 2) if durable_after else None,
-            "first_confirmed_write_at_s": confirmed["at_s"] if confirmed else None,
-            "first_confirmed_write_answered_s": (
-                round(confirmed["at_s"] + confirmed["ms"] / 1000, 2) if confirmed else None
-            ),
-            "unconfirmed_writes_before": sum(1 for w in writes if w["status"] == 424),
-            "writes": writes,
-        }
+    def resnapshot(self) -> dict[str, Any]:
+        """The re-snapshot probe's result, measured from the first healthy answer."""
+        if self.probe is None:
+            return {"error": "no probe: the server never became healthy"}
+        return self.probe.result()
 
     def phase_cf_replacement(self) -> dict[str, Any]:
         server = self.server
@@ -767,24 +814,30 @@ class Harness:
             run = canaries.write_canaries(
                 client, self.password, items=3, change_password=False, live=live_query
             )
-        server.wait_replicated(600)
+        # The canaries' rows as the server holds them once replicated: the replaced container
+        # must restore exactly these. Nothing writes after this point; the Durable Object kills
+        # the container next.
+        conversations = [run.conversation] if run.conversation else []
+        snap, txid, _ = drill.confirmed_snapshot(conversations=conversations)
+        canary_list = [c.with_expected(snap) for c in run.canaries]
         manifest = {
-            "canaries": [c.to_json() for c in run.canaries],
-            "conversations": [run.conversation] if run.conversation else [],
+            "canaries": [c.to_json() for c in canary_list],
+            "conversations": conversations,
         }
-        result = {
+        rows = filler_rows()
+        return {
             "prefix": server.prefix,
             "canaries": run.summary(),
-            "filler_rows": filler_rows(),
+            "confirmed_txid": txid,
+            "filler_rows": rows,
             "written_at": time.time(),
             # What the Durable Object passes to the replaced container (no credentials).
             "awaiting": {
                 "prefix": server.prefix,
                 "manifest": json.dumps(manifest),
-                "filler_rows": filler_rows(),
+                "filler_rows": rows,
             },
         }
-        return result
 
     # Replaced mode --------------------------------------------------------------------------
     def run_replaced(self) -> None:
@@ -795,12 +848,10 @@ class Harness:
             "process_started_at": time.time(),
         }
         try:
-            server, timing = self.replace(self.s.replaced_prefix)
+            _server, timing = self.replace(self.s.replaced_prefix)
             result["replacement"] = timing
             if "recovery" not in timing:
-                rows = filler_rows()
-                result["filler_rows"] = rows
-                result["filler_rows_expected"] = self.s.replaced_filler_rows
+                # The probe's writes add rows of their own; they never touch a canary's row.
                 manifest = json.loads(self.s.replaced_manifest or "{}")
                 restored = db.snapshot_file(
                     DATA / "omnigent.db", conversations=manifest.get("conversations", [])
@@ -808,10 +859,14 @@ class Harness:
                 canary_list = [db.Canary.from_json(c) for c in manifest.get("canaries", [])]
                 check = db.check_canaries(canary_list, None, restored)
                 result["acknowledged_changes"] = check.to_json()
-                result["healthy_at"] = time.time()
-                result["resnapshot"] = self.resnapshot_window(server)
-                result["ok"] = check.ok and (
-                    self.s.replaced_filler_rows is None or rows == self.s.replaced_filler_rows
+                rows = filler_rows()
+                result["filler_rows"] = rows
+                result["filler_rows_expected"] = self.s.replaced_filler_rows
+                result["resnapshot"] = self.resnapshot()
+                result["ok"] = (
+                    check.ok
+                    and all(c.expected is not None for c in canary_list if c.expect == "present")
+                    and (self.s.replaced_filler_rows is None or rows == self.s.replaced_filler_rows)
                 )
             else:
                 result["ok"] = False

@@ -89,12 +89,37 @@ def test_a_new_boot_starts_afresh() -> None:
 def test_an_unknown_position_warns_after_the_threshold() -> None:
     tracker = lag.LagTracker(threshold_s=60)
     tracker.observe(_s(0, 5, 5))
-    assert tracker.observe(_s(10, None, None)).unknown_s == 0
-    state = tracker.observe(_s(69, None, None))
+    assert tracker.observe(_s(10, None, None)).unknown_s == 10  # unknown since the last known
+    state = tracker.observe(_s(59, None, None))
     assert state.unknown_s == 59 and not state.warning and not state.caught_up
-    state = tracker.observe(_s(70, None, None))
+    state = tracker.observe(_s(60, None, None))
     assert state.warning and state.reason == "unknown"
     assert not tracker.observe(_s(71, 5, 5)).warning
+
+
+def test_old_evidence_does_not_age_while_the_position_is_unknown() -> None:
+    """Codex review r1, finding 6: one uncovered sample, then only failures. The tracker must
+    not report 60 s of lag it never saw; it reports what it knows and how long it has not."""
+    tracker = lag.LagTracker(threshold_s=60)
+    tracker.observe(_s(0, 2, 1))
+    state = tracker.observe(_s(59, None, None))
+    assert state.lag_s == 0 and state.unknown_s == 59 and not state.warning
+    state = tracker.observe(_s(60, None, None))
+    assert state.lag_s == 0 and state.reason == "unknown"
+    # Known lag before the outage stays as the last position proved it.
+    tracker = lag.LagTracker(threshold_s=60)
+    tracker.observe(_s(0, 2, 1))
+    tracker.observe(_s(30, 3, 1))
+    state = tracker.observe(_s(80, None, None))
+    assert state.lag_s == 30 and state.unknown_s == 50 and not state.warning
+
+
+def test_a_new_boot_on_any_sample_clears_old_positions() -> None:
+    tracker = lag.LagTracker(threshold_s=30)
+    tracker.observe(_s(0, 50, 10))
+    tracker.observe(lag.Sample(at=5, boot_id="b2"))  # unavailable, but from a new boot
+    state = tracker.observe(_s(40, 3, 3, boot="b2"))
+    assert state.lag_s == 0 and not state.warning
 
 
 def test_samples_must_be_in_time_order_and_threshold_positive() -> None:
@@ -121,20 +146,27 @@ positions = st.lists(
 @settings(max_examples=300)
 @given(positions)
 def test_lag_is_a_lower_bound_on_the_oldest_unreplicated_commit(steps: list) -> None:
-    """Model: commits happen at sample times; the tracker never overstates their age, never
-    warns while caught up, and warns whenever a known-unreplicated sample is old enough."""
+    """Model: commits happen at sample times; the tracker never overstates their age (as of
+    the last known position), never warns while caught up, and its warning is exactly the
+    threshold rule."""
     tracker = lag.LagTracker(threshold_s=45)
     now = 0.0
     txid = replicated = 0
+    known_at: float | None = None
     first_unreplicated_seen: dict[int, float] = {}
     for step, commits, progress, available in steps:
         now += step
         txid += commits
         replicated = min(txid, replicated + progress)
         if not available:
+            if known_at is None:
+                known_at = now  # never known: unknown since the first sample
             state = tracker.observe(lag.Sample(now))
             assert state.lag_s >= 0 and not state.caught_up
+            assert state.unknown_s == now - known_at
+            assert state.warning == (state.lag_s >= 45 or state.unknown_s >= 45)
             continue
+        known_at = now
         for t in range(replicated + 1, txid + 1):
             first_unreplicated_seen.setdefault(t, now)
         state = tracker.observe(lag.Sample(now, "b", txid, replicated))
@@ -146,7 +178,8 @@ def test_lag_is_a_lower_bound_on_the_oldest_unreplicated_commit(steps: list) -> 
         else:
             assert 0 <= state.lag_s <= now - oldest + 1e-9
             assert not state.caught_up
-        assert state.warning == (state.lag_s >= 45 or state.unknown_s >= 45)
+        assert state.unknown_s == 0
+        assert state.warning == (state.lag_s >= 45)
 
 
 # ── Snapshots and record checks ─────────────────────────────────────────────────────────
@@ -235,6 +268,13 @@ def test_snapshot_compare_and_canaries(tmp_path: Path) -> None:
         "item",
         "deleted",
     }
+    # Without the live snapshot, a canary that carries its row's digest from a confirmed live
+    # snapshot is still checked by value (the replacement's check, Codex review r1 finding 3).
+    carried = [c.with_expected(live) for c in canaries]
+    assert carried[0].expected is not None and carried[3].expected is None
+    assert db.Canary.from_json(carried[0].to_json()) == carried[0]
+    assert db.check_canaries(carried, None, broken).detail["differ"] == ["schedule"]
+    assert db.check_canaries(carried, None, same).ok
     conn.close()
 
 

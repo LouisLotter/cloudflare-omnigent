@@ -213,6 +213,8 @@ export interface RunRecord {
   readonly mode: "measure" | "replaced";
   readonly phase: string | null;
   readonly stored: readonly string[];
+  /** The result names the harness last reported. */
+  readonly reported?: readonly string[];
   readonly errors: Readonly<Record<string, string>>;
   readonly missedPolls: number;
   readonly replacement?: Replacement;
@@ -228,15 +230,15 @@ export type Action =
 
 /**
  * What the alarm does next, from the run and what it just observed (``status`` is null when
- * the harness did not answer). Results are stored before anything finishes the run.
+ * the harness did not answer). New results are stored first, and nothing irreversible (a
+ * replacement, which kills the container, or the end of a run) happens while a result the
+ * harness reported is not yet in R2: the container holds its only copy. Only the run window's
+ * end overrides that; the summary then names what is missing.
  */
 export function decide(run: RunRecord, status: HarnessStatus | null, now: number): Action[] {
   if (run.outcome !== undefined) return [];
-  const actions: Action[] = [];
-  if (status !== null) {
-    const fresh = status.results.filter((name) => !run.stored.includes(name));
-    if (fresh.length > 0) actions.push({ kind: "store", names: fresh });
-  }
+  const fresh = status === null ? [] : status.results.filter((name) => !run.stored.includes(name));
+  const actions: Action[] = fresh.length > 0 ? [{ kind: "store", names: fresh }] : [];
   if (now >= run.armedUntil) return [...actions, { kind: "finish", outcome: "expired" }];
   const replacement = run.replacement;
   if (replacement !== undefined && replacement.healthyAt === undefined) {
@@ -246,17 +248,21 @@ export function decide(run: RunRecord, status: HarnessStatus | null, now: number
     }
     return [...actions, { kind: "await-health" }];
   }
+  if (fresh.length > 0) return actions;
   if (status === null) {
     // The caller counts this poll as missed; a harness silent for MAX_MISSED_POLLS has failed.
-    return run.missedPolls + 1 >= MAX_MISSED_POLLS
-      ? [...actions, { kind: "finish", outcome: "failed" }]
-      : actions;
+    return run.missedPolls + 1 >= MAX_MISSED_POLLS ? [{ kind: "finish", outcome: "failed" }] : [];
   }
   if (run.mode === "measure" && status.awaiting !== null && replacement === undefined) {
-    return [...actions, { kind: "replace", awaiting: status.awaiting }];
+    return [{ kind: "replace", awaiting: status.awaiting }];
   }
-  if (status.done) return [...actions, { kind: "finish", outcome: "done" }];
-  return actions;
+  if (status.done) return [{ kind: "finish", outcome: "done" }];
+  return [];
+}
+
+/** Results the harness reported that never reached R2. */
+export function missingResults(run: RunRecord): string[] {
+  return (run.reported ?? []).filter((name) => !run.stored.includes(name));
 }
 
 /** The replacement's durations, for the evidence. */

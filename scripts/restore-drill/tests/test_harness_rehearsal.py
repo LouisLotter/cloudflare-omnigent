@@ -111,7 +111,7 @@ def test_measurement_run_and_container_replacement(stack: Stack) -> None:
         assert drill["replacement"]["source"] == "restored"
         for sync in ("1s", "200ms"):
             barrier = results[f"barrier-{sync}"]
-            assert barrier["writes"]["n"] == 15 and barrier["items"]["n"] == 8
+            assert barrier["write_latency_ms"]["n"] == 15 and barrier["item_latency_ms"]["n"] == 8
             assert barrier["barrier_wait_ms"]["n"] == 15
             assert barrier["writes_unconfirmed"] == 0 and barrier["items_refused"] == 0
         assert results["idle-1s"]["seconds"] >= 5
@@ -119,7 +119,8 @@ def test_measurement_run_and_container_replacement(stack: Stack) -> None:
             restore = results[f"restore-{size}mb"]
             assert restore["ok"], restore
             assert restore["replacement"]["source"] == "restored"
-            assert restore["resnapshot"]["first_confirmed_write_at_s"] is not None
+            assert restore["resnapshot"]["first_confirmed_write_answered_s"] is not None
+            assert restore["resnapshot"]["new_commit_durable_after_s"] is not None
         assert results["restore-20mb"]["drill_side_restore"]["ok"]
 
         waiting = status["awaiting_replacement"]
@@ -141,6 +142,8 @@ def test_measurement_run_and_container_replacement(stack: Stack) -> None:
         (reports / f"{run_id}-replaced.json").write_text(json.dumps(replaced, indent=2))
         assert replaced["ok"], replaced
         assert replaced["acknowledged_changes"]["detail"]["missing"] == []
+        assert replaced["acknowledged_changes"]["detail"]["differ"] == []
+        assert replaced["resnapshot"]["new_commit_durable_after_s"] is not None
         assert replaced["filler_rows"] == waiting["filler_rows"]
     finally:
         for name in (first, second):

@@ -1,7 +1,8 @@
 // The WP2.5 harness Worker: one Durable Object with one `basic` container running the server
 // image plus the drill (cfo_drill.harness), and the owner's page that starts a run.
 //
-//   GET  /            the page (status, the R2 token form, Run and Stop); changes nothing
+//   GET  /            the page (status, the R2 token form, Run and Stop). It changes no run
+//                     state; it only stores the hash of the intent token it embeds (IR-017)
 //   GET  /api/status  the run as the Durable Object records it; never a credential
 //   POST /api/run     the owner's R2 token; same origin and an intent token (IR-017)
 //   POST /api/stop    stops the run, the container, and forgets the token
@@ -11,6 +12,11 @@
 // the container and starts a new one when the harness asks for the replacement measurement,
 // times that replacement until Omnigent answers /health, and at the end stops the container
 // and deletes the token. Deploy with the guarded staging tool only (see wrangler.jsonc).
+//
+// Stop can arrive while an alarm waits on the container (Durable Objects interleave events at
+// every await that is not storage). So the end of a run is recorded, and the token deleted,
+// before anything is stopped, and every continuation re-reads the run and acts only if it is
+// still the same, unfinished run: nothing is started, and no record overwritten, after a stop.
 
 import { DurableObject } from "cloudflare:workers";
 import { type ContainerPort, containerPort } from "./container-port.ts";
@@ -31,6 +37,7 @@ import {
   decide,
   type HarnessStatus,
   harnessEnv,
+  missingResults,
   newRunId,
   type Outcome,
   parseCredentials,
@@ -134,11 +141,18 @@ export class DrillRun extends DurableObject<Env> {
       errors: {},
       missedPolls: 0,
     };
-    await this.ctx.storage.put("creds", parsed.value);
-    await this.ctx.storage.put("settings", settings);
-    await this.ctx.storage.put("run", run);
-    port.start(harnessEnv(settings, parsed.value));
+    // One atomic write, and the alarm that ends the run at the latest, before any effect.
+    await this.ctx.storage.put({ creds: parsed.value, settings, run });
     await this.ctx.storage.setAlarm(now + ALARM_MS);
+    try {
+      port.start(harnessEnv(settings, parsed.value));
+    } catch (error) {
+      await this.finish(run, "failed");
+      return {
+        status: 502,
+        body: { error: `the container did not start: ${String(error).slice(0, 200)}` },
+      };
+    }
     log("run.started", { runId: run.runId });
     return { status: 202, body: { runId: run.runId, armedUntil: run.armedUntil } };
   }
@@ -149,38 +163,49 @@ export class DrillRun extends DurableObject<Env> {
       await this.finish(run, "stopped");
       return;
     }
-    await this.port().kill();
     await this.forgetSecrets();
+    await this.port().kill();
+  }
+
+  /** The stored run, if it is still ``runId`` and unfinished; otherwise undefined. */
+  private async active(runId: string): Promise<RunRecord | undefined> {
+    const run = await this.ctx.storage.get<RunRecord>("run");
+    return run !== undefined && run.runId === runId && run.outcome === undefined ? run : undefined;
   }
 
   async alarm(): Promise<void> {
     let run = await this.ctx.storage.get<RunRecord>("run");
     if (run === undefined || run.outcome !== undefined) return;
+    const runId = run.runId;
     const port = this.port();
     const status = port.running ? await this.harnessStatus(port) : null;
     run = {
       ...run,
       missedPolls: status === null ? run.missedPolls + 1 : 0,
       phase: status?.phase ?? run.phase,
+      reported: status?.results ?? run.reported ?? [],
       errors: status ? { ...run.errors, ...status.errors } : run.errors,
     };
-    let next = ALARM_MS;
     for (const action of decide(run, status, Date.now())) {
       if (action.kind === "store") {
         run = await this.store(run, port, action.names);
       } else if (action.kind === "replace") {
         run = await this.replace(run, port, action.awaiting);
-        next = HEALTH_POLL_MS;
       } else if (action.kind === "await-health") {
         run = await this.awaitHealth(run, port);
-        if (run.replacement?.healthyAt === undefined) next = HEALTH_POLL_MS;
       } else {
         await this.finish(run, action.outcome);
         return;
       }
     }
+    if ((await this.active(runId)) === undefined) {
+      // Stopped while this alarm waited: the stop's record stands, and nothing may run on.
+      if (port.running) await port.kill();
+      return;
+    }
+    const pending = run.replacement !== undefined && run.replacement.healthyAt === undefined;
     await this.ctx.storage.put("run", run);
-    await this.ctx.storage.setAlarm(Date.now() + next);
+    await this.ctx.storage.setAlarm(Date.now() + (pending ? HEALTH_POLL_MS : ALARM_MS));
   }
 
   private async harnessStatus(port: ContainerPort): Promise<HarnessStatus | null> {
@@ -224,18 +249,20 @@ export class DrillRun extends DurableObject<Env> {
     port: ContainerPort,
     awaiting: Awaiting,
   ): Promise<RunRecord> {
-    const settings = await this.ctx.storage.get<RunSettings>("settings");
-    const creds = await this.ctx.storage.get<R2Credentials>("creds");
     const requestedAt = Date.now();
-    if (settings === undefined || creds === undefined) {
-      return {
-        ...run,
-        replacement: { prefix: awaiting.prefix, requestedAt, error: "no settings" },
-      };
-    }
     log("replacement.kill", { runId: run.runId });
     await port.kill();
     const stoppedAt = Date.now();
+    // Re-read after the wait: a stop meanwhile ended the run and deleted the token.
+    const still = await this.active(run.runId);
+    const settings = await this.ctx.storage.get<RunSettings>("settings");
+    const creds = await this.ctx.storage.get<R2Credentials>("creds");
+    if (still === undefined || settings === undefined || creds === undefined) {
+      return {
+        ...run,
+        replacement: { prefix: awaiting.prefix, requestedAt, stoppedAt, error: "run ended" },
+      };
+    }
     try {
       port.start(replacedEnv(settings, creds, awaiting));
     } catch (error) {
@@ -255,7 +282,6 @@ export class DrillRun extends DurableObject<Env> {
     return {
       ...run,
       mode: "replaced",
-      stored: run.stored,
       missedPolls: 0,
       replacement: { prefix: awaiting.prefix, requestedAt, stoppedAt, startCalledAt },
     };
@@ -281,47 +307,82 @@ export class DrillRun extends DurableObject<Env> {
     return run;
   }
 
+  /**
+   * Ends a run: its outcome and the deletion of the token are written first, in one step,
+   * then the container is stopped and the summary stored. A run already ended keeps its
+   * first outcome.
+   */
   private async finish(run: RunRecord, outcome: Outcome): Promise<void> {
+    const current = await this.active(run.runId);
+    if (current !== undefined) {
+      const finished: RunRecord = { ...run, outcome, finishedAt: Date.now() };
+      await this.ctx.storage.put("run", finished);
+      await this.forgetSecrets();
+      await this.ctx.storage.deleteAlarm();
+      log("run.finished", { runId: run.runId, outcome });
+      try {
+        await this.port().kill();
+      } catch {
+        // Recorded either way; teardown removes the container application.
+      }
+      try {
+        await this.env.RESULTS.put(
+          resultKey(run.runId, "summary"),
+          JSON.stringify(
+            {
+              ...finished,
+              missingResults: missingResults(finished),
+              replacementTimings: finished.replacement
+                ? replacementTimings(finished.replacement)
+                : null,
+            },
+            null,
+            2,
+          ),
+          { httpMetadata: { contentType: "application/json" } },
+        );
+      } catch {
+        // The run record keeps the same facts.
+      }
+      return;
+    }
+    await this.forgetSecrets();
     try {
       await this.port().kill();
     } catch {
-      // Recorded below either way; teardown removes the container application.
+      // Already gone.
     }
-    await this.forgetSecrets();
-    const finished: RunRecord = { ...run, outcome, finishedAt: Date.now() };
-    await this.ctx.storage.put("run", finished);
-    await this.ctx.storage.deleteAlarm();
-    try {
-      await this.env.RESULTS.put(
-        resultKey(run.runId, "summary"),
-        JSON.stringify(
-          {
-            ...finished,
-            replacementTimings: finished.replacement
-              ? replacementTimings(finished.replacement)
-              : null,
-          },
-          null,
-          2,
-        ),
-        { httpMetadata: { contentType: "application/json" } },
-      );
-    } catch {
-      // The run record keeps the same facts.
-    }
-    log("run.finished", { runId: run.runId, outcome });
   }
 
   private async forgetSecrets(): Promise<void> {
-    await this.ctx.storage.delete("creds");
-    await this.ctx.storage.delete("settings");
+    await this.ctx.storage.delete(["creds", "settings"]);
   }
 }
 
+/** The body as JSON, refusing more than MAX_BODY_BYTES bytes before buffering them. */
 async function readJson(request: Request): Promise<unknown> {
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) throw new Error("body too large");
-  return JSON.parse(text);
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) throw new Error("body too large");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = request.body?.getReader();
+  while (reader !== undefined) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new Error("body too large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 export default {

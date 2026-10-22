@@ -14,8 +14,10 @@ module is the reference the durability suite runs with Omnigent's real routes un
   refusal rather than a lost reply: ``click.ClickException`` for ``provision``,
   ``start_host`` and ``terminate`` (a wake then fails visibly with the message, a first start
   records it on the host, a removal stays tombstoned for the reaper), and
-  ``SuspendResult("refused")`` for ``suspend`` (Omnigent then restores the token the sleep
-  revoked; raising would read as "unknown" and keep admission closed).
+  ``SuspendResult("refused")`` for a new ``suspend`` operation (Omnigent then restores the
+  token the sleep revoked; raising would read as "unknown" and keep admission closed). A
+  repeated ``suspend`` operation reports its recorded outcome without a new wait: its stop may
+  already have happened.
 - :class:`RecordingStubLauncher` makes no platform effect at all: it records each one, with
   the replicated position at that moment, and keeps only a digest of a launch token.
 """
@@ -88,6 +90,8 @@ class Effect:
 @dataclass
 class EffectLog:
     effects: list[Effect] = field(default_factory=list)
+    #: Each suspend operation's outcome, so a repeat reports it instead of acting again.
+    suspends: dict[str, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(self, effect: Effect) -> None:
@@ -186,10 +190,21 @@ class RecordingStubLauncher(SandboxHostLauncher):
         return host_id
 
     def suspend(self, sandbox_id: str, *, operation_id: str) -> SuspendResult:
+        # A repeat of an operation reports its recorded outcome and waits for nothing: its
+        # stop may already have happened, so a failed wait now must not turn it into a refusal
+        # (Codex review r1). Only a new operation crosses the fence.
+        with self._effects._lock:
+            recorded = self._effects.suspends.get(operation_id)
+        if recorded is not None:
+            return SuspendResult(outcome=recorded)  # type: ignore[arg-type]
         outcome = self._fence.wait("suspend")
         if outcome is not None and not outcome.ok:
+            with self._effects._lock:
+                self._effects.suspends[operation_id] = "refused"
             return SuspendResult(outcome="refused", reason="durability not confirmed")
         self._record("suspend", sandbox_id)
+        with self._effects._lock:
+            self._effects.suspends[operation_id] = "stopped"
         return SuspendResult(outcome="stopped")
 
     def terminate(self, sandbox_id: str) -> None:

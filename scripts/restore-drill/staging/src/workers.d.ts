@@ -13,7 +13,11 @@ declare module "cloudflare:workers" {
 interface DurableObjectStorage {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  /** Several keys in one atomic write. */
+  put(entries: Record<string, unknown>): Promise<void>;
   delete(key: string): Promise<boolean>;
+  /** Several keys in one atomic delete. */
+  delete(keys: string[]): Promise<number>;
   setAlarm(scheduledTime: number): Promise<void>;
   getAlarm(): Promise<number | null>;
   deleteAlarm(): Promise<void>;

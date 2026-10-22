@@ -4,10 +4,10 @@ Run inside the server container (``python -m cfo_drill drill``), where the entry
 Litestream configuration, the control socket and the replica credentials are. It never stops
 or changes the server, never sends Litestream a ``wait`` sync and never checkpoints:
 
-1. **A confirmed position.** It snapshots the live database (:mod:`cfo_drill.db`), asks
-   Litestream for the current position ``T`` with one sync without ``wait``, and snapshots
-   again: equal snapshots mean the first one is the state at ``T``. Then it waits until the
-   replica holds ``T`` (the barriers' own wait).
+1. **A confirmed position.** It asks Litestream for the current position ``T`` with one sync
+   without ``wait``, snapshots the live database (:mod:`cfo_drill.db`), and syncs again: the
+   same ``T`` means nothing was committed meanwhile, so the snapshot is the state at ``T``.
+   Then it waits until the replica holds ``T`` (the barriers' own wait).
 2. **A restore to ``T``** into a scratch directory, with ``litestream restore -txid``, under a
    deadline (a blackholed link hangs a restore, spike S4).
 3. **Checks:** ``PRAGMA integrity_check``; an owner exists; the schema version and the tables;
@@ -141,11 +141,14 @@ def confirmed_snapshot(
     attempts = 0
     with BlockingClient(str(socket), str(db_path)) as client:
         while True:
+            # A sync without ``wait`` turns every commit so far into position T; a second one
+            # answers the same T only if nothing was committed in between (Litestream says
+            # ``no_change``). So a snapshot read between two syncs that answer the same T is
+            # exactly the database at T, whatever the other writers did before or after.
             attempts += 1
-            before = db.snapshot_file(db_path, conversations=conversations)
             target = client.sync().txid
-            after = db.snapshot_file(db_path, conversations=conversations)
-            if before.to_json() == after.to_json():
+            before = db.snapshot_file(db_path, conversations=conversations)
+            if client.sync().txid == target:
                 break
             if attempts >= SNAPSHOT_ATTEMPTS:
                 raise DrillError("the database kept changing; no quiet moment for a snapshot")

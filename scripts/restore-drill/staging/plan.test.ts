@@ -7,6 +7,7 @@ import {
   type HarnessStatus,
   harnessEnv,
   MAX_MISSED_POLLS,
+  missingResults,
   newRunId,
   parseCredentials,
   parseHarnessStatus,
@@ -213,10 +214,11 @@ describe("decide", () => {
     expect(decide({ ...RUN, outcome: "done" }, status({ done: true }), NOW)).toEqual([]);
   });
 
-  it("stores first, then replaces the container when the harness asks", () => {
+  it("replaces the container only once every reported result is stored", () => {
     const awaiting = { prefix: "restore-1000mb", manifest: "{}", fillerRows: 1 };
-    expect(decide(RUN, status({ results: ["cf-replacement"], awaiting }), NOW)).toEqual([
-      { kind: "store", names: ["cf-replacement"] },
+    const asking = status({ results: ["cf-replacement"], awaiting });
+    expect(decide(RUN, asking, NOW)).toEqual([{ kind: "store", names: ["cf-replacement"] }]);
+    expect(decide({ ...RUN, stored: ["cf-replacement"] }, asking, NOW)).toEqual([
       { kind: "replace", awaiting },
     ]);
   });
@@ -250,11 +252,19 @@ describe("decide", () => {
     expect(decide(replaced, status({ awaiting }), NOW)).toEqual([]);
   });
 
-  it("finishes a measure run without a replacement when the harness is done", () => {
-    expect(decide(RUN, status({ done: true, results: ["env"] }), NOW)).toEqual([
-      { kind: "store", names: ["env"] },
+  it("finishes a run only once every reported result is stored", () => {
+    const done = status({ done: true, results: ["env"] });
+    expect(decide(RUN, done, NOW)).toEqual([{ kind: "store", names: ["env"] }]);
+    expect(decide({ ...RUN, stored: ["env"] }, done, NOW)).toEqual([
       { kind: "finish", outcome: "done" },
     ]);
+  });
+
+  it("names the results that never reached R2", () => {
+    expect(missingResults({ ...RUN, reported: ["env", "drill"], stored: ["env"] })).toEqual([
+      "drill",
+    ]);
+    expect(missingResults(RUN)).toEqual([]);
   });
 
   it("expires at the end of the window, after storing", () => {
@@ -292,9 +302,12 @@ describe("decide", () => {
           const finishes = actions.filter((a) => a.kind === "finish");
           const storeIndex = actions.findIndex((a) => a.kind === "store");
           const finishIndex = actions.findIndex((a) => a.kind === "finish");
+          const irreversible = actions.some((a) => a.kind === "finish" || a.kind === "replace");
           return (
             finishes.length <= 1 &&
-            (storeIndex === -1 || finishIndex === -1 || storeIndex < finishIndex)
+            (storeIndex === -1 || finishIndex === -1 || storeIndex < finishIndex) &&
+            // Nothing irreversible while a result waits for R2, unless the window is over.
+            (storeIndex === -1 || late || !irreversible)
           );
         },
       ),

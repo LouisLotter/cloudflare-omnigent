@@ -34,11 +34,13 @@ class FakeStorage {
   async get<T>(key: string): Promise<T | undefined> {
     return structuredClone(this.data.get(key)) as T | undefined;
   }
-  async put<T>(key: string, value: T): Promise<void> {
-    this.data.set(key, structuredClone(value));
+  async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+    const entries = typeof key === "string" ? { [key]: value } : key;
+    for (const [k, v] of Object.entries(entries)) this.data.set(k, structuredClone(v));
   }
-  async delete(key: string): Promise<boolean> {
-    return this.data.delete(key);
+  async delete(key: string | string[]): Promise<boolean | number> {
+    if (typeof key === "string") return this.data.delete(key);
+    return key.filter((k) => this.data.delete(k)).length;
   }
   async setAlarm(at: number): Promise<void> {
     this.alarm = at;
@@ -62,8 +64,12 @@ class FakeContainer {
   signals: number[] = [];
   harness: Harness | null = null;
   healthy = false;
+  failStart = false;
+  /** Runs inside destroy(), between its start and its end: another event arriving meanwhile. */
+  duringDestroy: (() => Promise<void>) | null = null;
   start(options: { enableInternet: boolean; env?: Record<string, string> }): void {
     expect(options.enableInternet).toBe(true);
+    if (this.failStart) throw new Error("synthetic start failure");
     this.running = true;
     this.starts.push(options.env ?? {});
   }
@@ -72,6 +78,9 @@ class FakeContainer {
     this.signals.push(signo);
   }
   async destroy(): Promise<void> {
+    const interleaved = this.duringDestroy;
+    this.duringDestroy = null;
+    if (interleaved !== null) await interleaved();
     this.running = false;
   }
   getTcpPort(port: number) {
@@ -91,7 +100,9 @@ class FakeContainer {
 
 class FakeR2 {
   objects = new Map<string, string>();
+  failing = false;
   async put(key: string, value: string): Promise<void> {
+    if (this.failing) throw new Error("synthetic R2 failure");
     this.objects.set(key, value);
   }
 }
@@ -169,6 +180,18 @@ describe("run", () => {
     expect(shown).toContain('"holdsToken": true'.replace(": ", ":"));
     expect(logs.join("\n")).not.toContain(SECRET);
   });
+
+  it("forgets the token when the container cannot start", async () => {
+    // Codex review r1, finding 2.
+    container.failStart = true;
+    const result = await drill.run(CREDS);
+    expect(result.status).toBe(502);
+    expect(String(result.body.error)).not.toContain(SECRET);
+    expect(storage.data.has("creds")).toBe(false);
+    expect(storage.data.has("settings")).toBe(false);
+    expect((await storage.get<Record<string, unknown>>("run"))?.outcome).toBe("failed");
+    expect(storage.alarm).toBeNull();
+  });
 });
 
 describe("alarm", () => {
@@ -195,6 +218,8 @@ describe("alarm", () => {
     };
     await drill.alarm();
     expect(r2.objects.has(`results/${runId}/cf-replacement.json`)).toBe(true);
+    expect(container.signals).toEqual([]); // nothing irreversible in the alarm that stored
+    await drill.alarm();
     expect(container.signals).toEqual([9]);
     const replaced = container.starts[1] ?? {};
     expect(replaced).toMatchObject({
@@ -223,9 +248,11 @@ describe("alarm", () => {
     };
     await drill.alarm();
     expect(r2.objects.has(`results/${runId}/cf-replacement-container.json`)).toBe(true);
+    await drill.alarm(); // every result stored: now the run ends
     const summary = JSON.parse(r2.objects.get(`results/${runId}/summary.json`) ?? "{}");
     expect(summary.outcome).toBe("done");
     expect(summary.stored).toEqual(["env", "cf-replacement", "cf-replacement-container"]);
+    expect(summary.missingResults).toEqual([]);
     expect(container.running).toBe(false);
     expect(storage.data.has("creds")).toBe(false);
     expect(storage.data.has("settings")).toBe(false);
@@ -234,6 +261,62 @@ describe("alarm", () => {
     expect(everythingKept()).not.toContain(String(container.starts[0]?.DRILL_OWNER_PASSWORD));
     await drill.alarm(); // a stray alarm after the end does nothing
     expect(container.starts).toHaveLength(2);
+  });
+
+  it("never starts the replaced container after a stop that came in during the kill", async () => {
+    // Codex review r1, finding 1.
+    const runId = await started();
+    const awaiting = { prefix: "restore-1000mb", manifest: "{}", filler_rows: 9 };
+    container.harness = {
+      status: status({ results: ["cf-replacement"], awaiting_replacement: awaiting }),
+      results: { "cf-replacement": {} },
+    };
+    await drill.alarm(); // stores
+    container.duringDestroy = () => drill.stop();
+    await drill.alarm(); // replaces; Stop arrives while the container is being killed
+    expect(container.starts).toHaveLength(1);
+    expect(container.running).toBe(false);
+    const run = await storage.get<Record<string, unknown>>("run");
+    expect(run?.outcome).toBe("stopped");
+    expect(run?.runId).toBe(runId);
+    expect(storage.data.has("creds")).toBe(false);
+    expect(storage.alarm).toBeNull();
+    await drill.alarm();
+    expect(container.starts).toHaveLength(1);
+  });
+
+  it("keeps the container and retries while a result cannot be stored", async () => {
+    // Codex review r1, finding 4.
+    const runId = await started();
+    container.harness = {
+      status: status({ done: true, results: ["env"] }),
+      results: { env: { ok: true } },
+    };
+    r2.failing = true;
+    await drill.alarm();
+    await drill.alarm();
+    expect(container.running).toBe(true);
+    expect((await storage.get<Record<string, unknown>>("run"))?.outcome).toBeUndefined();
+    r2.failing = false;
+    await drill.alarm(); // stored
+    await drill.alarm(); // then done
+    expect(r2.objects.has(`results/${runId}/env.json`)).toBe(true);
+    expect((await storage.get<Record<string, unknown>>("run"))?.outcome).toBe("done");
+  });
+
+  it("names a result lost at the end of the window", async () => {
+    const runId = await started();
+    container.harness = { status: status({ results: ["env"] }), results: { env: {} } };
+    r2.failing = true;
+    await drill.alarm();
+    const run = (await storage.get<Record<string, unknown>>("run")) ?? {};
+    await storage.put("run", { ...run, armedUntil: Date.now() - 1 });
+    r2.failing = false;
+    container.harness = { status: status({ results: ["env", "drill"] }), results: {} };
+    await drill.alarm();
+    const summary = JSON.parse(r2.objects.get(`results/${runId}/summary.json`) ?? "{}");
+    expect(summary.outcome).toBe("expired");
+    expect(summary.missingResults).toEqual(["env", "drill"]);
   });
 
   it("expires a run at the end of its window", async () => {
@@ -315,6 +398,13 @@ describe("routes", () => {
     expect(shown).not.toContain(SECRET);
     const big = run({ origin: ORIGIN, "x-drill-intent": intent }, { pad: "x".repeat(5000) });
     expect((await worker.fetch(big, env as never)).status).toBe(400);
+    // Codex review r1, finding 8: the limit counts bytes, not characters.
+    const wide = new Request(`${ORIGIN}/api/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: ORIGIN, "x-drill-intent": intent },
+      body: `${"\u3000".repeat(1400)}${JSON.stringify(CREDS)}`,
+    });
+    expect((await worker.fetch(wide, env as never)).status).toBe(400);
     const stop = new Request(`${ORIGIN}/api/stop`, {
       method: "POST",
       headers: { origin: ORIGIN, "x-drill-intent": intent },

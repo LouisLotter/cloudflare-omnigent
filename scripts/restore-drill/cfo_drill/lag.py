@@ -11,7 +11,9 @@ on the control port answers ``txid`` (covering every commit made before the call
 - a later ``replicatedTxid`` that reaches a sample's ``txid`` covers that sample;
 - positions are compared only within one boot (a restore starts a new boot);
 - a position the server cannot give (503: Litestream down, recovery, a failing control call)
-  is "unknown", and an unknown that lasts as long as the threshold warns too.
+  is "unknown". Old evidence does not age while nothing is known: the lag stays at what the
+  last known position proved, and the time since that position counts as unknown instead. An
+  unknown that lasts as long as the threshold warns too ("replication status unknown").
 
 The lag is a lower bound: the warning can come up to one sampling interval late, never early,
 so an idle or healthy server never shows a false warning. :class:`LagTracker` is pure; the
@@ -42,9 +44,10 @@ class Sample:
 
 @dataclass(frozen=True)
 class LagState:
-    #: Age of the oldest commit known to be unreplicated, in seconds (a lower bound).
+    #: Age of the oldest commit known to be unreplicated, in seconds, as of the last known
+    #: position (a lower bound).
     lag_s: float
-    #: How long the position has been unknown, in seconds (0 when it is known).
+    #: Seconds since the last known position, while the position is unknown (0 when known).
     unknown_s: float
     #: The last known position is fully replicated.
     caught_up: bool
@@ -61,7 +64,9 @@ class LagTracker:
     _boot: str | None = None
     #: (time, txid) of samples not yet covered, oldest first, txids strictly increasing.
     _pending: deque[tuple[float, int]] = field(default_factory=deque)
-    _unknown_since: float | None = None
+    #: Time of the last available sample, and whether the position is unknown since then.
+    _known_at: float | None = None
+    _unknown: bool = False
     _last_at: float | None = None
     _caught_up: bool = True
 
@@ -73,15 +78,19 @@ class LagTracker:
         if self._last_at is not None and sample.at < self._last_at:
             raise ValueError("samples must be in time order")
         self._last_at = sample.at
-        if not sample.available:
-            if self._unknown_since is None:
-                self._unknown_since = sample.at
-            return self.state(sample.at)
-        self._unknown_since = None
-        if sample.boot_id != self._boot:
+        if sample.boot_id is not None and sample.boot_id != self._boot:
             # A new boot (a restore or a restart): earlier positions mean nothing now.
             self._boot = sample.boot_id
             self._pending.clear()
+            self._caught_up = True
+        if not sample.available:
+            if not self._unknown:
+                self._unknown = True
+                if self._known_at is None:
+                    self._known_at = sample.at
+            return self.state(sample.at)
+        self._unknown = False
+        self._known_at = sample.at
         assert sample.txid is not None and sample.replicated_txid is not None
         replicated = sample.replicated_txid
         while self._pending and self._pending[0][1] <= replicated:
@@ -92,8 +101,10 @@ class LagTracker:
         return self.state(sample.at)
 
     def state(self, now: float) -> LagState:
-        lag = max(0.0, now - self._pending[0][0]) if self._pending else 0.0
-        unknown = max(0.0, now - self._unknown_since) if self._unknown_since is not None else 0.0
+        known = self._known_at if self._known_at is not None else now
+        evidence = known if self._unknown else now
+        lag = max(0.0, evidence - self._pending[0][0]) if self._pending else 0.0
+        unknown = max(0.0, now - known) if self._unknown else 0.0
         reason = None
         if lag >= self.threshold_s:
             reason = "lagging"
@@ -102,7 +113,7 @@ class LagTracker:
         return LagState(
             lag_s=lag,
             unknown_s=unknown,
-            caught_up=self._caught_up and self._unknown_since is None,
+            caught_up=self._caught_up and not self._unknown,
             warning=reason is not None,
             reason=reason,
         )

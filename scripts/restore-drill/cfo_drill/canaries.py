@@ -393,6 +393,14 @@ def write_canaries(
     return run
 
 
+def _json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 def _schedules(client: Omnigent, bearer: dict[str, str]) -> dict[str, dict[str, Any]]:
     body = client.http.get("/v1/scheduled-tasks", headers=bearer).json()
     tasks = body.get("data") or body.get("scheduled_tasks") or []
@@ -418,42 +426,52 @@ def verify_http(client: Omnigent, run: CanaryRun) -> list[db.Check]:
     checks: list[db.Check] = []
     secrets = run.secrets
     if "password_change" in acked:
-        new_ok = client.login(secrets.password).status_code == 200
-        old_refused = (
-            secrets.original_password is None
-            or client.login(secrets.original_password).status_code != 200
+        # Exact answers only: an error or an unexpected status proves nothing either way.
+        new_status = client.login(secrets.password).status_code
+        old_status = (
+            client.login(secrets.original_password).status_code
+            if secrets.original_password is not None
+            else None
         )
+        new_ok = new_status == 200
+        old_refused = old_status in (None, 401)
         checks.append(
             db.Check(
                 "http.password_change",
                 (new_ok and old_refused) or not acked["password_change"],
                 {
-                    "new_password_works": new_ok,
-                    "old_password_refused": old_refused,
+                    "new_password_status": new_status,
+                    "old_password_status": old_status,
                     "acknowledged": acked["password_change"],
                 },
             )
         )
     password = secrets.password
-    if client.login(password).status_code != 200 and secrets.original_password:
+    if client.login(password).status_code == 401 and secrets.original_password:
         password = secrets.original_password  # an unacknowledged password change was lost
     bearer = client.bearer(password)
     if secrets.refresh_kept:
-        works = client.refresh(secrets.refresh_kept).status_code == 200
+        status = client.refresh(secrets.refresh_kept).status_code
         checks.append(
             db.Check(
                 "http.grant_issued",
-                works or not acked.get("grant_issued", False),
-                {"refreshes": works, "acknowledged": acked.get("grant_issued")},
+                status == 200 or not acked.get("grant_issued", False),
+                {"refresh_status": status, "acknowledged": acked.get("grant_issued")},
             )
         )
     if secrets.refresh_revoked:
-        refused = client.refresh(secrets.refresh_revoked).status_code != 200
+        response = client.refresh(secrets.refresh_revoked)
+        error = _json(response).get("error")
+        refused = response.status_code == 400 and error == "invalid_grant"
         checks.append(
             db.Check(
                 "http.grant_revoked",
                 refused or not acked.get("grant_revoked", False),
-                {"refused": refused, "acknowledged": acked.get("grant_revoked")},
+                {
+                    "refresh_status": response.status_code,
+                    "error": error if isinstance(error, str) else None,
+                    "acknowledged": acked.get("grant_revoked"),
+                },
             )
         )
     tasks = _schedules(client, bearer)
