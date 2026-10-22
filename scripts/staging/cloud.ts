@@ -241,6 +241,21 @@ function text(entry: Record<string, unknown>, key: string, what: string): string
   return value;
 }
 
+/**
+ * The body of Cloudflare's bulk secrets change (`PATCH …/secrets-bulk`, `cf workers secrets
+ * bulk`), a JSON merge patch: a value becomes a text secret, null deletes the secret.
+ */
+export function secretsBulkBody(
+  changes: Readonly<Record<string, string | null>>,
+): Record<string, { name: string; type: "secret_text"; text: string } | null> {
+  return Object.fromEntries(
+    Object.entries(changes).map(([name, value]) => [
+      name,
+      value === null ? null : { name, type: "secret_text" as const, text: value },
+    ]),
+  );
+}
+
 /** The names in `wrangler secret list --format json`: `[{ "name": …, "type": … }]`. */
 export function secretNamesOf(stdout: string): string[] {
   let listing: unknown;
@@ -378,7 +393,7 @@ const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";
  * descriptor is closed afterwards. The values never reach argv or a log.
  */
 export function withSecretsDescriptor<T>(
-  secrets: Readonly<Record<string, string | null>>,
+  secrets: Readonly<Record<string, unknown>>,
   use: (fd: number) => T,
 ): T {
   const fd = openNameless();
@@ -649,16 +664,20 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         }
         return secretNamesOf(result.stdout);
       }),
-    // One request (`PATCH …/secrets-bulk`), so one new version. The changes, values and nulls,
-    // reach Wrangler as the deploy's secrets do: an unlinked file on descriptor 3.
+    // One request (`PATCH …/secrets-bulk`), so one new deployed version, through cf, which
+    // fails for a missing Worker. `wrangler secret bulk` would create a draft Worker instead.
+    // The changes reach cf as the deploy's secrets reach Wrangler: an unlinked file on
+    // descriptor 3, read as `@/dev/fd/3`; no part of cf's output reaches an error.
     updateSecrets: (name, changes) => {
-      pinnedConfig(name, (file, dir) =>
-        withSecretsDescriptor(changes, (fd) =>
-          wrangler(["secret", "bulk", "/dev/fd/3", "--config", file, "--name", name], dir, {}, [
-            fd,
-          ]),
-        ),
+      const result = withSecretsDescriptor(secretsBulkBody(changes), (fd) =>
+        run("cf", ["workers", "secrets", "bulk", "--worker", name, "--secrets", "@/dev/fd/3"], {
+          inherit: false,
+          fds: [fd],
+        }),
       );
+      if (result.status !== 0) {
+        throw new Error(`cf workers secrets bulk failed${errorCodes(result.stderr)}`);
+      }
     },
     bucketExists: (name) =>
       bucketLookup(run("cf", ["r2", "buckets", "get", name], { inherit: false }), name),

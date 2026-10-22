@@ -35,6 +35,7 @@ import {
   removeStaleSecretDirs,
   secretNamesOf,
   secretsBase,
+  secretsBulkBody,
   spawnRunner,
   tunnelsOf,
   vpcServicesOf,
@@ -619,26 +620,23 @@ describe("CLI wiring", () => {
     expect(existsSync(seen?.cwd ?? "/")).toBe(false);
   });
 
-  it("lists secret names and changes secrets through the same pinned configuration (WP2.4)", () => {
-    const seen: { args: readonly string[]; config: unknown; fd3?: string; inherit: boolean }[] = [];
-    const secrets = cliCloud(config, WORKER, (_command, args, options) => {
-      const file = args[args.indexOf("--config") + 1] ?? "";
+  it("lists secret names through a pinned configuration, and changes secrets with cf (WP2.4)", () => {
+    const seen: { command: string; args: readonly string[]; config?: unknown; fd3?: string }[] = [];
+    const secrets = cliCloud(config, WORKER, (command, args, options) => {
+      const at = args.indexOf("--config");
       const fd = options.fds?.[0];
       seen.push({
-        args: args.slice(2),
-        config: JSON.parse(readFileSync(file, "utf8")),
-        inherit: options.inherit,
+        command,
+        args: command === "cf" ? args : args.slice(2),
+        ...(at < 0 ? {} : { config: JSON.parse(readFileSync(args[at + 1] ?? "", "utf8")) }),
         ...(fd === undefined ? {} : { fd3: readFileSync(`/proc/self/fd/${fd}`, "utf8") }),
       });
       return ok('[{"name":"B","type":"secret_text"}]');
     });
     expect(secrets.secretNames("cfo-stg-a")).toEqual(["B"]);
     secrets.updateSecrets("cfo-stg-a", { A: "1", B: null });
-    expect(seen.map((s) => s.config)).toEqual([
-      { name: "cfo-stg-a", account_id: "a".repeat(32) },
-      { name: "cfo-stg-a", account_id: "a".repeat(32) },
-    ]);
     expect(seen[0]).toMatchObject({
+      command: process.execPath,
       args: [
         "secret",
         "list",
@@ -649,19 +647,33 @@ describe("CLI wiring", () => {
         "--format",
         "json",
       ],
-      inherit: false,
+      config: { name: "cfo-stg-a", account_id: "a".repeat(32) },
     });
+    // One bulk request through cf, which fails for a missing Worker: `wrangler secret bulk`
+    // would create a draft Worker instead (Codex WP2.4 r1, finding 7).
     expect(seen[1]).toMatchObject({
-      args: ["secret", "bulk", "/dev/fd/3", "--config", expect.any(String), "--name", "cfo-stg-a"],
-      inherit: true,
+      command: "cf",
+      args: ["workers", "secrets", "bulk", "--worker", "cfo-stg-a", "--secrets", "@/dev/fd/3"],
     });
-    expect(JSON.parse(seen[1]?.fd3 ?? "{}")).toEqual({ A: "1", B: null });
+    expect(JSON.parse(seen[1]?.fd3 ?? "{}")).toEqual({
+      A: { name: "A", type: "secret_text", text: "1" },
+      B: null,
+    });
     expect(seen[1]?.args.join(" ")).not.toContain('"1"');
-    const failing = cliCloud(config, WORKER, () => failed("boom"));
+    const failing = cliCloud(config, WORKER, () =>
+      failed("[10007] This Worker does not exist (value-1)"),
+    );
     expect(() => failing.secretNames("cfo-stg-a")).toThrow("wrangler secret list exited with 1");
     expect(() => failing.updateSecrets("cfo-stg-a", { A: null })).toThrow(
-      /wrangler secret exited with 1/,
+      /^cf workers secrets bulk failed: \[10007\]$/,
     );
+  });
+
+  it("writes the bulk body as Cloudflare's merge patch", () => {
+    expect(secretsBulkBody({ A: "x", B: null })).toEqual({
+      A: { name: "A", type: "secret_text", text: "x" },
+      B: null,
+    });
   });
 
   it("reads secret names only from Wrangler's JSON listing", () => {

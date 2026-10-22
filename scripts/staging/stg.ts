@@ -15,7 +15,7 @@
 //
 // deploy --secrets-stdin uploads the secrets in a JSON object on stdin, {"NAME": "value", …},
 // with the version, as the manifest's are. secrets changes a deployed Worker's secrets in one
-// new version (`wrangler secret bulk`): {"NAME": "value"} sets one, {"NAME": null} deletes one.
+// new deployed version (one bulk request): {"NAME": "value"} sets one, {"NAME": null} deletes one.
 // Values come only from stdin and never reach argv, the output or a file that stays; names are
 // logged. secret-names prints the Worker's secret names as JSON, or null when it has none.
 //

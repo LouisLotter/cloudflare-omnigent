@@ -153,8 +153,9 @@ export interface Cloud {
   /** The names of the Worker's secrets; never their values. */
   secretNames(name: string): string[];
   /**
-   * One change of the Worker's secrets, as a new version (`wrangler secret bulk`): a value sets
-   * a secret, null deletes it. The values reach Wrangler as on deploy, never argv or the output.
+   * One change of the Worker's secrets, as a new deployed version (`PATCH …/secrets-bulk`): a
+   * value sets a secret, null deletes it. Fails, and creates nothing, for a missing Worker. The
+   * values never reach argv or the output.
    */
   updateSecrets(name: string, changes: Readonly<Record<string, string | null>>): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
@@ -1327,8 +1328,8 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
 }
 
 /**
- * Changes secrets of a deployed staging Worker: one new version, as `wrangler secret bulk`
- * makes it. Only for a deployment the registry shows deployed, by the owner that deployed it,
+ * Changes secrets of a deployed staging Worker: one new deployed version, from one bulk
+ * request. Only for a deployment the registry shows deployed, by the owner that deployed it,
  * whose Worker Cloudflare confirms; never one of the secrets the tool delivers itself (the
  * service token's). Names are logged, never values.
  */
