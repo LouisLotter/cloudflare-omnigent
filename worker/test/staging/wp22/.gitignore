@@ -1,0 +1,3 @@
+# Configurations the staging tool renders next to the checked ones.
+.stg-rendered.*.jsonc
+__pycache__/
