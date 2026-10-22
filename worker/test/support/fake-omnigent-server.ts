@@ -7,7 +7,7 @@
  * - `fetch` records every request and answers with the next queued response, else 200 "ok".
  * - `outages` returns the records a test added that overlap the range, oldest first, by the
  *   contract's own `outageOverlaps` rule, so the fake and WP2.2 cannot disagree on it.
- * - `bootstrapStatus` returns what a test set, null by default.
+ * - `bootstrapStatus` returns what a test set, null by default; `ensureStarted` counts calls.
  * - Every RPC call checks its interface version as OmnigentServer does: a newer one is refused
  *   with `unsupported_version`.
  * - `unconfirmedResponse` builds the server image's 424 for a path, in the body shape that
@@ -69,6 +69,14 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
   async bootstrapStatus(call: OmnigentServerCall): Promise<BootstrapStatus | null> {
     checkVersion(call);
     return this.bootstrap;
+  }
+
+  /** How many times `ensureStarted` was called. */
+  ensured = 0;
+
+  async ensureStarted(call: OmnigentServerCall): Promise<void> {
+    checkVersion(call);
+    this.ensured += 1;
   }
 }
 

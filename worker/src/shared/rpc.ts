@@ -59,4 +59,11 @@ export interface OmnigentServerRpc {
    * covered a position read after that.
    */
   bootstrapStatus(call: OmnigentServerCall): Promise<BootstrapStatus | null>;
+  /**
+   * The always-on backstop, from the platform Worker's cron trigger: arms the watchdog's alarm
+   * if none is set, and lets the watchdog start a stopped server now. Nothing else: no health
+   * check, and no restart of a server that runs. The watchdog's rules hold, so a server in
+   * recovery mode, held after exit 78, or inside DC-37's backoff is not started.
+   */
+  ensureStarted(call: OmnigentServerCall): Promise<void>;
 }
