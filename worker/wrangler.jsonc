@@ -34,5 +34,7 @@
     { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
     { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] }
   ],
+  // The always-on backstop and the first start after an installation (src/index.ts, scheduled).
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": true }
 }
