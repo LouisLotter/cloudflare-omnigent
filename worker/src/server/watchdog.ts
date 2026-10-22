@@ -131,6 +131,8 @@ export interface WatchdogState {
   readonly initSeenAt: number | null;
   /** While `starting`: when the entrypoint was first seen reporting the app `running`. */
   readonly bootEndedAt: number | null;
+  /** While `starting`: the entrypoint's boot ID (`/status`), so a new boot is recognised. */
+  readonly bootId: string | null;
   /**
    * When the entrypoint was first seen in recovery mode, while it has reported nothing else
    * since: the current observation, kept while its status is unreadable, and cleared by any
@@ -153,6 +155,7 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   bootSeenAt: null,
   initSeenAt: null,
   bootEndedAt: null,
+  bootId: null,
   recoverySince: null,
   outage: null,
 };
@@ -175,6 +178,8 @@ export type EntrypointPhase =
 
 export interface EntrypointReport {
   readonly phase: EntrypointPhase;
+  /** The entrypoint's boot ID, new at every container start; absent from older reports. */
+  readonly bootId?: string | null;
   /** In recovery mode: why, and whether the entrypoint retries by itself. */
   readonly recovery: { readonly reason: string; readonly transient: boolean } | null;
 }
@@ -200,6 +205,7 @@ export type WatchdogEventName =
   | "found_stopped"
   | "start"
   | "start_phase"
+  | "start_reboot"
   | "start_stopped"
   | "start_not_ready"
   | "start_failing"
@@ -511,76 +517,7 @@ function silent(
 
   const booting = phase === "starting" || phase === "restoring";
   const initializing = phase === "initializing";
-  if (state.phase === "starting") {
-    const since = state.phaseSince ?? now;
-    const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
-    // Each phase's first sight is logged once, so a start's progress shows in the logs.
-    const progress = (seenBefore: number | null) => {
-      if (seenBefore === null) b.event("start_phase", { phase, sinceStartMs: now - since });
-    };
-    let budget: "restore" | "app_start" | "readiness";
-    if (booting) {
-      // A boot and a restore may take the restore allowance, counted from the start.
-      progress(state.bootSeenAt);
-      budget = "restore";
-      if (now - since < restoreAllowance) {
-        return b.done(state, now + timing.pollMs, {
-          bootSeenAt: now,
-          initSeenAt: null,
-          bootEndedAt: null,
-        });
-      }
-    } else if (
-      initializing ||
-      (phase === null && state.initSeenAt !== null && state.bootEndedAt === null)
-    ) {
-      // The app is initializing: Python's imports, Omnigent's migrations, `create_app` and the
-      // owner check. It gets the app-start budget from its first sight, also while its status
-      // is unknown (AIR2-010).
-      if (initializing) progress(state.initSeenAt);
-      const initSeenAt = state.initSeenAt ?? now;
-      budget = "app_start";
-      if (now - initSeenAt < timing.appStartWaitMs) {
-        return b.done(state, now + timing.pollMs, { initSeenAt });
-      }
-    } else if (phase === null && state.bootSeenAt !== null && state.bootEndedAt === null) {
-      // Seen restoring, now unknown: keep the restore's allowance (Codex WP2.2 r4-3).
-      budget = "restore";
-      if (now - since < restoreAllowance) return b.done(state, now + timing.pollMs);
-    } else {
-      // The app is `running` (it answered the entrypoint's health check; an older image says so
-      // from the app's start), or nothing was seen since the start. The readiness wait counts
-      // from the first sight of `running` once the entrypoint was seen before it (Codex WP2.2
-      // r3-4, r4-3), otherwise from the start.
-      if (phase === "running") progress(state.bootEndedAt);
-      const bootEndedAt = phase === "running" ? (state.bootEndedAt ?? now) : state.bootEndedAt;
-      const seenBefore = state.bootSeenAt !== null || state.initSeenAt !== null;
-      budget = "readiness";
-      if (
-        now - (seenBefore && bootEndedAt !== null ? bootEndedAt : since) <
-        timing.readinessWaitMs
-      ) {
-        return b.done(state, now + timing.pollMs, { bootEndedAt });
-      }
-    }
-    // Not answering within its budget: a failed start.
-    const failedStarts = state.failedStarts + 1;
-    b.openFor(state, "start_failed", since);
-    b.event("start_not_ready", {
-      waitedMs: now - since,
-      failedStarts,
-      entrypoint: phase,
-      budget,
-    });
-    return stopForRestart(
-      state,
-      now,
-      timing,
-      b,
-      `not ready within the ${budget} budget`,
-      failedStarts,
-    );
-  }
+  if (state.phase === "starting") return starting(state, entrypoint, now, timing, b);
 
   // The entrypoint reports something other than recovery mode, after it: it left recovery mode
   // (its own retry restored the database) and starts the app. Whatever the outage's recorded
@@ -610,7 +547,8 @@ function silent(
       startsSince: state.startsSince ?? now,
       bootSeenAt: booting ? now : null,
       initSeenAt: initializing ? now : null,
-      bootEndedAt: null,
+      bootEndedAt: phase === "running" ? now : null,
+      bootId: entrypoint?.bootId ?? null,
       recoverySince: null,
     });
   }
@@ -631,6 +569,99 @@ function silent(
     return stopForRestart(state, now, timing, b, "not answering", state.failedStarts);
   }
   return b.done(state, now + timing.pollMs);
+}
+
+/**
+ * A start in progress, and silent: the entrypoint's phases decide how long it may take
+ * (AIR2-010). Each phase has its own finite budget while its status reads; while it does not,
+ * the start may be in any stage after the last one seen, so it gets what those stages could
+ * still take, and no more (Codex WP2.6 r1-1):
+ *   - `starting`, `restoring`: the restore allowance, from the start;
+ *   - `initializing`: the app-start budget, from its first sight;
+ *   - `running` (the app answered the entrypoint, or an older image's app started): the
+ *     readiness wait, from its first sight;
+ *   - unreadable after `running`: the readiness wait from `running`; after `initializing`: the
+ *     app-start budget and the readiness wait from `initializing`; with nothing seen past the
+ *     boot: the restore allowance, the app-start budget and the readiness wait, from the start.
+ * A boot with another ID than the one this start follows is a new container (the platform
+ * replaced it unseen): it starts its budgets again (Codex WP2.6 r1-2).
+ */
+function starting(
+  observed: WatchdogState,
+  entrypoint: EntrypointReport | null,
+  now: number,
+  timing: WatchdogTiming,
+  b: Builder,
+): Step {
+  const phase = entrypoint?.phase ?? null;
+  const bootId = entrypoint?.bootId ?? null;
+  let state = observed;
+  if (bootId !== null && state.bootId !== null && bootId !== state.bootId) {
+    b.event("start_reboot", { phase, sinceStartMs: now - (state.phaseSince ?? now) });
+    state = {
+      ...state,
+      phaseSince: now,
+      bootId,
+      bootSeenAt: null,
+      initSeenAt: null,
+      bootEndedAt: null,
+    };
+  } else if (bootId !== null && state.bootId === null) {
+    state = { ...state, bootId };
+  }
+  const since = state.phaseSince ?? now;
+  const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
+  // Each phase's first sight is logged once, so a start's progress shows in the logs.
+  const progress = (seenBefore: number | null) => {
+    if (seenBefore === null) b.event("start_phase", { phase, sinceStartMs: now - since });
+  };
+  const wait = (fields: Partial<WatchdogState> = {}) => b.done(state, now + timing.pollMs, fields);
+  let budget: "restore" | "app_start" | "readiness" | "start";
+  if (phase === "starting" || phase === "restoring") {
+    progress(state.bootSeenAt);
+    budget = "restore";
+    if (now - since < restoreAllowance) {
+      return wait({ bootSeenAt: now, initSeenAt: null, bootEndedAt: null });
+    }
+  } else if (phase === "initializing") {
+    progress(state.initSeenAt);
+    const initSeenAt = state.initSeenAt ?? now;
+    budget = "app_start";
+    if (now - initSeenAt < timing.appStartWaitMs) return wait({ initSeenAt });
+  } else if (phase === "running") {
+    progress(state.bootEndedAt);
+    const bootEndedAt = state.bootEndedAt ?? now;
+    budget = "readiness";
+    if (now - bootEndedAt < timing.readinessWaitMs) return wait({ bootEndedAt });
+  } else if (state.bootEndedAt !== null) {
+    budget = "readiness";
+    if (now - state.bootEndedAt < timing.readinessWaitMs) return wait();
+  } else if (state.initSeenAt !== null) {
+    budget = "app_start";
+    if (now - state.initSeenAt < timing.appStartWaitMs + timing.readinessWaitMs) return wait();
+  } else {
+    budget = "start";
+    if (now - since < restoreAllowance + timing.appStartWaitMs + timing.readinessWaitMs) {
+      return wait();
+    }
+  }
+  // Not answering within its budget: a failed start.
+  const failedStarts = state.failedStarts + 1;
+  b.openFor(state, "start_failed", since);
+  b.event("start_not_ready", {
+    waitedMs: now - since,
+    failedStarts,
+    entrypoint: phase,
+    budget,
+  });
+  return stopForRestart(
+    state,
+    now,
+    timing,
+    b,
+    `not ready within the ${budget} budget`,
+    failedStarts,
+  );
 }
 
 function stopped(
@@ -748,6 +779,7 @@ function start(
     bootSeenAt: null,
     initSeenAt: null,
     bootEndedAt: null,
+    bootId: null,
     recoverySince: null,
   });
 }

@@ -249,13 +249,14 @@ describe("OmnigentServer: always on", () => {
     await platformStop(stub, fake);
     await nextCheck(stub); // restarted
     fake.listening = false;
-    const startedAt = testServers.clock.now();
-    while (testServers.clock.now() - startedAt < T.readinessWaitMs - T.pollMs) {
+    await nextCheck(stub); // `running` first seen, and silent: the readiness wait counts from here
+    const seenAt = testServers.clock.now();
+    while (testServers.clock.now() - seenAt < T.readinessWaitMs - T.pollMs) {
       await nextCheck(stub);
       expect(fake.signals).toEqual([]);
     }
     await nextCheck(stub);
-    expect(testServers.clock.now() - startedAt).toBeGreaterThanOrEqual(T.readinessWaitMs);
+    expect(testServers.clock.now() - seenAt).toBeGreaterThanOrEqual(T.readinessWaitMs);
     expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint confirms its final sync
     expect(fake.destroys).toEqual([]);
     expect(events("watchdog").map((e) => e.event)).toContain("start_not_ready");
@@ -684,6 +685,27 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     expect(fake.starts).toHaveLength(2);
     const phases = events("watchdog").filter((e) => e.event === "start_phase");
     expect(phases.map((e) => e.phase)).toEqual(["restoring", "initializing"]);
+  });
+
+  it("starts the budgets again when the container was replaced unseen mid-start (Codex WP2.6 r1-2)", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "initializing";
+    const startedAt = testServers.clock.now();
+    while (testServers.clock.now() - startedAt < T.appStartWaitMs - 30_000) await nextCheck(stub);
+    // A new boot of another container, which the watchdog never saw stop: a fresh allowance.
+    fake.bootId = "e".repeat(32);
+    fake.entrypointPhase = "restoring";
+    const rebootAt = testServers.clock.now();
+    while (testServers.clock.now() - rebootAt < T.restoreWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    expect(events("watchdog").filter((e) => e.event === "start_reboot")).toHaveLength(1);
+    fake.entrypointPhase = "running";
+    await nextCheck(stub);
+    expect((await stub.outages(everything))[0]?.endedAt).not.toBeNull();
   });
 
   it("restarts an initialization that never ends once its app-start budget is used up", async () => {

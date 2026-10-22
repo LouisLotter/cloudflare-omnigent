@@ -119,6 +119,7 @@ const StoredWatchdogState = z.strictObject({
   bootSeenAt: Millis.nullable().default(null),
   initSeenAt: Millis.nullable().default(null),
   bootEndedAt: Millis.nullable().default(null),
+  bootId: z.string().max(64).nullable().default(null),
   recoverySince: Millis.nullable().optional(),
   outage: z
     .strictObject({
@@ -165,6 +166,7 @@ const EntrypointStatus = z.object({
     .object({ reason: z.string().max(200), transient: z.boolean() })
     .nullable()
     .optional(),
+  bootId: z.string().max(64).optional(),
 });
 
 /** The entrypoint's status port (WP2.3): the same port as the replication position. */
@@ -485,7 +487,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH),
     );
     if (!parsed.success) return null;
-    return { phase: parsed.data.phase, recovery: parsed.data.recovery ?? null };
+    return {
+      phase: parsed.data.phase,
+      recovery: parsed.data.recovery ?? null,
+      bootId: parsed.data.bootId ?? null,
+    };
   }
 
   /**
