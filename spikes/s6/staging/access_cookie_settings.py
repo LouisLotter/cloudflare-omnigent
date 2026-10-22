@@ -35,15 +35,18 @@ def main() -> int:
     state = Path(os.environ.get("CFO_STAGING_DIR") or Path.home() / ".config" / "cloudflare-omnigent" / "staging")
     config = json.loads((state / "config.json").read_text())
     env = {**os.environ, "CLOUDFLARE_ACCOUNT_ID": config["accountId"]}
-    r = subprocess.run(["cf", "zero-trust", "access", "applications", "list", "--name", NAME, "--exact"],
+    zone = config["zone"]
+    # The staging tool names the application "<deployment>--<create nonce>" and finds it by its
+    # domain (scripts/staging/cloud.ts); an exact name match never finds it (S6 follow-up).
+    r = subprocess.run(["cf", "zero-trust", "access", "applications", "list", "--domain", f"{NAME}.{zone}", "--exact"],
                        capture_output=True, text=True, env=env, timeout=60)
     if r.returncode != 0:
         print(json.dumps({"error": "cf exited non-zero", "exit": r.returncode}))
         return 1
     data = json.loads(r.stdout)
     apps = data if isinstance(data, list) else data.get("result", data.get("items", []))
-    zone = config["zone"]
-    apps = [a for a in apps if a.get("name") == NAME and a.get("domain") == f"{NAME}.{zone}"]
+    named = lambda n: n == NAME or (isinstance(n, str) and n.startswith(f"{NAME}--"))  # noqa: E731
+    apps = [a for a in apps if named(a.get("name")) and a.get("domain") == f"{NAME}.{zone}"]
     out = {"applications_found": len(apps)}
     if apps:
         app = apps[0]
