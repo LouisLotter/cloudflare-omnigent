@@ -70,6 +70,7 @@ import {
   INITIAL_WATCHDOG_STATE,
   type Observation,
   randomOutageId,
+  signalled,
   step,
   WATCHDOG_TIMING,
   type WatchdogState,
@@ -112,6 +113,9 @@ const WatchdogStateSchema = z.strictObject({
   lastAnsweredAt: Millis.nullable(),
   startsSince: Millis.nullable(),
   heldConfig: z.string().max(64).nullable().default(null),
+  signalledAt: Millis.nullable().default(null),
+  killedAt: Millis.nullable().default(null),
+  bootSeenAt: Millis.nullable().default(null),
   outage: z
     .strictObject({
       outageId: OutageId,
@@ -139,6 +143,12 @@ const STATUS_PATH = "/status";
 const SIGTERM = 15;
 
 const STATE_KEY = "watchdog";
+/**
+ * The exit code `monitor()` last reported, until a check consumes it. Stored: the instance can
+ * be recreated between the exit and the check, and an exit 78 must still hold the server
+ * (Codex WP2.2 r3-5).
+ */
+const LAST_EXIT_KEY = "last_exit";
 const BOOTSTRAP_STATUS_KEY = "bootstrap_status";
 const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
 
@@ -171,11 +181,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #stopping = false;
   /** The running container's intercept registration failed and is retried at each check. */
   #interceptPending = false;
-  /**
-   * The exit code `monitor()` last reported, until a check consumes it. In memory: a pending
-   * `monitor()` keeps this instance alive while the container runs, and the code is diagnostic.
-   */
-  #exitCode: number | null = null;
+
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
   #checks: Promise<void> = Promise.resolve();
@@ -392,6 +398,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           this.#ready = true;
         }
       }
+      // No request is passed on while the container is being stopped or killed (Codex WP2.2
+      // r3-1); the persisted `stopping` phase keeps it so until the container is seen stopped.
+      if (result.effects.some((effect) => effect.type === "stop" || effect.type === "destroy")) {
+        this.#stopping = true;
+      }
       try {
         await this.#apply(container, result.effects);
       } finally {
@@ -432,7 +443,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
 
   /** The exit code `monitor()` last reported and no check has consumed yet. */
   #lastExit(): number | null {
-    return this.#exitCode;
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", LAST_EXIT_KEY)
+      .toArray()[0];
+    const parsed = z
+      .object({ exitCode: z.number().int().min(0).max(255).nullable() })
+      .safeParse(row === undefined ? undefined : parseJson(row.value));
+    return parsed.success ? parsed.data.exitCode : null;
   }
 
   /** Whether Omnigent answers its health check with a 2xx. Never throws. */
@@ -478,8 +495,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           try {
             container.signal(SIGTERM);
           } catch (error) {
+            // Not delivered: the next check sends it again, or calls the stop off if the
+            // server answers (Codex WP2.2 r3-2).
             logEvent("watchdog", "stop_error", { error: describeError(error) });
+            break;
           }
+          // Delivered: the grace counts from now.
+          this.#persist(signalled(this.#loadState(), this.now()), [], false);
           break;
         case "destroy":
           try {
@@ -504,7 +526,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
     // An exit left from an earlier container is not this one's.
-    this.#exitCode = null;
+    this.ctx.storage.sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
     try {
       container.start(vars);
     } catch (error) {
@@ -527,7 +549,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           error: exit.error === null ? null : describeError(exit.error),
         });
         // Kept until a check consumes it, so the outage record can carry it.
-        this.#exitCode = exitCode;
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+          LAST_EXIT_KEY,
+          JSON.stringify({ exitCode, at: this.now() }),
+        );
       });
     } catch (error) {
       logEvent("watchdog", "watch_error", { error: describeError(error) });
@@ -575,7 +601,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #persist(state: WatchdogState, effects: readonly Effect[], consumedExit: boolean): void {
     const sql = this.ctx.storage.sql;
     this.ctx.storage.transactionSync(() => {
-      if (consumedExit) this.#exitCode = null;
+      if (consumedExit) sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
       sql.exec(
         "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
         STATE_KEY,

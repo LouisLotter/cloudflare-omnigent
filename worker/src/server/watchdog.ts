@@ -96,6 +96,15 @@ export interface WatchdogState {
   readonly startsSince: number | null;
   /** The configuration fingerprint an exit 78 was seen with, while `held`. */
   readonly heldConfig: string | null;
+  /**
+   * While `stopping`: when SIGTERM reached the container (or the platform's own stop was first
+   * seen). Null while the stop is only intended: the grace counts from delivery, never before.
+   */
+  readonly signalledAt: number | null;
+  /** While `stopping`: when the container was killed after the grace. */
+  readonly killedAt: number | null;
+  /** While `starting`: the last time the entrypoint reported a boot or a restore. */
+  readonly bootSeenAt: number | null;
   readonly outage: OngoingOutage | null;
 }
 
@@ -107,6 +116,9 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   lastAnsweredAt: null,
   startsSince: null,
   heldConfig: null,
+  signalledAt: null,
+  killedAt: null,
+  bootSeenAt: null,
   outage: null,
 };
 
@@ -147,6 +159,7 @@ export type WatchdogEventName =
   | "restart_silent"
   | "stop_done"
   | "stop_overdue"
+  | "stop_cancelled"
   | "entrypoint_stopping"
   | "recovery_mode"
   | "config_error"
@@ -314,7 +327,14 @@ function answering(state: WatchdogState, now: number, timing: WatchdogTiming, b:
   return b.done(INITIAL_WATCHDOG_STATE, now + timing.intervalMs, { lastAnsweredAt: now });
 }
 
-/** The watchdog stopped the server with SIGTERM: wait for the stop, kill it past the grace. */
+/**
+ * The watchdog is stopping the server. The phase lasts until the container is seen stopped, so
+ * no request is passed on meanwhile, the kill after the grace included.
+ * - Intended but not yet delivered (`signalledAt` null: the instance was reset, or the signal
+ *   failed): a server that answers, or is in recovery mode, is left running; otherwise SIGTERM
+ *   is sent again.
+ * - Delivered: wait for the final sync; past the grace, counted from delivery, kill it.
+ */
 function stopping(
   state: WatchdogState,
   observation: Observation,
@@ -332,6 +352,8 @@ function stopping(
       phase: "waiting",
       phaseSince: now,
       startDueAt: now + retryDelay(1, timing),
+      signalledAt: null,
+      killedAt: null,
     };
     if (observation.exitCode === EXIT_CONFIG) {
       return stopped(waiting, observation.exitCode, now, timing, b, config);
@@ -340,12 +362,30 @@ function stopping(
     b.recordOutage();
     return b.done(waiting, waiting.startDueAt ?? now);
   }
-  if (now - since < timing.stopGraceMs) return b.done(state, now + timing.pollMs);
-  // The stop outran its grace: kill it, then start again after DC-37's first delay.
-  b.event("stop_overdue", { stopMs: now - since });
+  const cleared: Partial<WatchdogState> = {
+    phase: "idle",
+    phaseSince: null,
+    signalledAt: null,
+    killedAt: null,
+  };
+  if (state.signalledAt === null) {
+    if (observation.kind === "answering" || observation.entrypoint?.phase === "recovery") {
+      // The stop never reached it, and it no longer needs one.
+      b.event("stop_cancelled", { intendedMs: now - since });
+      const resumed = { ...state, ...cleared };
+      return observation.kind === "answering"
+        ? answering(resumed, now, timing, b)
+        : silent(resumed, observation.entrypoint, now, timing, b);
+    }
+    b.effects.push({ type: "stop", reason: "the stop was not delivered" });
+    return b.done(state, now + timing.pollMs);
+  }
+  const delivered = state.signalledAt;
+  if (now - delivered < timing.stopGraceMs) return b.done(state, now + timing.pollMs);
+  // The stop outran its grace: kill it, and stay stopping until it is seen stopped.
+  if (state.killedAt === null) b.event("stop_overdue", { stopMs: now - delivered });
   b.effects.push({ type: "destroy", reason: "the stop outran its grace" });
-  const startDueAt = now + retryDelay(1, timing);
-  return b.done(state, startDueAt, { phase: "waiting", phaseSince: now, startDueAt });
+  return b.done(state, now + timing.pollMs, { killedAt: state.killedAt ?? now });
 }
 
 /** Starts a graceful restart: SIGTERM now, the start once the container stopped. */
@@ -359,10 +399,13 @@ function stopForRestart(
 ): Step {
   b.recordOutage();
   b.effects.push({ type: "stop", reason });
+  // Delivery is recorded by the caller once the signal is sent (`signalled`).
   return b.done(state, now + timing.pollMs, {
     phase: "stopping",
     phaseSince: now,
     startDueAt: null,
+    signalledAt: null,
+    killedAt: null,
     failedStarts,
   });
 }
@@ -400,20 +443,28 @@ function silent(
     b.event("entrypoint_stopping", { phase });
     b.openFor(state, "container_stopped", now);
     b.recordOutage();
+    // The platform signalled it: the grace counts from now.
     return b.done(state, now + timing.pollMs, {
       phase: "stopping",
       phaseSince: now,
       startDueAt: null,
+      signalledAt: now,
+      killedAt: null,
     });
   }
 
   const booting = phase === "starting" || phase === "restoring";
   if (state.phase === "starting") {
     const since = state.phaseSince ?? now;
-    const wait = booting
-      ? Math.max(timing.readinessWaitMs, timing.restoreWaitMs)
-      : timing.readinessWaitMs;
-    if (now - since < wait) return b.done(state, now + timing.pollMs);
+    if (booting) {
+      // A restore may take the image's restore deadline; the app's own start follows it.
+      if (now - since < Math.max(timing.readinessWaitMs, timing.restoreWaitMs)) {
+        return b.done(state, now + timing.pollMs, { bootSeenAt: now });
+      }
+    } else if (now - Math.max(since, state.bootSeenAt ?? since) < timing.readinessWaitMs) {
+      // The app gets the full readiness wait from the end of a restore (Codex WP2.2 r3-4).
+      return b.done(state, now + timing.pollMs);
+    }
     // Running, but not answering within the wait: a failed start.
     const failedStarts = state.failedStarts + 1;
     b.openFor(state, "start_failed", since);
@@ -562,7 +613,20 @@ function start(
     phaseSince: now,
     startDueAt: null,
     startsSince: state.startsSince ?? now,
+    signalledAt: null,
+    killedAt: null,
+    bootSeenAt: null,
   });
+}
+
+/**
+ * The state once SIGTERM reached the container: the grace counts from now. A no-op unless the
+ * watchdog is stopping the server and has not delivered the signal yet.
+ */
+export function signalled(state: WatchdogState, now: number): WatchdogState {
+  return state.phase === "stopping" && state.signalledAt === null
+    ? { ...state, signalledAt: now }
+    : state;
 }
 
 const BASE32 = "0123456789abcdefghjkmnpqrstvwxyz";

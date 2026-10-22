@@ -11,6 +11,7 @@ import {
   randomOutageId,
   retryDelay,
   type Step,
+  signalled,
   step,
   WATCHDOG_TIMING as T,
   type WatchdogState,
@@ -96,6 +97,19 @@ describe("watchdog: first start", () => {
     });
     expect(failed?.state).toMatchObject({ phase: "stopping", failedStarts: 1 });
     expect(failed?.nextCheckAt).toBe(T0 + T.readinessWaitMs + T.pollMs);
+  });
+
+  it("gives the app a full readiness wait after a long restore (Codex r3-4)", () => {
+    const restoredAt = T0 + 180_000;
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [restoredAt, entrypoint("restoring")],
+      [restoredAt + 5_000, entrypoint("running")], // the app is starting
+      [restoredAt + T.readinessWaitMs - 1, SILENT],
+      [restoredAt + T.readinessWaitMs, entrypoint("running")],
+    ]);
+    for (const s of steps.slice(1, 4)) expect(types(s)).toEqual([]);
+    expect(types(defined(steps[4]))).toContain("stop");
   });
 
   it("waits out a restore the entrypoint reports, then counts the start failed (WP2.3)", () => {
@@ -243,9 +257,16 @@ describe("watchdog: restarts stop gracefully (WP2.3's final sync)", () => {
     expect(types(defined(waiting))).toEqual([]);
     const hung = defined(restarting);
     expect(types(hung)).toEqual(["event", "outage", "stop"]);
-    expect(hung.state).toMatchObject({ phase: "stopping", phaseSince: T0 + T.hungAfterMs });
+    expect(hung.state).toMatchObject({
+      phase: "stopping",
+      phaseSince: T0 + T.hungAfterMs,
+      signalledAt: null,
+    });
+    // The Durable Object records the delivery; the grace counts from it.
+    const sent = signalled(hung.state, T0 + T.hungAfterMs);
+    expect(sent.signalledAt).toBe(T0 + T.hungAfterMs);
     // Still running while it confirms its final sync: no start, no kill.
-    const syncing = step(hung.state, SILENT, T0 + T.hungAfterMs + 30_000, T, nextId);
+    const syncing = step(sent, SILENT, T0 + T.hungAfterMs + 30_000, T, nextId);
     expect(types(syncing)).toEqual([]);
     const done = step(syncing.state, exited(0), T0 + T.hungAfterMs + 60_000, T, nextId);
     expect(events(done)).toEqual(["stop_done"]);
@@ -259,12 +280,52 @@ describe("watchdog: restarts stop gracefully (WP2.3's final sync)", () => {
     });
   });
 
-  it("kills a stop only once it outruns its grace", () => {
-    const stopping: WatchdogState = { ...answered(T0), phase: "stopping", phaseSince: T0 };
+  it("kills a stop only once it outruns its grace from delivery, and stays stopping until it stopped", () => {
+    const stopping: WatchdogState = {
+      ...answered(T0),
+      phase: "stopping",
+      phaseSince: T0 - 600_000, // intended long before: the grace counts from delivery
+      signalledAt: T0,
+    };
     expect(types(step(stopping, ANSWERING, T0 + T.stopGraceMs - 1, T, nextId))).toEqual([]);
     const overdue = step(stopping, SILENT, T0 + T.stopGraceMs, T, nextId);
     expect(types(overdue)).toEqual(["event", "destroy"]);
-    expect(overdue.state).toMatchObject({ phase: "waiting" });
+    // Still stopping: no request is passed on until the container is seen stopped.
+    expect(overdue.state).toMatchObject({ phase: "stopping", killedAt: T0 + T.stopGraceMs });
+    const again = step(overdue.state, ANSWERING, T0 + T.stopGraceMs + T.pollMs, T, nextId);
+    expect(types(again)).toEqual(["destroy"]);
+    const gone = step(again.state, exited(137), T0 + T.stopGraceMs + 2 * T.pollMs, T, nextId);
+    expect(events(gone)).toEqual(["stop_done"]);
+    expect(gone.state).toMatchObject({ phase: "waiting", killedAt: null, signalledAt: null });
+  });
+
+  it("never kills on a stop that was never delivered: calls it off, or sends it again (Codex r3-2)", () => {
+    const intended: WatchdogState = {
+      ...answered(T0),
+      phase: "stopping",
+      phaseSince: T0,
+      signalledAt: null,
+      outage: {
+        outageId: "out_00000000000000000000000000",
+        cause: "not_answering",
+        startedAt: T0 - 120_000,
+        detectedAt: T0 - 60_000,
+        restarts: 0,
+        exitCode: null,
+        recovery: null,
+      },
+    };
+    const later = T0 + T.stopGraceMs * 3;
+    const healthy = step(intended, ANSWERING, later, T, nextId);
+    expect(types(healthy)).not.toContain("destroy");
+    expect(events(healthy)).toEqual(["stop_cancelled", "server_ready", "outage_ended"]);
+    expect(healthy.state.phase).toBe("idle");
+    const silentAgain = step(intended, SILENT, later, T, nextId);
+    expect(types(silentAgain)).toEqual(["stop"]);
+    expect(silentAgain.state.phase).toBe("stopping");
+    const recovery = step(intended, entrypoint("recovery"), later, T, nextId);
+    expect(types(recovery).some((t) => t === "stop" || t === "destroy")).toBe(false);
+    expect(recovery.state.outage?.cause).toBe("recovery_mode");
   });
 
   it("waits for a stop the platform began, rather than killing it", () => {
@@ -523,7 +584,8 @@ describe("watchdog simulation", () => {
               if (currentDown !== null) currentDown.to = now;
               currentDown = null;
             }
-            state = s.state;
+            // The Durable Object records a delivered SIGTERM.
+            state = s.effects.some((e) => e.type === "stop") ? signalled(s.state, now) : s.state;
             expect(s.nextCheckAt).toBeGreaterThan(now);
             expect(s.nextCheckAt - now).toBeLessThanOrEqual(T.intervalMs);
             now = s.nextCheckAt;
@@ -571,6 +633,9 @@ describe("watchdog: any stored state", () => {
     lastAnsweredAt: maybe(time),
     startsSince: maybe(time),
     heldConfig: maybe(fc.constantFrom("config-a", "config-b")),
+    signalledAt: maybe(time),
+    killedAt: maybe(time),
+    bootSeenAt: maybe(time),
     outage: maybe(
       fc.record({
         outageId: fc.constant("out_00000000000000000000000000"),
@@ -624,6 +689,17 @@ describe("watchdog: any stored state", () => {
         if (
           observation.kind === "stopped" &&
           types(s).some((t) => t === "stop" || t === "destroy")
+        ) {
+          return false;
+        }
+        // A kill only after a delivered stop outran its grace (Codex r3-2).
+        if (
+          types(s).includes("destroy") &&
+          !(
+            state.phase === "stopping" &&
+            state.signalledAt !== null &&
+            now - state.signalledAt >= T.stopGraceMs
+          )
         ) {
           return false;
         }

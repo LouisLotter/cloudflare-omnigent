@@ -92,6 +92,19 @@ describe("the server image's deadlines (WP2.3)", () => {
     );
     expect(serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: "0" }).stopGraceMs).toBe(660_000);
   });
+
+  it("reads seconds as the image does, so the grace is never shorter than its own (Codex r3-3)", () => {
+    const grace = (value: string) =>
+      serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: value }).stopGraceMs;
+    for (const value of ["900", "900.0", "9e2", "9E+2", " 900 ", "9_00", "+900", "900."]) {
+      expect(grace(value), value).toBe(1_860_000);
+    }
+    expect(grace("0.5")).toBe(61_000);
+    expect(grace(".5")).toBe(61_000);
+    for (const value of ["inf", "nan", "-5", "0x10", "1e400", "", "9__00", "_900"]) {
+      expect(grace(value), value).toBe(660_000);
+    }
+  });
 });
 
 describe("configFingerprint", () => {

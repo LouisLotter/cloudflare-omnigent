@@ -58,10 +58,18 @@ export function bootstrapSecretPresent(env: Readonly<Record<string, unknown>>): 
   return typeof value === "string" && value.length > 0;
 }
 
-/** A whole number of seconds from a `SERVER_ENV_` setting, or the image's default. */
+/**
+ * A number of seconds from a `SERVER_ENV_` setting, read as the image reads it (WP2.3's
+ * `parse_seconds`: Python's `float`, so `900`, `900.0`, `9e2` and `9_00` are all 900), or the
+ * image's default when it is unset or not a positive finite number (the image then exits 78,
+ * and the watchdog holds it). Never shorter than the image's own value (Codex WP2.2 r3-3).
+ */
 function seconds(env: Readonly<Record<string, unknown>>, name: string, fallback: number): number {
   const raw = env[`${SERVER_ENV_PREFIX}${name}`];
-  const value = typeof raw === "string" && /^\d{1,5}$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (typeof raw !== "string") return fallback;
+  const text = raw.trim().replace(/(?<=\d)_(?=\d)/g, "");
+  if (!/^[+]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) return fallback;
+  const value = Number(text);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
@@ -79,7 +87,10 @@ export function serverDeadlines(env: Readonly<Record<string, unknown>>): {
   const restore = seconds(env, "CFO_RESTORE_DEADLINE_S", 300);
   const ready = seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60);
   const finalSync = seconds(env, "CFO_FINAL_SYNC_TIMEOUT_S", 300);
-  return { restoreWaitMs: (restore + ready + 60) * 1000, stopGraceMs: (2 * finalSync + 60) * 1000 };
+  return {
+    restoreWaitMs: Math.ceil((restore + ready + 60) * 1000),
+    stopGraceMs: Math.ceil((2 * finalSync + 60) * 1000),
+  };
 }
 
 /**
