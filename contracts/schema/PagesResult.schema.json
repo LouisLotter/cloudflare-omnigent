@@ -1,0 +1,562 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "state",
+          "type": "string"
+        },
+        "computer": {
+          "additionalProperties": {},
+          "properties": {
+            "admission": {
+              "additionalProperties": {},
+              "properties": {
+                "admitting": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "enum": [
+                    "not_saved",
+                    "needs_sign_in"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "admitting"
+              ],
+              "type": "object"
+            },
+            "computerId": {
+              "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+              "type": "string"
+            },
+            "generation": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hostId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hostName": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastContactAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastKeepAliveAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastSavedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lifecycle": {
+              "enum": [
+                "provisioned",
+                "waking",
+                "restoring",
+                "started_no_host",
+                "start_claimed",
+                "host_running",
+                "host_refused",
+                "stopping",
+                "asleep",
+                "stopped",
+                "failed",
+                "removal_pending",
+                "removed"
+              ],
+              "type": "string"
+            },
+            "nextSize": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "lite",
+                    "basic",
+                    "standard-1",
+                    "standard-2",
+                    "standard-3",
+                    "standard-4"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refusedSleeps": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "removal": {
+              "additionalProperties": {},
+              "properties": {
+                "loginPossiblyLost": {
+                  "type": "boolean"
+                },
+                "revocationRecorded": {
+                  "type": "boolean"
+                },
+                "signOut": {
+                  "enum": [
+                    "none",
+                    "requested",
+                    "tombstoned",
+                    "verified"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "none",
+                    "pending",
+                    "resolved"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "signOut",
+                "loginPossiblyLost",
+                "revocationRecorded"
+              ],
+              "type": "object"
+            },
+            "restoredTo": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "saving": {
+              "type": "boolean"
+            },
+            "setupCards": {
+              "items": {
+                "additionalProperties": {},
+                "properties": {
+                  "provider": {
+                    "enum": [
+                      "claude",
+                      "codex"
+                    ],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": [
+                      "not_signed_in",
+                      "expired",
+                      "refused"
+                    ],
+                    "type": "string"
+                  },
+                  "state": {
+                    "enum": [
+                      "signed_in",
+                      "needs_sign_in",
+                      "saving",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "size": {
+              "enum": [
+                "lite",
+                "basic",
+                "standard-1",
+                "standard-2",
+                "standard-3",
+                "standard-4"
+              ],
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "stopped",
+                "started_no_host",
+                "start_claimed",
+                "host_running",
+                "host_refused",
+                "stopping"
+              ],
+              "type": "string"
+            },
+            "unexpectedStopAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verifiedAt": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "workspaceBytes": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "computerId",
+            "hostName",
+            "hostId",
+            "size",
+            "nextSize",
+            "lifecycle",
+            "status",
+            "generation",
+            "admission",
+            "saving",
+            "lastSavedAt",
+            "verifiedAt",
+            "workspaceBytes",
+            "lastContactAt",
+            "lastKeepAliveAt",
+            "restoredTo",
+            "unexpectedStopAt",
+            "refusedSleeps",
+            "setupCards",
+            "removal"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "computer"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "set_size",
+          "type": "string"
+        },
+        "appliesAt": {
+          "const": "next_start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "appliesAt"
+      ],
+      "type": "object"
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "restart",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "restart",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "busy",
+                "not_running",
+                "not_offered",
+                "unresolved",
+                "at_capacity"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "stop_without_saving",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "stop_without_saving",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "busy",
+                "not_running",
+                "not_offered",
+                "unresolved",
+                "at_capacity"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_out",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_out",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "busy",
+                "not_running",
+                "not_offered",
+                "unresolved",
+                "at_capacity"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "record_revocation",
+          "type": "string"
+        },
+        "recorded": {
+          "const": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "recorded"
+      ],
+      "type": "object"
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "resolve_removal",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "resolve_removal",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "busy",
+                "not_running",
+                "not_offered",
+                "unresolved",
+                "at_capacity"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  ],
+  "title": "PagesResult"
+}

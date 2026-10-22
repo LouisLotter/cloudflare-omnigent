@@ -1,0 +1,23 @@
+{
+  "type": "report",
+  "protocolVersion": 1,
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 7,
+  "operationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+  "report": {
+    "seq": 12,
+    "host": {
+      "state": "zombie",
+      "startAttempt": 3,
+      "restarts": 0
+    },
+    "runnerProcesses": 2,
+    "restore": "confirmed",
+    "capture": "idle",
+    "credentialsPending": [],
+    "logins": {
+      "claude": "signed_in",
+      "codex": "unknown"
+    }
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "state",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "set_size",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "size": {
+          "enum": [
+            "lite",
+            "basic",
+            "standard-1",
+            "standard-2",
+            "standard-3",
+            "standard-4"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "size"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "restart",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "stop_without_saving",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "sign_out",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "record_revocation",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "resolve_removal",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "PagesCall"
+}

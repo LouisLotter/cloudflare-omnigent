@@ -1,0 +1,11 @@
+{
+  "type": "restore_workspace",
+  "job": {
+    "kind": "restore",
+    "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+    "state": "done",
+    "treeDigest": "aef95ad829ee7eabbebfbac857a66fc193121df6476b18400a434fb55fd69fbb",
+    "entries": 7,
+    "stripped": 0
+  }
+}

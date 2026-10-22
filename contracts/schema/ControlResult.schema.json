@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": {},
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "method": {
+          "const": "register_computer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "computers": {
+          "items": {
+            "additionalProperties": {},
+            "properties": {
+              "computerId": {
+                "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+                "type": "string"
+              },
+              "name": {
+                "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "computerId",
+              "name"
+            ],
+            "type": "object"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        },
+        "method": {
+          "const": "list_computers",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "computers"
+      ],
+      "type": "object"
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "granted": {
+              "const": true,
+              "type": "boolean"
+            },
+            "method": {
+              "const": "reserve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "granted"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "awake": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "granted": {
+              "const": false,
+              "type": "boolean"
+            },
+            "limit": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "const": "reserve",
+              "type": "string"
+            },
+            "reason": {
+              "const": "at_capacity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "method",
+            "granted",
+            "reason",
+            "awake",
+            "limit"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "method": {
+          "const": "release",
+          "type": "string"
+        },
+        "released": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "method",
+        "released"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "forgotten": {
+          "type": "boolean"
+        },
+        "method": {
+          "const": "forget_computer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "forgotten"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "maxAwakeComputers": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxInstanceSize": {
+          "enum": [
+            "lite",
+            "basic",
+            "standard-1",
+            "standard-2",
+            "standard-3",
+            "standard-4"
+          ],
+          "type": "string"
+        },
+        "method": {
+          "const": "limits",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "maxAwakeComputers",
+        "maxInstanceSize"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "ControlResult"
+}

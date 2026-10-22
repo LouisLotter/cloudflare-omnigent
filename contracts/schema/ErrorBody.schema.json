@@ -15,7 +15,9 @@
             "stale_generation",
             "unsupported_version",
             "unavailable",
-            "internal"
+            "internal",
+            "gone",
+            "at_capacity"
           ],
           "type": "string"
         },
