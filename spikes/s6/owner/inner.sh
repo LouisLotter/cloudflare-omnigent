@@ -5,9 +5,11 @@
 # timestamps only. No CLI output is passed through, and stderr is discarded.
 #
 #   inner.sh start-generation | audit <label> | audit-json <label> | copies <label> | lifetimes <label>
+#          | login-values <label>
 #          | capture <credential|workspace> | restore | watch-start | watch-stop
 #          | claude-status | codex-status | signed-out-check
 #          | claude-ask | codex-ask | claude-force-refresh | codex-force-refresh
+#          | claude-remember | codex-remember | claude-resume | codex-resume
 #          | claude-logout | codex-logout | leak-check [label]
 # Exit status: 0 when the step did what it should; non-zero otherwise.
 set -uo pipefail
@@ -36,6 +38,20 @@ codex_logged_in() {
   s=$(timeout 60 codex login status 2>&1 | grep -o "Logged in using [A-Za-z]*\|Not logged in" | head -1)
   case "$s" in "Logged in"*) echo true ;; "Not logged in") echo false ;; *) echo unknown ;; esac
 }
+# VD-09 (S6 follow-up): computer A opens one conversation per CLI around a random code word;
+# computer B, restored from A's workspace checkpoint, resumes each and must answer with the word.
+# The word and the session ids live in the workspace ("work" is a workspace checkpoint root), so
+# B finds them only if the workspace restore brought them back. The word is not a secret.
+RESUME_DIR="$HOME/work/s6-resume"
+RESUME_QUESTION="What is the code word I asked you to remember earlier in this conversation? Reply with the code word only."
+claude_sessions() { find "$HOME/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' 2>/dev/null | wc -l; }
+codex_rollouts() { find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | wc -l; }
+lines_of() { [ -f "$1" ] && wc -l < "$1" || echo 0; }
+resume_report() { # name exit restored replied grew new_files; exit status: resumed and answered
+  echo "{\"${1}_resume_exit\": $2, \"conversation_restored\": $3, \"replied_with_code_word\": $4, \"same_conversation_grew\": $5, \"new_conversation_files\": $6}" | tee -a "$OUT/requests.jsonl"
+  [ "$2" = 0 ] && [ "$3" = true ] && [ "$4" = true ]
+}
+
 ask() { # $1 name; rest: command. Prints exit code and whether the reply contained OK.
   local name=$1; shift
   "$@" > /tmp/s6-ask.out 2>&1
@@ -72,6 +88,11 @@ EOF
     ;;
   copies)
     python3 -I "$S6/credsync/find_copies.py" --home "$HOME" "${CRED_FILES[@]}" | tee "$OUT/copies-$(slug "$2").json" ;;
+  login-values)
+    # DC-45: for each file holding a login value, which login file key it comes from, its class
+    # and where it sits; never the value (credsync/login_values.py).
+    python3 -I "$S6/credsync/login_values.py" --home "$HOME" "${CRED_FILES[@]}" | tee "$OUT/login-values-$(slug "$2").json"
+    [ "${PIPESTATUS[0]}" = 0 ] ;;
   lifetimes)
     # Timestamps only: Claude's expiresAt, and the exp/iat claims of Codex's access token.
     python3 -I - <<'EOF' | tee "$OUT/lifetimes-$(slug "$2").json"
@@ -135,6 +156,60 @@ EOF
   codex-ask)
     if [ "$FAKE" = 1 ]; then ask codex bash -c 'codex use && echo OK'; exit; fi
     ask codex timeout 300 codex exec --skip-git-repo-check "Reply with the single word OK." ;;
+  claude-remember)
+    mkdir -p "$RESUME_DIR"
+    [ -s "$RESUME_DIR/word" ] || python3 -I -c 'import secrets; print("S6-" + secrets.token_hex(3).upper())' > "$RESUME_DIR/word"
+    python3 -I -c 'import uuid; print(uuid.uuid4())' > "$RESUME_DIR/claude-session-id"
+    word=$(cat "$RESUME_DIR/word"); id=$(cat "$RESUME_DIR/claude-session-id")
+    if [ "$FAKE" = 1 ]; then
+      mkdir -p "$HOME/.claude/projects/-root" && echo '{"fake": "conversation"}' > "$HOME/.claude/projects/-root/$id.jsonl"
+      ask claude bash -c 'claude use && echo OK'; exit
+    fi
+    ask claude timeout 180 claude -p --session-id "$id" "Remember this code word for later in this conversation: $word. For now, reply with the single word OK." ;;
+  codex-remember)
+    mkdir -p "$RESUME_DIR"
+    [ -s "$RESUME_DIR/word" ] || python3 -I -c 'import secrets; print("S6-" + secrets.token_hex(3).upper())' > "$RESUME_DIR/word"
+    word=$(cat "$RESUME_DIR/word")
+    before=$(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | sort)
+    if [ "$FAKE" = 1 ]; then
+      d="$HOME/.codex/sessions/2026/01/01"; mkdir -p "$d"
+      echo '{"fake": "rollout"}' > "$d/rollout-2026-01-01T00-00-00-$(python3 -I -c 'import uuid; print(uuid.uuid4())').jsonl"
+      ask codex bash -c 'codex use && echo OK'; rc=$?
+    else
+      ask codex timeout 300 codex exec --skip-git-repo-check "Remember this code word for later in this conversation: $word. For now, reply with the single word OK."; rc=$?
+    fi
+    # The new rollout's thread id, for B: rollout-<time>-<thread uuid>.jsonl.
+    new=$(comm -13 <(echo "$before") <(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' 2>/dev/null | sort) | head -1)
+    basename "$new" .jsonl | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' > "$RESUME_DIR/codex-session-id"
+    [ "$rc" = 0 ] && [ -s "$RESUME_DIR/codex-session-id" ] ;;
+  claude-resume)
+    word=$(cat "$RESUME_DIR/word" 2>/dev/null); id=$(cat "$RESUME_DIR/claude-session-id" 2>/dev/null)
+    f=$( [ -n "$id" ] && find "$HOME/.claude/projects" -name "$id.jsonl" 2>/dev/null | head -1)
+    restored=false; [ -n "$word" ] && [ -n "$f" ] && restored=true
+    n0=$(claude_sessions); l0=$(lines_of "$f")
+    if [ "$FAKE" = 1 ]; then
+      { claude use > /dev/null 2>&1 && [ "$restored" = true ] && echo "$word" && echo '{"fake": "resumed"}' >> "$f"; } > /tmp/s6-ask.out 2>&1; rc=$?
+    else
+      timeout 180 claude -p --resume "$id" "$RESUME_QUESTION" > /tmp/s6-ask.out 2>&1; rc=$?
+    fi
+    replied=false; [ -n "$word" ] && grep -qF "$word" /tmp/s6-ask.out && replied=true
+    rm -f /tmp/s6-ask.out
+    grew=false; [ "$(lines_of "$f")" -gt "$l0" ] && grew=true
+    resume_report claude "$rc" "$restored" "$replied" "$grew" $(( $(claude_sessions) - n0 )) ;;
+  codex-resume)
+    word=$(cat "$RESUME_DIR/word" 2>/dev/null); id=$(cat "$RESUME_DIR/codex-session-id" 2>/dev/null)
+    f=$( [ -n "$id" ] && find "$HOME/.codex/sessions" -name "rollout-*-$id.jsonl" 2>/dev/null | head -1)
+    restored=false; [ -n "$word" ] && [ -n "$f" ] && restored=true
+    n0=$(codex_rollouts); l0=$(lines_of "$f")
+    if [ "$FAKE" = 1 ]; then
+      { codex use > /dev/null 2>&1 && [ "$restored" = true ] && echo "$word" && echo '{"fake": "resumed"}' >> "$f"; } > /tmp/s6-ask.out 2>&1; rc=$?
+    else
+      timeout 300 codex exec resume --skip-git-repo-check "$id" "$RESUME_QUESTION" > /tmp/s6-ask.out 2>&1; rc=$?
+    fi
+    replied=false; [ -n "$word" ] && grep -qF "$word" /tmp/s6-ask.out && replied=true
+    rm -f /tmp/s6-ask.out
+    grew=false; [ "$(lines_of "$f")" -gt "$l0" ] && grew=true
+    resume_report codex "$rc" "$restored" "$replied" "$grew" $(( $(codex_rollouts) - n0 )) ;;
   claude-force-refresh)
     if [ "$FAKE" = 1 ]; then claude refresh > /dev/null 2>&1; rc=$?; echo "{\"claude_refresh_exit\": $rc}"; exit $rc; fi
     # Set only the login's expiry timestamp in the past (atomic replace, mode 0600, nothing
