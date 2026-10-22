@@ -7,7 +7,14 @@
 //   pnpm exec vitest run --config spikes/s3/staging/vitest.config.mjs
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { PLANS, READY_LIMIT_MS, startCampaign, stopCampaign, tick } from "./campaign.js";
+import {
+  isTransient,
+  PLANS,
+  READY_LIMIT_MS,
+  startCampaign,
+  stopCampaign,
+  tick,
+} from "./campaign.js";
 
 let clock;
 let calls;
@@ -440,6 +447,66 @@ describe("the full plan, against fakes", () => {
     expect(result("calibrate").rows.map((r) => r.hold_s)).toEqual([40, 60]);
     // Every transfer had a deadline within the alarm's budget.
     expect(logs.filter((l) => l.event === "step_error")).toEqual([]);
+  });
+});
+
+describe("transient connection drops and the AR-25 rerun", () => {
+  it("a dropped connection during a turn resumes the step; the repeated unit is marked", async () => {
+    await startCampaign(ports(), "quick");
+    let dropped = 0;
+    const sup = fakeSupervisor.current;
+    const post = sup.post;
+    sup.post = async (path, body) => {
+      if (path === "/turn" && body.cli === "claude" && body.n === 1 && dropped === 0) {
+        dropped += 1;
+        await post(path, body); // the container ran the turn; the reply was lost
+        throw new Error("Network connection lost.");
+      }
+      return post(path, body);
+    };
+    await runAlarms();
+    expect(logs.some((l) => l.event === "step_transient_error" && l.step === "turns")).toBe(true);
+    expect(campaign().steps.turns.ok).toBe(true);
+    expect(result("turns").summary.repeated_turns).toEqual([3]);
+    expect(map.get(`layers:${campaign().id}`)).toHaveLength(4);
+    expect(campaign().steps.restore.ok).toBe(true);
+  });
+
+  it("a connection that keeps dropping fails the step but keeps what it gathered", async () => {
+    await startCampaign(ports(), "quick");
+    const sup = fakeSupervisor.current;
+    const post = sup.post;
+    sup.post = async (path, body) => {
+      if (path === "/turn" && body.n === 1) throw new Error("Network connection lost.");
+      return post(path, body);
+    };
+    await runAlarms();
+    expect(campaign().steps.turns.ok).toBe(false);
+    expect(
+      logs.filter((l) => l.event === "step_transient_error" && l.step === "turns"),
+    ).toHaveLength(3);
+    const partial = result("turns").partial;
+    expect(partial.rows.map((r) => r.n)).toEqual([0, 1, 2]);
+    expect(partial.records).toHaveLength(3);
+  });
+
+  it("isTransient sees the message through causes, and nothing else", () => {
+    expect(isTransient(new Error("Network connection lost."))).toBe(true);
+    expect(
+      isTransient(new Error("wrapped", { cause: new Error("Network connection lost.") })),
+    ).toBe(true);
+    expect(isTransient(new Error("supervisor /turn: 500 boom"))).toBe(false);
+  });
+
+  it("the ar25 plan runs the conversations, 20 turns and the restore", async () => {
+    await startCampaign(ports(), "ar25");
+    await runAlarms(2000);
+    expect(campaign().status).toBe("done");
+    expect(Object.keys(campaign().steps)).toEqual(["setup", "turns", "restore"]);
+    expect(Object.values(campaign().steps).every((st) => st.ok)).toBe(true);
+    expect(map.get(`layers:${campaign().id}`)).toHaveLength(21);
+    expect(result("turns").summary.claude.turns).toBe(10);
+    expect(result("turns").summary.codex.turns).toBe(10);
   });
 });
 

@@ -9,7 +9,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { DirectoryBackup } from "@cloudflare/sandbox";
 import { PLANS, startCampaign, stopCampaign, tick } from "./campaign.js";
-import { handle } from "./controls.js";
+import {
+  handle,
+  INTENT_TTL_MS,
+  intentMatches,
+  newIntentToken,
+  pruneIntents,
+  sha256Hex,
+} from "./controls.js";
 import { gatewayFor, noteHold, noteWaited } from "./gateway.js";
 
 // The SDK's gateway for control calls, and the holding gateway for the container's transfers;
@@ -32,17 +39,11 @@ function log(event, data = {}) {
   console.log(JSON.stringify({ s3: event, wt: Date.now(), ...data }));
 }
 
-function randomToken() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 export class Bench extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
-    // The token is in memory only: a new instance gets a new one. The manual arming is stored.
-    this.state = { token: randomToken(), armedUntil: 0 };
+    // The manual arming is stored; request-intent tokens are stored as hashes (ports.intents).
+    this.state = { armedUntil: 0 };
     this.holds = new Map();
     this.exited = null;
     ctx.blockConcurrencyWhile(async () => {
@@ -214,6 +215,18 @@ export class Bench extends DurableObject {
         },
       },
       saveArm: (armedUntil) => storage.put("armedUntil", armedUntil),
+      intents: {
+        issue: async () => {
+          const now = Date.now();
+          const token = newIntentToken();
+          const kept = pruneIntents((await storage.get("intents")) ?? [], now);
+          kept.push({ hash: await sha256Hex(token), expiresAt: now + INTENT_TTL_MS });
+          await storage.put("intents", kept);
+          return token;
+        },
+        check: async (token) =>
+          intentMatches(token, (await storage.get("intents")) ?? [], Date.now()),
+      },
     };
   }
 

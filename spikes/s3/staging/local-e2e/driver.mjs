@@ -165,11 +165,17 @@ bench.holdRecord = (key) => {
   }
 };
 const origin = "http://s3-e2e.local.test";
-const start = await bench.fetch(
+// As the owner does: load the page, then press the button with the page's token. A second,
+// new Bench instance answers the press, as after an eviction: the token's hash is stored.
+const page = await (await bench.fetch(new Request(`${origin}/`))).text();
+const token = page.match(/name="intent" value="([0-9a-f]{64})"/)[1];
+const fresh = new Bench(ctx, env);
+fresh.holdRecord = bench.holdRecord;
+const start = await fresh.fetch(
   new Request(`${origin}/campaign`, {
     method: "POST",
     headers: { Origin: origin, "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ intent: bench.state.token, plan: PLAN }).toString(),
+    body: new URLSearchParams({ intent: token, plan: PLAN }).toString(),
   }),
 );
 if (start.status !== 303)

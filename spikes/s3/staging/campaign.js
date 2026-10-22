@@ -21,6 +21,25 @@ export const TICK_BUDGET_MS = 12 * 60_000;
 export const TRANSFER_MS = 5 * 60_000;
 export const READY_LIMIT_MS = 15 * 60_000;
 export const NOT_READY_RETRY_MS = 10_000;
+export const TRANSIENT_RETRY_MS = 5_000;
+export const MAX_TRANSIENTS = 3;
+
+/** A platform blip, not a failure of the step: Cloudflare's "Network connection lost." */
+export function isTransient(error) {
+  for (let e = error, depth = 0; e && depth < 5; e = e.cause, depth++) {
+    if (/Network connection lost/i.test(String(e?.message ?? e))) return true;
+  }
+  return false;
+}
+
+/** The rows and records a step had gathered when it failed, for its result file. */
+function partialOf(sub) {
+  const partial = {};
+  for (const key of ["rows", "records", "chain", "full", "result"]) {
+    if (sub?.[key] !== undefined && sub[key] !== null) partial[key] = sub[key];
+  }
+  return Object.keys(partial).length ? partial : null;
+}
 const LAYER_DIR = "/restore-staging/layer";
 
 /** The step lists. `full` is the staging run; `quick` rehearses every step in minutes. */
@@ -84,6 +103,18 @@ export const PLANS = {
     // A case proves "R2 blocked for more than 90 s" only if a part really waited that long.
     r2MinHoldMs: 90_000,
     holds: [40, 60],
+  },
+  // The AR-25 steps alone, for a rerun: Omnigent's conversations, the turns, the restore.
+  ar25: {
+    armMs: 3_600_000,
+    steps: ["setup", "turns", "restore"],
+    bench: {},
+    turnsProfile: "realistic",
+    largeProfile: "large",
+    deltas: 20,
+    r2: [],
+    r2MinHoldMs: 90_000,
+    holds: [],
   },
   quick: {
     armMs: 3_600_000,
@@ -326,8 +357,23 @@ export async function tick(ports) {
           });
     }
   } catch (error) {
-    outcome = { done: true, result: { error: errorText(error) } };
-    log("step_error", { error: errorText(error) });
+    campaign.transients = campaign.transients ?? {};
+    const seen = campaign.transients[step] ?? 0;
+    if (isTransient(error) && seen < MAX_TRANSIENTS) {
+      // A dropped connection between the Durable Object and the container ("Network connection
+      // lost."): the step resumes from its stored progress on the next alarm.
+      campaign.transients[step] = seen + 1;
+      log("step_transient_error", { error: errorText(error), retry: seen + 1 });
+      outcome = { done: false, delayMs: TRANSIENT_RETRY_MS };
+    } else {
+      // What the step had gathered is kept with the error.
+      const partial = partialOf(campaign.sub);
+      outcome = {
+        done: true,
+        result: { error: errorText(error), ...(partial ? { partial } : {}) },
+      };
+      log("step_error", { error: errorText(error) });
+    }
   }
   if (outcome.done) {
     await recordStep(ports, campaign, step, outcome, log);
@@ -462,7 +508,12 @@ const STEPS = {
     // Every layer is done (a reset after the last one was stored): summarise, no new turn.
     if (sub.n > plan.deltas) return summarizeTurns(sub);
     const n = sub.n;
-    const row = { n };
+    // A unit repeated after a transient error may have run its turn already, so its delta
+    // can hold two turns' changes; the row says so.
+    sub.attempts = sub.attemptOf === n ? sub.attempts + 1 : 1;
+    sub.attemptOf = n;
+    await save();
+    const row = { n, attempt: sub.attempts };
     if (n > 0) {
       row.cli = n % 2 === 1 ? "claude" : "codex";
       row.turn = await ports.sup.post("/turn", {
@@ -851,6 +902,7 @@ function summarizeTurns(sub) {
     codex: sumUp(deltas.filter((r) => r.cli === "codex")),
     deltas_stored_bytes: cumulative,
     rule_new_base_after_delta: rebaseAfter,
+    repeated_turns: deltas.filter((r) => (r.attempt ?? 1) > 1).map((r) => r.n),
   };
   return { done: true, result: { rows: sub.rows, summary }, summary };
 }

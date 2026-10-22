@@ -2,7 +2,16 @@
 // have zero effect: no container start, no forward, no arming.
 //   pnpm exec vitest run --config spikes/s3/staging/vitest.config.mjs
 import { beforeEach, describe, expect, it } from "vitest";
-import { ARM_MS, handle, sameToken } from "./controls.js";
+import {
+  ARM_MS,
+  handle,
+  INTENT_TTL_MS,
+  intentMatches,
+  MAX_INTENTS,
+  pruneIntents,
+  sameToken,
+  sha256Hex,
+} from "./controls.js";
 
 const ORIGIN = "https://cfo-stg-s3-capture.example.test";
 const TOKEN = "a".repeat(64);
@@ -13,10 +22,23 @@ let clock;
 let running;
 let campaignStatus;
 let lastBody;
+// Stands in for the Durable Object's storage of intent hashes (it survives eviction).
+let intents;
+let issued;
 
 function ports() {
   return {
     now: () => clock,
+    intents: {
+      issue: async () => {
+        const token = `t${issued.length}`.padEnd(64, "0");
+        issued.push(token);
+        intents = pruneIntents(intents, clock);
+        intents.push({ hash: await sha256Hex(token), expiresAt: clock + INTENT_TTL_MS });
+        return token;
+      },
+      check: (token) => intentMatches(token, intents, clock),
+    },
     saveArm: async (armedUntil) => {
       calls.push(`saveArm ${armedUntil}`);
     },
@@ -73,11 +95,14 @@ function noEffects() {
   expect(state.armedUntil).toBe(0);
 }
 
-beforeEach(() => {
-  state = { token: TOKEN, armedUntil: 0 };
+beforeEach(async () => {
+  state = { armedUntil: 0 };
+  issued = [];
   calls = [];
   clock = 1_000_000;
   running = false;
+  // A page served earlier gave out TOKEN.
+  intents = [{ hash: await sha256Hex(TOKEN), expiresAt: clock + INTENT_TTL_MS }];
   campaignStatus = null;
 });
 
@@ -248,6 +273,49 @@ describe("valid same-origin controls", () => {
     const res = await handle(post("/campaign", { body: { plan: "forever" } }), state, ports());
     expect(res.status).toBe(400);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("request-intent tokens kept as hashes", () => {
+  it("a page's token works after the Durable Object lost its memory", async () => {
+    const page = await handle(get("/"), state, ports());
+    const token = (await page.text()).match(/name="intent" value="([0-9a-z]{64})"/)[1];
+    expect(token).toBe(issued.at(-1));
+    expect(JSON.stringify(intents)).not.toContain(token); // only its hash is stored
+    state = { armedUntil: 0 }; // a new instance: nothing in memory
+    const res = await handle(post("/arm", { token }), state, ports());
+    expect(res.status).toBe(303);
+  });
+
+  it("an expired token is refused", async () => {
+    clock += INTENT_TTL_MS + 1;
+    const res = await handle(post("/arm"), state, ports());
+    expect(res.status).toBe(403);
+    expect(state.armedUntil).toBe(0);
+  });
+
+  it("HEAD and /results issue no token", async () => {
+    await handle(new Request(`${ORIGIN}/`, { method: "HEAD" }), state, ports());
+    await handle(get("/results"), state, ports());
+    expect(issued).toEqual([]);
+  });
+
+  it("keeps at most MAX_INTENTS unexpired hashes", async () => {
+    for (let i = 0; i < MAX_INTENTS + 5; i++) await handle(get("/"), state, ports());
+    expect(intents.length).toBe(MAX_INTENTS);
+    const oldest = issued[0];
+    const res = await handle(post("/arm", { token: oldest }), state, ports());
+    expect(res.status).toBe(403);
+    const newest = issued.at(-1);
+    expect((await handle(post("/arm", { token: newest }), state, ports())).status).toBe(303);
+  });
+
+  it("offers the AR-25 rerun", async () => {
+    const page = await (await handle(get("/"), state, ports())).text();
+    expect(page).toContain('name="plan" value="ar25"');
+    const res = await handle(post("/campaign", { body: { plan: "ar25" } }), state, ports());
+    expect(res.status).toBe(303);
+    expect(calls).toEqual(["campaign start ar25"]);
   });
 });
 
