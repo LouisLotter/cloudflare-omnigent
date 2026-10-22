@@ -21,6 +21,12 @@ import type { ControlRpc } from "../../src/shared/rpc.ts";
 
 const base32 = "0123456789abcdefghjkmnpqrstvwxyz";
 
+/** A mutating call's operation ID; read-only calls have none. */
+function operationIdOf(call: object): string | undefined {
+  const id = (call as { readonly operationId?: unknown }).operationId;
+  return typeof id === "string" ? id : undefined;
+}
+
 export class FakeControl implements ControlRpc {
   maxAwakeComputers = 2;
   maxInstanceSize: InstanceSize = "standard-4";
@@ -30,6 +36,9 @@ export class FakeControl implements ControlRpc {
   readonly computers = new Map<string, ComputerId>();
   /** `${computerId}/${generation}` slots. */
   readonly slots = new Set<string>();
+  /** Outcomes of mutating calls, by operation ID: a repeat returns the recorded answer, even
+   * after capacity frees (a refused reservation replayed must not take a slot nobody starts). */
+  readonly #outcomes = new Map<string, ControlResult>();
   #next = 0;
 
   async control(raw: ControlCall): Promise<ControlResult> {
@@ -41,6 +50,18 @@ export class FakeControl implements ControlRpc {
     }
     if (this.unavailable) throw platformError("unavailable", "ControlDO is unavailable");
     this.calls.push(call);
+    const operationId = operationIdOf(call);
+    const recorded = operationId === undefined ? undefined : this.#outcomes.get(operationId);
+    if (recorded && recorded.method !== call.method) {
+      throw platformError("conflict", "operation ID reused for another call");
+    }
+    if (recorded) return recorded;
+    const result = this.#answer(call);
+    if (operationId !== undefined) this.#outcomes.set(operationId, result);
+    return result;
+  }
+
+  #answer(call: ControlCall): ControlResult {
     switch (call.method) {
       case "register_computer": {
         let computerId = this.computers.get(call.name);

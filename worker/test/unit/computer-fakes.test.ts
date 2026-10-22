@@ -169,6 +169,9 @@ describe("FakeComputerContainer", () => {
 describe("FakeControl", () => {
   const rpc = { interfaceVersion: CONTROL_INTERFACE_VERSION };
   const op = "op_01hzy4a7b8c9d0e1f2g3h4j5k6";
+  /** A fresh operation ID for each new call. */
+  let next = 0;
+  const fresh = () => `op_01hzy4a7b8c9d0e1f2g3h4j5${(next++).toString().padStart(2, "0")}`;
 
   it("registers a computer once per name, and lists and forgets it", async () => {
     const control = new FakeControl();
@@ -178,10 +181,11 @@ describe("FakeControl", () => {
       operationId: op,
       name: "managed-7f3c2a9e",
     });
+    // A new operation for the same name, after a lost reply: the same computer.
     const b = await control.control({
       method: "register_computer",
       ...rpc,
-      operationId: op,
+      operationId: fresh(),
       name: "managed-7f3c2a9e",
     });
     expect(a).toEqual(b);
@@ -192,7 +196,7 @@ describe("FakeControl", () => {
       await control.control({
         method: "forget_computer",
         ...rpc,
-        operationId: op,
+        operationId: fresh(),
         computerId: a.computerId,
       }),
     ).toEqual({
@@ -205,7 +209,7 @@ describe("FakeControl", () => {
     const control = new FakeControl();
     control.maxAwakeComputers = 1;
     const reserve = (computerId: string, generation: number) =>
-      control.control({ method: "reserve", ...rpc, operationId: op, computerId, generation });
+      control.control({ method: "reserve", ...rpc, operationId: fresh(), computerId, generation });
     expect(await reserve(CMP, 1)).toEqual({ method: "reserve", granted: true });
     expect(await reserve(CMP, 1)).toEqual({ method: "reserve", granted: true });
     expect(await reserve("cmp_01hzy3m8k6q4t2v9w7x5r0s1n4", 1)).toEqual({
@@ -219,7 +223,7 @@ describe("FakeControl", () => {
       await control.control({
         method: "release",
         ...rpc,
-        operationId: op,
+        operationId: fresh(),
         computerId: CMP,
         generation: 1,
       }),
@@ -227,11 +231,54 @@ describe("FakeControl", () => {
       method: "release",
       released: true,
     });
+    // An operation ID reused for another call is refused.
+    await control.control({
+      method: "reserve",
+      ...rpc,
+      operationId: op,
+      computerId: CMP,
+      generation: 2,
+    });
+    expect(
+      await codeOf(
+        control.control({ method: "forget_computer", ...rpc, operationId: op, computerId: CMP }),
+      ),
+    ).toBe("conflict");
     expect(await control.control({ method: "limits", ...rpc })).toEqual({
       method: "limits",
       maxAwakeComputers: 1,
       maxInstanceSize: "standard-4",
     });
+  });
+
+  it("replays a recorded refusal, even after capacity frees", async () => {
+    const control = new FakeControl();
+    control.maxAwakeComputers = 1;
+    await control.control({
+      method: "reserve",
+      ...rpc,
+      operationId: op,
+      computerId: CMP,
+      generation: 1,
+    });
+    const other = "op_01hzy4a7b8c9d0e1f2g3h4j5k7";
+    const second = {
+      method: "reserve" as const,
+      ...rpc,
+      operationId: other,
+      computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4",
+      generation: 1,
+    };
+    expect(await control.control(second)).toMatchObject({ granted: false });
+    await control.control({
+      method: "release",
+      ...rpc,
+      operationId: "op_01hzy4a7b8c9d0e1f2g3h4j5k8",
+      computerId: CMP,
+      generation: 1,
+    });
+    expect(await control.control(second)).toMatchObject({ granted: false });
+    expect(control.slots.size).toBe(0);
   });
 
   it("refuses a newer interface version, a malformed call, and fails when unavailable", async () => {
@@ -338,6 +385,25 @@ describe("FakeWorkspace", () => {
     expect(await workspace.launcher(again)).toEqual({ operation: "suspend", outcome: "stopped" });
   });
 
+  it("resolves every sleep operation that joined, and replays it after the computer woke again", async () => {
+    const workspace = new FakeWorkspace(CMP);
+    await workspace.launcher(call({ operation: "resume" }));
+    workspace.fire("container_running");
+    workspace.fire("restore_confirmed");
+    const a = call({ operation: "suspend" });
+    const b = call({ operation: "suspend" });
+    await workspace.launcher(a);
+    expect(await workspace.launcher(b)).toEqual({ operation: "suspend", outcome: "in_progress" });
+    workspace.fire("stop_prepared");
+    workspace.fire("container_stopped");
+    await workspace.launcher(call({ operation: "resume" }));
+    workspace.fire("container_running");
+    workspace.fire("restore_confirmed");
+    // Replayed after a new wake, B reports its recorded outcome and starts no second sleep.
+    expect(await workspace.launcher(b)).toEqual({ operation: "suspend", outcome: "stopped" });
+    expect(workspace.context.stopPrep).toBeNull();
+  });
+
   it("refuses at capacity, a start for another attempt, and another host on the computer", async () => {
     const workspace = new FakeWorkspace(CMP);
     workspace.inputs.add("at_capacity");
@@ -408,6 +474,12 @@ describe("FakeWorkspace", () => {
         props,
         message: { type: "credential_checkpoint", ...envelope, bundle } as never,
       });
+    // No credential checkpoint before the generation's restore is confirmed (R-19).
+    expect(await codeOf(publish())).toBe("conflict");
+    workspace.fire("container_running");
+    expect(await codeOf(publish())).toBe("conflict");
+    expect(workspace.credentialPointer).toBeNull();
+    workspace.fire("restore_confirmed");
     expect(await publish()).toMatchObject({ outcome: "published" });
     expect(await publish()).toEqual({
       type: "credential_checkpoint",
@@ -431,18 +503,19 @@ describe("FakeWorkspace", () => {
       },
     );
     await workspace.launcher(call({ operation: "terminate" }));
+    const first = "op_01hzy4a7b8c9d0e1f2g3h4j5k7";
+    const second = "op_01hzy4a7b8c9d0e1f2g3h4j5k8";
     expect(
-      await workspace.pages({ action: "resolve_removal", interfaceVersion, operationId: op }),
-    ).toMatchObject({
-      outcome: "refused",
-      reason: "unresolved",
-    });
+      await workspace.pages({ action: "resolve_removal", interfaceVersion, operationId: first }),
+    ).toMatchObject({ outcome: "refused", reason: "unresolved" });
     workspace.inputs.add("sign_out_settled");
     expect(
-      await workspace.pages({ action: "resolve_removal", interfaceVersion, operationId: op }),
-    ).toMatchObject({
-      outcome: "accepted",
-    });
+      await workspace.pages({ action: "resolve_removal", interfaceVersion, operationId: second }),
+    ).toMatchObject({ outcome: "accepted" });
+    // A repeated page mutation returns its recorded outcome.
+    expect(
+      await workspace.pages({ action: "resolve_removal", interfaceVersion, operationId: first }),
+    ).toMatchObject({ outcome: "refused", reason: "unresolved" });
     expect(
       await codeOf(workspace.pages({ action: "state", interfaceVersion: interfaceVersion + 1 })),
     ).toBe("unsupported_version");

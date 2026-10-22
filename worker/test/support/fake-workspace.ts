@@ -19,6 +19,7 @@ import {
   ComputerCall,
   type ComputerId,
   type ComputerPageState,
+  type CredentialBundle,
   containerMayRun,
   credentialIsNewer,
   type Effect,
@@ -36,6 +37,7 @@ import {
   type PagesResult,
   type Reply,
   type ReservationState,
+  ruleFor,
   SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS,
   SUPPORTED_SUPERVISOR_PROTOCOL_VERSIONS,
   type SupervisorReply,
@@ -56,6 +58,12 @@ function checkVersion(interfaceVersion: number): void {
   }
 }
 
+/** A mutating call's operation ID; read-only calls have none. */
+function operationIdOf(call: object): string | undefined {
+  const id = (call as { readonly operationId?: unknown }).operationId;
+  return typeof id === "string" ? id : undefined;
+}
+
 export class FakeWorkspace implements WorkspaceRpc {
   context: MachineContext = INITIAL_CONTEXT;
   /** Outside facts the next events see. */
@@ -68,13 +76,20 @@ export class FakeWorkspace implements WorkspaceRpc {
   /** "Not saved": admission closed by WorkspaceDO (design, Admission). */
   notSaved = false;
   reservationState: ReservationState | null = null;
-  credentialPointer: { generation: number; order: number } | null = null;
+  credentialPointer: CredentialBundle | null = null;
   readonly launcherCalls: LauncherRequest[] = [];
   readonly computerCalls: ComputerCall[] = [];
   readonly pageCalls: PagesCall[] = [];
   readonly effects: Effect[] = [];
-  readonly #outcomes = new Map<string, Recorded>();
-  #sleepOperation: string | null = null;
+  /** Outcomes by operation ID, with the operation that recorded them: an ID reused for another
+   * operation is refused with `conflict`. */
+  readonly #outcomes = new Map<
+    string,
+    { readonly operation: string; readonly outcome: Recorded }
+  >();
+  readonly #pageOutcomes = new Map<string, PagesResult>();
+  /** Every operation waiting on the sleep in progress: they share its outcome. */
+  readonly #sleepOperations = new Set<string>();
 
   readonly computerId: ComputerId;
 
@@ -89,24 +104,27 @@ export class FakeWorkspace implements WorkspaceRpc {
     this.context = context;
     this.effects.push(...effects);
     if (effects.includes("start_container")) this.generation += 1;
-    if (this.#sleepOperation) {
-      if (event === "stop_preparation_failed" && before.stopPrep === "sleep") {
-        this.#record(this.#sleepOperation, {
+    if (this.#sleepOperations.size > 0) {
+      let outcome: Recorded | null = null;
+      if (
+        event === "stop_preparation_failed" &&
+        before.stopPrep !== null &&
+        context.stopPrep === null
+      ) {
+        outcome = {
           result: { operation: "suspend", outcome: "refused", reason: "checkpoint_failed" },
-        });
-        this.#sleepOperation = null;
+        };
       } else if (!containerMayRun(context.state) || context.state === "waking") {
-        this.#record(this.#sleepOperation, {
-          result: { operation: "suspend", outcome: "stopped" },
-        });
-        this.#sleepOperation = null;
+        outcome = { result: { operation: "suspend", outcome: "stopped" } };
+      }
+      if (outcome) {
+        for (const operationId of this.#sleepOperations) {
+          this.#outcomes.set(operationId, { operation: "suspend", outcome });
+        }
+        this.#sleepOperations.clear();
       }
     }
     return reply;
-  }
-
-  #record(operationId: string, outcome: Recorded): void {
-    this.#outcomes.set(operationId, outcome);
   }
 
   async launcher(raw: LauncherCall): Promise<LauncherResult> {
@@ -121,7 +139,11 @@ export class FakeWorkspace implements WorkspaceRpc {
     }
     this.launcherCalls.push(request);
     const byOperationId = LAUNCHER_OPERATIONS[request.operation].idempotency === "operation_id";
-    const recorded = byOperationId ? this.#outcomes.get(request.operationId) : undefined;
+    const entry = byOperationId ? this.#outcomes.get(request.operationId) : undefined;
+    if (entry && entry.operation !== request.operation) {
+      throw platformError("conflict", "operation ID reused for another operation");
+    }
+    const recorded = entry?.outcome;
     if (recorded) {
       if ("error" in recorded) throw platformError(recorded.error, "recorded outcome");
       return recorded.result;
@@ -139,8 +161,10 @@ export class FakeWorkspace implements WorkspaceRpc {
       outcome.result.operation === "suspend" &&
       outcome.result.outcome === "in_progress"
     );
-    if (byOperationId && settled) this.#record(request.operationId, outcome);
-    if (!settled) this.#sleepOperation ??= request.operationId;
+    if (byOperationId && settled) {
+      this.#outcomes.set(request.operationId, { operation: request.operation, outcome });
+    }
+    if (!settled) this.#sleepOperations.add(request.operationId);
     if ("error" in outcome) throw platformError(outcome.error, `${request.operation} refused`);
     return outcome.result;
   }
@@ -263,13 +287,15 @@ export class FakeWorkspace implements WorkspaceRpc {
       case "report":
         return { type: "report", appliedSeq: message.report.seq };
       case "credential_checkpoint": {
+        // The lifecycle decides first: no checkpoint before the restore is confirmed (R-19).
+        const rule = ruleFor(this.context, "credential_checkpoint", this.inputs);
+        if (!rule.effects?.includes("publish_credentials")) {
+          throw platformError("conflict", `no credential checkpoint in ${this.context.state}`);
+        }
         if (!credentialIsNewer(message.bundle, this.credentialPointer)) {
           return { type: "credential_checkpoint", outcome: "superseded", checkpointId: null };
         }
-        this.credentialPointer = {
-          generation: message.bundle.generation,
-          order: message.bundle.order,
-        };
+        this.credentialPointer = message.bundle;
         this.fire("credential_checkpoint");
         return {
           type: "credential_checkpoint",
@@ -294,6 +320,18 @@ export class FakeWorkspace implements WorkspaceRpc {
     checkVersion(parsed.data.interfaceVersion);
     const call = parsed.data;
     this.pageCalls.push(call);
+    const operationId = operationIdOf(call);
+    const recorded = operationId === undefined ? undefined : this.#pageOutcomes.get(operationId);
+    if (recorded && recorded.action !== call.action) {
+      throw platformError("conflict", "operation ID reused for another action");
+    }
+    if (recorded) return recorded;
+    const result = this.#page(call);
+    if (operationId !== undefined) this.#pageOutcomes.set(operationId, result);
+    return result;
+  }
+
+  #page(call: PagesCall): PagesResult {
     const event = {
       restart: "restart",
       stop_without_saving: "stop_without_saving",
