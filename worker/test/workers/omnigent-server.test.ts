@@ -289,6 +289,29 @@ describe("OmnigentServer: always on", () => {
     expect(fake.starts).toHaveLength(1);
   });
 
+  it("calls off a restart when a request passed on earlier is answered during the last look (Codex r2)", async () => {
+    const { stub, fake } = await runningServer();
+    fake.healthResults = Array.from({ length: 200 }, () => false);
+    const silentFrom = testServers.clock.now();
+    while (testServers.clock.now() - silentFrom < T.hungAfterMs - T.pollMs) await nextCheck(stub);
+    // The request's readiness check passes; the watchdog's two probes fail; its last look is
+    // slow and fails too, while the request, passed on before, is answered.
+    fake.healthResults = [true, false, false, { ok: false, delayMs: 400 }];
+    fake.handler = async () => {
+      await sleep(200);
+      return new Response("done");
+    };
+    const post = forward(stub, "/v1/sessions", { method: "POST", body: "{}" });
+    for (let i = 0; i < 200 && fake.forwarded().length === 0; i += 1) await sleep(5);
+    expect(fake.forwarded()).toHaveLength(1);
+    testServers.clock.advance(T.pollMs); // the deciding check: silent for the whole wait
+    const alarm = runDurableObjectAlarm(stub);
+    expect((await post).status).toBe(200);
+    expect(await alarm).toBe(true);
+    expect(fake.destroys).toEqual([]);
+    expect(events("watchdog").map((e) => e.event)).toContain("restart_called_off");
+  });
+
   it("passes no request on while the watchdog stops the server (Codex r1-1)", async () => {
     const { stub, fake } = await runningServer();
     fake.healthResults = Array.from({ length: 200 }, () => false);

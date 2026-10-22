@@ -44,7 +44,7 @@ export class FakeServerContainer implements ServerContainer {
    * Answers for the next health checks, in order (true: 200, false: 503); once used up, health
    * follows `listening`. Lets a test say exactly when the server stops or starts answering.
    */
-  healthResults: boolean[] = [];
+  healthResults: (boolean | { readonly ok: boolean; readonly delayMs: number })[] = [];
   /**
    * How long `destroy` takes, so a test can act while the watchdog stops the server. A timer, not
    * a promise the test resolves: promises do not cross workerd's request contexts.
@@ -116,7 +116,10 @@ export class FakeServerContainer implements ServerContainer {
     }
     const path = new URL(request.url).pathname;
     if (port === 8000 && path === "/health") {
-      const ok = this.healthResults.shift();
+      const next = this.healthResults.shift();
+      const ok = typeof next === "object" ? next.ok : next;
+      if (typeof next === "object")
+        await new Promise((resolve) => setTimeout(resolve, next.delayMs));
       return ok === false
         ? Response.json({ status: "unavailable" }, { status: 503 })
         : Response.json({ status: "ok" });

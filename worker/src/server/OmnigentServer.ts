@@ -326,9 +326,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       if (result.effects.some((effect) => effect.type === "destroy")) {
         // A restart decided on silence. Admit nothing from here, then take a last look: if the
         // server answered meanwhile, a request or a health check saw it, so the restart is
-        // called off and the answer recorded instead (Codex WP2.2 r1, finding 1).
+        // called off and the answer recorded instead (Codex WP2.2 r1, finding 1). Requests
+        // already passed on before this point can still be cut by the stop.
         this.#stopping = true;
-        if (this.#answeredAt >= observedFrom || (await this.#healthy(container))) {
+        const lastLook = await this.#healthy(container);
+        // Read after the last look settles: a request already passed on may have been answered
+        // during it (Codex WP2.2 r2). No await between here and the stop.
+        if (lastLook || this.#answeredAt >= observedFrom) {
           this.#stopping = false;
           await this.#apply(
             container,
