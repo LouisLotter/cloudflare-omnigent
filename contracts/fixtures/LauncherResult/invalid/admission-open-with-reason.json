@@ -1,0 +1,7 @@
+{
+  "operation": "admission",
+  "admitting": true,
+  "reason": "not_saved",
+  "status": "host_running",
+  "generation": 7
+}

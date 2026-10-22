@@ -1,0 +1,20 @@
+{
+  "type": "status",
+  "report": {
+    "seq": 12,
+    "host": {
+      "state": "running",
+      "startAttempt": 3,
+      "restarts": 0
+    },
+    "runnerProcesses": 2,
+    "restore": "confirmed",
+    "capture": "idle",
+    "credentialsPending": [],
+    "logins": {
+      "claude": "signed_in",
+      "codex": "unknown"
+    },
+    "token": "synthetic-launch-token-not-a-secret-0001"
+  }
+}

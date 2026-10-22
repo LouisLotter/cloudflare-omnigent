@@ -1,0 +1,7 @@
+{
+  "method": "reserve",
+  "granted": false,
+  "reason": "at_capacity",
+  "awake": 2,
+  "limit": 2
+}

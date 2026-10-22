@@ -1,0 +1,30 @@
+{
+  "description": "Launcher API HMAC envelope (launcher.ts). The key is the UTF-8 bytes of `key`; a synthetic value for these vectors only.",
+  "key": "synthetic-signing-key-for-test-vectors-only-0001",
+  "cases": [
+    {
+      "operation": "claim_start",
+      "keyId": "k-2026-10",
+      "timestamp": 1792407600,
+      "body": "{\"computerId\":\"cmp_01hzy3m8k6q4t2v9w7x5r0s1n3\",\"operation\":\"claim_start\",\"operationId\":\"5f0c6e2a9b4d4c1e8a7f3b2d1c0e9f8a\",\"protocolVersion\":1}",
+      "stringToSign": "cfo-launcher-v1\nclaim_start\nk-2026-10\n1792407600\nfbebd94516dd346371de1c4f2fabedf52d0647a93f80a21723e6dd0a28868589",
+      "headers": {
+        "X-Omnigent-Signing-Key-Id": "k-2026-10",
+        "X-Omnigent-Timestamp": "1792407600",
+        "X-Omnigent-Signature": "f5a4eb1975a0eed86c27538b2757a5e41a6a82a0e62d4f88ba9ccb1b20005a0e"
+      }
+    },
+    {
+      "operation": "resume",
+      "keyId": "k-2026-10",
+      "timestamp": 1792407601,
+      "body": "{\"computerId\":\"cmp_01hzy3m8k6q4t2v9w7x5r0s1n3\",\"operation\":\"resume\",\"operationId\":\"00000000000000000000000000000001\",\"protocolVersion\":1}",
+      "stringToSign": "cfo-launcher-v1\nresume\nk-2026-10\n1792407601\n4f69a571db8349da56516979df03373a91e869ac7d1b8ef8020637931149f340",
+      "headers": {
+        "X-Omnigent-Signing-Key-Id": "k-2026-10",
+        "X-Omnigent-Timestamp": "1792407601",
+        "X-Omnigent-Signature": "d3fcdd00f2c4c43f24497fce48d3042d8500206577176973cc4a4afd4a1d1639"
+      }
+    }
+  ]
+}

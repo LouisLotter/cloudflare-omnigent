@@ -1,0 +1,74 @@
+{
+  "formatVersion": 1,
+  "layerId": "lyr_01hzy5b2c3d4e5f6g7h8j9k0m0",
+  "kind": "base",
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 5,
+  "parentTreeDigest": "7a02bcef6125b0cf63d07fbf802606b99c80866f0f70ae1bef77b0313c079684",
+  "entries": [
+    {
+      "path": "work",
+      "type": "dir",
+      "mode": 493,
+      "uid": 1000,
+      "gid": 1000
+    },
+    {
+      "path": "work/README.md",
+      "type": "file",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "size": 6,
+      "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    },
+    {
+      "path": "work/notes\tand tabs.txt",
+      "type": "file",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "size": 16,
+      "sha256": "0fcc6f648e99b4882090be01fe898d00a4b471c11ae316dbb10ddc6e67c607e4"
+    },
+    {
+      "path": ".claude",
+      "type": "dir",
+      "mode": 493,
+      "uid": 1000,
+      "gid": 1000
+    },
+    {
+      "path": ".claude/projects",
+      "type": "dir",
+      "mode": 493,
+      "uid": 1000,
+      "gid": 1000
+    },
+    {
+      "path": ".claude/projects/-home-u-work/3b0c.jsonl",
+      "type": "file",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "size": 16,
+      "sha256": "9848ab0b020271bde26d2924202ad1f04d81b0866c0bc20653a11d2c90d2db91"
+    },
+    {
+      "path": ".omnigent/codex-native/ab12/codex-home/AGENTS.md",
+      "type": "symlink",
+      "uid": 1000,
+      "gid": 1000,
+      "target": "../../../../.codex/AGENTS.md"
+    },
+    {
+      "path": ".omnigent",
+      "type": "dir",
+      "mode": 448,
+      "uid": 1000,
+      "gid": 1000
+    }
+  ],
+  "deleted": [],
+  "treeDigest": "71ca1dfdaee96e8c363b2a08c7760764b3e8e834b7876f32b8966c6b053a6995"
+}

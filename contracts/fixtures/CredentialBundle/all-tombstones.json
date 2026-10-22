@@ -1,0 +1,24 @@
+{
+  "formatVersion": 1,
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 1,
+  "order": 4,
+  "files": {
+    ".claude/.credentials.json": {
+      "state": "tombstone",
+      "copyOrder": 1
+    },
+    ".claude/.device-keys.json": {
+      "state": "tombstone",
+      "copyOrder": 2
+    },
+    ".codex/auth.json": {
+      "state": "tombstone",
+      "copyOrder": 3
+    },
+    ".codex/.credentials.json": {
+      "state": "tombstone",
+      "copyOrder": 4
+    }
+  }
+}

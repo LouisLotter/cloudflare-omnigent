@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checkpointId": {
+      "pattern": "^ckp_[0-9a-hjkmnp-tv-z]{26}$",
+      "type": "string"
+    },
+    "computerId": {
+      "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+      "type": "string"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "type": "string"
+    },
+    "cutAt": {
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+      "type": "string"
+    },
+    "formatVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "generation": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "layers": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "backup": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "maxLength": 4096,
+                "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
+                "type": "string"
+              },
+              "format": {
+                "const": "tar+zstd/1",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "name": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "size": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "dir",
+              "size",
+              "sha256",
+              "format"
+            ],
+            "type": "object"
+          },
+          "bytes": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deleted": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entries": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "indexSha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "kind": {
+            "const": "delta",
+            "type": "string"
+          },
+          "layerId": {
+            "pattern": "^lyr_[0-9a-hjkmnp-tv-z]{26}$",
+            "type": "string"
+          },
+          "treeDigest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "layerId",
+          "backup",
+          "indexSha256",
+          "treeDigest",
+          "entries",
+          "deleted",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "maxItems": 21,
+      "minItems": 1,
+      "prefixItems": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backup": {
+              "additionalProperties": false,
+              "properties": {
+                "dir": {
+                  "maxLength": 4096,
+                  "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
+                  "type": "string"
+                },
+                "format": {
+                  "const": "tar+zstd/1",
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                  "type": "string"
+                },
+                "name": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "dir",
+                "size",
+                "sha256",
+                "format"
+              ],
+              "type": "object"
+            },
+            "bytes": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "deleted": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "entries": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "indexSha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "base",
+              "type": "string"
+            },
+            "layerId": {
+              "pattern": "^lyr_[0-9a-hjkmnp-tv-z]{26}$",
+              "type": "string"
+            },
+            "treeDigest": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "layerId",
+            "backup",
+            "indexSha256",
+            "treeDigest",
+            "entries",
+            "deleted",
+            "bytes"
+          ],
+          "type": "object"
+        }
+      ],
+      "type": "array"
+    },
+    "parentCheckpointId": {
+      "anyOf": [
+        {
+          "pattern": "^ckp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policyVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "roots": {
+      "items": {
+        "maxLength": 4096,
+        "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "type": "array"
+    },
+    "treeDigest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "formatVersion",
+    "checkpointId",
+    "computerId",
+    "generation",
+    "policyVersion",
+    "parentCheckpointId",
+    "cutAt",
+    "createdAt",
+    "roots",
+    "layers",
+    "treeDigest"
+  ],
+  "title": "WorkspaceManifest",
+  "type": "object"
+}

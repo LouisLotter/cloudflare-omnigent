@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "prepare",
+          "type": "string"
+        },
+        "supportedProtocolVersions": {
+          "items": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "operation",
+        "supportedProtocolVersions"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "provision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "granted": {
+              "const": true,
+              "type": "boolean"
+            },
+            "operation": {
+              "const": "claim_start",
+              "type": "string"
+            },
+            "startAttempt": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "operation",
+            "granted",
+            "startAttempt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "granted": {
+              "const": false,
+              "type": "boolean"
+            },
+            "operation": {
+              "const": "claim_start",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "stopped",
+                "host_running",
+                "stopping"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "granted",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "start_host",
+          "type": "string"
+        },
+        "workspacePath": {
+          "maxLength": 4096,
+          "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "workspacePath"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "resume",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "starting",
+            "running",
+            "after_stop"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "outcome",
+        "generation"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "keep_alive",
+          "type": "string"
+        },
+        "renewed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation",
+        "renewed"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "status",
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "stopped",
+            "started_no_host",
+            "start_claimed",
+            "host_running",
+            "host_refused",
+            "stopping"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "running",
+        "status",
+        "generation"
+      ],
+      "type": "object"
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "admitting": {
+              "const": true,
+              "type": "boolean"
+            },
+            "generation": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "operation": {
+              "const": "admission",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "stopped",
+                "started_no_host",
+                "start_claimed",
+                "host_running",
+                "host_refused",
+                "stopping"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "admitting",
+            "status",
+            "generation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "admitting": {
+              "const": false,
+              "type": "boolean"
+            },
+            "generation": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "message": {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            "operation": {
+              "const": "admission",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_saved",
+                "needs_sign_in"
+              ],
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "stopped",
+                "started_no_host",
+                "start_claimed",
+                "host_running",
+                "host_refused",
+                "stopping"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "admitting",
+            "reason",
+            "status",
+            "generation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "folded": {
+              "type": "boolean"
+            },
+            "operation": {
+              "const": "checkpoint",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "outcome",
+            "folded"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "checkpoint",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_running",
+                "restoring",
+                "stopping"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "suspend",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "restoring",
+                "capture_running",
+                "terminal_open",
+                "runner_processes",
+                "checkpoint_failed",
+                "credentials_unpublished"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "suspend",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "suspend",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "in_progress",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "outcome"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "terminate",
+          "type": "string"
+        },
+        "removal": {
+          "enum": [
+            "pending",
+            "resolved",
+            "absent"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "removal"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "LauncherResult"
+}

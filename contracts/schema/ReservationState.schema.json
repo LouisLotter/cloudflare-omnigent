@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": {},
+  "properties": {
+    "computerId": {
+      "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+      "type": "string"
+    },
+    "containerRunning": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "fenced": {
+      "type": "boolean"
+    },
+    "generation": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "reserved",
+            "starting",
+            "running",
+            "releasing"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "computerId",
+    "generation",
+    "phase",
+    "fenced",
+    "containerRunning"
+  ],
+  "title": "ReservationState",
+  "type": "object"
+}

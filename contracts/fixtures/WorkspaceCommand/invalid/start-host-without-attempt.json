@@ -1,0 +1,11 @@
+{
+  "type": "start_host",
+  "protocolVersion": 1,
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 7,
+  "operationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+  "hostId": "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+  "hostName": "Work computer",
+  "token": "synthetic-launch-token-not-a-secret-0001",
+  "hostConfig": {}
+}

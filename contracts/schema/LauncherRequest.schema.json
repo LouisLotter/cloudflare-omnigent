@@ -1,0 +1,359 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "prepare",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "provision",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "name"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "claim_start",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "hostConfig": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "hostId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "hostName": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "start_host",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "startAttempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "token": {
+          "pattern": "^[A-Za-z0-9_-]{32,512}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId",
+        "startAttempt",
+        "hostId",
+        "hostName",
+        "token",
+        "hostConfig"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "resume",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "keep_alive",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "status",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "admission",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "checkpoint",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "enum": [
+            "turn_completed",
+            "long_turn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "suspend",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "operation": {
+          "const": "terminate",
+          "type": "string"
+        },
+        "operationId": {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "protocolVersion",
+        "operationId",
+        "computerId"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "LauncherRequest"
+}

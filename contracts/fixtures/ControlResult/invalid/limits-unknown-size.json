@@ -1,0 +1,5 @@
+{
+  "method": "limits",
+  "maxAwakeComputers": 2,
+  "maxInstanceSize": "huge"
+}

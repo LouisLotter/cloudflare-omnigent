@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "deleted": {
+          "items": {
+            "maxLength": 4096,
+            "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+            "type": "string"
+          },
+          "maxItems": 0,
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "maximum": 4095,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "mode",
+                  "uid",
+                  "gid",
+                  "size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "maximum": 4095,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "dir",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "mode",
+                  "uid",
+                  "gid"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "target": {
+                    "maxLength": 4096,
+                    "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "symlink",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "uid",
+                  "gid",
+                  "target"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "maxItems": 1000000,
+          "type": "array"
+        },
+        "formatVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "const": "base",
+          "type": "string"
+        },
+        "layerId": {
+          "pattern": "^lyr_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "parentTreeDigest": {
+          "type": "null"
+        },
+        "treeDigest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "formatVersion",
+        "layerId",
+        "computerId",
+        "generation",
+        "entries",
+        "treeDigest",
+        "parentTreeDigest",
+        "deleted"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "deleted": {
+          "items": {
+            "maxLength": 4096,
+            "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+            "type": "string"
+          },
+          "maxItems": 1000000,
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "maximum": 4095,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "mode",
+                  "uid",
+                  "gid",
+                  "size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "maximum": 4095,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "dir",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "mode",
+                  "uid",
+                  "gid"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "gid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+                    "type": "string"
+                  },
+                  "target": {
+                    "maxLength": 4096,
+                    "pattern": "^(?:[^\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "symlink",
+                    "type": "string"
+                  },
+                  "uid": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "type",
+                  "uid",
+                  "gid",
+                  "target"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "maxItems": 1000000,
+          "type": "array"
+        },
+        "formatVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "const": "delta",
+          "type": "string"
+        },
+        "layerId": {
+          "pattern": "^lyr_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "parentTreeDigest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "treeDigest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "formatVersion",
+        "layerId",
+        "computerId",
+        "generation",
+        "entries",
+        "treeDigest",
+        "parentTreeDigest",
+        "deleted"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "LayerIndex"
+}

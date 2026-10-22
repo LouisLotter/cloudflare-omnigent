@@ -1,0 +1,10 @@
+{
+  "type": "capture",
+  "job": {
+    "kind": "capture",
+    "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+    "state": "unchanged",
+    "cutAt": "2026-10-22T09:14:58.000Z",
+    "pausedMs": 650
+  }
+}

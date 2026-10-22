@@ -1,0 +1,31 @@
+{
+  "formatVersion": 1,
+  "checkpointId": "ckp_01hzy5b2c3d4e5f6g7h8j9k0m1",
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 7,
+  "policyVersion": 1,
+  "parentCheckpointId": null,
+  "cutAt": "2026-10-22T09:14:58.000Z",
+  "createdAt": "2026-10-22T09:15:01.000Z",
+  "roots": ["work", ".claude", ".claude.json", ".codex", ".omnigent"],
+  "layers": [
+    {
+      "layerId": "lyr_01hzy5b2c3d4e5f6g7h8j9k0m0",
+      "kind": "base",
+      "backup": {
+        "id": "1b4e28ba-2fa1-41d2-883f-0016d3cca400",
+        "dir": "/var/cfo/staged/lyr_01hzy5b2c3d4e5f6g7h8j9k0m0",
+        "size": 435000000,
+        "name": "lyr_01hzy5b2c3d4e5f6g7h8j9k0m0",
+        "sha256": "89a87a902543bd812ccafa64a09da2430ea2de19c128bfa2669cc15c271ff497",
+        "format": "tar+zstd/1"
+      },
+      "indexSha256": "53c5e3d1d0d0172931f111914998bd0c6f7eff5b9315fe51fae1cdcb0e59492f",
+      "treeDigest": "71ca1dfdaee96e8c363b2a08c7760764b3e8e834b7876f32b8966c6b053a6995",
+      "entries": 8,
+      "deleted": 0,
+      "bytes": 724000000
+    }
+  ],
+  "treeDigest": "71ca1dfdaee96e8c363b2a08c7760764b3e8e834b7876f32b8966c6b053a6995"
+}

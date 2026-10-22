@@ -1,0 +1,5 @@
+{
+  "operation": "suspend",
+  "outcome": "refused",
+  "reason": "capture_running"
+}
