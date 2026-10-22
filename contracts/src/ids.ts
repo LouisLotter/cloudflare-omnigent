@@ -62,12 +62,23 @@ export type StartAttempt = z.infer<typeof StartAttempt>;
 export const Sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
 export type Sha256Hex = z.infer<typeof Sha256Hex>;
 
-/** One path segment: not empty, not `.` or `..`, no `/` or NUL. */
-const segment = String.raw`(?!\.\.?(?:\/|$))[^/\u0000]+`;
+/**
+ * Well-formed text: no NUL and no unpaired UTF-16 surrogate, so every accepted string has exactly
+ * one UTF-8 encoding (TextEncoder would turn each unpaired surrogate into U+FFFD, and two paths
+ * into one). Python decodes a surrogate pair into one code point outside the surrogate range, so
+ * the same expression holds there. A file name that is not valid UTF-8 cannot be represented: the
+ * capture leaves it out and reports it, as it does an unclassified file.
+ */
+const wellFormedChar = String.raw`[^\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF]`;
+export const WELL_FORMED_TEXT = new RegExp(`^(?:${wellFormedChar})+$`);
+
+/** One path segment: not empty, not `.` or `..`, no `/`, NUL or unpaired surrogate. */
+const segment = String.raw`(?!\.\.?(?:\/|$))(?:[^/\u0000\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+`;
 
 /**
  * A path relative to a capture root (the computer user's home directory): POSIX separators, no
- * leading or trailing slash, no empty, `.` or `..` segment, no NUL, at most 4096 characters.
+ * leading or trailing slash, no empty, `.` or `..` segment, no NUL or unpaired surrogate, at most
+ * 4096 characters.
  * Deleted paths in a layer are checked with this too, so none can reach outside the declared
  * roots. A regular expression, so the exported JSON Schema checks it as well.
  */

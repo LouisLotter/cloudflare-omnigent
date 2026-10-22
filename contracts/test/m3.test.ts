@@ -39,6 +39,7 @@ import {
   type MachineContext,
   PAGE_EVENTS,
   PagesCall,
+  RESTORED_STATES,
   RelativePath,
   SIGN_OUT_TABLE,
   SupervisorMessage,
@@ -215,6 +216,11 @@ describe("IDs and paths", () => {
     ]) {
       expect(RelativePath.safeParse(no).success, JSON.stringify(no)).toBe(false);
     }
+    // One UTF-8 encoding per accepted path: unpaired surrogates are refused, pairs accepted.
+    expect(RelativePath.safeParse("work/\u{1F600}.txt").success).toBe(true);
+    for (const lone of ["work/\ud800", "work/\udc00x", "\ud801"]) {
+      expect(RelativePath.safeParse(lone).success, JSON.stringify(lone)).toBe(false);
+    }
     expect(AbsolutePath.safeParse("/home/omnigent/work").success).toBe(true);
     for (const no of ["/", "home", "/home/../root", "/home//x", "/home/"]) {
       expect(AbsolutePath.safeParse(no).success, no).toBe(false);
@@ -286,23 +292,65 @@ describe("the tree index and its digest", () => {
 });
 
 describe("credential checkpoints", () => {
-  it("publishes only a newer copy: a higher order in the generation, or a newer generation", () => {
-    expect(credentialIsNewer({ generation: 3, order: 1 }, null)).toBe(true);
-    expect(credentialIsNewer({ generation: 3, order: 5 }, { generation: 3, order: 4 })).toBe(true);
-    expect(credentialIsNewer({ generation: 3, order: 4 }, { generation: 3, order: 4 })).toBe(false);
-    expect(credentialIsNewer({ generation: 3, order: 9 }, { generation: 4, order: 1 })).toBe(false);
-    expect(credentialIsNewer({ generation: 5, order: 1 }, { generation: 4, order: 99 })).toBe(true);
+  const files = (claude: number, keys = 1, codex = 1, mcp = 1) => ({
+    ".claude/.credentials.json": { copyOrder: claude },
+    ".claude/.device-keys.json": { copyOrder: keys },
+    ".codex/auth.json": { copyOrder: codex },
+    ".codex/.credentials.json": { copyOrder: mcp },
+  });
+  const copy = (generation: number, claude: number, codex = 1) => ({
+    generation,
+    order: Math.max(claude, codex),
+    files: files(claude, 1, codex),
   });
 
-  it("is a total order on (generation, order) (property)", () => {
-    const copy = fc.record({ generation: fc.nat(10), order: fc.integer({ min: 1, max: 10 }) });
+  it("publishes only a newer copy: a higher order in the generation, or a newer generation", () => {
+    expect(credentialIsNewer(copy(3, 1), null)).toBe(true);
+    expect(credentialIsNewer(copy(3, 5), copy(3, 4))).toBe(true);
+    expect(credentialIsNewer(copy(3, 4), copy(3, 4))).toBe(false);
+    expect(credentialIsNewer(copy(3, 9), copy(4, 1))).toBe(false);
+    expect(credentialIsNewer(copy(5, 1), copy(4, 99))).toBe(true);
+  });
+
+  it("never undoes a logout with an older login, even with a higher bundle order", () => {
+    // The pointer: Claude's tombstone copied at order 5. The candidate mixes an older Claude
+    // copy (order 1) with a newer Codex refresh (order 6), as interleaved copies could.
+    const pointer = { generation: 3, order: 5, files: files(5, 1, 2, 1) };
+    const interleaved = { generation: 3, order: 6, files: files(1, 1, 6, 1) };
+    expect(credentialIsNewer(interleaved, pointer)).toBe(false);
+    // A whole snapshot taken after both is newer in every file and is published.
+    expect(credentialIsNewer({ generation: 3, order: 7, files: files(5, 1, 6, 1) }, pointer)).toBe(
+      true,
+    );
+  });
+
+  it("is antisymmetric, and orders whole snapshots totally (property)", () => {
+    const snapshot = fc
+      .record({ generation: fc.nat(5), base: fc.integer({ min: 1, max: 8 }) })
+      .map(({ generation, base }) => ({
+        generation,
+        order: base,
+        files: files(base, base, base, base),
+      }));
     fc.assert(
-      fc.property(copy, copy, (a, b) => {
+      fc.property(snapshot, snapshot, (a, b) => {
         const forward = credentialIsNewer(a, b);
         const backward = credentialIsNewer(b, a);
         const same = a.generation === b.generation && a.order === b.order;
         expect(forward && backward).toBe(false);
         expect(forward || backward || same).toBe(true);
+      }),
+    );
+    const any = fc.record({
+      generation: fc.nat(3),
+      claude: fc.integer({ min: 1, max: 6 }),
+      codex: fc.integer({ min: 1, max: 6 }),
+    });
+    fc.assert(
+      fc.property(any, any, (a, b) => {
+        const x = copy(a.generation, a.claude, a.codex);
+        const y = copy(b.generation, b.claude, b.codex);
+        expect(credentialIsNewer(x, y) && credentialIsNewer(y, x)).toBe(false);
       }),
     );
   });
@@ -426,6 +474,15 @@ const contexts = reachable();
 describe("the lifecycle table", () => {
   it("reaches every state from a new computer", () => {
     expect(new Set(contexts.map((c) => c.state))).toEqual(new Set(LifecycleState.options));
+  });
+
+  it("keeps a stop preparation only while restored, and a removal never parked as an ordinary stop", () => {
+    for (const context of contexts) {
+      if (context.stopPrep !== null) expect(RESTORED_STATES).toContain(context.state);
+      if (context.removalIntent) {
+        expect(["provisioned", "asleep", "stopped", "failed"]).not.toContain(context.state);
+      }
+    }
   });
 
   it("answers every launcher call and page action in every state", () => {
@@ -618,6 +675,41 @@ describe("the lifecycle table", () => {
     expect(step(running, "start_not_taken").context.state).toBe("start_claimed");
   });
 
+  it("keeps a sleep's preparation when the host is refused meanwhile (RC-54)", () => {
+    const live = run(["resume", "container_running", "restore_confirmed", "claim_start"]);
+    const running = step(live, "start_host", new Set(["attempt_current"])).context;
+    const preparing = step(running, "suspend").context;
+    const refused = step(preparing, "host_refused_reported").context;
+    expect(refused.state).toBe("host_refused");
+    expect(refused.stopPrep).toBe("sleep");
+    expect(typedStatus(refused)).toBe("stopping");
+    expect(step(refused, "claim_start").reply).toEqual({ kind: "claim", granted: false });
+    expect(step(refused, "stop_prepared").context.state).toBe("stopping");
+    const failed = step(refused, "stop_preparation_failed").context;
+    expect(failed).toMatchObject({ state: "host_refused", stopPrep: null });
+    expect(step(failed, "claim_start").reply).toEqual({ kind: "claim", granted: true });
+  });
+
+  it("returns a sign-out run's failed start to the pending removal, which can try again", () => {
+    const pending = run(["terminate"]);
+    expect(pending.state).toBe("removal_pending");
+    for (const event of [
+      "start_refused",
+      "container_stopped",
+      "start_failed",
+      "start_deadline",
+    ] as const) {
+      const waking = step(pending, "sign_out_run").context;
+      const failed = step(waking, event);
+      expect(failed.context.state, event).toBe("removal_pending");
+      expect(failed.effects).toContain("fence_start");
+      expect(step(failed.context, "sign_out_run").reply).toEqual({ kind: "page", accepted: true });
+      expect(
+        step(failed.context, "removal_resolved", new Set(["sign_out_settled"])).context.state,
+      ).toBe("removed");
+    }
+  });
+
   it("removes only after the sign-out is settled, and keeps credentials until then", () => {
     const asleep = run([
       "resume",
@@ -673,6 +765,10 @@ describe("the lifecycle table", () => {
             ]).not.toContain(next.state);
           }
           if (next.paramsStored) expect(next.claimed).toBe(true);
+          if (next.stopPrep !== null) expect(RESTORED_STATES).toContain(next.state);
+          if (next.removalIntent) {
+            expect(["provisioned", "asleep", "stopped", "failed"]).not.toContain(next.state);
+          }
           if (typedStatus(next) === "host_running") expect(next.state).toBe("host_running");
           if ((LAUNCHER_EVENTS as readonly string[]).includes(e)) expect(reply).toBeDefined();
           context = next;

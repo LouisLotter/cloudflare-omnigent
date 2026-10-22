@@ -8,6 +8,7 @@ import {
   RelativePath,
   Sha256Hex,
   Timestamp,
+  WELL_FORMED_TEXT,
 } from "./ids.ts";
 
 // Version 1 of the two checkpoint formats (design, "Checkpoints"; AR-25; R-19).
@@ -101,11 +102,7 @@ export const IndexSymlink = z.strictObject({
   type: z.literal("symlink"),
   uid: Id,
   gid: Id,
-  target: z
-    .string()
-    .min(1)
-    .max(4096)
-    .refine((t) => !t.includes("\0"), { message: "no NUL in a link target" }),
+  target: z.string().max(4096).regex(WELL_FORMED_TEXT),
 });
 export const IndexEntry = z.discriminatedUnion("type", [IndexFile, IndexDirectory, IndexSymlink]);
 export type IndexEntry = z.infer<typeof IndexEntry>;
@@ -296,8 +293,9 @@ export const LOGIN_FILE: Readonly<Record<"claude" | "codex", DeclaredCredentialP
 export const MAX_CREDENTIAL_FILE_BYTES = 64 * 1024;
 
 /**
- * Each copy's order number, taken under the same lock as the read; numbers restart at 1 in each
- * generation and increase across all declared files.
+ * A copy's order number, taken under the same lock as the read. Numbers restart at 1 in each
+ * generation and increase across all declared files. A file's order is that of the snapshot that
+ * last read it changed, so it never decreases within a generation.
  */
 const CopyOrder = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 
@@ -341,8 +339,11 @@ function highestCopyOrder(files: Readonly<Record<string, { readonly copyOrder: n
  * A credential checkpoint's content: every declared file, present or tombstoned, keyed by path.
  * The supervisor sends it in a `credential_checkpoint` message; WorkspaceDO stores it unchanged
  * at `credentialObjectKey` and sends it back in `install_credentials`. `order` is the highest copy
- * order in it. WorkspaceDO publishes it only if (`generation`, `order`) is newer than the
- * pointer's: the same generation with a higher order, or a newer generation.
+ * order in it. Each bundle is one whole snapshot: the supervisor reads every declared file and
+ * takes the bundle's order under one lock (as S6 did), so a later bundle is never older in any
+ * file. WorkspaceDO publishes it only if `credentialIsNewer` holds: a newer generation, or the
+ * same generation with a higher order and no file older than the pointer's (which also refuses a
+ * bundle built from interleaved copies, so a logout is never undone by an older login).
  *
  * Checked in TypeScript, not in the exported JSON Schema: `order` is the highest copy order.
  */
@@ -402,14 +403,25 @@ export const CredentialManifest = z
   });
 export type CredentialManifest = z.infer<typeof CredentialManifest>;
 
-/** Whether a credential bundle may replace the published pointer (same rule as the design). */
+type CredentialOrder = {
+  readonly generation: number;
+  readonly order: number;
+  readonly files: Readonly<Record<DeclaredCredentialPath, { readonly copyOrder: number }>>;
+};
+
+/**
+ * Whether a credential bundle may replace the published pointer: a newer generation (its restore
+ * installed the pointer's files first, and copies before that restore are refused by the order
+ * floor of `install_credentials`), or the same generation with a higher order where no declared
+ * file's copy is older than the pointer's.
+ */
 export function credentialIsNewer(
-  candidate: { readonly generation: number; readonly order: number },
-  current: { readonly generation: number; readonly order: number } | null,
+  candidate: CredentialOrder,
+  current: CredentialOrder | null,
 ): boolean {
-  if (current === null) return true;
-  return (
-    candidate.generation > current.generation ||
-    (candidate.generation === current.generation && candidate.order > current.order)
+  if (current === null || candidate.generation > current.generation) return true;
+  if (candidate.generation < current.generation || candidate.order <= current.order) return false;
+  return DeclaredCredentialPath.options.every(
+    (path) => candidate.files[path].copyOrder >= current.files[path].copyOrder,
   );
 }

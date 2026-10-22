@@ -17,6 +17,11 @@
           "maxItems": 16,
           "type": "array"
         },
+        "orderFloor": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
         "removed": {
           "items": {
             "enum": [
@@ -38,7 +43,8 @@
       "required": [
         "type",
         "installed",
-        "removed"
+        "removed",
+        "orderFloor"
       ],
       "type": "object"
     },
@@ -174,7 +180,7 @@
             "taken",
             "superseded",
             "refused_live_host",
-            "not_ready"
+            "declined"
           ],
           "type": "string"
         },
@@ -186,6 +192,25 @@
       "required": [
         "type",
         "outcome"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "order": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "credential_snapshot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "order"
       ],
       "type": "object"
     },
@@ -254,7 +279,7 @@
                 },
                 "layerDir": {
                   "maxLength": 4096,
-                  "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)+$",
+                  "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
                   "type": "string"
                 },
                 "pausedMs": {
@@ -571,7 +596,7 @@
                     },
                     "layerDir": {
                       "maxLength": 4096,
-                      "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)+$",
+                      "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
                       "type": "string"
                     },
                     "pausedMs": {

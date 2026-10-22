@@ -148,6 +148,14 @@ export type ContextGuard =
 
 export type Guard = GuardInput | ContextGuard;
 
+/**
+ * What 3.1 does after persisting a transition. Two need care:
+ * - `prepare_stop`: the sleep checkpoints. A workspace capture published or verified unchanged,
+ *   then the final credential barrier: the computer API's `credential_snapshot`, and a wait until
+ *   the credential pointer holds that order or newer from this generation. Then `stop_prepared`;
+ *   any failure, `stop_preparation_failed` (lifecycle step 7).
+ * - `prepare_credential_stop`: the credential barrier alone, for "Stop without saving" (FH-35).
+ */
 export type Effect =
   | "reserve"
   | "start_container"
@@ -223,6 +231,14 @@ export type Cell = readonly Rule[];
 export const IGNORE: Cell = [{}];
 
 const NOT_RUNNING = ["provisioned", "asleep", "stopped", "failed"] as const;
+
+/** States in which the restore is confirmed and the container runs. */
+export const RESTORED_STATES: readonly LifecycleState[] = [
+  "started_no_host",
+  "start_claimed",
+  "host_running",
+  "host_refused",
+];
 
 /** States in which no container runs. */
 export const CONTAINER_STOPPED_STATES: readonly LifecycleState[] = [
@@ -446,19 +462,40 @@ export const LIFECYCLE_TABLE: Table = {
   waking: {
     ...starting("waking"),
     container_running: [{ to: "restoring", effects: ["restore"] }],
+    // A sign-out run's failed start returns to the pending removal, which can try again.
     start_refused: [
       { when: ["retries_left"], effects: ["retry_start"] },
+      {
+        when: ["removal_intent"],
+        to: "removal_pending",
+        effects: ["record_start_failure", "fence_start", "release_reservation"],
+      },
       { to: "failed", effects: ["record_start_failure", "fence_start", "release_reservation"] },
     ],
     // A start that did not hold is treated as refused (DC-37: `start()` returns before placement).
     container_stopped: [
       { when: ["retries_left"], effects: ["retry_start"] },
+      {
+        when: ["removal_intent"],
+        to: "removal_pending",
+        effects: ["record_start_failure", "fence_start", "release_reservation"],
+      },
       { to: "failed", effects: ["record_start_failure", "fence_start", "release_reservation"] },
     ],
     start_failed: [
+      {
+        when: ["removal_intent"],
+        to: "removal_pending",
+        effects: ["record_start_failure", "fence_start", "release_reservation"],
+      },
       { to: "failed", effects: ["record_start_failure", "fence_start", "release_reservation"] },
     ],
     start_deadline: [
+      {
+        when: ["removal_intent"],
+        to: "removal_pending",
+        effects: ["record_start_failure", "fence_start", "release_reservation"],
+      },
       { to: "failed", effects: ["record_start_failure", "fence_start", "release_reservation"] },
     ],
   },
@@ -527,8 +564,12 @@ export const LIFECYCLE_TABLE: Table = {
     // Never claim or re-arm a live incarnation (G1BR-005).
     claim_start: [gone, claimRefused],
     start_taken: [{}],
-    // The supervisor answered that it does not hold the attempt: no incarnation exists.
+    // Only the supervisor's `declined` answer to this attempt's `start_host` command: it fences
+    // the attempt (the supervisor never takes it, or an older one, later), so no incarnation can
+    // exist. A report showing no attempt never releases a handed-out attempt: a report sent
+    // before the parameters can arrive after them.
     start_not_taken: [{ to: "start_claimed", set: { claim: "new" } }],
+    // Only a report naming the current attempt as refused; one about an older attempt is ignored.
     host_refused_reported: [{ to: "host_refused", effects: ["record_host_refused"] }],
     start_deadline: IGNORE,
   },
@@ -742,9 +783,10 @@ export function step(
   if (set.failedStart) next = { ...next, failedStart: true };
   if (set.capturing !== undefined) next = { ...next, capturing: set.capturing };
   if (rule.to !== undefined && rule.to !== context.state) {
-    // Leaving a running state ends any stop preparation; a stopped container holds no claim,
-    // no queued wake and no capture.
-    next = { ...next, stopPrep: null };
+    // A stop preparation survives moves between the restored states (a host refused during a
+    // sleep's preparation keeps the sleep); it ends when the stop begins or the container stops.
+    // A stopped container holds no claim, no queued wake and no capture.
+    if (!RESTORED_STATES.includes(next.state)) next = { ...next, stopPrep: null };
     if (!containerMayRun(next.state) || next.state === "waking") {
       next = {
         ...next,

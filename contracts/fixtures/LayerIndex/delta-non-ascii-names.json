@@ -1,0 +1,30 @@
+{
+  "formatVersion": 1,
+  "layerId": "lyr_01hzy5b2c3d4e5f6g7h8j9k0m1",
+  "kind": "delta",
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 6,
+  "parentTreeDigest": "71ca1dfdaee96e8c363b2a08c7760764b3e8e834b7876f32b8966c6b053a6995",
+  "entries": [
+    {
+      "path": "work/caf\u00e9.md",
+      "type": "file",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "size": 2,
+      "sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+    },
+    {
+      "path": "work/\ud83d\ude00.txt",
+      "type": "file",
+      "mode": 420,
+      "uid": 1000,
+      "gid": 1000,
+      "size": 6,
+      "sha256": "afdbe5c62eaa85fb1610acd334f294a746bbd9e361d6c336bceaf4e04edc8b3f"
+    }
+  ],
+  "deleted": [],
+  "treeDigest": "cc795da59ba27cb5a6fe6ab948de8b21cdee997422d37bd4183eb4ebb0719abc"
+}

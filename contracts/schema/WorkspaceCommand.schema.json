@@ -319,7 +319,7 @@
         "layerDirs": {
           "items": {
             "maxLength": 4096,
-            "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)+$",
+            "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
             "type": "string"
           },
           "maxItems": 21,
@@ -367,7 +367,7 @@
                         "properties": {
                           "dir": {
                             "maxLength": 4096,
-                            "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)+$",
+                            "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
                             "type": "string"
                           },
                           "format": {
@@ -458,7 +458,7 @@
                           "properties": {
                             "dir": {
                               "maxLength": 4096,
-                              "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)+$",
+                              "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
                               "type": "string"
                             },
                             "format": {
@@ -560,7 +560,7 @@
                 "roots": {
                   "items": {
                     "maxLength": 4096,
-                    "pattern": "^(?!\\.\\.?(?:\\/|$))[^/\\u0000]+(?:\\/(?!\\.\\.?(?:\\/|$))[^/\\u0000]+)*$",
+                    "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
                     "type": "string"
                   },
                   "maxItems": 64,
@@ -1020,6 +1020,41 @@
         },
         "type": {
           "const": "status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "protocolVersion",
+        "computerId",
+        "generation",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "credential_snapshot",
           "type": "string"
         }
       },

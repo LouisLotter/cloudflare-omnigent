@@ -110,6 +110,12 @@ export const CliLoginStatus = z.enum(["signed_in", "signed_out", "expired", "unk
  * State, not events: a report replaces every earlier one. `seq` increases within a generation, and
  * WorkspaceDO ignores a report whose `seq` it has already applied, so reports may be repeated
  * or arrive out of order.
+ *
+ * Reports are not ordered against commands: one sent before `start_host`'s parameters arrived can
+ * be delivered after them. So a report never releases a handed-out start attempt (only the
+ * supervisor's `declined` answer does), and its host state counts only when `host.startAttempt` is
+ * the current attempt: `refused` then moves the computer to `host_refused`; a report about an
+ * older attempt, or none, changes nothing about the claim.
  */
 export const SupervisorReport = z.strictObject({
   seq: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
@@ -137,8 +143,11 @@ export const ReportMessage = z.strictObject({
 
 /**
  * A credential checkpoint, asked for once the watcher's copy settled (500 ms, read stably), right
- * after a sign-in, and after a logout. Retried until acknowledged (R-18). Idempotent by
- * (`generation`, `bundle.order`): a repeat returns the recorded outcome.
+ * after a sign-in, after a logout, and on `credential_snapshot`. Retried until acknowledged
+ * (R-18). Idempotent by (`generation`, `bundle.order`): a repeat returns the recorded outcome.
+ * WorkspaceDO answers `superseded` for a bundle at or below the generation's order floor (copies
+ * taken before the credentials were installed) or not newer than the pointer (`credentialIsNewer`),
+ * and refuses one before the generation's restore is confirmed (R-19).
  */
 export const CredentialCheckpointMessage = z
   .strictObject({
@@ -173,7 +182,7 @@ export const SupervisorReply = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("credential_checkpoint"),
     /** `published`: this bundle is now the pointer. `superseded`: the pointer is already as new
-     * or newer, so this one is not needed; the supervisor stops retrying either way. */
+     * or newer, or the bundle predates the install; the supervisor stops retrying either way. */
     outcome: z.enum(["published", "superseded"]),
     checkpointId: CheckpointId.nullable(),
   }),
@@ -188,13 +197,20 @@ export type SupervisorReply = z.infer<typeof SupervisorReply>;
  * Install the declared credential files from the latest credential checkpoint, after the
  * workspace restore: into a staging directory first, then only the declared files; tombstoned
  * files are deleted. `null`: no credential checkpoint exists, so nothing is installed. Idempotent
- * by operation ID; installing the same bundle again changes nothing.
+ * by operation ID; installing the same bundle again changes nothing. The bundle is this
+ * computer's, from any earlier generation. The supervisor's credential watcher starts only after
+ * the install, and its reply's `orderFloor` is the highest copy order it had taken before: a
+ * bundle at or below it predates the restored credentials and is never published (S6's cutoff).
  */
-export const InstallCredentialsCommand = z.strictObject({
-  type: z.literal("install_credentials"),
-  ...envelope,
-  bundle: CredentialBundle.nullable(),
-});
+export const InstallCredentialsCommand = z
+  .strictObject({
+    type: z.literal("install_credentials"),
+    ...envelope,
+    bundle: CredentialBundle.nullable(),
+  })
+  .refine((c) => c.bundle === null || c.bundle.computerId === c.computerId, {
+    message: "the bundle is this computer's",
+  });
 
 /**
  * Merge the restored layers and move the result into place. WorkspaceDO has restored each layer
@@ -203,6 +219,7 @@ export const InstallCredentialsCommand = z.strictObject({
  * rebuilds the index and checks it against each layer's `treeDigest`, checks the tree against the
  * index, then moves it into place. A missing or corrupt layer fails it and changes nothing.
  * `manifest: null`: a new computer, nothing to restore. Starts a job; idempotent by operation ID.
+ * The manifest is this computer's, from any earlier generation.
  */
 export const RestoreWorkspaceCommand = z
   .strictObject({
@@ -213,15 +230,21 @@ export const RestoreWorkspaceCommand = z
   })
   .refine((c) => (c.manifest?.layers.length ?? 0) === c.layerDirs.length, {
     message: "one restored directory per layer",
+  })
+  .refine((c) => c.manifest === null || c.manifest.computerId === c.computerId, {
+    message: "the manifest is this computer's",
   });
 
 /**
  * Host start parameters for one attempt (G1BR-005), sent only after both restores are confirmed.
  * Idempotent by attempt: the supervisor takes an attempt once and answers `taken` for a repeat;
- * it answers `superseded` for an attempt older than one it took, and `refused_live_host` for a
- * newer attempt while the host of an earlier one is starting, live or being restarted (only after
- * reporting `refused` does it take a newer one). It keeps the token in memory only, and restarts a
- * crashed host with it, whatever the exit code but 77. The token is never logged.
+ * it answers `superseded` for an attempt older than one it took or declined, and
+ * `refused_live_host` for a newer attempt while the host of an earlier one is starting, live or
+ * being restarted (only after reporting `refused` does it take a newer one). `declined`: it did
+ * not take this attempt (its own restore is not done, say), and it never takes this attempt or an
+ * older one later, in any delivery, so WorkspaceDO may treat the attempt as unclaimed
+ * (`start_not_taken`). It keeps the token in memory only, and restarts a crashed host with it,
+ * whatever the exit code but 77. The token is never logged.
  */
 export const StartHostCommand = z.strictObject({
   type: z.literal("start_host"),
@@ -290,6 +313,18 @@ export const JobStatusCommand = z.strictObject({
 /** Read the supervisor's report. Read-only. */
 export const StatusCommand = z.strictObject({ type: z.literal("status"), ...envelope });
 
+/**
+ * The final-checkpoint barrier for a stop: take a whole snapshot of the declared files now, under
+ * the copy lock, and send it as a `credential_checkpoint` whatever changed, then reply with its
+ * order. WorkspaceDO stops only once its pointer holds that order or newer from this generation
+ * (lifecycle step 7). Idempotent by operation ID: a repeat returns the same order and takes no
+ * second snapshot.
+ */
+export const CredentialSnapshotCommand = z.strictObject({
+  type: z.literal("credential_snapshot"),
+  ...envelope,
+});
+
 /** Ask the CLIs to sign out (`claude auth logout`, `codex logout`); the watcher then publishes
  * the tombstones. Idempotent: signing out again changes nothing. */
 export const SignOutCommand = z.strictObject({ type: z.literal("sign_out"), ...envelope });
@@ -302,6 +337,7 @@ export const WorkspaceCommand = z.discriminatedUnion("type", [
   FinishCaptureCommand,
   JobStatusCommand,
   StatusCommand,
+  CredentialSnapshotCommand,
   SignOutCommand,
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommand>;
@@ -386,12 +422,15 @@ export const WorkspaceCommandReply = z.discriminatedUnion("type", [
     type: z.literal("install_credentials"),
     installed: z.array(DeclaredCredentialPath).max(16),
     removed: z.array(DeclaredCredentialPath).max(16),
+    /** The highest copy order taken before the install; 0 if none. */
+    orderFloor: z.number().int().min(0),
   }),
   z.strictObject({ type: z.literal("restore_workspace"), job: RestoreJob }),
   z.strictObject({
     type: z.literal("start_host"),
-    outcome: z.enum(["taken", "superseded", "refused_live_host", "not_ready"]),
+    outcome: z.enum(["taken", "superseded", "refused_live_host", "declined"]),
   }),
+  z.strictObject({ type: z.literal("credential_snapshot"), order: z.number().int().min(1) }),
   z.strictObject({ type: z.literal("capture"), job: CaptureJob }),
   z.strictObject({ type: z.literal("finish_capture"), done: z.literal(true) }),
   z.strictObject({
@@ -433,6 +472,7 @@ export const COMPUTER_API_MESSAGES = {
   finish_capture: { direction: "to_supervisor", idempotency: "operation_id" },
   job_status: { direction: "to_supervisor", idempotency: "read_only" },
   status: { direction: "to_supervisor", idempotency: "read_only" },
+  credential_snapshot: { direction: "to_supervisor", idempotency: "operation_id" },
   sign_out: { direction: "to_supervisor", idempotency: "operation_id" },
 } as const satisfies Record<
   SupervisorMessage["type"] | WorkspaceCommand["type"],
