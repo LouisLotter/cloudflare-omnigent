@@ -12,14 +12,14 @@
 #   worker/test/staging/wp22/run.sh collect <run-id>       copy and analyse a run
 #   worker/test/staging/wp22/run.sh teardown               the web Worker, then the platform
 #
-# Results and logs go to $WP22_RESULTS (default /home/decay/.pt/wp22/staging), outside the
+# Results and logs go to $WP22_RESULTS (default $HOME/.pt/wp22/staging), outside the
 # repository; redact them with spikes/x1/scripts/redact.py before they leave the laptop.
 # Every deploy stamps build.ts, so a redeploy is a new Worker version with identical images, and
 # restores it afterwards.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../../.." && pwd)"
-results="${WP22_RESULTS:-/home/decay/.pt/wp22/staging}"
+results="${WP22_RESULTS:-$HOME/.pt/wp22/staging}"
 state="${CFO_STAGING_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cloudflare-omnigent/staging}"
 redact=(python3 -I "$root/spikes/x1/scripts/redact.py" "$state/config.json" -)
 bucket=cfo-stg-wp22-platform-results
