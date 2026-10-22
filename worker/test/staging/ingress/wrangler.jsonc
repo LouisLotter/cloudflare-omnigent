@@ -1,0 +1,17 @@
+// WP2.1's staging harness: the product's ingress in front of a probe handler, no container.
+// Deployed first as it is, so that the staging tool creates the owner-only Access application;
+// until the generated configuration (config.ts) adds the team domain, the AUD tag, the hostname
+// and the owner pin, ingress fails closed and answers 503 to everything.
+//
+//   pnpm stg deploy --suffix wp21-ingress --owner WP2.1 --config worker/test/staging/ingress/wrangler.jsonc --days 1
+//
+// The steps are in the header of harness.ts.
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "cfo-stg-wp21-ingress",
+  "main": "harness.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true }
+}

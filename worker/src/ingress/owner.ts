@@ -24,8 +24,10 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function digest(salt: Uint8Array<ArrayBuffer>, email: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", salt, HMAC, false, ["sign"]);
+const hmacKey = (salt: Uint8Array<ArrayBuffer>): Promise<CryptoKey> =>
+  crypto.subtle.importKey("raw", salt, HMAC, false, ["sign"]);
+
+async function digest(key: CryptoKey, email: string): Promise<Uint8Array> {
   const mac = await crypto.subtle.sign(HMAC, key, new TextEncoder().encode(normalizeEmail(email)));
   return new Uint8Array(mac);
 }
@@ -36,7 +38,7 @@ export async function makeOwnerPin(email: string, salt: Uint8Array<ArrayBuffer>)
     throw new Error(`the salt must be ${MIN_SALT_BYTES} to ${MAX_SALT_BYTES} bytes`);
   }
   if (normalizeEmail(email) === "") throw new Error("the owner's address is empty");
-  return `hmac-sha256:${base64UrlEncode(salt)}:${hex(await digest(salt, email))}`;
+  return `hmac-sha256:${base64UrlEncode(salt)}:${hex(await digest(await hmacKey(salt), email))}`;
 }
 
 export interface OwnerPin {
@@ -56,9 +58,11 @@ export function parseOwnerPin(text: string | undefined): OwnerPin | undefined {
   }
   if (salt.length < MIN_SALT_BYTES || salt.length > MAX_SALT_BYTES) return undefined;
   const expected = match[2] as string;
+  let key: Promise<CryptoKey> | undefined;
   return {
     async matches(email: string): Promise<boolean> {
-      const got = hex(await digest(salt, email));
+      key ??= hmacKey(salt);
+      const got = hex(await digest(await key, email));
       let diff = 0;
       for (let i = 0; i < expected.length; i++) diff |= got.charCodeAt(i) ^ expected.charCodeAt(i);
       return diff === 0;
