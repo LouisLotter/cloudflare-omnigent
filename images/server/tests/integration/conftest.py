@@ -259,7 +259,11 @@ class Server:
         return docker("exec", self.name, *command, check=False)
 
     def remove(self) -> None:
-        self.logs()
+        # Keep every server's output for the run's canary scan (CFO_CANARY_VALUES set to the
+        # run's generated secrets): no credential may appear in a log.
+        logs_dir = self.stack.workdir / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        (logs_dir / f"{self.name}.log").write_text(self.logs())
         docker("rm", "-f", self.name, check=False)
 
     def replace(self, **extra: str) -> Server:
@@ -292,6 +296,24 @@ class Server:
 
     def bearer(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.login()['token']}"}
+
+
+def _scan_logs(stack: Stack) -> None:
+    """Run the repository's canary scanner over every server's output, with the run's
+    generated secrets as exact canary values. Any hit fails the run."""
+    logs_dir = stack.workdir / "logs"
+    scanner = HERE.parents[3] / "scripts" / "canary-scan.ts"
+    if not logs_dir.exists() or shutil.which("node") is None or not scanner.exists():
+        return
+    result = subprocess.run(
+        ["node", str(scanner), str(logs_dir)],
+        env={**os.environ, "CFO_CANARY_VALUES": ",".join(stack.secrets())},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    (stack.workdir / "canary-scan.txt").write_text(result.stdout + result.stderr)
+    assert result.returncode == 0, result.stdout[-2000:]
 
 
 @pytest.fixture(scope="session")
@@ -335,6 +357,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
         stack.s3().create_bucket(Bucket=BUCKET)
         stack.reset_link()
         yield stack
+        _scan_logs(stack)
     finally:
         for name in docker("ps", "-a", "-q", "--filter", f"name={PROJECT}-server-").stdout.split():
             docker("rm", "-f", name, check=False)
