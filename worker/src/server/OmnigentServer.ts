@@ -212,6 +212,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #stopping = false;
   /** The running container's intercept registration failed and is retried at each check. */
   #interceptPending = false;
+  /** This instance has run its first alarm (and logged it). */
+  #alarmed = false;
 
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
@@ -380,6 +382,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   // The watchdog
 
   override async alarm(): Promise<void> {
+    if (!this.#alarmed) {
+      // One line per instance, in its first alarm: with invocation logs off (they record request
+      // headers, WP2.6), it is the record that this version's object runs its watchdog, which
+      // the bootstrap's check after the release looks for (WP2.4).
+      this.#alarmed = true;
+      logEvent("watchdog", "first_alarm");
+    }
     await this.#check();
   }
 

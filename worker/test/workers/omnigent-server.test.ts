@@ -442,6 +442,15 @@ describe("OmnigentServer: always on", () => {
     expect(alarm).not.toBeNull();
   });
 
+  it("logs its first alarm once per instance, the record of its watchdog running (invocation logs are off)", async () => {
+    const { stub } = await runningServer();
+    await nextCheck(stub);
+    await evictDurableObject(stub); // a new instance, as a version switch makes
+    await nextCheck(stub);
+    await nextCheck(stub);
+    expect(events("watchdog").filter((e) => e.event === "first_alarm")).toHaveLength(2);
+  });
+
   it("starts over from damaged state rather than stop watching", async () => {
     const { stub, fake } = await freshServer();
     await runInDurableObject(stub, (_i: OmnigentServer, state) => {
