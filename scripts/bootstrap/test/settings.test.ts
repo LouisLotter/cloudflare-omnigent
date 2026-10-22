@@ -45,7 +45,7 @@ describe("installation IDs", () => {
 
 describe("the owner's username and password", () => {
   it("follows Omnigent's username rule, and refuses root and local", () => {
-    for (const ok of ["owner", "a", "louis.l", "x_y-z", "me@example.test", "0wner"]) {
+    for (const ok of ["owner", "a", "ada.l", "x_y-z", "me@example.test", "0wner"]) {
       expect(usernameProblem(ok)).toBeUndefined();
     }
     for (const bad of ["", "Owner", "-owner", "o wner", "a".repeat(65), "me@x", "ünïcode"]) {
