@@ -1,0 +1,8 @@
+{
+  "operation": "admission",
+  "admitting": false,
+  "reason": "not_saved",
+  "message": "The computer's files have not been saved for 35 minutes.",
+  "status": "host_running",
+  "generation": 7
+}

@@ -1,0 +1,9 @@
+{
+  "type": "restore_workspace",
+  "job": {
+    "kind": "restore",
+    "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+    "state": "failed",
+    "reason": "gremlins"
+  }
+}

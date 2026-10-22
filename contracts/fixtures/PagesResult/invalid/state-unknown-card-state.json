@@ -1,0 +1,41 @@
+{
+  "action": "state",
+  "computer": {
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "hostName": "Work computer",
+    "hostId": "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+    "size": "standard-2",
+    "nextSize": null,
+    "lifecycle": "host_running",
+    "status": "host_running",
+    "generation": 7,
+    "admission": {
+      "admitting": true
+    },
+    "saving": false,
+    "lastSavedAt": "2026-10-22T09:14:58.000Z",
+    "verifiedAt": "2026-10-22T09:14:58.000Z",
+    "workspaceBytes": 724000000,
+    "lastContactAt": "2026-10-22T09:20:00.000Z",
+    "lastKeepAliveAt": "2026-10-22T09:10:00.000Z",
+    "restoredTo": null,
+    "unexpectedStopAt": null,
+    "refusedSleeps": 0,
+    "setupCards": [
+      {
+        "provider": "claude",
+        "state": "signed_out"
+      },
+      {
+        "provider": "codex",
+        "state": "signed_in"
+      }
+    ],
+    "removal": {
+      "state": "none",
+      "signOut": "none",
+      "loginPossiblyLost": false,
+      "revocationRecorded": false
+    }
+  }
+}

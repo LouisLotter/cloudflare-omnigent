@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "checkpointId": "ckp_01hzy5b2c3d4e5f6g7h8j9k0m1",
+  "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+  "generation": 7,
+  "order": 3,
+  "createdAt": "2026-10-22T09:15:00.000Z",
+  "object": {
+    "key": "credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n3/ckp_01hzy5b2c3d4e5f6g7h8j9k0m1.json",
+    "size": 812,
+    "sha256": "1e6ed65d77d6364eeaed5a745ba5c4985ae2b700dd85d7cf7f027bdf294a33fc"
+  },
+  "files": {
+    ".claude/.credentials.json": {
+      "state": "present",
+      "size": 27,
+      "sha256": "efafc7a6b3202ba6d742e0df6c4b3c2748693fc6e168fb8762a27a58a2e508e6",
+      "copyOrder": 4
+    },
+    ".claude/.device-keys.json": {
+      "state": "tombstone",
+      "copyOrder": 1
+    },
+    ".codex/auth.json": {
+      "state": "tombstone",
+      "copyOrder": 5
+    },
+    ".codex/.credentials.json": {
+      "state": "tombstone",
+      "copyOrder": 2
+    }
+  }
+}

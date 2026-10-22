@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "cfo.checkpoint-policy",
+      "type": "string"
+    },
+    "roots": {
+      "items": {
+        "maxLength": 4096,
+        "pattern": "^(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)*$",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "minItems": 1,
+      "type": "array"
+    },
+    "rules": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "credential",
+              "exclude",
+              "save",
+              "save-link",
+              "unclassified"
+            ],
+            "type": "string"
+          },
+          "class": {
+            "enum": [
+              "credential",
+              "credential-link",
+              "secret",
+              "runtime",
+              "cache",
+              "continuation",
+              "workspace",
+              "unclassified"
+            ],
+            "type": "string"
+          },
+          "harness": {
+            "enum": [
+              "claude-code",
+              "codex",
+              "claude-native",
+              "codex-native",
+              "both",
+              "omnigent",
+              "platform"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+            "type": "string"
+          },
+          "patterns": {
+            "items": {
+              "maxLength": 512,
+              "pattern": "^(?!\\/)[^\\u0000]+$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "root": {
+            "enum": [
+              "home",
+              "tmp"
+            ],
+            "type": "string"
+          },
+          "why": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "harness",
+          "class",
+          "action",
+          "root",
+          "patterns",
+          "why"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "version": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "roots",
+    "rules"
+  ],
+  "title": "CheckpointPolicy",
+  "type": "object"
+}

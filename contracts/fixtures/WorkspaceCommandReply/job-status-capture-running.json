@@ -1,0 +1,8 @@
+{
+  "type": "job_status",
+  "job": {
+    "kind": "capture",
+    "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+    "state": "running"
+  }
+}

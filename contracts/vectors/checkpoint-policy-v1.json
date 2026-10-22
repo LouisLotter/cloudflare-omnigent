@@ -1,0 +1,276 @@
+{
+  "description": "Checkpoint policy version 1 (checkpoint-policy.ts): the decision for sample paths, relative to the home directory. `tmpRel` is $TMPDIR relative to the home, when it lies inside a root (never in version 1; the last case shows why). WP3.4's Python policy must give the same decisions.",
+  "policyVersion": 1,
+  "cases": [
+    {
+      "path": ".claude/.credentials.json",
+      "action": "credential",
+      "rule": "claude-credentials"
+    },
+    {
+      "path": ".claude/.credentials.json.tmp.1a2b3c4d",
+      "action": "credential",
+      "rule": "claude-credentials"
+    },
+    {
+      "path": ".claude/.credentials.json.tmp.4242.0123456789ab",
+      "action": "credential",
+      "rule": "claude-credentials"
+    },
+    {
+      "path": ".claude/.device-keys.json",
+      "action": "credential",
+      "rule": "claude-device-keys"
+    },
+    {
+      "path": ".claude/.device-keys.lock",
+      "action": "credential",
+      "rule": "claude-device-keys"
+    },
+    {
+      "path": ".codex/auth.json",
+      "action": "credential",
+      "rule": "codex-auth"
+    },
+    {
+      "path": ".codex/.credentials.json",
+      "action": "credential",
+      "rule": "codex-mcp-credentials"
+    },
+    {
+      "path": ".codex/.credentials.json.tmp",
+      "action": "credential",
+      "rule": "codex-mcp-credentials"
+    },
+    {
+      "path": ".omnigent/auth_tokens.json",
+      "action": "exclude",
+      "rule": "omnigent-login"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/auth.json",
+      "action": "exclude",
+      "rule": "codex-home-auth"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/.credentials.json",
+      "action": "exclude",
+      "rule": "codex-home-mcp-credentials"
+    },
+    {
+      "path": ".omnigent/cache/codex-model-probe/home/auth.json",
+      "action": "exclude",
+      "rule": "codex-model-probe-cache"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/policy_hook.json",
+      "action": "exclude",
+      "rule": "codex-policy-hook"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/policy_hook.json.k3j2h1g0",
+      "action": "exclude",
+      "rule": "codex-policy-hook"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/bridge.json.k3j2h1g0",
+      "action": "exclude",
+      "rule": "codex-bridge-json"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/provider_key",
+      "action": "exclude",
+      "rule": "codex-provider-key"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/provider_key.x8y7z6w5",
+      "action": "exclude",
+      "rule": "codex-provider-key"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/.server.json.ab12cd34.tmp",
+      "action": "exclude",
+      "rule": "bridge-server-json"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/.tool_relay.json.ab12cd34.tmp",
+      "action": "exclude",
+      "rule": "bridge-tool-relay"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/tool_relay.env",
+      "action": "exclude",
+      "rule": "bridge-tool-relay-env"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/subagent_router.json.ab12cd34.tmp",
+      "action": "exclude",
+      "rule": "bridge-routers"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/state.json",
+      "action": "exclude",
+      "rule": "codex-bridge-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/process-owners/4242",
+      "action": "exclude",
+      "rule": "codex-process-registry"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/config.toml",
+      "action": "save",
+      "rule": "codex-home-config"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/.omnigent-config-profile.toml",
+      "action": "save",
+      "rule": "codex-home-config"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/config.toml.tmpab12",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/sessions/2026/10/22/rollout-x.jsonl",
+      "action": "save",
+      "rule": "codex-home-continuation"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/AGENTS.md",
+      "action": "save-link",
+      "rule": "codex-home-links"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/state_5.sqlite",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/dead_letter.jsonl",
+      "action": "save",
+      "rule": "codex-bridge-queue"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/launch.json",
+      "action": "save",
+      "rule": "codex-bridge-continuation"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a",
+      "action": "save",
+      "rule": "codex-bridge-dir"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/mystery.bin",
+      "action": "unclassified",
+      "rule": "codex-bridge-unclassified"
+    },
+    {
+      "path": ".omnigent/claude-native/9c1d/launch.json",
+      "action": "save",
+      "rule": "claude-launch-state"
+    },
+    {
+      "path": ".omnigent/cache/models.json",
+      "action": "exclude",
+      "rule": "omnigent-cache"
+    },
+    {
+      "path": ".claude/projects/-home-u-work/3b0c.jsonl",
+      "action": "save",
+      "rule": "claude-transcripts"
+    },
+    {
+      "path": ".claude/projects/-home-u-work/3b0c.jsonl.tmp",
+      "action": "exclude",
+      "rule": "claude-transcript-temporaries"
+    },
+    {
+      "path": ".claude/projects/-home-u-work/3b0c.jsonl.unreconciled-20261022T091500Z",
+      "action": "save",
+      "rule": "claude-unreconciled-transcripts"
+    },
+    {
+      "path": ".claude.json",
+      "action": "save",
+      "rule": "claude-global-config"
+    },
+    {
+      "path": ".claude/backups/.claude.json.backup.1",
+      "action": "exclude",
+      "rule": "claude-backups"
+    },
+    {
+      "path": ".claude/statsig/cache",
+      "action": "exclude",
+      "rule": "claude-runtime"
+    },
+    {
+      "path": ".codex/log/codex-tui.log",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".codex/sessions/2026/10/22/rollout-y.jsonl",
+      "action": "save",
+      "rule": "workspace"
+    },
+    {
+      "path": ".codex/config.toml",
+      "action": "save",
+      "rule": "workspace"
+    },
+    {
+      "path": "work/app/node_modules/left-pad/index.js",
+      "action": "exclude",
+      "rule": "general-caches"
+    },
+    {
+      "path": "work/app/.venv",
+      "action": "exclude",
+      "rule": "general-caches"
+    },
+    {
+      "path": "work/app/src/main.py",
+      "action": "save",
+      "rule": "workspace"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/permission_hook.json",
+      "tmpRel": "work/tmp",
+      "action": "exclude",
+      "rule": "tmp-claude-bridge-secrets"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/.claude-settings.json.ab12cd34.tmp",
+      "tmpRel": "work/tmp",
+      "action": "exclude",
+      "rule": "tmp-claude-bridge-secrets"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/transcript_forwarder.json",
+      "tmpRel": "work/tmp",
+      "action": "save",
+      "rule": "tmp-claude-bridge-continuation"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef",
+      "tmpRel": "work/tmp",
+      "action": "save",
+      "rule": "tmp-claude-bridge-dirs"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/locks/a.lock",
+      "tmpRel": "work/tmp",
+      "action": "exclude",
+      "rule": "tmp-claude-bridge-runtime"
+    },
+    {
+      "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/permission_hook.json",
+      "action": "save",
+      "rule": "workspace"
+    }
+  ]
+}

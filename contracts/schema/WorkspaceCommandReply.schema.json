@@ -1,0 +1,888 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "installed": {
+          "items": {
+            "enum": [
+              ".claude/.credentials.json",
+              ".claude/.device-keys.json",
+              ".codex/auth.json",
+              ".codex/.credentials.json"
+            ],
+            "type": "string"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "orderFloor": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "removed": {
+          "items": {
+            "enum": [
+              ".claude/.credentials.json",
+              ".claude/.device-keys.json",
+              ".codex/auth.json",
+              ".codex/.credentials.json"
+            ],
+            "type": "string"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "type": {
+          "const": "install_credentials",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "installed",
+        "removed",
+        "orderFloor"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "restore",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "running",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "entries": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "restore",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "done",
+                  "type": "string"
+                },
+                "stripped": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "treeDigest": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state",
+                "treeDigest",
+                "entries",
+                "stripped"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "restore",
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "layer_missing",
+                    "layer_corrupt",
+                    "index_mismatch",
+                    "path_refused",
+                    "disk_full",
+                    "unsupported_format",
+                    "move_failed"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state",
+                "reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": {
+          "const": "restore_workspace",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "job"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "enum": [
+            "taken",
+            "superseded",
+            "refused_live_host",
+            "declined"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "start_host",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "order": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "credential_snapshot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "order"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "capture",
+                  "type": "string"
+                },
+                "state": {
+                  "const": "running",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "bytes": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "cutAt": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                "deleted": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "entries": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "indexSha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "capture",
+                  "type": "string"
+                },
+                "layerDir": {
+                  "maxLength": 4096,
+                  "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
+                  "type": "string"
+                },
+                "pausedMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "staged",
+                  "type": "string"
+                },
+                "treeDigest": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state",
+                "layerDir",
+                "indexSha256",
+                "treeDigest",
+                "entries",
+                "deleted",
+                "bytes",
+                "cutAt",
+                "pausedMs"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cutAt": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "capture",
+                  "type": "string"
+                },
+                "pausedMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "unchanged",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state",
+                "cutAt",
+                "pausedMs"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "jobOperationId": {
+                  "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "capture",
+                  "type": "string"
+                },
+                "pausedMs": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "reason": {
+                  "enum": [
+                    "lease_expired",
+                    "disk_budget",
+                    "copy_failed",
+                    "stage_failed",
+                    "parent_mismatch",
+                    "policy_violation",
+                    "busy"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "const": "failed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "jobOperationId",
+                "state",
+                "reason",
+                "pausedMs"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "type": {
+          "const": "capture",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "job"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "done": {
+          "const": true,
+          "type": "boolean"
+        },
+        "type": {
+          "const": "finish_capture",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "done"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "restore",
+                      "type": "string"
+                    },
+                    "state": {
+                      "const": "running",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "entries": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "restore",
+                      "type": "string"
+                    },
+                    "state": {
+                      "const": "done",
+                      "type": "string"
+                    },
+                    "stripped": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "treeDigest": {
+                      "anyOf": [
+                        {
+                          "pattern": "^[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state",
+                    "treeDigest",
+                    "entries",
+                    "stripped"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "restore",
+                      "type": "string"
+                    },
+                    "reason": {
+                      "enum": [
+                        "layer_missing",
+                        "layer_corrupt",
+                        "index_mismatch",
+                        "path_refused",
+                        "disk_full",
+                        "unsupported_format",
+                        "move_failed"
+                      ],
+                      "type": "string"
+                    },
+                    "state": {
+                      "const": "failed",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state",
+                    "reason"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "capture",
+                      "type": "string"
+                    },
+                    "state": {
+                      "const": "running",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "cutAt": {
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "type": "string"
+                    },
+                    "deleted": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "entries": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "indexSha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "capture",
+                      "type": "string"
+                    },
+                    "layerDir": {
+                      "maxLength": 4096,
+                      "pattern": "^(?:\\/(?!\\.\\.?(?:\\/|$))(?:[^/\\u0000\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+)+$",
+                      "type": "string"
+                    },
+                    "pausedMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "const": "staged",
+                      "type": "string"
+                    },
+                    "treeDigest": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state",
+                    "layerDir",
+                    "indexSha256",
+                    "treeDigest",
+                    "entries",
+                    "deleted",
+                    "bytes",
+                    "cutAt",
+                    "pausedMs"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cutAt": {
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "type": "string"
+                    },
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "capture",
+                      "type": "string"
+                    },
+                    "pausedMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "state": {
+                      "const": "unchanged",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state",
+                    "cutAt",
+                    "pausedMs"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "jobOperationId": {
+                      "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "capture",
+                      "type": "string"
+                    },
+                    "pausedMs": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "reason": {
+                      "enum": [
+                        "lease_expired",
+                        "disk_budget",
+                        "copy_failed",
+                        "stage_failed",
+                        "parent_mismatch",
+                        "policy_violation",
+                        "busy"
+                      ],
+                      "type": "string"
+                    },
+                    "state": {
+                      "const": "failed",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "jobOperationId",
+                    "state",
+                    "reason",
+                    "pausedMs"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          ]
+        },
+        "type": {
+          "const": "job_status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "job"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "report": {
+          "additionalProperties": false,
+          "properties": {
+            "capture": {
+              "enum": [
+                "idle",
+                "running"
+              ],
+              "type": "string"
+            },
+            "credentialsPending": {
+              "items": {
+                "enum": [
+                  ".claude/.credentials.json",
+                  ".claude/.device-keys.json",
+                  ".codex/auth.json",
+                  ".codex/.credentials.json"
+                ],
+                "type": "string"
+              },
+              "maxItems": 16,
+              "type": "array"
+            },
+            "host": {
+              "additionalProperties": false,
+              "properties": {
+                "restarts": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "startAttempt": {
+                  "anyOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "enum": [
+                    "not_started",
+                    "starting",
+                    "running",
+                    "restarting",
+                    "refused"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "startAttempt",
+                "restarts"
+              ],
+              "type": "object"
+            },
+            "logins": {
+              "additionalProperties": false,
+              "properties": {
+                "claude": {
+                  "enum": [
+                    "signed_in",
+                    "signed_out",
+                    "expired",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "codex": {
+                  "enum": [
+                    "signed_in",
+                    "signed_out",
+                    "expired",
+                    "unknown"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claude",
+                "codex"
+              ],
+              "type": "object"
+            },
+            "restore": {
+              "enum": [
+                "pending",
+                "running",
+                "confirmed",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "runnerProcesses": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "seq": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "seq",
+            "host",
+            "runnerProcesses",
+            "restore",
+            "capture",
+            "credentialsPending",
+            "logins"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "report"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "claude": {
+          "enum": [
+            "ok",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "codex": {
+          "enum": [
+            "ok",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "sign_out",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "claude",
+        "codex"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "WorkspaceCommandReply"
+}

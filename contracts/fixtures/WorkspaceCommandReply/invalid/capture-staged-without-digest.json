@@ -1,0 +1,15 @@
+{
+  "type": "capture",
+  "job": {
+    "kind": "capture",
+    "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+    "state": "staged",
+    "layerDir": "/var/cfo/staged/x",
+    "indexSha256": "de7d1b721a1e0632b7cf04edf5032c8ecffa9f9a08492152b926f1a5a7e765d7",
+    "entries": 0,
+    "deleted": 0,
+    "bytes": 0,
+    "cutAt": "2026-10-22T09:14:58.000Z",
+    "pausedMs": 1
+  }
+}

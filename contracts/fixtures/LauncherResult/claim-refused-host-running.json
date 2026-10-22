@@ -1,0 +1,5 @@
+{
+  "operation": "claim_start",
+  "granted": false,
+  "status": "host_running"
+}

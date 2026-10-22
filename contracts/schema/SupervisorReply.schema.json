@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "hello",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "protocolVersion"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "appliedSeq": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "report",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "appliedSeq"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "checkpointId": {
+          "anyOf": [
+            {
+              "pattern": "^ckp_[0-9a-hjkmnp-tv-z]{26}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "published",
+            "superseded"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "credential_checkpoint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "outcome",
+        "checkpointId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "enum": [
+            "accepted",
+            "refused"
+          ],
+          "type": "string"
+        },
+        "type": {
+          "const": "save_request",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "outcome"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "SupervisorReply"
+}

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { SupervisorHello, wireSchemas } from "../src/index.ts";
+import { SupervisorMessage, wireSchemas } from "../src/index.ts";
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
 
@@ -25,6 +25,8 @@ describe("golden fixtures", () => {
   for (const [name, schema] of Object.entries(wireSchemas)) {
     const valid = jsonFiles(join(fixturesDir, name));
     const invalid = jsonFiles(join(fixturesDir, name, "invalid"));
+    // Invalid only by a check the exported JSON Schema cannot express (a cross-field rule).
+    const refined = jsonFiles(join(fixturesDir, name, "refined"));
 
     it(`${name} has at least one valid and one invalid fixture`, () => {
       expect(valid.length).toBeGreaterThan(0);
@@ -44,10 +46,16 @@ describe("golden fixtures", () => {
         expect(schema.safeParse(load(file)).success).toBe(false);
       });
     }
+
+    for (const file of refined) {
+      it(`${name} rejects refined/${file.split("/").pop()}`, () => {
+        expect(schema.safeParse(load(file)).success).toBe(false);
+      });
+    }
   }
 });
 
-describe("SupervisorHello properties", () => {
+describe("SupervisorMessage hello properties", () => {
   const base32 = "0123456789abcdefghjkmnpqrstvwxyz";
   const id26 = fc
     .array(fc.constantFrom(...base32.split("")), { minLength: 26, maxLength: 26 })
@@ -57,19 +65,19 @@ describe("SupervisorHello properties", () => {
     fc.assert(
       fc.property(
         id26,
+        id26,
         fc.nat(),
-        fc.uuid({ version: 4 }),
         fc.integer({ min: 1, max: 1000 }),
-        (id, generation, hostId, protocolVersion) => {
+        (computer, operation, generation, protocolVersion) => {
           const hello = {
             type: "hello" as const,
             protocolVersion,
-            computerId: `cmp_${id}`,
+            computerId: `cmp_${computer}`,
             generation,
-            hostId,
+            operationId: `op_${operation}`,
             supervisorVersion: "0.1.0",
           };
-          const parsed = SupervisorHello.parse(hello);
+          const parsed = SupervisorMessage.parse(hello);
           expect(JSON.parse(JSON.stringify(parsed))).toEqual(hello);
         },
       ),
@@ -79,7 +87,7 @@ describe("SupervisorHello properties", () => {
   it("never throws on arbitrary JSON input, only reports failure", () => {
     fc.assert(
       fc.property(fc.jsonValue(), (value) => {
-        expect(() => SupervisorHello.safeParse(value)).not.toThrow();
+        expect(() => SupervisorMessage.safeParse(value)).not.toThrow();
       }),
     );
   });

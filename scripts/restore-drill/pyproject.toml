@@ -1,0 +1,17 @@
+# Tool settings for the restore drill (cfo_drill) and the durability test suite (WP2.5),
+# matching images/server/pyproject.toml. Nothing is installed from here: the drill runs inside
+# the server image (staging/Dockerfile copies cfo_drill), and the tests run from uv or inside
+# the image's test target.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cfo_drill", "cfo_server"]
+known-local-folder = ["conftest", "harness_stack"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
