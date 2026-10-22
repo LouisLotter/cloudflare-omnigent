@@ -1,0 +1,465 @@
+{
+  "format": "cfo.s6.native-bridge-classification",
+  "version": 1,
+  "omnigent": "LouisLotter/omnigent cfo/integration af3e49de2",
+  "notes": [
+    "One classification of every file the claude-native and codex-native harnesses write under the computer's home, from the fork's source (file:line in `evidence`) and checked by running the fork's own writers under a throwaway home (spikes/s6/followup/bridge_check.py).",
+    "Patterns are relative to the home directory, or to the temporary directory for root \"tmp\" (Claude-native's bridge lives in $TMPDIR/omnigent-<uid>/claude-native, outside the home; its rules apply only if $TMPDIR lies inside a checkpointed directory).",
+    "`*` matches within one path segment, `?` one character in a segment, `**` any number of segments. The first matching rule wins, so specific rules come first. A directory a rule saves is traversed, and each member is decided on its own; a directory a rule excludes is skipped whole.",
+    "Actions: exclude (never in a workspace checkpoint; stripped with an alert if found in a layer), save (continuation state), save-link (a symbolic link kept as a link, never followed), decide (saved today, but can hold a secret: the lead decides; RC-53 flags it).",
+    "Every family lists its temporary-write variants: a capture can pause between a write and its rename."
+  ],
+  "rules": [
+    {
+      "id": "codex-home-auth",
+      "harness": "codex-native",
+      "class": "credential-family link",
+      "action": "exclude",
+      "patterns": [".omnigent/codex-native/*/codex-home/auth.json"],
+      "evidence": "inner/codex_executor.py:1180-1226 (symlink to ~/.codex/auth.json; copy2 fallback); app_server.py:2106-2114 relinks a missing one at every start",
+      "why": "A link (or a copied fallback) to the declared login file. Excluded by path whatever its type; the start relinks it. Codex rewrites auth.json in place (no temporary sibling)."
+    },
+    {
+      "id": "codex-home-mcp-credentials",
+      "harness": "codex-native",
+      "class": "credential-family link",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/codex-home/.credentials.json",
+        ".omnigent/codex-native/*/codex-home/.credentials.json.*"
+      ],
+      "evidence": "inner/codex_executor.py:1187, 1206-1216 (os.link: a hard link, same inode as ~/.codex/.credentials.json; copy2 fallback)",
+      "why": "A hard link: an archive that follows the path stores the whole MCP login. Must be excluded by path; the start re-links it."
+    },
+    {
+      "id": "codex-model-probe-cache",
+      "harness": "codex-native",
+      "class": "credential-family link",
+      "action": "exclude",
+      "patterns": [".omnigent/cache/codex-model-probe/**"],
+      "evidence": "harnesses/codex_native/app_server.py:1547-1597 (a minimal private home with its own auth.json link, .credentials.json hard link and provider tables)",
+      "why": "A second set of credential links. Cache; regenerated."
+    },
+    {
+      "id": "codex-policy-hook",
+      "harness": "codex-native",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/policy_hook.json",
+        ".omnigent/codex-native/*/policy_hook.json.*"
+      ],
+      "evidence": "codex_native/bridge.py:430-465 write_policy_hook_config, 468-495 update_policy_hook_auth_headers (mkstemp prefix 'policy_hook.json.' then os.replace; 0600)",
+      "fields": [
+        "ap_auth_headers.Authorization (runner, delegated or OIDC bearer)",
+        "ap_auth_headers.X-* (Databricks and installation ids)"
+      ],
+      "why": "Bearer headers for the policy hook. Rewritten at every app-server start; the renewal path re-mints in memory and has no caller that writes."
+    },
+    {
+      "id": "codex-bridge-json",
+      "harness": "codex-native",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/bridge.json",
+        ".omnigent/codex-native/*/bridge.json.*"
+      ],
+      "evidence": "codex_native/bridge.py:358-386 write_mcp_bridge_config (mkstemp prefix 'bridge.json.' then os.replace)",
+      "fields": ["token (serve-mcp control-endpoint bearer)"],
+      "why": "Holds only the serve-mcp bearer. Recreated when missing, so excluding it loses nothing."
+    },
+    {
+      "id": "bridge-server-json",
+      "harness": "both",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/server.json",
+        ".omnigent/codex-native/*/.server.json.*.tmp"
+      ],
+      "evidence": "claude_native/bridge.py:6515-6550 _start_http_ingress via _write_json_file 9635-9663 (NamedTemporaryFile '.server.json.<8>.tmp')",
+      "fields": ["token (= bridge.json token)", "socket or url, pid"],
+      "why": "Bearer, and a socket path that is dead after a restore."
+    },
+    {
+      "id": "bridge-tool-relay",
+      "harness": "both",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/tool_relay.json",
+        ".omnigent/codex-native/*/.tool_relay.json.*.tmp"
+      ],
+      "evidence": "claude_native/bridge.py:6365-6447 start_tool_relay, 1324-1337 update_tools, via _write_json_file (NamedTemporaryFile '.tool_relay.json.<8>.tmp')",
+      "fields": ["token (tool relay bearer)", "url (loopback port)"],
+      "why": "Relay bearer; a stale copy advertises tools at a dead port."
+    },
+    {
+      "id": "bridge-tool-relay-env",
+      "harness": "both",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [".omnigent/codex-native/*/tool_relay.env"],
+      "evidence": "claude_native/bridge.py:6428-6433 (Path.write_text in place, then chmod 0600; never deleted)",
+      "fields": ["OMNIGENT_RELAY_TOKEN"],
+      "why": "Written in place: no temporary sibling, briefly at the umask's mode, and can be torn. Never removed."
+    },
+    {
+      "id": "bridge-routers",
+      "harness": "both",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/turn_router.json",
+        ".omnigent/codex-native/*/turn_router.json.*.tmp",
+        ".omnigent/codex-native/*/subagent_router.json",
+        ".omnigent/codex-native/*/subagent_router.json.*.tmp"
+      ],
+      "evidence": "runner/subagent_routing.py:981-1026 write_advertisement (mkstemp prefix '<name>.', suffix '.tmp')",
+      "fields": ["token (loopback route-turn bearer)"],
+      "why": "Smart Routing sessions only."
+    },
+    {
+      "id": "codex-bridge-locks",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/.locks",
+        ".omnigent/codex-native/.locks/**",
+        ".omnigent/codex-native/*/state.lock",
+        ".omnigent/codex-native/*/unmirrored_settings.lock"
+      ],
+      "evidence": "native_bridge_common.py:44-55; codex_native/bridge.py:1012-1038",
+      "why": "Lock files; no value after a restore."
+    },
+    {
+      "id": "codex-bridge-runtime",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/owner.pid",
+        ".omnigent/codex-native/*/state.json",
+        ".omnigent/codex-native/*/state.json.*",
+        ".omnigent/codex-native/*/startup_error.json",
+        ".omnigent/codex-native/*/startup_error.json.*",
+        ".omnigent/codex-native/*/startup_timeout.json",
+        ".omnigent/codex-native/*/startup_timeout.json.*",
+        ".omnigent/codex-native/*/egress_certificate_failure.json",
+        ".omnigent/codex-native/*/egress_certificate_failure.json.*",
+        ".omnigent/codex-native/*/mcp_startup.json",
+        ".omnigent/codex-native/*/mcp_startup.json.*",
+        ".omnigent/codex-native/*/unmirrored_settings.json",
+        ".omnigent/codex-native/*/unmirrored_settings.json.*",
+        ".omnigent/codex-native/*/app-server.sock",
+        ".omnigent/codex-native/*/turn_routing.log",
+        ".omnigent/codex-native/*/dead_letter.jsonl.tmp",
+        ".omnigent/codex-native/*/dead_letter.jsonl.1.tmp",
+        ".omnigent/codex-native/*/side_chat_requests/*.tmp"
+      ],
+      "evidence": "codex_native/bridge.py:1041-1070, 1098-1221, 1387-1409, 546-588, 521-528; native_bridge_common.py:73-86; _native_post_delivery.py:450-470; side_chat.py:327-340",
+      "why": "A restored state.json or startup error points turns at a dead app-server or fails them until relaunch; clear_bridge_state removes them at every launch anyway. The dead-letter .tmp files are transient rewrites; the queue itself is saved."
+    },
+    {
+      "id": "codex-process-registry",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/process-registry.json",
+        ".omnigent/codex-native/process-registry.json.tmp",
+        ".omnigent/codex-native/process-registry.json.lock",
+        ".omnigent/codex-native/process-owners/**"
+      ],
+      "evidence": "codex_native/process_registry.py:91-298",
+      "why": "PIDs and boot ids; dropped on reconcile after a restore."
+    },
+    {
+      "id": "codex-home-skills",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [".omnigent/codex-native/*/codex-home/skills/**"],
+      "evidence": "inner/codex_executor.py:866-957 (links into a temporary bundle directory; existing entries are never repaired)",
+      "why": "Restored links would point at a bundle that no longer exists; excluded, they are re-linked at launch."
+    },
+    {
+      "id": "codex-home-temporaries",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/codex-home/config.toml.*",
+        ".omnigent/codex-native/*/codex-home/.config.toml.*",
+        ".omnigent/codex-native/*/codex-home/..omnigent-config-profile.toml.*",
+        ".omnigent/codex-native/*/codex-home/..omnigent-developer-instructions-state.toml.*",
+        ".omnigent/codex-native/*/codex-home/hooks.json.*",
+        ".omnigent/codex-native/*/codex-home/sessions/**/.rollout-*.jsonl.*.tmp",
+        ".omnigent/codex-native/*/codex-home/sessions/**/rollout-*.jsonl.tmp",
+        ".omnigent/codex-native/*/codex-home/log/**",
+        ".omnigent/codex-native/*/codex-home/.tmp/**",
+        ".omnigent/codex-native/*/codex-home/cache/**"
+      ],
+      "evidence": "launch_args.py:340-349 _write_private_config; codex_executor.py:1290-1380; bridge.py:949-1009; app_server.py:417-610; main.py:1864-2088 (rollout rewrites)",
+      "why": "Temporary siblings of saved files (a config temporary can hold the same secret as config.toml), and the same log, .tmp and cache exclusions as ~/.codex (DC-12)."
+    },
+    {
+      "id": "omnigent-model-catalog-cache",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [".omnigent/cache/**"],
+      "evidence": "models/model_catalog_store.py:83-103,163",
+      "why": "Cache; the design already excludes ~/.omnigent/cache."
+    },
+    {
+      "id": "codex-home-config",
+      "harness": "codex-native",
+      "class": "continuation, can hold a secret",
+      "action": "decide",
+      "patterns": [
+        ".omnigent/codex-native/*/codex-home/config.toml",
+        ".omnigent/codex-native/*/codex-home/.omnigent-config-profile.toml"
+      ],
+      "evidence": "inner/codex_executor.py:1252-1287 (copied from ~/.codex/config.toml), 2214-2268 and app_server.py:3784-3797 (an Omnigent key provider's auth command is printf %s '<key>': a literal API key); launch_args.py:450-507 (the profile copies whole tables)",
+      "fields": [
+        "model_providers.*.auth.args (literal API key for Omnigent key providers)",
+        "anything the user's ~/.codex/config.toml holds (mcp_servers.*.http_headers, env)"
+      ],
+      "why": "The session's private settings (/model, effort, trust, writable roots, developer instructions) must survive, so it is saved. With a subscription login it holds no secret; with an Omnigent key provider it holds the key in plain text. Lead decides: fork change (reference the key instead of inlining it), scrub on capture, or accept with an RC-53 exception."
+    },
+    {
+      "id": "codex-home-continuation",
+      "harness": "codex-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [
+        ".omnigent/codex-native/*/codex-home/.omnigent-developer-instructions-state.toml",
+        ".omnigent/codex-native/*/codex-home/.omnigent-developer-instructions-base",
+        ".omnigent/codex-native/*/codex-home/model_catalog.json",
+        ".omnigent/codex-native/*/codex-home/hooks.json",
+        ".omnigent/codex-native/*/codex-home/.omnigent-codex-source",
+        ".omnigent/codex-native/*/codex-home/sessions/**",
+        ".omnigent/codex-native/*/codex-home/plugins"
+      ],
+      "evidence": "app_server.py:417-610; codex_executor.py:1938-2006 (model_catalog.json is referenced from config.toml and not regenerated), 1570-1610 (hooks.json), 1227-1228; Codex rollouts",
+      "why": "Private session state. Rollouts are the local fallback when server history is unavailable."
+    },
+    {
+      "id": "codex-home-links",
+      "harness": "codex-native",
+      "class": "continuation (link only)",
+      "action": "save-link",
+      "patterns": [
+        ".omnigent/codex-native/*/codex-home/memories_1.sqlite",
+        ".omnigent/codex-native/*/codex-home/AGENTS.md",
+        ".omnigent/codex-native/*/codex-home/AGENTS.override.md",
+        ".omnigent/codex-native/*/codex-home/plugins/cache",
+        ".omnigent/codex-native/*/codex-home/mcp-oauth-locks",
+        ".omnigent/codex-native/*/codex-home/memories",
+        ".omnigent/codex-native/*/codex-home/rules"
+      ],
+      "evidence": "inner/codex_executor.py:208-217, 1183-1250",
+      "why": "Links into ~/.codex; kept as links, never followed. A copy fallback (not a link) is saved as a file."
+    },
+    {
+      "id": "codex-home-other",
+      "harness": "codex-native",
+      "class": "continuation (Codex's own files)",
+      "action": "save",
+      "patterns": [".omnigent/codex-native/*/codex-home/**"],
+      "evidence": "written by the Codex CLI itself in its CODEX_HOME (history, state databases)",
+      "why": "The same rules as ~/.codex; DC-45's key report covers what Codex writes there with a real login."
+    },
+    {
+      "id": "codex-bridge-queue",
+      "harness": "codex-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [
+        ".omnigent/codex-native/*/dead_letter.jsonl",
+        ".omnigent/codex-native/*/dead_letter.jsonl.1"
+      ],
+      "evidence": "_native_post_delivery.py:47-117 append_dead_letter, 473-605 replay_dead_letters; forwarder.py:7696-7756 (replayed before a cold resume rebuilds the rollout)",
+      "why": "The undelivered-event queue: transcript items (idempotent by source_id) and usage (set semantics). Never tool calls."
+    },
+    {
+      "id": "codex-bridge-continuation",
+      "harness": "codex-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [
+        ".omnigent/codex-native/*/turn_routing_done",
+        ".omnigent/codex-native/*/turn_replay_pending.json",
+        ".omnigent/codex-native/*/side_chat_requests",
+        ".omnigent/codex-native/*/side_chat_requests/*.json",
+        ".omnigent/codex-native/*/codex-home",
+        ".omnigent/codex-native/*/launch.json"
+      ],
+      "evidence": "runner/turn_routing.py:367-391, 976-1047; side_chat.py:327-340; codex_native/state.py:86-124",
+      "why": "Routing and replay markers (checked against server items before acting) and the CLI's launch record."
+    },
+    {
+      "id": "codex-bridge-launch-tmp",
+      "harness": "codex-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [
+        ".omnigent/codex-native/*/launch.json.tmp",
+        ".omnigent/claude-native/*/launch.json.tmp"
+      ],
+      "evidence": "codex_native/state.py:86-124; claude_native/state.py:143-236",
+      "why": "Fixed temporary of launch.json."
+    },
+    {
+      "id": "codex-bridge-dir",
+      "harness": "codex-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [".omnigent/codex-native", ".omnigent/codex-native/*"],
+      "evidence": "codex_native/bridge.py:217-266",
+      "why": "The directories themselves (mode 0700)."
+    },
+    {
+      "id": "codex-bridge-unclassified",
+      "harness": "codex-native",
+      "class": "unclassified",
+      "action": "unclassified",
+      "patterns": [".omnigent/codex-native/**"],
+      "why": "Anything else in a Codex bridge is a file this classification does not know: the check fails on it."
+    },
+    {
+      "id": "claude-launch-state",
+      "harness": "claude-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [
+        ".omnigent/claude-native",
+        ".omnigent/claude-native/*",
+        ".omnigent/claude-native/*/launch.json"
+      ],
+      "evidence": "claude_native/state.py:143-236 (CLI `omnigent claude` only)",
+      "why": "Launch record."
+    },
+    {
+      "id": "native-attachments",
+      "harness": "both",
+      "class": "continuation (regenerable)",
+      "action": "save",
+      "patterns": [".omnigent/attachments/**", ".omnigent/attachments"],
+      "evidence": "inner/native_attachments.py:151-217",
+      "why": "Cached uploads; rebuilt on resume."
+    },
+    {
+      "id": "claude-transcript-temporaries",
+      "harness": "claude-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": [".claude/projects/*/*.jsonl.tmp"],
+      "evidence": "claude_native/main.py:2398-2444, 2607-2672, 5327-5428 (fixed '<uuid>.jsonl.tmp' then replace)",
+      "why": "Temporary of a rewritten transcript."
+    },
+    {
+      "id": "claude-transcripts",
+      "harness": "claude-native",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [".claude/projects/**"],
+      "evidence": "Claude Code; Omnigent rewrites on cold resume (claude_native/main.py:5327-5428)",
+      "why": "Conversation transcripts; the server's history is authoritative on a cold resume."
+    },
+    {
+      "id": "claude-global-config-temporaries",
+      "harness": "claude-native",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": ["..claude.json.*.tmp"],
+      "evidence": "claude_native/bridge.py:1949-1989 _atomic_write_user_json (NamedTemporaryFile prefix '.<name>.' suffix '.tmp', so two leading dots)",
+      "why": "Temporary of ~/.claude.json, which the next rule decides."
+    },
+    {
+      "id": "claude-global-config",
+      "harness": "claude-native",
+      "class": "continuation, can hold a secret",
+      "action": "decide",
+      "patterns": [".claude.json"],
+      "evidence": "claude_native/bridge.py:1853-1946 ensure_claude_workspace_trusted sets only hasCompletedOnboarding and projects[<workspace>].hasTrustDialogAccepted; the Claude CLI keeps oauthAccount metadata and user-scope mcpServers (headers and env may hold secrets) here",
+      "why": "Omnigent writes no secret here. What the Claude CLI writes is DC-45's question (spikes/s6/credsync/login_values.py, by key)."
+    },
+    {
+      "id": "tmp-claude-bridge-secrets",
+      "harness": "claude-native",
+      "root": "tmp",
+      "class": "secret",
+      "action": "exclude",
+      "patterns": [
+        "omnigent-*/claude-native/*/permission_hook.json",
+        "omnigent-*/claude-native/*/.permission_hook.json.*.tmp",
+        "omnigent-*/claude-native/*/claude-settings.json",
+        "omnigent-*/claude-native/*/.claude-settings.json.*.tmp",
+        "omnigent-*/claude-native/*/bridge.json",
+        "omnigent-*/claude-native/*/.bridge.json.*.tmp",
+        "omnigent-*/claude-native/*/tool_relay.json",
+        "omnigent-*/claude-native/*/.tool_relay.json.*.tmp",
+        "omnigent-*/claude-native/*/tool_relay.env",
+        "omnigent-*/claude-native/*/server.json",
+        "omnigent-*/claude-native/*/.server.json.*.tmp",
+        "omnigent-*/claude-native/*/turn_router.json",
+        "omnigent-*/claude-native/*/turn_router.json.*.tmp",
+        "omnigent-*/claude-native/*/subagent_router.json",
+        "omnigent-*/claude-native/*/subagent_router.json.*.tmp"
+      ],
+      "evidence": "claude_native/bridge.py:186-188 (root under tempfile.gettempdir()), 1664-1761 prepare_bridge_dir (bridge.json token), 2181-2198 and 2424-2432 (permission_hook.json ap_auth_headers), 2657-2751 augment_claude_args (claude-settings.json: hooks and apiKeyHelper), 6365-6447 relay, 9635-9663 _write_json_file",
+      "fields": [
+        "permission_hook.json: ap_auth_headers",
+        "claude-settings.json: apiKeyHelper (a credential-bearing command)",
+        "bridge.json: token",
+        "tool_relay.*: relay token",
+        "server.json, routers: tokens"
+      ],
+      "why": "Only relevant if $TMPDIR is inside a checkpointed directory. Recommended: keep $TMPDIR outside, so none of this is captured."
+    },
+    {
+      "id": "tmp-claude-bridge-continuation",
+      "harness": "claude-native",
+      "root": "tmp",
+      "class": "continuation",
+      "action": "save",
+      "patterns": [
+        "omnigent-*/claude-native/*/transcript_forwarder.json",
+        "omnigent-*/claude-native/*/hook_forwarder.json",
+        "omnigent-*/claude-native/*/subagent_forwarder.json",
+        "omnigent-*/claude-native/*/message_deltas_forwarder.json",
+        "omnigent-*/claude-native/*/compaction_forwarder.json"
+      ],
+      "evidence": "claude_native/forwarder.py:7859-7887",
+      "why": "Forwarder cursors. A cold resume starts the forwarder at the end of the transcript and rebuilds it from server history, so they are useful, not required."
+    },
+    {
+      "id": "tmp-claude-bridge-dirs",
+      "harness": "claude-native",
+      "root": "tmp",
+      "class": "continuation (directories only)",
+      "action": "save",
+      "patterns": [
+        "omnigent-*",
+        "omnigent-*/claude-native",
+        "omnigent-*/claude-native/????????????????????????????????"
+      ],
+      "evidence": "claude_native/bridge.py:186-188, 1465-1474 (the bridge root and its sha256[:32] directories)",
+      "why": "The directories that lead to the forwarder cursors, so a capture reaches them; every other member is decided by the rules around this one (review s6-fu-r1)."
+    },
+    {
+      "id": "tmp-claude-bridge-runtime",
+      "harness": "claude-native",
+      "root": "tmp",
+      "class": "runtime",
+      "action": "exclude",
+      "patterns": ["omnigent-*/**"],
+      "evidence": "claude_native/bridge.py:124-128, 1499-1525, 2866-2919, 4069-4099; status.py:174-191; runtime/harnesses/paths.py:16-24 (mcp-<pid>.sock)",
+      "why": "Locks, approval waits, sockets, hook logs, tmux targets, the forwarders' temporaries and the rest: per-process state."
+    }
+  ]
+}

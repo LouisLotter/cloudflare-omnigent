@@ -1,0 +1,10 @@
+Your Worker has access to the following bindings:
+Binding                                  Resource                  
+env.COMPUTER (S6Computer)                Durable Object            
+env.S6_ALLOW_INJECTION ("0")             Environment Variable      
+
+The following containers are available:
+- cfo-stg-s6-creds-pc (<worktree>/spikes/s6/image/Dockerfile)
+
+--dry-run: exiting now.
+Untagged: cfo-stg-s6-creds-pc:wrangler-859d1c94-e925-4027-b233-28e95843fe4c

@@ -1,0 +1,2 @@
+FAILED ../../../../.pt/s6f/lvb/tests/test_login_values.py::test_review_r1_nothing_printable_leaks_through_names
+1 failed, 2 passed in 0.18s

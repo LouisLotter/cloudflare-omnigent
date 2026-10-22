@@ -1,0 +1,26 @@
+PASS stop with a failed final checkpoint (capture) is refused
+PASS the computer keeps running after the refused stop (capture)
+PASS the state names the unsaved computer (capture)
+PASS stop with a failed final checkpoint (export) is refused
+PASS the computer keeps running after the refused stop (export)
+PASS the state names the unsaved computer (export)
+PASS stop with a failed final checkpoint (store) is refused
+PASS the computer keeps running after the refused stop (store)
+PASS the state names the unsaved computer (store)
+PASS stop with a failed final checkpoint (publish) is refused
+PASS the computer keeps running after the refused stop (publish)
+PASS the state names the unsaved computer (publish)
+PASS a stop with a published final checkpoint succeeds
+PASS and the computer is stopped
+PASS and the state no longer reports an unsaved computer
+PASS a signed-in computer runs before the force-stop
+PASS force-stop stops the computer
+PASS force-stop records that credentials may be lost
+PASS force-stop without its confirmation is refused
+PASS after a force-stop, Recover reports unresolved credentials, not a verified sign-out
+PASS Wipe refuses while the credentials are unresolved
+PASS Start refuses while the credentials are unresolved
+PASS the revocation record needs its explicit confirmation
+PASS the owner's revocation is recorded
+PASS Wipe works once the revocation is recorded
+failures: 0
