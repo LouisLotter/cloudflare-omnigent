@@ -1,0 +1,254 @@
+{
+ "rows": [
+  {
+   "case": "held-then-recovers",
+   "hold_ms": 10000,
+   "deadline_ms": 120000,
+   "layer_bytes": 131193418,
+   "hold_observed": {
+    "first_part_after_ms": 337,
+    "longest_wait_ms": 10000,
+    "parts_held": 2
+   },
+   "upload": {
+    "ok": true,
+    "ms": 10413,
+    "stored_bytes": 28956130
+   },
+   "pointer_before": null,
+   "pointer_after": {
+    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "case": "held-then-recovers"
+   },
+   "objects_before": 0,
+   "objects_after": 1,
+   "load": {
+    "turns": 4,
+    "turns_ok": 4,
+    "turn_s": {
+     "n": 4,
+     "median": 0.32,
+     "worst": 0.37,
+     "best": 0.3
+    },
+    "capture": {
+     "method": "rsync-2phase",
+     "outcome": "snapshot_ready",
+     "pause_s": 0.3619,
+     "pause_s_by_guard": 0.3619,
+     "freeze_s": 0.0035,
+     "copy_s": 0.358,
+     "release_s": 0.0005,
+     "precopy_s": 0.8445,
+     "size_bytes": 131511772,
+     "files": 4457,
+     "snapshot_bytes": 131204181,
+     "budget_check_s": 0.0189,
+     "free_bytes": 321352683520,
+     "reused_snapshot": null,
+     "stopped_by_kind": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "sandbox-shim": 1,
+      "supervisor": 1
+     },
+     "running_after_freeze": [],
+     "total_s": 1.3943,
+     "worker_wall_s": 1.518,
+     "stopped": 17,
+     "freeze_passes": 2,
+     "copy_mb_s": 367.4,
+     "at_s": 6.5
+    },
+    "host": {
+     "states": [
+      "online"
+     ],
+     "polls": 20,
+     "not_online_s": 0,
+     "poll_errors": 0
+    },
+    "rows": [
+     {
+      "at_s": 0,
+      "ok": true,
+      "s": 0.33
+     },
+     {
+      "at_s": 5,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 10,
+      "ok": true,
+      "s": 0.31
+     },
+     {
+      "at_s": 15,
+      "ok": true,
+      "s": 0.3
+     }
+    ]
+   },
+   "blocked_long_enough": true
+  },
+  {
+   "case": "held-past-the-deadline",
+   "hold_ms": 10000,
+   "deadline_ms": 5000,
+   "layer_bytes": 131193418,
+   "hold_observed": {
+    "first_part_after_ms": 346,
+    "longest_wait_ms": 10000,
+    "parts_held": 2
+   },
+   "upload": {
+    "ok": false,
+    "ms": 5002,
+    "error": "TimeoutError 23: The operation was aborted due to timeout"
+   },
+   "pointer_before": {
+    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "case": "held-then-recovers"
+   },
+   "pointer_after": {
+    "id": "83aa00c6-d595-49bb-bdd7-a3dcf872b1cb",
+    "case": "held-then-recovers"
+   },
+   "objects_before": 1,
+   "objects_after": 1,
+   "load": {
+    "turns": 4,
+    "turns_ok": 4,
+    "turn_s": {
+     "n": 4,
+     "median": 0.32,
+     "worst": 0.37,
+     "best": 0.3
+    },
+    "capture": {
+     "method": "rsync-2phase",
+     "outcome": "snapshot_ready",
+     "pause_s": 0.3609,
+     "pause_s_by_guard": 0.3609,
+     "freeze_s": 0.0027,
+     "copy_s": 0.3575,
+     "release_s": 0.0006,
+     "precopy_s": 0.7491,
+     "size_bytes": 131511772,
+     "files": 4457,
+     "snapshot_bytes": 131204181,
+     "budget_check_s": 0.019,
+     "free_bytes": 321309765632,
+     "reused_snapshot": null,
+     "stopped_by_kind": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     },
+     "running_after_freeze": [],
+     "total_s": 1.3062,
+     "worker_wall_s": 1.418,
+     "stopped": 17,
+     "freeze_passes": 2,
+     "copy_mb_s": 367.9,
+     "at_s": 6.4
+    },
+    "host": {
+     "states": [
+      "online"
+     ],
+     "polls": 20,
+     "not_online_s": 0,
+     "poll_errors": 0
+    },
+    "rows": [
+     {
+      "at_s": 0,
+      "ok": true,
+      "s": 0.33
+     },
+     {
+      "at_s": 5,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 10,
+      "ok": true,
+      "s": 0.31
+     },
+     {
+      "at_s": 15,
+      "ok": true,
+      "s": 0.3
+     }
+    ]
+   },
+   "blocked_long_enough": true
+  }
+ ],
+ "summary": [
+  {
+   "case": "held-then-recovers",
+   "blocked_long_enough": true,
+   "longest_wait_ms": 10000,
+   "upload_ok": true,
+   "upload_ms": 10413,
+   "pointer_moved": true,
+   "objects_added": 1,
+   "turns": "4/4",
+   "capture_pause_s": 0.3619,
+   "capture_outcome": "snapshot_ready",
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 20,
+    "not_online_s": 0,
+    "poll_errors": 0
+   }
+  },
+  {
+   "case": "held-past-the-deadline",
+   "blocked_long_enough": true,
+   "longest_wait_ms": 10000,
+   "upload_ok": false,
+   "upload_ms": 5002,
+   "error": "TimeoutError 23: The operation was aborted due to timeout",
+   "pointer_moved": false,
+   "objects_added": 0,
+   "turns": "4/4",
+   "capture_pause_s": 0.3609,
+   "capture_outcome": "snapshot_ready",
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 20,
+    "not_online_s": 0,
+    "poll_errors": 0
+   }
+  }
+ ],
+ "failed": []
+}

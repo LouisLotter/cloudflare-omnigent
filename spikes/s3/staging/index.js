@@ -10,7 +10,7 @@ import { DurableObject } from "cloudflare:workers";
 import { DirectoryBackup } from "@cloudflare/sandbox";
 import { PLANS, startCampaign, stopCampaign, tick } from "./campaign.js";
 import { handle } from "./controls.js";
-import { gatewayFor } from "./gateway.js";
+import { gatewayFor, noteHold } from "./gateway.js";
 
 // The SDK's gateway for control calls, and the holding gateway for the container's transfers;
 // reached only through ctx.exports by DirectoryBackup. No route leads to either.
@@ -19,10 +19,10 @@ export { HoldingGateway } from "./gateway.js";
 
 const KEEP_ALIVE_MS = 30 * 60 * 1000;
 const SUPERVISOR_PORT = 7070;
-// The first start pulls the image (about 3 GB); later starts are quick.
-const READY_MS = 600_000;
-// DC-37: a start right after a stop can be refused; wait and retry.
-const START_RETRY_MS = [5_000, 10_000, 20_000, 20_000];
+// One alarm waits at most this long for the supervisor; the campaign gives a starting
+// container (the first start pulls an image of about 3 GB) 15 minutes over several alarms.
+const READY_WAIT_MS = 60_000;
+const BOOT_REQUEST_MS = 5_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -41,6 +41,8 @@ export class Bench extends DurableObject {
     super(ctx, env);
     // The token is in memory only: a new instance gets a new one. The manual arming is stored.
     this.state = { token: randomToken(), armedUntil: 0 };
+    this.holds = new Map();
+    this.exited = null;
     ctx.blockConcurrencyWhile(async () => {
       this.state.armedUntil = (await ctx.storage.get("armedUntil")) ?? 0;
     });
@@ -62,34 +64,63 @@ export class Bench extends DurableObject {
     return JSON.parse(text);
   }
 
-  /** Starts the container if needed and waits for the supervisor; returns its boot record. */
+  /**
+   * Starts the container if it is not running and waits up to READY_WAIT_MS for the supervisor.
+   * Returns its boot record, or null when it is not ready yet: still starting, refused (a start
+   * right after a stop, DC-37), or exited (seen through monitor(), since start() reports only
+   * invalid options). The campaign retries on its next alarm.
+   */
   async ensure() {
     const container = this.ctx.container;
     if (!container.running) {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          container.start({ env: { S3_ALL_IN_ONE: "1" }, enableInternet: false });
-          log("container_start", { attempt });
-          break;
-        } catch (error) {
-          log("container_start_refused", { attempt, error: String(error).slice(0, 300) });
-          if (attempt >= START_RETRY_MS.length) throw error;
-          await sleep(START_RETRY_MS[attempt]);
-        }
+      try {
+        container.start({ env: { S3_ALL_IN_ONE: "1" }, enableInternet: false });
+      } catch (error) {
+        log("container_start_refused", { error: String(error).slice(0, 300) });
+        return null;
       }
+      log("container_start", {});
+      this.exited = null;
+      container.monitor().then(
+        () => {
+          this.exited = "exited";
+        },
+        (error) => {
+          this.exited = `errored: ${String(error).slice(0, 200)}`;
+        },
+      );
     }
-    const deadline = Date.now() + READY_MS;
+    const deadline = Date.now() + READY_WAIT_MS;
     for (;;) {
       try {
-        const res = await this.supFetch("/boot");
+        const res = await this.supFetch("/boot", {
+          method: "GET",
+          signal: AbortSignal.timeout(BOOT_REQUEST_MS),
+        });
         if (res.ok) return await res.json();
       } catch {
         // Not listening yet.
       }
-      if (Date.now() > deadline)
-        throw new Error(`the supervisor did not answer within ${READY_MS} ms`);
+      if (this.exited) {
+        log("container_exited", { how: this.exited });
+        this.exited = null;
+        return null;
+      }
+      if (Date.now() > deadline) return null;
       await sleep(1_000);
     }
+  }
+
+  /**
+   * RPC from the HoldingGateway: the end of the hold `key`, which starts with its first part.
+   * Kept in memory with the longest wait, for the campaign's r2-block step to read.
+   */
+  holdUntil(key, holdMs) {
+    return noteHold(this.holds, key, holdMs, Date.now());
+  }
+
+  holdRecord(key) {
+    return this.holds.get(key) ?? null;
   }
 
   async view() {
@@ -134,11 +165,17 @@ export class Bench extends DurableObject {
       container: {
         running: () => ctx.container.running,
         ensure: () => this.ensure(),
-        start: () => this.ensure(),
+        // The manual controls: start, and fail the request if it is not ready within a minute.
+        start: async () => {
+          if (!(await this.ensure())) throw new Error("the container is not ready yet; retry");
+        },
         keepAlive: () => ctx.container.setInactivityTimeout(KEEP_ALIVE_MS),
-        stop: () => ctx.container.destroy(),
+        stop: async () => {
+          if (ctx.container.running) await ctx.container.destroy();
+        },
         fetch: (path, init) => this.supFetch(path, init),
       },
+      holdRecord: (key) => this.holdRecord(key),
       backups: (prefix, hold) =>
         new DirectoryBackup(ctx.container, gatewayFor(ctx.exports, hold), {
           binding: "CKPT",
@@ -163,7 +200,11 @@ export class Bench extends DurableObject {
       campaign: {
         view: () => this.view(),
         start: (plan) => startCampaign(this.ports(), plan),
-        stop: (reason) => stopCampaign(this.ports(), reason),
+        // Stopping also stops the container at once: no job, pause or held upload goes on.
+        stop: async (reason) => {
+          await stopCampaign(this.ports(), reason);
+          if (ctx.container.running) await ctx.container.destroy();
+        },
       },
       saveArm: (armedUntil) => storage.put("armedUntil", armedUntil),
     };

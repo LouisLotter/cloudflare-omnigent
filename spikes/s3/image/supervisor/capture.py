@@ -97,9 +97,12 @@ def copy_steps(method: str, items: list[dict[str, Any]], snap: str, *, final: bo
     steps: list[list[str]] = []
     for it in items:
         src = it["src"]
-        if not os.path.lexists(src):
-            continue
         dst = os.path.join(snap, it["name"])
+        if not os.path.lexists(src):
+            # A root that is gone must be gone from a reused snapshot too (kept or incremental).
+            if os.path.lexists(dst):
+                steps.append(["rm", "-rf", "--", dst])
+            continue
         is_dir = os.path.isdir(src) and not os.path.islink(src)
         if method == "reflink":
             # Copy-on-write clones (btrfs, XFS): data is shared, only metadata is

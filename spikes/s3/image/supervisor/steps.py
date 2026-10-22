@@ -38,6 +38,8 @@ RunCapture = Callable[[dict[str, Any]], dict[str, Any]]
 AsAgent = Callable[[list[str]], list[str]]
 
 SESSIONS: dict[str, Any] = {}
+# The workspace profile last generated in ~/work, for the campaign's checks (GET /boot).
+PROFILE: dict[str, str | None] = {"current": None}
 
 
 def stats(xs: list[float]) -> dict[str, float]:
@@ -123,9 +125,11 @@ def stop_load() -> int:
 
 
 def genws(as_agent: AsAgent, profile: str) -> dict[str, Any]:
+    PROFILE["current"] = None
     r = run_agent(as_agent, [PY, "-m", "supervisor.genws", profile])
     if r.returncode != 0:
         raise RuntimeError(f"genws {profile} failed: {r.stderr[-500:]}")
+    PROFILE["current"] = profile
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 

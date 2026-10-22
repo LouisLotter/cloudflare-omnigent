@@ -360,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/boot":
             self._send(200, {"boot_id": STATE["boot_id"], "started": STATE["started"],
                              "all_in_one": STATE.get("aio"), "host_pids": STATE["workload_pids"],
-                             "kept_snapshot": STATE["kept_snapshot"],
+                             "kept_snapshot": STATE["kept_snapshot"], "profile": steps.PROFILE["current"],
                              "published_layer": LAYERS["published"]["seq"] if LAYERS["published"] else None})
         elif self.path == "/runners":
             t0 = time.monotonic()

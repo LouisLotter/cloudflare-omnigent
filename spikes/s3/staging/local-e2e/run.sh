@@ -22,7 +22,7 @@ cleanup() {
   docker rm -f cfo-s3stg-e2e-box cfo-s3stg-e2e-gateway >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   # The gateway container wrote part files as root; remove them from inside a container.
-  docker run --rm -v "$R2:/r2" "$GATEWAY_IMAGE" rm -rf /r2/objects /r2/uploads /r2/grant.json \
+  docker run --rm -v "$R2:/r2" "$GATEWAY_IMAGE" rm -rf /r2/objects /r2/uploads /r2/grant.json /r2/holds.json \
     >/dev/null 2>&1 || true
   rm -rf "$R2"
 }

@@ -294,3 +294,64 @@ def test_snapshot_files_helpers_still_agree(tmp_path: Path) -> None:
         t.kill()
     assert snapshot_files(Path(res["snapshot_dir"]), items, home) == source_files(home, items)
     assert items_for(home)
+
+
+# --- review fixes (Codex s3-staging r1) ---------------------------------------------------
+
+
+def test_layer_root_symlink_is_refused_and_nothing_outside_is_touched(tmp_path: Path) -> None:
+    """P1: a layer whose root is a symbolic link must not be walked (stripping would delete
+    outside the layer) nor installed."""
+    tree = tmp_path / "tree"
+    make_tree(tree)
+    live = tmp_path / "live-claude"
+    live.mkdir()
+    (live / ".credentials.json").write_text('{"synthetic":"must survive"}')
+    layer = tmp_path / "layer"
+    layer.mkdir()
+    os.symlink(str(live), layer / "claude")
+    (layer / L.LAYER_META).write_text(json.dumps({"format": 1, "seq": 1, "deleted": []}))
+    with pytest.raises(L.LayerError):
+        L.merge(str(layer), str(tree), ROOTS)
+    assert (live / ".credentials.json").read_text() == '{"synthetic":"must survive"}'
+    assert not (tree / "claude").is_symlink()
+
+
+def test_credential_named_symlink_to_a_directory_is_stripped(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    make_tree(tree)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("not ours")
+    layer = tmp_path / "layer"
+    (layer / "claude").mkdir(parents=True)
+    os.symlink(str(elsewhere), layer / "claude" / ".credentials.json")
+    os.symlink(str(elsewhere), layer / "claude" / "plain-link")
+    (layer / L.LAYER_META).write_text(json.dumps({"format": 1, "seq": 1, "deleted": []}))
+    res = L.merge(str(layer), str(tree), ROOTS)
+    assert res["stripped_credential_members"] == ["claude/.credentials.json"]
+    assert not os.path.lexists(tree / "claude" / ".credentials.json")
+    assert (tree / "claude" / "plain-link").is_symlink()  # installed as a link, never followed
+    assert (elsewhere / "keep.txt").read_text() == "not ours"
+
+
+def test_kept_snapshot_drops_a_deleted_root(tmp_path: Path, target) -> None:
+    """P2: a declared root that disappears between captures must disappear from the reused snapshot."""
+    home, items = prepare(tmp_path)
+    first = C.capture(base_spec(tmp_path, items, tmp_path / "snap", target, method="rsync-2phase",
+                                capture_id="first"))
+    assert os.path.isdir(os.path.join(first["snapshot_dir"], "codex"))
+    shutil.rmtree(home / ".codex")
+    res = C.capture(base_spec(tmp_path, items, tmp_path / "snap", target, method="rsync-2phase",
+                              capture_id="second", keep_base=first["snapshot_dir"]))
+    assert res["outcome"] == "snapshot_ready", res
+    assert not os.path.exists(os.path.join(res["snapshot_dir"], "codex"))
+    assert snapshot_files(Path(res["snapshot_dir"]), items, home) == source_files(home, items)
+
+
+def test_root_deleted_between_the_passes_is_dropped(tmp_path: Path, target) -> None:
+    home, items = prepare(tmp_path)
+    res = C.capture(base_spec(tmp_path, items, tmp_path / "snap", target, method="rsync-2phase",
+                              hooks={"after_precopy": lambda: shutil.rmtree(home / ".codex")}))
+    assert res["outcome"] == "snapshot_ready", res
+    assert not os.path.exists(os.path.join(res["snapshot_dir"], "codex"))

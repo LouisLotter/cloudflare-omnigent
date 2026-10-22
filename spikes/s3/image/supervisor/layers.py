@@ -259,20 +259,28 @@ def merge(layer_dir: str, tree: str, roots: dict[str, str]) -> dict[str, Any]:
         raise LayerError(f"unknown layer format {meta.get('format')!r}")
     os.makedirs(tree, exist_ok=True)
     deleted = [validate_deleted(p, set(roots)) for p in meta.get("deleted", [])]
-    # Never install a credential member, whatever a layer holds (IR-015).
+    # Never install a credential member, whatever a layer holds (IR-015). Each root must be a
+    # real directory: walking a symbolic link would strip, and later install, outside the layer.
     stripped: list[str] = []
     for name in sorted(os.listdir(layer_dir)):
         if name == LAYER_META:
             continue
         if name not in roots:
             raise LayerError(f"refused layer entry {name!r}: outside the declared roots")
-        for dirpath, _dirs, files in os.walk(os.path.join(layer_dir, name)):
-            for f in files:
-                full = os.path.join(dirpath, f)
-                rel = os.path.relpath(full, os.path.join(layer_dir, name))
+        top = os.path.join(layer_dir, name)
+        if os.path.islink(top) or not os.path.isdir(top):
+            raise LayerError(f"refused layer entry {name!r}: a root must be a directory")
+        for dirpath, dirs, files in os.walk(top):  # never follows a link below the root
+            keep = []
+            for entry in [*dirs, *files]:
+                full = os.path.join(dirpath, entry)
+                rel = os.path.relpath(full, top)
                 if credpolicy.is_credential(f"{roots[name]}/{rel}"):
-                    os.unlink(full)
+                    _remove(full)  # a file, a link (even to a directory), or a directory
                     stripped.append(f"{name}/{rel}")
+                elif entry in dirs:
+                    keep.append(entry)
+            dirs[:] = keep
     for rel in deleted:
         _remove(_inside(tree, rel))
     moved = 0

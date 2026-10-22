@@ -1,0 +1,63 @@
+{
+ "rows": [
+  {
+   "hold_s": 5,
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 5.0575,
+   "pause_s_by_guard": 5.0575,
+   "freeze_s": 0.003,
+   "copy_s": 5.054,
+   "release_s": 0.0005,
+   "precopy_s": 0.0585,
+   "size_bytes": 547,
+   "files": 7,
+   "snapshot_bytes": 522,
+   "budget_check_s": 0.0001,
+   "free_bytes": 321290579968,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 5.1522,
+   "worker_wall_s": 5.223,
+   "stopped": 17,
+   "freeze_passes": 2,
+   "copy_mb_s": 0,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 36,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "turn_before": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0,
+   "session_status": "idle"
+  }
+ ]
+}

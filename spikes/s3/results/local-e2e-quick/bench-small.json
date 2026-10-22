@@ -1,0 +1,447 @@
+{
+ "summary": {
+  "profile": "small",
+  "generation": {
+   "profile": "small",
+   "gen_s": 5.1
+  },
+  "size_bytes": 127131438,
+  "files": 4313,
+  "budget_s": 60,
+  "rsync-2phase-warm": {
+   "runs": 1,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 1,
+    "median": 0.363,
+    "worst": 0.363,
+    "best": 0.363
+   },
+   "copy_s": {
+    "n": 1,
+    "median": 0.353,
+    "worst": 0.353,
+    "best": 0.353
+   },
+   "precopy_s": {
+    "n": 1,
+    "median": 0.611,
+    "worst": 0.611,
+    "best": 0.611
+   },
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "server_poll_errors": 0,
+   "host_redials": 0,
+   "turns_ok": 1,
+   "writer_prefix_consistent": 1,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "rsync-2phase-cold": {
+   "runs": 1,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 1,
+    "median": 0.373,
+    "worst": 0.373,
+    "best": 0.373
+   },
+   "copy_s": {
+    "n": 1,
+    "median": 0.363,
+    "worst": 0.363,
+    "best": 0.363
+   },
+   "precopy_s": {
+    "n": 1,
+    "median": 2.722,
+    "worst": 2.722,
+    "best": 2.722
+   },
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "server_poll_errors": 0,
+   "host_redials": 0,
+   "turns_ok": 1,
+   "writer_prefix_consistent": 1,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "reflink-warm": {
+   "runs": 1,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 1,
+    "median": 0.453,
+    "worst": 0.453,
+    "best": 0.453
+   },
+   "copy_s": {
+    "n": 1,
+    "median": 0.444,
+    "worst": 0.444,
+    "best": 0.444
+   },
+   "precopy_s": {},
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "server_poll_errors": 0,
+   "host_redials": 0,
+   "turns_ok": 1,
+   "writer_prefix_consistent": 1,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "reflink-cold": {
+   "runs": 1,
+   "outcomes": [
+    "snapshot_ready"
+   ],
+   "pause_s": {
+    "n": 1,
+    "median": 0.536,
+    "worst": 0.536,
+    "best": 0.536
+   },
+   "copy_s": {
+    "n": 1,
+    "median": 0.526,
+    "worst": 0.526,
+    "best": 0.526
+   },
+   "precopy_s": {},
+   "over_20s": 0,
+   "over_40s": 0,
+   "host_always_online": true,
+   "server_poll_errors": 0,
+   "host_redials": 0,
+   "turns_ok": 1,
+   "writer_prefix_consistent": 1,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   }
+  },
+  "bench_s": 14.7
+ },
+ "rows": [
+  {
+   "temp": "warm",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 0.3627,
+   "pause_s_by_guard": 0.3627,
+   "freeze_s": 0.0086,
+   "copy_s": 0.3527,
+   "release_s": 0.0015,
+   "precopy_s": 0.6108,
+   "size_bytes": 127131438,
+   "files": 4313,
+   "snapshot_bytes": 127132865,
+   "budget_check_s": 0.0169,
+   "free_bytes": 321468334080,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 1.1641,
+   "worker_wall_s": 1.215,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 360.5,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 2,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 167,
+    "gap_after_snapshot_s": 0.359,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "rsync-2phase",
+   "outcome": "snapshot_ready",
+   "pause_s": 0.3731,
+   "pause_s_by_guard": 0.3731,
+   "freeze_s": 0.0088,
+   "copy_s": 0.3628,
+   "release_s": 0.0015,
+   "precopy_s": 2.7218,
+   "size_bytes": 127134936,
+   "files": 4313,
+   "snapshot_bytes": 127140213,
+   "budget_check_s": 0.0167,
+   "free_bytes": 321466634240,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 3.3133,
+   "worker_wall_s": 3.369,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 350.4,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 4,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "evict": {
+    "evicted_files": 7054,
+    "s": 0.25
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 501,
+    "gap_after_snapshot_s": 0.378,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "warm",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 0.4528,
+   "pause_s_by_guard": 0.4527,
+   "freeze_s": 0.0078,
+   "copy_s": 0.4435,
+   "release_s": 0.0014,
+   "precopy_s": null,
+   "size_bytes": 127141734,
+   "files": 4313,
+   "snapshot_bytes": 127141797,
+   "budget_check_s": 0.017,
+   "free_bytes": 321464745984,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 0.7049,
+   "worker_wall_s": 0.765,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 286.7,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 1,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "evict": null,
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 573,
+    "gap_after_snapshot_s": 0.455,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.3,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  },
+  {
+   "temp": "cold",
+   "method": "reflink",
+   "outcome": "snapshot_ready",
+   "pause_s": 0.5364,
+   "pause_s_by_guard": 0.5363,
+   "freeze_s": 0.0091,
+   "copy_s": 0.5256,
+   "release_s": 0.0017,
+   "precopy_s": null,
+   "size_bytes": 127143956,
+   "files": 4313,
+   "snapshot_bytes": 127144063,
+   "budget_check_s": 0.02,
+   "free_bytes": 321463988224,
+   "reused_snapshot": null,
+   "stopped_by_kind": {
+    "idle-sleep": 50,
+    "omnigent-host": 1,
+    "omnigent-runner-or-harness": 6,
+    "omnigent-terminal": 9,
+    "omnigent-zygote": 1,
+    "writer": 1
+   },
+   "running_by_kind": {
+    "capture-worker": 1,
+    "init": 1,
+    "lease-guard": 1,
+    "mock-llm": 1,
+    "omnigent-server": 1,
+    "supervisor": 1
+   },
+   "running_after_freeze": [],
+   "total_s": 0.8151,
+   "worker_wall_s": 0.865,
+   "stopped": 68,
+   "freeze_passes": 2,
+   "copy_mb_s": 241.9,
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 1,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "evict": {
+    "evicted_files": 7054,
+    "s": 0.23
+   },
+   "consistency": {
+    "prefix": true,
+    "complete_last_record": true,
+    "last_seq": 676,
+    "gap_after_snapshot_s": 0.538,
+    "live_contiguous": true
+   },
+   "turn_after": {
+    "ok": true,
+    "s": 0.31,
+    "status": "idle",
+    "send_attempts": 1
+   },
+   "host_connects": 0
+  }
+ ]
+}

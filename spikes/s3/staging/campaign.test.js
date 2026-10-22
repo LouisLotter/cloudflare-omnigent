@@ -1,11 +1,13 @@
 // The staging campaign's step machine (campaign.js), driven alarm by alarm with a fake
-// supervisor, fake DirectoryBackup and fake storage. Checks the order of the work, what is
-// recorded, the R2 cases' publication rule, and that stopping, expiry, errors and a replaced
-// container are handled.
+// supervisor (which keeps the container's published layer, kept snapshot and workspace
+// profile), a fake DirectoryBackup and fake storage. Checks the order of the work, what is
+// recorded, the R2 cases' publication and blocking rules, the restore's acceptance checks, and
+// that stopping, expiry, errors, a slow or replaced container and a reset between a layer's
+// commit and the stored progress are handled.
 //   pnpm exec vitest run --config spikes/s3/staging/vitest.config.mjs
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { PLANS, startCampaign, stopCampaign, tick } from "./campaign.js";
+import { PLANS, READY_LIMIT_MS, startCampaign, stopCampaign, tick } from "./campaign.js";
 
 let clock;
 let calls;
@@ -14,9 +16,13 @@ let objects;
 let alarm;
 let map;
 let boot;
+let ready;
 let failPaths;
 let uploadHook;
+let commitHook;
+let holds;
 let stopped;
+let box;
 
 function fakeSupervisor() {
   const jobs = new Map();
@@ -26,16 +32,19 @@ function fakeSupervisor() {
     jobs.set(id, { polls: 0, result });
     return { job: id };
   };
-  const capture = (body) => ({
-    outcome: "snapshot_ready",
-    pause_s: 0.5,
-    precopy_s: 1,
-    copy_s: 0.4,
-    snapshot_dir: "/snap/x",
-    size_bytes: 700e6,
-    reused_snapshot: Boolean(body.keep),
-    stopped_by_kind: { "omnigent-host": 1 },
-  });
+  const capture = (body) => {
+    if (body.keep) box.kept = "/snap/kept";
+    return {
+      outcome: "snapshot_ready",
+      pause_s: 0.5,
+      precopy_s: 1,
+      copy_s: 0.4,
+      snapshot_dir: "/snap/x",
+      size_bytes: 700e6,
+      reused_snapshot: Boolean(body.keep),
+      stopped_by_kind: { "omnigent-host": 1 },
+    };
+  };
   return {
     get: async (path) => {
       calls.push(`GET ${path}`);
@@ -54,14 +63,18 @@ function fakeSupervisor() {
         case "/setup":
           return startJob({ host: "online", sessions: 3 });
         case "/bench":
+          box.profile = body.profile;
           return startJob({ summary: { profile: body.profile }, rows: [{ n: 1 }, { n: 2 }] });
         case "/genws":
+          box.profile = body.profile;
           return startJob({ profile: body.profile });
         case "/calibrate":
           return startJob({ rows: body.holds.map((h) => ({ hold_s: h, pause_s: h })) });
         case "/load":
           return startJob({ turns: 4, turns_ok: 4, capture: { pause_s: 0.6 }, host: {} });
         case "/rm":
+          if (body.all) box.kept = null;
+          return {};
         case "/restore/reset":
           return {};
         case "/turn":
@@ -78,10 +91,13 @@ function fakeSupervisor() {
             index_zstd_bytes: 500e3,
           };
         case "/layer/commit":
+          box.published = String(body.seq);
+          commitHook?.(body.seq);
+          return { seq: String(body.seq) };
         case "/layer/discard":
           return { seq: String(body.seq) };
         case "/restore/merge":
-          return { moved: 1 };
+          return { moved: 1, merge_s: 0.01 };
         case "/restore/verify":
           return { equal: true };
         case "/restore/reopen":
@@ -115,7 +131,15 @@ function ports() {
     },
     sup: fakeSupervisor.current,
     container: {
-      ensure: async () => ({ boot_id: boot }),
+      ensure: async () =>
+        ready
+          ? {
+              boot_id: boot,
+              published_layer: box.published,
+              kept_snapshot: box.kept,
+              profile: box.profile,
+            }
+          : null,
       keepAlive: async () => {
         calls.push("keepAlive");
       },
@@ -123,9 +147,11 @@ function ports() {
         stopped = true;
       },
     },
+    holdRecord: async (key) => holds.get(key) ?? null,
     backups: (prefix, hold) => ({
       backup: async ({ dir, name, signal }) => {
         calls.push(`backup ${prefix}${name}`);
+        if (hold) holds.set(hold.key, { first: clock + 500, longestWaitMs: hold.ms, parts: 16 });
         const outcome = uploadHook?.({ prefix, dir, name, signal, hold });
         if (outcome instanceof Error) throw outcome;
         clock += 2_000;
@@ -165,6 +191,9 @@ async function runAlarms(max = 500) {
   return n;
 }
 
+const campaign = () => map.get("campaign");
+const result = (step) => objects.get(`results/${campaign().id}/${step}.json`);
+
 beforeEach(() => {
   clock = Date.UTC(2026, 9, 22, 10, 0, 0);
   calls = [];
@@ -173,9 +202,13 @@ beforeEach(() => {
   alarm = null;
   map = new Map();
   boot = "boot-1";
+  ready = true;
   failPaths = new Set();
   uploadHook = null;
+  commitHook = null;
+  holds = new Map();
   stopped = false;
+  box = { published: null, kept: null, profile: null };
   fakeSupervisor.current = fakeSupervisor();
 });
 
@@ -184,18 +217,19 @@ describe("starting and stopping", () => {
     const first = await startCampaign(ports(), "quick");
     expect(first.ok).toBe(true);
     expect(alarm).toBeGreaterThan(clock);
-    expect(map.get("campaign").status).toBe("running");
+    expect(campaign().status).toBe("running");
     const second = await startCampaign(ports(), "full");
     expect(second).toEqual({ ok: false, reason: "a campaign is running" });
     expect((await startCampaign(ports(), "nope")).ok).toBe(false);
   });
 
-  it("a stop request ends the campaign at the next alarm, with no further alarm", async () => {
+  it("a stop request ends the campaign at the next alarm, stops the container, sets no alarm", async () => {
     await startCampaign(ports(), "quick");
     await runAlarms(1);
     await stopCampaign(ports(), "disarmed by the owner");
     await runAlarms(1);
-    expect(map.get("campaign").status).toBe("stopped: disarmed by the owner");
+    expect(campaign().status).toBe("stopped: disarmed by the owner");
+    expect(stopped).toBe(true);
     expect(alarm).toBe(null);
     const before = calls.length;
     await tick(ports());
@@ -208,16 +242,18 @@ describe("starting and stopping", () => {
       map.set("stopRequested", "disarmed by the owner");
     };
     await runAlarms();
-    expect(map.get("campaign").status).toBe("stopped: disarmed by the owner");
+    expect(campaign().status).toBe("stopped: disarmed by the owner");
+    expect(stopped).toBe(true);
     expect(alarm).toBe(null);
   });
 
-  it("stops when the arming expires", async () => {
+  it("stops, and stops the container, when the arming expires", async () => {
     await startCampaign(ports(), "quick");
     clock += PLANS.quick.armMs + 1;
     alarm = clock;
     await runAlarms();
-    expect(map.get("campaign").status).toBe("stopped: arming expired");
+    expect(campaign().status).toBe("stopped: arming expired");
+    expect(stopped).toBe(true);
   });
 });
 
@@ -225,23 +261,21 @@ describe("the quick plan, end to end against fakes", () => {
   it("runs every step in order and records each result", async () => {
     await startCampaign(ports(), "quick");
     await runAlarms();
-    const campaign = map.get("campaign");
-    expect(campaign.status).toBe("done");
+    expect(campaign().status).toBe("done");
     expect(stopped).toBe(true);
-    expect(Object.keys(campaign.steps)).toEqual(PLANS.quick.steps);
+    expect(Object.keys(campaign().steps)).toEqual(PLANS.quick.steps);
     for (const step of PLANS.quick.steps) {
-      expect(campaign.steps[step].ok).toBe(true);
-      expect(objects.has(`results/${campaign.id}/${step}.json`)).toBe(true);
+      expect(campaign().steps[step].ok).toBe(true);
+      expect(result(step)).toBeDefined();
     }
-    expect(objects.has(`results/${campaign.id}/campaign.json`)).toBe(true);
+    expect(objects.has(`results/${campaign().id}/campaign.json`)).toBe(true);
   });
 
   it("turns: a base, then one layer per turn, alternating Claude Code and Codex", async () => {
     await startCampaign(ports(), "quick");
     await runAlarms();
     const seq = calls.filter((c) => /^POST \/(turn|capture|layer|layer\/commit)\b/.test(c));
-    const firstTurns = seq.slice(0, 3 + 4 * 2);
-    expect(firstTurns).toEqual([
+    expect(seq.slice(0, 11)).toEqual([
       "POST /capture",
       "POST /layer 0",
       "POST /layer/commit 0",
@@ -254,13 +288,12 @@ describe("the quick plan, end to end against fakes", () => {
       "POST /layer 2",
       "POST /layer/commit 2",
     ]);
-    const turnRows = logs.filter((l) => l.event === "turn_layer").map((l) => l.row);
-    expect(turnRows.map((r) => r.cli)).toEqual([undefined, "claude", "codex", "claude"]);
-    expect(turnRows[0].upload.stored_bytes).toBe(300e6);
-    const result = objects.get(`results/${map.get("campaign").id}/turns.json`);
-    expect(result.summary.claude.turns).toBe(2);
-    expect(result.summary.codex.turns).toBe(1);
-    expect(map.get(`layers:${map.get("campaign").id}`)).toHaveLength(PLANS.quick.deltas + 1);
+    const rows = logs.filter((l) => l.event === "turn_layer").map((l) => l.row);
+    expect(rows.map((r) => r.cli)).toEqual([undefined, "claude", "codex", "claude"]);
+    expect(rows[0].upload.stored_bytes).toBe(300e6);
+    expect(result("turns").summary.claude.turns).toBe(2);
+    expect(result("turns").summary.codex.turns).toBe(1);
+    expect(map.get(`layers:${campaign().id}`)).toHaveLength(PLANS.quick.deltas + 1);
   });
 
   it("restore: every layer in order into the layer directory, each merged, then verified", async () => {
@@ -271,53 +304,65 @@ describe("the quick plan, end to end against fakes", () => {
       [0, 1, 2, 3].map((n) => `restore layers/layer-${n}-id -> /restore-staging/layer`),
     );
     expect(calls.filter((c) => c === "POST /restore/merge")).toHaveLength(4);
-    const result = objects.get(`results/${map.get("campaign").id}/restore.json`);
-    expect(result.summary.chain_verify_equal).toBe(true);
-    expect(result.summary.full_verify_equal).toBe(true);
-    expect(result.reopen.codex_history).toBe(true);
+    expect(result("restore").summary.chain_verify_equal).toBe(true);
+    expect(result("restore").summary.full_verify_equal).toBe(true);
+    expect(result("restore").failed).toEqual([]);
   });
 
-  it("r2-block: the pointer moves only after a completed upload", async () => {
+  it("r2-block: the pointer moves only after a completed upload; a real block is recorded", async () => {
     await startCampaign(ports(), "quick");
     uploadHook = ({ prefix, signal, hold }) => {
       if (prefix !== "r2block/") return undefined;
-      expect(hold.until - hold.from).toBe(10_000);
+      expect(hold.ms).toBe(10_000);
       return signal.deadlineMs < 10_000 ? new Error("TimeoutError: deadline") : undefined;
     };
     await runAlarms();
-    const result = objects.get(`results/${map.get("campaign").id}/r2-block.json`);
-    expect(result.summary.map((r) => [r.case, r.upload_ok, r.pointer_moved])).toEqual([
-      ["held-then-recovers", true, true],
-      ["held-past-the-deadline", false, false],
+    const summary = result("r2-block").summary;
+    expect(
+      summary.map((r) => [r.case, r.upload_ok, r.pointer_moved, r.blocked_long_enough]),
+    ).toEqual([
+      ["held-then-recovers", true, true, true],
+      ["held-past-the-deadline", false, false, true],
     ]);
-    expect(result.summary[1].objects_added).toBe(0);
-    expect(result.summary[0].turns).toBe("4/4");
+    expect(summary[1].objects_added).toBe(0);
+    expect(summary[0].turns).toBe("4/4");
+    expect(campaign().steps["r2-block"].ok).toBe(true);
+  });
+
+  it("r2-block: a hold no part waited out does not count as R2 blocked", async () => {
+    await startCampaign(ports(), "quick");
+    uploadHook = ({ prefix, hold }) => {
+      if (prefix === "r2block/") holds.set(hold.key, { first: clock, longestWaitMs: 0, parts: 0 });
+      return undefined;
+    };
+    await runAlarms();
+    expect(campaign().steps["r2-block"].ok).toBe(false);
+    expect(campaign().steps["r2-block"].failed).toHaveLength(2);
   });
 });
 
 describe("the full plan, against fakes", () => {
   it("runs all ten steps, with the 120 s holds, the 40 s and 60 s pauses and the large throughput", async () => {
-    const holds = [];
+    const seen = [];
     uploadHook = ({ prefix, hold, signal }) => {
-      if (prefix === "r2block/") holds.push([hold.until - hold.from, signal.deadlineMs]);
+      if (prefix === "r2block/") seen.push([hold.ms, signal.deadlineMs]);
       return undefined;
     };
     await startCampaign(ports(), "full");
     await runAlarms(2000);
-    const campaign = map.get("campaign");
-    expect(campaign.status).toBe("done");
-    expect(Object.keys(campaign.steps)).toEqual(PLANS.full.steps);
-    expect(Object.values(campaign.steps).every((s) => s.ok)).toBe(true);
-    expect(holds).toEqual([
-      [120_000, 600_000],
+    expect(campaign().status).toBe("done");
+    expect(Object.keys(campaign().steps)).toEqual(PLANS.full.steps);
+    expect(Object.values(campaign().steps).every((s) => s.ok)).toBe(true);
+    expect(seen).toEqual([
+      [120_000, 480_000],
       [120_000, 60_000],
     ]);
     expect(calls.filter((c) => c.startsWith("restore layers/"))).toHaveLength(21);
-    const throughput = objects.get(`results/${campaign.id}/throughput-large.json`);
-    expect(throughput.verify.equal).toBe(true);
+    expect(result("throughput-large").verify.equal).toBe(true);
     expect(calls).toContain("restore full/large-id -> /restore-staging/large");
-    const calibrate = objects.get(`results/${campaign.id}/calibrate.json`);
-    expect(calibrate.rows.map((r) => r.hold_s)).toEqual([40, 60]);
+    expect(result("calibrate").rows.map((r) => r.hold_s)).toEqual([40, 60]);
+    // Every transfer had a deadline within the alarm's budget.
+    expect(logs.filter((l) => l.event === "step_error")).toEqual([]);
   });
 });
 
@@ -326,53 +371,115 @@ describe("failures", () => {
     failPaths.add("/calibrate");
     await startCampaign(ports(), "quick");
     await runAlarms();
-    const campaign = map.get("campaign");
-    expect(campaign.status).toBe("done");
-    expect(campaign.steps.calibrate.ok).toBe(false);
-    expect(campaign.steps.calibrate.summary.error).toContain("boom");
+    expect(campaign().status).toBe("done");
+    expect(campaign().steps.calibrate.ok).toBe(false);
+    expect(campaign().steps.calibrate.summary.error).toContain("boom");
     expect(logs.some((l) => l.event === "step_error" && l.step === "calibrate")).toBe(true);
   });
 
-  it("a failed upload of a layer fails the turns step and discards the staged layer", async () => {
+  it("a failed layer upload fails the turns step, and the short chain fails the restore's check", async () => {
     uploadHook = ({ prefix, name }) =>
       prefix === "layers/" && name === "layer-1" ? new Error("BACKUP_TRANSFER") : undefined;
     await startCampaign(ports(), "quick");
     await runAlarms();
-    const campaign = map.get("campaign");
-    expect(campaign.steps.turns.ok).toBe(false);
+    expect(campaign().steps.turns.ok).toBe(false);
     expect(calls).toContain("POST /layer/discard 1");
     expect(calls).not.toContain("POST /layer/commit 1");
-    // The restore step restores what was published: the base alone.
-    expect(campaign.steps.restore.ok).toBe(true);
     expect(calls.filter((c) => c.startsWith("restore layers/"))).toHaveLength(1);
+    expect(campaign().steps.restore.ok).toBe(false);
+    expect(campaign().steps.restore.failed).toEqual(["1 layers, not 4"]);
+  });
+
+  it("a Durable Object reset after a layer's commit neither loses nor repeats that layer", async () => {
+    await startCampaign(ports(), "quick");
+    let before = null;
+    commitHook = (seq) => {
+      // The state the campaign had stored just before this commit: what a reset leaves.
+      if (String(seq) === "2" && !before) {
+        before = { campaign: structuredClone(map.get("campaign")), layers: null };
+        before.layers = structuredClone(map.get(`layers:${before.campaign.id}`));
+      }
+    };
+    for (let i = 0; i < 300 && !before; i++) await runAlarms(1);
+    // The tick that committed layer 2 finished; now the reset throws its progress away.
+    map.set("campaign", before.campaign);
+    map.set(`layers:${before.campaign.id}`, before.layers);
+    alarm = clock;
+    await runAlarms();
+    const records = map.get(`layers:${campaign().id}`);
+    expect(records.map((r) => r.id)).toEqual([
+      "layer-0-id",
+      "layer-1-id",
+      "layer-2-id",
+      "layer-3-id",
+    ]);
+    expect(calls.filter((c) => c === "POST /layer/commit 2")).toHaveLength(1);
+    expect(calls.filter((c) => c === "POST /layer 2")).toHaveLength(1);
+    expect(campaign().steps.restore.ok).toBe(true);
+  });
+
+  it("a container that is slow to start gets later alarms; after 15 minutes the step is given up", async () => {
+    await startCampaign(ports(), "quick");
+    ready = false;
+    await runAlarms(3);
+    expect(logs.filter((l) => l.event === "container_not_ready")).toHaveLength(3);
+    expect(campaign().index).toBe(0);
+    ready = true;
+    await runAlarms(1);
+    expect(campaign().steps.probe.ok).toBe(true);
+    ready = false;
+    const since = clock;
+    for (let i = 0; i < 500 && !campaign().steps.setup; i++) await runAlarms(1);
+    expect(clock - since).toBeGreaterThanOrEqual(READY_LIMIT_MS);
+    expect(campaign().steps.setup.ok).toBe(false);
+    expect(campaign().steps.setup.summary.error).toContain("not ready for 15 minutes");
   });
 
   it("a container replaced twice in one step gives that step up", async () => {
     await startCampaign(ports(), "quick");
-    for (let i = 0; i < 200 && map.get("campaign").index < 2; i++) await runAlarms(1);
-    // In the bench step: replace the container on two of its alarms.
+    for (let i = 0; i < 200 && campaign().index < 2; i++) await runAlarms(1);
     boot = "boot-2";
     await runAlarms(1);
     boot = "boot-3";
     await runAlarms(1);
     await runAlarms();
-    const campaign = map.get("campaign");
-    expect(campaign.steps["bench-small"].ok).toBe(false);
-    expect(campaign.steps["bench-small"].summary.error).toContain("replaced twice");
-    expect(campaign.steps.turns.ok).toBe(true);
-    expect(campaign.status).toBe("done");
+    expect(campaign().steps["bench-small"].ok).toBe(false);
+    expect(campaign().steps["bench-small"].summary.error).toContain("replaced twice");
+    expect(campaign().steps.turns.ok).toBe(true);
+    expect(campaign().status).toBe("done");
   });
 
-  it("a replaced container mid-step restarts the step and is logged", async () => {
+  it("a container replaced during the turns restarts the chain; one replaced before the restore fails it", async () => {
     await startCampaign(ports(), "quick");
-    // Run until the turns step has done its base and one turn.
     for (let i = 0; i < 200 && !logs.some((l) => l.event === "turn_layer" && l.row.n === 1); i++) {
       await runAlarms(1);
     }
     boot = "boot-2";
+    box = { published: null, kept: null, profile: null };
     await runAlarms();
     expect(logs.some((l) => l.event === "container_replaced")).toBe(true);
-    expect(map.get("campaign").containerReplaced ?? map.get("campaign").replaced).toBe(1);
-    expect(map.get("campaign").status).toBe("done");
+    expect(campaign().steps.turns.ok).toBe(true);
+    expect(map.get(`layers:${campaign().id}`)).toHaveLength(4);
+    expect(campaign().steps.restore.ok).toBe(true);
+  });
+
+  it("the restore refuses a chain the container no longer has", async () => {
+    await startCampaign(ports(), "quick");
+    for (let i = 0; i < 300 && campaign().index < 4; i++) await runAlarms(1);
+    // Between the turns and the restore, the container was replaced (a new one, no chain).
+    box.published = null;
+    await runAlarms();
+    expect(campaign().steps.restore.ok).toBe(false);
+    expect(campaign().steps.restore.summary.error).toContain("was replaced");
+  });
+
+  it("throughput-large regenerates the large workspace when it is not there", async () => {
+    await startCampaign(ports(), "full");
+    for (let i = 0; i < 2000 && campaign().index < 8; i++) await runAlarms(1);
+    box.profile = null;
+    await runAlarms(2000);
+    expect(calls.filter((c) => c === "POST /genws").length).toBeGreaterThanOrEqual(2);
+    expect(campaign().steps["throughput-large"].ok).toBe(true);
+    expect(result("throughput-large").profile).toBe("large");
   });
 });

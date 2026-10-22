@@ -1,0 +1,373 @@
+{
+ "id": "c20261022103520",
+ "plan": "quick",
+ "status": "done",
+ "index": 7,
+ "sub": {},
+ "startedAt": 1792665320564,
+ "armedUntil": 1792668920564,
+ "bootId": "ef79641090ae43f794ba4cc1d657849a",
+ "steps": {
+  "probe": {
+   "ok": true,
+   "summary": {
+    "kernel": "7.2.5-3-omarchy",
+    "reflink": {
+     "within_snapshot_area": "ok",
+     "workspace_to_snapshot": "ok"
+    },
+    "cgroup_writable": "no: [Errno 30] Read-only file system: '/sys/fs/cgroup/s3probe'",
+    "sigstop": {
+     "stopped_state": "T",
+     "resumed_state": "S"
+    },
+    "cap_kill": true,
+    "cap_sys_ptrace": false,
+    "read_cold_mb_s": 458.9,
+    "write_mb_s": 109.5,
+    "same_ctime": 0,
+    "df": "Mounted on Type       1B-blocks        Avail\n/          overlay 497941479424 321535262720\n/          overlay 497941479424 321535262720\n/          overlay 497941479424 321535262720"
+   },
+   "at": 1792665344625
+  },
+  "setup": {
+   "ok": true,
+   "summary": {
+    "host": "online",
+    "sessions": 3,
+    "launch_s": [
+     0.5,
+     0.89,
+     1.4
+    ],
+    "first_turns_ok": true,
+    "setup_s": 6.7
+   },
+   "at": 1792665360634
+  },
+  "bench-small": {
+   "ok": true,
+   "summary": {
+    "profile": "small",
+    "generation": {
+     "profile": "small",
+     "gen_s": 5.1
+    },
+    "size_bytes": 127131438,
+    "files": 4313,
+    "budget_s": 60,
+    "rsync-2phase-warm": {
+     "runs": 1,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 1,
+      "median": 0.363,
+      "worst": 0.363,
+      "best": 0.363
+     },
+     "copy_s": {
+      "n": 1,
+      "median": 0.353,
+      "worst": 0.353,
+      "best": 0.353
+     },
+     "precopy_s": {
+      "n": 1,
+      "median": 0.611,
+      "worst": 0.611,
+      "best": 0.611
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "server_poll_errors": 0,
+     "host_redials": 0,
+     "turns_ok": 1,
+     "writer_prefix_consistent": 1,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "rsync-2phase-cold": {
+     "runs": 1,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 1,
+      "median": 0.373,
+      "worst": 0.373,
+      "best": 0.373
+     },
+     "copy_s": {
+      "n": 1,
+      "median": 0.363,
+      "worst": 0.363,
+      "best": 0.363
+     },
+     "precopy_s": {
+      "n": 1,
+      "median": 2.722,
+      "worst": 2.722,
+      "best": 2.722
+     },
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "server_poll_errors": 0,
+     "host_redials": 0,
+     "turns_ok": 1,
+     "writer_prefix_consistent": 1,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-warm": {
+     "runs": 1,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 1,
+      "median": 0.453,
+      "worst": 0.453,
+      "best": 0.453
+     },
+     "copy_s": {
+      "n": 1,
+      "median": 0.444,
+      "worst": 0.444,
+      "best": 0.444
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "server_poll_errors": 0,
+     "host_redials": 0,
+     "turns_ok": 1,
+     "writer_prefix_consistent": 1,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "reflink-cold": {
+     "runs": 1,
+     "outcomes": [
+      "snapshot_ready"
+     ],
+     "pause_s": {
+      "n": 1,
+      "median": 0.536,
+      "worst": 0.536,
+      "best": 0.536
+     },
+     "copy_s": {
+      "n": 1,
+      "median": 0.526,
+      "worst": 0.526,
+      "best": 0.526
+     },
+     "precopy_s": {},
+     "over_20s": 0,
+     "over_40s": 0,
+     "host_always_online": true,
+     "server_poll_errors": 0,
+     "host_redials": 0,
+     "turns_ok": 1,
+     "writer_prefix_consistent": 1,
+     "stopped_by_kind": {
+      "idle-sleep": 50,
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1,
+      "writer": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "supervisor": 1
+     }
+    },
+    "bench_s": 14.7
+   },
+   "at": 1792665376645
+  },
+  "turns": {
+   "ok": true,
+   "summary": {
+    "base_files": 4309,
+    "base_bytes": 127129279,
+    "base_stored_bytes": 28764208,
+    "base_upload_ms": 726,
+    "index_zstd_bytes": 199947,
+    "claude": {
+     "turns": 2,
+     "changed_bytes_median": 246182,
+     "changed_bytes_worst": 249050,
+     "stored_bytes_median": 76617.5,
+     "stored_bytes_worst": 87478,
+     "upload_ms_median": 42,
+     "pause_s_median": 0.35735,
+     "pause_s_worst": 0.3632,
+     "index_s_median": 0.027999999999999997
+    },
+    "codex": {
+     "turns": 1,
+     "changed_bytes_median": 3754810,
+     "changed_bytes_worst": 3754810,
+     "stored_bytes_median": 116791,
+     "stored_bytes_worst": 116791,
+     "upload_ms_median": 43,
+     "pause_s_median": 0.3621,
+     "pause_s_worst": 0.3621,
+     "index_s_median": 0.036
+    },
+    "deltas_stored_bytes": 270026,
+    "rule_new_base_after_delta": null
+   },
+   "at": 1792665402952
+  },
+  "restore": {
+   "ok": true,
+   "summary": {
+    "chain_layers": 4,
+    "chain_work_ms": 681,
+    "chain_wall_ms": 863,
+    "chain_verify_equal": true,
+    "chain_restore_ms_median": 46.5,
+    "full_restore_ms": 1616,
+    "full_verify_equal": true,
+    "reopen": {
+     "claude_rc": 0,
+     "codex_rc": 0,
+     "claude_history": true,
+     "codex_history": true
+    }
+   },
+   "at": 1792665409557
+  },
+  "r2-block": {
+   "ok": true,
+   "summary": [
+    {
+     "case": "held-then-recovers",
+     "blocked_long_enough": true,
+     "longest_wait_ms": 10000,
+     "upload_ok": true,
+     "upload_ms": 10413,
+     "pointer_moved": true,
+     "objects_added": 1,
+     "turns": "4/4",
+     "capture_pause_s": 0.3619,
+     "capture_outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "polls": 20,
+      "not_online_s": 0,
+      "poll_errors": 0
+     }
+    },
+    {
+     "case": "held-past-the-deadline",
+     "blocked_long_enough": true,
+     "longest_wait_ms": 10000,
+     "upload_ok": false,
+     "upload_ms": 5002,
+     "error": "TimeoutError 23: The operation was aborted due to timeout",
+     "pointer_moved": false,
+     "objects_added": 0,
+     "turns": "4/4",
+     "capture_pause_s": 0.3609,
+     "capture_outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "polls": 20,
+      "not_online_s": 0,
+      "poll_errors": 0
+     }
+    }
+   ],
+   "at": 1792665452737
+  },
+  "calibrate": {
+   "ok": true,
+   "summary": [
+    {
+     "hold_s": 5,
+     "pause_s": 5.0575,
+     "outcome": "snapshot_ready",
+     "host": {
+      "states": [
+       "online"
+      ],
+      "polls": 36,
+      "not_online_s": 0,
+      "poll_errors": 0
+     },
+     "host_connects": 0,
+     "turn_after": true,
+     "stopped": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     }
+    }
+   ],
+   "at": 1792665498777
+  }
+ },
+ "waitingSince": null,
+ "turnsCanary": "S3Wmvjeoi28",
+ "endedAt": 1792665499778
+}

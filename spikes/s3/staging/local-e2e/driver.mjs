@@ -15,7 +15,7 @@
 // $S3E2E_OUT and leaves results/<campaign>/*.json in the fake bucket.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { DirectoryBackupGateway } from "@cloudflare/sandbox";
@@ -65,6 +65,9 @@ class DockerContainer {
     this.#running = false;
   }
   async setInactivityTimeout() {}
+  monitor() {
+    return new Promise(() => {}); // the harness never reports an exit
+  }
   getTcpPort(port) {
     if (port !== 7070) throw new Error(`unexpected port ${port}`);
     return {
@@ -153,6 +156,14 @@ const ctx = {
 };
 
 const bench = new Bench(ctx, env);
+// The holds live in the gateway container's process here (gateway-server.mjs).
+bench.holdRecord = (key) => {
+  try {
+    return JSON.parse(readFileSync(join(R2_ROOT, "holds.json"), "utf8"))[key] ?? null;
+  } catch {
+    return null;
+  }
+};
 const origin = "http://s3-e2e.local.test";
 const start = await bench.fetch(
   new Request(`${origin}/campaign`, {
