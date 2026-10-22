@@ -31,8 +31,17 @@ def _start(stack: Stack, name: str, env: dict[str, str]) -> int:
     env_file.chmod(0o600)
     try:
         docker(
-            "run", "-d", "--name", name, "--network", NETWORK, "-p", "127.0.0.1::8002",
-            "--env-file", str(env_file), IMAGE,
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            NETWORK,
+            "-p",
+            "127.0.0.1::8002",
+            "--env-file",
+            str(env_file),
+            IMAGE,
         )
     finally:
         env_file.unlink()

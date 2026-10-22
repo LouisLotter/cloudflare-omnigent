@@ -6,6 +6,9 @@ replica prefix. The canary changes go through Omnigent's real HTTP routes.
 
 from __future__ import annotations
 
+import json
+import time
+
 import pytest
 
 from cfo_drill import canaries as canary_mod
@@ -171,3 +174,75 @@ def test_drill_reports_a_restore_that_misses_its_deadline(
     assert code == 1
     assert report["restore"]["timed_out"] is True
     assert checks_by_name(report)["restore"]["ok"] is False
+
+
+def _session_status(server: Server, password: str, session_id: str) -> object:
+    with canary_mod.Omnigent(server.url) as client:
+        bearer = client.bearer(password)
+        body = client.http.get(f"/v1/sessions/{session_id}", headers=bearer).json()
+    return body.get("status")
+
+
+def test_unheld_running_edge_may_be_lost_and_the_next_turn_end_supersedes_it(
+    link: Stack, prefix: str
+) -> None:
+    """The design leaves running edges unheld ("the restore drill checks whether they
+    matter"). A running edge is acknowledged at once, even with R2 blackholed, and a server
+    lost then forgets it: the session shows its earlier status. The next turn-end edge is held
+    until durable and survives the next loss, so no outcome depends on the running edge; what
+    is lost is a status shown until that edge arrives."""
+    server = _healthy(link, prefix)
+    with canary_mod.Omnigent(server.url) as client:
+        bearer = client.bearer(server.password)
+        agent = client.agent_id(bearer)
+        session = client.http.post("/v1/sessions", json={"agent_id": agent}, headers=bearer)
+        session_id = session.json()["id"]
+    before = _session_status(server, server.password, session_id)
+    server.wait_replicated()
+    link.blackhole()
+    with canary_mod.Omnigent(server.url) as client:
+        bearer = client.bearer(server.password)
+        started = time.monotonic()
+        running = client.http.post(
+            f"/v1/sessions/{session_id}/events",
+            json={"type": "external_session_status", "data": {"status": "running"}},
+            headers=bearer,
+        )
+        elapsed = time.monotonic() - started
+    assert 200 <= running.status_code < 300, running.text
+    assert elapsed < 1.0  # not held: acknowledged while nothing can be replicated
+    live = _session_status(server, server.password, session_id)
+    server.kill("KILL")
+    link.unblock()
+    nxt = server.replace(CFO_INSTALLATION_INITIALIZED="true")
+    nxt.wait_healthy()
+    after_loss = _session_status(nxt, nxt.password, session_id)
+    assert after_loss == before  # the running edge was lost with the server
+
+    with canary_mod.Omnigent(nxt.url) as client:
+        bearer = client.bearer(nxt.password)
+        # A turn-end edge (here "failed", distinct from the session's earlier "idle").
+        turn_end = client.http.post(
+            f"/v1/sessions/{session_id}/events",
+            json={
+                "type": "external_session_status",
+                "data": {"status": "failed", "output": "synthetic turn failure"},
+            },
+            headers={**bearer, "Idempotency-Key": f"drill-edge-{prefix}"},
+        )
+    assert 200 <= turn_end.status_code < 300, turn_end.text  # held until durable
+    last = nxt.replace(CFO_INSTALLATION_INITIALIZED="true")
+    last.wait_healthy()
+    final = _session_status(last, last.password, session_id)
+    (link.workdir / "running-edge.json").write_text(
+        json.dumps(
+            {
+                "before": before,
+                "live_after_running": live,
+                "after_loss": after_loss,
+                "after_turn_end_and_loss": final,
+                "running_ack_ms": round(elapsed * 1000, 1),
+            }
+        )
+    )
+    assert final == "failed"
