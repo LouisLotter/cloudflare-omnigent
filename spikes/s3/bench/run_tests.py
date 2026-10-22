@@ -17,7 +17,7 @@ import sys
 import time
 
 from common import RESULTS, ROOT, SPIKE
-from sync_policy import sync
+from prepare_staging import prepare
 
 IMAGE = "cfo-s3-computer:spike"
 
@@ -26,7 +26,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label")
     args, rest = ap.parse_known_args()
-    digest = sync()
+    digest = prepare()["s6_policy_sha256"]
     b = subprocess.run(["docker", "build", "-q", "-t", IMAGE, str(SPIKE / "image")], capture_output=True, text=True)
     if b.returncode != 0:
         print(b.stderr[-3000:])
