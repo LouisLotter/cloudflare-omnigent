@@ -57,3 +57,40 @@ export function bootstrapSecretPresent(env: Readonly<Record<string, unknown>>): 
   const value = env[BOOTSTRAP_PASSWORD_SECRET];
   return typeof value === "string" && value.length > 0;
 }
+
+/** A whole number of seconds from a `SERVER_ENV_` setting, or the image's default. */
+function seconds(env: Readonly<Record<string, unknown>>, name: string, fallback: number): number {
+  const raw = env[`${SERVER_ENV_PREFIX}${name}`];
+  const value = typeof raw === "string" && /^\d{1,5}$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * The server image's own deadlines, from the settings it reads (WP2.3), for the watchdog:
+ * - a restore may take `CFO_RESTORE_DEADLINE_S` (300) after Litestream is ready
+ *   (`CFO_LITESTREAM_READY_TIMEOUT_S`, 60), with a minute's margin;
+ * - a stop may take about twice `CFO_FINAL_SYNC_TIMEOUT_S` (300) while R2 is down: the
+ *   entrypoint's confirmation, then Litestream's own retry, with a minute's margin.
+ */
+export function serverDeadlines(env: Readonly<Record<string, unknown>>): {
+  restoreWaitMs: number;
+  stopGraceMs: number;
+} {
+  const restore = seconds(env, "CFO_RESTORE_DEADLINE_S", 300);
+  const ready = seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60);
+  const finalSync = seconds(env, "CFO_FINAL_SYNC_TIMEOUT_S", 300);
+  return { restoreWaitMs: (restore + ready + 60) * 1000, stopGraceMs: (2 * finalSync + 60) * 1000 };
+}
+
+/**
+ * A fingerprint of the container's configuration: after an exit 78, the watchdog starts the
+ * server again only once this changes. A digest, stored, never logged.
+ */
+export async function configFingerprint(vars: Readonly<Record<string, string>>): Promise<string> {
+  const text = JSON.stringify(Object.entries(vars).sort(([a], [b]) => a.localeCompare(b)));
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)]
+    .slice(0, 16)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}

@@ -29,13 +29,14 @@ class TestClock {
   }
 }
 
-/** Fast timings for tests: no pause between health checks, short request waits. */
+/** Fast timings for tests: no pause between health checks, short request waits and stops. */
 export const TEST_TIMING: ServerTiming = {
   ...SERVER_TIMING,
   probeRetryMs: 0,
   probeTimeoutMs: 50,
   requestWaitMs: 150,
   requestPollMs: 10,
+  stopGraceMs: 30_000,
 };
 
 class TestServers {

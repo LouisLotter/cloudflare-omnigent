@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  exitCodeOf,
   isNoInstanceError,
   isNotListeningError,
   nativeServerContainer,
@@ -29,6 +30,9 @@ function runtimeContainer(monitor: Promise<void>) {
     destroy: async (reason: string) => {
       calls.push(["destroy", reason]);
     },
+    signal: (signo: number) => {
+      calls.push(["signal", signo]);
+    },
     setInactivityTimeout: async (ms: number) => {
       calls.push(["setInactivityTimeout", ms]);
     },
@@ -51,6 +55,7 @@ describe("the server's container port", () => {
     const response = await port.fetch(8000, new Request("http://omnigent/health"));
     expect(await response.text()).toBe("from port");
     await port.destroy("why");
+    port.signal(15);
     await port.setInactivityTimeout(3_600_000);
     const target = { fetch: () => undefined } as unknown as Fetcher;
     await port.interceptOutboundHttp("platform.internal", target);
@@ -59,6 +64,7 @@ describe("the server's container port", () => {
       ["getTcpPort", 8000],
       ["port.fetch", "http://omnigent/health"],
       ["destroy", "why"],
+      ["signal", 15],
       ["setInactivityTimeout", 3_600_000],
       ["interceptOutboundHttp", "platform.internal", target],
     ]);
@@ -96,5 +102,22 @@ describe("the server's container port", () => {
       ),
     ).toBe(true);
     expect(isNotListeningError(new Error("Network connection lost."))).toBe(false);
+  });
+});
+
+describe("exitCodeOf", () => {
+  it("reads the container's exit code from monitor()'s outcome", () => {
+    expect(exitCodeOf({ error: null })).toBe(0);
+    expect(exitCodeOf({ error: new Error("Container exited with unexpected exit code: 78") })).toBe(
+      78,
+    );
+    expect(exitCodeOf({ error: new Error("container exited with unexpected exit code: 75") })).toBe(
+      75,
+    );
+    expect(
+      exitCodeOf({ error: new Error("Runtime signalled the container to exit: 15") }),
+    ).toBeNull();
+    expect(exitCodeOf({ error: new Error("exited with unexpected exit code: 999") })).toBeNull();
+    expect(exitCodeOf({ error: "network down" })).toBeNull();
   });
 });

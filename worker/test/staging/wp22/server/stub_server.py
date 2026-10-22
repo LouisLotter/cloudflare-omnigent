@@ -7,7 +7,7 @@ run before the server image (WP2.3) exists:
   for the owner's browser that holds a WebSocket and reconnects); WebSocket /ws, an echo that
   computers' probe and the browser page hold open.
 - Port 8001: GET /position, the entrypoint's replication position (contracts' ReplicationPosition),
-  always caught up.
+  always caught up; GET /status, the entrypoint's phase, always "running" (WP2.3's shape).
 - Port 8002: GET /log?offset=N, this container's event log from byte N, which the staging run
   pulls into its results bucket.
 
@@ -141,7 +141,10 @@ class SideHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parts = urlsplit(self.path)
         port = self.server.server_address[1]
-        if port == 8001 and parts.path == "/position":
+        if port == 8001 and parts.path == "/status":
+            body = json.dumps({"protocolVersion": 1, "bootId": BOOT_ID, "phase": "running", "recovery": None}).encode()
+            content_type = "application/json"
+        elif port == 8001 and parts.path == "/position":
             body = json.dumps(
                 {"protocolVersion": 1, "bootId": BOOT_ID, "txid": 1, "replicatedTxid": 1}
             ).encode()

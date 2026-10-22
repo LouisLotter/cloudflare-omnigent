@@ -200,6 +200,7 @@ describe("OmnigentServer: always on", () => {
       detectedAt: iso(detected),
       endedAt: iso(ended),
       restarts: 1,
+      exitCode: null, // stopped by a signal: no exit code
     });
     const ready = events("watchdog").findLast((e) => e.event === "server_ready");
     expect(ready).toMatchObject({ failedStarts: 0, detectedToReadyMs: ended - detected });
@@ -239,13 +240,15 @@ describe("OmnigentServer: always on", () => {
     const startedAt = testServers.clock.now();
     while (testServers.clock.now() - startedAt < T.readinessWaitMs - T.pollMs) {
       await nextCheck(stub);
-      expect(fake.destroys).toEqual([]);
+      expect(fake.signals).toEqual([]);
     }
     await nextCheck(stub);
     expect(testServers.clock.now() - startedAt).toBeGreaterThanOrEqual(T.readinessWaitMs);
-    expect(fake.destroys).toEqual(["not ready within the readiness wait"]);
+    expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint confirms its final sync
+    expect(fake.destroys).toEqual([]);
     expect(events("watchdog").map((e) => e.event)).toContain("start_not_ready");
     fake.listening = true;
+    await nextCheck(stub); // the stop is done
     await nextCheck(stub); // the retry
     await nextCheck(stub); // answers
     expect(fake.starts).toHaveLength(3);
@@ -258,12 +261,14 @@ describe("OmnigentServer: always on", () => {
     const { stub, fake } = await runningServer();
     fake.listening = false;
     const silentFrom = testServers.clock.now();
-    while (fake.destroys.length === 0) await nextCheck(stub);
+    while (fake.signals.length === 0) await nextCheck(stub);
     expect(testServers.clock.now() - silentFrom).toBeGreaterThanOrEqual(T.hungAfterMs);
-    expect(fake.destroys).toEqual(["not answering"]);
+    expect(fake.signals).toEqual([15]);
+    expect(fake.destroys).toEqual([]);
     fake.listening = true;
-    await nextCheck(stub);
-    await nextCheck(stub);
+    await nextCheck(stub); // the stop is done
+    await nextCheck(stub); // the restart
+    await nextCheck(stub); // answers
     const [record] = await stub.outages(everything);
     expect(record).toMatchObject({
       cause: "not_answering",
@@ -281,6 +286,7 @@ describe("OmnigentServer: always on", () => {
     while (testServers.clock.now() - silentFrom < T.hungAfterMs - T.pollMs) await nextCheck(stub);
     fake.healthResults = [false, false, true];
     await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
     expect(fake.destroys).toEqual([]);
     expect(events("watchdog").map((e) => e.event)).toContain("restart_called_off");
     const [record] = await stub.outages(everything);
@@ -308,7 +314,7 @@ describe("OmnigentServer: always on", () => {
     const alarm = runDurableObjectAlarm(stub);
     expect((await post).status).toBe(200);
     expect(await alarm).toBe(true);
-    expect(fake.destroys).toEqual([]);
+    expect(fake.signals).toEqual([]);
     expect(events("watchdog").map((e) => e.event)).toContain("restart_called_off");
   });
 
@@ -320,18 +326,16 @@ describe("OmnigentServer: always on", () => {
     // The deciding check: two failed probes and a failed last look. From then on the server
     // would answer health checks, so only the stop itself keeps a request out.
     fake.healthResults = [false, false, false];
-    fake.destroyMs = 300;
-    const at = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
-    testServers.clock.advance(Math.max(0, (at ?? 0) - testServers.clock.now()));
-    const alarm = runDurableObjectAlarm(stub);
-    for (let i = 0; i < 200 && fake.destroys.length === 0; i += 1) await sleep(5);
-    expect(fake.destroys).toHaveLength(1); // the watchdog is stopping the server now
+    fake.stopMs = 300; // the entrypoint takes its time over the final sync
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]); // the watchdog is stopping the server now
+    expect(fake.running).toBe(true);
     const during = await forward(stub, "/v1/sessions", { method: "POST", body: "{}" });
     expect(during.status).toBe(503);
     expect(ErrorBody.parse(await during.json()).error.retryable).toBe(true);
     expect(fake.forwarded()).toEqual([]);
-    expect(await alarm).toBe(true);
-    expect(fake.destroys).toEqual(["not answering"]);
+    await sleep(350);
+    expect(fake.running).toBe(false);
   });
 
   it("does not start without platform.internal, and retries a failed registration (Codex r1-2)", async () => {
@@ -385,6 +389,7 @@ describe("OmnigentServer: always on", () => {
     fake.interceptOutboundHttp = fail("intercept");
     fake.setInactivityTimeout = fail("timeout");
     fake.destroy = fail("destroy");
+    fake.stopMs = null; // SIGTERM ignored: the stop outruns its grace, then the kill fails
     await check(stub);
     expect(fake.starts).toEqual([]); // no start without platform.internal
     fake.interceptOutboundHttp = FakeServerContainer.prototype.interceptOutboundHttp.bind(fake);
@@ -464,6 +469,99 @@ describe("OmnigentServer: always on", () => {
     expect(ErrorBody.parse(await response.json()).error.retryable).toBe(false);
     await check(stub);
     expect(events("watchdog").some((e) => e.event === "no_container")).toBe(true);
+  });
+});
+
+describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
+  it("waits out a restore past the readiness wait, without stopping it", async () => {
+    const { stub, fake } = await runningServer();
+    fake.stopByPlatform();
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "restoring"; // port 8000 refuses connections meanwhile
+    const startedAt = testServers.clock.now();
+    while (testServers.clock.now() - startedAt < T.restoreWaitMs - T.pollMs) await nextCheck(stub);
+    expect(testServers.clock.now() - startedAt).toBeGreaterThan(T.readinessWaitMs);
+    expect(fake.signals).toEqual([]);
+    fake.entrypointPhase = "running";
+    await nextCheck(stub);
+    const [record] = await stub.outages(everything);
+    expect(record?.endedAt).not.toBeNull();
+    expect(fake.starts).toHaveLength(2);
+  });
+
+  it("never restarts a server in recovery mode, and records the outage as recovery", async () => {
+    const { stub, fake } = await runningServer();
+    fake.entrypointPhase = "recovery";
+    fake.recovery = { reason: "replica_empty", transient: false };
+    const from = testServers.clock.now();
+    while (testServers.clock.now() - from < 30 * 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    const [ongoing] = await stub.outages(everything);
+    expect(ongoing).toMatchObject({ cause: "recovery_mode", endedAt: null, restarts: 0 });
+    expect(events("watchdog").filter((e) => e.event === "recovery_mode")).toHaveLength(1);
+    // Requests reach the image, which answers them with its recovery reason, at once.
+    const during = await forward(stub, "/");
+    expect(during.status).toBe(503);
+    expect(await during.json()).toMatchObject({ error: { code: "recovery_mode" } });
+    // The owner restored the replica, or the entrypoint's own retry worked.
+    fake.entrypointPhase = "running";
+    fake.recovery = null;
+    await nextCheck(stub);
+    const [ended] = await stub.outages(everything);
+    expect(ended?.endedAt).not.toBeNull();
+  });
+
+  it("waits for a stop the platform began instead of killing it during its final sync", async () => {
+    const { stub, fake } = await runningServer();
+    fake.entrypointPhase = "stopping";
+    fake.healthResults = Array.from({ length: 50 }, () => false);
+    await nextCheck(stub); // seen stopping: waited for, as a stop of its own
+    const seenAt = testServers.clock.now();
+    let checks = 0;
+    while (testServers.clock.now() - seenAt < T.stopGraceMs - T.pollMs) {
+      await nextCheck(stub);
+      checks += 1;
+    }
+    expect(checks).toBeGreaterThan(3);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(events("watchdog").some((e) => e.event === "entrypoint_stopping")).toBe(true);
+    fake.stopByPlatform(0);
+    await nextCheck(stub); // the stop is done
+    await nextCheck(stub); // restarted
+    expect(fake.starts).toHaveLength(2);
+    const [record] = await stub.outages(everything);
+    expect(record).toMatchObject({ cause: "container_stopped", exitCode: 0 });
+  });
+
+  it("records exit codes, and holds after 78 until the configuration changes", async () => {
+    const { stub, fake } = await runningServer();
+    fake.stopByPlatform(75); // the final sync was not confirmed
+    await nextCheck(stub);
+    expect((await stub.outages(everything))[0]).toMatchObject({ exitCode: 75 });
+    await nextCheck(stub); // answers again
+    fake.stopByPlatform(78); // a setting is missing or malformed
+    const starts = fake.starts.length;
+    for (let i = 0; i < 5; i += 1) await nextCheck(stub);
+    expect(fake.starts.length).toBe(starts);
+    const held = (await stub.outages(everything)).at(-1);
+    expect(held).toMatchObject({ exitCode: 78, endedAt: null });
+    const refused = await forward(stub, "/");
+    expect(refused.status).toBe(503);
+    expect(ErrorBody.parse(await refused.json()).error.retryable).toBe(false);
+    expect(events("watchdog").some((e) => e.event === "config_error")).toBe(true);
+    // The installer fixes the setting: a new Worker version with a new configuration.
+    await runInDurableObject(stub, (instance: OmnigentServer) => {
+      const env = { ...(instance as unknown as { env: object }).env };
+      Object.defineProperty(instance, "env", {
+        value: { ...env, SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "false" },
+      });
+    });
+    await nextCheck(stub);
+    expect(fake.starts.length).toBe(starts + 1);
+    expect(fake.starts.at(-1)?.env.CFO_INSTALLATION_INITIALIZED).toBe("false");
   });
 });
 

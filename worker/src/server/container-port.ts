@@ -21,6 +21,8 @@ export interface ServerContainer {
   /** HTTP to a container port, over `http://` (an `https://` URL throws on Cloudflare). */
   fetch(port: number, request: Request): Promise<Response>;
   destroy(reason: string): Promise<void>;
+  /** Sends a signal to the container's main process, such as SIGTERM (15). */
+  signal(signo: number): void;
   setInactivityTimeout(ms: number): Promise<void>;
   interceptOutboundHttp(host: string, target: Fetcher): Promise<void>;
 }
@@ -51,6 +53,9 @@ export function nativeServerContainer(container: Container): ServerContainer {
     destroy(reason) {
       return container.destroy(reason);
     },
+    signal(signo) {
+      container.signal(signo);
+    },
     setInactivityTimeout(ms) {
       return container.setInactivityTimeout(ms);
     },
@@ -70,6 +75,19 @@ function messageOf(error: unknown): string {
 /** Cloudflare's refusal of a start right after a stop (DC-37). */
 export function isNoInstanceError(error: unknown): boolean {
   return messageOf(error).includes(NO_INSTANCE);
+}
+
+/**
+ * The exit code in an error `monitor()` rejected with, if it names one: the runtime reports a
+ * non-zero exit as "container exited with unexpected exit code: N", and a stop by signal as
+ * "runtime signalled the container to exit: N" (which gives no exit code). A clean exit
+ * resolves `monitor()` and is code 0.
+ */
+export function exitCodeOf(exit: ContainerExit): number | null {
+  if (exit.error === null) return 0;
+  const match = /exited with unexpected exit code:\s*(\d{1,3})\b/.exec(messageOf(exit.error));
+  const code = match?.[1] === undefined ? null : Number(match[1]);
+  return code !== null && code <= 255 ? code : null;
 }
 
 /** A port fetch that never reached a listening server: the request was not sent. */

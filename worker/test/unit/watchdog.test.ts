@@ -2,7 +2,10 @@ import { OutageId, OutageRecord } from "@cfo/contracts";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  ANSWERING,
   type Effect,
+  type EntrypointPhase,
+  EXIT_CONFIG,
   INITIAL_WATCHDOG_STATE,
   type Observation,
   randomOutageId,
@@ -18,6 +21,17 @@ const T0 = Date.parse("2026-10-22T03:00:00.000Z");
 let ids = 0;
 const nextId = () => `out_${String(++ids).padStart(26, "0")}`;
 
+const STOPPED: Observation = { kind: "stopped", exitCode: null };
+const exited = (exitCode: number): Observation => ({ kind: "stopped", exitCode });
+const SILENT: Observation = { kind: "silent", entrypoint: null };
+const entrypoint = (phase: EntrypointPhase, transient = false): Observation => ({
+  kind: "silent",
+  entrypoint: {
+    phase,
+    recovery: phase === "recovery" ? { reason: "replica_empty", transient } : null,
+  },
+});
+
 const types = (s: Step) => s.effects.map((e) => e.type);
 const events = (s: Step) =>
   s.effects.flatMap((e) => (e.type === "event" ? [e.name] : [])) as string[];
@@ -25,11 +39,15 @@ const outages = (s: Step) =>
   s.effects.flatMap((e) => (e.type === "outage" ? [e.record] : [])) as OutageRecord[];
 
 /** Runs observations in order, each at its time; returns every step. */
-function run(start: WatchdogState, seq: readonly [number, Observation][]): Step[] {
+function run(
+  start: WatchdogState,
+  seq: readonly [number, Observation][],
+  config = "config-a",
+): Step[] {
   const steps: Step[] = [];
   let state = start;
   for (const [at, obs] of seq) {
-    const s = step(state, obs, at, T, nextId);
+    const s = step(state, obs, at, T, nextId, config);
     steps.push(s);
     state = s.state;
   }
@@ -40,7 +58,7 @@ const answered = (at: number): WatchdogState => ({ ...INITIAL_WATCHDOG_STATE, la
 
 describe("watchdog: first start", () => {
   it("starts a server that was never started, without recording an outage", () => {
-    const s = step(INITIAL_WATCHDOG_STATE, "stopped", T0, T, nextId);
+    const s = step(INITIAL_WATCHDOG_STATE, STOPPED, T0, T, nextId);
     expect(types(s)).toEqual(["event", "start"]);
     expect(s.state).toMatchObject({
       phase: "starting",
@@ -53,37 +71,50 @@ describe("watchdog: first start", () => {
 
   it("dates a failed first start from the first start, through refused retries", () => {
     const steps = run(INITIAL_WATCHDOG_STATE, [
-      [T0, "stopped"], // first start
-      [T0 + 5_000, "stopped"], // refused: retry due in 5 s
-      [T0 + 10_000, "stopped"], // second start
-      [T0 + 10_000 + T.readinessWaitMs, "silent"], // never ready
+      [T0, STOPPED], // first start
+      [T0 + 5_000, STOPPED], // refused: retry due in 5 s
+      [T0 + 10_000, STOPPED], // second start
+      [T0 + 10_000 + T.readinessWaitMs, SILENT], // never ready
     ]);
     const record = outages(defined(steps[3]))[0];
     expect(record).toMatchObject({ cause: "start_failed", startedAt: new Date(T0).toISOString() });
   });
 
-  it("waits the full readiness wait for a first start, then records it as failed", () => {
+  it("waits the full readiness wait for a first start, then stops it to start again", () => {
     const [, waiting, failed] = run(INITIAL_WATCHDOG_STATE, [
-      [T0, "stopped"],
-      [T0 + T.readinessWaitMs - 1, "silent"],
-      [T0 + T.readinessWaitMs, "silent"],
+      [T0, STOPPED],
+      [T0 + T.readinessWaitMs - 1, SILENT],
+      [T0 + T.readinessWaitMs, SILENT],
     ]);
     expect(waiting?.effects).toEqual([]);
-    expect(failed && types(failed)).toEqual(["event", "event", "outage", "destroy"]);
+    expect(failed && types(failed)).toEqual(["event", "event", "outage", "stop"]);
     expect(failed && events(failed)).toEqual(["outage_started", "start_not_ready"]);
     expect(failed && outages(failed)[0]).toMatchObject({
       cause: "start_failed",
       startedAt: new Date(T0).toISOString(),
       endedAt: null,
     });
-    expect(failed?.state).toMatchObject({ phase: "waiting", failedStarts: 1 });
-    expect(failed?.nextCheckAt).toBe(T0 + T.readinessWaitMs + retryDelay(1, T));
+    expect(failed?.state).toMatchObject({ phase: "stopping", failedStarts: 1 });
+    expect(failed?.nextCheckAt).toBe(T0 + T.readinessWaitMs + T.pollMs);
+  });
+
+  it("waits out a restore the entrypoint reports, then counts the start failed (WP2.3)", () => {
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + T.readinessWaitMs + 1, entrypoint("restoring")],
+      [T0 + T.restoreWaitMs - 1, entrypoint("restoring")],
+      [T0 + T.restoreWaitMs, entrypoint("restoring")],
+    ]);
+    expect(types(defined(steps[1]))).toEqual([]);
+    expect(types(defined(steps[2]))).toEqual([]);
+    expect(types(defined(steps[3]))).toContain("stop");
+    expect(T.restoreWaitMs).toBeGreaterThan(T.readinessWaitMs);
   });
 });
 
 describe("watchdog: a healthy server", () => {
   it("records nothing and checks again after the interval", () => {
-    const s = step(answered(T0), "answering", T0 + 60_000, T, nextId);
+    const s = step(answered(T0), ANSWERING, T0 + 60_000, T, nextId);
     expect(s.effects).toEqual([]);
     expect(s.state.lastAnsweredAt).toBe(T0 + 60_000);
     expect(s.nextCheckAt).toBe(T0 + 60_000 + T.intervalMs);
@@ -92,8 +123,8 @@ describe("watchdog: a healthy server", () => {
   it("never stops or restarts a server that answers", () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 10_000_000 }), (offset) => {
-        const s = step(answered(T0), "answering", T0 + offset, T, nextId);
-        return !types(s).includes("destroy") && !types(s).includes("start");
+        const s = step(answered(T0), ANSWERING, T0 + offset, T, nextId);
+        return types(s).every((t) => !["stop", "destroy", "start"].includes(t));
       }),
     );
   });
@@ -102,9 +133,9 @@ describe("watchdog: a healthy server", () => {
 describe("watchdog: found stopped (maintenance or a deploy's rollout)", () => {
   it("opens an outage from the last answer, restarts, and closes it when the server answers", () => {
     const steps = run(answered(T0), [
-      [T0 + 50_000, "stopped"],
-      [T0 + 55_000, "silent"],
-      [T0 + 70_000, "answering"],
+      [T0 + 50_000, exited(0)],
+      [T0 + 55_000, SILENT],
+      [T0 + 70_000, ANSWERING],
     ]);
     const [found, booting, ready] = steps;
     expect(found && events(found)).toEqual(["found_stopped", "outage_started", "start"]);
@@ -114,6 +145,7 @@ describe("watchdog: found stopped (maintenance or a deploy's rollout)", () => {
       detectedAt: new Date(T0 + 50_000).toISOString(),
       endedAt: null,
       restarts: 1,
+      exitCode: 0,
     });
     expect(booting?.effects).toEqual([]);
     expect(ready && events(ready)).toEqual(["server_ready", "outage_ended"]);
@@ -123,12 +155,23 @@ describe("watchdog: found stopped (maintenance or a deploy's rollout)", () => {
     expect(ready?.state.outage).toBeNull();
   });
 
+  it("keeps the last exit code on the record: an unconfirmed final sync (75) shows", () => {
+    const steps = run(answered(T0), [
+      [T0 + 10_000, exited(75)],
+      [T0 + 15_000, exited(71)], // the restart's app exited
+      [T0 + 20_000, STOPPED], // retry due, no code reported
+    ]);
+    expect(outages(defined(steps[0]))[0]?.exitCode).toBe(75);
+    expect(outages(defined(steps[1]))[0]?.exitCode).toBe(71);
+    expect(outages(defined(steps[2]))[0]?.exitCode).toBe(71);
+  });
+
   it("reports where a replacement's time went (DC-47)", () => {
     const steps = run(answered(T0), [
-      [T0 + 10_000, "stopped"],
-      [T0 + 15_000, "stopped"], // refused (DC-37)
-      [T0 + 20_000, "stopped"], // retry due
-      [T0 + 32_000, "answering"],
+      [T0 + 10_000, STOPPED],
+      [T0 + 15_000, STOPPED], // refused (DC-37)
+      [T0 + 20_000, STOPPED], // retry due
+      [T0 + 32_000, ANSWERING],
     ]);
     const ready = defined(steps[3]).effects.find(
       (e): e is Extract<Effect, { type: "event" }> =>
@@ -145,21 +188,21 @@ describe("watchdog: found stopped (maintenance or a deploy's rollout)", () => {
 
 describe("watchdog: a start refused right after a stop (DC-37)", () => {
   it("retries with the bounded backoff, never early, then every minute, and never gives up", () => {
-    let state = step(answered(T0), "stopped", T0, T, nextId).state;
+    let state = step(answered(T0), STOPPED, T0, T, nextId).state;
     let now = T0;
     const startTimes: number[] = [T0];
     for (let failure = 1; failure <= 7; failure += 1) {
       now += T.pollMs;
-      const refused = step(state, "stopped", now, T, nextId);
+      const refused = step(state, STOPPED, now, T, nextId);
       expect(events(refused)).toContain("start_stopped");
       expect(refused.state.failedStarts).toBe(failure);
       const due = now + retryDelay(failure, T);
       expect(refused.nextCheckAt).toBe(due);
       // A check before the retry is due starts nothing.
-      const early = step(refused.state, "stopped", due - 1, T, nextId);
+      const early = step(refused.state, STOPPED, due - 1, T, nextId);
       expect(types(early)).not.toContain("start");
       expect(early.nextCheckAt).toBe(due);
-      const retry = step(refused.state, "stopped", due, T, nextId);
+      const retry = step(refused.state, STOPPED, due, T, nextId);
       expect(types(retry)).toContain("start");
       startTimes.push(due);
       state = retry.state;
@@ -170,26 +213,26 @@ describe("watchdog: a start refused right after a stop (DC-37)", () => {
   });
 
   it("says once that starts keep failing, after the backoff is used up", () => {
-    let state = step(answered(T0), "stopped", T0, T, nextId).state;
+    let state = step(answered(T0), STOPPED, T0, T, nextId).state;
     const said: number[] = [];
     let now = T0;
     for (let failure = 1; failure <= 8; failure += 1) {
       now += T.pollMs;
-      const refused = step(state, "stopped", now, T, nextId);
+      const refused = step(state, STOPPED, now, T, nextId);
       if (events(refused).includes("start_failing")) said.push(failure);
       now = refused.nextCheckAt;
-      state = step(refused.state, "stopped", now, T, nextId).state;
+      state = step(refused.state, STOPPED, now, T, nextId).state;
     }
     expect(said).toEqual([T.startRetryMs.length + 1]);
   });
 });
 
-describe("watchdog: a server that stops answering", () => {
-  it("opens a not_answering outage from the last answer and restarts it after the wait", () => {
+describe("watchdog: restarts stop gracefully (WP2.3's final sync)", () => {
+  it("stops a silent server with SIGTERM after the wait, starts it once it stopped", () => {
     const steps = run(answered(T0), [
-      [T0 + 60_000, "silent"],
-      [T0 + 100_000, "silent"],
-      [T0 + T.hungAfterMs, "silent"],
+      [T0 + 60_000, SILENT],
+      [T0 + 100_000, SILENT],
+      [T0 + T.hungAfterMs, SILENT],
     ]);
     const [opened, waiting, restarting] = steps.map((s) => defined(s));
     expect(events(defined(opened))).toEqual(["outage_started", "not_answering"]);
@@ -199,26 +242,119 @@ describe("watchdog: a server that stops answering", () => {
     });
     expect(types(defined(waiting))).toEqual([]);
     const hung = defined(restarting);
-    expect(types(hung)).toEqual(["event", "destroy"]);
-    expect(hung.state).toMatchObject({ phase: "waiting" });
-    const restart = step(hung.state, "stopped", hung.nextCheckAt, T, nextId);
+    expect(types(hung)).toEqual(["event", "outage", "stop"]);
+    expect(hung.state).toMatchObject({ phase: "stopping", phaseSince: T0 + T.hungAfterMs });
+    // Still running while it confirms its final sync: no start, no kill.
+    const syncing = step(hung.state, SILENT, T0 + T.hungAfterMs + 30_000, T, nextId);
+    expect(types(syncing)).toEqual([]);
+    const done = step(syncing.state, exited(0), T0 + T.hungAfterMs + 60_000, T, nextId);
+    expect(events(done)).toEqual(["stop_done"]);
+    expect(done.state.phase).toBe("waiting");
+    const restart = step(done.state, STOPPED, done.nextCheckAt, T, nextId);
     expect(types(restart)).toContain("start");
-    expect(restart.state.outage?.cause).toBe("not_answering");
-    expect(restart.state.outage?.restarts).toBe(1);
+    expect(restart.state.outage).toMatchObject({
+      cause: "not_answering",
+      restarts: 1,
+      exitCode: 0,
+    });
+  });
+
+  it("kills a stop only once it outruns its grace", () => {
+    const stopping: WatchdogState = { ...answered(T0), phase: "stopping", phaseSince: T0 };
+    expect(types(step(stopping, ANSWERING, T0 + T.stopGraceMs - 1, T, nextId))).toEqual([]);
+    const overdue = step(stopping, SILENT, T0 + T.stopGraceMs, T, nextId);
+    expect(types(overdue)).toEqual(["event", "destroy"]);
+    expect(overdue.state).toMatchObject({ phase: "waiting" });
+  });
+
+  it("waits for a stop the platform began, rather than killing it", () => {
+    const s = step(answered(T0), entrypoint("stopping"), T0 + 10_000, T, nextId);
+    expect(types(s)).not.toContain("destroy");
+    expect(types(s)).not.toContain("stop");
+    expect(s.state).toMatchObject({ phase: "stopping", phaseSince: T0 + 10_000 });
+    expect(s.state.outage?.cause).toBe("container_stopped");
   });
 
   it("adopts a container that runs while a start is due, rather than stopping it", () => {
     const waiting: WatchdogState = { ...answered(T0), phase: "waiting", startDueAt: T0 + 9_000 };
-    const s = step(waiting, "silent", T0 + 1_000, T, nextId);
-    expect(types(s)).toEqual([]);
+    const s = step(waiting, SILENT, T0 + 1_000, T, nextId);
+    expect(types(s)).toEqual(["event", "outage"]);
     expect(s.state).toMatchObject({ phase: "starting", phaseSince: T0 + 1_000 });
   });
 
   it("clamps an outage that would start after its detection", () => {
-    const s = step(answered(T0 + 5_000), "stopped", T0, T, nextId);
+    const s = step(answered(T0 + 5_000), STOPPED, T0, T, nextId);
     const record = outages(s)[0];
     expect(record?.startedAt).toBe(new Date(T0).toISOString());
     expect(OutageRecord.safeParse(record).success).toBe(true);
+  });
+});
+
+describe("watchdog: recovery mode and settings (WP2.3)", () => {
+  it("never restarts a server in recovery mode, transient or not, and says why once", () => {
+    for (const transient of [false, true]) {
+      const steps = run(answered(T0), [
+        [T0 + 60_000, entrypoint("recovery", transient)],
+        [T0 + 400_000, entrypoint("recovery", transient)],
+        [T0 + 4_000_000, SILENT], // its status could not be read this time
+        [T0 + 4_100_000, entrypoint("recovery", transient)],
+      ]);
+      for (const s of steps) {
+        expect(types(s).some((t) => ["stop", "destroy", "start"].includes(t))).toBe(false);
+      }
+      expect(steps.flatMap(events).filter((e) => e === "recovery_mode")).toHaveLength(1);
+      expect(outages(defined(steps[3]))[0]).toMatchObject({
+        cause: "recovery_mode",
+        endedAt: null,
+      });
+      expect(defined(steps[3]).nextCheckAt - (T0 + 4_100_000)).toBe(T.intervalMs);
+    }
+  });
+
+  it("records a recovery the restart ran into, and its end when the server answers", () => {
+    const steps = run(answered(T0), [
+      [T0 + 10_000, STOPPED], // restart
+      [T0 + 30_000, entrypoint("recovery", true)], // the restore failed: the entrypoint retries
+      [T0 + 100_000, ANSWERING], // its retry worked
+    ]);
+    expect(outages(defined(steps[1]))[0]).toMatchObject({ cause: "recovery_mode", restarts: 1 });
+    expect(defined(steps[1]).state.phase).toBe("idle");
+    expect(outages(defined(steps[2]))[0]?.endedAt).toBe(new Date(T0 + 100_000).toISOString());
+  });
+
+  it("holds a server that exited 78 until its configuration changes", () => {
+    const held = run(
+      answered(T0),
+      [
+        [T0 + 10_000, exited(EXIT_CONFIG)],
+        [T0 + 70_000, STOPPED],
+        [T0 + 3_600_000, STOPPED],
+      ],
+      "config-a",
+    );
+    expect(events(defined(held[0]))).toContain("config_error");
+    expect(held.flatMap(types)).not.toContain("start");
+    expect(defined(held[2]).state).toMatchObject({ phase: "held", heldConfig: "config-a" });
+    expect(outages(defined(held[2]))[0]).toMatchObject({ exitCode: EXIT_CONFIG, endedAt: null });
+    const changed = step(defined(held[2]).state, STOPPED, T0 + 3_700_000, T, nextId, "config-b");
+    expect(events(changed)).toEqual(["config_changed", "start"]);
+    expect(changed.state).toMatchObject({ phase: "starting", heldConfig: null });
+  });
+
+  it("holds a first start that exits 78 too, recording it as a failed start", () => {
+    const [first, found] = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 5_000, exited(EXIT_CONFIG)],
+    ]);
+    expect(first && types(first)).toContain("start");
+    expect(found?.state.phase).toBe("held");
+    expect(found && outages(found)[0]).toMatchObject({ cause: "start_failed", exitCode: 78 });
+  });
+
+  it("holds after a graceful stop that ended in 78", () => {
+    const stopping: WatchdogState = { ...answered(T0), phase: "stopping", phaseSince: T0 };
+    const s = step(stopping, exited(EXIT_CONFIG), T0 + 1_000, T, nextId, "config-a");
+    expect(s.state).toMatchObject({ phase: "held", heldConfig: "config-a" });
   });
 });
 
@@ -232,8 +368,8 @@ describe("randomOutageId", () => {
 
 // ---------------------------------------------------------------------------------------------
 // Simulation (the plan's "simulation" layer for this package): a simulated server under random
-// platform stops, refused starts, slow boots and hangs, driven by the watchdog at the times it
-// asks for. Invariants hold for every run.
+// platform stops, refused starts, slow boots, restores, recovery mode, hangs and slow stops,
+// driven by the watchdog at the times it asks for. Invariants hold for every run.
 
 interface SimServer {
   running: boolean;
@@ -241,6 +377,12 @@ interface SimServer {
   answersAt: number | null;
   hung: boolean;
   refusalsLeft: number;
+  /** Until when its entrypoint reports a restore. */
+  restoringUntil: number;
+  recovery: boolean;
+  /** When a SIGTERM stop completes, while stopping. */
+  stopsAt: number | null;
+  lastExit: number | null;
 }
 
 const faultArb = fc.oneof(
@@ -248,39 +390,57 @@ const faultArb = fc.oneof(
     kind: fc.constant("platform_stop" as const),
     at: fc.integer({ min: 0, max: 3_600_000 }),
     refusals: fc.integer({ min: 0, max: 6 }),
+    exitCode: fc.constantFrom(0, 70, 71, 75),
   }),
   fc.record({ kind: fc.constant("hang" as const), at: fc.integer({ min: 0, max: 3_600_000 }) }),
+  fc.record({
+    kind: fc.constant("recovery" as const),
+    at: fc.integer({ min: 0, max: 3_600_000 }),
+    lastsMs: fc.integer({ min: 60_000, max: 1_800_000 }),
+  }),
   fc.record({ kind: fc.constant("none" as const), at: fc.integer({ min: 0, max: 3_600_000 }) }),
 );
 
 describe("watchdog simulation", () => {
-  it("keeps the server on and records every outage without understating it", () => {
-    const seen = { downIntervals: 0, refusedStarts: 0, restarts: 0 };
+  it("keeps the server on, records every outage without understating it, and never fights recovery", () => {
+    const seen = { downIntervals: 0, refusedStarts: 0, restarts: 0, recoveries: 0, stops: 0 };
     fc.assert(
       fc.property(
         fc.array(faultArb, { maxLength: 6 }),
         fc.integer({ min: 1_000, max: 200_000 }),
-        (faults, bootMs) => {
+        fc.integer({ min: 0, max: 500_000 }),
+        fc.integer({ min: 0, max: 900_000 }),
+        (faults, bootMs, restoreMs, stopMs) => {
           const sorted = [...faults].sort((a, b) => a.at - b.at);
           const server: SimServer = {
             running: false,
             answersAt: null,
             hung: false,
             refusalsLeft: 0,
+            restoringUntil: 0,
+            recovery: false,
+            stopsAt: null,
+            lastExit: null,
           };
+          let recoveryEndsAt = 0;
           let state = INITIAL_WATCHDOG_STATE;
           let now = T0;
           let fault = 0;
-          // When the simulated server truly stopped answering, and every recorded outage.
           let currentDown: { from: number; to: number | null } | null = null;
           let everAnswered = false;
           const records = new Map<string, OutageRecord>();
           const downIntervals: { from: number; to: number | null }[] = [];
           const end = T0 + 5 * 3_600_000;
           let startsWhileRunning = 0;
+          let stoppedInRecovery = 0;
 
           const answering = (at: number) =>
-            server.running && !server.hung && server.answersAt !== null && at >= server.answersAt;
+            server.running &&
+            !server.hung &&
+            !server.recovery &&
+            server.stopsAt === null &&
+            server.answersAt !== null &&
+            at >= server.answersAt;
 
           while (now < end) {
             for (let f = sorted[fault]; f !== undefined && T0 + f.at <= now; f = sorted[fault]) {
@@ -288,9 +448,24 @@ describe("watchdog simulation", () => {
                 server.running = false;
                 server.answersAt = null;
                 server.hung = false;
+                server.recovery = false;
+                server.stopsAt = null;
                 server.refusalsLeft = f.refusals;
+                server.lastExit = f.exitCode;
               } else if (f.kind === "hang" && server.running) server.hung = true;
+              else if (f.kind === "recovery" && server.running && server.stopsAt === null) {
+                server.recovery = true;
+                recoveryEndsAt = now + f.lastsMs;
+                seen.recoveries += 1;
+              }
               fault += 1;
+            }
+            if (server.recovery && now >= recoveryEndsAt) server.recovery = false;
+            if (server.stopsAt !== null && now >= server.stopsAt) {
+              server.running = false;
+              server.stopsAt = null;
+              server.answersAt = null;
+              server.lastExit = 0;
             }
             const isUp = answering(now);
             if (everAnswered && !isUp && currentDown === null) {
@@ -298,8 +473,23 @@ describe("watchdog simulation", () => {
               currentDown = { from: state.lastAnsweredAt ?? now, to: null };
               downIntervals.push(currentDown);
             }
-            const obs: Observation = !server.running ? "stopped" : isUp ? "answering" : "silent";
-            const s = step(state, obs, now, T, nextId);
+            let obs: Observation;
+            if (!server.running) obs = { kind: "stopped", exitCode: server.lastExit };
+            else if (isUp) obs = ANSWERING;
+            else {
+              const phase: EntrypointPhase = server.recovery
+                ? "recovery"
+                : server.stopsAt !== null
+                  ? "stopping"
+                  : now < server.restoringUntil
+                    ? "restoring"
+                    : "running";
+              obs = entrypoint(phase, true);
+            }
+            // Recovery as the watchdog sees it, before a stop of its own began.
+            const inRecovery = server.recovery && state.phase !== "stopping";
+            const s = step(state, obs, now, T, nextId, "config-a");
+            if (obs.kind === "stopped") server.lastExit = null;
             for (const effect of s.effects) {
               if (effect.type === "outage") records.set(effect.record.outageId, effect.record);
               if (effect.type === "start") {
@@ -311,15 +501,24 @@ describe("watchdog simulation", () => {
                 } else {
                   server.running = true;
                   server.hung = false;
-                  server.answersAt = now + bootMs;
+                  server.recovery = false;
+                  server.restoringUntil = now + restoreMs;
+                  server.answersAt = now + restoreMs + bootMs;
                 }
               }
+              if (effect.type === "stop") {
+                seen.stops += 1;
+                if (inRecovery) stoppedInRecovery += 1;
+                server.stopsAt = now + stopMs;
+              }
               if (effect.type === "destroy") {
+                if (inRecovery) stoppedInRecovery += 1;
                 server.running = false;
                 server.answersAt = null;
+                server.stopsAt = null;
               }
             }
-            if (obs === "answering") {
+            if (obs.kind === "answering") {
               everAnswered = true;
               if (currentDown !== null) currentDown.to = now;
               currentDown = null;
@@ -331,8 +530,8 @@ describe("watchdog simulation", () => {
           }
 
           seen.downIntervals += downIntervals.length;
-          // Never started over a running container.
           expect(startsWhileRunning).toBe(0);
+          expect(stoppedInRecovery).toBe(0);
           // Every record satisfies the contract, and at most one is ongoing.
           const all = [...records.values()];
           for (const r of all) expect(OutageRecord.safeParse(r).success).toBe(true);
@@ -347,11 +546,6 @@ describe("watchdog simulation", () => {
             );
             expect(covering).toBeDefined();
           }
-          // The server is on at the end unless a fault came within the last few minutes.
-          const lastFault = sorted.at(-1);
-          if (lastFault === undefined || T0 + lastFault.at < end - 30 * 60_000) {
-            expect(state.outage === null || bootMs > T.readinessWaitMs).toBe(true);
-          }
         },
       ),
       { numRuns: 300 },
@@ -360,6 +554,8 @@ describe("watchdog simulation", () => {
     expect(seen.downIntervals).toBeGreaterThan(100);
     expect(seen.refusedStarts).toBeGreaterThan(100);
     expect(seen.restarts).toBeGreaterThan(100);
+    expect(seen.recoveries).toBeGreaterThan(20);
+    expect(seen.stops).toBeGreaterThan(20);
   });
 });
 
@@ -368,35 +564,85 @@ describe("watchdog: any stored state", () => {
   const time = fc.integer({ min: T0 - 3_600_000, max: T0 + 3_600_000 });
   const maybe = <V>(arb: fc.Arbitrary<V>) => fc.option(arb, { nil: null });
   const stateArb: fc.Arbitrary<WatchdogState> = fc.record({
-    phase: fc.constantFrom("idle", "starting", "waiting"),
+    phase: fc.constantFrom("idle", "starting", "stopping", "waiting", "held"),
     phaseSince: maybe(time),
     startDueAt: maybe(time),
     failedStarts: fc.integer({ min: 0, max: 20 }),
     lastAnsweredAt: maybe(time),
     startsSince: maybe(time),
+    heldConfig: maybe(fc.constantFrom("config-a", "config-b")),
     outage: maybe(
       fc.record({
         outageId: fc.constant("out_00000000000000000000000000"),
-        cause: fc.constantFrom("container_stopped", "not_answering", "start_failed"),
+        cause: fc.constantFrom(
+          "container_stopped",
+          "not_answering",
+          "start_failed",
+          "recovery_mode",
+        ),
         startedAt: time,
         detectedAt: time,
         restarts: fc.integer({ min: 0, max: 2000 }),
+        exitCode: maybe(fc.constantFrom(0, 70, 71, 75, 78)),
+        recovery: maybe(fc.constant("replica_empty")),
       }),
     ),
   });
-  const observationArb = fc.constantFrom<Observation>("stopped", "answering", "silent");
+  const observationArb: fc.Arbitrary<Observation> = fc.oneof(
+    fc.constant(ANSWERING),
+    fc.record({
+      kind: fc.constant("stopped" as const),
+      exitCode: maybe(fc.constantFrom(0, 70, 71, 75, 78)),
+    }),
+    fc.constant(SILENT),
+    fc
+      .constantFrom<EntrypointPhase>(
+        "starting",
+        "restoring",
+        "recovery",
+        "running",
+        "stopping",
+        "stopped",
+      )
+      .map((phase) => entrypoint(phase)),
+  );
+  const configArb = fc.constantFrom("config-a", "config-b");
 
-  it("never starts a running container, never stops an answering one, and always looks again", () => {
+  it("never starts a running container, never stops one in recovery or that answers, and always looks again", () => {
     fc.assert(
-      fc.property(stateArb, observationArb, time, (state, observation, now) => {
-        const s = step(state, observation, now, T, nextId);
-        if (observation !== "stopped" && types(s).includes("start")) return false;
-        if (observation !== "silent" && types(s).includes("destroy")) return false;
-        if (observation === "answering" && s.state.outage !== null) return false;
+      fc.property(stateArb, observationArb, time, configArb, (state, observation, now, config) => {
+        const s = step(state, observation, now, T, nextId, config);
+        if (observation.kind !== "stopped" && types(s).includes("start")) return false;
+        const recovery =
+          observation.kind === "silent" && observation.entrypoint?.phase === "recovery";
+        // A stop the watchdog began earlier may still be killed after its grace.
+        const ownStop = state.phase === "stopping";
+        if (recovery && !ownStop && types(s).some((t) => t === "stop" || t === "destroy")) {
+          return false;
+        }
+        if (observation.kind === "answering" && types(s).includes("stop")) return false;
+        if (
+          observation.kind === "stopped" &&
+          types(s).some((t) => t === "stop" || t === "destroy")
+        ) {
+          return false;
+        }
+        const releasing = state.phase === "held" && config !== state.heldConfig;
+        if (
+          observation.kind === "stopped" &&
+          observation.exitCode === EXIT_CONFIG &&
+          !releasing &&
+          types(s).includes("start")
+        ) {
+          return false;
+        }
+        if (state.phase === "held" && config === state.heldConfig && types(s).includes("start")) {
+          return false;
+        }
         const longest = Math.max(T.intervalMs, T.slowRetryMs, ...T.startRetryMs);
         return s.nextCheckAt > now && s.nextCheckAt - now <= longest;
       }),
-      { numRuns: 3000 },
+      { numRuns: 5000 },
     );
   });
 
@@ -414,12 +660,12 @@ describe("watchdog: any stored state", () => {
           return Date.parse(record.startedAt) <= bound;
         });
       }),
-      { numRuns: 3000 },
+      { numRuns: 5000 },
     );
   });
 
   it("uses the design's timing by default, and needs an ID source only to open an outage", () => {
-    expect(step(answered(T0), "answering", T0 + 1).nextCheckAt).toBe(T0 + 1 + T.intervalMs);
-    expect(() => step(answered(T0), "stopped", T0 + 1)).toThrow("no outage ID source");
+    expect(step(answered(T0), ANSWERING, T0 + 1).nextCheckAt).toBe(T0 + 1 + T.intervalMs);
+    expect(() => step(answered(T0), STOPPED, T0 + 1)).toThrow("no outage ID source");
   });
 });

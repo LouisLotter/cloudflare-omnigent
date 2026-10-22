@@ -8,10 +8,14 @@
  *   - a stop by the platform (maintenance, a deploy's rollout);
  *   - a WebSocket answered with the container's own handshake headers, which must not reach the
  *     egress.
- * It records starts, stops, intercepts, timeouts and every request it served.
+ *   - the server image's entrypoint (WP2.3): its status on port 8001 (`phase`, recovery),
+ *     port 8000 refusing connections while it restores and answering 503 in recovery mode, a
+ *     SIGTERM stop that takes time, and exit codes;
+ * It records starts, signals, stops, intercepts, timeouts and every request it served.
  */
 import type { ReplicationPosition } from "@cfo/contracts";
 import type { ContainerExit, ServerContainer } from "../../src/server/container-port.ts";
+import type { EntrypointPhase } from "../../src/server/watchdog.ts";
 
 export const NO_INSTANCE_MESSAGE =
   "There is no container instance that can be provided to this Durable Object, try again later";
@@ -50,6 +54,14 @@ export class FakeServerContainer implements ServerContainer {
    * a promise the test resolves: promises do not cross workerd's request contexts.
    */
   destroyMs = 0;
+  /** What the entrypoint reports on `/status`; null answers 404. */
+  entrypointPhase: EntrypointPhase | null = "running";
+  recovery: { reason: string; transient: boolean } | null = null;
+  readonly signals: number[] = [];
+  /** How long a SIGTERM stop takes; null: SIGTERM is ignored. */
+  stopMs: number | null = 0;
+  /** The exit code a SIGTERM stop ends with. */
+  exitCodeOnStop = 0;
   /** What `/v1/info` reports. */
   info = { accounts_enabled: true, needs_setup: true };
   /** What `/position` reports, or null for a 503. */
@@ -84,10 +96,37 @@ export class FakeServerContainer implements ServerContainer {
     this.running = false;
   }
 
-  /** The platform stops the container, as maintenance or a rollout would. */
-  stopByPlatform(): void {
+  /** The platform stops the container, as maintenance or a rollout would, or it exits. */
+  stopByPlatform(exitCode: number | null = null): void {
     this.running = false;
-    this.#onExit?.({ error: new Error("Runtime signalled the container to exit: 15") });
+    this.#exited(exitCode);
+  }
+
+  /** The container's main process ended with this code (null: by a signal). */
+  #exited(exitCode: number | null): void {
+    const error =
+      exitCode === 0
+        ? null
+        : new Error(
+            exitCode === null
+              ? "Runtime signalled the container to exit: 15"
+              : `Container exited with unexpected exit code: ${exitCode}`,
+          );
+    this.#onExit?.({ error });
+  }
+
+  signal(signo: number): void {
+    this.signals.push(signo);
+    this.ops.push(`signal:${signo}`);
+    if (signo !== 15 || this.stopMs === null) return;
+    this.entrypointPhase = "stopping";
+    const stop = () => {
+      this.running = false;
+      this.entrypointPhase = "running";
+      this.#exited(this.exitCodeOnStop);
+    };
+    if (this.stopMs === 0) stop();
+    else setTimeout(stop, this.stopMs);
   }
 
   async setInactivityTimeout(ms: number): Promise<void> {
@@ -111,10 +150,29 @@ export class FakeServerContainer implements ServerContainer {
       body,
     });
     if (!this.running) throw new Error("Container is not running.");
-    if (!this.listening) {
+    const path = new URL(request.url).pathname;
+    if (port === 8001 && path === "/status") {
+      return this.entrypointPhase === null
+        ? new Response("not found", { status: 404 })
+        : Response.json({
+            protocolVersion: 1,
+            bootId: "f".repeat(32),
+            phase: this.entrypointPhase,
+            recovery: this.recovery,
+            finalSync: null,
+          });
+    }
+    const restoring =
+      port === 8000 && ["starting", "restoring"].includes(this.entrypointPhase ?? "");
+    if (!this.listening || restoring) {
       throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
     }
-    const path = new URL(request.url).pathname;
+    if (port === 8000 && this.entrypointPhase === "recovery") {
+      return Response.json(
+        { error: { code: "recovery_mode", reason: this.recovery?.reason ?? "unknown" } },
+        { status: 503 },
+      );
+    }
     if (port === 8000 && path === "/health") {
       const next = this.healthResults.shift();
       const ok = typeof next === "object" ? next.ok : next;
