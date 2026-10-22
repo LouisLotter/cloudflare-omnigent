@@ -331,7 +331,10 @@ class DockerServer {
       this.#refusedPending = true;
       return;
     }
-    if (this.name !== null) dockerQuiet("rm", "-f", this.name);
+    if (this.name !== null) {
+      this.onContainerEnd(this.name); // its log, before it is removed
+      dockerQuiet("rm", "-f", this.name);
+    }
     this.#serial += 1;
     const name = `${PROJECT}-srv-${process.pid}-${this.#serial}`;
     runContainer(name, vars, this.spec);
@@ -528,9 +531,10 @@ async function runScenario(name: string, options: Record<string, string | boolea
     mounts: sc.mounts,
   };
   let extra = sc.extra;
+  // A container's log, kept once it can be read; a removed container's earlier copy stays.
   const logsOf = (container: string) => {
     const out = dockerQuiet("logs", container);
-    writeFileSync(join(runDir, "containers", `${container}.log`), out.out);
+    if (out.ok) writeFileSync(join(runDir, "containers", `${container}.log`), out.out);
   };
   const server = new DockerServer(spec, logsOf);
   server.refuseStarts = sc.refuseStarts ?? 0;

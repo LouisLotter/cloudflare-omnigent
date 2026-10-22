@@ -21,7 +21,8 @@ import {
   OMNIGENT_SERVER_INTERFACE_VERSION,
   OMNIGENT_SERVER_OBJECT_NAME,
 } from "../../../src/shared/rpc.ts";
-import { type Action, decide, INITIAL_RUN, type RunState, type SeedResult } from "./plan.ts";
+import { RunDriver, type RunPorts } from "./driver.ts";
+import { INITIAL_RUN, type RunState, type SeedResult } from "./plan.ts";
 
 export { PlatformInternal } from "../../../src/server/platform-internal.ts";
 
@@ -33,16 +34,12 @@ interface StagingEnv {
   readonly SEED_MB?: string;
 }
 
-const TICK_MS = 15_000;
 const SEEDER_PORT = 8080;
 const call = { interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION };
 
 function log(event: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ cfo: "wp26_staging", event, ...fields }));
 }
-
-const describe = (error: unknown) =>
-  (error instanceof Error ? error.message : String(error)).slice(0, 200);
 
 /** The production class, with the harness's two calls. */
 export class OmnigentServer extends PlatformOmnigentServer {
@@ -114,95 +111,68 @@ export class Seeder extends DurableObject<StagingEnv> {
   }
 }
 
-/** The run: one per deployment. */
+/** The run: one per deployment. Its ticks go through one driver, one at a time. */
 export class RestoreRun extends DurableObject<StagingEnv> {
+  readonly #driver = new RunDriver(this.#ports());
+
   async status(): Promise<RunState> {
     return (await this.ctx.storage.get<RunState>("run")) ?? INITIAL_RUN;
   }
 
-  async tick(): Promise<void> {
-    try {
-      await this.#tick();
-    } catch (error) {
-      log("tick_error", { error: describe(error) });
-    }
+  tick(): Promise<void> {
+    return this.#driver.tick();
   }
 
   override async alarm(): Promise<void> {
-    await this.tick();
+    await this.#driver.tick();
   }
 
-  async #tick(): Promise<void> {
-    const state = await this.status();
-    if (state.stage === "done" && state.summaryWritten) return;
-    const env = this.env as unknown as Record<string, unknown>;
-    const seeder = this.env.SEEDER.getByName("seeder");
-    const server = this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME);
-    const serverUsed = state.firstStartAt !== null;
-    const [seederRunning, seedResult, serverState, outages] = await Promise.all([
-      state.stage === "seeding" ? seeder.running() : Promise.resolve(false),
-      state.stage === "seeding" ? seeder.result() : Promise.resolve(null),
-      // The server object is not touched before the seeding ends: its constructor arms the
-      // watchdog, which would start a server on a replica still being written.
-      serverUsed ? server.stagingState() : Promise.resolve(null),
-      serverUsed && state.killedAt !== null
-        ? server.outages({
-            ...call,
-            from: new Date(state.killedAt - 60_000).toISOString(),
-            to: new Date(Date.now() + 60_000).toISOString(),
-          })
-        : Promise.resolve([]),
-    ]);
-    const now = Date.now();
-    const step = decide(state, {
-      now,
-      tokenPresent:
-        typeof env.SERVER_ENV_LITESTREAM_ACCESS_KEY_ID === "string" &&
-        typeof env.SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY === "string",
-      seederRunning,
-      seedResult,
-      serverLastAnsweredAt: serverState?.lastAnsweredAt ?? null,
-      outages: outages.map((o) => ({
-        detectedAt: Date.parse(o.detectedAt),
-        endedAt: o.endedAt === null ? null : Date.parse(o.endedAt),
-      })),
-    });
-    let next = step.state;
-    await this.ctx.storage.put("run", next); // persist before effect
-    for (const action of step.actions) next = await this.#apply(action, next);
-    if (next !== step.state) await this.ctx.storage.put("run", next);
-    if (!(next.stage === "done" && next.summaryWritten) && next.stage !== "waiting_token") {
-      await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
-    }
-  }
-
-  async #apply(action: Action, state: RunState): Promise<RunState> {
-    const seeder = this.env.SEEDER.getByName("seeder");
-    const server = this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME);
-    switch (action.type) {
-      case "log":
-        log(action.event, { runId: state.runId, ...action.fields });
-        return state;
-      case "start_seeder":
-        await seeder.start(Number(this.env.SEED_MB ?? "1200"));
-        return state;
-      case "stop_seeder":
-        await seeder.stop();
-        return state;
-      case "ensure_server":
-        await server.ensureStarted(call);
-        return state;
-      case "destroy_server":
-        log("destroy", { runId: state.runId, ...(await server.stagingDestroy()) });
-        return state;
-      case "write_summary": {
-        const outages = state.firstStartAt
-          ? await server.outages({
-              ...call,
-              from: new Date((state.t0 ?? Date.now()) - 60_000).toISOString(),
-              to: new Date(Date.now() + 60_000).toISOString(),
-            })
-          : [];
+  #ports(): RunPorts {
+    const seeder = () => this.env.SEEDER.getByName("seeder");
+    // The server object is not touched before the seeding ends: its constructor arms the
+    // watchdog, which would start a server on a replica still being written.
+    const server = () => this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME);
+    const outagesSince = (from: number) =>
+      server().outages({
+        ...call,
+        from: new Date(from - 60_000).toISOString(),
+        to: new Date(Date.now() + 60_000).toISOString(),
+      });
+    return {
+      load: () => this.ctx.storage.get<RunState>("run"),
+      save: (state) => this.ctx.storage.put("run", state),
+      now: () => Date.now(),
+      observe: async (state) => {
+        const env = this.env as unknown as Record<string, unknown>;
+        const seeding = state.stage === "seeding";
+        const serverUsed = state.firstStartAt !== null;
+        const [seederRunning, seedResult, serverState, outages] = await Promise.all([
+          seeding ? seeder().running() : Promise.resolve(false),
+          seeding ? seeder().result() : Promise.resolve(null),
+          serverUsed ? server().stagingState() : Promise.resolve(null),
+          serverUsed && state.killedAt !== null
+            ? outagesSince(state.killedAt)
+            : Promise.resolve([]),
+        ]);
+        return {
+          tokenPresent:
+            typeof env.SERVER_ENV_LITESTREAM_ACCESS_KEY_ID === "string" &&
+            typeof env.SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY === "string",
+          seederRunning,
+          seedResult,
+          serverLastAnsweredAt: serverState?.lastAnsweredAt ?? null,
+          outages: outages.map((o) => ({
+            detectedAt: Date.parse(o.detectedAt),
+            endedAt: o.endedAt === null ? null : Date.parse(o.endedAt),
+          })),
+        };
+      },
+      startSeeder: () => seeder().start(Number(this.env.SEED_MB ?? "1200")),
+      stopSeeder: () => seeder().stop(),
+      ensureServer: () => server().ensureStarted(call),
+      destroyServer: () => server().stagingDestroy(),
+      writeSummary: async (state) => {
+        const outages = state.firstStartAt ? await outagesSince(state.t0 ?? Date.now()) : [];
         const seconds = (from: number | null, to: number | null) =>
           from === null || to === null ? null : Math.round((to - from) / 100) / 10;
         const summary = {
@@ -215,10 +185,10 @@ export class RestoreRun extends DurableObject<StagingEnv> {
           `results/${state.runId || "run"}/summary.json`,
           JSON.stringify(summary, null, 2),
         );
-        log("summary_written", { runId: state.runId });
-        return { ...state, summaryWritten: true };
-      }
-    }
+      },
+      log,
+      scheduleNext: (at) => this.ctx.storage.setAlarm(at),
+    };
   }
 }
 

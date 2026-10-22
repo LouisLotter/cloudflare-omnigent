@@ -28,7 +28,8 @@ describe("the WP2.6 staging run", () => {
   it("waits for the owner's token, then seeds, starts the server, replaces it and writes the summary", () => {
     let state: RunState = INITIAL_RUN;
     const waiting = decide(state, seen(T0, { tokenPresent: false }));
-    expect(waiting.actions).toEqual([]);
+    expect(types(waiting.actions)).toEqual(["log"]);
+    expect(waiting.state).toBe(state);
     let step = decide(state, seen(T0));
     expect(types(step.actions)).toEqual(["log", "start_seeder"]);
     state = step.state;
@@ -46,8 +47,16 @@ describe("the WP2.6 staging run", () => {
     step = decide(state, seen(T0 + 590_000 + LIMITS.healthyHoldMs));
     expect(types(step.actions)).toEqual(["log", "destroy_server"]);
     state = step.state;
-    const killedAt = T0 + 590_000 + LIMITS.healthyHoldMs;
-    expect(state).toMatchObject({ stage: "replacing", killedAt });
+    const requestedAt = T0 + 590_000 + LIMITS.healthyHoldMs;
+    expect(state).toMatchObject({
+      stage: "replacing",
+      killRequestedAt: requestedAt,
+      killedAt: null,
+    });
+    // Until the destroy returned (the driver records it), the destroy is sent again.
+    expect(types(decide(state, seen(requestedAt + 15_000)).actions)).toEqual(["destroy_server"]);
+    const killedAt = requestedAt + 2_000;
+    state = { ...state, killedAt };
     // An answer from before the kill's outage is not the replacement's.
     const early = decide(state, seen(killedAt + 1_000, { serverLastAnsweredAt: killedAt + 500 }));
     expect(early.state.stage).toBe("replacing");
@@ -68,6 +77,20 @@ describe("the WP2.6 staging run", () => {
     });
     const written = { ...step.state, summaryWritten: true };
     expect(decide(written, seen(killedAt + 500_000)).actions).toEqual([]);
+  });
+
+  it("ends the run when the server cannot be destroyed", () => {
+    const replacing: RunState = {
+      ...INITIAL_RUN,
+      stage: "replacing",
+      runId: "run-x",
+      killRequestedAt: T0,
+      killedAt: null,
+    };
+    expect(decide(replacing, seen(T0 + LIMITS.startMs + 1)).state).toMatchObject({
+      stage: "done",
+      failure: "the server could not be destroyed",
+    });
   });
 
   it("restarts a seeder that is not running, a bounded number of times", () => {

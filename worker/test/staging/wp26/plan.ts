@@ -7,7 +7,9 @@
 //   2. the first start: the production OmnigentServer is asked to start (ensureStarted, as the
 //      cron does) and its watchdog restores the replica and follows the start until it answers;
 //   3. the replacement: once it has answered for a while, its container is destroyed and the
-//      watchdog starts a new one, which restores the same replica, until it answers;
+//      watchdog starts a new one, which restores the same replica, until it answers. The kill
+//      is an intent until the destroy returned (its time, `killedAt`, is the measurement's
+//      origin); a destroy that failed or was cut off is sent again (Codex WP2.6 r1-4);
 //   4. the end: the summary is written to R2; teardown removes the rest.
 // Every stage is bounded, so a run that goes wrong ends as `failed` with the reason.
 
@@ -29,6 +31,8 @@ export interface RunState {
   readonly seed: SeedResult | null;
   readonly firstStartAt: number | null;
   readonly firstAnsweredAt: number | null;
+  /** When the replacement's kill was decided; `killedAt` once the destroy returned. */
+  readonly killRequestedAt: number | null;
   readonly killedAt: number | null;
   readonly replacedAnsweredAt: number | null;
   readonly failure: string | null;
@@ -45,6 +49,7 @@ export const INITIAL_RUN: RunState = {
   seed: null,
   firstStartAt: null,
   firstAnsweredAt: null,
+  killRequestedAt: null,
   killedAt: null,
   replacedAnsweredAt: null,
   failure: null,
@@ -117,7 +122,10 @@ export function decide(
   const now = seen.now;
   switch (state.stage) {
     case "waiting_token": {
-      if (!seen.tokenPresent) return { state, actions: [] };
+      if (!seen.tokenPresent) {
+        // One line a tick (the cron's minute), so `run.sh status` shows the harness alive.
+        return { state, actions: [{ type: "log", event: "waiting_token", fields: {} }] };
+      }
       const runId = `run-${new Date(now).toISOString().replace(/[-:.]/g, "").slice(0, 15)}Z`;
       return {
         state: { ...state, stage: "seeding", runId, t0: now, seedStartedAt: now, seedStarts: 1 },
@@ -188,15 +196,22 @@ export function decide(
         return { state, actions: [{ type: "ensure_server" }] };
       }
       return {
-        state: { ...state, stage: "replacing", killedAt: now },
+        state: { ...state, stage: "replacing", killRequestedAt: now, killedAt: null },
         actions: [
-          { type: "log", event: "server_destroyed", fields: {} },
+          { type: "log", event: "destroy_requested", fields: {} },
           { type: "destroy_server" },
         ],
       };
     }
     case "replacing": {
-      const killedAt = state.killedAt ?? now;
+      if (state.killedAt === null) {
+        // The destroy has not returned: it failed, or the object was reset around it.
+        if (now - (state.killRequestedAt ?? now) > limits.startMs) {
+          return ended(state, now, "the server could not be destroyed");
+        }
+        return { state, actions: [{ type: "destroy_server" }] };
+      }
+      const killedAt = state.killedAt;
       // The outage the watchdog opened when it found the destroyed container stopped, ended by
       // the replacement's first answer.
       const answered =
