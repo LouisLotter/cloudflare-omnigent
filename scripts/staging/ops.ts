@@ -254,7 +254,16 @@ export interface SecretsRequest {
   readonly owner: string;
   /** A value sets a secret, null deletes it. */
   readonly changes: Readonly<Record<string, string | null>>;
+  /**
+   * The change is sent only if the tool's clock has not passed this time (milliseconds) once
+   * every check is done; otherwise nothing is sent and WindowPassed is thrown. For a change
+   * that is valid only for a while, such as WP2.4's release after a fresh status.
+   */
+  readonly notAfter?: number;
 }
+
+/** A change refused because its window (SecretsRequest.notAfter) had passed. Nothing was sent. */
+export class WindowPassed extends Error {}
 
 function put(ctx: Context, deployment: Deployment): Deployment {
   ctx.store.update((all) => [...all.filter((d) => d.name !== deployment.name), deployment]);
@@ -1355,6 +1364,10 @@ export function updateSecrets(ctx: Context, request: SecretsRequest): void {
     assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
     if (!ctx.cloud.workerExists(name)) {
       throw new Error(`${name} is recorded, but the staging account has no such Worker`);
+    }
+    // Last, after every check: a change valid only for a while is not sent once it has expired.
+    if (request.notAfter !== undefined && ctx.now().getTime() > request.notAfter) {
+      throw new WindowPassed(`the change's window has passed; nothing was sent to ${name}`);
     }
     ctx.cloud.updateSecrets(name, request.changes);
     const set = names.filter((n) => request.changes[n] !== null);

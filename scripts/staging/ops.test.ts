@@ -33,6 +33,7 @@ import {
   sweep,
   teardown,
   updateSecrets,
+  WindowPassed,
 } from "./ops.ts";
 
 const ACCOUNT = "a".repeat(32);
@@ -2390,6 +2391,23 @@ describe("WP2.4: the caller's secrets, on deploy and afterwards", () => {
     store.update((all) => all.map((d) => ({ ...d, state: "pending" as const })));
     expect(change("a")).toThrow("cfo-stg-a is not deployed; deploy it first");
     expect(cloud.calls.filter((c) => c.startsWith("worker.secrets.update"))).toEqual([]);
+  });
+
+  it("sends nothing once a change's window has passed, after every check", () => {
+    deploy(ctx, { ...request(), secrets: { A: "1" } });
+    cloud.calls.length = 0;
+    expect(() =>
+      updateSecrets(ctx, {
+        suffix: "a",
+        owner: "wp0.4",
+        changes: { A: null },
+        notAfter: clock - 1,
+      }),
+    ).toThrow(WindowPassed);
+    expect(cloud.calls).toEqual(["accounts", "worker.exists"]);
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({ A: "1" });
+    updateSecrets(ctx, { suffix: "a", owner: "wp0.4", changes: { A: null }, notAfter: clock });
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({});
   });
 
   it("never changes the secrets the tool delivers for a service token", () => {

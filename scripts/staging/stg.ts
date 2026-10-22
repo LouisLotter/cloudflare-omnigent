@@ -7,7 +7,8 @@
 //   node scripts/staging/stg.ts check
 //   node scripts/staging/stg.ts deploy --suffix <s> --owner <wp> [--config worker/wrangler.jsonc] [--days 7]
 //                                      [--secrets-stdin]
-//   node scripts/staging/stg.ts secrets --suffix <s> --owner <wp>      (changes as JSON on stdin)
+//   node scripts/staging/stg.ts secrets --suffix <s> --owner <wp> [--not-after <ms>]
+//                                                                    (changes as JSON on stdin)
 //   node scripts/staging/stg.ts secret-names --suffix <s>
 //   node scripts/staging/stg.ts list
 //   node scripts/staging/stg.ts teardown --suffix <s>
@@ -17,7 +18,9 @@
 // with the version, as the manifest's are. secrets changes a deployed Worker's secrets in one
 // new deployed version (one bulk request): {"NAME": "value"} sets one, {"NAME": null} deletes one.
 // Values come only from stdin and never reach argv, the output or a file that stays; names are
-// logged. secret-names prints the Worker's secret names as JSON, or null when it has none.
+// logged. With --not-after (Unix milliseconds), the change is sent only if that time has not
+// passed once every check is done; otherwise nothing is sent and the tool exits with 3.
+// secret-names prints the Worker's secret names as JSON, or null when it has none.
 //
 // sweep lists expired deployments (removed with --yes) and reports every staging bucket, Access
 // application, service token, Tunnel, VPC service and DNS record that no record owns. Of those
@@ -82,7 +85,15 @@ import {
 } from "./cloud.ts";
 import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
-import { type Context, deploy, listSecretNames, sweep, teardown, updateSecrets } from "./ops.ts";
+import {
+  type Context,
+  deploy,
+  listSecretNames,
+  sweep,
+  teardown,
+  updateSecrets,
+  WindowPassed,
+} from "./ops.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -168,6 +179,7 @@ function main(): void {
       days: { type: "string", default: "7" },
       yes: { type: "boolean", default: false },
       "secrets-stdin": { type: "boolean", default: false },
+      "not-after": { type: "string" },
     },
   });
 
@@ -211,10 +223,15 @@ function main(): void {
     }
     case "secrets": {
       if (!values.suffix || !values.owner) throw new Error("secrets needs --suffix and --owner");
+      const notAfter = values["not-after"] === undefined ? undefined : Number(values["not-after"]);
+      if (notAfter !== undefined && !Number.isSafeInteger(notAfter)) {
+        throw new Error("--not-after must be a time in Unix milliseconds");
+      }
       updateSecrets(context(loadConfig(), command), {
         suffix: values.suffix,
         owner: values.owner,
         changes: secretsFromStdin(true),
+        ...(notAfter === undefined ? {} : { notAfter }),
       });
       return;
     }
@@ -255,6 +272,7 @@ try {
   main();
 } catch (error) {
   console.error(`stg: ${error instanceof Error ? error.message : String(error)}`);
+  if (error instanceof WindowPassed) process.exit(3);
   if (error instanceof Error && error.cause !== undefined) {
     console.error(`  cause: ${error.cause instanceof Error ? error.cause.message : error.cause}`);
   }
