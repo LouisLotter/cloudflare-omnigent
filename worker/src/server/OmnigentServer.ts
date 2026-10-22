@@ -702,4 +702,15 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#checkCall(call);
     return this.#loadBootstrap().status;
   }
+
+  async ensureStarted(call: OmnigentServerCall): Promise<void> {
+    this.#checkCall(call);
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(this.now());
+      logEvent("watchdog", "alarm_rearmed");
+    }
+    // A running server is the watchdog's to judge at its own pace: nothing more here. A stopped
+    // one gets a check now, through the same queue as the alarm, so the two never race.
+    if (this.#container?.running === false) await this.#check();
+  }
 }

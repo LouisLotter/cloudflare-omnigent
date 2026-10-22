@@ -21,17 +21,15 @@ export default {
   },
 
   /**
-   * For a cron trigger, to keep the server always on without waiting for a browser: any call
-   * constructs OmnigentServer, whose constructor arms the watchdog if no alarm is set. It would
-   * start the server right after an installation, and restore the watchdog should its alarm
-   * ever be lost. The trigger itself waits for the staging tool to accept `triggers` (a change
-   * for the lead); until then the first browser request or RPC starts the server.
+   * The cron trigger (wrangler.jsonc, every minute): the always-on backstop and the first start
+   * after an installation. It makes sure the watchdog's alarm is armed and a stopped server is
+   * started, and does nothing else (OmnigentServer.ensureStarted).
    */
   async scheduled(_controller, env, ctx): Promise<void> {
     ctx.waitUntil(
-      env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME)
-        .bootstrapStatus({ interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION })
-        .then(() => undefined),
+      env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).ensureStarted({
+        interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
+      }),
     );
   },
 } satisfies ExportedHandler<Env>;

@@ -73,6 +73,13 @@ describe("the platform Worker (wrangler.jsonc)", () => {
     expect(platform.main).toBe("src/index.ts");
   });
 
+  it("pokes OmnigentServer every minute, the always-on backstop", () => {
+    const triggers = (platform as unknown as { triggers?: { crons?: string[] } }).triggers;
+    expect(triggers).toEqual({ crons: ["* * * * *"] });
+    expect(read(join(SRC, "index.ts"))).toMatch(/async scheduled\(/);
+    expect((web as unknown as { triggers?: unknown }).triggers).toBeUndefined();
+  });
+
   it("hosts OmnigentServer as a SQLite Durable Object class", () => {
     expect(platform.durable_objects?.bindings).toContainEqual({
       name: "OMNIGENT",

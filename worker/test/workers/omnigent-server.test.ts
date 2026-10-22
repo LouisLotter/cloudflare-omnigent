@@ -422,10 +422,11 @@ describe("OmnigentServer: always on", () => {
     const stub = env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME) as Stub;
     const fake = testServers.create(stub.id);
     const ctx = createExecutionContext();
-    await platform.scheduled?.(createScheduledController(), env, ctx);
+    await platform.scheduled?.(createScheduledController({ cron: "* * * * *" }), env, ctx);
     await waitOnExecutionContext(ctx);
-    await check(stub);
-    expect(fake.starts).toHaveLength(1);
+    expect(fake.starts).toHaveLength(1); // started at once, not at the next alarm
+    const alarm = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
+    expect(alarm).not.toBeNull();
   });
 
   it("starts over from damaged state rather than stop watching", async () => {
@@ -469,6 +470,64 @@ describe("OmnigentServer: always on", () => {
     expect(ErrorBody.parse(await response.json()).error.retryable).toBe(false);
     await check(stub);
     expect(events("watchdog").some((e) => e.event === "no_container")).toBe(true);
+  });
+});
+
+describe("OmnigentServer: the cron backstop (ensureStarted)", () => {
+  it("arms a missing alarm and starts a stopped server", async () => {
+    const { stub, fake } = await runningServer();
+    fake.stopByPlatform(0);
+    await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.deleteAlarm());
+    await stub.ensureStarted(call);
+    expect(fake.starts).toHaveLength(2);
+    const alarm = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
+    expect(alarm).not.toBeNull();
+    expect(events("watchdog").map((e) => e.event)).toContain("alarm_rearmed");
+  });
+
+  it("does nothing while the server runs: no probe, no start, no stop", async () => {
+    const { stub, fake } = await runningServer();
+    const before = { requests: fake.requests.length, ops: fake.ops.length };
+    await stub.ensureStarted(call);
+    expect(fake.requests.length).toBe(before.requests);
+    expect(fake.ops.length).toBe(before.ops);
+  });
+
+  it("never restarts a server in recovery mode", async () => {
+    const { stub, fake } = await runningServer();
+    fake.entrypointPhase = "recovery";
+    fake.recovery = { reason: "replica_empty", transient: false };
+    await nextCheck(stub);
+    await stub.ensureStarted(call);
+    await stub.ensureStarted(call);
+    expect(fake.starts).toHaveLength(1);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+  });
+
+  it("never starts a server held after exit 78, nor one inside DC-37's backoff", async () => {
+    const { stub, fake } = await runningServer();
+    fake.stopByPlatform(78);
+    await nextCheck(stub); // held
+    await stub.ensureStarted(call);
+    await stub.ensureStarted(call);
+    expect(fake.starts).toHaveLength(1);
+
+    const second = await runningServer();
+    second.fake.stopByPlatform();
+    second.fake.refuseStarts = 1;
+    await nextCheck(second.stub); // found stopped: start, refused
+    await nextCheck(second.stub); // the refusal found: the retry is due in 5 s
+    const starts = second.fake.starts.length;
+    await second.stub.ensureStarted(call); // within the backoff
+    expect(second.fake.starts.length).toBe(starts);
+  });
+
+  it("starts the server once when it races the alarm", async () => {
+    const { stub, fake } = await freshServer();
+    const [ran] = await Promise.all([runDurableObjectAlarm(stub), stub.ensureStarted(call)]);
+    expect(ran).toBe(true);
+    expect(fake.starts).toHaveLength(1);
   });
 });
 
