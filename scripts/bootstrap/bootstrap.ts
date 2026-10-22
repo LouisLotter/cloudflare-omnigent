@@ -311,6 +311,12 @@ async function status(path: string, withLogs: boolean): Promise<void> {
       `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"}`,
     );
   }
+  if (journal.releasedAt !== undefined) {
+    console.log(
+      `released at ${journal.releasedAt}${journal.verifiedAt ? `, checked at ${journal.verifiedAt}` : ", not checked yet"}: the lines above are from before the switch`,
+    );
+    return;
+  }
   const decision = decide(logs.statuses, { installationId: installation.installationId, now });
   console.log(
     decision.accepted
