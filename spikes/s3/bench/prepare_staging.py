@@ -34,7 +34,7 @@ OMNIGENT_COMMIT = "af3e49de2b169a8593e2d91e7ab98e2581f9f90a"
 BASE_TAG = f"cfo-s3/omnigent-server:{OMNIGENT_COMMIT[:9]}"
 MOCK_PATH = "tests/server/integration/mock_llm_server.py"
 MOCK_SHA256 = "5dfa10f751cc30ca66094eb27da298ae609cc8d08132f3d77516cefd92c41fd2"
-DEFAULT_FORK = Path(os.environ.get("S3_OMNIGENT_FORK", "/home/decay/Lervent/omnigent-wt/integration"))
+DEFAULT_FORK = Path(os.environ.get("S3_OMNIGENT_FORK", "../omnigent-wt/integration")).expanduser()
 BUILD_DIR = Path(os.environ.get("S3_BUILD_DIR", Path.home() / ".cache" / "cfo-s3-build"))
 
 
