@@ -40,7 +40,7 @@ def tokens(access_ttl: int) -> dict:
         STATE["retired"].add(STATE["refresh"])
     STATE["refresh"] = refresh
     return {
-        "id_token": jwt({"email": "synthetic@example.invalid", "https://api.openai.com/auth": auth, "iat": now, "exp": now + 3600}),
+        "id_token": jwt({"email": "s6-synthetic@example.invalid", "https://api.openai.com/auth": auth, "iat": now, "exp": now + 3600}),
         "access_token": jwt({"https://api.openai.com/auth": auth, "iat": now, "exp": now + access_ttl}),
         "refresh_token": refresh,
         "token_type": "Bearer",

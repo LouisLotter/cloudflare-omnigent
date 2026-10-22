@@ -1,9 +1,11 @@
 """Spike S3 supervisor: starts the host, serves a small control API.
 
 The API stands in for the computer API that WorkspaceDO would call. It binds
-inside the container; the compose file publishes it on 127.0.0.1 only.
+inside the container; the compose file publishes it on 127.0.0.1 only, and on
+staging only the spike Worker's Durable Object reaches it.
 
   GET  /health            liveness
+  GET  /boot              this supervisor's boot ID (a new container gets a new one)
   GET  /runners           runner count from /proc (supervisor view)
   GET  /procs             process table (evidence)
   POST /capture           one bounded capture (runs the capture worker process)
@@ -12,8 +14,14 @@ inside the container; the compose file publishes it on 127.0.0.1 only.
   GET  /jobs/<id>         job status/result
   GET  /pointer           the published checkpoint pointer
   GET  /probe             environment probe for the staging run
-  POST /bench             self-contained capture bench (job), for the staging run
+  POST /genws, /setup, /bench, /calibrate, /load   staging campaign steps (jobs)
+  POST /turn              one scripted Claude Code or Codex turn (AR-25)
+  POST /layer, /layer/commit, /layer/discard          stage incremental layers
+  POST /restore/reset, /restore/merge, /restore/verify, /restore/reopen   restore them
   POST /exec, /rm, /df, /fetch   spike conveniences for the bench scripts
+
+With S3_ALL_IN_ONE=1 (staging), the Omnigent server and the mock LLM run as
+the supervisor's children before the host starts (aio.py).
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from . import aio, layers, steps
 from . import procs as P
 from . import runners as R
 from . import upload as U
@@ -60,7 +69,14 @@ ITEMS: list[dict[str, Any]] = [
 ]
 ROOTS = {it["name"]: it["home_rel"] for it in ITEMS}
 
-STATE: dict[str, Any] = {"workload_pids": [], "jobs": {}, "cgroup": False, "last_snapshot": None}
+STATE: dict[str, Any] = {"workload_pids": [], "jobs": {}, "cgroup": False, "last_snapshot": None,
+                         "kept_snapshot": None, "boot_id": uuid.uuid4().hex, "started": time.time()}
+
+# Incremental layers (AR-25): the published chain's latest index, and staged ones.
+INDEX_DIR = "/var/lib/s3/index"
+STAGE_ROOT = os.path.join(SNAP_ROOT, ".stage")
+RESTORE_ROOT = "/restore-staging"
+LAYERS: dict[str, Any] = {"published": None, "pending": {}}
 
 
 def setup_cgroup() -> bool:
@@ -108,9 +124,10 @@ def start_host() -> subprocess.Popen[bytes]:
         os.chown(cfg, PW.pw_uid, PW.pw_gid)
     log = open(os.path.join(LOG_DIR, "host.log"), "ab")
     server = os.environ["OMNIGENT_SERVER_URL"]
+    # Omnigent's default process log, ~/.omnigent/logs/, which the capture excludes.
     proc = subprocess.Popen(
         as_agent(["/opt/venv/bin/python", "-m", "omnigent.host._daemon_entry", "--server", server]),
-        env=agent_env({"OMNIGENT_PROCESS_LOG_FILE": os.path.join(HOME, ".omnigent", "host-daemon.log")}),
+        env=agent_env(),
         cwd=HOME,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -135,9 +152,18 @@ def run_capture(body: dict[str, Any]) -> dict[str, Any]:
         "log_dir": LOG_DIR,
         "fault": body.get("fault", ""),
         "margin_bytes": body.get("margin_bytes", 64 << 20),
+        "record_kinds": bool(body.get("record_kinds")),
     }
+    # Pause only below our entrypoint (tini, the supervisor's parent). A process
+    # the platform runs in the container, or one started with exec (the backup
+    # helper), is outside that tree and never paused; the probe lists them.
+    if os.getppid() > 0:
+        spec["entry_pid"] = os.getppid()
     if body.get("method") == "rsync-incremental" and STATE["last_snapshot"]:
         spec["incremental_base"] = STATE["last_snapshot"]
+    if body.get("method") == "rsync-2phase" and body.get("keep") and STATE["kept_snapshot"]:
+        spec["keep_base"] = STATE["kept_snapshot"]
+        STATE["kept_snapshot"] = None  # the capture takes it over; a failure discards it
     spec_path = os.path.join(LOG_DIR, f"capture-{cid}.spec.json")
     result_path = os.path.join(LOG_DIR, f"capture-{cid}.result.json")
     with open(spec_path, "w") as fh:
@@ -177,7 +203,99 @@ def run_capture(body: dict[str, Any]) -> dict[str, Any]:
     res["worker_wall_s"] = round(wall, 3)
     if res.get("outcome") == "snapshot_ready" and body.get("method") == "rsync-incremental":
         STATE["last_snapshot"] = res["snapshot_dir"]
+    if res.get("outcome") == "snapshot_ready" and body.get("keep"):
+        STATE["kept_snapshot"] = res["snapshot_dir"]
+    elif spec.get("keep_base") and os.path.isdir(spec["keep_base"]):
+        # Refused before the copy began (no disk space, for example): it is still the kept one.
+        STATE["kept_snapshot"] = spec["keep_base"]
     return res
+
+
+def do_turn(body: dict[str, Any]) -> dict[str, Any]:
+    cli = body["cli"]
+    if cli not in ("claude", "codex"):
+        raise ValueError("cli must be claude or codex")
+    p = subprocess.run(
+        as_agent(["/opt/venv/bin/python", "-m", "supervisor.turns", cli, str(int(body["n"])), str(body["canary"])]),
+        env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=330)
+    if p.returncode != 0:
+        return {"cli": cli, "n": body["n"], "rc": p.returncode, "error": p.stderr[-800:]}
+    return json.loads(p.stdout.strip().splitlines()[-1])
+
+
+def do_layer(body: dict[str, Any]) -> dict[str, Any]:
+    """Index the snapshot and stage a base or a delta against the published chain."""
+    seq = str(body["seq"])
+    base = bool(body.get("base"))
+    snap = body.get("snapshot_dir") or STATE["kept_snapshot"]
+    if not snap or not os.path.isdir(snap):
+        raise ValueError("no snapshot to stage")
+    published = LAYERS["published"]
+    prev = layers.load_index(published["index"]) if published else None
+    index, istats = layers.build_index(snap, prev)
+    if base:
+        changed, deleted = sorted(index), []
+    elif prev is None:
+        raise ValueError("a delta needs a published parent")
+    else:
+        changed, deleted = layers.diff(prev, index)
+    layer_dir = os.path.join(STAGE_ROOT, seq)
+    meta = {"seq": seq, "base": base, "parent": None if base or not published else published["seq"]}
+    sstats = layers.stage(snap, layer_dir, index, changed, deleted, meta)
+    ipath = os.path.join(INDEX_DIR, f"{seq}.json")
+    sizes = layers.save_index(index, ipath)
+    if not body.get("standalone"):
+        LAYERS["pending"][seq] = ipath
+    return {"seq": seq, "base": base, "layer_dir": layer_dir, **istats, **sstats, **sizes}
+
+
+def do_layer_end(body: dict[str, Any], commit: bool) -> dict[str, Any]:
+    seq = str(body["seq"])
+    subprocess.run(["rm", "-rf", os.path.join(STAGE_ROOT, seq)], check=False)
+    ipath = LAYERS["pending"].pop(seq, None)
+    refreshed = 0
+    if commit:
+        if ipath is None:
+            raise ValueError(f"layer {seq} is not pending")
+        LAYERS["published"] = {"seq": seq, "index": ipath}
+        if STATE["kept_snapshot"]:
+            refreshed = layers.refresh_keys(STATE["kept_snapshot"], ipath)
+    elif ipath and os.path.exists(ipath):
+        os.unlink(ipath)
+    return {"seq": seq, "published": LAYERS["published"]["seq"] if LAYERS["published"] else None,
+            "refreshed_keys": refreshed}
+
+
+def restore_path(name: str) -> str:
+    if name not in ("tree", "layer", "full", "large"):
+        raise ValueError("unknown restore directory")
+    return os.path.join(RESTORE_ROOT, name)
+
+
+def do_restore(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    if path == "/restore/reset":
+        for name in ("tree", "layer", "full", "large"):
+            subprocess.run(["rm", "-rf", restore_path(name)], check=False)
+        STATE["restore_merged"] = None
+        return {"reset": True}
+    if path == "/restore/merge":
+        res = layers.merge(restore_path(body.get("layer", "layer")), restore_path(body.get("tree", "tree")), ROOTS)
+        # The last layer merged into the tree, so a resumed restore never merges one twice.
+        STATE["restore_merged"] = res["seq"]
+        return res
+    if path == "/restore/verify":
+        expected = layers.load_index(os.path.join(INDEX_DIR, f"{body['seq']}.json"))
+        return layers.verify(restore_path(body.get("tree", "tree")), expected)
+    if path == "/restore/reopen":
+        tree = restore_path(body.get("tree", "tree"))
+        p = subprocess.run(
+            as_agent(["/opt/venv/bin/python", "-m", "supervisor.turns", "reopen", os.path.join(tree, "claude"),
+                      os.path.join(tree, "codex"), str(body["canary"])]),
+            env=agent_env({"PYTHONPATH": "/opt/s3"}), cwd=HOME, capture_output=True, text=True, timeout=330)
+        if p.returncode != 0:
+            return {"rc": p.returncode, "error": p.stderr[-800:]}
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    raise ValueError("unknown restore action")
 
 
 def start_job(fn: Any, *args: Any) -> str:
@@ -243,6 +361,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             self._send(200, {"ok": True, "cgroup": STATE["cgroup"], "workload_pids": STATE["workload_pids"]})
+        elif self.path == "/boot":
+            self._send(200, {"boot_id": STATE["boot_id"], "started": STATE["started"],
+                             "all_in_one": STATE.get("aio"), "host_pids": STATE["workload_pids"],
+                             "kept_snapshot": STATE["kept_snapshot"], "profile": steps.PROFILE["current"],
+                             "restore_merged": STATE.get("restore_merged"),
+                             "published_layer": LAYERS["published"]["seq"] if LAYERS["published"] else None})
         elif self.path == "/runners":
             t0 = time.monotonic()
             res = R.classify()
@@ -283,7 +407,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         try:
             if self.path == "/capture":
-                self._send(200, run_capture(body))
+                # A long capture (minutes for a large cold workspace) can run as a job.
+                if body.get("as_job"):
+                    self._send(200, {"job": start_job(run_capture, body)})
+                else:
+                    self._send(200, run_capture(body))
             elif self.path == "/upload":
                 self._send(200, {"job": start_job(do_upload, body)})
             elif self.path == "/exec":
@@ -293,11 +421,25 @@ class Handler(BaseHTTPRequestHandler):
                 dest = "/tmp/" + os.path.basename(body["dest"])
                 U.client(30, 3).download_file(os.environ.get("S3_BUCKET", "checkpoints"), body["key"], dest)
                 self._send(200, {"path": dest, "size": os.path.getsize(dest)})
+            elif self.path == "/genws":
+                self._send(200, {"job": start_job(lambda b: steps.genws(as_agent, b["profile"]), body)})
+            elif self.path == "/setup":
+                self._send(200, {"job": start_job(steps.setup, body)})
             elif self.path == "/bench":
-                from . import probe
-
                 # Minutes long: run as a job, poll GET /jobs/<id>.
-                self._send(200, {"job": start_job(probe.bench, body, run_capture, as_agent)})
+                self._send(200, {"job": start_job(steps.bench, body, run_capture, as_agent)})
+            elif self.path == "/calibrate":
+                self._send(200, {"job": start_job(steps.calibrate, body, run_capture, ITEMS)})
+            elif self.path == "/load":
+                self._send(200, {"job": start_job(steps.load, body, run_capture)})
+            elif self.path == "/turn":
+                self._send(200, do_turn(body))
+            elif self.path == "/layer":
+                self._send(200, do_layer(body))
+            elif self.path in ("/layer/commit", "/layer/discard"):
+                self._send(200, do_layer_end(body, self.path == "/layer/commit"))
+            elif self.path.startswith("/restore/"):
+                self._send(200, do_restore(self.path, body))
             elif self.path == "/rm":
                 # Spike convenience: remove snapshots (root-owned) between runs.
                 path = os.path.realpath(body["path"])
@@ -306,11 +448,14 @@ class Handler(BaseHTTPRequestHandler):
                         subprocess.run(["rm", "-rf", os.path.join(path, name)], check=False)
                 elif path.startswith(("/snap/", "/snap-small/", "/restore-staging/")):
                     subprocess.run(["rm", "-rf", path], check=False)
+                    if STATE["kept_snapshot"] and os.path.realpath(STATE["kept_snapshot"]) == path:
+                        STATE["kept_snapshot"] = None
                 else:
                     self._send(400, {"error": "refused"})
                     return
                 if body.get("forget_base"):
                     STATE["last_snapshot"] = None
+                    STATE["kept_snapshot"] = None
                 self._send(200, {"removed": path})
             elif self.path == "/df":
                 st = os.statvfs(body.get("path", SNAP_ROOT))
@@ -356,6 +501,9 @@ def ensure_bucket() -> None:
 def main() -> int:
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(SNAP_ROOT, exist_ok=True)
+    if os.environ.get("S3_ALL_IN_ONE") == "1":
+        aio.apply_defaults()
+        STATE["aio"] = aio.start()
     if "S3_ENDPOINT" in os.environ:
         threading.Thread(target=ensure_bucket, daemon=True).start()
     STATE["cgroup"] = setup_cgroup()

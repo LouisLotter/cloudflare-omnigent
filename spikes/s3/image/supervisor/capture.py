@@ -26,6 +26,7 @@ from typing import Any
 
 from . import credpolicy
 from . import freeze as F
+from . import procs as P
 
 # Fault-injection seams for the lease tests. Never set outside the spike.
 FAULT_ENV = "S3_CAPTURE_FAULT"  # "hang_after_freeze" | "die_after_freeze" | "slow_copy:<s>"
@@ -96,9 +97,12 @@ def copy_steps(method: str, items: list[dict[str, Any]], snap: str, *, final: bo
     steps: list[list[str]] = []
     for it in items:
         src = it["src"]
-        if not os.path.lexists(src):
-            continue
         dst = os.path.join(snap, it["name"])
+        if not os.path.lexists(src):
+            # A root that is gone must be gone from a reused snapshot too (kept or incremental).
+            if os.path.lexists(dst):
+                steps.append(["rm", "-rf", "--", dst])
+            continue
         is_dir = os.path.isdir(src) and not os.path.islink(src)
         if method == "reflink":
             # Copy-on-write clones (btrfs, XFS): data is shared, only metadata is
@@ -202,10 +206,20 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
             b, n = tree_size(it["src"], it.get("exclude", []))
             need += b
             nfiles += n
-    base_dir = spec.get("incremental_base")
+    # A reused destination: the previous snapshot for incremental, or the kept
+    # snapshot for two-phase (the design keeps it for the container's life, so
+    # the unpaused pass moves only what changed). Either way the paused pass
+    # compares contents (IR-011).
+    if method == "rsync-incremental":
+        base_dir = spec.get("incremental_base")
+    elif method == "rsync-2phase":
+        base_dir = spec.get("keep_base")
+    else:
+        base_dir = None
     reuse = 0
-    if method == "rsync-incremental" and base_dir and os.path.isdir(base_dir):
+    if base_dir and os.path.isdir(base_dir):
         reuse, _ = tree_size(base_dir, [])
+        res["reused_snapshot"] = True
     margin = int(spec.get("margin_bytes", 64 * 1024 * 1024))
     free = free_bytes(root)
     required = max(0, need - reuse) + margin
@@ -218,7 +232,7 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
 
     partial = os.path.join(root, f"{cid}.partial")
     final = os.path.join(root, cid)
-    if method == "rsync-incremental" and base_dir and os.path.isdir(base_dir):
+    if base_dir and os.path.isdir(base_dir):
         os.rename(base_dir, partial)  # reuse the previous snapshot as the copy base
     else:
         os.makedirs(partial, exist_ok=False)
@@ -329,7 +343,15 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
             hooks["after_stop"](_pid)
 
     scope_pid = spec.get("scope_pid")
-    scope = (lambda: {int(scope_pid)}) if scope_pid else None
+    entry_pid = spec.get("entry_pid")
+    scope: Any = None
+    if scope_pid:
+        scope = lambda: {int(scope_pid)}  # noqa: E731 - tests: only this tree
+    elif entry_pid:
+        # Everything below the container's entrypoint, never the entrypoint itself,
+        # and nothing outside its tree (exec'd helpers, platform processes).
+        def scope() -> set[int]:
+            return {pr.pid for pr in P.scan(with_cmdline=False).values() if pr.ppid == int(entry_pid)}
     if mechanism == "cgroup":
         fz: F.SignalFreezer | F.CgroupFreezer = F.CgroupFreezer(
             spec["cgroup_dir"], request_freeze, lease_alive, before_stop=before_stop, after_stop=after_stop)
@@ -348,6 +370,12 @@ def capture(spec: dict[str, Any]) -> dict[str, Any]:
         res["freeze"] = {k: v for k, v in asdict(fr).items() if k not in ("stopped",)}
         res["freeze"]["stopped_count"] = len(fr.stopped)
         res["running_after_freeze"] = fz.verify_frozen()
+        if spec.get("record_kinds"):
+            # Pause-scope evidence (AR-09): what was stopped, and what kept running.
+            res["stopped_by_kind"] = P.kinds([pid for pid, _ in fr.stopped])
+            now = P.scan()
+            res["running_by_kind"] = P.kinds(
+                [pid for pid, pr in now.items() if pr.state not in ("T", "t", "Z", "X")])
 
         if fault == "die_after_freeze":
             os.kill(os.getpid(), signal.SIGKILL)

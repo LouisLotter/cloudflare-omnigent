@@ -1,0 +1,240 @@
+{
+ "base": "http://127.0.0.1:18786",
+ "failures": 0,
+ "results": [
+  {
+   "name": "setup: start with a 4-second terminal window",
+   "ok": true,
+   "error": null
+  },
+  {
+   "name": "the terminal answers the tty subprotocol",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "one Upgrade header in the handshake",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "a terminal opened inside the window runs a command",
+   "ok": true
+  },
+  {
+   "name": "the Worker closed the open terminal when its window expired",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666702341,
+    "code": 4001,
+    "reason": "terminal closed: its window has closed"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "nothing typed after the expiry runs",
+   "ok": true
+  },
+  {
+   "name": "a new terminal is refused after the expiry",
+   "ok": true,
+   "status": 403
+  },
+  {
+   "name": "after-sign-in: a connected terminal runs a command first",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "after-sign-in: still usable after 30 s idle",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "after-sign-in: the Worker closed the terminal before the phase's first step",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666734874,
+    "code": 4001,
+    "reason": "terminal closed: after-sign-in began"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1,
+   "close_after_post_ms": 4,
+   "first_step_after_post_ms": 62
+  },
+  {
+   "name": "after-sign-in: nothing typed afterwards runs",
+   "ok": true
+  },
+  {
+   "name": "setup: after-sign-in completed",
+   "ok": true
+  },
+  {
+   "name": "recover: a connected terminal runs a command first",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "recover: the Worker closed the terminal before the phase's first step",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666745151,
+    "code": 4001,
+    "reason": "terminal closed: recover began"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1,
+   "close_after_post_ms": 7,
+   "first_step_after_post_ms": 63
+  },
+  {
+   "name": "recover: nothing typed afterwards runs",
+   "ok": true
+  },
+  {
+   "name": "setup: recover completed",
+   "ok": true
+  },
+  {
+   "name": "setup: start",
+   "ok": true
+  },
+  {
+   "name": "stop: a connected terminal runs a command first",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "stop: the Worker closed the terminal before the phase's first step",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666751856,
+    "code": 4001,
+    "reason": "terminal closed: stop began"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1,
+   "close_after_post_ms": 5,
+   "first_step_after_post_ms": 80
+  },
+  {
+   "name": "stop: nothing typed afterwards runs",
+   "ok": true
+  },
+  {
+   "name": "setup: stop completed",
+   "ok": true
+  },
+  {
+   "name": "setup: recover after stop",
+   "ok": true
+  },
+  {
+   "name": "setup: start",
+   "ok": true
+  },
+  {
+   "name": "wipe: a connected terminal runs a command first",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "wipe: the Worker closed the terminal before the phase's first step",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666759014,
+    "code": 4001,
+    "reason": "terminal closed: wipe began"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1,
+   "close_after_post_ms": 5,
+   "first_step_after_post_ms": 9
+  },
+  {
+   "name": "wipe: nothing typed afterwards runs",
+   "ok": true
+  },
+  {
+   "name": "wipe was refused while the computer runs",
+   "ok": true
+  },
+  {
+   "name": "force-stop: a connected terminal runs a command first",
+   "ok": true,
+   "status": 101,
+   "close": null,
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1
+  },
+  {
+   "name": "force-stop: the Worker closed the terminal before the phase's first step",
+   "ok": true,
+   "status": 101,
+   "close": {
+    "at": 1792666761480,
+    "code": 4001,
+    "reason": "terminal closed: force-stop began"
+   },
+   "ended": false,
+   "protocol": "tty",
+   "upgrade_headers": 1,
+   "close_after_post_ms": 6,
+   "first_step_after_post_ms": 235
+  },
+  {
+   "name": "force-stop: nothing typed afterwards runs",
+   "ok": true
+  },
+  {
+   "name": "setup: force-stop completed",
+   "ok": true
+  },
+  {
+   "name": "cleanup: wiped",
+   "ok": true
+  }
+ ]
+}

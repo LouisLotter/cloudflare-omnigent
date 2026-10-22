@@ -9,7 +9,7 @@ import argparse
 import json
 
 from common import SPIKE, SRV, compose, http, sup, wait_for
-from sync_policy import sync
+from prepare_staging import prepare
 
 HOST_ID = "6d2f6c1e-3b1a-4c55-9a51-5f3e0a000001"
 
@@ -34,7 +34,7 @@ def main() -> None:
         compose("--profile", "restore", "down", "-v", "--remove-orphans")
         print("down")
         return
-    sync()  # S6's credential policy into the build context
+    prepare()  # S6's credential policy, the mock LLM and the Omnigent base image
     variant = ["-f", str(SPIKE / "compose.cgroup.yaml")] if args.freezer == "cgroup" else []
     compose(*variant, "up", "-d", "--build", "--force-recreate",
             extra_env={"S3_FREEZER": args.freezer, "S3_RUNNER_IDLE_TIMEOUT_S": args.idle})

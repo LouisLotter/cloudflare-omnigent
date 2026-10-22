@@ -1,0 +1,523 @@
+{
+ "rows": [
+  {
+   "case": "held-then-recovers",
+   "expect": "published",
+   "hold_ms": 120000,
+   "deadline_ms": 480000,
+   "layer_bytes": 727868746,
+   "hold_observed": {
+    "first_part_after_ms": 613,
+    "promised_max_ms": 120000,
+    "observed_max_ms": 124823,
+    "parts_held": 16
+   },
+   "upload": {
+    "ok": true,
+    "ms": 128153,
+    "stored_bytes": 435604216
+   },
+   "pointer_before": null,
+   "pointer_after": {
+    "id": "3c5bcb31-9b45-4280-82b4-3516e3e68e6d",
+    "case": "held-then-recovers"
+   },
+   "objects_before": 0,
+   "objects_after": 1,
+   "load": {
+    "turns": 30,
+    "turns_ok": 30,
+    "turn_s": {
+     "n": 30,
+     "median": 0.37,
+     "worst": 0.52,
+     "best": 0.35
+    },
+    "capture": {
+     "method": "rsync-2phase",
+     "outcome": "snapshot_ready",
+     "pause_s": 0.7774,
+     "pause_s_by_guard": 0.7772,
+     "freeze_s": 0.005,
+     "copy_s": 0.7606,
+     "release_s": 0.0117,
+     "precopy_s": 3.2517,
+     "size_bytes": 728253301,
+     "files": 12517,
+     "snapshot_bytes": 727945710,
+     "budget_check_s": 0.1121,
+     "free_bytes": 7708246016,
+     "reused_snapshot": null,
+     "stopped_by_kind": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "sandbox-shim": 1,
+      "supervisor": 1
+     },
+     "running_after_freeze": [],
+     "total_s": 4.9774,
+     "worker_wall_s": 5.23,
+     "stopped": 17,
+     "freeze_passes": 2,
+     "copy_mb_s": 957.5,
+     "at_s": 35.2
+    },
+    "host": {
+     "states": [
+      "online"
+     ],
+     "polls": 149,
+     "not_online_s": 0,
+     "poll_errors": 0
+    },
+    "rows": [
+     {
+      "at_s": 0,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 5,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 10,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 15,
+      "ok": true,
+      "s": 0.41
+     },
+     {
+      "at_s": 20,
+      "ok": true,
+      "s": 0.35
+     },
+     {
+      "at_s": 25,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 30,
+      "ok": true,
+      "s": 0.43
+     },
+     {
+      "at_s": 35,
+      "ok": true,
+      "s": 0.43
+     },
+     {
+      "at_s": 40,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 45,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 50,
+      "ok": true,
+      "s": 0.35
+     },
+     {
+      "at_s": 55,
+      "ok": true,
+      "s": 0.35
+     },
+     {
+      "at_s": 60,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 65,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 70,
+      "ok": true,
+      "s": 0.35
+     },
+     {
+      "at_s": 75,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 80,
+      "ok": true,
+      "s": 0.39
+     },
+     {
+      "at_s": 85,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 90,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 95,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 100,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 105,
+      "ok": true,
+      "s": 0.35
+     },
+     {
+      "at_s": 110,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 115,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 120,
+      "ok": true,
+      "s": 0.4
+     },
+     {
+      "at_s": 125,
+      "ok": true,
+      "s": 0.52
+     },
+     {
+      "at_s": 130,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 135,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 140,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 145,
+      "ok": true,
+      "s": 0.4
+     }
+    ]
+   },
+   "pointer_moved": true,
+   "failed": []
+  },
+  {
+   "case": "held-past-the-deadline",
+   "expect": "aborted",
+   "hold_ms": 120000,
+   "deadline_ms": 60000,
+   "layer_bytes": 727868746,
+   "hold_observed": {
+    "first_part_after_ms": 367,
+    "promised_max_ms": 120000,
+    "observed_max_ms": 0,
+    "parts_held": 16
+   },
+   "upload": {
+    "ok": false,
+    "ms": 60387,
+    "error": "TimeoutError 23: The operation was aborted due to timeout"
+   },
+   "pointer_before": {
+    "id": "3c5bcb31-9b45-4280-82b4-3516e3e68e6d",
+    "case": "held-then-recovers"
+   },
+   "pointer_after": {
+    "id": "3c5bcb31-9b45-4280-82b4-3516e3e68e6d",
+    "case": "held-then-recovers"
+   },
+   "objects_before": 1,
+   "objects_after": 1,
+   "load": {
+    "turns": 30,
+    "turns_ok": 30,
+    "turn_s": {
+     "n": 30,
+     "median": 0.38,
+     "worst": 0.52,
+     "best": 0.36
+    },
+    "capture": {
+     "method": "rsync-2phase",
+     "outcome": "snapshot_ready",
+     "pause_s": 0.7817,
+     "pause_s_by_guard": 0.7807,
+     "freeze_s": 0.0052,
+     "copy_s": 0.7611,
+     "release_s": 0.0154,
+     "precopy_s": 3.157,
+     "size_bytes": 728253301,
+     "files": 12517,
+     "snapshot_bytes": 727945710,
+     "budget_check_s": 0.1477,
+     "free_bytes": 7705333760,
+     "reused_snapshot": null,
+     "stopped_by_kind": {
+      "omnigent-host": 1,
+      "omnigent-runner-or-harness": 6,
+      "omnigent-terminal": 9,
+      "omnigent-zygote": 1
+     },
+     "running_by_kind": {
+      "capture-worker": 1,
+      "init": 1,
+      "lease-guard": 1,
+      "mock-llm": 1,
+      "omnigent-server": 1,
+      "sandbox-shim": 1,
+      "supervisor": 1
+     },
+     "running_after_freeze": [],
+     "total_s": 4.9161,
+     "worker_wall_s": 5.197,
+     "stopped": 17,
+     "freeze_passes": 2,
+     "copy_mb_s": 956.8,
+     "at_s": 35.2
+    },
+    "host": {
+     "states": [
+      "online"
+     ],
+     "polls": 149,
+     "not_online_s": 0,
+     "poll_errors": 0
+    },
+    "rows": [
+     {
+      "at_s": 0,
+      "ok": true,
+      "s": 0.41
+     },
+     {
+      "at_s": 5,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 10,
+      "ok": true,
+      "s": 0.39
+     },
+     {
+      "at_s": 15,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 20,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 25,
+      "ok": true,
+      "s": 0.4
+     },
+     {
+      "at_s": 30,
+      "ok": true,
+      "s": 0.52
+     },
+     {
+      "at_s": 35,
+      "ok": true,
+      "s": 0.45
+     },
+     {
+      "at_s": 40,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 45,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 50,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 55,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 60,
+      "ok": true,
+      "s": 0.4
+     },
+     {
+      "at_s": 65,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 70,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 75,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 80,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 85,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 90,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 95,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 100,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 105,
+      "ok": true,
+      "s": 0.41
+     },
+     {
+      "at_s": 110,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 115,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 120,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 125,
+      "ok": true,
+      "s": 0.37
+     },
+     {
+      "at_s": 130,
+      "ok": true,
+      "s": 0.36
+     },
+     {
+      "at_s": 135,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 140,
+      "ok": true,
+      "s": 0.38
+     },
+     {
+      "at_s": 145,
+      "ok": true,
+      "s": 0.38
+     }
+    ]
+   },
+   "pointer_moved": false,
+   "failed": []
+  }
+ ],
+ "summary": [
+  {
+   "case": "held-then-recovers",
+   "first_part_after_ms": 613,
+   "observed_max_wait_ms": 124823,
+   "upload_ok": true,
+   "upload_ms": 128153,
+   "pointer_moved": true,
+   "objects_added": 1,
+   "turns": "30/30",
+   "capture_pause_s": 0.7774,
+   "capture_outcome": "snapshot_ready",
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 149,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "failed": []
+  },
+  {
+   "case": "held-past-the-deadline",
+   "first_part_after_ms": 367,
+   "observed_max_wait_ms": 0,
+   "upload_ok": false,
+   "upload_ms": 60387,
+   "error": "TimeoutError 23: The operation was aborted due to timeout",
+   "pointer_moved": false,
+   "objects_added": 0,
+   "turns": "30/30",
+   "capture_pause_s": 0.7817,
+   "capture_outcome": "snapshot_ready",
+   "host": {
+    "states": [
+     "online"
+    ],
+    "polls": 149,
+    "not_online_s": 0,
+    "poll_errors": 0
+   },
+   "failed": []
+  }
+ ],
+ "failed": []
+}

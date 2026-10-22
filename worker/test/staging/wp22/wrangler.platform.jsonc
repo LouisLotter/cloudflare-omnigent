@@ -1,0 +1,54 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP2.2 staging: the platform Worker with the production OmnigentServer, a stand-in server
+  // container and the harness (platform.ts). Deploy only with run.sh, which stamps build.ts and
+  // calls the guarded staging tool:
+  //   pnpm stg deploy --suffix wp22-platform --owner WP2.2 --config <this file> --days 2
+  "name": "cfo-stg-wp22-platform",
+  "main": "platform.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "COMPUTER", "class_name": "StagingComputer" },
+      { "name": "RUN", "class_name": "StagingRun" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["OmnigentServer", "StagingComputer", "StagingRun"] }
+  ],
+  "containers": [
+    {
+      "name": "cfo-stg-wp22-platform-server",
+      "class_name": "OmnigentServer",
+      "image": "./server/Dockerfile",
+      "image_build_context": "./server",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-wp22-platform-computer",
+      "class_name": "StagingComputer",
+      "image": "./computer/Dockerfile",
+      "image_build_context": "./computer",
+      "max_instances": 1,
+      "instance_type": "lite"
+    }
+  ],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp22-platform-results" }],
+  // Synthetic values only. The bootstrap password's presence makes the watchdog log its
+  // bootstrap status on every check, as an installation's would until the owner is durable.
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD": "cfo-canary-staging-bootstrap-password"
+  }
+}

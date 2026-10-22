@@ -15,14 +15,25 @@ const time = (value: string) => Date.parse(value);
 export const OutageRecord = z
   .strictObject({
     outageId: OutageId,
-    /** Found stopped, running but not answering, or not ready within the readiness wait. */
-    cause: z.enum(["container_stopped", "not_answering", "start_failed"]),
+    /**
+     * Found stopped, running but not answering, not ready within the readiness wait, or in the
+     * server image's recovery mode (its database could not be restored safely; WP2.3), which
+     * needs the owner rather than a restart.
+     */
+    cause: z.enum(["container_stopped", "not_answering", "start_failed", "recovery_mode"]),
     startedAt: Timestamp,
     detectedAt: Timestamp,
     /** When the server answered again; null while the outage lasts. */
     endedAt: Timestamp.nullable(),
     /** Restarts the watchdog made during the outage. */
     restarts: z.number().int().min(0).max(1000),
+    /**
+     * The server container's last exit code during the outage, if one was seen: 0 a clean stop,
+     * 70 Litestream failed, 71 the app exited, 75 the final sync was not confirmed (changes may
+     * be lost), 78 a setting is missing or malformed (WP2.3). Absent in records written before
+     * the field existed.
+     */
+    exitCode: z.number().int().min(0).max(255).nullable().optional(),
   })
   .refine(
     (r) =>

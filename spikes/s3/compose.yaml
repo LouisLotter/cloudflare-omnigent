@@ -6,7 +6,10 @@
 # The bench scripts (spikes/s3/bench/) generate the two MinIO values at run time.
 name: cfo-s3
 
-x-omnigent-image: &omnigent_image ghcr.io/omnigent-ai/omnigent-server@sha256:dba491573ba16b42da7447a7ab6e978bfeb6f49876093cc925f8340abd010df6
+# Omnigent built from the fork's cfo/integration at af3e49de2 (bench/prepare_staging.py), the
+# same base as the spike image. The results before 22 Oct used the published image
+# ghcr.io/omnigent-ai/omnigent-server@sha256:dba491573ba16b42da7447a7ab6e978bfeb6f49876093cc925f8340abd010df6.
+x-omnigent-image: &omnigent_image cfo-s3/omnigent-server:af3e49de2
 
 services:
   server:
@@ -27,12 +30,12 @@ services:
 
   mockllm:
     # Omnigent's own e2e mock LLM (OpenAI Responses + Anthropic Messages, with
-    # request capture), mounted read-only from the fork.
+    # request capture), the copy prepare_staging.py takes from the fork.
     image: *omnigent_image
     entrypoint: ["python", "-m", "uvicorn", "--app-dir", "/mock", "mock_llm_server:app",
                  "--host", "0.0.0.0", "--port", "9999", "--log-level", "warning"]
     volumes:
-      - /home/decay/Lervent/omnigent/tests/server/integration/mock_llm_server.py:/mock/mock_llm_server.py:ro
+      - ./image/mockllm/mock_llm_server.py:/mock/mock_llm_server.py:ro
     ports:
       - "127.0.0.1:19999:9999"
 

@@ -1,16 +1,40 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Deployed names come from scripts/deploy.ts, which enforces the cfo-stg- prefix for staging.
+  // The platform Worker (AR-17): every Durable Object and container class, the private virtual
+  // hosts, and no public route. The web Worker (wrangler.web.jsonc) binds its classes by this
+  // name, so deploy this one first. Deployed names come from scripts/deploy.ts, which enforces
+  // the cfo-stg- prefix for staging.
+  //
+  // OmnigentServer's container: the server image (WP2.3), built from the repository root with
+  // BuildKit (its Dockerfile uses `ADD <git>`, `ADD --checksum` and a `# syntax` line, and reads
+  // images/server/Dockerfile.dockerignore). The default scheduling policy, one `basic` instance.
   "name": "cloudflare-omnigent",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Closed by default: only explicitly routed hostnames, protected by Access, reach the Worker.
+  // Closed by default: no route of its own, no workers.dev or preview URL.
   "workers_dev": false,
   "preview_urls": false,
+  "containers": [
+    {
+      "class_name": "OmnigentServer",
+      "image": "../images/server/Dockerfile",
+      "image_build_context": "..",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
   "durable_objects": {
-    "bindings": [{ "name": "CONTROL", "class_name": "ControlDO" }]
+    "bindings": [
+      { "name": "CONTROL", "class_name": "ControlDO" },
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] }
+  ],
+  // The always-on backstop and the first start after an installation (src/index.ts, scheduled).
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": true }
 }

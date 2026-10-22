@@ -201,6 +201,10 @@ class FakeTtyd extends EventTarget {
   }
 }
 
+// Cloudflare's answer to a start right after a stop (DC-37), as seen on staging on 19 Oct.
+export const START_REFUSED_TEXT =
+  "There is no container instance that can be provided to this Durable Object, try again later";
+
 class FakeContainer {
   constructor(world) {
     this.world = world;
@@ -208,14 +212,63 @@ class FakeContainer {
     this.homes = new Map();
     this.ttyd = [];
     this.termRequests = [];
+    // DC-37 models: refuse the next N starts, and/or every start within this many ms of the
+    // last stop (warped time). A destroy that does nothing models a stop that does not happen.
+    this.refuseStarts = 0;
+    this.refuseWithinMs = 0;
+    this.lastStopAt = null;
+    this.ignoreDestroy = false;
+    // Review s6-fu-r1: start() returns after validating its options, and a placement refusal
+    // can arrive later, through monitor(); destroy() can fail; other start errors exist.
+    this.refuseLateStarts = 0;
+    this.destroyThrows = false;
+    this.holdDestroy = false;
+    this.heldDestroy = null;
+    this.startErrors = [];
+    this.monitorPromise = null;
+    this.resolveMonitor = null;
   }
   start() {
+    const sinceStop = this.lastStopAt === null ? Infinity : Date.now() - this.lastStopAt;
+    if (this.startErrors.length) {
+      this.world.log("container-start-error");
+      throw new Error(this.startErrors.shift());
+    }
+    if (this.refuseStarts > 0 || sinceStop < this.refuseWithinMs) {
+      if (this.refuseStarts > 0) this.refuseStarts--;
+      this.world.log("container-start-refused");
+      throw new Error(START_REFUSED_TEXT);
+    }
+    if (this.refuseLateStarts > 0) {
+      this.refuseLateStarts--;
+      this.world.log("container-start-refused-late");
+      this.monitorPromise = new Promise((_, reject) =>
+        queueMicrotask(() => reject(new Error(START_REFUSED_TEXT))),
+      );
+      this.monitorPromise.catch(() => {});
+      return;
+    }
     this.world.log("container-start");
     this.running = true;
     this.homes = new Map();
+    this.monitorPromise = new Promise((resolve) => {
+      this.resolveMonitor = resolve;
+    });
+  }
+  monitor() {
+    return this.monitorPromise ?? new Promise(() => {});
   }
   async destroy() {
     this.world.log("container-destroy");
+    if (this.holdDestroy) {
+      // The test settles it: resolve, or reject after whatever it does meanwhile.
+      await new Promise((resolve, reject) => {
+        this.heldDestroy = { resolve, reject };
+      });
+      this.heldDestroy = null;
+    }
+    if (this.destroyThrows) throw new Error("destroy failed (test)");
+    if (this.ignoreDestroy) return;
     this.stopNow("container stopped");
   }
   // The computer goes away without the Worker asking (a crash, a host restart).
@@ -224,7 +277,10 @@ class FakeContainer {
     this.stopNow("container crashed");
   }
   stopNow(why) {
+    if (this.running) this.lastStopAt = Date.now();
     this.running = false;
+    this.resolveMonitor?.();
+    this.resolveMonitor = null;
     this.homes = new Map();
     for (const t of this.ttyd) t.end(1006, why);
   }

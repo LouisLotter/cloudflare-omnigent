@@ -27,10 +27,13 @@ import {
   type Cloud,
   type Context,
   deploy,
+  listSecretNames,
   type NameFilter,
   type Store,
   sweep,
   teardown,
+  updateSecrets,
+  WindowPassed,
 } from "./ops.ts";
 
 const ACCOUNT = "a".repeat(32);
@@ -410,6 +413,21 @@ class FakeCloud implements Cloud {
     if (mode === "fails" || mode === "fails-after-delete") {
       throw new Error("wrangler delete exited with 1");
     }
+  }
+  secretNames(name: string): string[] {
+    this.tick();
+    this.calls.push(`worker.secrets ${name}`);
+    return Object.keys(this.secrets.get(name) ?? {}).sort();
+  }
+  updateSecrets(name: string, changes: Readonly<Record<string, string | null>>): void {
+    this.tick();
+    this.calls.push(`worker.secrets.update ${name}`);
+    const next = { ...this.secrets.get(name) };
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === null) delete next[key];
+      else next[key] = value;
+    }
+    this.secrets.set(name, next);
   }
   bucketExists(name: string): boolean {
     this.tick();
@@ -1456,6 +1474,36 @@ describe("staging manifest: a Tunnel, its public hostname and Workers VPC servic
     expect(views[path]?.raw).not.toHaveProperty("routes");
   });
 
+  it("deploys a configuration that leaves its containers unnamed under the deployment's names", () => {
+    const path = "/w/production.jsonc";
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "HOST", class_name: "Host" }] },
+        containers: [{ class_name: "Host", image: "./Dockerfile", max_instances: 1 }],
+        triggers: { crons: ["* * * * *"] },
+      },
+    };
+    deploy(ctx, request("a", 7, path));
+    expect(cloud.uploads.at(-1)?.configPath).toBe(RENDERED);
+    const uploaded = JSON.parse(written[0]?.text ?? "{}");
+    expect(uploaded.containers).toEqual([
+      { name: "cfo-stg-a-host", class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+    ]);
+    expect(record()).toMatchObject({ containers: ["cfo-stg-a-host"], state: "deployed" });
+    expect([...cloud.containerApps_.values()]).toEqual(["cfo-stg-a-host"]);
+    expect(files.size).toBe(0);
+    // The checked configuration keeps its unnamed container.
+    expect(views[path]?.raw.containers).toEqual([
+      { class_name: "Host", image: "./Dockerfile", max_instances: 1 },
+    ]);
+    teardown(ctx, "cfo-stg-a");
+    expect(cloud.containerApps_.size).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
   it("removes the rendered copy when the upload fails", () => {
     cloud.deployFault = "before-upload";
     expect(() => deploy(ctx, request("a", 7, withManifest("a")))).toThrow("wrangler deploy");
@@ -2284,6 +2332,96 @@ describe("review r2, finding 5: creates that land after they were given up", () 
     ]);
     expect(cloud.buckets.size).toBe(2);
     expect(cloud.apps.size).toBe(3);
+  });
+});
+
+describe("WP2.4: the caller's secrets, on deploy and afterwards", () => {
+  it("uploads the caller's secrets with the version, besides the manifest's", () => {
+    deploy(ctx, {
+      ...request("a", 7, withManifest("a", TUNNEL_MANIFEST)),
+      secrets: { APP_KEY: "k1" },
+    });
+    expect(cloud.uploads[0]?.secrets).toEqual({
+      X1_TUNNEL_TOKEN: expect.any(String),
+      APP_KEY: "k1",
+    });
+    expect(logs.join("\n")).not.toContain("k1");
+  });
+
+  it("refuses a bad secret name before anything, and the manifest's own names", () => {
+    expect(() => deploy(ctx, { ...request(), secrets: { "BAD-NAME": "x" } })).toThrow(
+      'invalid secret names: "BAD-NAME"',
+    );
+    expect(cloud.calls).toEqual([]);
+    expect(() =>
+      deploy(ctx, {
+        ...request("a", 7, withManifest("a", TUNNEL_MANIFEST)),
+        secrets: { X1_TUNNEL_TOKEN: "x" },
+      }),
+    ).toThrow("the secret X1_TUNNEL_TOKEN is the staging tool's own");
+    expect(cloud.uploads).toEqual([]);
+  });
+
+  it("changes a deployed Worker's secrets in one change, and lists their names", () => {
+    deploy(ctx, { ...request(), secrets: { A: "1", B: "2" } });
+    expect(listSecretNames(ctx, "a")).toEqual(["A", "B"]);
+    cloud.calls.length = 0;
+    updateSecrets(ctx, { suffix: "a", owner: "wp0.4", changes: { A: null, C: "3" } });
+    expect(cloud.calls).toEqual(["accounts", "worker.exists", "worker.secrets.update cfo-stg-a"]);
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({ B: "2", C: "3" });
+    expect(logs.at(-1)).toBe("changed the secrets of cfo-stg-a: set C deleted A");
+    expect(logs.join("\n")).not.toContain('"3"');
+    expect(locks.held.size).toBe(0);
+  });
+
+  it("refuses a change for anything but a deployed Worker of the same owner", () => {
+    const change =
+      (suffix: string, owner = "wp0.4", changes: Record<string, string | null> = { A: "1" }) =>
+      () =>
+        updateSecrets(ctx, { suffix, owner, changes });
+    expect(change("none")).toThrow("cfo-stg-none is not a recorded staging deployment");
+    deploy(ctx, request());
+    expect(change("a", "wp9.9")).toThrow("cfo-stg-a belongs to wp0.4, not wp9.9");
+    expect(change("a", "wp0.4", {})).toThrow("no secret to change");
+    expect(change("a", "wp0.4", { "a b": "1" })).toThrow(/invalid secret names/);
+    cloud.workers.delete("cfo-stg-a");
+    expect(change("a")).toThrow(
+      "cfo-stg-a is recorded, but the staging account has no such Worker",
+    );
+    store.update((all) => all.map((d) => ({ ...d, state: "pending" as const })));
+    expect(change("a")).toThrow("cfo-stg-a is not deployed; deploy it first");
+    expect(cloud.calls.filter((c) => c.startsWith("worker.secrets.update"))).toEqual([]);
+  });
+
+  it("sends nothing once a change's window has passed, after every check", () => {
+    deploy(ctx, { ...request(), secrets: { A: "1" } });
+    cloud.calls.length = 0;
+    expect(() =>
+      updateSecrets(ctx, {
+        suffix: "a",
+        owner: "wp0.4",
+        changes: { A: null },
+        notAfter: clock - 1,
+      }),
+    ).toThrow(WindowPassed);
+    expect(cloud.calls).toEqual(["accounts", "worker.exists"]);
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({ A: "1" });
+    updateSecrets(ctx, { suffix: "a", owner: "wp0.4", changes: { A: null }, notAfter: clock });
+    expect(cloud.secrets.get("cfo-stg-a")).toEqual({});
+  });
+
+  it("never changes the secrets the tool delivers for a service token", () => {
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    expect(() =>
+      updateSecrets(ctx, { suffix: "a", owner: "wp0.4", changes: { X1_ACCESS_CLIENT_ID: null } }),
+    ).toThrow("the secrets X1_ACCESS_CLIENT_ID are the staging tool's own");
+  });
+
+  it("lists no names for a deployment it does not record, or a Worker that is gone", () => {
+    expect(listSecretNames(ctx, "a")).toBeNull();
+    deploy(ctx, request());
+    cloud.workers.delete("cfo-stg-a");
+    expect(listSecretNames(ctx, "a")).toBeNull();
   });
 });
 

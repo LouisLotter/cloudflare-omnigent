@@ -241,6 +241,32 @@ function text(entry: Record<string, unknown>, key: string, what: string): string
   return value;
 }
 
+/**
+ * The body of Cloudflare's bulk secrets change (`PATCH …/secrets-bulk`, `cf workers secrets
+ * bulk`), a JSON merge patch: a value becomes a text secret, null deletes the secret.
+ */
+export function secretsBulkBody(
+  changes: Readonly<Record<string, string | null>>,
+): Record<string, { name: string; type: "secret_text"; text: string } | null> {
+  return Object.fromEntries(
+    Object.entries(changes).map(([name, value]) => [
+      name,
+      value === null ? null : { name, type: "secret_text" as const, text: value },
+    ]),
+  );
+}
+
+/** The names in `wrangler secret list --format json`: `[{ "name": …, "type": … }]`. */
+export function secretNamesOf(stdout: string): string[] {
+  let listing: unknown;
+  try {
+    listing = JSON.parse(stdout);
+  } catch {
+    throw new Error("wrangler secret list printed something other than JSON");
+  }
+  return entries(listing, "secret").map((secret) => text(secret, "name", "a secret"));
+}
+
 /** Access applications, each with the ID, name and domain the guard needs, as listed. */
 export function accessAppsOf(listing: unknown): AccessApp[] {
   return entries(listing, "Access application").map((app) => {
@@ -367,7 +393,7 @@ const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";
  * descriptor is closed afterwards. The values never reach argv or a log.
  */
 export function withSecretsDescriptor<T>(
-  secrets: Readonly<Record<string, string>>,
+  secrets: Readonly<Record<string, unknown>>,
   use: (fd: number) => T,
 ): T {
   const fd = openNameless();
@@ -503,6 +529,21 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
   const nameArgs = (filter: NameFilter, exact: string, prefix: string): string[] =>
     "name" in filter ? [exact, filter.name] : [prefix, filter.prefix];
   const zone = ["--zone", config.zone];
+  // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
+  // --config it reads whatever configuration its working directory holds. A generated
+  // configuration in an empty directory pins the staging account.
+  const pinnedConfig = <T>(name: string, use: (file: string, dir: string) => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), "cfo-stg-worker-"));
+    try {
+      const file = join(dir, "wrangler.json");
+      writeFileSync(file, JSON.stringify({ name, account_id: config.accountId }), {
+        mode: 0o600,
+      });
+      return use(file, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
   const created = (answer: unknown, key: string, what: string): string => {
     const id = (answer as Record<string, unknown> | null)?.[key];
     if (typeof id !== "string" || id === "") throw new Error(`${what} did not return an ID`);
@@ -603,19 +644,39 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
         wrangler([...args, "--secrets-file", "/dev/fd/3"], workerDir, env, [fd]),
       );
     },
-    // Wrangler prefers a configuration's account_id to CLOUDFLARE_ACCOUNT_ID, and without
-    // --config it reads whatever configuration its working directory holds. A generated
-    // configuration in an empty directory pins the staging account.
     deleteWorker: (name) => {
-      const dir = mkdtempSync(join(tmpdir(), "cfo-stg-delete-"));
-      try {
-        const file = join(dir, "wrangler.json");
-        writeFileSync(file, JSON.stringify({ name, account_id: config.accountId }), {
-          mode: 0o600,
+      pinnedConfig(name, (file, dir) =>
+        wrangler(["delete", "--config", file, "--name", name, "--force"], dir),
+      );
+    },
+    // Read with the same pinned configuration. The answer is JSON names and types only.
+    secretNames: (name) =>
+      pinnedConfig(name, (file, dir) => {
+        const cli = ["--no-warnings", wranglerCli(workerDir)];
+        const args = ["secret", "list", "--config", file, "--name", name, "--format", "json"];
+        const result = run(process.execPath, [...cli, ...args], {
+          inherit: false,
+          cwd: dir,
+          env: { ...WRANGLER_QUIET_LOGS },
         });
-        wrangler(["delete", "--config", file, "--name", name, "--force"], dir);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
+        if (result.status !== 0) {
+          throw new Error(`wrangler secret list exited with ${result.status}`);
+        }
+        return secretNamesOf(result.stdout);
+      }),
+    // One request (`PATCH …/secrets-bulk`), so one new deployed version, through cf, which
+    // fails for a missing Worker. `wrangler secret bulk` would create a draft Worker instead.
+    // The changes reach cf as the deploy's secrets reach Wrangler: an unlinked file on
+    // descriptor 3, read as `@/dev/fd/3`; no part of cf's output reaches an error.
+    updateSecrets: (name, changes) => {
+      const result = withSecretsDescriptor(secretsBulkBody(changes), (fd) =>
+        run("cf", ["workers", "secrets", "bulk", "--worker", name, "--secrets", "@/dev/fd/3"], {
+          inherit: false,
+          fds: [fd],
+        }),
+      );
+      if (result.status !== 0) {
+        throw new Error(`cf workers secrets bulk failed${errorCodes(result.stderr)}`);
       }
     },
     bucketExists: (name) =>

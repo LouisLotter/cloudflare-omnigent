@@ -100,3 +100,58 @@ def fd_target(pid: int, fd: int) -> str | None:
         return os.readlink(f"/proc/{pid}/fd/{fd}")
     except OSError:
         return None
+
+
+
+def kind(p: Proc, procs: dict[int, Proc] | None = None) -> str:
+    """A coarse label for the pause-scope evidence (AR-09): what kind of process this is.
+
+    Runners and harnesses are forked from the zygote and share its command line,
+    so a zygote whose parent is a zygote is one of them.
+    """
+    cmd = p.cmd()
+    if p.comm in ("tini", "docker-init"):
+        return "init"
+    if "omnigent.host._daemon_entry" in cmd:
+        return "omnigent-host"
+    if "omnigent.runner._zygote" in cmd:
+        parent = (procs or {}).get(p.ppid)
+        if parent and "omnigent.runner._zygote" in parent.cmd():
+            return "omnigent-runner-or-harness"
+        return "omnigent-zygote"
+    if "omnigent-terminal" in cmd or "omnigent-start-on-attach" in cmd or "omnigent attach" in cmd:
+        return "omnigent-terminal"
+    if "omnigent" in cmd and " server" in cmd:
+        return "omnigent-server"
+    if "mock_llm_server" in cmd:
+        return "mock-llm"
+    if "supervisor.lease_guard" in cmd:
+        return "lease-guard"
+    if "supervisor.capture" in cmd:
+        return "capture-worker"
+    if "supervisor.writer" in cmd:
+        return "writer"
+    if "supervisor" in cmd:
+        return "supervisor"
+    if "sandbox-shim" in cmd:
+        return "sandbox-shim"
+    if "omnigent" in cmd or "/opt/venv/bin/python" in cmd:
+        return "omnigent-other"
+    if "claude" in cmd:
+        return "claude"
+    if "codex" in cmd:
+        return "codex"
+    if p.comm == "sleep":
+        return "idle-sleep"
+    return "other:" + p.comm[:15]
+
+
+def kinds(pids: list[int]) -> dict[str, int]:
+    """Count processes by kind."""
+    procs = scan()
+    out: dict[str, int] = {}
+    for pid in pids:
+        p = procs.get(pid)
+        k = kind(p, procs) if p else "gone"
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))

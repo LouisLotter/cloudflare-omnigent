@@ -1,0 +1,29 @@
+PASS the page carries a request-intent token and a Strict terminal cookie
+PASS the page cannot be framed
+PASS POST start refused: foreign origin
+PASS POST start refused: null origin
+PASS POST start refused: missing origin
+PASS POST start refused: same origin but Sec-Fetch-Site cross-site
+PASS POST start refused: same origin without the token
+PASS POST start refused: same origin with a wrong token
+PASS POST start refused: simple cross-site form (no custom header)
+PASS POST start refused: fault injection asked for while it is off
+PASS PUT refused
+PASS DELETE refused
+PASS PATCH refused
+PASS a cross-site top-level GET of a control URL shows a confirmation page
+PASS HEAD of a control URL changes nothing
+PASS no refusal or GET had any effect
+PASS valid same-origin POST start works
+PASS terminal refused: foreign origin
+PASS terminal refused: null origin
+PASS terminal refused: missing origin
+PASS terminal refused: same origin, Sec-Fetch-Site cross-site
+PASS terminal refused: same origin without the terminal cookie
+PASS terminal refused: same origin with a wrong cookie
+PASS valid same-origin terminal runs a command
+PASS terminal refusals had no effect
+PASS terminal refused once its window is closed (after sign-in)
+PASS every refusal reached the boundary log
+PASS cleanup: recover and wipe
+failures: 0
