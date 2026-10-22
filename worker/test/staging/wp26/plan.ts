@@ -8,8 +8,10 @@
 //      cron does) and its watchdog restores the replica and follows the start until it answers;
 //   3. the replacement: once it has answered for a while, its container is destroyed and the
 //      watchdog starts a new one, which restores the same replica, until it answers. The kill
-//      is an intent until the destroy returned (its time, `killedAt`, is the measurement's
-//      origin); a destroy that failed or was cut off is sent again (Codex WP2.6 r1-4);
+//      is an intent until a destroy returned; that destroy's sending time (`killSentAt`) is the
+//      measurement's origin and the bound for the watchdog's detection, which may come before
+//      the destroy's answer (Codex WP2.6 r1-4, r2-2); one that failed or was cut off is sent
+//      again;
 //   4. the end: the summary is written to R2; teardown removes the rest.
 // Every stage is bounded, so a run that goes wrong ends as `failed` with the reason.
 
@@ -31,8 +33,10 @@ export interface RunState {
   readonly seed: SeedResult | null;
   readonly firstStartAt: number | null;
   readonly firstAnsweredAt: number | null;
-  /** When the replacement's kill was decided; `killedAt` once the destroy returned. */
+  /** When the replacement's kill was decided. */
   readonly killRequestedAt: number | null;
+  /** When the destroy that returned was sent, and when it returned. */
+  readonly killSentAt: number | null;
   readonly killedAt: number | null;
   readonly replacedAnsweredAt: number | null;
   readonly failure: string | null;
@@ -50,6 +54,7 @@ export const INITIAL_RUN: RunState = {
   firstStartAt: null,
   firstAnsweredAt: null,
   killRequestedAt: null,
+  killSentAt: null,
   killedAt: null,
   replacedAnsweredAt: null,
   failure: null,
@@ -196,7 +201,13 @@ export function decide(
         return { state, actions: [{ type: "ensure_server" }] };
       }
       return {
-        state: { ...state, stage: "replacing", killRequestedAt: now, killedAt: null },
+        state: {
+          ...state,
+          stage: "replacing",
+          killRequestedAt: now,
+          killSentAt: null,
+          killedAt: null,
+        },
         actions: [
           { type: "log", event: "destroy_requested", fields: {} },
           { type: "destroy_server" },
@@ -211,7 +222,8 @@ export function decide(
         }
         return { state, actions: [{ type: "destroy_server" }] };
       }
-      const killedAt = state.killedAt;
+      // The watchdog may find the container stopped before the destroy's answer came back.
+      const killedAt = state.killSentAt ?? state.killedAt;
       // The outage the watchdog opened when it found the destroyed container stopped, ended by
       // the replacement's first answer.
       const answered =

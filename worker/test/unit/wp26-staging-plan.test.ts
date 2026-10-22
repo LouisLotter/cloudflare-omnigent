@@ -55,8 +55,8 @@ describe("the WP2.6 staging run", () => {
     });
     // Until the destroy returned (the driver records it), the destroy is sent again.
     expect(types(decide(state, seen(requestedAt + 15_000)).actions)).toEqual(["destroy_server"]);
-    const killedAt = requestedAt + 2_000;
-    state = { ...state, killedAt };
+    const killedAt = requestedAt + 2_000; // sent then; the driver records its return too
+    state = { ...state, killSentAt: killedAt, killedAt: killedAt + 1_500 };
     // An answer from before the kill's outage is not the replacement's.
     const early = decide(state, seen(killedAt + 1_000, { serverLastAnsweredAt: killedAt + 500 }));
     expect(early.state.stage).toBe("replacing");

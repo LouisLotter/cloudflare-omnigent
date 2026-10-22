@@ -1,7 +1,7 @@
 // WP2.6 staging: the run's driver (test code, never shipped). One tick at a time per object,
 // whoever calls it (the cron's RPC or the object's alarm), so a decision is never taken twice
-// on the same stored state (Codex WP2.6 r1-3). Each step is persisted before its effects; the
-// destroy's time is recorded only once it returned (Codex WP2.6 r1-4).
+// on the same stored state (Codex WP2.6 r1-3). Each step is persisted before its effects; a
+// destroy counts only once it returned, timed from when it was sent (Codex WP2.6 r1-4, r2-2).
 import { type Action, decide, INITIAL_RUN, type Observed, type RunState } from "./plan.ts";
 
 export interface RunPorts {
@@ -79,10 +79,16 @@ export class RunDriver {
         await ports.ensureServer();
         return state;
       case "destroy_server": {
+        // Sent at `killSentAt`, the measurement's origin; it counts once it returned.
+        const killSentAt = ports.now();
         const result = await ports.destroyServer();
-        const killedAt = ports.now(); // the measurement's origin: the destroy returned
-        ports.log("server_destroyed", { runId: state.runId, ...result });
-        return { ...state, killedAt };
+        const killedAt = ports.now();
+        ports.log("server_destroyed", {
+          runId: state.runId,
+          ...result,
+          destroyMs: killedAt - killSentAt,
+        });
+        return { ...state, killSentAt, killedAt };
       }
       case "write_summary":
         await ports.writeSummary(state);

@@ -151,7 +151,7 @@ export class RestoreRun extends DurableObject<StagingEnv> {
           seeding ? seeder().result() : Promise.resolve(null),
           serverUsed ? server().stagingState() : Promise.resolve(null),
           serverUsed && state.killedAt !== null
-            ? outagesSince(state.killedAt)
+            ? outagesSince(state.killSentAt ?? state.killedAt)
             : Promise.resolve([]),
         ]);
         return {
@@ -178,7 +178,10 @@ export class RestoreRun extends DurableObject<StagingEnv> {
         const summary = {
           ...state,
           firstStartToAnswerSeconds: seconds(state.firstStartAt, state.firstAnsweredAt),
-          killToAnswerSeconds: seconds(state.killedAt, state.replacedAnsweredAt),
+          killToAnswerSeconds: seconds(
+            state.killSentAt ?? state.killedAt,
+            state.replacedAnsweredAt,
+          ),
           outages,
         };
         await this.env.RESULTS.put(

@@ -74,7 +74,11 @@ describe("the WP2.6 staging run driver", () => {
     const driver = new RunDriver(world.ports());
     await Promise.all([driver.tick(), driver.tick(), driver.tick()]);
     expect(world.destroys).toBe(1);
-    expect(world.stored).toMatchObject({ stage: "replacing", killedAt: T0 + 1_500 });
+    expect(world.stored).toMatchObject({
+      stage: "replacing",
+      killSentAt: T0,
+      killedAt: T0 + 1_500,
+    });
   });
 
   it("records the kill only once the destroy returned, and sends a failed one again (r1-4)", async () => {
@@ -86,10 +90,12 @@ describe("the WP2.6 staging run driver", () => {
     expect(world.destroys).toBe(1);
     expect(world.stored).toMatchObject({ stage: "replacing", killRequestedAt: T0, killedAt: null });
     world.clock += 15_000;
+    const sentAt = world.clock;
     await driver.tick();
     expect(world.destroys).toBe(2);
-    const killedAt = world.stored?.killedAt;
-    expect(killedAt).toBe(world.clock); // the second destroy's return, the measurement's origin
+    // The destroy that returned: sent at `sentAt`, the measurement's origin.
+    expect(world.stored).toMatchObject({ killSentAt: sentAt, killedAt: sentAt + 1_500 });
+    const killedAt = sentAt;
     // An answer that the kill's outage did not end is not the replacement's.
     world.observed = {
       ...world.observed,
@@ -109,6 +115,24 @@ describe("the WP2.6 staging run driver", () => {
       summaryWritten: true,
     });
     expect(world.summaries).toHaveLength(1);
+  });
+
+  it("takes an outage the watchdog detected before the destroy's answer came back (r2-2)", async () => {
+    const world = new FakeWorld();
+    world.stored = healthyLongEnough();
+    await new RunDriver(world.ports()).tick(); // sent at T0, returned at T0 + 1.5 s
+    // Codex's example: detected at 1 s, before the answer; the replacement answered at 300 s.
+    world.observed = {
+      ...world.observed,
+      outages: [{ detectedAt: T0 + 1_000, endedAt: T0 + 300_000 }],
+    };
+    world.clock = T0 + 310_000;
+    await new RunDriver(world.ports()).tick();
+    expect(world.stored).toMatchObject({
+      stage: "done",
+      failure: null,
+      replacedAnsweredAt: T0 + 300_000,
+    });
   });
 
   it("sends the destroy again after the object was reset around it", async () => {
