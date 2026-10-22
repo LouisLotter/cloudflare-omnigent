@@ -105,6 +105,8 @@ export interface WatchdogState {
   readonly killedAt: number | null;
   /** While `starting`: the last time the entrypoint reported a boot or a restore. */
   readonly bootSeenAt: number | null;
+  /** While `starting`: when the entrypoint was first seen past its boot (`running`). */
+  readonly bootEndedAt: number | null;
   readonly outage: OngoingOutage | null;
 }
 
@@ -119,6 +121,7 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   signalledAt: null,
   killedAt: null,
   bootSeenAt: null,
+  bootEndedAt: null,
   outage: null,
 };
 
@@ -144,7 +147,12 @@ export interface EntrypointReport {
  */
 export type Observation =
   | { readonly kind: "answering" }
-  | { readonly kind: "stopped"; readonly exitCode: number | null }
+  | {
+      readonly kind: "stopped";
+      readonly exitCode: number | null;
+      /** The configuration fingerprint the exited container was started with, when known. */
+      readonly ranWith?: string | null;
+    }
   | { readonly kind: "silent"; readonly entrypoint: EntrypointReport | null };
 
 export const ANSWERING: Observation = { kind: "answering" };
@@ -295,7 +303,7 @@ export function step(
     case "silent":
       return silent(state, observation.entrypoint, now, timing, b);
     case "stopped":
-      return stopped(state, observation.exitCode, now, timing, b, config);
+      return stopped(state, observation.exitCode, now, timing, b, config, observation.ranWith);
   }
 }
 
@@ -356,7 +364,7 @@ function stopping(
       killedAt: null,
     };
     if (observation.exitCode === EXIT_CONFIG) {
-      return stopped(waiting, observation.exitCode, now, timing, b, config);
+      return stopped(waiting, observation.exitCode, now, timing, b, config, observation.ranWith);
     }
     b.update({ exitCode: observation.exitCode ?? b.outage?.exitCode ?? null });
     b.recordOutage();
@@ -456,14 +464,22 @@ function silent(
   const booting = phase === "starting" || phase === "restoring";
   if (state.phase === "starting") {
     const since = state.phaseSince ?? now;
+    const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
     if (booting) {
       // A restore may take the image's restore deadline; the app's own start follows it.
-      if (now - since < Math.max(timing.readinessWaitMs, timing.restoreWaitMs)) {
-        return b.done(state, now + timing.pollMs, { bootSeenAt: now });
+      if (now - since < restoreAllowance) {
+        return b.done(state, now + timing.pollMs, { bootSeenAt: now, bootEndedAt: null });
       }
-    } else if (now - Math.max(since, state.bootSeenAt ?? since) < timing.readinessWaitMs) {
-      // The app gets the full readiness wait from the end of a restore (Codex WP2.2 r3-4).
-      return b.done(state, now + timing.pollMs);
+    } else if (state.bootSeenAt !== null && phase === null && state.bootEndedAt === null) {
+      // Seen restoring, now unknown: keep the restore's allowance (Codex WP2.2 r4-3).
+      if (now - since < restoreAllowance) return b.done(state, now + timing.pollMs);
+    } else {
+      // The app gets the full readiness wait from the moment the entrypoint was first seen past
+      // its boot (Codex WP2.2 r3-4, r4-3), or from the start if no boot was seen.
+      const bootEndedAt = state.bootSeenAt === null ? null : (state.bootEndedAt ?? now);
+      if (now - (bootEndedAt ?? since) < timing.readinessWaitMs) {
+        return b.done(state, now + timing.pollMs, { bootEndedAt });
+      }
     }
     // Running, but not answering within the wait: a failed start.
     const failedStarts = state.failedStarts + 1;
@@ -518,6 +534,7 @@ function stopped(
   timing: WatchdogTiming,
   b: Builder,
   config: string,
+  ranWith: string | null = null,
 ): Step {
   if (exitCode !== null) b.update({ exitCode });
 
@@ -537,16 +554,23 @@ function stopped(
   }
 
   if (exitCode === EXIT_CONFIG) {
-    // A setting is missing or malformed: restarting cannot help until the configuration changes.
+    // A setting is missing or malformed: restarting cannot help until the configuration
+    // changes. The hold belongs to the configuration the container ran with; when that is
+    // already not the current one, the corrected configuration is started (Codex WP2.2 r4-2).
     b.openFor(state, state.lastAnsweredAt === null ? "start_failed" : "container_stopped", now);
     b.update({ exitCode });
     b.event("config_error", { exitCode });
+    const held = ranWith ?? config;
+    if (held !== config) {
+      b.event("config_changed");
+      return start({ ...state, heldConfig: null }, now, timing, b, exitCode);
+    }
     b.recordOutage();
     return b.done(state, now + timing.intervalMs, {
       phase: "held",
       phaseSince: now,
       startDueAt: null,
-      heldConfig: config,
+      heldConfig: held,
     });
   }
 
@@ -616,6 +640,7 @@ function start(
     signalledAt: null,
     killedAt: null,
     bootSeenAt: null,
+    bootEndedAt: null,
   });
 }
 

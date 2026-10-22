@@ -58,19 +58,38 @@ export function bootstrapSecretPresent(env: Readonly<Record<string, unknown>>): 
   return typeof value === "string" && value.length > 0;
 }
 
+/** A set value the watchdog cannot read as the image does: assume a long one, never a short one. */
+const UNREAD_SECONDS = 3600;
+
+/** Unicode decimal digits as ASCII, as Python's `float` reads them ("９００", "٩٠٠" → "900"). */
+function asciiDigits(text: string): string {
+  return text.replace(/\p{Nd}/gu, (digit) => {
+    const code = digit.codePointAt(0) ?? 0;
+    // Unicode lays decimal digits out in runs of ten, zero first: the digit is its distance
+    // from the start of its run, modulo ten.
+    let start = code;
+    while (start > 0 && /\p{Nd}/u.test(String.fromCodePoint(start - 1))) start -= 1;
+    return String((code - start) % 10);
+  });
+}
+
 /**
  * A number of seconds from a `SERVER_ENV_` setting, read as the image reads it (WP2.3's
- * `parse_seconds`: Python's `float`, so `900`, `900.0`, `9e2` and `9_00` are all 900), or the
- * image's default when it is unset or not a positive finite number (the image then exits 78,
- * and the watchdog holds it). Never shorter than the image's own value (Codex WP2.2 r3-3).
+ * `parse_seconds`: Python's `float`, so `900`, `900.0`, `9e2`, `9_00` and `９００` are all 900).
+ * Unset: the image's default. Set but not readable here: a long value, so the grace is never
+ * shorter than the image's own; if the image cannot read it either, it exits 78 and the
+ * watchdog holds it (Codex WP2.2 r3-3, r4-1).
  */
 function seconds(env: Readonly<Record<string, unknown>>, name: string, fallback: number): number {
   const raw = env[`${SERVER_ENV_PREFIX}${name}`];
-  if (typeof raw !== "string") return fallback;
-  const text = raw.trim().replace(/(?<=\d)_(?=\d)/g, "");
-  if (!/^[+]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) return fallback;
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "string") return Math.max(fallback, UNREAD_SECONDS);
+  const text = asciiDigits(raw.trim()).replace(/(?<=\d)_(?=\d)/g, "");
+  if (!/^[+]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) {
+    return Math.max(fallback, UNREAD_SECONDS);
+  }
   const value = Number(text);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
+  return Number.isFinite(value) && value > 0 ? value : Math.max(fallback, UNREAD_SECONDS);
 }
 
 /**

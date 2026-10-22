@@ -99,14 +99,37 @@ describe("watchdog: first start", () => {
     expect(failed?.nextCheckAt).toBe(T0 + T.readinessWaitMs + T.pollMs);
   });
 
+  it("counts the app's readiness from its first sight past the boot, and keeps the restore's allowance while unknown (Codex r4-3)", () => {
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 180_000, entrypoint("restoring")],
+      [T0 + 240_000, SILENT], // unknown: still within the restore's allowance
+      [T0 + 300_000, entrypoint("running")], // first seen past the boot
+      [T0 + 300_000 + T.readinessWaitMs - 1, entrypoint("running")],
+      [T0 + 300_000 + T.readinessWaitMs, entrypoint("running")],
+    ]);
+    for (const s of steps.slice(1, 5)) expect(types(s)).toEqual([]);
+    expect(defined(steps[3]).state.bootEndedAt).toBe(T0 + 300_000);
+    expect(types(defined(steps[5]))).toContain("stop");
+    // Unknown after a restore, with no sight past it: the restore's allowance, then a stop.
+    const unknown = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 60_000, entrypoint("restoring")],
+      [T0 + T.restoreWaitMs - 1, SILENT],
+      [T0 + T.restoreWaitMs, SILENT],
+    ]);
+    expect(types(defined(unknown[2]))).toEqual([]);
+    expect(types(defined(unknown[3]))).toContain("stop");
+  });
+
   it("gives the app a full readiness wait after a long restore (Codex r3-4)", () => {
     const restoredAt = T0 + 180_000;
     const steps = run(INITIAL_WATCHDOG_STATE, [
       [T0, STOPPED],
       [restoredAt, entrypoint("restoring")],
       [restoredAt + 5_000, entrypoint("running")], // the app is starting
-      [restoredAt + T.readinessWaitMs - 1, SILENT],
-      [restoredAt + T.readinessWaitMs, entrypoint("running")],
+      [restoredAt + 5_000 + T.readinessWaitMs - 1, SILENT],
+      [restoredAt + 5_000 + T.readinessWaitMs, entrypoint("running")],
     ]);
     for (const s of steps.slice(1, 4)) expect(types(s)).toEqual([]);
     expect(types(defined(steps[4]))).toContain("stop");
@@ -402,6 +425,18 @@ describe("watchdog: recovery mode and settings (WP2.3)", () => {
     expect(changed.state).toMatchObject({ phase: "starting", heldConfig: null });
   });
 
+  it("holds the configuration that exited 78, and starts a corrected one at once (Codex r4-2)", () => {
+    const ranWithA: Observation = { kind: "stopped", exitCode: EXIT_CONFIG, ranWith: "config-a" };
+    const corrected = step(answered(T0), ranWithA, T0 + 10_000, T, nextId, "config-b");
+    expect(events(corrected)).toEqual(
+      expect.arrayContaining(["config_error", "config_changed", "start"]),
+    );
+    expect(corrected.state.phase).toBe("starting");
+    const same = step(answered(T0), ranWithA, T0 + 10_000, T, nextId, "config-a");
+    expect(same.state).toMatchObject({ phase: "held", heldConfig: "config-a" });
+    expect(types(same)).not.toContain("start");
+  });
+
   it("holds a first start that exits 78 too, recording it as a failed start", () => {
     const [first, found] = run(INITIAL_WATCHDOG_STATE, [
       [T0, STOPPED],
@@ -636,6 +671,7 @@ describe("watchdog: any stored state", () => {
     signalledAt: maybe(time),
     killedAt: maybe(time),
     bootSeenAt: maybe(time),
+    bootEndedAt: maybe(time),
     outage: maybe(
       fc.record({
         outageId: fc.constant("out_00000000000000000000000000"),

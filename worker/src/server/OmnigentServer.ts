@@ -116,6 +116,7 @@ const WatchdogStateSchema = z.strictObject({
   signalledAt: Millis.nullable().default(null),
   killedAt: Millis.nullable().default(null),
   bootSeenAt: Millis.nullable().default(null),
+  bootEndedAt: Millis.nullable().default(null),
   outage: z
     .strictObject({
       outageId: OutageId,
@@ -149,6 +150,8 @@ const STATE_KEY = "watchdog";
  * (Codex WP2.2 r3-5).
  */
 const LAST_EXIT_KEY = "last_exit";
+/** The configuration fingerprint the running container was started with (Codex WP2.2 r4-2). */
+const START_CONFIG_KEY = "start_config";
 const BOOTSTRAP_STATUS_KEY = "bootstrap_status";
 const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
 
@@ -366,11 +369,15 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         nextCheckAt = this.now() + timing.intervalMs;
         return;
       }
-      const observedFrom = Date.now();
-      const observation = await this.#observe(container);
       const config = await configFingerprint(
         serverContainerEnv(this.env as unknown as Record<string, unknown>).vars,
       );
+      const observedFrom = Date.now();
+      const seen = await this.#observe(container);
+      // The exit is read here, with no await before the decision is persisted and the record
+      // consumed, so an exit reported meanwhile is never deleted unread (Codex WP2.2 r4-4).
+      const observation: Observation =
+        seen.kind === "stopped" ? { kind: "stopped", ...this.#lastExit() } : seen;
       let result = step(this.#loadState(), observation, this.now(), timing, randomOutageId, config);
       this.#persist(result.state, result.effects, observation.kind === "stopped");
       nextCheckAt = result.nextCheckAt;
@@ -423,7 +430,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   async #observe(container: ServerContainer): Promise<Observation> {
-    const stopped = (): Observation => ({ kind: "stopped", exitCode: this.#lastExit() });
+    // The exit code is added by the caller, at decision time.
+    const stopped = (): Observation => ({ kind: "stopped", exitCode: null });
     if (!container.running) return stopped();
     if (await this.#healthy(container)) return ANSWERING;
     await sleep(this.timing().probeRetryMs);
@@ -441,15 +449,21 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     return { phase: parsed.data.phase, recovery: parsed.data.recovery ?? null };
   }
 
-  /** The exit code `monitor()` last reported and no check has consumed yet. */
-  #lastExit(): number | null {
+  /**
+   * The exit code `monitor()` last reported and no check has consumed yet, with the
+   * configuration fingerprint that container was started with.
+   */
+  #lastExit(): { exitCode: number | null; ranWith: string | null } {
     const row = this.ctx.storage.sql
       .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", LAST_EXIT_KEY)
       .toArray()[0];
     const parsed = z
-      .object({ exitCode: z.number().int().min(0).max(255).nullable() })
+      .object({
+        exitCode: z.number().int().min(0).max(255).nullable(),
+        ranWith: z.string().max(64).nullable().default(null),
+      })
       .safeParse(row === undefined ? undefined : parseJson(row.value));
-    return parsed.success ? parsed.data.exitCode : null;
+    return parsed.success ? parsed.data : { exitCode: null, ranWith: null };
   }
 
   /** Whether Omnigent answers its health check with a 2xx. Never throws. */
@@ -525,8 +539,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#interceptPending = false;
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
-    // An exit left from an earlier container is not this one's.
+    // An exit left from an earlier container is not this one's; this one runs with `vars`.
     this.ctx.storage.sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+      START_CONFIG_KEY,
+      JSON.stringify(await configFingerprint(vars)),
+    );
     try {
       container.start(vars);
     } catch (error) {
@@ -548,11 +567,20 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           exitCode,
           error: exit.error === null ? null : describeError(exit.error),
         });
-        // Kept until a check consumes it, so the outage record can carry it.
+        // Kept until a check consumes it, so the outage record can carry it, with the
+        // configuration the container ran with, which an exit 78 holds.
+        const startRow = this.ctx.storage.sql
+          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_CONFIG_KEY)
+          .toArray()[0];
+        const ranWith = startRow === undefined ? null : parseJson(startRow.value);
         this.ctx.storage.sql.exec(
           "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
           LAST_EXIT_KEY,
-          JSON.stringify({ exitCode, at: this.now() }),
+          JSON.stringify({
+            exitCode,
+            ranWith: typeof ranWith === "string" ? ranWith : null,
+            at: this.now(),
+          }),
         );
       });
     } catch (error) {

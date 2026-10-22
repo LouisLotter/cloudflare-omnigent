@@ -88,22 +88,39 @@ describe("the server image's deadlines (WP2.3)", () => {
       }),
     ).toEqual({ restoreWaitMs: 690_000, stopGraceMs: 300_000 });
     expect(serverDeadlines({ SERVER_ENV_CFO_RESTORE_DEADLINE_S: "soon" }).restoreWaitMs).toBe(
-      420_000,
+      (3600 + 60 + 60) * 1000,
     );
-    expect(serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: "0" }).stopGraceMs).toBe(660_000);
+    expect(serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: "0" }).stopGraceMs).toBe(
+      (2 * 3600 + 60) * 1000,
+    );
   });
 
   it("reads seconds as the image does, so the grace is never shorter than its own (Codex r3-3)", () => {
     const grace = (value: string) =>
       serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: value }).stopGraceMs;
-    for (const value of ["900", "900.0", "9e2", "9E+2", " 900 ", "9_00", "+900", "900."]) {
+    for (const value of [
+      "900",
+      "900.0",
+      "9e2",
+      "9E+2",
+      " 900 ",
+      "9_00",
+      "+900",
+      "900.",
+      "９００", // fullwidth (Codex r4-1)
+      "٩٠٠", // Arabic-Indic
+      "९००", // Devanagari
+      "\u00a0900\u2003",
+    ]) {
       expect(grace(value), value).toBe(1_860_000);
     }
     expect(grace("0.5")).toBe(61_000);
     expect(grace(".5")).toBe(61_000);
-    for (const value of ["inf", "nan", "-5", "0x10", "1e400", "", "9__00", "_900"]) {
-      expect(grace(value), value).toBe(660_000);
+    // Set, but not something this parser can read as the image would: never a short grace.
+    for (const value of ["inf", "nan", "-5", "0x10", "1e400", "", "9__00", "_900", "soon"]) {
+      expect(grace(value), value).toBe(2 * 3_600_000 + 60_000);
     }
+    expect(serverDeadlines({}).stopGraceMs).toBe(660_000);
   });
 });
 

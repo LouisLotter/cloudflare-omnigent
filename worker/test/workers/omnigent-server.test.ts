@@ -554,6 +554,21 @@ describe("OmnigentServer: fixes from Codex review r3", () => {
     expect((await stub.outages(everything))[0]?.endedAt).not.toBeNull();
   });
 
+  it("starts the corrected configuration when the one that exited 78 is already replaced (r4-2)", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake, 78); // configuration A
+    // The installer corrects the setting (a new version) before the watchdog's next check.
+    await runInDurableObject(stub, (instance: OmnigentServer) => {
+      const env = { ...(instance as unknown as { env: object }).env };
+      Object.defineProperty(instance, "env", {
+        value: { ...env, SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true" },
+      });
+    });
+    await nextCheck(stub);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.starts.at(-1)?.env.CFO_INSTALLATION_INITIALIZED).toBe("true");
+  });
+
   it("holds after exit 78 even when the object is recreated before the next check (r3-5)", async () => {
     const { stub, fake } = await runningServer();
     await platformStop(stub, fake, 78);
