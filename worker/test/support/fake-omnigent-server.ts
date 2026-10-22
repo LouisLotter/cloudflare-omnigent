@@ -1,7 +1,8 @@
 /**
  * In-memory fake of the OmnigentServer Durable Object, for tests of the packages that call it:
  * the web Worker's forwarding path (WP2.2) passes browser requests through `fetch`, and the
- * cloud-computers page (WP3.5) reads outage records. It uses only web-standard APIs, so it runs in Node and in workerd.
+ * cloud-computers page (WP3.5) reads outage records. It uses only web-standard APIs, so it runs
+ * in Node and in workerd.
  *
  * - `fetch` records every request and answers with the next queued response, else 200 "ok".
  * - `outages` returns the records a test added that overlap the range, oldest first, by the
