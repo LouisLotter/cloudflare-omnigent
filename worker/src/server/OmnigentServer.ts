@@ -106,7 +106,7 @@ export const SERVER_TIMING: ServerTiming = {
 const Millis = z.number().int().min(0).max(8.64e15);
 
 // Fields added after the first version default, so state an older build stored still reads.
-const WatchdogStateSchema = z.strictObject({
+const StoredWatchdogState = z.strictObject({
   phase: z.enum(["idle", "starting", "stopping", "waiting", "held"]),
   phaseSince: Millis.nullable(),
   startDueAt: Millis.nullable(),
@@ -119,6 +119,7 @@ const WatchdogStateSchema = z.strictObject({
   bootSeenAt: Millis.nullable().default(null),
   initSeenAt: Millis.nullable().default(null),
   bootEndedAt: Millis.nullable().default(null),
+  recoverySince: Millis.nullable().optional(),
   outage: z
     .strictObject({
       outageId: OutageId,
@@ -131,6 +132,23 @@ const WatchdogStateSchema = z.strictObject({
     })
     .nullable(),
 });
+
+/**
+ * The stored state. One stored before `recoverySince` existed (AIR2-009) was protected by its
+ * outage's `recovery_mode` cause: it counts as in recovery mode until the entrypoint is seen
+ * reporting something else, never less protected than before.
+ */
+const WatchdogStateSchema = StoredWatchdogState.transform(
+  ({ recoverySince, ...state }): WatchdogState => ({
+    ...state,
+    recoverySince:
+      recoverySince !== undefined
+        ? recoverySince
+        : state.outage?.cause === "recovery_mode"
+          ? state.outage.detectedAt
+          : null,
+  }),
+);
 
 /** The fields of the entrypoint's `GET :8001/status` the watchdog reads (WP2.3); others ignored. */
 const EntrypointStatus = z.object({
@@ -270,8 +288,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         false,
       );
     }
-    // In recovery mode the server image answers every request itself, with its reason.
-    const recovery = state.outage?.cause === "recovery_mode";
+    // In recovery mode the server image answers every request itself, with its reason. The
+    // current observation decides, not the outage's cause (AIR2-009): once the server left
+    // recovery mode, a request waits for it to answer like any other start.
+    const recovery = state.recoverySince !== null;
     if (!this.#ready && !recovery && !(await this.#waitUntilReady(container))) return starting();
     // The watchdog may have begun a restart while this request waited.
     if (this.#stopping || this.#loadState().phase === "stopping") return starting();

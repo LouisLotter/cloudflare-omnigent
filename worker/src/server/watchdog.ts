@@ -13,7 +13,10 @@
 //     from its first sight; an app the entrypoint reports running, or a start the entrypoint
 //     says nothing about, gets the readiness wait of at least 120 s. Every budget is finite;
 //   - a server in the image's recovery mode is never restarted: it needs the owner, and the
-//     entrypoint retries a transient cause itself;
+//     entrypoint retries a transient cause itself. What protects it is the current observation
+//     (kept while its status is unreadable), not the outage's recorded cause: once the
+//     entrypoint reports anything else, the start that follows gets the budgets of any start
+//     (AIR2-009);
 //   - a restart stops the container with SIGTERM, so the entrypoint can confirm a final sync,
 //     and kills it only after the stop's grace (about twice the final-sync timeout);
 //   - an exit with code 78 (a setting missing or malformed) is not restarted until the
@@ -128,6 +131,12 @@ export interface WatchdogState {
   readonly initSeenAt: number | null;
   /** While `starting`: when the entrypoint was first seen reporting the app `running`. */
   readonly bootEndedAt: number | null;
+  /**
+   * When the entrypoint was first seen in recovery mode, while it has reported nothing else
+   * since: the current observation, kept while its status is unreadable, and cleared by any
+   * other phase, an answer or a stop. The outage keeps its `recovery_mode` cause either way.
+   */
+  readonly recoverySince: number | null;
   readonly outage: OngoingOutage | null;
 }
 
@@ -144,6 +153,7 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   bootSeenAt: null,
   initSeenAt: null,
   bootEndedAt: null,
+  recoverySince: null,
   outage: null,
 };
 
@@ -200,6 +210,7 @@ export type WatchdogEventName =
   | "stop_cancelled"
   | "entrypoint_stopping"
   | "recovery_mode"
+  | "recovery_left"
   | "config_error"
   | "config_changed"
   | "server_ready"
@@ -326,14 +337,19 @@ export function step(
   config = "",
 ): Step {
   const b = new Builder(state.outage, now, newOutageId);
-  if (state.phase === "stopping") return stopping(state, observation, now, timing, b, config);
+  // A container seen stopped, or answering, is no longer in recovery mode.
+  const current =
+    state.recoverySince !== null && observation.kind !== "silent"
+      ? { ...state, recoverySince: null }
+      : state;
+  if (current.phase === "stopping") return stopping(current, observation, now, timing, b, config);
   switch (observation.kind) {
     case "answering":
-      return answering(state, now, timing, b);
+      return answering(current, now, timing, b);
     case "silent":
-      return silent(state, observation.entrypoint, now, timing, b);
+      return silent(current, observation.entrypoint, now, timing, b);
     case "stopped":
-      return stopped(state, observation.exitCode, now, timing, b, config, observation.ranWith);
+      return stopped(current, observation.exitCode, now, timing, b, config, observation.ranWith);
   }
 }
 
@@ -472,6 +488,7 @@ function silent(
       phaseSince: null,
       startDueAt: null,
       failedStarts: 0,
+      recoverySince: state.recoverySince ?? now,
     });
   }
 
@@ -488,6 +505,7 @@ function silent(
       startDueAt: null,
       signalledAt: now,
       killedAt: null,
+      recoverySince: null,
     });
   }
 
@@ -564,10 +582,23 @@ function silent(
     );
   }
 
-  if (state.phase === "waiting" || state.phase === "held" || booting || initializing) {
-    // A container runs that the watchdog did not just start (one it was waiting to start, or a
-    // platform restart now booting or initializing): adopt it and wait for it to answer, with
-    // the budgets of a start from now.
+  // The entrypoint reports something other than recovery mode, after it: it left recovery mode
+  // (its own retry restored the database) and starts the app. Whatever the outage's recorded
+  // cause, the start is followed like any other, so a hung one is restarted (AIR2-009).
+  const leftRecovery = state.recoverySince !== null && phase !== null;
+  if (leftRecovery) {
+    b.event("recovery_left", { phase, recoveryMs: now - (state.recoverySince ?? now) });
+  }
+  if (
+    state.phase === "waiting" ||
+    state.phase === "held" ||
+    booting ||
+    initializing ||
+    leftRecovery
+  ) {
+    // A container runs that the watchdog did not just start (one it was waiting to start, a
+    // platform restart now booting or initializing, or one that left recovery mode): adopt it
+    // and wait for it to answer, with the budgets of a start from now.
     if (state.lastAnsweredAt !== null) {
       b.openFor(state, "container_stopped", now);
       b.recordOutage();
@@ -580,6 +611,7 @@ function silent(
       bootSeenAt: booting ? now : null,
       initSeenAt: initializing ? now : null,
       bootEndedAt: null,
+      recoverySince: null,
     });
   }
 
@@ -592,7 +624,8 @@ function silent(
   }
   const silentSince = state.lastAnsweredAt ?? b.outage?.detectedAt ?? now;
   // A server last seen in recovery mode is not restarted because its status could not be read.
-  const inRecovery = b.outage?.cause === "recovery_mode";
+  // The current observation decides, not the outage's cause (AIR2-009).
+  const inRecovery = state.recoverySince !== null;
   if (now - silentSince >= timing.hungAfterMs && !inRecovery) {
     b.event("restart_silent", { silentMs: now - silentSince });
     return stopForRestart(state, now, timing, b, "not answering", state.failedStarts);
@@ -715,6 +748,7 @@ function start(
     bootSeenAt: null,
     initSeenAt: null,
     bootEndedAt: null,
+    recoverySince: null,
   });
 }
 

@@ -718,6 +718,70 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     expect(ended?.endedAt).not.toBeNull();
   });
 
+  it("restarts a server that left recovery mode and never answers (AIR2-009)", async () => {
+    const { stub, fake } = await runningServer();
+    fake.entrypointPhase = "recovery";
+    fake.recovery = { reason: "restore_deadline", transient: true };
+    await nextCheck(stub); // recovery mode: never restarted while in it
+    // The entrypoint's own retry restored the database between two checks; the app hangs.
+    fake.entrypointPhase = "running";
+    fake.recovery = null;
+    fake.listening = false;
+    await nextCheck(stub);
+    expect(events("watchdog").map((e) => e.event)).toContain("recovery_left");
+    const leftAt = testServers.clock.now();
+    while (testServers.clock.now() - leftAt < T.readinessWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    const [record] = await stub.outages(everything);
+    expect(record).toMatchObject({ cause: "recovery_mode", endedAt: null });
+  });
+
+  it("keeps a server stored in recovery mode by an older build protected while its status is unreadable", async () => {
+    const { stub, fake } = await runningServer();
+    const now = testServers.clock.now();
+    await runInDurableObject(stub, (_i: OmnigentServer, state) => {
+      // As the build before AIR2-009 stored it: no recoverySince, a recovery_mode outage.
+      const older = {
+        phase: "idle",
+        phaseSince: null,
+        startDueAt: null,
+        failedStarts: 0,
+        lastAnsweredAt: now - 3_600_000,
+        startsSince: null,
+        heldConfig: null,
+        signalledAt: null,
+        killedAt: null,
+        bootSeenAt: null,
+        bootEndedAt: null,
+        outage: {
+          outageId: "out_00000000000000000000000001",
+          cause: "recovery_mode",
+          startedAt: now - 3_600_000,
+          detectedAt: now - 3_000_000,
+          restarts: 0,
+          exitCode: null,
+          recovery: "replica_empty",
+        },
+      };
+      state.storage.sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES ('watchdog', ?)",
+        JSON.stringify(older),
+      );
+    });
+    fake.entrypointPhase = null; // its status cannot be read
+    fake.listening = false;
+    const from = testServers.clock.now();
+    while (testServers.clock.now() - from < 30 * 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    expect(events("watchdog").some((e) => e.event === "state_unreadable")).toBe(false);
+  });
+
   it("waits for a stop the platform began instead of killing it during its final sync", async () => {
     const { stub, fake } = await runningServer();
     fake.entrypointPhase = "stopping";
