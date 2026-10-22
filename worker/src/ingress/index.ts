@@ -26,7 +26,19 @@
 // A refusal answers with an `ErrorBody` that names no reason; the reason is logged, with the
 // path but never the query string, the assertion or the email.
 
-import type { ErrorCode } from "@cfo/contracts";
+import type { ErrorBody, ErrorCode } from "@cfo/contracts";
+import {
+  type AccessSettings,
+  certsUrlFor,
+  issuerFor,
+  JwksCache,
+  type KeySource,
+  validateAssertion,
+} from "./access.ts";
+import { isAllowedHost, parseHostnames, strippedHeaders } from "./hosts.ts";
+import { clientKey, type LimitDecision, RateLimiter } from "./limits.ts";
+import { originAllowed } from "./origin.ts";
+import { type OwnerPin, parseOwnerPin } from "./owner.ts";
 
 /**
  * The Worker variables ingress reads. All are plain configuration, written at installation
@@ -34,19 +46,19 @@ import type { ErrorCode } from "@cfo/contracts";
  */
 export interface IngressEnv {
   /** The Zero Trust team domain, `<team>.cloudflareaccess.com`. */
-  readonly ACCESS_TEAM_DOMAIN?: string;
+  readonly ACCESS_TEAM_DOMAIN?: string | undefined;
   /** The Access application's AUD tag. Until it is set, every request answers 503. */
-  readonly ACCESS_AUD?: string;
+  readonly ACCESS_AUD?: string | undefined;
   /** The installation's public hostnames, comma-separated, matched exactly. */
-  readonly ALLOWED_HOSTNAMES?: string;
+  readonly ALLOWED_HOSTNAMES?: string | undefined;
   /** The owner's address as a salted hash (`makeOwnerPin` in owner.ts). Required. */
-  readonly OWNER_EMAIL_HASH?: string;
+  readonly OWNER_EMAIL_HASH?: string | undefined;
   /**
    * Local end-to-end runs only: a certs origin on `http://127.0.0.1:<port>` or
    * `http://localhost:<port>`. Ignored in any other form. A deployed Worker cannot reach either,
    * so a stray value fails closed.
    */
-  readonly ACCESS_CERTS_URL_LOCAL_ONLY?: string;
+  readonly ACCESS_CERTS_URL_LOCAL_ONLY?: string | undefined;
 }
 
 /** Who ingress admitted. Always the pinned owner (R-29); the email is deliberately not passed on. */
@@ -143,22 +155,158 @@ export type AdmittedHandler<E> = (
   ctx: ExecutionContext,
 ) => Response | Promise<Response>;
 
+const MESSAGES: Readonly<Partial<Record<IngressFailure, string>>> = {
+  unknown_host: "Not found.",
+  rate_limited: "Too many requests; try again shortly.",
+  keys_unavailable: "Access could not be checked; try again shortly.",
+};
+
+/** The refusal for `reason`: an `ErrorBody` that names no reason. */
+export function refusal(reason: IngressFailure, retryAfterSeconds?: number): Response {
+  const { status, code, retryable } = REFUSALS[reason];
+  const body: ErrorBody = {
+    error: { code, message: MESSAGES[reason] ?? "Access denied.", retryable },
+  };
+  const headers: Record<string, string> = {
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  };
+  if (retryAfterSeconds !== undefined) headers["retry-after"] = String(retryAfterSeconds);
+  return Response.json(body, { status, headers });
+}
+
+/** What ingress needs to know about this installation, parsed from `IngressEnv`. */
+export interface IngressConfig {
+  readonly settings: AccessSettings;
+  readonly hostnames: readonly string[];
+  readonly owner: OwnerPin;
+  /** The team's certs endpoint, or the local stand-in's. */
+  readonly certsUrl: string;
+}
+
+const AUD_TAG = /^[A-Za-z0-9_-]{1,256}$/;
+const LOCAL_CERTS = /^http:\/\/(?:127\.0\.0\.1|localhost):\d{1,5}$/;
+
+/** The configuration, or undefined if any part is missing or malformed: ingress then fails closed. */
+export function parseIngressEnv(env: IngressEnv): IngressConfig | undefined {
+  const issuer = issuerFor(env.ACCESS_TEAM_DOMAIN?.trim() ?? "");
+  const audience = env.ACCESS_AUD?.trim() ?? "";
+  const hostnames = parseHostnames(env.ALLOWED_HOSTNAMES);
+  const owner = parseOwnerPin(env.OWNER_EMAIL_HASH?.trim());
+  if (issuer === undefined || !AUD_TAG.test(audience) || !hostnames || !owner) return undefined;
+  const local = env.ACCESS_CERTS_URL_LOCAL_ONLY?.trim();
+  const certsUrl =
+    local !== undefined && LOCAL_CERTS.test(local)
+      ? `${local}/cdn-cgi/access/certs`
+      : certsUrlFor(issuer);
+  return { settings: { issuer, audience }, hostnames, owner, certsUrl };
+}
+
+/** What `createIngress` runs on: injected so that tests drive the clock, keys and limits. */
+export interface IngressDeps {
+  readonly keys: KeySource;
+  readonly limiter: { take(client: string): LimitDecision };
+  readonly nowMs: () => number;
+  /** One structured log line. Never given the assertion, an email or a query string. */
+  readonly log: (line: Readonly<Record<string, string>>) => void;
+}
+
+const MAX_LOGGED_PATH = 256;
+
+async function sessionIdOf(sub: string, issuedOrExpires: number): Promise<string> {
+  const text = `cfo-ingress-session/v1\n${sub}\n${issuedOrExpires}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The ingress step for a parsed configuration; undefined configuration refuses everything. */
+export function createIngress(config: IngressConfig | undefined, deps: IngressDeps): Ingress {
+  const refuse = (
+    reason: IngressFailure,
+    request: Request,
+    url: URL,
+    retryAfterSeconds?: number,
+  ): Rejected => {
+    deps.log({
+      event: "ingress_refused",
+      reason,
+      method: request.method,
+      path: url.pathname.slice(0, MAX_LOGGED_PATH),
+    });
+    return { ok: false, reason, response: refusal(reason, retryAfterSeconds) };
+  };
+
+  return {
+    async admit(request: Request): Promise<IngressResult> {
+      const url = new URL(request.url);
+      if (config === undefined) return refuse("not_configured", request, url);
+      if (!isAllowedHost(url, config.hostnames)) return refuse("unknown_host", request, url);
+      const limit = deps.limiter.take(clientKey(request.headers));
+      if (!limit.allowed) return refuse("rate_limited", request, url, limit.retryAfterSeconds);
+
+      const assertion = await validateAssertion(
+        request.headers.get("cf-access-jwt-assertion"),
+        config.settings,
+        deps.keys,
+        Math.floor(deps.nowMs() / 1000),
+      );
+      if (!assertion.ok) return refuse(assertion.reason, request, url);
+      const { sub, email, iat, exp } = assertion.claims;
+      if (email === undefined || !(await config.owner.matches(email))) {
+        return refuse("not_owner", request, url);
+      }
+
+      const origin = url.origin;
+      if (!originAllowed(request, origin)) return refuse("bad_origin", request, url);
+
+      return {
+        ok: true,
+        identity: {
+          sub,
+          sessionId: await sessionIdOf(sub, iat ?? exp),
+          issuedAt: iat,
+          expiresAt: exp,
+        },
+        request: new Request(request, { headers: strippedHeaders(request.headers) }),
+        origin,
+      };
+    },
+  };
+}
+
+/** How long one fetch of the team's certs may take. */
+const CERTS_FETCH_TIMEOUT_MS = 5_000;
+
+let cached: { readonly key: string; readonly ingress: Ingress } | undefined;
+
 /**
  * The ingress for this isolate's configuration, created on first use and kept while the
- * configuration is unchanged.
+ * configuration is unchanged, so that the key cache and the rate limiter persist.
  */
-export function ingressFromEnv(_env: IngressEnv): Ingress {
-  // Interface commit: fail closed until the implementation lands.
-  return {
-    admit: async () => ({
-      ok: false,
-      reason: "not_configured",
-      response: Response.json(
-        { error: { code: "unavailable", message: "Access denied.", retryable: false } },
-        { status: 503, headers: { "cache-control": "no-store" } },
-      ),
-    }),
-  };
+export function ingressFromEnv(env: IngressEnv): Ingress {
+  const key = JSON.stringify([
+    env.ACCESS_TEAM_DOMAIN,
+    env.ACCESS_AUD,
+    env.ALLOWED_HOSTNAMES,
+    env.OWNER_EMAIL_HASH,
+    env.ACCESS_CERTS_URL_LOCAL_ONLY,
+  ]);
+  if (cached?.key === key) return cached.ingress;
+  const config = parseIngressEnv(env);
+  const nowMs = () => Date.now();
+  const ingress = createIngress(config, {
+    keys: new JwksCache(
+      config?.certsUrl ?? "",
+      (url) => fetch(url, { signal: AbortSignal.timeout(CERTS_FETCH_TIMEOUT_MS) }),
+      nowMs,
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ),
+    limiter: new RateLimiter(nowMs),
+    nowMs,
+    log: (line) => console.log(JSON.stringify(line)),
+  });
+  cached = { key, ingress };
+  return ingress;
 }
 
 /** Wraps the web Worker's handler: `next` runs only for a request ingress admitted. */
