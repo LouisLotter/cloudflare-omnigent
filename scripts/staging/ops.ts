@@ -22,7 +22,9 @@
 //   - Worker and Access share one record and one expiry, so a sweep removes them together.
 //     Containers and R2 buckets the configuration declares carry the deployment's name, are
 //     recorded before the deploy that creates them, and are removed by the same teardown,
-//     after the Worker and before Access.
+//     after the Worker and before Access. A container the configuration leaves unnamed, as the
+//     checked-in production configuration does, is named for the deployment in the rendered copy
+//     (withStagingNames), as the Worker is by --name.
 //   - Access applications set SameSite=lax on their cookie (D9). One written by an older tool is
 //     rewritten, and every application is read back and checked before the Worker upload.
 //   - Images are built with the record's creation time as their timestamp. A redeploy rebuilds
@@ -103,6 +105,7 @@ import {
   vpcServiceName,
   type WorkerDomain,
   type WorkerRoute,
+  withStagingNames,
 } from "./guard.ts";
 
 /** Lists by exact name, or, for the sweep, by name prefix. */
@@ -1025,7 +1028,9 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
       registry: { owner: request.owner, deployments },
     });
   check(ctx.store.load());
-  const declared = declaredResources(view.raw, name);
+  // Containers as the upload names them: an unnamed one gets the deployment's name.
+  const staged = withStagingNames(view.raw, name);
+  const declared = declaredResources(staged, name);
   const manifest = ctx.readManifest(request.configPath);
   const plan =
     manifest && planFor(name, ctx.config.zone, parseManifest(manifest.json, manifest.path));
@@ -1216,13 +1221,13 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
     // it, so that its relative paths still resolve, and the copy is checked as Wrangler reads
     // it before the upload and removed afterwards, whatever happens.
     const rendered =
-      routes.length + vpcBindings.length > 0
+      routes.length + vpcBindings.length > 0 || staged !== view.raw
         ? renderedConfigPath(request.configPath, name)
         : undefined;
     try {
       if (rendered !== undefined) {
         const raw = {
-          ...view.raw,
+          ...staged,
           ...(routes.length > 0 ? { routes } : {}),
           ...(vpcBindings.length > 0 ? { vpc_services: vpcBindings } : {}),
         };
