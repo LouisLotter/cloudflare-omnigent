@@ -1,5 +1,0 @@
-inject codex-logout: session exit 1; recovery material kept: yes; {'signed_out_verified': None, 'recovery_error': 'codex-logout failed in cfo-s6-owner-pc-c', 'left_behind': {'computers': ['cfo-s6-owner-pc-c'], 'minio': True, 'network': True, 'shm': True}}
-  after removing the cause, --cleanup exit 0; {'signed_out_verified': True, 'left_behind': {'computers': [], 'minio': False, 'network': False, 'shm': False}}
-inject capture: session exit 1; recovery material kept: yes; {'signed_out_verified': None, 'recovery_error': 'capture failed in cfo-s6-owner-pc-a', 'left_behind': {'computers': ['cfo-s6-owner-pc-a'], 'minio': True, 'network': True, 'shm': True}}
-  after removing the cause, --cleanup exit 0; {'signed_out_verified': True, 'left_behind': {'computers': [], 'minio': False, 'network': False, 'shm': False}}
-exit 0
