@@ -27,6 +27,7 @@ interface Config {
   containers?: unknown;
   migrations?: { tag: string; new_sqlite_classes?: string[] }[];
   durable_objects?: { bindings: Binding[] };
+  observability?: { enabled?: boolean; logs?: { enabled?: boolean; invocation_logs?: boolean } };
 }
 
 const config = (file: string) =>
@@ -131,6 +132,20 @@ describe("the web Worker (wrangler.web.jsonc)", () => {
         `readonly ${binding.name}: DurableObjectNamespace<${binding.class_name}>`,
       );
     }
+  });
+});
+
+describe("Workers Logs: no request header is recorded (WP2.6)", () => {
+  // Invocation logs record every request header, custom credential headers in clear; the
+  // structured console logs (the watchdog's, the bootstrap status) stay on.
+  it.each([
+    ["the platform Worker", platform],
+    ["the web Worker", web],
+  ])("%s keeps console logs and has invocation logs off", (_name, cfg) => {
+    expect(cfg.observability).toMatchObject({
+      enabled: true,
+      logs: { enabled: true, invocation_logs: false },
+    });
   });
 });
 

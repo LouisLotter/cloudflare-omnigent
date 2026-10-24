@@ -249,13 +249,14 @@ describe("OmnigentServer: always on", () => {
     await platformStop(stub, fake);
     await nextCheck(stub); // restarted
     fake.listening = false;
-    const startedAt = testServers.clock.now();
-    while (testServers.clock.now() - startedAt < T.readinessWaitMs - T.pollMs) {
+    await nextCheck(stub); // `running` first seen, and silent: the readiness wait counts from here
+    const seenAt = testServers.clock.now();
+    while (testServers.clock.now() - seenAt < T.readinessWaitMs - T.pollMs) {
       await nextCheck(stub);
       expect(fake.signals).toEqual([]);
     }
     await nextCheck(stub);
-    expect(testServers.clock.now() - startedAt).toBeGreaterThanOrEqual(T.readinessWaitMs);
+    expect(testServers.clock.now() - seenAt).toBeGreaterThanOrEqual(T.readinessWaitMs);
     expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint confirms its final sync
     expect(fake.destroys).toEqual([]);
     expect(events("watchdog").map((e) => e.event)).toContain("start_not_ready");
@@ -440,6 +441,15 @@ describe("OmnigentServer: always on", () => {
     expect(fake.starts).toHaveLength(1); // started at once, not at the next alarm
     const alarm = await runInDurableObject(stub, (_i: OmnigentServer, s) => s.storage.getAlarm());
     expect(alarm).not.toBeNull();
+  });
+
+  it("logs its first alarm once per instance, the record of its watchdog running (invocation logs are off)", async () => {
+    const { stub } = await runningServer();
+    await nextCheck(stub);
+    await evictDurableObject(stub); // a new instance, as a version switch makes
+    await nextCheck(stub);
+    await nextCheck(stub);
+    expect(events("watchdog").filter((e) => e.event === "first_alarm")).toHaveLength(2);
   });
 
   it("starts over from damaged state rather than stop watching", async () => {
@@ -655,6 +665,66 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     expect(fake.starts).toHaveLength(2);
   });
 
+  it("gives an initializing app its app-start budget, past the readiness wait (AIR2-010)", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "restoring";
+    const startedAt = testServers.clock.now();
+    while (testServers.clock.now() - startedAt < 90_000) await nextCheck(stub);
+    // Migrations, create_app and the owner check: port 8000 refuses connections meanwhile.
+    fake.entrypointPhase = "initializing";
+    const initAt = testServers.clock.now();
+    while (testServers.clock.now() - initAt < T.readinessWaitMs + 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(await forward(stub, "/v1/sessions")).toHaveProperty("status", 503);
+    fake.entrypointPhase = "running";
+    await nextCheck(stub);
+    const [record] = await stub.outages(everything);
+    expect(record?.endedAt).not.toBeNull();
+    expect(fake.starts).toHaveLength(2);
+    const phases = events("watchdog").filter((e) => e.event === "start_phase");
+    expect(phases.map((e) => e.phase)).toEqual(["restoring", "initializing"]);
+  });
+
+  it("starts the budgets again when the container was replaced unseen mid-start (Codex WP2.6 r1-2)", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "initializing";
+    const startedAt = testServers.clock.now();
+    while (testServers.clock.now() - startedAt < T.appStartWaitMs - 30_000) await nextCheck(stub);
+    // A new boot of another container, which the watchdog never saw stop: a fresh allowance.
+    fake.bootId = "e".repeat(32);
+    fake.entrypointPhase = "restoring";
+    const rebootAt = testServers.clock.now();
+    while (testServers.clock.now() - rebootAt < T.restoreWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    expect(events("watchdog").filter((e) => e.event === "start_reboot")).toHaveLength(1);
+    fake.entrypointPhase = "running";
+    await nextCheck(stub);
+    expect((await stub.outages(everything))[0]?.endedAt).not.toBeNull();
+  });
+
+  it("restarts an initialization that never ends once its app-start budget is used up", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake);
+    await nextCheck(stub); // restarted
+    fake.entrypointPhase = "initializing";
+    await nextCheck(stub); // first sight
+    const seenAt = testServers.clock.now();
+    while (testServers.clock.now() - seenAt < T.appStartWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint stops the app, confirms the sync
+    const failed = events("watchdog").find((e) => e.event === "start_not_ready");
+    expect(failed).toMatchObject({ budget: "app_start", entrypoint: "initializing" });
+  });
+
   it("never restarts a server in recovery mode, and records the outage as recovery", async () => {
     const { stub, fake } = await runningServer();
     fake.entrypointPhase = "recovery";
@@ -677,6 +747,70 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     await nextCheck(stub);
     const [ended] = await stub.outages(everything);
     expect(ended?.endedAt).not.toBeNull();
+  });
+
+  it("restarts a server that left recovery mode and never answers (AIR2-009)", async () => {
+    const { stub, fake } = await runningServer();
+    fake.entrypointPhase = "recovery";
+    fake.recovery = { reason: "restore_deadline", transient: true };
+    await nextCheck(stub); // recovery mode: never restarted while in it
+    // The entrypoint's own retry restored the database between two checks; the app hangs.
+    fake.entrypointPhase = "running";
+    fake.recovery = null;
+    fake.listening = false;
+    await nextCheck(stub);
+    expect(events("watchdog").map((e) => e.event)).toContain("recovery_left");
+    const leftAt = testServers.clock.now();
+    while (testServers.clock.now() - leftAt < T.readinessWaitMs - T.pollMs) {
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([]);
+    }
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    const [record] = await stub.outages(everything);
+    expect(record).toMatchObject({ cause: "recovery_mode", endedAt: null });
+  });
+
+  it("keeps a server stored in recovery mode by an older build protected while its status is unreadable", async () => {
+    const { stub, fake } = await runningServer();
+    const now = testServers.clock.now();
+    await runInDurableObject(stub, (_i: OmnigentServer, state) => {
+      // As the build before AIR2-009 stored it: no recoverySince, a recovery_mode outage.
+      const older = {
+        phase: "idle",
+        phaseSince: null,
+        startDueAt: null,
+        failedStarts: 0,
+        lastAnsweredAt: now - 3_600_000,
+        startsSince: null,
+        heldConfig: null,
+        signalledAt: null,
+        killedAt: null,
+        bootSeenAt: null,
+        bootEndedAt: null,
+        outage: {
+          outageId: "out_00000000000000000000000001",
+          cause: "recovery_mode",
+          startedAt: now - 3_600_000,
+          detectedAt: now - 3_000_000,
+          restarts: 0,
+          exitCode: null,
+          recovery: "replica_empty",
+        },
+      };
+      state.storage.sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES ('watchdog', ?)",
+        JSON.stringify(older),
+      );
+    });
+    fake.entrypointPhase = null; // its status cannot be read
+    fake.listening = false;
+    const from = testServers.clock.now();
+    while (testServers.clock.now() - from < 30 * 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    expect(events("watchdog").some((e) => e.event === "state_unreadable")).toBe(false);
   });
 
   it("waits for a stop the platform began instead of killing it during its final sync", async () => {

@@ -6,11 +6,17 @@
 // with the server image's facts (WP2.3, its evidence's "Container environment"):
 //   - the server is always on: a container found stopped is started again, and the watchdog
 //     itself never stops a server that answers;
-//   - after each start it waits at least 120 s for readiness before it records a failed start,
-//     and longer while the image's entrypoint reports a restore in progress (port 8000 refuses
-//     connections until the restore deadline, 300 s by default);
+//   - after each start it follows the entrypoint's phases (`GET :8001/status`) before it records
+//     a failed start (AIR2-010): a boot and restore get the restore allowance from the start
+//     (the restore deadline, the database check and Litestream's start); the app's
+//     initialization (migrations, its construction, the owner check) gets the app-start budget
+//     from its first sight; an app the entrypoint reports running, or a start the entrypoint
+//     says nothing about, gets the readiness wait of at least 120 s. Every budget is finite;
 //   - a server in the image's recovery mode is never restarted: it needs the owner, and the
-//     entrypoint retries a transient cause itself;
+//     entrypoint retries a transient cause itself. What protects it is the current observation
+//     (kept while its status is unreadable), not the outage's recorded cause: once the
+//     entrypoint reports anything else, the start that follows gets the budgets of any start
+//     (AIR2-009);
 //   - a restart stops the container with SIGTERM, so the entrypoint can confirm a final sync,
 //     and kills it only after the stop's grace (about twice the final-sync timeout);
 //   - an exit with code 78 (a setting missing or malformed) is not restarted until the
@@ -28,10 +34,24 @@ export interface WatchdogTiming {
   readonly intervalMs: number;
   /** The check cadence while it starts, stops, retries or is in an outage. */
   readonly pollMs: number;
-  /** How long a start may take to answer before it counts as failed (DC-47: at least 120 s). */
+  /**
+   * How long an app the entrypoint reports `running` (it answered the entrypoint, or an older
+   * image's app started) may take to answer the watchdog, from that sight (DC-47: at least
+   * 120 s). While the status cannot be read, a start gets this on top of the budgets of the
+   * stages it may still be in (see `starting`).
+   */
   readonly readinessWaitMs: number;
-  /** How long a start may take while the entrypoint reports a restore (WP2.3). */
+  /**
+   * How long a start may take, from `start()`, while the entrypoint reports its boot or a
+   * restore: the restore deadline, the database check after it and Litestream's start (WP2.3).
+   */
   readonly restoreWaitMs: number;
+  /**
+   * How long the app may take to answer from the first sight of the entrypoint reporting it
+   * `initializing`: Python's imports, Omnigent's migrations, `create_app` and the owner check.
+   * Qualified for a 1 GB database on `basic` (WP2.6); finite, so a hung start is restarted.
+   */
+  readonly appStartWaitMs: number;
   /** How long a running server may stay silent before it is restarted. */
   readonly hungAfterMs: number;
   /** How long a SIGTERM stop may take before the container is killed (WP2.3: final sync). */
@@ -46,8 +66,11 @@ export const WATCHDOG_TIMING: WatchdogTiming = {
   intervalMs: 60_000,
   pollMs: 5_000,
   readinessWaitMs: 120_000,
-  // CFO_RESTORE_DEADLINE_S (300) + CFO_LITESTREAM_READY_TIMEOUT_S (60) + a minute's margin.
-  restoreWaitMs: 420_000,
+  // CFO_RESTORE_DEADLINE_S (300) + the database check (DATABASE_CHECK_ALLOWANCE_S, 120) +
+  // CFO_LITESTREAM_READY_TIMEOUT_S (60) + a minute's margin (server-env.ts computes it from the
+  // settings the container runs with).
+  restoreWaitMs: 540_000,
+  appStartWaitMs: 300_000,
   hungAfterMs: 120_000,
   // 2 × CFO_FINAL_SYNC_TIMEOUT_S (300) + a minute's margin.
   stopGraceMs: 660_000,
@@ -105,8 +128,18 @@ export interface WatchdogState {
   readonly killedAt: number | null;
   /** While `starting`: the last time the entrypoint reported a boot or a restore. */
   readonly bootSeenAt: number | null;
-  /** While `starting`: when the entrypoint was first seen past its boot (`running`). */
+  /** While `starting`: when the entrypoint was first seen reporting the app `initializing`. */
+  readonly initSeenAt: number | null;
+  /** While `starting`: when the entrypoint was first seen reporting the app `running`. */
   readonly bootEndedAt: number | null;
+  /** While `starting`: the entrypoint's boot ID (`/status`), so a new boot is recognised. */
+  readonly bootId: string | null;
+  /**
+   * When the entrypoint was first seen in recovery mode, while it has reported nothing else
+   * since: the current observation, kept while its status is unreadable, and cleared by any
+   * other phase, an answer or a stop. The outage keeps its `recovery_mode` cause either way.
+   */
+  readonly recoverySince: number | null;
   readonly outage: OngoingOutage | null;
 }
 
@@ -121,21 +154,33 @@ export const INITIAL_WATCHDOG_STATE: WatchdogState = {
   signalledAt: null,
   killedAt: null,
   bootSeenAt: null,
+  initSeenAt: null,
   bootEndedAt: null,
+  bootId: null,
+  recoverySince: null,
   outage: null,
 };
 
-/** The phases the server image's entrypoint reports on `GET :8001/status` (WP2.3). */
+/**
+ * The phases the server image's entrypoint reports on `GET :8001/status` (WP2.3), in order:
+ * `starting`, then `restoring` (the restore, the database check and Litestream's start), then
+ * `initializing` while the app starts and before it answers its health check (WP2.6; an older
+ * image reports `running` from the app's start), then `running`; `recovery` instead of a start;
+ * `stopping` and `stopped` at the end.
+ */
 export type EntrypointPhase =
   | "starting"
   | "restoring"
   | "recovery"
+  | "initializing"
   | "running"
   | "stopping"
   | "stopped";
 
 export interface EntrypointReport {
   readonly phase: EntrypointPhase;
+  /** The entrypoint's boot ID, new at every container start; absent from older reports. */
+  readonly bootId?: string | null;
   /** In recovery mode: why, and whether the entrypoint retries by itself. */
   readonly recovery: { readonly reason: string; readonly transient: boolean } | null;
 }
@@ -160,6 +205,8 @@ export const ANSWERING: Observation = { kind: "answering" };
 export type WatchdogEventName =
   | "found_stopped"
   | "start"
+  | "start_phase"
+  | "start_reboot"
   | "start_stopped"
   | "start_not_ready"
   | "start_failing"
@@ -170,6 +217,7 @@ export type WatchdogEventName =
   | "stop_cancelled"
   | "entrypoint_stopping"
   | "recovery_mode"
+  | "recovery_left"
   | "config_error"
   | "config_changed"
   | "server_ready"
@@ -296,14 +344,19 @@ export function step(
   config = "",
 ): Step {
   const b = new Builder(state.outage, now, newOutageId);
-  if (state.phase === "stopping") return stopping(state, observation, now, timing, b, config);
+  // A container seen stopped, or answering, is no longer in recovery mode.
+  const current =
+    state.recoverySince !== null && observation.kind !== "silent"
+      ? { ...state, recoverySince: null }
+      : state;
+  if (current.phase === "stopping") return stopping(current, observation, now, timing, b, config);
   switch (observation.kind) {
     case "answering":
-      return answering(state, now, timing, b);
+      return answering(current, now, timing, b);
     case "silent":
-      return silent(state, observation.entrypoint, now, timing, b);
+      return silent(current, observation.entrypoint, now, timing, b);
     case "stopped":
-      return stopped(state, observation.exitCode, now, timing, b, config, observation.ranWith);
+      return stopped(current, observation.exitCode, now, timing, b, config, observation.ranWith);
   }
 }
 
@@ -442,6 +495,7 @@ function silent(
       phaseSince: null,
       startDueAt: null,
       failedStarts: 0,
+      recoverySince: state.recoverySince ?? now,
     });
   }
 
@@ -458,46 +512,31 @@ function silent(
       startDueAt: null,
       signalledAt: now,
       killedAt: null,
+      recoverySince: null,
     });
   }
 
   const booting = phase === "starting" || phase === "restoring";
-  if (state.phase === "starting") {
-    const since = state.phaseSince ?? now;
-    const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
-    if (booting) {
-      // A restore may take the image's restore deadline; the app's own start follows it.
-      if (now - since < restoreAllowance) {
-        return b.done(state, now + timing.pollMs, { bootSeenAt: now, bootEndedAt: null });
-      }
-    } else if (state.bootSeenAt !== null && phase === null && state.bootEndedAt === null) {
-      // Seen restoring, now unknown: keep the restore's allowance (Codex WP2.2 r4-3).
-      if (now - since < restoreAllowance) return b.done(state, now + timing.pollMs);
-    } else {
-      // The app gets the full readiness wait from the moment the entrypoint was first seen past
-      // its boot (Codex WP2.2 r3-4, r4-3), or from the start if no boot was seen.
-      const bootEndedAt = state.bootSeenAt === null ? null : (state.bootEndedAt ?? now);
-      if (now - (bootEndedAt ?? since) < timing.readinessWaitMs) {
-        return b.done(state, now + timing.pollMs, { bootEndedAt });
-      }
-    }
-    // Running, but not answering within the wait: a failed start.
-    const failedStarts = state.failedStarts + 1;
-    b.openFor(state, "start_failed", since);
-    b.event("start_not_ready", { waitedMs: now - since, failedStarts, entrypoint: phase });
-    return stopForRestart(
-      state,
-      now,
-      timing,
-      b,
-      "not ready within the readiness wait",
-      failedStarts,
-    );
-  }
+  const initializing = phase === "initializing";
+  if (state.phase === "starting") return starting(state, entrypoint, now, timing, b);
 
-  if (state.phase === "waiting" || state.phase === "held" || booting) {
-    // A container runs that the watchdog did not just start (one it was waiting to start, or a
-    // platform restart now booting): adopt it and wait for it to answer.
+  // The entrypoint reports something other than recovery mode, after it: it left recovery mode
+  // (its own retry restored the database) and starts the app. Whatever the outage's recorded
+  // cause, the start is followed like any other, so a hung one is restarted (AIR2-009).
+  const leftRecovery = state.recoverySince !== null && phase !== null;
+  if (leftRecovery) {
+    b.event("recovery_left", { phase, recoveryMs: now - (state.recoverySince ?? now) });
+  }
+  if (
+    state.phase === "waiting" ||
+    state.phase === "held" ||
+    booting ||
+    initializing ||
+    leftRecovery
+  ) {
+    // A container runs that the watchdog did not just start (one it was waiting to start, a
+    // platform restart now booting or initializing, or one that left recovery mode): adopt it
+    // and wait for it to answer, with the budgets of a start from now.
     if (state.lastAnsweredAt !== null) {
       b.openFor(state, "container_stopped", now);
       b.recordOutage();
@@ -507,6 +546,11 @@ function silent(
       phaseSince: now,
       startDueAt: null,
       startsSince: state.startsSince ?? now,
+      bootSeenAt: booting ? now : null,
+      initSeenAt: initializing ? now : null,
+      bootEndedAt: phase === "running" ? now : null,
+      bootId: entrypoint?.bootId ?? null,
+      recoverySince: null,
     });
   }
 
@@ -519,12 +563,140 @@ function silent(
   }
   const silentSince = state.lastAnsweredAt ?? b.outage?.detectedAt ?? now;
   // A server last seen in recovery mode is not restarted because its status could not be read.
-  const inRecovery = b.outage?.cause === "recovery_mode";
+  // The current observation decides, not the outage's cause (AIR2-009).
+  const inRecovery = state.recoverySince !== null;
   if (now - silentSince >= timing.hungAfterMs && !inRecovery) {
     b.event("restart_silent", { silentMs: now - silentSince });
     return stopForRestart(state, now, timing, b, "not answering", state.failedStarts);
   }
   return b.done(state, now + timing.pollMs);
+}
+
+/**
+ * A start in progress, and silent: the entrypoint's phases decide how long it may take
+ * (AIR2-010). Each phase has its own finite budget while its status reads; while it does not,
+ * the start may be in any stage after the last one seen, so it gets what those stages could
+ * still take, and no more (Codex WP2.6 r1-1):
+ *   - `starting`, `restoring`: the restore allowance, from the start;
+ *   - `initializing`: the app-start budget, from its first sight;
+ *   - `running` (the app answered the entrypoint, or an older image's app started): the
+ *     readiness wait, from its first sight;
+ *   - unreadable after `running`: the readiness wait from `running`; after `initializing`: the
+ *     app-start budget and the readiness wait from `initializing`; with nothing seen past the
+ *     boot: the restore allowance, the app-start budget and the readiness wait, from the start.
+ * A boot with another ID than the one this start follows is a new container (the platform
+ * replaced it unseen): the earlier one counts as a failed start, recorded on the outage, and the
+ * new one gets budgets of its own (Codex WP2.6 r1-2). Only while the failed starts stay within
+ * DC-37's backoff: beyond it, a new boot no longer renews the start's budgets, so the watchdog's
+ * own stop and restart take over, with their bounded backoff (Codex WP2.6 r2-1).
+ * After exhaustion, keep known phase clocks even when the replacement regresses to a boot
+ * phase. A late first sight of a later phase is also bounded by the sum of the stage allowances
+ * from the last permitted renewal. No new persisted fields are needed for this ceiling.
+ */
+function starting(
+  observed: WatchdogState,
+  entrypoint: EntrypointReport | null,
+  now: number,
+  timing: WatchdogTiming,
+  b: Builder,
+): Step {
+  const phase = entrypoint?.phase ?? null;
+  const bootId = entrypoint?.bootId ?? null;
+  let state = observed;
+  if (bootId !== null && state.bootId !== null && bootId !== state.bootId) {
+    // The container this start followed is gone, replaced before it answered: a failed start.
+    const failedStarts = state.failedStarts + 1;
+    const renews = failedStarts <= timing.startRetryMs.length;
+    b.openFor(state, "start_failed", state.phaseSince ?? now);
+    b.countRestart();
+    b.recordOutage();
+    b.event("start_reboot", {
+      phase,
+      sinceStartMs: now - (state.phaseSince ?? now),
+      failedStarts,
+      renewed: renews,
+    });
+    if (failedStarts === timing.startRetryMs.length + 1) {
+      b.event("start_failing", {
+        failedStarts,
+        sinceFirstStartMs: now - (state.startsSince ?? state.phaseSince ?? now),
+      });
+    }
+    state = {
+      ...state,
+      phaseSince: renews ? now : state.phaseSince,
+      failedStarts,
+      bootId,
+      bootSeenAt: renews ? null : state.bootSeenAt,
+      initSeenAt: renews ? null : state.initSeenAt,
+      bootEndedAt: renews ? null : state.bootEndedAt,
+    };
+  } else if (bootId !== null && state.bootId === null) {
+    state = { ...state, bootId };
+  }
+  const since = state.phaseSince ?? now;
+  const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
+  const renewalsExhausted = state.failedStarts > timing.startRetryMs.length;
+  const wholeStartAllowance = restoreAllowance + timing.appStartWaitMs + timing.readinessWaitMs;
+  // Each phase's first sight is logged once, so a start's progress shows in the logs.
+  const progress = (seenBefore: number | null) => {
+    if (seenBefore === null) b.event("start_phase", { phase, sinceStartMs: now - since });
+  };
+  const wait = (fields: Partial<WatchdogState> = {}) => b.done(state, now + timing.pollMs, fields);
+  let budget: "restore" | "app_start" | "readiness" | "start";
+  if (renewalsExhausted && now - since >= wholeStartAllowance) {
+    // Otherwise a phase first observed late (including after eviction or unreadable status)
+    // could get a fresh allowance despite the exhausted renewal limit.
+    budget = "start";
+  } else if (phase === "starting" || phase === "restoring") {
+    progress(state.bootSeenAt);
+    budget = "restore";
+    if (now - since < restoreAllowance) {
+      return wait({
+        bootSeenAt: now,
+        initSeenAt: renewalsExhausted ? state.initSeenAt : null,
+        bootEndedAt: renewalsExhausted ? state.bootEndedAt : null,
+      });
+    }
+  } else if (phase === "initializing") {
+    progress(state.initSeenAt);
+    const initSeenAt = state.initSeenAt ?? now;
+    budget = "app_start";
+    if (now - initSeenAt < timing.appStartWaitMs) return wait({ initSeenAt });
+  } else if (phase === "running") {
+    progress(state.bootEndedAt);
+    const bootEndedAt = state.bootEndedAt ?? now;
+    budget = "readiness";
+    if (now - bootEndedAt < timing.readinessWaitMs) return wait({ bootEndedAt });
+  } else if (state.bootEndedAt !== null) {
+    budget = "readiness";
+    if (now - state.bootEndedAt < timing.readinessWaitMs) return wait();
+  } else if (state.initSeenAt !== null) {
+    budget = "app_start";
+    if (now - state.initSeenAt < timing.appStartWaitMs + timing.readinessWaitMs) return wait();
+  } else {
+    budget = "start";
+    if (now - since < restoreAllowance + timing.appStartWaitMs + timing.readinessWaitMs) {
+      return wait();
+    }
+  }
+  // Not answering within its budget: a failed start.
+  const failedStarts = state.failedStarts + 1;
+  b.openFor(state, "start_failed", since);
+  b.event("start_not_ready", {
+    waitedMs: now - since,
+    failedStarts,
+    entrypoint: phase,
+    budget,
+  });
+  return stopForRestart(
+    state,
+    now,
+    timing,
+    b,
+    `not ready within the ${budget} budget`,
+    failedStarts,
+  );
 }
 
 function stopped(
@@ -640,7 +812,10 @@ function start(
     signalledAt: null,
     killedAt: null,
     bootSeenAt: null,
+    initSeenAt: null,
     bootEndedAt: null,
+    bootId: null,
+    recoverySince: null,
   });
 }
 

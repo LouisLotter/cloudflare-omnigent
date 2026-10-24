@@ -2,8 +2,9 @@
 //
 //   - Always on. The watchdog alarm checks the server every minute (every few seconds while it
 //     starts or is down), keeps its inactivity timeout armed, starts it whenever it is found
-//     stopped, waits 120 s for readiness after each start, retries a refused start (DC-37), and
-//     restarts a server that stopped answering. Its decisions are the pure `watchdog.ts`.
+//     stopped, follows the entrypoint's phases after each start (a restore allowance, then an
+//     app-start budget, AIR2-010), retries a refused start (DC-37), and restarts a server that
+//     stopped answering. Its decisions are the pure `watchdog.ts`.
 //   - Outage records. Every interval in which the server did not answer is stored as an
 //     `OutageRecord`, from the last time it answered to the first time it answered again.
 //   - Bootstrap status. While the server answers, the watchdog reads `/v1/info` and the
@@ -105,7 +106,7 @@ export const SERVER_TIMING: ServerTiming = {
 const Millis = z.number().int().min(0).max(8.64e15);
 
 // Fields added after the first version default, so state an older build stored still reads.
-const WatchdogStateSchema = z.strictObject({
+const StoredWatchdogState = z.strictObject({
   phase: z.enum(["idle", "starting", "stopping", "waiting", "held"]),
   phaseSince: Millis.nullable(),
   startDueAt: Millis.nullable(),
@@ -116,7 +117,10 @@ const WatchdogStateSchema = z.strictObject({
   signalledAt: Millis.nullable().default(null),
   killedAt: Millis.nullable().default(null),
   bootSeenAt: Millis.nullable().default(null),
+  initSeenAt: Millis.nullable().default(null),
   bootEndedAt: Millis.nullable().default(null),
+  bootId: z.string().max(64).nullable().default(null),
+  recoverySince: Millis.nullable().optional(),
   outage: z
     .strictObject({
       outageId: OutageId,
@@ -130,13 +134,39 @@ const WatchdogStateSchema = z.strictObject({
     .nullable(),
 });
 
+/**
+ * The stored state. One stored before `recoverySince` existed (AIR2-009) was protected by its
+ * outage's `recovery_mode` cause: it counts as in recovery mode until the entrypoint is seen
+ * reporting something else, never less protected than before.
+ */
+const WatchdogStateSchema = StoredWatchdogState.transform(
+  ({ recoverySince, ...state }): WatchdogState => ({
+    ...state,
+    recoverySince:
+      recoverySince !== undefined
+        ? recoverySince
+        : state.outage?.cause === "recovery_mode"
+          ? state.outage.detectedAt
+          : null,
+  }),
+);
+
 /** The fields of the entrypoint's `GET :8001/status` the watchdog reads (WP2.3); others ignored. */
 const EntrypointStatus = z.object({
-  phase: z.enum(["starting", "restoring", "recovery", "running", "stopping", "stopped"]),
+  phase: z.enum([
+    "starting",
+    "restoring",
+    "recovery",
+    "initializing",
+    "running",
+    "stopping",
+    "stopped",
+  ]),
   recovery: z
     .object({ reason: z.string().max(200), transient: z.boolean() })
     .nullable()
     .optional(),
+  bootId: z.string().max(64).optional(),
 });
 
 /** The entrypoint's status port (WP2.3): the same port as the replication position. */
@@ -184,6 +214,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #stopping = false;
   /** The running container's intercept registration failed and is retried at each check. */
   #interceptPending = false;
+  /** This instance has run its first alarm (and logged it). */
+  #alarmed = false;
 
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
@@ -260,8 +292,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         false,
       );
     }
-    // In recovery mode the server image answers every request itself, with its reason.
-    const recovery = state.outage?.cause === "recovery_mode";
+    // In recovery mode the server image answers every request itself, with its reason. The
+    // current observation decides, not the outage's cause (AIR2-009): once the server left
+    // recovery mode, a request waits for it to answer like any other start.
+    const recovery = state.recoverySince !== null;
     if (!this.#ready && !recovery && !(await this.#waitUntilReady(container))) return starting();
     // The watchdog may have begun a restart while this request waited.
     if (this.#stopping || this.#loadState().phase === "stopping") return starting();
@@ -350,6 +384,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   // The watchdog
 
   override async alarm(): Promise<void> {
+    if (!this.#alarmed) {
+      // One line per instance, in its first alarm: with invocation logs off (they record request
+      // headers, WP2.6), it is the record that this version's object runs its watchdog, which
+      // the bootstrap's check after the release looks for (WP2.4).
+      this.#alarmed = true;
+      logEvent("watchdog", "first_alarm");
+    }
     await this.#check();
   }
 
@@ -446,7 +487,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH),
     );
     if (!parsed.success) return null;
-    return { phase: parsed.data.phase, recovery: parsed.data.recovery ?? null };
+    return {
+      phase: parsed.data.phase,
+      recovery: parsed.data.recovery ?? null,
+      bootId: parsed.data.bootId ?? null,
+    };
   }
 
   /**

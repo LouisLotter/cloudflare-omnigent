@@ -51,6 +51,9 @@ MAX_LEVELS: tuple[str, ...] = ("read", "edit")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
+#: Litestream's sync interval unless ``CFO_SYNC_INTERVAL`` says otherwise (WP2.5's R2 runs).
+DEFAULT_SYNC_INTERVAL = "200ms"
+
 # The senders' acknowledgement timeouts the transcript barrier must stay below (core change
 # 14): 5 s for a native forwarder's item POST, 30 s for the runner's ``event.ack``. One barrier
 # serves both, so the smaller bound applies.
@@ -274,7 +277,9 @@ def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:
     endpoint = _get(env, "CFO_REPLICA_ENDPOINT")
     if endpoint is not None:
         _origin(endpoint, "CFO_REPLICA_ENDPOINT")
-    interval = _get(env, "CFO_SYNC_INTERVAL") or "1s"
+    # 200 ms: on R2 it halves the barrier wait's p95 and p99 against 1 s (0.54 and 0.59 s
+    # against 1.23 and 1.33 s) and adds no request while idle (WP2.5).
+    interval = _get(env, "CFO_SYNC_INTERVAL") or DEFAULT_SYNC_INTERVAL
     if not re.fullmatch(r"[1-9][0-9]*(ms|s)", interval):
         raise ConfigError(f"CFO_SYNC_INTERVAL must look like 1s or 200ms, not {interval!r}")
     return ReplicaSettings(

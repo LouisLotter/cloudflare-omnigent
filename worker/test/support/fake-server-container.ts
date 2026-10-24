@@ -56,6 +56,8 @@ export class FakeServerContainer implements ServerContainer {
   destroyMs = 0;
   /** What the entrypoint reports on `/status`; null answers 404. */
   entrypointPhase: EntrypointPhase | null = "running";
+  /** The entrypoint's boot ID on `/status`: a new one models a container replaced unseen. */
+  bootId = "f".repeat(32);
   recovery: { reason: string; transient: boolean } | null = null;
   readonly signals: number[] = [];
   /** How long a SIGTERM stop takes; null: SIGTERM is ignored. */
@@ -156,14 +158,17 @@ export class FakeServerContainer implements ServerContainer {
         ? new Response("not found", { status: 404 })
         : Response.json({
             protocolVersion: 1,
-            bootId: "f".repeat(32),
+            bootId: this.bootId,
             phase: this.entrypointPhase,
             recovery: this.recovery,
             finalSync: null,
           });
     }
+    // Port 8000 refuses connections until the app listens: through the restore and while it
+    // initializes (the entrypoint's `initializing`, WP2.6).
     const restoring =
-      port === 8000 && ["starting", "restoring"].includes(this.entrypointPhase ?? "");
+      port === 8000 &&
+      ["starting", "restoring", "initializing"].includes(this.entrypointPhase ?? "");
     if (!this.listening || restoring) {
       throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
     }

@@ -8,7 +8,7 @@ Record each new credential's purpose, audience, custody, persistence and revocat
 - Pass secrets through the checked bootstrap/staging tooling's prompt or stdin, not command arguments, tracked configuration or shell history. The tooling uses transient restricted files/open descriptors for deployment. Preserve its target/account checks; do not replace it with an unchecked bulk secret command.
 - Treat platform secret changes as releases. Removing bootstrap credentials requires durable initialization, not only a successful local account query. Key rotation requires overlap and post-release checks.
 - Copy declared native login files as opaque bytes. Do not parse or log them. Use synthetic runtime-generated canaries in tests, and record which paths, formats and values a scan covered.
-- Do not log credential-bearing request headers or terminal/viewer streams. Candidate invocation-log suppression is not yet in main; verify deployed behavior before using credential-bearing traffic.
+- Do not log credential-bearing request headers or terminal/viewer streams. Both production Worker configurations set `observability.logs.invocation_logs: false` while retaining structured console logs. Do not send credential-bearing traffic through a Worker with invocation logs enabled; custom headers such as `X-Omnigent-Host-Token`, `X-Omnigent-Runner-Tunnel-Token` and `x-api-key` may be recorded. Verify the deployed configuration and keep credentials out of console logs.
 
 ## Installer-local material
 
