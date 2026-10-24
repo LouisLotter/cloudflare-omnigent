@@ -14,7 +14,7 @@ The integrated server still registers a [placeholder launcher](server/cfo_server
 | `test` | Existing image-local unit/in-process test target; its default command excludes `tests/integration` |
 | [server/tests/integration/](server/tests/integration/) | Separate built-image tests with Docker, MinIO/Toxiproxy, generated credentials, replacement/fault cases and cleanup ownership |
 
-Use [testing](../docs/testing.md) for the build/run recipes and their prerequisites. CI's image job is a placeholder; ordinary Node/Python CI does not build or test this image. Separate candidate-only artifact identity/fork-test targets must not be invoked as if they existed in the integrated source.
+Use [testing](../docs/testing.md) for the build/run recipes and their prerequisites. CI builds the existing `server` and `test` targets, requires the pinned app/entrypoint/Litestream prerequisites, and runs the image's unit/in-process suite with networking disabled. S3/fault integration and full image credential/artifact qualification remain separate. Candidate-only artifact identity/fork-test targets must not be invoked as if they existed in the integrated source.
 
 ## Identity and custody
 

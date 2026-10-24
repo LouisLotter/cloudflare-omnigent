@@ -67,7 +67,7 @@ pnpm --filter @cfo/worker exec wrangler deploy --config wrangler.jsonc --dry-run
 pnpm --filter @cfo/worker exec wrangler deploy --config wrangler.web.jsonc --dry-run --outdir dist/web
 ```
 
-These are bundling commands, not deployments. They do not instantiate/qualify Containers, prove image identity or exercise a real computer route. Main CI has not yet adopted the explicit two-bundle proposal.
+CI runs both commands and scans both Worker output directories. The platform dry run also builds its configured server image, so it requires Docker and build-time network access; this remains within the Node job's existing 20-minute limit. These are local build commands, not deployments: they do not instantiate/qualify Cloudflare Containers, prove release image identity or exercise a real computer route.
 
 ## Bounded canary checks
 
@@ -79,17 +79,20 @@ node scripts/canary-scan.ts worker/dist/platform worker/dist/web
 
 Run the last command only after generating both nonempty output directories. Exit 0 means clean within the supported input/value limits; 1 means a finding/self-test failure, 2 usage, and 3 incomplete input. Incomplete does not mean clean. The scanner checks supported synthetic markers and exact `CFO_CANARY_VALUES` entries, not arbitrary real secrets or all transformations. Nested skipped directories/symlinks and unsupported compressed formats constrain coverage. These commands do not scan Git history, every source directory, image filesystems or all checkpoint layers, and do not authorize publication.
 
-## Server image tests — manual local Docker
+## Server image tests — CI and local Docker
 
 The [Dockerfile](../images/server/Dockerfile) has `server` and `test` targets. Builds fetch public dependencies and use significant disk/CPU. From an isolated local test environment without real account credentials:
 
 ```bash
+docker build --platform linux/amd64 -f images/server/Dockerfile --target server -t cfo-server:local-runtime .
 docker build --platform linux/amd64 -f images/server/Dockerfile --target test -t cfo-server:local-test .
-docker run --rm -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:local-test python -c 'import pathlib, subprocess; import omnigent.server.app; assert pathlib.Path("/app/entrypoint.py").is_file(); assert subprocess.check_output(["litestream", "version"], text=True).strip() == "0.5.17"'
-docker run --rm -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:local-test
+docker run --rm --network none cfo-server:local-test python -c 'import pathlib, subprocess; import omnigent.server.app; assert pathlib.Path("/app/entrypoint.py").is_file(); assert subprocess.check_output(["litestream", "version"], text=True).strip() == "0.5.17"'
+docker run --rm --network none -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:local-test
 ```
 
-The last command uses the existing image CMD: unit/in-process tests excluding `tests/integration`. Prerequisite checks prevent an absent app/Litestream from looking like passing skipped coverage. Inspect results and skips; do not count a skipped image test as evidence. These commands use Docker's default network; the proposed CI lane's additional network isolation has not yet been runtime-validated.
+CI uses these commands with its own local image tags and a 45-minute job limit. Builds require network access; the prerequisite and test containers run with `--network none`, which preserves loopback for local test servers. No host directories, credentials or Docker socket are mounted into the test containers.
+
+The last command uses the existing image CMD: unit/in-process tests excluding `tests/integration`. Prerequisite checks prevent an absent app/Litestream from looking like passing skipped coverage. Inspect results and skips; do not count a skipped image test as evidence. Building the final `server` target and testing the derived `test` target do not replace a production-container smoke test or immutable artifact qualification.
 
 The heavier [server integration suite](../images/server/tests/integration/conftest.py) uses actual containers, MinIO/Toxiproxy, generated credentials, local ports and kill/replace cleanup. Its conftest documents the required image tag and separate uv invocation. The [restore-drill Python suite](../scripts/restore-drill/tests/conftest.py) needs its own dependencies/drill image and local services; the root Python lock alone is insufficient. Its in-process fence launcher is a recording stub, not the production Cloudflare adapter. Read those suite-specific prerequisites and ownership/cleanup behavior before running; do not point them at real installation storage.
 
@@ -97,7 +100,9 @@ The separate server candidate adds a `fork-tests` build target and image-revisio
 
 ## Existing CI and remaining qualification
 
-Current [CI](../.github/workflows/ci.yml) runs Node checks/coverage/schema drift, the root Python project, selected canary scans and one default Worker bundle. Its image job is still a placeholder. A proposed bounded two-bundle/server-image lane remains unapplied and unexecuted; image, Python restore-drill and complete credential/artifact tests are not thereby enforced.
+Current [CI](../.github/workflows/ci.yml) runs Node checks/coverage/schema drift, the root Python project, selected source canary scans, both Worker bundles and their canary scans, plus the existing server/test image builds and isolated image unit/in-process suite. It uses ordinary pull requests, read-only repository permissions and pinned actions, with no registry push or deployment. The 45-minute image-job cap is an initial budget; a cached local run does not establish hosted cold-build duration.
+
+Server S3/fault integration, Python restore-drill, candidate-only fork/artifact tests, full image filesystem/layer credential scans and real Cloudflare/provider qualification remain outside these jobs. There is no computer image job until an actual product Dockerfile and suite exist.
 
 Before qualification, record actual platform/fork revisions, Worker versions, final server/computer image digests and architecture, CLI/SDK/Litestream identities, packaged contract/policy assets, commands/results/skips and accepted limits. Then test actual receivers and the selected runtime assembly: version/generation refusal, replication-before-response/ack/effect, lost replies, sleep/start fencing, pause expiry, publication/unchanged freshness, credential families/tombstones, native continuation and real browser behavior. Generic reference fixtures and source ancestry do not replace those checks.
 
