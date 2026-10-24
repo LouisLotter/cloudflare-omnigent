@@ -4,17 +4,13 @@
 
 Implementation has started. Work runs in milestones M0 to M7, each split into work packages and ending at a gate with recorded evidence.
 
-**Process documents never go in this repository.** The tracker, verification evidence, gate reports, design-change proposals, review reports and review responses live in the maintainer's project notes, outside this repository, in `../omnigent-cloudflare-context/project/`. Never commit them here, in any branch.
+## Public documentation and private process records
 
-## Where the design lives
+Maintain the product architecture, trust/credential model, compatibility contracts, generic operating guidance and accepted engineering decisions in `docs/`, with an index in [docs/decisions/README.md](docs/decisions/README.md). Public documents must be understandable without private notes and must distinguish accepted design, implemented source, packaged artifacts and runtime qualification.
 
-The design documents are kept outside this repository, in the folder next to this checkout, `../omnigent-cloudflare-context`:
+Keep work tracking, verification evidence, gate approvals, design-change proposals, review reports/responses, private operational records and account-specific instructions in the maintainer's project notes outside this repository. Never commit those process documents, credentials, account details, personal data or approval conversations here, in any branch.
 
-- `design/hybrid-architecture.md`: the governing design, including the release checks and failure handling.
-- `design/code-structure.md`: repository layout, module rules, owned paths and conventions.
-- `design/implementation-plan.md`: roles, milestones, work packages, gates and the test strategy.
-
-They stay there. If implementation shows the design is wrong, change the design first, add a line to the tracker's design change notes, then change the code.
+The private design and implementation plans remain in the maintainer's project notes; do not copy or move them wholesale into this repository. Distill durable engineering decisions into public ADRs after review, then have the private plans reference the maintained public decisions. If implementation contradicts an accepted decision, propose and review the design change before changing code; update the public decision and private tracking consistently. Publishing an ADR does not itself authorize a gate, deployment or implementation change.
 
 ## Roles
 
@@ -104,9 +100,9 @@ pnpm --filter @cfo/worker dry-run # wrangler deploy --dry-run
 | Path | Contents |
 |---|---|
 | `contracts/` | Wire contract: zod schemas, exported JSON Schema, golden fixtures |
-| `worker/` | The Worker, its Durable Objects and their tests |
-| `python/` | Python side: contract tests now, the supervisor and gateway backend later |
-| `images/` | Container images: server, computer, LinkedIn connector |
-| `spikes/` | Throwaway M1 experiments; their evidence is in the project notes |
+| `worker/` | Web and platform Workers, Durable Objects and their tests |
+| `python/` | Python schema/vector reference checks; production image code has its own projects |
+| `images/` | Server image and image-local tests; computer and connector images remain unfinished |
+| `spikes/` | Historical experiments and retained reproduction harnesses; keep required analysis inputs |
 | `scripts/` | Repository tools: the canary scanner and the guarded staging tool |
-| `docs/` | `secrets.md`, the secret checklist |
+| `docs/` | Maintained architecture, decisions, compatibility, testing, secret custody and operating guides |
