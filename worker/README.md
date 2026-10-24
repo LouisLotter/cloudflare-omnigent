@@ -1,50 +1,39 @@
 # worker
 
-The single Worker deployment: ingress, the forwarding path to the Omnigent server, platform pages, the private virtual hosts that containers call, and every Durable Object.
+Two deployments share this source tree. The [platform configuration](wrangler.jsonc) owns Durable Objects and containers without a public route; the [web configuration](wrangler.web.jsonc) owns authenticated public ingress and binds to the platform. [ADR 0002](../docs/decisions/0002-two-workers-native-transport.md) explains the split and reconnect obligations.
 
-## Now
+## Current source
 
-The M0 scaffold: an entry point with a health check, `ControlDO` with its schema migrations, shared error codes and the migration runner, with unit and Workers-runtime tests.
+| Path | Responsibility |
+|---|---|
+| [src/index.ts](src/index.ts), [src/env.ts](src/env.ts) | Platform exports, binding and environment contracts |
+| [src/web.ts](src/web.ts) | Web ingress and forwarding entrypoint |
+| [src/ingress/](src/ingress/) | Access assertions, owner identity, hostname/origin checks and request limits |
+| [src/server/](src/server/) | Server Durable Object, watchdog, native-port adapter, forwarding and bootstrap status |
+| [src/control/](src/control/) | Installation control storage/migration scaffold; no application schedule cache |
+| [src/shared/](src/shared/) | Versioned RPC, IDs, errors, migrations and shared helpers |
 
-## Planned layout
+The current [private platform entrypoint](src/server/platform-internal.ts) returns unavailable before effects. Computer controller/routes, platform pages and connection services are unfinished integration, not features implied by this directory layout. Omnigent remains the application scheduler and work authority; the platform has no application login or mirrored schedule state.
 
-From the code-structure plan. The milestone is when each part arrives.
+## Local checks
 
-| Path in `src/` | Responsibility | Milestone |
-|---|---|---|
-| `index.ts`, `env.ts` | Router; exports the DO classes and entry points | M0 |
-| `shared/` | Typed DO RPC interfaces (`rpc.ts`), error codes, IDs, migrations, crypto, audit | M0 onward |
-| `ingress/` | Access assertion validation, hostname allowlist, identity-header stripping, coarse rate limits | M2 |
-| `server/` | `OmnigentServer` (always on, watchdog), the one forwarding path (`forward.ts`) with the managed-settings guard, the public proxy; later schedule observation and run-now wake | M2, M3, M4 |
-| `control/` | `ControlDO`: limits and reservations, the platform's Omnigent login, the schedule cache and availability gaps | M2, M3, M4 |
-| `computer/` | `WorkspaceDO`: identity, lifecycle and generations, admission, idle, sizing, checkpoints, the container port, the setup terminal, network intercepts | M3 |
-| `internal/` | Virtual hosts reachable only from containers: `omnigent.internal`, the computer API, later `mcp.internal` | M3, M5 |
-| `pages/` | Platform pages: cloud computers, setup, connected accounts | M3, M5 |
-| `connection/` | `ConnectionDO`: vault, journal, provider registry, OAuth, provider adapters | M5 |
-| `egress/` | `git.internal` and the backup gateway | M3, M5 |
-
-## Module rules
-
-- Each Durable Object keeps its behavior in pure state-machine modules. Pure modules import nothing from `cloudflare:workers`, so they run in plain Node tests.
-- Only `container-port.ts` modules touch `ctx.container` or Sandbox SDK helpers.
-- Durable Objects call each other only through the typed RPC methods in `shared/rpc.ts`.
-- Every inbound payload is parsed with a `contracts` schema before use.
-- Mutations take an operation ID and, where it applies, the expected generation. Persist the transition before the effect.
-
-## Tests
-
-| Folder | Runs in | Covers |
-|---|---|---|
-| `test/unit/` | Node (`vitest.unit.config.ts`) | Pure modules, with fast-check property tests |
-| `test/workers/` | workerd through `@cloudflare/vitest-plugin` (`vitest.workers.config.ts`) | Real DO SQLite, alarms and RPC, evicting the object between steps |
-| `test/e2e/` | `wrangler dev` with Docker (later) | Containers, interception, the private host route, checkpoints |
+After [dependency setup](../CONTRIBUTING.md), run from the repository root:
 
 ```bash
-pnpm --filter @cfo/worker test        # unit, then Workers runtime
+pnpm --filter @cfo/worker test:unit
+pnpm --filter @cfo/worker test:workers
 pnpm --filter @cfo/worker typecheck
-pnpm --filter @cfo/worker dry-run     # wrangler deploy --dry-run
 ```
 
-## Configuration and deployment
+Unit tests use Node. Workers tests use local workerd with real test Durable Object storage, alarms and eviction under [wrangler.test.jsonc](wrangler.test.jsonc). They do not qualify a deployed Containers service or a real computer route.
 
-`wrangler.jsonc` is a shared file owned by the integration lead. `workers.dev` and preview URLs stay disabled. Deploy only through the guarded deployment script, which uses `cfo-stg-` names in staging and refuses the wrong account.
+Check each production configuration explicitly:
+
+```bash
+WRANGLER_SEND_METRICS=false pnpm --filter @cfo/worker exec wrangler deploy --dry-run --config wrangler.jsonc --outdir dist/platform
+WRANGLER_SEND_METRICS=false pnpm --filter @cfo/worker exec wrangler deploy --dry-run --config wrangler.web.jsonc --outdir dist/web
+```
+
+These commands bundle locally and write generated output; they do not deploy. The package's existing `dry-run` script checks only the default platform configuration and writes to `dist`. The explicit pair above uses `dist/platform` and `dist/web` to match the [testing guide](../docs/testing.md); CI does not yet check both configurations. See that guide for coverage and [compatibility](../docs/compatibility.md) for artifact/qualification limits.
+
+Keep beta container APIs behind their adapters and pure logic free of `cloudflare:workers`. Parse inbound payloads, preserve operation/version/generation checks and persist transitions before effects. Retain [worker-configuration.d.ts](worker-configuration.d.ts): the type-drift check intentionally depends on that generated file. Production and account operations use the owner/review boundaries in [AGENTS.md](../AGENTS.md).

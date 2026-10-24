@@ -1,40 +1,27 @@
 # contracts
 
-The wire contract between the Worker and the processes in its containers: the computer supervisor, the server's Cloudflare launcher, and the gateway backend later. It is defined once, in TypeScript with zod, and checked from both TypeScript and Python.
+The versioned wire and behavior authority shared by the Workers and their container-side adapters. Current computer contracts are integrated source; the complete production controller, launcher and supervisor assembly is not yet integrated or qualified. See [compatibility](../docs/compatibility.md).
 
-| Path | Contents |
+| Path | Authority |
 |---|---|
-| `src/` | The zod schemas: IDs and timestamps, the error body, M2's contracts (the Access assertion claims, the two 424 "durability unconfirmed" bodies, the outage record, the bootstrap status, the replication position) and M3's (below). `wireSchemas` in `src/index.ts` registers every schema that crosses a boundary. |
-| `schema/` | JSON Schema exported from `src/` by `pnpm contracts:export`. Generated and committed; CI fails if it drifts from the source. |
-| `fixtures/<Schema>/` | Golden fixtures: valid examples at the top level, invalid ones under `invalid/`, and under `refined/` the ones invalid only by a cross-field rule that JSON Schema cannot express (TypeScript refuses them; a Python reader checks those rules itself, and each schema's comment lists them). Every registered schema needs at least one valid and one `invalid/` fixture. |
-| `vectors/` | Cross-language test vectors: the launcher API's signatures, the tree index's digest and the checkpoint policy's decisions. Both test suites check them. |
-| `test/` | Vitest: every fixture parses as expected and round-trips unchanged, plus property tests. |
+| [src/](src/) | TypeScript/zod runtime schemas and cross-field refinements; [index.ts](src/index.ts) registers exported wire schemas |
+| [schema/](schema/) | Committed JSON Schema projection generated from the runtime schemas |
+| [fixtures/](fixtures/) | Valid examples, `invalid/` shape failures and `refined/` cases rejected by runtime cross-field rules that export cannot fully express |
+| [vectors/](vectors/) | Cross-language signing, tree-digest and checkpoint-policy cases |
+| [test/](test/) | Actual schema parsing, round trips, refinements and property checks |
 
-The Python side, `python/tests/`, validates the same fixtures against the exported JSON Schema and checks the vectors.
+[lifecycle.ts](src/lifecycle.ts) owns the reference state/event interpreter. [checkpoint-policy.ts](src/checkpoint-policy.ts) owns version-one credential-family/capture/prune/restore rules. [launcher.ts](src/launcher.ts), [computer-protocol.ts](src/computer-protocol.ts), [manifests.ts](src/manifests.ts) and [controllers.ts](src/controllers.ts) define their respective boundaries. Keep data-policy and lifecycle authority distinct from transport schemas.
 
-## M3's contracts (3.C)
+## Changing a contract
 
-| Module | Contract |
-|---|---|
-| `launcher.ts` | The launcher API on `platform.internal`: its eleven operations as `LauncherRequest` and `LauncherResult`, the HMAC envelope with key IDs (core change 19's envelope, its own first line), the protocol version, the typed status and admission, `claim_start` and attempt-bound `start_host`, `suspend`'s outcomes, and per operation its idempotency rule, durability wait and error mapping. |
-| `computer-protocol.ts` | The computer API between the supervisor and WorkspaceDO, both directions: protocol version, reports, the pause lease, captures, restores, credential checkpoints, host start parameters, with an operation ID and an idempotency rule per message; the intercepts' trusted props. |
-| `manifests.ts` | Version 1 of the workspace manifest (a base and deltas, each layer carrying its own index; the tree digest) and of the credential checkpoint (the declared files with copy orders and tombstones). |
-| `checkpoint-policy.ts` | Version 1 of the credential families and the checkpoint policy, from S6's classification: one ordered rule list for capture, prune and restore. |
-| `lifecycle.ts` | WorkspaceDO's state × event table as typed data, with its reference interpreter `step`, the typed status, sign-out verification and the timing budget. Saving is a flag, not a state. |
-| `controllers.ts` | The payloads of WorkspaceDO's and ControlDO's RPC, with interface versions; the TypeScript interfaces are in `worker/src/shared/rpc.ts`. |
-| `setup-cards.ts` | The Claude and Codex setup cards' states, derived, never stored. |
-
-The fakes for M3 are in `worker/test/support/`: `fake-computer-container.ts` (refuses starts after a stop, keeps stop records, drops connections), `fake-control.ts` and `fake-workspace.ts`.
-
-## Changing the contract
-
-- `contracts/` is a shared path owned by the integration lead. Other packages propose changes through a pull request to the lead.
-- Each milestone starts with a contract package (schemas, fixtures, RPC interfaces and fakes), merged before its parallel work begins.
-- To add a message: add its schema to `wireSchemas`, add valid and invalid fixtures, run `pnpm contracts:export`, and run both test suites.
-- Versioned messages carry a protocol, format or interface version. A receiver rejects any version it does not support before changing state.
+Agree changes to shared wire interfaces with the integration maintainer first. Add a registered schema and valid/invalid fixtures; add refined cases for cross-field rules and update independent vectors when their semantics change. Regenerate the projection and include every changed/new schema file:
 
 ```bash
 pnpm --filter @cfo/contracts test
 pnpm contracts:export
-uv run --directory python pytest
+uv run --locked --no-sync --offline --directory python pytest
 ```
+
+These commands assume the [contributor setup](../CONTRIBUTING.md) is complete. Export rewrites `schema/`; CI checks for drift and untracked exported files. Preserve invalid/refined fixtures, generated schemas and vectors as maintained test assets.
+
+The [Python reference tests](../python/README.md) validate exported-schema valid/invalid cases and independently calculate vectors. They do not import every production receiver or exercise `refined/` cases through a supervisor. Each actual adapter/parser must apply the matching runtime refinements, policy and supported-version checks before effects, and its image must contain the matching assets. See [testing](../docs/testing.md) and [checkpoint publication](../docs/decisions/0005-checkpoint-publication-continuation.md).

@@ -1,15 +1,23 @@
 # images
 
-Container images. None exists yet; each arrives with its milestone. All are `linux/amd64`, with every base image pinned by digest.
+The maintained product image source is [server/Dockerfile](server/Dockerfile), targeting `linux/amd64`. A production computer image/supervisor assembly remains unfinished; connector images are planned. Prototype spike images are historical reproduction tools, not selected product artifacts.
 
-| Image | Arrives | Based on | Adds |
-|---|---|---|---|
-| `server` | M2, WP2.3 | Omnigent's server, built in `images/server/Dockerfile` from the fork's `cfo/integration` at a pinned commit | Litestream at an exact tested release. An entrypoint (`cfo_server`) that restores the database under a deadline, enters recovery mode instead of public setup when an initialized installation's replica is empty or its database is corrupt or has no owner, writes the deployment-managed settings files, then runs Litestream and Omnigent and checks the final sync on shutdown. Omnigent is built with one `create_app` call: authoritative sharing settings, the launcher registered through `sandbox_config`, a response barrier that answers 424 "applied, durability not yet confirmed" for security changes the replica has not confirmed, and the transcript barrier of core change 14. A control port (8001), reached only by the server's Durable Object, serves `GET /position` (the `ReplicationPosition` contract) and `GET /status` (phase, recovery reason, replication lag). Tests: `images/server/tests` (inside the image: `docker build --target test`), image tests in `tests/integration`. |
-| `computer` | M3, WP3.4 | Omnigent's host image | Claude Code and Codex exactly as published, with telemetry, updates and plugins switched off. The Sandbox SDK's backup shim. The supervisor: starts the host only after both restores, with the fixed host identity from the environment; pauses processes under a time-limited lease for each capture; saves credential files with tombstones; checkpoints on SIGTERM. A test variant adds the fake CLIs. |
-| `linkedin` | M5, WP5.6 | The LinkedIn MCP server image | Trust for the Cloudflare container CA, the backup shim for browser profiles, browser-cookie import switched off |
+## Server image
 
-Rules:
+The image builds Omnigent from a pinned fork commit, adds Litestream 0.5.17 and [cfo_server](server/cfo_server/), then restores/checks the database before starting the application. Initialized installations with an unusable replica/database/owner state enter recovery mode rather than first-visitor setup. The app wires response/transcript durability barriers and deployment-managed settings through supported Omnigent interfaces.
 
-- No image contains platform secrets or connected-account credentials. A cloud computer holds only the person's own Omnigent, Claude and Codex logins, created by signing in on it.
-- Containers reach platform services only through intercepted virtual hosts, such as `omnigent.internal`, handled by Worker code. Cloud computers otherwise have ordinary internet access, so the CLIs talk to their providers unmodified.
-- CI builds every image on each push. Deployment pushes them through Wrangler.
+The integrated server still registers a [placeholder launcher](server/cfo_server/launcher.py), [disables native GitHub linking](server/cfo_server/app.py) and relies on an [unavailable private platform bridge](../worker/src/server/platform-internal.ts). Do not describe the server image as a complete cloud-computer or connected-account product.
+
+| Dockerfile target / test location | Purpose and prerequisite |
+|---|---|
+| `server` | Final runtime target; builds download base images, fork source, system and Python/web dependencies |
+| `test` | Existing image-local unit/in-process test target; its default command excludes `tests/integration` |
+| [server/tests/integration/](server/tests/integration/) | Separate built-image tests with Docker, MinIO/Toxiproxy, generated credentials, replacement/fault cases and cleanup ownership |
+
+Use [testing](../docs/testing.md) for the build/run recipes and their prerequisites. CI's image job is a placeholder; ordinary Node/Python CI does not build or test this image. Separate candidate-only artifact identity/fork-test targets must not be invoked as if they existed in the integrated source.
+
+## Identity and custody
+
+The default server fork pin is `af3e49de2b169a8593e2d91e7ab98e2581f9f90a`; the separate server candidate pins `35ac1ebd2405264de7c0456084f45c4af1e657ca`. Current fork integration is newer than either. [Compatibility](../docs/compatibility.md) maps the resulting Stop/provider-key/history gaps. Record actual build arguments and immutable artifact identities before claiming a fix; source/base pins do not alone make rebuilt image bytes identical.
+
+Builds must not embed installation credential values in images. Required server secrets are supplied at runtime, and computers are intended to hold native CLI logins and specified runtime credentials. Worker-held keys do not prevent authorized plaintext use inside a process. Follow [credential authority](../docs/decisions/0004-identity-credential-authority.md) and [the secret inventory](../docs/secrets.md) rather than a blanket “containers have no secrets” assumption. Preserve dependency licences and notices when changing the fork build or redistribution.

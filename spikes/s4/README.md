@@ -1,39 +1,47 @@
 # S4: Litestream and the durability barrier
 
-Throwaway spike code. Results and conclusions are in the S4 evidence report, kept in the maintainer's project notes outside this repository.
-
-## What is here
+A historical Docker fault/reproduction harness. It compares response/commit-hook barrier variants, measures replica/restore behavior and reproduces Litestream failure cases. Its pinned app/entrypoint and results describe this experiment, not the current product server or a universal timing guarantee. Current behavior is described by [durability before acknowledgement/effect](../../docs/decisions/0003-durability-before-acknowledgement-effect.md) and the [maintained server image](../../images/README.md).
 
 | Path | Purpose |
 |---|---|
-| `compose.yaml` | MinIO (S3 stand-in for R2), Toxiproxy (to slow or block the "R2" link) and the server. The server has no volume, so replacing its container restores from the replica. |
-| `compose.tmpfs.yaml` | Optional overlay that puts the database on tmpfs, to separate disk fsync cost from Litestream's own latency. |
-| `server/Dockerfile` | Omnigent built from the fork at `90a9bed9a`, plus Litestream 0.5.17 (checksum-verified) as PID 1. |
-| `server/s4_entrypoint.py` | Runs Omnigent's unmodified Docker entrypoint, wrapping its `build_app` to add the barrier. No Omnigent file is edited. |
-| `server/s4_barrier.py` | The barrier: SQLAlchemy engine events classify commits that changed security tables; an ASGI middleware holds the response until Litestream's `replicated_txid` covers the commit, or answers 424 `durability_unconfirmed`. Also the `commit_hook` variant the design first described, kept for comparison. |
-| `server/tools/` | In-container helpers: seed a database, check one, time a restore, probe Litestream's control socket, and the issue #1540 harness. |
-| `scripts/s4.py` | The driver. Each command writes raw results to `results/`. |
+| [compose.yaml](compose.yaml) | MinIO as an S3 stand-in, Toxiproxy and the historical server; replacing the server restores from its replica |
+| [compose.tmpfs.yaml](compose.tmpfs.yaml) | Optional tmpfs comparison |
+| [server/Dockerfile](server/Dockerfile) | Historical fork-base image plus checksum-verified Litestream 0.5.17 |
+| [server/s4_entrypoint.py](server/s4_entrypoint.py), [server/s4_barrier.py](server/s4_barrier.py) | Historical entrypoint and barrier variants, separate from the maintained image implementation |
+| [server/tools/](server/tools/) | Database, restore, control-socket and issue-reproduction helpers |
+| [scripts/s4.py](scripts/s4.py), [scripts/s4lib.py](scripts/s4lib.py) | Driver, generated test credentials, Docker operations and result writer |
 
-## Running it
+## Historical reproduction setup
 
-Needs Docker and uv. Build the Omnigent base image once from the fork (read-only), into a scratch directory:
+Use Docker/Compose and uv in a separate scratch checkout of this repository. The driver writes `results/`, including fixed names such as `images.json`, and can replace/fault its server. Do not use a checkout whose historical results or running campaign you need to retain. Reserve the Compose project/ports for one run.
 
-```bash
-mkdir -p /tmp/s4-build/omnigent-90a9bed9a
-git -C /home/decay/Lervent/omnigent archive --format=tar 90a9bed9a | tar -x -C /tmp/s4-build/omnigent-90a9bed9a
-docker build -f /tmp/s4-build/omnigent-90a9bed9a/deploy/docker/Dockerfile --target runtime \
-  -t cfo-s4/omnigent-server:90a9bed9a /tmp/s4-build/omnigent-90a9bed9a
-```
-
-Then, from the repository root:
+The base requires fork commit `90a9bed9a5e25b1cab8d06a7e361c86cd5460918` available in a caller-selected fork checkout. Set `S4_FORK_DIR` to that checkout before running this recipe. Build setup downloads base/system/Python/web dependencies; it is not an offline check.
 
 ```bash
-S4="uv run --no-project --with httpx==0.28.1 --with boto3==1.40.0 spikes/s4/scripts/s4.py"
-$S4 build          # the spike image; records digests in results/images.json
-$S4 all            # the whole recorded matrix, about 100 minutes
-$S4 down           # remove the containers and MinIO's data
+set -euo pipefail
+: "${S4_FORK_DIR:?Set S4_FORK_DIR to your Omnigent fork checkout}"
+S4_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cfo-s4-build.XXXXXX")"
+mkdir -p "$S4_BUILD_DIR/omnigent"
+git -C "$S4_FORK_DIR" archive --format=tar 90a9bed9a5e25b1cab8d06a7e361c86cd5460918 | tar -x -C "$S4_BUILD_DIR/omnigent"
+docker build -f "$S4_BUILD_DIR/omnigent/deploy/docker/Dockerfile" --target runtime -t cfo-s4/omnigent-server:90a9bed9a "$S4_BUILD_DIR/omnigent"
 ```
 
-Single scenarios: `$S4 routes --mode response`, `$S4 blocked --block blackhole --after kill`, `$S4 sigterm`, `$S4 restore --sizes 100`, `$S4 issue1540`, `$S4 latency --tmpfs`, `$S4 startup`. See `$S4 --help`.
+From the scratch platform checkout root, define the historical driver:
 
-Credentials (MinIO keys, the owner password, the cookie secret) are generated on first use into `.run/s4.env`, which is git-ignored. Results are checked for those values before they are written.
+```bash
+s4() {
+  uv run --no-project --with httpx==0.28.1 --with boto3==1.40.0 spikes/s4/scripts/s4.py "$@"
+}
+s4 --help
+s4 build
+```
+
+The uv invocation can download its separate tools; root `python/` dependencies do not provide them. The `build` command builds the spike image and writes its local image identities to `results/images.json`. Those local IDs are not registry manifest digests.
+
+Choose scenarios from the driver's help: `routes`, `window`, `blocked`, `latency`, `sigterm`, `restore`, `postrestore`, `startup` or `issue1540`. These deliberately start/replace/kill containers or fault the replica link; the `all` command runs the entire historical matrix and is not a quick contributor test. A MinIO result is not real R2/Cloudflare qualification. Keep the exact revision, environment and failed observations with a new run.
+
+## Credentials, output and teardown
+
+The harness generates test credentials into gitignored `.run/s4.env` (mode 0600). Its result writer refuses known generated/observed secret values; this bounded check is not general proof every output is safe. Do not supply real provider accounts or publish raw credential material. Retain historical results and applicable licences/notices; follow the [spike evidence rules](../README.md).
+
+When this isolated test run is finished, `s4 down` invokes Compose `down -v --remove-orphans`: it removes this Compose stack and its volumes, including MinIO replica data. That cleanup is destructive to the test data and must not target someone else's active campaign. See [testing](../../docs/testing.md) for the separate maintained image/restore-drill suites.

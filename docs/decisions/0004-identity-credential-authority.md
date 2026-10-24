@@ -1,0 +1,41 @@
+# 0004 — Identity and credential authority
+
+Status: accepted design. Fork mechanisms exist; platform key service and complete computer-route integration remain planned.
+
+## Context
+
+Generation fencing prevents an old computer from reclaiming current authority. Credential encryption protects stored records but does not prevent authorized plaintext use. Runners need broad application access, so their tokens cannot be described as isolated computer-only credentials.
+
+## Decision
+
+Omnigent owns each stable host ID. A container start has a separate platform generation and a granted start attempt. The host receives its identity and fresh launch token directly; restoring files must not create another host identity. The token remains in supervisor/host memory and process environments, never a login file or checkpoint. Code on that computer can read the token; this is within the supported trust model.
+
+Managed-host registration requires that host's launch token. Owner bearer fallback must not claim a pending/managed host, and a superseded token must not displace the current incarnation. Interception binds the trusted computer/generation to that host. These rules prevent cross-computer registration; they do not prevent broad owner-equivalent application access through runners.
+
+Runner tokens are short-lived owner bearers marked `delegated`. The fork refuses them for approval answers through either route, policy updates/deletes, default-policy creation, replacing a session's agent, and account/credential administration under `/auth/*` and `/oauth/*`. The private computer route additionally blocks sharing mutations and protected administrative/approval paths. The runner may consume a human-approved MCP call only against the server's recorded verdict, bound to the exact call/arguments, session or actor and connection generation, and consumed once. Caller-supplied acceptance is insufficient.
+
+Delegated runners may still add session policies, cap sub-agent costs and manage user agents. The planned connected-account service uses installation-wide default approval policies, because a per-agent or per-session rule alone would not bind a new session created with a different bundle. This is the connected-account design, not a new requirement for every kind of approval. Added policies can affect state read by other policies, leaving a known approval-bypass risk. These narrow restrictions do not promise confinement of hostile code: runners can reach the person's other conversations and computers' work. A fully scoped runner principal remains later work. The `harness_install` feature stays disabled in the platform image.
+
+### Custody by material
+
+| Material | Intended custody and persistence |
+| --- | --- |
+| Credential-store encryption keys | Versioned keys held by the platform Worker. The planned signed service binds encryption to record identity; the server holds an HMAC signing credential, not those encryption keys. Ciphertext in SQLite/R2 does not imply plaintext is absent from server memory. |
+| Server credentials | Cookie/bootstrap material as applicable, database-replica/artifact storage credentials and private-bridge signing credentials reach the server as required. Native GitHub linking also needs its GitHub App configuration. These are not baked into the image. |
+| Claude/Codex logins | Login files on the computer and in the declared credential checkpoint; never ordinary workspace layers. Treat checkpoint read access as access to those logins. |
+| Launch, runner-binding and delegated tokens | Runtime memory/environments or narrowly excluded runtime files as appropriate; every live generation must be absent from published workspace layers. No long-lived Omnigent login/refresh grant belongs on a computer. |
+| Omnigent-linked GitHub | The server stores encrypted access/refresh material and uses plaintext to refresh/vend. Its refresh token stays on the server. The host's local broker gives git/gh the access token in memory/environment, without a token in helper arguments or gh `hosts.yml`. Unlinking prevents new vends; an already issued token remains valid until expiration or provider revocation. |
+| Codex key-provider API key | `provider_key` under `.omnigent/codex-native/<bridge>/`, mode 0600, for the app-server lifetime; referenced by generated configuration and removed on close. The file and `provider_key.*` temporaries are excluded secret families. Saved `config.toml`/profile files retain references, not inline keys. Key providers use `api_key_ref`, not an inline key in the computer's Omnigent configuration. |
+| Platform connected accounts | Planned Worker-side connection service; raw credentials do not reach computers. This is distinct from Omnigent's deliberate native GitHub exception. Databricks/other native credential providers remain unconfigured. |
+
+The checkpoint buckets have only Worker-binding access, without a computer S3 token; the server's storage token covers its replica/artifact scope. Version one has no application-level checkpoint encryption. R2 encryption at rest and private access do not protect login files from an account/Worker administrator.
+
+## Alternatives and consequences
+
+Blanket claims that containers contain no secrets or runners have only host scope are false. Path blocking alone cannot distinguish runner events from human approval answers. Delegation checks and recorded verdicts preserve approved runner execution while refusing impersonation. The host broker removes disk copies; it deliberately does not deny running code access to GitHub tokens. A Worker key service keeps this installation on Cloudflare; a faux Vault service would add an inaccurate external API contract.
+
+## Implementation and qualification
+
+Fork `184b5cf` contains [delegation tests](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/tests/server/test_delegated_runner_tokens.py), [broker tests](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/tests/host/test_credential_broker.py), the [HTTP cipher contract](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/designs/CREDENTIAL_STORE.md#http-key-service), and the [referenced-provider-key test](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/tests/e2e/test_codex_native_referenced_provider_key_e2e.py). Tests named here are coverage references, not new executions.
+
+Platform main and the server candidate both [disable GitHub/cipher wiring](../../images/server/cfo_server/app.py); main's [private endpoint](../../worker/src/server/platform-internal.ts) refuses calls. [Checkpoint policy](../../contracts/src/checkpoint-policy.ts) includes the provider-key family, but image packaging and actual capture/restore consumption remain to qualify. The native GitHub link/unlink, context mismatch, private-route refusal and all-layer token scans must run against the selected assembled images before this custody model is claimed operationally.
