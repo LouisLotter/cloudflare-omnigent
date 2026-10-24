@@ -40,7 +40,7 @@ Additional source/CI obligations include:
 | `node scripts/canary-scan.ts --self-test` | Synthetic scanner controls; needs Node, not a dependency installation |
 | `node scripts/canary-scan.ts contracts worker/src python/tests docs` | The current bounded source scan; it is not a repository/history/image publication review |
 
-The [testing guide](docs/testing.md) gives command discovery, two-configuration bundling, image/restore-drill prerequisites and manual qualification. `pnpm check` does not itself include coverage, schema drift enforcement, bundling or canary CLI scans. Consult the actual [CI workflow](.github/workflows/ci.yml) when matching CI: its image job is currently a placeholder.
+The [testing guide](docs/testing.md) gives command discovery, two-configuration bundling, image/restore-drill prerequisites and manual qualification. `pnpm check` does not itself include coverage, schema drift enforcement, bundling or canary CLI scans. Consult the actual [CI workflow](.github/workflows/ci.yml) when matching CI: it also builds the existing server/test image targets and runs their unit/in-process suite with networking disabled.
 
 ## Keep contract authority explicit
 
