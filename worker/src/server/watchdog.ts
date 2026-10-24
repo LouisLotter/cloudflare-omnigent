@@ -589,6 +589,9 @@ function silent(
  * new one gets budgets of its own (Codex WP2.6 r1-2). Only while the failed starts stay within
  * DC-37's backoff: beyond it, a new boot no longer renews the start's budgets, so the watchdog's
  * own stop and restart take over, with their bounded backoff (Codex WP2.6 r2-1).
+ * After exhaustion, keep known phase clocks even when the replacement regresses to a boot
+ * phase. A late first sight of a later phase is also bounded by the sum of the stage allowances
+ * from the last permitted renewal. No new persisted fields are needed for this ceiling.
  */
 function starting(
   observed: WatchdogState,
@@ -624,26 +627,36 @@ function starting(
       phaseSince: renews ? now : state.phaseSince,
       failedStarts,
       bootId,
-      bootSeenAt: null,
-      initSeenAt: null,
-      bootEndedAt: null,
+      bootSeenAt: renews ? null : state.bootSeenAt,
+      initSeenAt: renews ? null : state.initSeenAt,
+      bootEndedAt: renews ? null : state.bootEndedAt,
     };
   } else if (bootId !== null && state.bootId === null) {
     state = { ...state, bootId };
   }
   const since = state.phaseSince ?? now;
   const restoreAllowance = Math.max(timing.readinessWaitMs, timing.restoreWaitMs);
+  const renewalsExhausted = state.failedStarts > timing.startRetryMs.length;
+  const wholeStartAllowance = restoreAllowance + timing.appStartWaitMs + timing.readinessWaitMs;
   // Each phase's first sight is logged once, so a start's progress shows in the logs.
   const progress = (seenBefore: number | null) => {
     if (seenBefore === null) b.event("start_phase", { phase, sinceStartMs: now - since });
   };
   const wait = (fields: Partial<WatchdogState> = {}) => b.done(state, now + timing.pollMs, fields);
   let budget: "restore" | "app_start" | "readiness" | "start";
-  if (phase === "starting" || phase === "restoring") {
+  if (renewalsExhausted && now - since >= wholeStartAllowance) {
+    // Otherwise a phase first observed late (including after eviction or unreadable status)
+    // could get a fresh allowance despite the exhausted renewal limit.
+    budget = "start";
+  } else if (phase === "starting" || phase === "restoring") {
     progress(state.bootSeenAt);
     budget = "restore";
     if (now - since < restoreAllowance) {
-      return wait({ bootSeenAt: now, initSeenAt: null, bootEndedAt: null });
+      return wait({
+        bootSeenAt: now,
+        initSeenAt: renewalsExhausted ? state.initSeenAt : null,
+        bootEndedAt: renewalsExhausted ? state.bootEndedAt : null,
+      });
     }
   } else if (phase === "initializing") {
     progress(state.initSeenAt);
