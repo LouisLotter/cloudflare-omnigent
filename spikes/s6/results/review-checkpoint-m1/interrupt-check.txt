@@ -1,6 +1,0 @@
-interrupt after 3s: {'signed_out_verified': True, 'basis': 'never signed in: the session stopped before any sign-in', 'session_marker': 'started', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
-interrupt after 9s: {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
-interrupt after 13s: {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
-interrupt after 17s: {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
-interrupt after 21s: {'signed_out_verified': True, 'basis': 'signed out, verified in a fresh computer', 'session_marker': 'signin-attempted', 'left_behind': {'computers': [], 'store': 'absent', 'shm': False}}
-exit 0

@@ -28,6 +28,8 @@ Authenticated browser access alone does not authorize a fault/reset/start action
 
 ## Retain evidence and reusable inputs
 
+Selected raw outputs are preserved at an immutable historical revision and in the maintainer archive. See [historical result retrieval](results-retention.md); default analysis inputs and every harness remain in this checkout.
+
 `results/` contains historical output, including failed runs and teardown observations. It is not a disposable cache. Some analysis programs read those exact files: S3's [facts.py](s3/bench/facts.py) and [report.py](s3/bench/report.py) read capture/report datasets by default. S2 also contains [executable analysis inside results](s2/results/analysis-2026-10-19/driver-saturation-check.py). Keep source/harnesses separate from generated output when reviewing retention.
 
 New runs can overwrite fixed output names. Preserve old originals and run associations, use synthetic/generated credentials, and review output before retaining or sharing it. A previous redaction/canary check or teardown file is bounded historical evidence, not proof of current publication safety or resource absence. Archive/removal requires an approved per-file preservation and dependency plan; duplicated screenshot bytes alone do not remove distinct evidence labels. Preserve licences, notices and deterministic regression fixtures.
