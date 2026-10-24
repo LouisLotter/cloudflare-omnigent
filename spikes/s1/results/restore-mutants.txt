@@ -1,9 +1,0 @@
-killed:   host not held
-killed:   no restore
-killed:   release before restore
-killed:   no release after a failed restore
-killed:   restore without waiting for exec
-killed:   verification always matches
-killed:   rwake without a backup starts anyway
-killed:   failed restore counted ok
-source restored
