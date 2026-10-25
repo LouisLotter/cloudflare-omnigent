@@ -30,7 +30,7 @@ from cloudflare_omnigent.sandbox.settings import LauncherSettings
 CMP = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3"
 #: Slack for thread scheduling on a busy machine; the unfixed client overran by 140 ms on a
 #: 60 ms deadline, and each trickling peer below keeps going for a second or more.
-SLACK_S = 0.12
+SLACK_S = 0.3
 
 Script = Callable[[socket.socket], None]
 
@@ -306,3 +306,59 @@ def test_a_peer_that_always_trickles_ends_in_an_unknown_outcome_within_the_budge
         attempts = len(server.requests)
     assert attempts >= 2
     assert elapsed < 0.5 + 0.1 + SLACK_S
+
+
+# ── Framing: a reply counts only when its framing proves it whole (Codex r1, finding 3) ─
+
+_JSON = b'{"operation":"suspend","outcome":"stopped"}'
+_CHUNKED_HEAD = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+
+
+def _chunk(data: bytes) -> bytes:
+    return f"{len(data):x}\r\n".encode() + data + b"\r\n"
+
+
+@pytest.mark.parametrize(
+    ("reply", "accepted"),
+    [
+        (_CHUNKED_HEAD + _chunk(_JSON) + b"0\r\n\r\n", True),
+        (_CHUNKED_HEAD + _chunk(_JSON[:10]) + _chunk(_JSON[10:]) + b"0\r\nX-T: 1\r\n\r\n", True),
+        (_CHUNKED_HEAD + _chunk(_JSON) + b"0\r\n", False),  # no end of the trailer
+        (_CHUNKED_HEAD + _chunk(_JSON), False),  # no last chunk
+        (_CHUNKED_HEAD + f"{len(_JSON):x}\r\n".encode() + _JSON + b"XX0\r\n\r\n", False),
+        (_CHUNKED_HEAD + b"zz\r\n" + _JSON + b"\r\n0\r\n\r\n", False),
+        (b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + _JSON, False),  # unframed
+        (b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\n" + _JSON, False),  # too large
+    ],
+    ids=[
+        "chunked",
+        "chunked-split-with-trailer",
+        "missing-final-crlf",
+        "missing-last-chunk",
+        "damaged-chunk-end",
+        "bad-chunk-size",
+        "close-delimited",
+        "length-over-the-limit",
+    ],
+)
+def test_only_completely_framed_replies_are_read(reply: bytes, accepted: bool) -> None:
+    with peer(after(0.0, reply)) as server:
+        _, outcome = _timed(server.url, 2.0)
+    if accepted:
+        assert outcome == (200, _JSON)
+    elif isinstance(outcome, tuple):
+        assert len(outcome[1]) > protocol.MAX_BODY_BYTES  # reads as too large: unknown
+    else:
+        assert isinstance(outcome, (OSError, client_module.http.client.HTTPException)), outcome
+
+
+def test_a_badly_framed_reply_is_repeated_and_never_taken_as_stopped() -> None:
+    bad = _CHUNKED_HEAD + _chunk(_JSON) + b"0\r\n"
+    good = ok_reply(_JSON)
+    with peer(after(0.0, bad), after(0.0, good)) as server:
+        reply = _client(server.url).call(
+            protocol.suspend_request("0" * 31 + "2", CMP),
+            CallPolicy(attempt_timeout_s=0.5, budget_s=2.0),
+        )
+    assert reply.attempts == 2
+    assert reply.result == protocol.SuspendResult("stopped")

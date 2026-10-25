@@ -473,3 +473,28 @@ def test_enums_match_the_contract() -> None:
     assert enum("CheckpointReason") == protocol.CHECKPOINT_REASONS
     assert enum("SuspendRefusal") == protocol.SUSPEND_REFUSALS
     assert enum("CheckpointRefusal") == protocol.CHECKPOINT_REFUSALS
+
+
+@pytest.mark.parametrize("value", [1.0, 1e0, 7.0])
+def test_integral_json_numbers_are_whole_numbers_as_the_schema_says(value: float) -> None:
+    payload = {"operation": "status", "running": True, "status": "stopped", "generation": value}
+    assert RESULT_SCHEMA.is_valid(payload)
+    assert protocol.parse_result("status", payload).generation == int(value)
+    claim = {"operation": "claim_start", "granted": True, "startAttempt": value}
+    assert protocol.parse_result("claim_start", claim).start_attempt == int(value)
+
+
+def test_unreadable_reply_diagnostics_never_echo_the_reply() -> None:
+    marker = "reflected-" + "x" * 20
+    for payload in (
+        {"operation": "keep_alive", "renewed": True, marker: 1},
+        {"operation": "start_host"},
+    ):
+        with pytest.raises(protocol.ProtocolError) as caught:
+            protocol.parse_result(payload["operation"], payload)  # type: ignore[arg-type]
+        assert marker not in str(caught.value)
+
+
+def test_readable_redacts_login_material() -> None:
+    secret = "s" * 40
+    assert protocol.readable(f"refused {secret} now", redact=(secret,)) == "refused [redacted] now"

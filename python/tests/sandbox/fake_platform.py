@@ -75,6 +75,10 @@ class Fault:
     code: str = "unavailable"
     message: str = "The platform is restarting."
     delay_s: float = 0.0
+    #: For ``error``: an HTTP status other than the code's own (a contract-inconsistent reply).
+    status: int | None = None
+    #: For ``extra_field``: the unknown field's name.
+    field: str = "surprise"
 
 
 @dataclass
@@ -248,11 +252,18 @@ class FakeLauncherApi:
         handler.end_headers()
         handler.wfile.write(data)
 
-    def _error(self, handler: BaseHTTPRequestHandler, code: str, message: str) -> int:
+    def _error(
+        self,
+        handler: BaseHTTPRequestHandler,
+        code: str,
+        message: str,
+        status: int | None = None,
+    ) -> int:
         body = {"error": {"code": code, "message": message, "retryable": code == "unavailable"}}
         ERROR_SCHEMA.validate(body)
-        self._reply(handler, ERROR_STATUS[code], body)
-        return ERROR_STATUS[code]
+        status = status if status is not None else ERROR_STATUS[code]
+        self._reply(handler, status, body)
+        return status
 
     def _take_fault(self, operation: str) -> Fault | None:
         with self.lock:
@@ -315,7 +326,7 @@ class FakeLauncherApi:
             handler.close_connection = True
             return 0
         if fault is not None and fault.kind == "error":
-            return self._error(handler, fault.code, fault.message)
+            return self._error(handler, fault.code, fault.message, fault.status)
         if fault is not None and fault.kind == "html502":
             page = b"<html><body>502 Bad Gateway</body></html>"
             handler.send_response(502)
@@ -344,7 +355,7 @@ class FakeLauncherApi:
             handler.wfile.write(data)
             return 200
         if fault is not None and fault.kind == "extra_field":
-            result = {**result, "surprise": True}
+            result = {**result, fault.field: True}
         try:
             self._reply(handler, 200, result)
         except OSError:

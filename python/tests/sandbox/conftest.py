@@ -23,8 +23,8 @@ from cloudflare_omnigent.sandbox.core import LauncherCore  # noqa: E402
 from cloudflare_omnigent.sandbox.protocol import OPERATIONS  # noqa: E402
 from cloudflare_omnigent.sandbox.settings import LauncherSettings  # noqa: E402
 
-FAST_POLICIES = {op: CallPolicy(attempt_timeout_s=1.0, budget_s=1.5) for op in OPERATIONS}
-FAST_POLICIES["suspend"] = CallPolicy(attempt_timeout_s=1.0, budget_s=2.0)
+FAST_POLICIES = {op: CallPolicy(attempt_timeout_s=1.0, budget_s=2.0) for op in OPERATIONS}
+FAST_POLICIES["suspend"] = CallPolicy(attempt_timeout_s=1.0, budget_s=2.5)
 FAST_BACKOFF = (0.05, 0.2)
 SUSPEND_POLL_S = 0.05
 

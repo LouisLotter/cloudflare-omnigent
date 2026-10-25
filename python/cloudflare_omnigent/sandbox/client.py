@@ -76,6 +76,8 @@ class Reply:
 #: ``http.client.HTTPException`` when no complete reply arrives.
 Post = Callable[[str, Mapping[str, str], bytes, float], tuple[int, bytes]]
 
+#: A repeat is not started with less than this left in the budget.
+_MIN_ATTEMPT_S = 0.05
 #: The first wait before a lost reply is repeated, doubling up to the second.
 BACKOFF_S = 0.25
 MAX_BACKOFF_S = 4.0
@@ -166,6 +168,67 @@ class _DeadlineConnection(http.client.HTTPConnection):
             raise TimeoutError("the attempt's deadline passed")
 
 
+class FramingError(http.client.HTTPException):
+    """The reply's body is not completely and correctly framed: it may be truncated."""
+
+
+_MAX_CHUNK_LINE = 1024
+
+
+def _read_chunked(fp: Any, limit: int) -> bytes:
+    """A chunked body, strictly: every size line, chunk CRLF, the last chunk and the trailer's
+    end must be present. ``http.client`` accepts a missing final CRLF or a damaged chunk end,
+    which could pass a truncated reply as complete.
+    """
+    body = bytearray()
+    while True:
+        line = fp.readline(_MAX_CHUNK_LINE + 1)
+        if not line.endswith(b"\r\n") or len(line) > _MAX_CHUNK_LINE:
+            raise FramingError("a chunk size line is missing or malformed")
+        size_text = line[:-2].split(b";", 1)[0].strip()
+        if not size_text or any(c not in b"0123456789abcdefABCDEF" for c in size_text):
+            raise FramingError("a chunk size is not hexadecimal")
+        size = int(size_text, 16)
+        if size == 0:
+            break
+        if len(body) + size > limit:
+            return bytes(body) + b"\0" * (limit + 1 - len(body))  # reads as too large
+        data = fp.read(size)
+        if len(data) != size or fp.read(2) != b"\r\n":
+            raise FramingError("a chunk is truncated or not followed by CRLF")
+        body += data
+    while True:  # trailer fields, then the empty line that ends the message
+        line = fp.readline(_MAX_CHUNK_LINE + 1)
+        if line == b"\r\n":
+            return bytes(body)
+        if not line.endswith(b"\r\n") or len(line) > _MAX_CHUNK_LINE:
+            raise FramingError("the chunked body does not end correctly")
+
+
+def _read_body(response: http.client.HTTPResponse) -> bytes:
+    """The whole body, only if its framing proves it complete; at most one byte over the limit.
+
+    A body must be chunked or carry a Content-Length: a body delimited only by the connection
+    closing cannot show that it arrived whole.
+    """
+    limit = protocol.MAX_BODY_BYTES
+    if response.chunked:
+        # Bypass http.client's lenient chunk decoder: read the raw framing ourselves.
+        return _read_chunked(response.fp, limit)
+    expected = response.length
+    if expected is None:
+        raise FramingError("the reply has neither a Content-Length nor chunked framing")
+    if expected > limit:
+        return b"\0" * (limit + 1)  # reads as too large; nothing more is read
+    data = bytearray()
+    while len(data) < expected:
+        piece = response.read(expected - len(data))
+        if not piece:
+            raise http.client.IncompleteRead(bytes(data), expected - len(data))
+        data += piece
+    return bytes(data)
+
+
 class _Exchange:
     """One request and its whole reply, run in a worker thread."""
 
@@ -187,18 +250,7 @@ class _Exchange:
             connection.request("POST", self._path, body=self._body, headers=self._headers)
             response = connection.getresponse()
             try:
-                chunks: list[bytes] = []
-                size = 0
-                while size <= protocol.MAX_BODY_BYTES:
-                    chunk = response.read1(16 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    size += len(chunk)
-                if size <= protocol.MAX_BODY_BYTES and response.length:
-                    # The peer closed before the Content-Length it announced: truncated.
-                    raise http.client.IncompleteRead(b"".join(chunks), response.length)
-                self.result = (response.status, b"".join(chunks))
+                self.result = (response.status, _read_body(response))
             finally:
                 response.close()
         except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
@@ -270,13 +322,16 @@ class LauncherClient:
         operation_id = request["operationId"]
         computer = request.get("computerId", "-")
         body = protocol.encode_body(request)
+        # Login material the request carries never comes back out in a message.
+        redact = tuple(v for k, v in request.items() if k == "token" and isinstance(v, str))
         url = f"{self._settings.base_url}/{operation}"
         deadline = self._monotonic() + policy.budget_s
         backoff = self._first_backoff_s
         attempts = 0
         while True:
             attempts += 1
-            timeout = min(policy.attempt_timeout_s, max(deadline - self._monotonic(), 0.5))
+            # Never past the budget: the first attempt gets at least a moment.
+            timeout = min(policy.attempt_timeout_s, max(deadline - self._monotonic(), 0.05))
             sent_at = self._clock()
             headers = {
                 "Content-Type": "application/json",
@@ -294,7 +349,7 @@ class LauncherClient:
             except (OSError, http.client.HTTPException) as exc:
                 reason = f"no reply ({type(exc).__name__})"
             else:
-                reason = self._outcome(operation, operation_id, computer, status, payload)
+                reason = self._outcome(operation, operation_id, computer, status, payload, redact)
                 if not isinstance(reason, str):
                     logger.debug(
                         "launcher %s %s for %s: %s after %d attempt(s)",
@@ -314,7 +369,7 @@ class LauncherClient:
                 attempts,
             )
             wait = min(backoff, max(deadline - self._monotonic(), 0.0))
-            if self._monotonic() + wait >= deadline:
+            if self._monotonic() + wait + _MIN_ATTEMPT_S >= deadline:
                 raise OutcomeUnknown(
                     f"The platform gave no readable answer to {operation} "
                     f"({reason}); its outcome is unknown."
@@ -329,6 +384,7 @@ class LauncherClient:
         computer: str,
         status: int,
         payload: bytes,
+        redact: tuple[str, ...] = (),
     ) -> protocol.Result | str:
         """The parsed result, or why the outcome is still unknown; raises a final answer."""
         if len(payload) > protocol.MAX_BODY_BYTES:
@@ -341,6 +397,7 @@ class LauncherClient:
             try:
                 return protocol.parse_result(operation, decoded)
             except protocol.ProtocolError as exc:
+                # The parser's messages are fixed text: nothing from the reply is echoed.
                 return f"HTTP 200, unreadable reply: {exc}"
         if not 400 <= status <= 599:
             return f"HTTP {status}"
@@ -348,9 +405,12 @@ class LauncherClient:
             error = protocol.parse_error(decoded)
         except protocol.ProtocolError:
             return f"HTTP {status}, no error body"
+        if protocol.ERROR_STATUS.get(error.code) != status:
+            # A code with the wrong status is not the receiver's answer: never final.
+            return f"HTTP {status} with a mismatched error code"
         if error.error_class == "sandbox_gone":
             logger.info("launcher %s %s for %s: gone", operation, operation_id, computer)
-            raise PlatformGone(protocol.readable(error.message))
+            raise PlatformGone(protocol.readable(error.message, redact=redact))
         if error.error_class == "readable_refusal":
             logger.warning(
                 "launcher %s %s for %s: refused (%s, HTTP %d)",
@@ -360,5 +420,5 @@ class LauncherClient:
                 error.code,
                 status,
             )
-            raise PlatformRefusal(error.code, protocol.readable(error.message))
+            raise PlatformRefusal(error.code, protocol.readable(error.message, redact=redact))
         return f"HTTP {status}, {error.code}"

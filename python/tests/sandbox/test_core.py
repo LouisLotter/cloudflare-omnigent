@@ -540,3 +540,77 @@ def test_no_token_key_or_signature_reaches_the_logs(
     assert settings.signing_key.decode() not in text
     signatures = {r.body and r.body.get("token") for r in api.requests}
     assert token in signatures  # it did reach the platform, and only there
+
+
+# ── Codex review r1: reflected secrets, status/code pairs, integral numbers, the budget ─
+
+
+def test_a_reply_reflecting_the_token_never_puts_it_in_logs_or_errors(
+    api: FakeLauncherApi, settings: LauncherSettings, launcher_logs: pytest.LogCaptureFixture
+) -> None:
+    core = make_core(settings, Fence(api))
+    token = launch_token()
+    computer_id, attempt = _claimed(api, core)
+    api.fault("start_host", "extra_field", field=token, times=100)
+    with pytest.raises(OutcomeUnknown) as unknown:
+        _start(core, computer_id, attempt, token)
+    api.faults.clear()
+    api.fault("start_host", "error", code="conflict", message=f"Refused start for {token}.")
+    with pytest.raises(PlatformRefusal) as refused:
+        _start(core, computer_id, attempt, token)
+    assert "[redacted]" in str(refused.value)
+    text = launcher_logs.text + str(unknown.value) + str(refused.value)
+    assert token not in text
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [("gone", 503), ("gone", 200), ("at_capacity", 500), ("unauthorized", 503), ("gone", 409)],
+)
+def test_an_error_code_with_the_wrong_status_is_never_final(
+    api: FakeLauncherApi, core: LauncherCore, code: str, status: int
+) -> None:
+    computer = api.add_computer(status="host_running")
+    api.fault("terminate", "error", code=code, status=status, times=100)
+    with pytest.raises(OutcomeUnknown):
+        core.terminate(computer.computer_id)
+    assert len([r for r in api.requests if r.operation == "terminate"]) >= 2
+
+
+def test_the_declared_status_makes_gone_final(api: FakeLauncherApi, core: LauncherCore) -> None:
+    computer = api.add_computer(status="host_running")
+    api.fault("terminate", "error", code="gone", message="Removed.")
+    with pytest.raises(PlatformGone):
+        core.terminate(computer.computer_id)
+    assert len([r for r in api.requests if r.operation == "terminate"]) == 1
+
+
+def test_no_attempt_runs_past_the_call_budget() -> None:
+    """Deterministic clock: each attempt times out after exactly the time it was given."""
+    from cloudflare_omnigent.sandbox.client import CallPolicy, LauncherClient
+
+    now = [1000.0]
+    given: list[float] = []
+
+    def post(url: str, headers: Any, body: bytes, timeout: float) -> tuple[int, bytes]:
+        given.append(timeout)
+        now[0] += timeout
+        raise TimeoutError("no reply")
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    settings = LauncherSettings(signing_key=b"k" * 32, signing_key_id="k1")
+    client = LauncherClient(
+        settings, post=post, clock=lambda: now[0], monotonic=lambda: now[0], sleep=sleep
+    )
+    for budget in (1.3, 0.3, 2.0, 5.0):
+        given.clear()
+        started = now[0]
+        with pytest.raises(OutcomeUnknown):
+            client.call(
+                protocol.status_request("0" * 31 + "1", "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3"),
+                CallPolicy(attempt_timeout_s=1.0, budget_s=budget),
+            )
+        assert now[0] - started <= budget + 1e-9, (budget, given)
+        assert given and all(t > 0 for t in given)

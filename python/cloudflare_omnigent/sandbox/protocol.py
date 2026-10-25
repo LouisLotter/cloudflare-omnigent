@@ -445,15 +445,26 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _json_int(value: object) -> int | None:
+    """A JSON number that is a whole number (``3``, ``3.0``, ``3e0``), else ``None``.
+
+    JSON Schema's ``integer`` accepts any mathematically integral number; booleans are not
+    numbers here.
+    """
+    if _is_int(value):
+        return value  # type: ignore[return-value]
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    return None
+
+
 def _fields(payload: object, required: set[str], optional: frozenset[str] = frozenset()) -> dict:
     _require(isinstance(payload, dict), "a reply is a JSON object")
     assert isinstance(payload, dict)
     keys = set(payload)
-    _require(required <= keys, f"the reply lacks {sorted(required - keys)}")
-    _require(
-        keys <= required | optional,
-        f"the reply has unknown fields {sorted(keys - required - optional)}",
-    )
+    # Fixed messages: a reply's own keys or values never reach a log or an error.
+    _require(required <= keys, "the reply lacks a required field")
+    _require(keys <= required | optional, "the reply has a field outside the contract")
     return payload
 
 
@@ -470,15 +481,17 @@ def _enum(value: object, allowed: tuple[str, ...]) -> str:
 
 
 def _generation(value: object) -> int:
-    _require(_is_int(value) and 0 <= value <= MAX_SAFE_INTEGER, "malformed generation")  # type: ignore[operator]
-    assert isinstance(value, int)
-    return value
+    number = _json_int(value)
+    _require(number is not None and 0 <= number <= MAX_SAFE_INTEGER, "malformed generation")
+    assert number is not None
+    return number
 
 
 def _attempt(value: object) -> int:
-    _require(_is_int(value) and 1 <= value <= MAX_SAFE_INTEGER, "malformed start attempt")  # type: ignore[operator]
-    assert isinstance(value, int)
-    return value
+    number = _json_int(value)
+    _require(number is not None and 1 <= number <= MAX_SAFE_INTEGER, "malformed start attempt")
+    assert number is not None
+    return number
 
 
 def _absolute_path(value: object) -> str:
@@ -625,8 +638,12 @@ def parse_error(payload: object) -> ErrorReply:
     )
 
 
-def readable(text: str, limit: int = 300) -> str:
-    """Text from the platform made safe to show: one line, no control characters, bounded."""
+def readable(text: str, limit: int = 300, *, redact: tuple[str, ...] = ()) -> str:
+    """Text from the platform made safe to show: one line, no control characters, bounded,
+    and without any of the *redact* values (login material the request carried)."""
+    for secret in redact:
+        if secret:
+            text = text.replace(secret, "[redacted]")
     cleaned = "".join(ch if ch.isprintable() else " " for ch in text).strip()
     return cleaned[:limit] if cleaned else "no detail given"
 
