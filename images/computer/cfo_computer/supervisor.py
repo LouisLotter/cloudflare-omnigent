@@ -1,0 +1,781 @@
+"""The supervisor: the computer's side of the computer API, and its one authority.
+
+``Supervisor.handle`` is the receiver for WorkspaceDO's commands (``WorkspaceCommand``), served
+on port 8090 by ``server.py``; the background loops send the supervisor's messages
+(``SupervisorMessage``): ``hello`` once per generation, a ``report`` periodically and on every
+change, ``credential_checkpoint`` from the credential watcher, ``save_request`` on SIGTERM.
+
+Command rules (contracts/src/computer-protocol.ts, ``COMPUTER_API_MESSAGES``):
+- every command is parsed with the contract (schema and refinements) before anything else;
+  an unsupported protocol version, another computer or another generation is refused before
+  any effect;
+- a mutating command is idempotent by its operation ID: a repeat returns the recorded answer
+  (for a job, its current state), and the same ID with another body is a ``conflict``. Only
+  answers are recorded, never failures, so a failed command can be repeated;
+- ``start_host`` is idempotent by attempt (``host.py``); ``status`` and ``job_status`` read.
+Ordering the design requires and the receiver enforces: the workspace restore, then the
+credential install, then the host. No capture before the restore is confirmed.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import threading
+import time
+import traceback
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from . import SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from . import logins as L
+from . import runners as R
+from .api import ComputerApi, Refused, Unanswered
+from .contract import Contract, ContractError, error_body
+from .credentials import (
+    CredentialAlert,
+    Credentials,
+    UnstableRead,
+    install_bundle,
+    verify_signed_out,
+)
+from .host import HostManager, StartParams, host_argv, host_config_command, host_env
+from .ids import new_operation_id
+from .paths import OMNIGENT_INTERNAL_URL, Account, Layout
+from .policy import Policy
+from .procutil import module_argv, run_workload, spawn_workload, workload_env
+from .restore import RestoreFailed, restore_workspace
+from .tree import tree_digest
+
+REPORT_INTERVAL_S = 30.0
+LOGIN_INTERVAL_S = 300.0
+#: The capture worker is given this long after its lease before it is killed as wedged.
+CAPTURE_WORKER_GRACE_S = 900.0
+
+HTTP_STATUS = {
+    "bad_request": 400,
+    "unsupported_version": 400,
+    "forbidden": 403,
+    "not_found": 404,
+    "conflict": 409,
+    "stale_generation": 409,
+    "unavailable": 503,
+    "internal": 500,
+}
+
+
+class CommandError(Exception):
+    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+@dataclass
+class Tools:
+    """Programs the supervisor runs; production uses the image's, tests pass fakes."""
+
+    omnigent: str = "/opt/venv/bin/omnigent"
+    venv_python: str = "/opt/venv/bin/python"
+    claude: str = "claude"
+    codex: str = "codex"
+    terminal: list[str] | None = None
+    server_url: str = OMNIGENT_INTERNAL_URL
+
+
+def _fingerprint(command: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(command, sort_keys=True).encode()).hexdigest()
+
+
+class Supervisor:
+    def __init__(
+        self,
+        *,
+        computer_id: str,
+        generation: int,
+        layout: Layout,
+        account: Account,
+        contract: Contract,
+        policy: Policy,
+        api: ComputerApi | None,
+        tools: Tools | None = None,
+        cgroup_dir: str | None = None,
+        scope_pids: list[int] | None = None,
+        host_backoff: Callable[[int], float] | None = None,
+        whole_container: bool = False,
+    ) -> None:
+        self.computer_id = computer_id
+        self.generation = generation
+        self.layout = layout
+        self.account = account
+        self.contract = contract
+        self.policy = policy
+        self.api = api
+        self.tools = tools or Tools()
+        self.cgroup_dir = cgroup_dir
+        # The pause scope: every workload process in the container (production, set by main),
+        # or only these process trees (tests). Never the whole machine by default.
+        self.whole_container = whole_container
+        self.scope_pids = scope_pids
+        self._lock = threading.RLock()
+        self._journal: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self.restore_state = "pending"
+        self.published_digest: str | None = None
+        self.published_checkpoint: str | None = None
+        self.credentials_installed = False
+        self.capture_running = False
+        self._capture_gate = threading.Lock()  # held while a capture runs: no workload spawns
+        self._workload_pids: set[int] = set()
+        self.logins = {"claude": "unknown", "codex": "unknown"}
+        self._report_seq = 0
+        self._stop = threading.Event()
+        self._changed = threading.Event()
+        self._login_wake = threading.Event()
+        self.alerts: list[str] = []
+        # Capture settings; tests narrow them (and inject faults into the worker).
+        self.capture_margin_bytes = 64 << 20
+        self.capture_grace_s = CAPTURE_WORKER_GRACE_S
+        self.capture_fault = ""
+        self.terminal: subprocess.Popen[bytes] | None = None
+        self.sigterm = False
+        layout.ensure()
+        self.creds = Credentials(
+            home=account.home,
+            computer_id=computer_id,
+            generation=generation,
+            publish=self._publish_bundle,
+            alert=self._alert,
+        )
+        self.creds.on_change = self.changed
+        kwargs = {"backoff": host_backoff} if host_backoff else {}
+        self.host = HostManager(
+            spawn=self._spawn_host,
+            prepare=self._prepare_host,
+            spawn_gate=self._spawn_gate,
+            on_change=self.changed,
+            **kwargs,
+        )
+
+    # -- small helpers ---------------------------------------------------------------------
+
+    def _alert(self, message: str) -> None:
+        with self._lock:
+            self.alerts = [*self.alerts[-19:], message]
+
+    def changed(self) -> None:
+        self._changed.set()
+
+    @contextlib.contextmanager
+    def _spawn_gate(self) -> Iterator[None]:
+        with self._capture_gate:
+            yield
+
+    def _env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        return workload_env(self.account.home, self.account.name, extra)
+
+    def _run(self, argv: list[str], timeout: float, stdin: bytes | None = None) -> tuple[int | None, bytes]:
+        """A short workload command, never during a capture (it would escape the pause)."""
+        with self._spawn_gate():
+            if stdin is None:
+                return run_workload(
+                    argv,
+                    env=self._env(),
+                    cwd=self.account.home,
+                    uid=self.account.uid,
+                    gid=self.account.gid,
+                    cgroup_dir=self.cgroup_dir,
+                    timeout=timeout,
+                )
+            from .procutil import workload_argv
+
+            proc = subprocess.run(
+                workload_argv(argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir),
+                env=self._env(),
+                cwd=str(self.account.home),
+                input=stdin,
+                capture_output=True,
+                timeout=timeout,
+                start_new_session=True,
+            )
+            return proc.returncode, proc.stdout
+
+    @property
+    def restores_done(self) -> bool:
+        return self.restore_state == "confirmed" and self.credentials_installed
+
+    # -- the host ----------------------------------------------------------------------------
+
+    def _ensure_workspace_root(self) -> None:
+        """``~/work``, the host's working directory (3.C's ``workspacePath``)."""
+        work = self.account.home / "work"
+        if not os.path.lexists(work):
+            work.mkdir(mode=0o755)
+            if os.geteuid() == 0:
+                os.chown(work, self.account.uid, self.account.gid)
+
+    def _prepare_host(self, params: StartParams) -> None:
+        self._ensure_workspace_root()
+        code, _ = self._run_unlocked(
+            host_config_command(self.tools.venv_python, params.host_config),
+            stdin=json.dumps(params.host_config).encode(),
+            timeout=60,
+        )
+        if code != 0:
+            raise RuntimeError("the host configuration could not be written")
+
+    def _run_unlocked(self, argv: list[str], *, stdin: bytes, timeout: float) -> tuple[int | None, bytes]:
+        # Called with the spawn gate already held (from the host manager).
+        from .procutil import workload_argv
+
+        proc = subprocess.run(
+            workload_argv(argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir),
+            env=self._env(),
+            cwd=str(self.account.home),
+            input=stdin,
+            capture_output=True,
+            timeout=timeout,
+            start_new_session=True,
+        )
+        return proc.returncode, proc.stdout
+
+    def _spawn_host(self, params: StartParams) -> subprocess.Popen[bytes]:
+        log = open(self.layout.log / "host.log", "ab")  # noqa: SIM115 - handed to the child
+        try:
+            proc = spawn_workload(
+                host_argv(self.tools.omnigent, self.tools.server_url),
+                env=host_env(self._env(), params),
+                cwd=self.account.home / "work",
+                uid=self.account.uid,
+                gid=self.account.gid,
+                cgroup_dir=self.cgroup_dir,
+                stdout=log,
+            )
+        finally:
+            log.close()
+        with self._lock:
+            self._workload_pids.add(proc.pid)
+        return proc
+
+    def start_terminal(self) -> None:
+        """The setup terminal, as workload, once both restores are done."""
+        if not self.tools.terminal or self.terminal is not None:
+            return
+        with self._spawn_gate():
+            self.terminal = spawn_workload(
+                self.tools.terminal,
+                env=self._env(),
+                cwd=self.account.home,
+                uid=self.account.uid,
+                gid=self.account.gid,
+                cgroup_dir=self.cgroup_dir,
+            )
+            with self._lock:
+                self._workload_pids.add(self.terminal.pid)
+
+    # -- commands ----------------------------------------------------------------------------
+
+    def handle(self, body: bytes) -> tuple[int, dict[str, Any]]:
+        """One command body in, (HTTP status, reply or ErrorBody) out."""
+        try:
+            try:
+                raw = json.loads(body)
+            except (ValueError, RecursionError) as exc:
+                raise CommandError("bad_request", "the body is not JSON") from exc
+            # Refused before the schema, so a newer protocol's command is named as such.
+            version = raw.get("protocolVersion") if isinstance(raw, dict) else None
+            if (
+                isinstance(version, (int, float))
+                and not isinstance(version, bool)
+                and version not in SUPPORTED_PROTOCOL_VERSIONS
+            ):
+                raise CommandError("unsupported_version", "unsupported protocol version")
+            try:
+                command = self.contract.parse_command(raw)
+            except ContractError as exc:
+                raise CommandError(exc.code, str(exc)) from exc
+            if command["computerId"] != self.computer_id:
+                raise CommandError("forbidden", "a command for another computer")
+            if command["generation"] != self.generation:
+                raise CommandError("stale_generation", "a command for another generation")
+            reply = self._dispatch(command)
+            try:
+                self.contract.check_outbound("WorkspaceCommandReply", reply)
+            except Exception as exc:  # noqa: BLE001 - a supervisor bug, never sent
+                raise CommandError("internal", "the reply failed its own contract check") from exc
+            return 200, reply
+        except CommandError as exc:
+            return HTTP_STATUS.get(exc.code, 500), error_body(exc.code, str(exc), retryable=exc.retryable)
+        except Exception as exc:  # noqa: BLE001 - an unexpected failure is retryable, unrecorded
+            self._alert(f"command failed: {type(exc).__name__}")
+            return 500, error_body("internal", type(exc).__name__, retryable=True)
+
+    def _dispatch(self, command: dict[str, Any]) -> dict[str, Any]:
+        kind = command["type"]
+        if kind == "status":
+            return {"type": "status", "report": self.report()}
+        if kind == "job_status":
+            return {"type": "job_status", "job": self._job_view(command["jobOperationId"])}
+        op = command["operationId"]
+        fingerprint = _fingerprint(command)
+        with self._lock:
+            known = self._journal.get(op)
+            if known is not None:
+                if known[0] != fingerprint:
+                    raise CommandError("conflict", "this operation ID was used for another command")
+                if kind in ("restore_workspace", "capture"):
+                    return {"type": kind, "job": self._job_view(op)}
+                return known[1]
+        handler = getattr(self, f"_cmd_{kind}")
+        reply = handler(command)
+        with self._lock:
+            self._journal.setdefault(op, (fingerprint, reply))
+        return reply
+
+    # restore_workspace ----------------------------------------------------------------------
+
+    def _cmd_restore_workspace(self, command: dict[str, Any]) -> dict[str, Any]:
+        op = command["operationId"]
+        with self._lock:
+            if self.restore_state in ("running", "confirmed"):
+                raise CommandError("conflict", f"a restore is already {self.restore_state}")
+            self.restore_state = "running"
+            self._jobs[op] = {"kind": "restore", "jobOperationId": op, "state": "running"}
+        threading.Thread(target=self._restore_job, args=(command,), daemon=True).start()
+        self.changed()
+        return {"type": "restore_workspace", "job": self._job_view(op)}
+
+    def _restore_job(self, command: dict[str, Any]) -> None:
+        op = command["operationId"]
+        job: dict[str, Any]
+        try:
+            result = restore_workspace(
+                command["manifest"],
+                command["layerDirs"],
+                home=self.account.home,
+                restore_root=self.layout.restore,
+                merge_root=self.layout.merge,
+                replaced_root=self.layout.replaced,
+                policy=self.policy,
+                contract=self.contract,
+                job_id=op,
+            )
+            self._write_published(result.index, command["manifest"]["checkpointId"] if command["manifest"] else None)
+            for path in result.stripped:
+                self._alert("a restored layer held a member the policy does not save")
+            for raw in command["layerDirs"]:
+                shutil.rmtree(raw, ignore_errors=True)
+            self._ensure_workspace_root()
+            job = {
+                "kind": "restore",
+                "jobOperationId": op,
+                "state": "done",
+                "treeDigest": result.tree_digest,
+                "entries": result.entries,
+                "stripped": len(result.stripped),
+            }
+            state = "confirmed"
+        except RestoreFailed as exc:
+            job = {"kind": "restore", "jobOperationId": op, "state": "failed", "reason": exc.reason}
+            state = "failed"
+        except Exception:  # noqa: BLE001
+            self._alert("restore failed unexpectedly")
+            job = {"kind": "restore", "jobOperationId": op, "state": "failed", "reason": "move_failed"}
+            state = "failed"
+        with self._lock:
+            self._jobs[op] = job
+            self.restore_state = state
+        self.changed()
+
+    def _write_published(self, index: list[dict[str, Any]], checkpoint_id: str | None) -> None:
+        data = self.layout.data
+        tmp = data / "published-index.json.tmp"
+        tmp.write_text(json.dumps(index, separators=(",", ":"), ensure_ascii=False))
+        os.replace(tmp, data / "published-index.json")
+        with self._lock:
+            self.published_digest = tree_digest(index)
+            self.published_checkpoint = checkpoint_id
+
+    # install_credentials --------------------------------------------------------------------
+
+    def _cmd_install_credentials(self, command: dict[str, Any]) -> dict[str, Any]:
+        if self.restore_state != "confirmed":
+            raise CommandError("conflict", "the workspace restore is not confirmed")
+        with self._capture_gate:
+            floor = self.creds.order
+            try:
+                result = install_bundle(
+                    command["bundle"],
+                    home=self.account.home,
+                    staging=self.layout.credentials_staging,
+                    uid=self.account.uid,
+                    gid=self.account.gid,
+                )
+            except CredentialAlert as exc:
+                raise CommandError("bad_request", str(exc)) from exc
+            self.creds.baseline()
+            with self._lock:
+                self.credentials_installed = True
+        self._login_wake.set()
+        self.changed()
+        threading.Thread(target=self.start_terminal, daemon=True).start()
+        return {
+            "type": "install_credentials",
+            "installed": result.installed,
+            "removed": result.removed,
+            "orderFloor": floor,
+        }
+
+    # start_host -----------------------------------------------------------------------------
+
+    def _cmd_start_host(self, command: dict[str, Any]) -> dict[str, Any]:
+        params = StartParams(
+            attempt=int(command["startAttempt"]),
+            host_id=command["hostId"],
+            host_name=command["hostName"],
+            token=command["token"],
+            host_config=command["hostConfig"],
+        )
+        outcome = self.host.start(params, restores_done=self.restores_done)
+        self.changed()
+        return {"type": "start_host", "outcome": outcome}
+
+    # capture --------------------------------------------------------------------------------
+
+    def _cmd_capture(self, command: dict[str, Any]) -> dict[str, Any]:
+        op = command["operationId"]
+        if self.restore_state != "confirmed":
+            raise CommandError("conflict", "the workspace restore is not confirmed")
+        if command["policyVersion"] != self.policy.version:
+            raise CommandError("unsupported_version", "unsupported checkpoint policy version")
+        with self._lock:
+            if self.capture_running:
+                job = {"kind": "capture", "jobOperationId": op, "state": "failed", "reason": "busy", "pausedMs": 0}
+                self._jobs[op] = job
+                return {"type": "capture", "job": job}
+            parent_path = None
+            if command["kind"] == "delta":
+                want = command["parent"]["treeDigest"]
+                self._settle_pending(want)
+                if self.published_digest != want:
+                    job = {
+                        "kind": "capture",
+                        "jobOperationId": op,
+                        "state": "failed",
+                        "reason": "parent_mismatch",
+                        "pausedMs": 0,
+                    }
+                    self._jobs[op] = job
+                    return {"type": "capture", "job": job}
+                parent_path = str(self.layout.data / "published-index.json")
+            else:
+                self._settle_pending(None)
+            self.capture_running = True
+            self._jobs[op] = {"kind": "capture", "jobOperationId": op, "state": "running"}
+        spec = {
+            "home": str(self.account.home),
+            "snapshot": str(self.layout.snapshot),
+            "staged_root": str(self.layout.staged),
+            "data_dir": str(self.layout.data),
+            "log_dir": str(self.layout.log),
+            "policy_file": str(self.layout.policy_file),
+            "schema_dir": str(self.layout.schema_dir),
+            "layer_id": command["layerId"],
+            "kind": command["kind"],
+            "parent": command["parent"],
+            "parent_index": parent_path,
+            "lease": command["lease"],
+            "computer_id": self.computer_id,
+            "generation": self.generation,
+            "supervisor_pid": os.getpid(),
+            "workload_pids": sorted(self._live_workload() | set(self.scope_pids or ())),
+            "cgroup_dir": self.cgroup_dir,
+            "scope_pids": self.scope_pids,
+            "whole_container": self.whole_container,
+            "margin_bytes": self.capture_margin_bytes,
+            "fault": self.capture_fault,
+            "record_kinds": True,
+        }
+        threading.Thread(target=self._capture_job, args=(op, spec), daemon=True).start()
+        self.changed()
+        return {"type": "capture", "job": self._job_view(op)}
+
+    def _settle_pending(self, parent_digest: str | None) -> None:
+        """Resolve a staged layer whose finish_capture never came: if WorkspaceDO now names
+        it as the parent, it was published; otherwise it is discarded."""
+        for op, job in list(self._jobs.items()):
+            if job.get("kind") != "capture" or job.get("state") != "staged" or job.get("finished"):
+                continue
+            if parent_digest is not None and job["treeDigest"] == parent_digest:
+                self._promote(job)
+            else:
+                self._discard(job)
+
+    def _promote(self, job: dict[str, Any]) -> None:
+        pending = self.layout.data / f"pending-{job['layerId']}.json"
+        os.replace(pending, self.layout.data / "published-index.json")
+        self.published_digest = job["treeDigest"]
+        shutil.rmtree(job["layerDir"], ignore_errors=True)
+        job["finished"] = "published"
+
+    def _discard(self, job: dict[str, Any]) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.layout.data / f"pending-{job['layerId']}.json")
+        shutil.rmtree(job["layerDir"], ignore_errors=True)
+        job["finished"] = "discarded"
+
+    def _live_workload(self) -> set[int]:
+        with self._lock:
+            alive = set()
+            for pid in self._workload_pids:
+                try:
+                    os.kill(pid, 0)
+                    alive.add(pid)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    alive.add(pid)
+            self._workload_pids = alive
+            return alive
+
+    def _capture_job(self, op: str, spec: dict[str, Any]) -> None:
+        spec_path = self.layout.log / f"capture-{op}.spec.json"
+        result_path = self.layout.log / f"capture-{op}.result.json"
+        spec_path.write_text(json.dumps(spec))
+        with contextlib.suppress(FileNotFoundError):
+            result_path.unlink()
+        job: dict[str, Any]
+        with self._capture_gate:
+            try:
+                worker = subprocess.Popen(
+                    module_argv("cfo_computer.capture", str(spec_path), str(result_path)),
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                )
+                limit = spec["lease"]["hardMs"] / 1000.0 + self.capture_grace_s
+                try:
+                    worker.wait(timeout=limit)
+                except subprocess.TimeoutExpired:
+                    # Wedged: its guard has resumed everything at the lease's end already.
+                    worker.kill()
+                    worker.wait()
+                result = json.loads(result_path.read_text())
+            except Exception:  # noqa: BLE001 - a dead worker is a failed capture
+                result = {"state": "failed", "reason": "copy_failed", "pausedMs": 0}
+        base = {"kind": "capture", "jobOperationId": op}
+        if result.get("state") == "staged":
+            job = {
+                **base,
+                "state": "staged",
+                "layerDir": result["layerDir"],
+                "indexSha256": result["indexSha256"],
+                "treeDigest": result["treeDigest"],
+                "entries": result["entries"],
+                "deleted": result["deleted"],
+                "bytes": result["bytes"],
+                "cutAt": result["cutAt"],
+                "pausedMs": int(result["pausedMs"]),
+                "layerId": result["layerId"],
+            }
+        elif result.get("state") == "unchanged":
+            job = {**base, "state": "unchanged", "cutAt": result["cutAt"], "pausedMs": int(result["pausedMs"])}
+        else:
+            job = {**base, "state": "failed", "reason": result.get("reason", "copy_failed"), "pausedMs": int(result.get("pausedMs", 0))}
+        if result.get("skipped"):
+            self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
+        with self._lock:
+            self._jobs[op] = job
+            self.capture_running = False
+        self.changed()
+
+    def _cmd_finish_capture(self, command: dict[str, Any]) -> dict[str, Any]:
+        capture_op = command["captureOperationId"]
+        with self._lock:
+            job = self._jobs.get(capture_op)
+            if job is None or job.get("kind") != "capture":
+                raise CommandError("not_found", "no such capture")
+            if job["state"] == "running":
+                raise CommandError("conflict", "the capture is still running", retryable=True)
+            if job["state"] == "staged" and not job.get("finished"):
+                if command["outcome"] == "published":
+                    self._promote(job)
+                else:
+                    self._discard(job)
+        self.changed()
+        return {"type": "finish_capture", "done": True}
+
+    def _job_view(self, op: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(op)
+            if job is None:
+                raise CommandError("not_found", "no such job")
+            return {k: v for k, v in job.items() if k not in ("finished", "layerId")}
+
+    # credentials ----------------------------------------------------------------------------
+
+    def _cmd_credential_snapshot(self, command: dict[str, Any]) -> dict[str, Any]:
+        if not self.credentials_installed:
+            raise CommandError("conflict", "the credentials are not installed")
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                bundle = self.creds.snapshot(force=True)
+                break
+            except UnstableRead as exc:
+                if time.monotonic() > deadline:
+                    raise CommandError("unavailable", "a credential file keeps changing", retryable=True) from exc
+                time.sleep(0.2)
+            except CredentialAlert as exc:
+                raise CommandError("internal", str(exc)) from exc
+        assert bundle is not None
+        self.creds.enqueue(bundle)
+        return {"type": "credential_snapshot", "order": bundle["order"]}
+
+    def _cmd_sign_out(self, command: dict[str, Any]) -> dict[str, Any]:
+        result = L.sign_out(lambda argv, timeout: self._run(list(argv), timeout), self.tools.claude, self.tools.codex)
+        self.creds.tick()
+        self._login_wake.set()
+        return {"type": "sign_out", "claude": result["claude"], "codex": result["codex"]}
+
+    def verify_signed_out(self, bundle: dict[str, Any] | None) -> list[str]:
+        """Q6: the published bundle, installed into a scratch home, leaves no declared file.
+
+        Not on the wire yet: the computer API has no command for it (a contract addition for
+        the lead). The install path is the one ``install_credentials`` uses.
+        """
+        return verify_signed_out(
+            bundle, scratch=self.layout.scratch / new_operation_id(), uid=self.account.uid, gid=self.account.gid
+        )
+
+    def _publish_bundle(self, bundle: dict[str, Any]) -> str:
+        if self.api is None:
+            raise Unanswered("no computer API")
+        message = self._envelope("credential_checkpoint")
+        message["bundle"] = bundle
+        try:
+            reply = self.api.send_once(message)
+        except Refused as exc:
+            self._alert(f"credential checkpoint refused: {exc.code}")
+            raise Unanswered(exc.code) from exc
+        return reply["outcome"]
+
+    # reports and messages -------------------------------------------------------------------
+
+    def _envelope(self, kind: str) -> dict[str, Any]:
+        return {
+            "type": kind,
+            "protocolVersion": SUPERVISOR_PROTOCOL_VERSION,
+            "computerId": self.computer_id,
+            "generation": self.generation,
+            "operationId": new_operation_id(),
+        }
+
+    def runner_processes(self) -> int:
+        try:
+            return int(R.classify()["runner_count"])
+        except Exception:  # noqa: BLE001 - unknown counts as live (AT3-002)
+            return 1
+
+    def report(self) -> dict[str, Any]:
+        with self._lock:
+            self._report_seq += 1
+            seq = self._report_seq
+            capture = "running" if self.capture_running else "idle"
+            restore = self.restore_state
+        host = self.host.report()
+        runners = self.runner_processes() if host["state"] != "not_started" else 0
+        return {
+            "seq": seq,
+            "host": host,
+            "runnerProcesses": runners,
+            "restore": restore,
+            "capture": capture,
+            "credentialsPending": self.creds.pending(),
+            "logins": dict(self.logins),
+        }
+
+    def refresh_logins(self) -> None:
+        if not self.credentials_installed:
+            return
+        run = lambda argv, timeout: self._run(list(argv), timeout)  # noqa: E731
+        status = {"claude": L.claude_status(run, self.tools.claude), "codex": L.codex_status(run, self.tools.codex)}
+        with self._lock:
+            changed = status != self.logins
+            self.logins = status
+        if changed:
+            self.changed()
+
+    def hello(self) -> None:
+        assert self.api is not None
+        message = self._envelope("hello")
+        message["supervisorVersion"] = SUPERVISOR_VERSION
+        self.api.send(message, stop=self._stop.is_set)
+
+    def send_report(self) -> None:
+        if self.api is None:
+            return
+        message = self._envelope("report")
+        message["report"] = self.report()
+        try:
+            self.api.send(message, attempts=3, stop=self._stop.is_set)
+        except (Unanswered, Refused):
+            pass  # the next report replaces this one
+
+    def request_save(self) -> None:
+        """SIGTERM: a best-effort workspace save (design, capture "at sleep; best-effort on
+        SIGTERM"). WorkspaceDO decides; the supervisor keeps serving until it is killed."""
+        self.sigterm = True
+        if self.api is None:
+            return
+        message = self._envelope("save_request")
+        message["reason"] = "sigterm"
+        with contextlib.suppress(Unanswered, Refused):
+            self.api.send(message, attempts=5, stop=lambda: False)
+
+    # loops ----------------------------------------------------------------------------------
+
+    def start_loops(self) -> None:
+        threading.Thread(target=self._report_loop, name="reports", daemon=True).start()
+        threading.Thread(target=self.creds.run, name="credentials", daemon=True).start()
+        threading.Thread(target=self._login_loop, name="logins", daemon=True).start()
+
+    def _report_loop(self) -> None:
+        if self.api is not None:
+            try:
+                self.hello()
+            except (Unanswered, Refused) as exc:
+                self._alert(f"hello not answered: {exc}")
+        while not self._stop.is_set():
+            self._changed.wait(REPORT_INTERVAL_S)
+            if self._stop.is_set():
+                return
+            time.sleep(0.2)  # fold a burst of changes into one report
+            self._changed.clear()
+            try:
+                self.send_report()
+            except Exception:  # noqa: BLE001 - reporting must never stop
+                self._alert("report failed: " + traceback.format_exc(limit=1)[-200:])
+
+    def _login_loop(self) -> None:
+        while not self._stop.is_set():
+            self._login_wake.wait(LOGIN_INTERVAL_S)
+            self._login_wake.clear()
+            if self._stop.is_set():
+                return
+            with contextlib.suppress(Exception):
+                self.refresh_logins()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._changed.set()
+        self._login_wake.set()
+        self.creds.stop()
+        self.host.stop()
+        if self.terminal is not None and self.terminal.poll() is None:
+            self.terminal.terminate()
