@@ -35,7 +35,11 @@ import {
 } from "../../../src/shared/rpc.ts";
 import { BUILD } from "./build.ts";
 
-export { PlatformInternal } from "../../../src/internal/entrypoints.ts";
+export {
+  ComputerApi,
+  OmnigentRoute,
+  PlatformInternal,
+} from "../../../src/internal/entrypoints.ts";
 
 interface StagingEnv {
   readonly OMNIGENT?: DurableObjectNamespace<OmnigentServer>;
@@ -43,10 +47,12 @@ interface StagingEnv {
   readonly COMPUTER_DEF_ON?: DurableObjectNamespace<ComputerDefOn>;
   readonly COMPUTER_DO_ON?: DurableObjectNamespace<ComputerDoOn>;
   readonly COMPUTER_DO_OFF?: DurableObjectNamespace<ComputerDoOff>;
-  readonly BENCH: DurableObjectNamespace<StartBench>;
+  readonly BENCH?: DurableObjectNamespace<StartBench>;
   readonly RUN: DurableObjectNamespace<StagingRun>;
   readonly RESULTS: R2Bucket;
-  readonly WP33_MODE: "full" | "bench";
+  readonly WP33_MODE: "full" | "bench" | "final";
+  /** WP3.1's WorkspaceDO, as the final run's stand-in (WorkspaceStandIn). */
+  readonly WORKSPACE?: DurableObjectNamespace<WorkspaceStandIn>;
   readonly WP33_RUN_TAG: string;
 }
 
@@ -258,8 +264,29 @@ const ROUTE_HOSTS: readonly (readonly [string, "NativeRoute" | "BridgeRoute"])[]
   ["bridge.internal", "BridgeRoute"],
 ];
 
+/** The final run's synthetic identities: each stand-in computer and the host Omnigent "bound". */
+const FINAL_IDENTITIES: Readonly<
+  Record<string, { computerId: string; hostId: string; token: string }>
+> = {
+  "def-off": {
+    computerId: "cmp_00000000000000000000000001",
+    hostId: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    token: "cfo-canary-launch-token-def-off-0123456789abcdef",
+  },
+  "do-on": {
+    computerId: "cmp_00000000000000000000000002",
+    hostId: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    token: "cfo-canary-launch-token-do-on-0123456789abcdef",
+  },
+};
+const FINAL_GENERATION = 1;
+
 abstract class ComputerBase extends DurableObject<StagingEnv> {
   protected abstract variant(): Variant;
+
+  #final(): boolean {
+    return this.env.WP33_MODE === "final";
+  }
 
   constructor(ctx: DurableObjectState, env: StagingEnv) {
     super(ctx, env);
@@ -280,9 +307,33 @@ abstract class ComputerBase extends DurableObject<StagingEnv> {
     const props: RouteProps = { variant: this.variant().name, runId };
     const container = this.ctx.container;
     if (!container) return;
-    for (const [host, entrypoint] of ROUTE_HOSTS) {
-      const factory = exports[entrypoint];
-      if (factory) await container.interceptOutboundHttp(host, factory({ props }));
+    if (this.#final()) {
+      // The production routes, with the trusted props WorkspaceDO would give them.
+      const identity = FINAL_IDENTITIES[this.variant().name];
+      if (!identity) throw new Error("no identity for this variant");
+      const interceptProps = {
+        propsVersion: 1,
+        computerId: identity.computerId,
+        generation: FINAL_GENERATION,
+        hostId: identity.hostId,
+      };
+      const production = this.ctx.exports as unknown as Record<
+        "OmnigentRoute" | "ComputerApi",
+        (options: { props: unknown }) => Fetcher
+      >;
+      await container.interceptOutboundHttp(
+        "omnigent.internal",
+        production.OmnigentRoute({ props: interceptProps }),
+      );
+      await container.interceptOutboundHttp(
+        "computer.internal",
+        production.ComputerApi({ props: interceptProps }),
+      );
+    } else {
+      for (const [host, entrypoint] of ROUTE_HOSTS) {
+        const factory = exports[entrypoint];
+        if (factory) await container.interceptOutboundHttp(host, factory({ props }));
+      }
     }
     const recorder = exports.Recorder;
     if (recorder) await container.interceptOutboundHttp("rec.internal", recorder({ props }));
@@ -296,12 +347,28 @@ abstract class ComputerBase extends DurableObject<StagingEnv> {
     const v = this.variant();
     if (!container.running) {
       await this.intercept(runId);
-      const env = {
-        WP33_HOSTS: ROUTE_HOSTS.map(([host]) => host).join(","),
-        WP33_VARIANT: v.name,
-        WP33_LADDER: v.ladder ? "1" : "",
-        WP33_FLOOD: v.flood.join(","),
-      };
+      const identity = FINAL_IDENTITIES[v.name];
+      const other = Object.values(FINAL_IDENTITIES).find((i) => i !== identity);
+      const env: Record<string, string> =
+        this.#final() && identity && other
+          ? {
+              WP33_HOSTS: "omnigent.internal",
+              WP33_VARIANT: v.name,
+              WP33_LADDER: "",
+              WP33_FLOOD: "",
+              WP33_CHECKS: "1",
+              WP33_HOST_ID: identity.hostId,
+              WP33_OTHER_HOST_ID: other.hostId,
+              WP33_LAUNCH_TOKEN: identity.token,
+              WP33_COMPUTER_ID: identity.computerId,
+              WP33_GENERATION: String(FINAL_GENERATION),
+            }
+          : {
+              WP33_HOSTS: ROUTE_HOSTS.map(([host]) => host).join(","),
+              WP33_VARIANT: v.name,
+              WP33_LADDER: v.ladder ? "1" : "",
+              WP33_FLOOD: v.flood.join(","),
+            };
       if (v.policy === "durable_object") {
         const image = container.images.probe;
         if (!image) throw new Error("no probe image");
@@ -365,6 +432,68 @@ export class ComputerDoOff extends ComputerBase {
 }
 
 // ---------------------------------------------------------------------------------------------
+// WP3.1's WorkspaceDO, as the final run's stand-in: what the production routes ask of it.
+
+export class WorkspaceStandIn extends DurableObject<StagingEnv> {
+  #identity() {
+    const name = this.ctx.id.name ?? "";
+    const identity = Object.values(FINAL_IDENTITIES).find((i) => i.computerId === name);
+    if (!identity) throw new Error("[not_found] no such computer");
+    return identity;
+  }
+
+  /** The pages interface's state: the route reads the generation and the bound host ID. */
+  async pages(): Promise<unknown> {
+    const identity = this.#identity();
+    return {
+      action: "state",
+      computer: {
+        computerId: identity.computerId,
+        hostName: "staging",
+        hostId: identity.hostId,
+        size: "standard-1",
+        nextSize: null,
+        lifecycle: "host_running",
+        status: "host_running",
+        generation: FINAL_GENERATION,
+        admission: { admitting: true },
+        saving: false,
+        lastSavedAt: null,
+        verifiedAt: null,
+        workspaceBytes: null,
+        lastContactAt: null,
+        lastKeepAliveAt: null,
+        restoredTo: null,
+        unexpectedStopAt: null,
+        refusedSleeps: 0,
+        setupCards: [
+          { provider: "claude", state: "unknown" },
+          { provider: "codex", state: "unknown" },
+        ],
+        removal: {
+          state: "none",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      },
+    };
+  }
+
+  /** The computer API: answers a hello of the current generation. */
+  async computer(call: {
+    message: { type: string; generation: number; protocolVersion: number };
+  }): Promise<unknown> {
+    this.#identity();
+    if (call.message.generation !== FINAL_GENERATION) {
+      throw new Error("[stale_generation] an older generation");
+    }
+    if (call.message.type !== "hello") throw new Error("[bad_request] only hello here");
+    return { type: "hello", protocolVersion: call.message.protocolVersion };
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The start bench (3.C's open question 3; VD-16)
 
 interface CycleSpec {
@@ -375,6 +504,11 @@ interface CycleSpec {
   readonly instance: string;
   /** "image": the image's own command (bench_server.py on 8090); "inline": INLINE_SERVER. */
   readonly command?: "image" | "inline";
+  /**
+   * Start, wait until the port answers, stop, then start again `gapMs` after the confirmed stop,
+   * all in one invocation: a start right after a stop (DC-37, VD-16).
+   */
+  readonly restart?: boolean;
 }
 
 /**
@@ -390,12 +524,19 @@ class H(h.BaseHTTPRequestHandler):
         body = json.dumps({"upMs": round((time.time() - START) * 1000), "port": PORT}).encode()
         self.send_response(200); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self, *a): pass
-class H6(h.ThreadingHTTPServer):
+class S4(h.ThreadingHTTPServer):
+    # http.server's own bind calls socket.getfqdn(), which fails on a durable_object-policy
+    # container: its hostname has a label longer than 63 characters (bench-2).
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "bench", self.server_address[1]
+class H6(S4):
     address_family = socket.AF_INET6
-START = time.time(); res = []; srv = None; PORT = None
+START = time.time(); res = [["hostname", socket.gethostname()[:200], len(socket.gethostname())]]; srv = None; PORT = None
 for host, port in (("0.0.0.0", 8090), ("::", 8090), ("0.0.0.0", 8091)):
     try:
-        s = (H6 if host == "::" else h.ThreadingHTTPServer)((host, port), H)
+        s = (H6 if host == "::" else S4)((host, port), H)
         res.append([host, port, "ok"])
         if srv is None: srv, PORT = s, port
         else: s.server_close()
@@ -415,6 +556,93 @@ srv.serve_forever()
 `;
 
 const BENCH_PLAN: readonly CycleSpec[] = [
+  // bench-4: a start right after a confirmed stop, in the same invocation (VD-16).
+  {
+    label: "restart-0ms-a",
+    gapMs: 0,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-0ms-b",
+    gapMs: 0,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-0ms-c",
+    gapMs: 0,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-100ms",
+    gapMs: 100,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-500ms",
+    gapMs: 500,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-1000ms",
+    gapMs: 1_000,
+    monitor: false,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-0ms-d",
+    gapMs: 0,
+    monitor: true,
+    instance: "standard-1",
+    command: "inline",
+    restart: true,
+  },
+  {
+    label: "restart-0ms-std2",
+    gapMs: 0,
+    monitor: false,
+    instance: "standard-2",
+    command: "inline",
+    restart: true,
+  },
+];
+/** bench-3's plan (25 Oct). Kept for the record. */
+export const BENCH_3_PLAN: readonly CycleSpec[] = [
+  // bench-3: the start measurements, on the inline server (bench-2 found the image's command,
+  // Python's http.server, failing to bind: the container's hostname is not a valid DNS name).
+  { label: "fresh", gapMs: null, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-a", gapMs: 0, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-b", gapMs: 0, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-c", gapMs: 0, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-monitor-a", gapMs: 0, monitor: true, instance: "standard-1", command: "inline" },
+  { label: "gap0-monitor-b", gapMs: 0, monitor: true, instance: "standard-1", command: "inline" },
+  { label: "gap2s", gapMs: 2_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap5s", gapMs: 5_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap10s", gapMs: 10_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap20s", gapMs: 20_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-standard-2", gapMs: 0, monitor: false, instance: "standard-2", command: "inline" },
+  { label: "gap0-lite", gapMs: 0, monitor: false, instance: "lite", command: "inline" },
+  { label: "gap0-basic", gapMs: 0, monitor: true, instance: "basic", command: "inline" },
+];
+/** bench-2's plan (25 Oct): the diagnosis of bench-1's exit, then cycles on a server that could
+ * not bind. Kept for the record. */
+export const BENCH_2_PLAN: readonly CycleSpec[] = [
   // bench-2: why the image's command exits, then the start measurements on what runs.
   {
     label: "diag-image-std1",
@@ -505,6 +733,10 @@ export class StartBench extends DurableObject<StagingEnv> {
     if (!container) throw new Error("no container configured");
     let lastStopAt = (await this.ctx.storage.get<number | null>("lastStopAt")) ?? null;
     let destroyMs: number | null = null;
+    let warmUp: Attempt | null = null;
+    if (spec.restart && !container.running) {
+      warmUp = await this.attempt(container, spec, 0, lastStopAt);
+    }
     if (container.running) {
       const t = Date.now();
       await container.destroy("wp33 bench: next cycle");
@@ -512,6 +744,7 @@ export class StartBench extends DurableObject<StagingEnv> {
       lastStopAt = Date.now();
       await this.ctx.storage.put("lastStopAt", lastStopAt);
     }
+    const runningAfterDestroy = container.running;
     if (spec.gapMs) await sleep(spec.gapMs);
     const attempts: Attempt[] = [];
     for (let i = 0; i <= RETRY_AFTER_MS.length; i += 1) {
@@ -527,7 +760,7 @@ export class StartBench extends DurableObject<StagingEnv> {
       await container.destroy("wp33 bench: cycle end");
       await this.ctx.storage.put("lastStopAt", Date.now());
     }
-    return { destroyMs, attempts, runningBeforeStop };
+    return { destroyMs, runningAfterDestroy, warmUp, attempts, runningBeforeStop };
   }
 
   async attempt(
@@ -644,7 +877,7 @@ export class StartBench extends DurableObject<StagingEnv> {
 interface RunRecord {
   runId: string;
   tag: string;
-  mode: "full" | "bench";
+  mode: "full" | "bench" | "final";
   t0: number;
   status: "active" | "ended";
   events: { kind: EventKind; at: number; doneAt: number | null; result?: unknown }[];
@@ -682,7 +915,7 @@ export class StagingRun extends DurableObject<StagingEnv> {
       mode,
       t0,
       status: "active",
-      events: (mode === "full" ? SCHEDULE : [{ kind: "end" as const, at: 14 * MIN }]).map((e) => ({
+      events: (mode === "bench" ? [{ kind: "end" as const, at: 14 * MIN }] : SCHEDULE).map((e) => ({
         kind: e.kind,
         at: t0 + e.at,
         doneAt: null,
@@ -696,7 +929,7 @@ export class StagingRun extends DurableObject<StagingEnv> {
     await this.env.RESULTS.put("runs/current.json", JSON.stringify(run));
     await this.env.RESULTS.put(`runs/${run.runId}/run.json`, JSON.stringify(run));
     this.#event(run, "run_started", { mode, build: BUILD.id });
-    if (mode === "full") {
+    if (mode !== "bench") {
       await serverStub(this.env).ensureStarted(call);
       for (const ns of this.#computers()) {
         await ns
@@ -705,7 +938,7 @@ export class StagingRun extends DurableObject<StagingEnv> {
           .catch((error: unknown) => this.#event(run, "computer_error", { error: text(error) }));
       }
     }
-    await this.env.BENCH.getByName("bench").begin(run.runId);
+    await this.env.BENCH?.getByName("bench").begin(run.runId);
     await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
   }
 

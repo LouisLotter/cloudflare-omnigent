@@ -111,7 +111,10 @@ def reply(status: http.HTTPStatus, body: bytes, content_type: str) -> Response:
 
 def process_request(connection: ServerConnection, request):  # noqa: ANN201
     path = urlsplit(request.path).path
-    if path == "/ws" and request.headers.get("Upgrade", "").lower() == "websocket":
+    upgrade = request.headers.get("Upgrade", "").lower() == "websocket"
+    # The echo, also on a host tunnel's path (WP3.3's final run: the production route checks the
+    # host ID and launch token before the request gets here).
+    if upgrade and (path == "/ws" or (path.startswith("/v1/hosts/") and path.endswith("/tunnel"))):
         return None
     LOG.write("http", path=path[:80])
     if path == "/health":

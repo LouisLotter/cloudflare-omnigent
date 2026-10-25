@@ -15,6 +15,12 @@ through a route of the platform Worker to OmnigentServer and the stand-in server
 - with WP33_FLOOD, holds one more connection per named route that sends 2 KiB messages as fast
   as WP33_FLOOD_RATE allows, and reports the counts every 30 s.
 
+With WP33_CHECKS (the final run, through the production route), it first checks once what a
+computer may and may not do on omnigent.internal and computer.internal: an ordinary read, the
+block list, a method override, its own host tunnel with its launch token, another computer's host
+tunnel, its own without a launch token, and the computer API's hello (current and older
+generation). Each check records the status it got and whether that was the expected one.
+
 Records go to http://rec.internal/batch every 5 s (the intercept's props name this computer), and
 to stdout. No headers or bodies are recorded.
 """
@@ -27,10 +33,11 @@ import json
 import os
 import secrets
 import time
+import urllib.error
 import urllib.request
 
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 HOSTS = [h for h in os.environ.get("WP33_HOSTS", "native.internal").split(",") if h]
 FLOOD = [h for h in os.environ.get("WP33_FLOOD", "").split(",") if h]
@@ -252,8 +259,79 @@ async def flood(host: str) -> None:
         await asyncio.sleep(1)
 
 
+def http_status(method: str, url: str, headers: dict[str, str], body: bytes | None) -> int:
+    request = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - fixed scheme
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+async def ws_status(url: str, headers: dict[str, str]) -> int:
+    try:
+        async with connect(url, additional_headers=headers, open_timeout=15, close_timeout=1) as ws:
+            payload = secrets.token_bytes(32)
+            await ws.send(payload)
+            echoed = await asyncio.wait_for(ws.recv(), timeout=10)
+            return 101 if echoed == payload else -2
+    except InvalidStatus as error:
+        return error.response.status_code
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+async def checks() -> None:
+    own = os.environ["WP33_HOST_ID"]
+    other = os.environ["WP33_OTHER_HOST_ID"]
+    token = os.environ["WP33_LAUNCH_TOKEN"]
+    computer = os.environ["WP33_COMPUTER_ID"]
+    generation = int(os.environ["WP33_GENERATION"])
+    base = "http://omnigent.internal"
+    json_headers = {"content-type": "application/json"}
+    # The server may still be starting: wait for an ordinary read to pass first.
+    for _ in range(60):
+        if await asyncio.to_thread(http_status, "GET", f"{base}/v1/info", {}, None) == 200:
+            break
+        await asyncio.sleep(2)
+
+    def hello(gen: int) -> bytes:
+        return json.dumps({
+            "type": "hello", "protocolVersion": 1, "computerId": computer, "generation": gen,
+            "operationId": "op_01hzy3m8k6q4t2v9w7x5r0s1n3", "supervisorVersion": "wp33-probe",
+        }).encode()
+
+    http_cases = [
+        ("read", "GET", f"{base}/v1/info", {}, None, 200),
+        ("account_setup", "POST", f"{base}/auth/setup", json_headers, b"{}", 403),
+        ("account_setup_encoded", "POST", f"{base}/AUTH%2Fsetup", json_headers, b"{}", 403),
+        ("approval", "POST", f"{base}/v1/sessions/s1/elicitations/e1/resolve", json_headers, b"{}", 403),
+        ("sharing", "PUT", f"{base}/v1/sharing", json_headers, b"{}", 403),
+        ("override", "GET", f"{base}/v1/info", {"X-HTTP-Method-Override": "PUT"}, None, 403),
+        ("computer_api_hello", "POST", "http://computer.internal/v1/messages", json_headers, hello(generation), 200),
+        ("computer_api_older", "POST", "http://computer.internal/v1/messages", json_headers, hello(generation - 1), 409),
+    ]
+    for name, method, url, headers, body, expected in http_cases:
+        status = await asyncio.to_thread(http_status, method, url, headers, body)
+        record("check", name=name, status=status, ok=status == expected)
+    ws_base = "ws://omnigent.internal/v1/hosts"
+    ws_cases = [
+        ("own_tunnel", f"{ws_base}/{own}/tunnel", {"X-Omnigent-Host-Token": token}, 101),
+        ("other_tunnel", f"{ws_base}/{other}/tunnel", {"X-Omnigent-Host-Token": token}, 403),
+        ("own_tunnel_no_token", f"{ws_base}/{own}/tunnel", {"Authorization": "Bearer x"}, 403),
+        ("own_tunnel_both", f"{ws_base}/{own}/tunnel", {"X-Omnigent-Host-Token": token, "Authorization": "Bearer x"}, 403),
+    ]
+    for name, url, headers, expected in ws_cases:
+        status = await ws_status(url, headers)
+        record("check", name=name, status=status, ok=status == expected)
+
+
 async def main() -> None:
     record("boot", hosts=HOSTS, flood=FLOOD, ladder=LADDER)
+    if os.environ.get("WP33_CHECKS") == "1":
+        await checks()
     tasks = [asyncio.create_task(shipper())]
     tasks += [asyncio.create_task(hold(h)) for h in HOSTS]
     if LADDER:

@@ -2,13 +2,13 @@
 # WP3.3 staging checks (test tooling, laptop only). Deploys only through the guarded staging tool.
 # No owner step: each deployment's cron trigger starts its run by itself.
 #
-#   worker/test/staging/wp33/run.sh deploy bench|platform   one stamped deploy
-#   worker/test/staging/wp33/run.sh campaign [tag]          wait for the platform run with this tag
-#                                                           to start, redeploy the platform Worker
-#                                                           at T0+16 min (the version switch), wait
-#                                                           for the end, collect both runs
-#   worker/test/staging/wp33/run.sh collect bench|platform <run-id>
-#   worker/test/staging/wp33/run.sh teardown                both deployments
+#   worker/test/staging/wp33/run.sh deploy bench|platform|final   one stamped deploy
+#   worker/test/staging/wp33/run.sh campaign platform|final <tag> wait for that deployment's run
+#                                                           with this tag to start, redeploy it at
+#                                                           T0+16 min (the version switch), wait
+#                                                           for the end, collect it
+#   worker/test/staging/wp33/run.sh collect bench|platform|final <run-id>
+#   worker/test/staging/wp33/run.sh teardown                every wp33 deployment
 #
 # Results go to $WP33_RESULTS (default $HOME/.pt/wp33/staging), outside the repository; redact
 # them with spikes/x1/scripts/redact.py before they leave the laptop.
@@ -44,6 +44,7 @@ deploy_one() {
   case "$target" in
     platform) config=worker/test/staging/wp33/wrangler.platform.jsonc ;;
     bench) config=worker/test/staging/wp33/wrangler.bench.jsonc ;;
+    final) config=worker/test/staging/wp33/wrangler.final.jsonc ;;
     *) echo "run.sh: unknown target $target" >&2; exit 2 ;;
   esac
   build="wp33-$(date -u +%Y%m%dT%H%M%SZ)-$target"
@@ -81,7 +82,8 @@ wait_for_run() {
 }
 
 collect() {
-  local target="$1" run_id="$2" out="$results/$target-$2"
+  local target="$1" run_id="$2" out
+  out="$results/$target-$run_id"
   mkdir -p "$out"
   python3 -I "$here/analyze.py" collect "$(bucket_of "$target")" "$run_id" "$out"
   python3 -I "$here/analyze.py" analyse "$out" "$results/deploys.jsonl" | tee "$out/summary.json"
@@ -90,17 +92,18 @@ collect() {
 case "${1:-}" in
   deploy) deploy_one "${2:?bench or platform}" ;;
   campaign)
-    tag="${2:-diag-1}"
-    read -r t0 run_id < <(wait_for_run platform "$tag") || { echo "run.sh: no run" >&2; exit 1; }
-    echo "platform run $run_id started at $t0"
-    wait_until $(( t0 + 16 * 60000 )); deploy_one platform
+    target="${2:-platform}"
+    tag="${3:-diag-1}"
+    read -r t0 run_id < <(wait_for_run "$target" "$tag") || { echo "run.sh: no run" >&2; exit 1; }
+    echo "$target run $run_id started at $t0"
+    wait_until $(( t0 + 16 * 60000 )); deploy_one "$target"
     wait_until $(( t0 + 34 * 60000 ))
-    collect platform "$run_id"
+    collect "$target" "$run_id"
     ;;
   collect) collect "${2:?bench or platform}" "${3:?run ID}" ;;
   teardown)
-    # Each one even if the other was never deployed (the tool exits 1 for an unknown name).
-    for target in platform bench; do
+    # Each one even if another was never deployed (the tool exits 1 for an unknown name).
+    for target in platform bench final; do
       (cd "$root" && pnpm stg teardown --suffix "wp33-$target") 2>&1 | "${redact[@]}" |
         tee "$results/teardown-$target.log" || true
     done

@@ -13,6 +13,7 @@ let failures = 0;
 for (const [file, name] of [
   ["wrangler.platform.jsonc", "cfo-stg-wp33-platform"],
   ["wrangler.bench.jsonc", "cfo-stg-wp33-bench"],
+  ["wrangler.final.jsonc", "cfo-stg-wp33-final"],
 ] as const) {
   try {
     validateDeployConfig(readWranglerConfig(join(here, file), worker), ACCOUNT, name);
