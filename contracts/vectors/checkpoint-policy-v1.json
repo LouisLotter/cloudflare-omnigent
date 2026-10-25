@@ -271,6 +271,21 @@
       "path": "work/tmp/omnigent-1000/claude-native/0123456789abcdef0123456789abcdef/permission_hook.json",
       "action": "save",
       "rule": "workspace"
+    },
+    {
+      "path": ".codex/tmp/arg0-linux/codex-arg0aVJHaz/apply_patch",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".codex/tmp",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/tmp/arg0-linux/codex-arg0aVJHaz/.lock",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
     }
   ]
 }
