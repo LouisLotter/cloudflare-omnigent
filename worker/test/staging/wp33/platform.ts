@@ -35,7 +35,7 @@ import {
 } from "../../../src/shared/rpc.ts";
 import { BUILD } from "./build.ts";
 
-export { PlatformInternal } from "../../../src/server/platform-internal.ts";
+export { PlatformInternal } from "../../../src/internal/entrypoints.ts";
 
 interface StagingEnv {
   readonly OMNIGENT?: DurableObjectNamespace<OmnigentServer>;
@@ -305,7 +305,7 @@ abstract class ComputerBase extends DurableObject<StagingEnv> {
       if (v.policy === "durable_object") {
         const image = container.images.probe;
         if (!image) throw new Error("no probe image");
-        container.start({ image, instance: "lite", enableInternet: v.internet, env });
+        container.start({ image, instance: "standard-1", enableInternet: v.internet, env });
       } else {
         container.start({ enableInternet: v.internet, env } as ContainerStartupOptions);
       }
@@ -348,11 +348,12 @@ export class ComputerDefOn extends ComputerBase {
 }
 export class ComputerDoOn extends ComputerBase {
   protected variant(): Variant {
+    // No ladder here: a 31–33 MiB message ran this probe out of memory on `lite` (diag-1).
     return {
       name: "do-on",
       policy: "durable_object",
       internet: true,
-      ladder: true,
+      ladder: false,
       flood: ["bridge.internal", "native.internal"],
     };
   }
@@ -372,9 +373,72 @@ interface CycleSpec {
   readonly gapMs: number | null;
   readonly monitor: boolean;
   readonly instance: string;
+  /** "image": the image's own command (bench_server.py on 8090); "inline": INLINE_SERVER. */
+  readonly command?: "image" | "inline";
 }
 
+/**
+ * bench-1 found the image's own command exiting with code 1 about a second after every start
+ * (it runs locally). This server, passed as the entrypoint, tries the binds the supervisor will
+ * need, reports what each did to rec.internal (the bench's recorder intercept), and serves
+ * /health on the first that worked: 8090 on IPv4, then IPv6, then 8091.
+ */
+const INLINE_SERVER = `
+import http.server as h, json, os, socket, sys, threading, time, traceback, urllib.request
+class H(h.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"upMs": round((time.time() - START) * 1000), "port": PORT}).encode()
+        self.send_response(200); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+class H6(h.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+START = time.time(); res = []; srv = None; PORT = None
+for host, port in (("0.0.0.0", 8090), ("::", 8090), ("0.0.0.0", 8091)):
+    try:
+        s = (H6 if host == "::" else h.ThreadingHTTPServer)((host, port), H)
+        res.append([host, port, "ok"])
+        if srv is None: srv, PORT = s, port
+        else: s.server_close()
+    except Exception as e:
+        res.append([host, port, repr(e)[:300]])
+def post():
+    body = json.dumps({"ev": "bench_bind", "wall": time.time() * 1000, "variant": "bench", "res": res, "label": os.environ.get("WP33_BENCH"), "uid": os.getuid(), "py": sys.version[:30]}).encode()
+    for _ in range(10):
+        try:
+            urllib.request.urlopen(urllib.request.Request("http://rec.internal/batch", data=body, method="POST"), timeout=5); return
+        except Exception:
+            time.sleep(1)
+threading.Thread(target=post, daemon=True).start()
+if srv is None:
+    time.sleep(60); sys.exit(3)
+srv.serve_forever()
+`;
+
 const BENCH_PLAN: readonly CycleSpec[] = [
+  // bench-2: why the image's command exits, then the start measurements on what runs.
+  {
+    label: "diag-image-std1",
+    gapMs: null,
+    monitor: true,
+    instance: "standard-1",
+    command: "image",
+  },
+  { label: "diag-inline-std1", gapMs: 0, monitor: true, instance: "standard-1", command: "inline" },
+  { label: "diag-image-lite", gapMs: 0, monitor: true, instance: "lite", command: "image" },
+  { label: "diag-inline-lite", gapMs: 0, monitor: true, instance: "lite", command: "inline" },
+  { label: "gap0-a", gapMs: 0, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-monitor-a", gapMs: 0, monitor: true, instance: "standard-1", command: "inline" },
+  { label: "gap0-b", gapMs: 0, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-monitor-b", gapMs: 0, monitor: true, instance: "standard-1", command: "inline" },
+  { label: "gap2s", gapMs: 2_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap5s", gapMs: 5_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap10s", gapMs: 10_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap20s", gapMs: 20_000, monitor: false, instance: "standard-1", command: "inline" },
+  { label: "gap0-standard-2", gapMs: 0, monitor: false, instance: "standard-2", command: "inline" },
+  { label: "gap0-basic", gapMs: 0, monitor: true, instance: "basic", command: "inline" },
+];
+/** bench-1's plan (25 Oct): every cycle hit the image command's exit 1. Kept for the record. */
+export const BENCH_1_PLAN: readonly CycleSpec[] = [
   { label: "fresh", gapMs: null, monitor: false, instance: "standard-1" },
   { label: "gap0-a", gapMs: 0, monitor: false, instance: "standard-1" },
   { label: "gap0-monitor-a", gapMs: 0, monitor: true, instance: "standard-1" },
@@ -409,7 +473,7 @@ interface Attempt {
 
 export class StartBench extends DurableObject<StagingEnv> {
   async begin(runId: string): Promise<void> {
-    if (await this.ctx.storage.get("runId")) return;
+    if ((await this.ctx.storage.get("runId")) === runId) return;
     await this.ctx.storage.put({ runId, next: 0, lastStopAt: null });
     await this.ctx.storage.setAlarm(Date.now() + 1000);
   }
@@ -488,6 +552,17 @@ export class StartBench extends DurableObject<StagingEnv> {
       monitorError: null,
       outcome: "timeout",
     };
+    // The recorder for the inline server's report, registered before every start.
+    const runId = (await this.ctx.storage.get<string>("runId")) ?? "none";
+    const recorder = (
+      this.ctx.exports as unknown as Record<string, (o: { props: RouteProps }) => Fetcher>
+    ).Recorder;
+    if (recorder) {
+      await container.interceptOutboundHttp(
+        "rec.internal",
+        recorder({ props: { variant: "bench", runId } }),
+      );
+    }
     try {
       const image = container.images.bench;
       container.start({
@@ -495,6 +570,7 @@ export class StartBench extends DurableObject<StagingEnv> {
         instance: spec.instance,
         enableInternet: true,
         env: { WP33_BENCH: spec.label },
+        ...(spec.command === "inline" ? { entrypoint: ["python", "-c", INLINE_SERVER] } : {}),
       } as ContainerStartupOptions);
     } catch (error) {
       a.threw = text(error);

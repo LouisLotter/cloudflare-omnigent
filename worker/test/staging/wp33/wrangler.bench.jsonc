@@ -30,5 +30,5 @@
     }
   ],
   "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp33-bench-results" }],
-  "vars": { "WP33_MODE": "bench", "WP33_RUN_TAG": "bench-1" }
+  "vars": { "WP33_MODE": "bench", "WP33_RUN_TAG": "bench-2" }
 }
