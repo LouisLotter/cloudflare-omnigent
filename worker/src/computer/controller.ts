@@ -1001,7 +1001,7 @@ export class WorkspaceController {
   /** Asks the supervisor for its report now; null if it cannot answer. */
   async #freshReport(r: ComputerRecord): Promise<SupervisorReport | null> {
     try {
-      const reply = await this.#command(r, {
+      const reply = await this.#command({
         type: "status",
         ...this.#envelope(r, this.#d.newId("op")),
       });
@@ -1632,7 +1632,7 @@ export class WorkspaceController {
         return true;
       }
       if (job.phase === "merge") {
-        const reply = await this.#command(r, {
+        const reply = await this.#command({
           type: "restore_workspace",
           ...this.#envelope(r, job.mergeOp),
           manifest: job.manifest,
@@ -1650,7 +1650,7 @@ export class WorkspaceController {
         return true;
       }
       const read = await this.#readBundle(r.credential);
-      const reply = await this.#command(r, {
+      const reply = await this.#command({
         type: "install_credentials",
         ...this.#envelope(r, job.installOp),
         bundle: read.bundle,
@@ -1724,7 +1724,7 @@ export class WorkspaceController {
       });
       return true;
     }
-    const reply = await this.#command(r, {
+    const reply = await this.#command({
       type: "start_host",
       ...this.#envelope(r, params.deliverOp),
       startAttempt: params.attempt,
@@ -1807,7 +1807,6 @@ export class WorkspaceController {
         case "command":
         case "poll": {
           const reply = await this.#command(
-            r,
             c.phase === "command"
               ? {
                   type: "capture",
@@ -1954,7 +1953,7 @@ export class WorkspaceController {
           return true;
         }
         case "finish": {
-          await this.#command(r, {
+          await this.#command({
             type: "finish_capture",
             ...this.#envelope(r, c.finishOp),
             captureOperationId: c.op,
@@ -2035,7 +2034,7 @@ export class WorkspaceController {
     if (job.phase === "credentials") {
       if (job.deadline !== null && now >= job.deadline) return fail();
       try {
-        const reply = await this.#command(r, {
+        const reply = await this.#command({
           type: "credential_snapshot",
           ...this.#envelope(r, job.snapshotOp),
         });
@@ -2105,14 +2104,14 @@ export class WorkspaceController {
     try {
       switch (job.phase) {
         case "command": {
-          const reply = await this.#command(r, { type: "sign_out", ...this.#envelope(r, job.op) });
+          const reply = await this.#command({ type: "sign_out", ...this.#envelope(r, job.op) });
           this.#log("sign_out_ran", { claude: reply.claude, codex: reply.codex });
           return update((_, j) => {
             j.phase = "snapshot";
           });
         }
         case "snapshot": {
-          const reply = await this.#command(r, {
+          const reply = await this.#command({
             type: "credential_snapshot",
             ...this.#envelope(r, job.snapshotOp),
           });
@@ -2321,7 +2320,6 @@ export class WorkspaceController {
    * to repeat (3.C's `COMPUTER_API_MESSAGES`). The body may hold a launch token: never logged.
    */
   async #command<T extends WorkspaceCommand>(
-    r: ComputerRecord,
     command: T,
   ): Promise<Extract<WorkspaceCommandReply, { type: T["type"] }>> {
     const port = this.#d.port;
