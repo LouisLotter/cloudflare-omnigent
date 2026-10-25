@@ -211,12 +211,15 @@ export interface ControllerDeps {
   /** The Durable Object's alarm: one time, replaced by each `set`. */
   readonly alarm: { set(at: number): void | Promise<void>; clear(): void | Promise<void> };
   readonly newId: (prefix: "op" | "ckp" | "lyr") => string;
-  /** An abort signal that fires after `ms` (the upload and command deadlines). */
-  readonly deadline: (ms: number) => AbortSignal;
+  /**
+   * A deadline: its signal aborts after `ms` (the upload and command deadlines). `clear` cancels
+   * it once the call ended, so no timer outlives its call and keeps the object in memory.
+   */
+  readonly deadline: (ms: number) => { readonly signal: AbortSignal; clear(): void };
   /** The computer's intercepts for these props: `omnigent.internal`, `computer.internal` (3.3). */
   readonly intercepts: (props: InterceptProps) => readonly InterceptTarget[];
   readonly timing?: ControllerTiming;
-  readonly log?: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
 }
 
 /** Where the host starts the agent: the policy's `work` root in the computer user's home. */
@@ -261,6 +264,16 @@ export async function fingerprintOf(request: unknown): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** The table's reply of the kind a call expects; anything else is a broken table. */
+function expectReply<K extends Reply["kind"]>(
+  reply: Reply | undefined,
+  kind: K,
+): Extract<Reply, { kind: K }> {
+  if (reply?.kind !== kind)
+    throw platformError("internal", `the lifecycle table answered ${reply?.kind}`);
+  return reply as Extract<Reply, { kind: K }>;
+}
+
 function checkInterface(version: number): void {
   if (version > WORKSPACE_INTERFACE_VERSION) {
     throw platformError("unsupported_version", `interface version ${version}`);
@@ -301,12 +314,8 @@ export class WorkspaceController {
     return this.#d.clock();
   }
 
-  #log(event: string, fields: Readonly<Record<string, unknown>> = {}): void {
-    const log =
-      this.#d.log ??
-      ((e: string, f: Readonly<Record<string, unknown>>) =>
-        console.log(JSON.stringify({ cfo: "workspace", event: e, ...f })));
-    log(event, { computerId: this.#d.computerId, ...fields });
+  #log(event: string, fields: Readonly<Record<string, unknown>>): void {
+    this.#d.log(event, { computerId: this.#d.computerId, ...fields });
   }
 
   #load(): ComputerRecord | null {
@@ -798,10 +807,10 @@ export class WorkspaceController {
       case "resume": {
         const reply = await this.#reserving("resume", {});
         if (reply?.kind === "error") throw this.#replyError(reply.code);
-        if (reply?.kind !== "resume") throw platformError("internal", "resume");
+        const resumed = expectReply(reply, "resume");
         return {
           operation: "resume",
-          outcome: reply.outcome,
+          outcome: resumed.outcome,
           generation: this.#require().lifecycle.generation,
         };
       }
@@ -809,9 +818,8 @@ export class WorkspaceController {
         return this.#recorded(request.operationId, fingerprint, (d) => {
           const reply = this.#step(d, "claim_start", {}).reply;
           if (reply?.kind === "error") return { error: reply.code };
-          if (reply?.kind !== "claim") throw platformError("internal", "claim");
           return {
-            result: reply.granted
+            result: expectReply(reply, "claim").granted
               ? { operation: "claim_start", granted: true, startAttempt: d.lifecycle.attempt }
               : {
                   operation: "claim_start",
@@ -859,15 +867,16 @@ export class WorkspaceController {
               result: { operation: "checkpoint", outcome: "refused", reason: reply.reason },
             };
           }
-          if (reply?.kind !== "checkpoint") throw platformError("internal", "checkpoint");
-          return { result: { operation: "checkpoint", outcome: "accepted", folded: reply.folded } };
+          const accepted = expectReply(reply, "checkpoint");
+          return {
+            result: { operation: "checkpoint", outcome: "accepted", folded: accepted.folded },
+          };
         });
       case "suspend":
         return this.#suspend(request.operationId, fingerprint as string);
       case "terminate": {
         const reply = this.#write((d) => this.#step(d, "terminate", {}).reply);
-        if (reply?.kind !== "terminate") throw platformError("internal", "terminate");
-        return { operation: "terminate", removal: reply.removal };
+        return { operation: "terminate", removal: expectReply(reply, "terminate").removal };
       }
       case "keep_alive": {
         const now = this.#now();
@@ -995,7 +1004,6 @@ export class WorkspaceController {
         type: "status",
         ...this.#envelope(r, this.#d.newId("op")),
       });
-      if (reply.type !== "status") return null;
       this.#write((d) => {
         this.#applyReport(d, r.lifecycle.generation, reply.report);
       });
@@ -1627,7 +1635,6 @@ export class WorkspaceController {
           manifest: job.manifest,
           layerDirs: [...restoreDirs(job.manifest)],
         });
-        if (reply.type !== "restore_workspace") return fail("unexpected reply");
         const result = reply.job;
         if (result.state === "running") return false;
         if (result.state === "failed") return fail(result.reason);
@@ -1645,7 +1652,6 @@ export class WorkspaceController {
         ...this.#envelope(r, job.installOp),
         bundle: read.bundle,
       });
-      if (reply.type !== "install_credentials") return fail("unexpected reply");
       const now = this.#now();
       await update((d) => {
         d.credentialFloor = { generation, floor: reply.orderFloor };
@@ -1724,7 +1730,6 @@ export class WorkspaceController {
       token: token.data.token,
       hostConfig: params.hostConfig,
     });
-    if (reply.type !== "start_host") return false;
     this.#log("start_delivered", { attempt: params.attempt, outcome: reply.outcome });
     await finish((d) => {
       if (reply.outcome === "taken") this.#step(d, "start_taken", {});
@@ -1817,9 +1822,8 @@ export class WorkspaceController {
                   jobOperationId: c.op,
                 },
           );
-          const job = reply.type === "capture" || reply.type === "job_status" ? reply.job : null;
-          if (job === null || job.kind !== "capture")
-            return this.#endCapture(c, "failed", "unexpected reply");
+          const job = reply.job;
+          if (job.kind !== "capture") return this.#endCapture(c, "failed", "unexpected reply");
           switch (job.state) {
             case "running":
               if (c.phase === "command") {
@@ -1875,12 +1879,13 @@ export class WorkspaceController {
           const staged = c.staged;
           if (staged === null) return this.#endCapture(c, "failed", "nothing staged");
           let backup: Awaited<ReturnType<ComputerContainerPort["backup"]>>;
+          const deadline = this.#d.deadline(this.#t.uploadDeadlineMs);
           try {
             backup = await port.backup({
               dir: staged.layerDir,
               name: c.layerId,
               prefix: workspaceBackupPrefix(this.#d.computerId),
-              signal: this.#d.deadline(this.#t.uploadDeadlineMs),
+              signal: deadline.signal,
             });
           } catch (error) {
             this.#log("upload_failed", { generation: c.generation, error: describe(error) });
@@ -1890,6 +1895,8 @@ export class WorkspaceController {
               x.phase = "finish";
             });
             return true;
+          } finally {
+            deadline.clear();
           }
           await update((_, x) => {
             x.backup = backup;
@@ -2029,7 +2036,6 @@ export class WorkspaceController {
           type: "credential_snapshot",
           ...this.#envelope(r, job.snapshotOp),
         });
-        if (reply.type !== "credential_snapshot") return false;
         await this.#exclusive(() =>
           this.#write((d) => {
             if (d.stopJob?.snapshotOp === job.snapshotOp)
@@ -2061,7 +2067,6 @@ export class WorkspaceController {
 
   /** `stopping`: the stop record is persisted; stop the container. */
   async #advanceStopping(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
-    if (!port.running) return false;
     try {
       await port.destroy(r.stop?.reason ?? "stop");
       return true;
@@ -2098,8 +2103,7 @@ export class WorkspaceController {
       switch (job.phase) {
         case "command": {
           const reply = await this.#command(r, { type: "sign_out", ...this.#envelope(r, job.op) });
-          if (reply.type === "sign_out")
-            this.#log("sign_out_ran", { claude: reply.claude, codex: reply.codex });
+          this.#log("sign_out_ran", { claude: reply.claude, codex: reply.codex });
           return update((_, j) => {
             j.phase = "snapshot";
           });
@@ -2109,7 +2113,6 @@ export class WorkspaceController {
             type: "credential_snapshot",
             ...this.#envelope(r, job.snapshotOp),
           });
-          if (reply.type !== "credential_snapshot") return false;
           return update((_, j) => {
             j.phase = "wait";
             j.order = reply.order;
@@ -2232,7 +2235,7 @@ export class WorkspaceController {
           const layer = r.orphans[0];
           if (layer === undefined) {
             return set((d) => {
-              if (d.deletion) d.deletion = { ...d.deletion, phase: "credentials" };
+              d.deletion = { forgetOp: deletion.forgetOp, phase: "credentials" };
             });
           }
           if (port === null) return false;
@@ -2251,7 +2254,7 @@ export class WorkspaceController {
           const key = r.credentialDeletes[0];
           if (key === undefined) {
             return set((d) => {
-              if (d.deletion) d.deletion = { ...d.deletion, phase: "forget" };
+              d.deletion = { forgetOp: deletion.forgetOp, phase: "forget" };
             });
           }
           if (this.#d.bucket === null) return false;
@@ -2268,7 +2271,7 @@ export class WorkspaceController {
             computerId: this.#d.computerId,
           });
           return set((d) => {
-            if (d.deletion) d.deletion = { ...d.deletion, phase: "wipe" };
+            d.deletion = { forgetOp: deletion.forgetOp, phase: "wipe" };
           });
         case "wipe": {
           await this.#exclusive(() =>
@@ -2314,12 +2317,15 @@ export class WorkspaceController {
    * One command, repeated unchanged after "Network connection lost." (S3): every command is safe
    * to repeat (3.C's `COMPUTER_API_MESSAGES`). The body may hold a launch token: never logged.
    */
-  async #command(r: ComputerRecord, command: WorkspaceCommand): Promise<WorkspaceCommandReply> {
+  async #command<T extends WorkspaceCommand>(
+    r: ComputerRecord,
+    command: T,
+  ): Promise<Extract<WorkspaceCommandReply, { type: T["type"] }>> {
     const port = this.#d.port;
     if (port === null) throw platformError("unavailable", "no container");
-    void r;
     const body = JSON.stringify(command);
     for (let attempt = 0; ; attempt += 1) {
+      const deadline = this.#d.deadline(this.#t.commandTimeoutMs);
       try {
         const response = await port.fetch(
           SUPERVISOR_API_PORT,
@@ -2327,7 +2333,7 @@ export class WorkspaceController {
             method: "POST",
             headers: { "content-type": "application/json" },
             body,
-            signal: this.#d.deadline(this.#t.commandTimeoutMs),
+            signal: deadline.signal,
           }),
         );
         const text = await response.text();
@@ -2345,16 +2351,17 @@ export class WorkspaceController {
           );
         }
         const reply = WorkspaceCommandReply.safeParse(json);
-        const expected = command.type === "job_status" ? "job_status" : command.type;
-        if (!reply.success || reply.data.type !== expected) {
+        if (!reply.success || reply.data.type !== command.type) {
           throw platformError("internal", `the supervisor's ${command.type} reply is malformed`);
         }
-        return reply.data;
+        return reply.data as Extract<WorkspaceCommandReply, { type: T["type"] }>;
       } catch (error) {
         if (isConnectionLostError(error) && attempt < this.#t.commandRetries) continue;
         if (errorCodeOf(error) === undefined)
           this.#log("command_failed", { type: command.type, error: describe(error) });
         throw error;
+      } finally {
+        deadline.clear();
       }
     }
   }

@@ -22,10 +22,12 @@ import {
   type SupervisorReply,
 } from "@cfo/contracts";
 import type { PlatformEnv } from "../env.ts";
+import { logEvent } from "../server/responses.ts";
 import type { ComputerContainerPort } from "../shared/computer-port.ts";
 import { platformError } from "../shared/errors.ts";
 import { CONTROL_OBJECT_NAME, type ControlRpc, type WorkspaceRpc } from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
+import { r2Bucket } from "./bucket.ts";
 import {
   type CheckpointBucket,
   CONTROLLER_TIMING,
@@ -83,22 +85,6 @@ export class SqlStore implements Store {
   }
 }
 
-/** The checkpoint bucket's credential bundles on an R2 binding. */
-export function r2Bucket(bucket: R2Bucket): CheckpointBucket {
-  return {
-    async put(key, body) {
-      await bucket.put(key, body);
-    },
-    async get(key) {
-      const object = await bucket.get(key);
-      return object === null ? null : new Uint8Array(await object.arrayBuffer());
-    },
-    async delete(key) {
-      await bucket.delete(key);
-    },
-  };
-}
-
 export class WorkspaceDO extends DurableObject<PlatformEnv> implements WorkspaceRpc {
   readonly #controller: WorkspaceController | null;
 
@@ -123,9 +109,17 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
         clear: () => ctx.storage.deleteAlarm(),
       },
       newId: randomId,
-      deadline: (ms) => AbortSignal.timeout(ms),
+      deadline: (ms) => {
+        const controller = new AbortController();
+        const timer = setTimeout(
+          () => controller.abort(new DOMException("deadline passed", "TimeoutError")),
+          ms,
+        );
+        return { signal: controller.signal, clear: () => clearTimeout(timer) };
+      },
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
+      log: (event, fields) => logEvent("workspace", event, fields),
     });
     const controller = this.#controller;
     void ctx.blockConcurrencyWhile(async () => {

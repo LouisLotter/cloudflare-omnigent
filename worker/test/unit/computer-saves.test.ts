@@ -77,9 +77,10 @@ describe("workspace checkpoints", () => {
       reason: "restoring",
     });
     live(sim).signIn("claude");
-    const before = live(sim).outbox.length;
-    await sim.settle();
-    expect(live(sim).outbox.length).toBe(before);
+    const message = live(sim).outbox.pop();
+    expect(await sim.deliver(message as never).catch((error: Error) => error.message)).toMatch(
+      /^\[conflict\]/,
+    );
     expect(sim.record().credential).toBeNull();
     expect(live(sim).commands.filter((c) => c.type === "capture")).toHaveLength(0);
     expect(await sim.call(sim.client.suspendRequest())).toEqual({
@@ -359,12 +360,12 @@ describe("credential checkpoints", () => {
   it("is retried until acknowledged while the bucket fails, then published (R-18)", async () => {
     const sim = new ComputerSim();
     await sim.running();
-    sim.bucket.failPuts = 2;
+    sim.bucket.blocked = true;
     live(sim).signIn("codex");
     await sim.settle();
     expect(sim.record().credential).toBeNull();
     expect(live(sim).outbox).toHaveLength(1);
-    await sim.settle();
+    sim.bucket.blocked = false;
     await sim.settle();
     expect(sim.record().credential?.files[".codex/auth.json"].state).toBe("present");
     expect(live(sim).outbox).toHaveLength(0);

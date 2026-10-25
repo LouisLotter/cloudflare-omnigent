@@ -52,6 +52,8 @@ const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 
 export interface SimOptions {
   readonly timing?: Partial<ControllerTiming>;
+  /** No checkpoint bucket is bound. */
+  readonly noBucket?: boolean;
   readonly start?: number;
 }
 
@@ -84,10 +86,15 @@ export class ComputerSim {
   /** Steps counted for `crashAt`; a crash fires when `steps` reaches it. */
   steps = 0;
   crashAt: number | null = null;
+  /** Runs at the injected crash, before the new instance boots (the world moving on meanwhile). */
+  onCrash: (() => void) | null = null;
   #dead = { dead: false };
   #ids = 0;
 
+  readonly #noBucket: boolean;
+
   constructor(options: SimOptions = {}) {
+    this.#noBucket = options.noBucket ?? false;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, (request) =>
@@ -119,6 +126,7 @@ export class ComputerSim {
     if (this.crashAt !== null && this.steps === this.crashAt) {
       this.crashAt = null;
       life.dead = true;
+      this.onCrash?.();
       throw new Crash();
     }
   }
@@ -174,7 +182,7 @@ export class ComputerSim {
       store: guardedStore,
       port: this.#guard(this.computer as ComputerContainerPort, life),
       control: this.#guard(this.control as ControlRpc, life),
-      bucket: this.#guard(this.bucket, life),
+      bucket: this.#noBucket ? null : this.#guard(this.bucket, life),
       clock: () => this.now,
       alarm: {
         set: (at) => {
@@ -199,7 +207,7 @@ export class ComputerSim {
       deadline: (ms) => {
         const controller = new AbortController();
         this.deadlines.push({ ms, controller });
-        return controller.signal;
+        return { signal: controller.signal, clear: () => undefined };
       },
       intercepts: (props) => [
         { host: "computer.internal", target: { props } as unknown as Fetcher },
@@ -279,8 +287,9 @@ export class ComputerSim {
     });
   };
 
-  /** Lets everything settle: the runner, and the supervisor's messages. */
+  /** Lets everything settle: the runner, and the supervisor's messages, until neither moves. */
   async settle(): Promise<void> {
+    let last = "";
     for (let i = 0; i < 50; i += 1) {
       await this.controller.idle();
       if (this.#dead.dead) {
@@ -288,8 +297,7 @@ export class ComputerSim {
         continue;
       }
       const sup = this.sup;
-      const before = sup?.outbox.length ?? 0;
-      if (sup !== null && before > 0) {
+      if (sup !== null && sup.outbox.length > 0) {
         await sup.flush(this.deliver).catch(() => undefined);
         if (this.#dead.dead) {
           await this.restart();
@@ -297,7 +305,9 @@ export class ComputerSim {
         }
       }
       await this.controller.idle();
-      if ((this.sup?.outbox.length ?? 0) === 0 || (this.sup?.outbox.length ?? 0) === before) break;
+      const now = `${this.sup?.outbox.length ?? 0}/${this.store.commits}/${this.instances}`;
+      if ((this.sup?.outbox.length ?? 0) === 0 || now === last) break;
+      last = now;
     }
   }
 

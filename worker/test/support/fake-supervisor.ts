@@ -21,7 +21,11 @@ import {
   WorkspaceCommand,
   type WorkspaceCommandReply,
 } from "@cfo/contracts";
-import type { BackupOptions, RestoreOptions } from "../../src/shared/computer-port.ts";
+import {
+  type BackupOptions,
+  NO_INSTANCE_MESSAGE,
+  type RestoreOptions,
+} from "../../src/shared/computer-port.ts";
 import { FakeComputerContainer } from "./fake-computer-container.ts";
 
 export type Tree = ReadonlyMap<string, string>;
@@ -595,7 +599,15 @@ export class SimulatedComputer extends FakeComputerContainer {
     };
   }
 
+  /** The next starts throw Cloudflare's refusal at once instead of returning (CF-05's other form). */
+  startThrows = 0;
+
   override start(options: Parameters<FakeComputerContainer["start"]>[0]): void {
+    if (this.startThrows > 0) {
+      this.startThrows -= 1;
+      this.starts.push({ instance: options.instance, env: { ...options.env }, refused: true });
+      throw new Error(NO_INSTANCE_MESSAGE);
+    }
     super.start(options);
     if (this.running) {
       const generation = Number(options.env.CFO_GENERATION);

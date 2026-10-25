@@ -594,3 +594,35 @@ describe("the lifecycle wrapper (3.C's table)", () => {
     expect(INITIAL_CONTEXT.state).toBe("provisioned");
   });
 });
+
+describe("WorkspaceDO's schema", () => {
+  it("is one forward migration the runner accepts", async () => {
+    const { WORKSPACE_MIGRATIONS } = await import("../../src/computer/schema.ts");
+    const { planMigrations } = await import("../../src/shared/migrations.ts");
+    expect(planMigrations(0, WORKSPACE_MIGRATIONS).map((m) => m.name)).toEqual(["workspace_kv"]);
+    expect(planMigrations(1, WORKSPACE_MIGRATIONS)).toEqual([]);
+  });
+});
+
+describe("the R2 adapter for credential bundles", () => {
+  it("stores, reads back and deletes bytes, and reads a missing object as null", async () => {
+    const { r2Bucket } = await import("../../src/computer/bucket.ts");
+    const objects = new Map<string, Uint8Array>();
+    const bucket = r2Bucket({
+      put: async (key, body) => objects.set(key, body),
+      get: async (key) => {
+        const body = objects.get(key);
+        return body === undefined ? null : { arrayBuffer: async () => body.slice().buffer };
+      },
+      delete: async (key) => {
+        objects.delete(key);
+      },
+    });
+    await bucket.put("credentials/a.json", new TextEncoder().encode("bundle"));
+    expect(
+      new TextDecoder().decode((await bucket.get("credentials/a.json")) ?? new Uint8Array()),
+    ).toBe("bundle");
+    await bucket.delete("credentials/a.json");
+    expect(await bucket.get("credentials/a.json")).toBeNull();
+  });
+});
