@@ -36,5 +36,8 @@
   ],
   // The always-on backstop and the first start after an installation (src/index.ts, scheduled).
   "triggers": { "crons": ["* * * * *"] },
-  "observability": { "enabled": true }
+  // Structured console logs on; invocation logs off. An invocation log records every request
+  // header: Cloudflare redacts Cookie and the Access assertion but not custom headers, such as
+  // Omnigent's X-Omnigent-Host-Token or x-api-key (WP2.6, docs/secrets.md).
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } }
 }

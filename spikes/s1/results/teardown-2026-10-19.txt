@@ -1,7 +1,0 @@
-{
-  "at": "2026-10-19T12:45:44.509Z",
-  "applications": [],
-  "images": []
-}
-cfo-stg-s1-life.<zone>: Access applications=0, Worker absent ([10007] 404)
-cfo-stg-s1-dop.<zone>: Access applications=0, Worker absent ([10007] 404)

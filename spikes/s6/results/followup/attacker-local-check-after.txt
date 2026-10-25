@@ -1,1 +1,0 @@
-{"attempts": 8, "refusals_logged": 7, "state_unchanged": true, "top_level_get_showed_confirmation": true}

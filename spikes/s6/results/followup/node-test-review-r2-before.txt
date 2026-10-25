@@ -1,2 +1,0 @@
-✖ DC-38 (review s6-fu-r2, P1): destroy() pending, the computer refreshes and crashes, then destroy() rejects: a possible loss, never a confirmed stop (16.584125ms)
-✖ DC-38 (review s6-fu-r2, P1): destroy() pending, the computer refreshes and crashes, then destroy() rejects: a possible loss, never a confirmed stop (16.584125ms)

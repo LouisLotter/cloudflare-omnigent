@@ -1,6 +1,0 @@
-{
-  "litestream": "0.5.17",
-  "omnigent_base_image": "sha256:0df29197281e0cc2fac5e00e777e6877c99fdddc95098e288df571dc7946096a",
-  "omnigent_commit": "90a9bed9a5e25b1cab8d06a7e361c86cd5460918",
-  "server_image": "sha256:99c3ca46e57fd2d6e3834932095901e481b5a900325366640668b45ddc3c5472"
-}

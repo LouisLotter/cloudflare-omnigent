@@ -4,9 +4,11 @@ import {
   BOOTSTRAP_PASSWORD_SECRET,
   bootstrapSecretPresent,
   configFingerprint,
+  DATABASE_CHECK_ALLOWANCE_S,
   serverContainerEnv,
   serverDeadlines,
 } from "../../src/server/server-env.ts";
+import { WATCHDOG_TIMING } from "../../src/server/watchdog.ts";
 
 const INSTALLATION = "ins_01hs3f9q2m8z4w7k6t5r1n0ybc";
 
@@ -79,16 +81,18 @@ describe("serverContainerEnv", () => {
 
 describe("the server image's deadlines (WP2.3)", () => {
   it("follow the image's defaults, and its settings when set", () => {
-    expect(serverDeadlines({})).toEqual({ restoreWaitMs: 420_000, stopGraceMs: 660_000 });
+    expect(serverDeadlines({})).toEqual({ restoreWaitMs: 540_000, stopGraceMs: 660_000 });
+    // The watchdog's defaults are the image's (watchdog.ts).
+    expect(serverDeadlines({}).restoreWaitMs).toBe(WATCHDOG_TIMING.restoreWaitMs);
     expect(
       serverDeadlines({
         SERVER_ENV_CFO_RESTORE_DEADLINE_S: "600",
         SERVER_ENV_CFO_LITESTREAM_READY_TIMEOUT_S: "30",
         SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: " 120 ",
       }),
-    ).toEqual({ restoreWaitMs: 690_000, stopGraceMs: 300_000 });
+    ).toEqual({ restoreWaitMs: 810_000, stopGraceMs: 300_000 });
     expect(serverDeadlines({ SERVER_ENV_CFO_RESTORE_DEADLINE_S: "soon" }).restoreWaitMs).toBe(
-      (3600 + 60 + 60) * 1000,
+      (3600 + DATABASE_CHECK_ALLOWANCE_S + 60 + 60) * 1000,
     );
     expect(serverDeadlines({ SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S: "0" }).stopGraceMs).toBe(
       (2 * 3600 + 60) * 1000,
