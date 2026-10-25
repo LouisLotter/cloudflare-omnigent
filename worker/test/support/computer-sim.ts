@@ -97,9 +97,10 @@ export class ComputerSim {
     this.#noBucket = options.noBucket ?? false;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
-    this.client = new FakeLauncherClient(CMP, (request) =>
-      this.controller.launcher({ interfaceVersion: WORKSPACE_INTERFACE_VERSION, request }),
-    );
+    this.client = new FakeLauncherClient(CMP, async (request) => {
+      await this.#live();
+      return this.controller.launcher({ interfaceVersion: WORKSPACE_INTERFACE_VERSION, request });
+    });
     this.store.beforeCommit = () => this.#step(this.#dead, "commit:before");
     this.store.afterCommit = () => this.#step(this.#dead, "commit:after");
     this.#build();
@@ -225,6 +226,14 @@ export class ComputerSim {
     });
   }
 
+  /**
+   * After a crash, the runtime builds a new instance only when an event arrives: a call, a
+   * computer message or the alarm. So nothing recovers unless an alarm was left in place.
+   */
+  async #live(): Promise<void> {
+    if (this.#dead.dead) await this.restart();
+  }
+
   /** A new instance from the same storage (a reset, a deploy's switch, an eviction). */
   async restart(): Promise<void> {
     this.#dead.dead = true;
@@ -239,16 +248,9 @@ export class ComputerSim {
     try {
       const result = await fn();
       await this.controller.idle();
-      if (this.#dead.dead) {
-        await this.restart();
-        return new Crash();
-      }
-      return result;
+      return this.#dead.dead ? new Crash() : result;
     } catch (error) {
-      if (error instanceof Crash || this.#dead.dead) {
-        await this.restart();
-        return new Crash();
-      }
+      if (error instanceof Crash || this.#dead.dead) return new Crash();
       throw error;
     }
   }
@@ -277,7 +279,8 @@ export class ComputerSim {
   }
 
   /** The supervisor's queued messages, through the computer API, until none is acknowledged. */
-  deliver = (message: SupervisorMessage): Promise<SupervisorReply> => {
+  deliver = async (message: SupervisorMessage): Promise<SupervisorReply> => {
+    await this.#live();
     const raw = this.store.get(RECORD_KEY);
     const hostId = raw === undefined ? null : ComputerRecord.parse(raw).hostId;
     return this.controller.computer({
@@ -287,25 +290,20 @@ export class ComputerSim {
     });
   };
 
-  /** Lets everything settle: the runner, and the supervisor's messages, until neither moves. */
+  /**
+   * Lets everything settle: the runner, and the supervisor's messages, until neither moves. A
+   * crashed instance stays down until an event arrives (a supervisor message counts).
+   */
   async settle(): Promise<void> {
     let last = "";
     for (let i = 0; i < 50; i += 1) {
       await this.controller.idle();
-      if (this.#dead.dead) {
-        await this.restart();
-        continue;
-      }
       const sup = this.sup;
       if (sup !== null && sup.outbox.length > 0) {
         await sup.flush(this.deliver).catch(() => undefined);
-        if (this.#dead.dead) {
-          await this.restart();
-          continue;
-        }
+        await this.controller.idle();
       }
-      await this.controller.idle();
-      const now = `${this.sup?.outbox.length ?? 0}/${this.store.commits}/${this.instances}`;
+      const now = `${this.sup?.outbox.length ?? 0}/${this.store.commits}/${this.instances}/${this.#dead.dead}`;
       if ((this.sup?.outbox.length ?? 0) === 0 || now === last) break;
       last = now;
     }
@@ -334,6 +332,7 @@ export class ComputerSim {
       if (at === null || at > until) break;
       this.now = Math.max(this.now, at);
       this.alarmAt = null;
+      await this.#live();
       await this.guarded(() => this.controller.alarm());
       await this.settle();
     }
@@ -396,6 +395,16 @@ export class ComputerSim {
       if (!this.computer.layers.has(layer.backup.id)) {
         problems.push(`manifest ${r.workspace?.checkpointId} names missing layer ${layer.layerId}`);
       }
+    }
+    // No untracked credential object: each is the pointer's, or queued for deletion, or an upload
+    // whose key is recorded (Codex WP3.1 r1-1).
+    const tracked = new Set([
+      ...(r.credential === null ? [] : [r.credential.object.key]),
+      ...r.credentialDeletes,
+      ...r.credentialUploads.map((u) => `credentials/${CMP}/${u.checkpointId}.json`),
+    ]);
+    for (const key of this.bucket.objects.keys()) {
+      if (!tracked.has(key)) problems.push(`untracked credential object ${key}`);
     }
     // Token custody: never in the record, the journal or the bucket.
     const stored = [...this.store.data]

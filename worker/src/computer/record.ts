@@ -84,7 +84,7 @@ const CaptureSchema = z.strictObject({
   /** `save`: runs for save requests; `stop`: the sleep checkpoint of a stop being prepared. */
   purpose: z.enum(["save", "stop"]),
   /** The save requests accepted before it began: its cut follows them. */
-  covers: z.array(z.string()).max(1000),
+  covers: z.array(z.string()),
   startedAt: Millis,
   phase: z.enum(["command", "poll", "upload", "publish", "finish"]),
   staged: z
@@ -147,7 +147,7 @@ export const ComputerRecord = z.strictObject({
     .strictObject({ generation: Count, phase: ReservationPhase, fenced: z.boolean() })
     .nullable(),
   /** Slots to give back to ControlDO, retried until acknowledged (FH-37). */
-  releases: z.array(z.strictObject({ generation: Count, operationId: OperationId })).max(100),
+  releases: z.array(z.strictObject({ generation: Count, operationId: OperationId })),
 
   /** The container start under way in `waking`, with its start-after-stop retries (DC-37). */
   start: z
@@ -212,7 +212,7 @@ export const ComputerRecord = z.strictObject({
     .nullable(),
 
   capture: CaptureSchema.nullable(),
-  saveRequests: z.array(SaveRequestSchema).max(1000),
+  saveRequests: z.array(SaveRequestSchema),
   /** The last save request of any kind; the backstop counts from it. */
   lastRequestAt: Millis.nullable(),
   captureFailures: Count,
@@ -237,7 +237,7 @@ export const ComputerRecord = z.strictObject({
   /** The workspace pointer: the latest published checkpoint. */
   workspace: WorkspaceManifest.nullable(),
   /** Layers no checkpoint may need any more, deleted once no retained one references them. */
-  orphans: z.array(DirectoryBackupRecord).max(1000),
+  orphans: z.array(DirectoryBackupRecord),
   lastSavedAt: Timestamp.nullable(),
   workspaceBytes: Count.nullable(),
 
@@ -246,7 +246,14 @@ export const ComputerRecord = z.strictObject({
   /** The current generation's install: bundles at or below this order predate it. */
   credentialFloor: z.strictObject({ generation: Count, floor: Count }).nullable(),
   /** Bundle objects no longer the pointer, deleted from the bucket. */
-  credentialDeletes: z.array(z.string().max(256)).max(1000),
+  credentialDeletes: z.array(z.string().max(256)),
+  /**
+   * Bundles being stored: the key is persisted before the upload, so an object a crash leaves
+   * behind is found and deleted, and a retry of the same bundle reuses its key.
+   */
+  credentialUploads: z
+    .array(z.strictObject({ checkpointId: CheckpointId, generation: Count, order: Count }))
+    .default([]),
   /** A credential checkpoint has held a login at some time. */
   everHeldLogin: z.boolean(),
 
@@ -274,8 +281,6 @@ export const ComputerRecord = z.strictObject({
   refusedSleeps: Count,
   /** When a stop's preparation last failed: a removal or deadline stop retries a heartbeat later. */
   stopRefusedAt: Millis.nullable().default(null),
-  /** `suspend` operations waiting on the sleep in progress: they share its outcome. */
-  sleepOps: z.array(z.string()).max(100),
   /** The setup terminal is open until then (WP3.5's terminal sets it). */
   terminalOpenUntil: Millis.nullable(),
 
@@ -290,6 +295,8 @@ export const ComputerRecord = z.strictObject({
 export type ComputerRecord = z.infer<typeof ComputerRecord>;
 
 export const RECORD_KEY = "computer";
+/** `suspend` operations waiting on the sleep in progress (they share its outcome): `sleep:<id>`. */
+export const SLEEP_PREFIX = "sleep:";
 /** The current attempt's launch token, only until the supervisor has it. */
 export const TOKEN_KEY = "launch-token";
 /** Operation outcomes by operation ID, kept at least 7 days: `op:<kind>:<id>`. */
@@ -358,6 +365,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     credential: null,
     credentialFloor: null,
     credentialDeletes: [],
+    credentialUploads: [],
     everHeldLogin: false,
     signOut: { phase: "none", loginPossiblyLost: false, revocationRecorded: false, job: null },
     lastContactAt: null,
@@ -366,7 +374,6 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     restoredTo: null,
     refusedSleeps: 0,
     stopRefusedAt: null,
-    sleepOps: [],
     terminalOpenUntil: null,
     deletion: null,
   };

@@ -641,7 +641,16 @@ export class SimulatedComputer extends FakeComputerContainer {
     return record;
   }
 
+  /** Restores wait until their signal aborts: a stalled transfer. */
+  holdRestores = false;
+
   override async restore(record: DirectoryBackupRecord, options: RestoreOptions): Promise<void> {
+    if (this.holdRestores) {
+      await new Promise<never>((_, reject) => {
+        if (options.signal?.aborted) reject(options.signal.reason);
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason));
+      });
+    }
     await super.restore(record, options);
     const content = this.layers.get(record.id);
     if (content === undefined || this.sup === null) throw new Error("BACKUP_NOT_FOUND");

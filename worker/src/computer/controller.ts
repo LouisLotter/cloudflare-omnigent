@@ -32,6 +32,7 @@ import {
   type CredentialManifest,
   containerMayRun,
   credentialIsNewer,
+  credentialObjectKey,
   deriveSetupCard,
   ErrorBody,
   type ErrorCode,
@@ -118,6 +119,7 @@ import {
   OPERATION_TIME_PREFIX,
   OperationRecord,
   RECORD_KEY,
+  SLEEP_PREFIX,
   type Store,
   TOKEN_KEY,
   TokenRecord,
@@ -160,6 +162,8 @@ export interface ControllerTiming {
   readonly startDeadlineMs: number;
   readonly inactivityTimeoutMs: number;
   readonly uploadDeadlineMs: number;
+  /** One layer's restore; a transfer that stalls longer is given up and retried. */
+  readonly restoreLayerDeadlineMs: number;
   /** A capture that has not ended after this is given up. */
   readonly captureDeadlineMs: number;
   readonly backstopMs: number;
@@ -187,6 +191,7 @@ export const CONTROLLER_TIMING: ControllerTiming = {
   startDeadlineMs: TIMING.startDeadlineS * 1000,
   inactivityTimeoutMs: INACTIVITY_TIMEOUT_MS,
   uploadDeadlineMs: TIMING.uploadDeadlineS * 1000,
+  restoreLayerDeadlineMs: 300_000,
   captureDeadlineMs: (TIMING.uploadDeadlineS + 300) * 1000,
   backstopMs: TIMING.backstopSaveS * 1000,
   notSavedMs: TIMING.notSavedS * 1000,
@@ -221,6 +226,13 @@ export interface ControllerDeps {
   readonly timing?: ControllerTiming;
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
 }
+
+/** The soonest the alarm is ever set after now. */
+export const MIN_ALARM_MS = 1_000;
+/** Save requests kept pending at most; any later save covers them all. */
+export const MAX_PENDING_SAVES = 100;
+/** Releases owed to ControlDO beyond which no new reservation is asked for (FH-37). */
+export const MAX_PENDING_RELEASES = 20;
 
 /** Where the host starts the agent: the policy's `work` root in the computer user's home. */
 export const WORKSPACE_PATH = "/home/omnigent/work";
@@ -301,6 +313,8 @@ export class WorkspaceController {
   #propsKey: string | null = null;
   /** Renew the inactivity timeout at the next chance (every new instance, every alarm). */
   #renewTimeout = true;
+  /** The layer restore in flight, aborted when its restore is abandoned (a stop, a removal). */
+  #restoreAbort: AbortController | null = null;
 
   constructor(deps: ControllerDeps) {
     this.#d = deps;
@@ -329,7 +343,8 @@ export class WorkspaceController {
       const d = this.#load();
       if (d === null) throw platformError("not_found", "no such computer");
       const result = fn(d);
-      this.#d.store.put(RECORD_KEY, d);
+      // Checked before it is written: a record that would not read back is never stored.
+      this.#d.store.put(RECORD_KEY, ComputerRecord.parse(d));
       return result;
     });
   }
@@ -343,7 +358,12 @@ export class WorkspaceController {
     return run;
   }
 
-  #dropToken(): void {
+  /** Drops the kept launch token; with `attempt`, only if it is that attempt's token. */
+  #dropToken(attempt?: number): void {
+    if (attempt !== undefined) {
+      const kept = TokenRecord.safeParse(this.#d.store.get(TOKEN_KEY));
+      if (!kept.success || kept.data.attempt !== attempt) return;
+    }
     this.#d.store.delete(TOKEN_KEY);
   }
 
@@ -514,7 +534,7 @@ export class WorkspaceController {
           const reason = d.stopJob?.failure ?? "checkpoint_failed";
           if (before.stopPrep === "sleep") d.refusedSleeps += 1;
           // Every sleep waiting on this stop (a sleep, or one that joined a restart) is refused.
-          this.#settleSleeps(d, { operation: "suspend", outcome: "refused", reason });
+          this.#settleSleeps({ operation: "suspend", outcome: "refused", reason });
           this.#log("stop_refused", { generation, stop: before.stopPrep, reason });
           d.stopJob = null;
           d.stopRefusedAt = now;
@@ -566,6 +586,13 @@ export class WorkspaceController {
           if (extra.request !== undefined) {
             d.saveRequests.push(extra.request);
             d.lastRequestAt = now;
+            // The next save covers every pending request, so only a bounded number are kept:
+            // the oldest the running capture does not cover go first (R-18 still holds).
+            const running = new Set(d.capture?.covers ?? []);
+            while (d.saveRequests.length > MAX_PENDING_SAVES) {
+              const drop = d.saveRequests.findIndex((x) => !running.has(x.id));
+              d.saveRequests.splice(drop < 0 ? 0 : drop, 1);
+            }
           }
           break;
         case "publish_credentials":
@@ -590,6 +617,7 @@ export class WorkspaceController {
       }
     }
     if (after.state !== before.state) {
+      if (before.state === "restoring") this.#restoreAbort?.abort(new Error("restore abandoned"));
       if (!containerMayRun(after.state) || after.state === "waking") this.#containerGone(d);
       else if (after.state === "host_running") d.noHostSince = null;
       else if (before.state === "host_running" && withoutHost(after.state)) d.noHostSince = now;
@@ -615,12 +643,14 @@ export class WorkspaceController {
       d.start = null;
       d.noHostSince = null;
     }
-    this.#settleSleeps(d, { operation: "suspend", outcome: "stopped" });
+    this.#settleSleeps({ operation: "suspend", outcome: "stopped" });
   }
 
-  #settleSleeps(d: ComputerRecord, result: LauncherResult): void {
-    for (const id of d.sleepOps) this.#opSettle("launcher", id, { result });
-    d.sleepOps = [];
+  #settleSleeps(result: LauncherResult): void {
+    for (const key of this.#d.store.keys(SLEEP_PREFIX)) {
+      this.#opSettle("launcher", key.slice(SLEEP_PREFIX.length), { result });
+      this.#d.store.delete(key);
+    }
   }
 
   /**
@@ -633,10 +663,26 @@ export class WorkspaceController {
     facts: Facts,
     extra: Extra = {},
     unavailable: "throw" | "at_capacity" = "throw",
+    commit: (d: ComputerRecord, reply: Reply | undefined) => void = () => undefined,
   ): Promise<Reply | undefined> {
     const r = this.#require();
+    const apply = (d: ComputerRecord, f: Facts, x: Extra) => {
+      const t = this.#step(d, event, f, x);
+      commit(d, t.reply);
+      return t;
+    };
     if (!wouldReserve(r.lifecycle, event, guardInputs(facts))) {
-      return this.#write((d) => this.#step(d, event, facts, extra).reply);
+      return this.#write((d) => apply(d, facts, extra).reply);
+    }
+    if (r.releases.length >= MAX_PENDING_RELEASES) {
+      // ControlDO has not acknowledged earlier releases: ask for no new slot until it has.
+      if (unavailable === "throw") {
+        throw platformError(
+          "unavailable",
+          "the computer's capacity could not be checked; try again",
+        );
+      }
+      return this.#write((d) => apply(d, { ...facts, atCapacity: true }, extra).reply);
     }
     const generation = Math.max(r.lifecycle.generation, r.lastReserved) + 1;
     const operationId = this.#d.newId("op");
@@ -665,14 +711,14 @@ export class WorkspaceController {
           "the computer's capacity could not be checked; try again",
         );
       }
-      return this.#write((d) => this.#step(d, event, { ...facts, atCapacity: true }, extra).reply);
+      return this.#write((d) => apply(d, { ...facts, atCapacity: true }, extra).reply);
     }
     const granted = result.method === "reserve" && result.granted;
     if (granted) await this.#refreshLimits();
     return this.#write((d) => {
       d.reserving = null;
-      if (!granted) return this.#step(d, event, { ...facts, atCapacity: true }, extra).reply;
-      const t = this.#step(d, event, facts, { ...extra, reservedGeneration: generation });
+      if (!granted) return apply(d, { ...facts, atCapacity: true }, extra).reply;
+      const t = apply(d, facts, { ...extra, reservedGeneration: generation });
       if (!t.effects.includes("reserve")) {
         d.releases.push({ generation, operationId: this.#d.newId("op") });
       }
@@ -717,6 +763,15 @@ export class WorkspaceController {
           d.releases.push({ generation: pending.generation, operationId: this.#d.newId("op") });
         });
       }
+      if (r.credentialUploads.length > 0) {
+        // No upload is in flight in a new instance: what the old one left is deleted.
+        this.#write((d) => {
+          for (const u of d.credentialUploads) {
+            d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
+          }
+          d.credentialUploads = [];
+        });
+      }
       this.#renewTimeout = true;
       this.#propsKey = null;
     });
@@ -727,10 +782,30 @@ export class WorkspaceController {
   async alarm(): Promise<void> {
     await this.#exclusive(async () => {
       await this.#schedule();
-      this.#renewTimeout = true;
       this.#pruneOperations();
+      // Time-driven events and the inactivity timeout never wait behind the runner, which may be
+      // busy with a long restore or upload: the deadlines hold whatever it is doing.
+      this.#timeEvents();
+      await this.#schedule();
     });
+    await this.#renewInactivity();
     this.#kick();
+  }
+
+  /** Renews the inactivity timeout 45 minutes ahead while a container should run. */
+  async #renewInactivity(): Promise<void> {
+    const r = this.#load();
+    const port = this.#d.port;
+    if (r === null || port === null || !port.running) return;
+    const state = r.lifecycle.context.state;
+    if (!containerMayRun(state) || state === "waking") return;
+    try {
+      await port.setInactivityTimeout(this.#t.inactivityTimeoutMs);
+      this.#renewTimeout = false;
+    } catch (error) {
+      this.#log("inactivity_timeout_failed", { error: describe(error) });
+      this.#renewTimeout = true;
+    }
   }
 
   /** Resolves once no call is queued and the runner has nothing left to do now (tests). */
@@ -940,11 +1015,10 @@ export class WorkspaceController {
     this.#d.store.transaction(() => {
       const existing = this.#load();
       if (existing === null) {
-        this.#d.store.put(RECORD_KEY, {
-          ...newRecord(this.#d.computerId, now),
-          name,
-          lastContactAt: now,
-        });
+        this.#d.store.put(
+          RECORD_KEY,
+          ComputerRecord.parse({ ...newRecord(this.#d.computerId, now), name, lastContactAt: now }),
+        );
         return;
       }
       if (existing.lifecycle.context.removalIntent)
@@ -968,7 +1042,10 @@ export class WorkspaceController {
     const ctx = r.lifecycle.context;
     const now = this.#now();
     const terminalOpen = r.terminalOpenUntil !== null && r.terminalOpenUntil > now;
-    let runners = this.#currentReport(r)?.runnerProcesses ?? null;
+    // Only the supervisor's answer now can show no runner exists (Lifecycle step 7). If it cannot
+    // answer, a cached positive count still refuses, but a cached zero proves nothing: unknown.
+    const cached = this.#currentReport(r)?.runnerProcesses ?? null;
+    let runners: number | null = cached !== null && cached > 0 ? cached : null;
     if (restored(ctx.state) && ctx.stopPrep === null && !ctx.capturing && !terminalOpen) {
       const fresh = await this.#freshReport(r);
       if (fresh !== null) runners = fresh.runnerProcesses;
@@ -983,7 +1060,7 @@ export class WorkspaceController {
       if (reply?.kind === "suspend_refused") {
         result = { operation: "suspend", outcome: "refused", reason: reply.reason };
       } else if (reply?.kind === "suspend" && reply.outcome === "in_progress") {
-        d.sleepOps.push(operationId);
+        this.#d.store.put(`${SLEEP_PREFIX}${operationId}`, true);
         this.#opPut("launcher", operationId, fingerprint, null);
         return { operation: "suspend", outcome: "in_progress" } as LauncherResult;
       } else {
@@ -1157,7 +1234,26 @@ export class WorkspaceController {
     if (!credentialIsNewer(bundle, pointer)) return superseded;
     const bucket = this.#d.bucket;
     if (bucket === null) throw platformError("unavailable", "no checkpoint bucket");
-    const checkpointId = this.#d.newId("ckp");
+    // The object's key is persisted before the upload: a crash after it leaves a key that is found
+    // and deleted, and a retry of the same bundle overwrites the same object. Uploads of other
+    // bundles are not in flight (this path holds the lock), so they are queued for deletion.
+    const same = (u: { readonly generation: number; readonly order: number }) =>
+      u.generation === bundle.generation && u.order === bundle.order;
+    const checkpointId = this.#write((d) => {
+      for (const u of d.credentialUploads.filter((x) => !same(x))) {
+        d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
+      }
+      const pending = d.credentialUploads.find(same);
+      d.credentialUploads = pending === undefined ? [] : [pending];
+      if (pending !== undefined) return pending.checkpointId;
+      const id = this.#d.newId("ckp") as CredentialManifest["checkpointId"];
+      d.credentialUploads.push({
+        checkpointId: id,
+        generation: bundle.generation,
+        order: bundle.order,
+      });
+      return id;
+    });
     const object = bundleObject(bundle);
     const manifest = await credentialManifestOf({ bundle, checkpointId, object, now: this.#now() });
     try {
@@ -1167,6 +1263,7 @@ export class WorkspaceController {
       throw platformError("unavailable", "the credential checkpoint could not be stored; retry");
     }
     return this.#write((d) => {
+      d.credentialUploads = d.credentialUploads.filter((u) => u.checkpointId !== checkpointId);
       if (!allowed(d) || !credentialIsNewer(bundle, d.credential)) {
         d.credentialDeletes.push(manifest.object.key);
         return superseded;
@@ -1205,18 +1302,22 @@ export class WorkspaceController {
         this.#require();
         const prior = this.#opFind("page", call.operationId, fingerprint);
         if (prior?.outcome) return prior.outcome as PagesResult;
-        const result = await this.#pageAction(call);
-        this.#d.store.transaction(() => {
-          this.#opPut("page", call.operationId, fingerprint, result as unknown as Outcome);
-        });
-        return result;
+        // The action and its recorded outcome commit together, so a repeat after a crash returns
+        // the outcome instead of acting again, perhaps on a later generation.
+        return this.#pageAction(call, (result) =>
+          this.#opPut("page", call.operationId, fingerprint, result as unknown as Outcome),
+        );
       });
     } finally {
       this.#kick();
     }
   }
 
-  async #pageAction(call: Exclude<PagesCall, { action: "state" }>): Promise<PagesResult> {
+  /** One page action; `record` journals its outcome inside the action's own transaction. */
+  async #pageAction(
+    call: Exclude<PagesCall, { action: "state" }>,
+    record: (result: PagesResult) => void,
+  ): Promise<PagesResult> {
     const outcome = (
       action: "restart" | "stop_without_saving" | "sign_out" | "resolve_removal",
       reply: Reply | undefined,
@@ -1224,55 +1325,58 @@ export class WorkspaceController {
       reply?.kind === "page_refused"
         ? { action, outcome: "refused", reason: reply.reason }
         : { action, outcome: "accepted" };
+    const act = (fn: (d: ComputerRecord) => PagesResult): PagesResult =>
+      this.#write((d) => {
+        const result = fn(d);
+        record(result);
+        return result;
+      });
     switch (call.action) {
       case "set_size":
-        this.#write((d) => {
-          const setting = chooseSize({ size: d.size, nextSize: d.nextSize }, call.size);
-          d.nextSize = setting.nextSize;
+        return act((d) => {
+          d.nextSize = chooseSize({ size: d.size, nextSize: d.nextSize }, call.size).nextSize;
+          return { action: "set_size", appliesAt: "next_start" };
         });
-        return { action: "set_size", appliesAt: "next_start" };
       case "restart":
-        return outcome(
-          "restart",
-          this.#write((d) => this.#step(d, "restart", {}).reply),
-        );
+        return act((d) => outcome("restart", this.#step(d, "restart", {}).reply));
       case "stop_without_saving":
-        return outcome(
-          "stop_without_saving",
-          this.#write(
-            (d) =>
-              this.#step(d, "stop_without_saving", {
-                sleepsRefusedThrice: d.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
-              }).reply,
+        return act((d) =>
+          outcome(
+            "stop_without_saving",
+            this.#step(d, "stop_without_saving", {
+              sleepsRefusedThrice: d.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
+            }).reply,
           ),
         );
       case "sign_out": {
-        const reply = await this.#reserving("sign_out_run", {});
-        if (reply?.kind === "page") {
-          this.#write((d) => {
+        let result: PagesResult | null = null;
+        await this.#reserving("sign_out_run", {}, {}, "throw", (d, reply) => {
+          if (reply?.kind === "page") {
             d.signOut = { ...d.signOut, phase: SIGN_OUT_TABLE[d.signOut.phase].requested };
-          });
-        }
-        return outcome("sign_out", reply);
+          }
+          result = outcome("sign_out", reply);
+          record(result);
+        });
+        if (result === null) throw platformError("internal", "sign_out");
+        return result;
       }
       case "record_revocation":
-        this.#write((d) => {
+        return act((d) => {
           d.signOut = { ...d.signOut, revocationRecorded: true };
+          return { action: "record_revocation", recorded: true };
         });
-        return { action: "record_revocation", recorded: true };
       case "resolve_removal":
-        return outcome(
-          "resolve_removal",
-          this.#write(
-            (d) =>
-              this.#step(d, "removal_resolved", {
-                signOutSettled: signOutSettled({
-                  phase: d.signOut.phase,
-                  neverHeldLogin: !d.everHeldLogin,
-                  loginPossiblyLost: d.signOut.loginPossiblyLost,
-                  revocationRecorded: d.signOut.revocationRecorded,
-                }),
-              }).reply,
+        return act((d) =>
+          outcome(
+            "resolve_removal",
+            this.#step(d, "removal_resolved", {
+              signOutSettled: signOutSettled({
+                phase: d.signOut.phase,
+                neverHeldLogin: !d.everHeldLogin,
+                loginPossiblyLost: d.signOut.loginPossiblyLost,
+                revocationRecorded: d.signOut.revocationRecorded,
+              }),
+            }).reply,
           ),
         );
     }
@@ -1373,6 +1477,8 @@ export class WorkspaceController {
     for (let pass = 0; pass < 200; pass += 1) {
       let progressed = false;
       try {
+        // A recovery alarm is in place before any long effect starts (FH-36).
+        await this.#exclusive(() => this.#schedule());
         progressed = await this.#reconcileOnce();
       } catch (error) {
         this.#log("reconcile_step_failed", { error: describe(error) });
@@ -1470,6 +1576,23 @@ export class WorkspaceController {
     const state = r.lifecycle.context.state;
     const running = port.running;
     if (expectsContainer(state) && !running) {
+      const old = r.reservation;
+      if (state === "stopping" && r.lifecycle.context.wakeQueued && old !== null) {
+        // The container is confirmed stopped: give its slot back before the queued wake asks for
+        // one, so the two never compete at the limit. The transition queues the same release
+        // again; ControlDO's release is idempotent.
+        try {
+          await this.#d.control.control({
+            method: "release",
+            interfaceVersion: CONTROL_INTERFACE_VERSION,
+            operationId: this.#d.newId("op"),
+            computerId: this.#d.computerId,
+            generation: old.generation,
+          });
+        } catch (error) {
+          this.#log("release_failed", { generation: old.generation, error: describe(error) });
+        }
+      }
       await this.#exclusive(() => this.#reserving("container_stopped", {}, {}, "at_capacity"));
       return true;
     }
@@ -1616,14 +1739,23 @@ export class WorkspaceController {
           });
           return true;
         }
+        // Bounded, and aborted if the restore is abandoned meanwhile (FH-36).
+        const deadline = this.#d.deadline(this.#t.restoreLayerDeadlineMs);
+        const abort = new AbortController();
+        deadline.signal.addEventListener("abort", () => abort.abort(deadline.signal.reason));
+        this.#restoreAbort = abort;
         try {
           await port.restore(layer.backup, {
             dir: `${RESTORE_ROOT}/${layer.layerId}`,
             prefix: workspaceBackupPrefix(this.#d.computerId),
+            signal: abort.signal,
           });
         } catch (error) {
           if (isMissingLayer(error)) return fail(`layer ${layer.layerId} missing`);
           throw error;
+        } finally {
+          deadline.clear();
+          this.#restoreAbort = null;
         }
         await update((_, j) => {
           j.nextLayer += 1;
@@ -1714,7 +1846,7 @@ export class WorkspaceController {
             d.params?.attempt === params.attempt && d.params.deliverOp === params.deliverOp;
           if (current && d.lifecycle.context.state === "host_running") fn(d);
           if (current) d.params = null;
-          this.#dropToken();
+          this.#dropToken(params.attempt);
         }),
       );
     if (!token.success || token.data.attempt !== params.attempt) {
@@ -2199,8 +2331,17 @@ export class WorkspaceController {
       );
       return true;
     }
+    if (r.credential !== null && r.credentialDeletes.includes(r.credential.object.key)) {
+      const live = r.credential.object.key;
+      await this.#exclusive(() =>
+        this.#write((d) => {
+          d.credentialDeletes = d.credentialDeletes.filter((x) => x !== live);
+        }),
+      );
+      return true;
+    }
     const key = r.credentialDeletes[0];
-    if (key !== undefined && this.#d.bucket !== null && key !== r.credential?.object.key) {
+    if (key !== undefined && this.#d.bucket !== null) {
       try {
         await this.#d.bucket.delete(key);
       } catch (error) {
@@ -2247,10 +2388,14 @@ export class WorkspaceController {
           });
         }
         case "credentials": {
-          if (r.credential !== null) {
+          if (r.credential !== null || r.credentialUploads.length > 0) {
             return set((d) => {
               if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
+              for (const u of d.credentialUploads) {
+                d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
+              }
               d.credential = null;
+              d.credentialUploads = [];
             });
           }
           const key = r.credentialDeletes[0];
@@ -2390,31 +2535,42 @@ export class WorkspaceController {
     }
     if (
       ctx.state === "restoring" ||
+      ctx.state === "stopping" ||
       r.capture !== null ||
       r.signOut.job !== null ||
-      r.stopJob !== null
+      r.stopJob !== null ||
+      r.params?.deliver === true
     ) {
       times.push(now + t.pollMs);
     }
-    if (ctx.state === "stopping" || r.params?.deliver) times.push(now + t.pollMs);
-    if (r.noHostSince !== null && withoutHost(ctx.state))
-      times.push(r.noHostSince + t.startDeadlineMs);
+    // Deadlines only while their action is eligible; a deferred one waits for what defers it.
+    const terminalOpen = r.terminalOpenUntil !== null && r.terminalOpenUntil > now;
+    const stopRetryAt = r.stopRefusedAt === null ? now : r.stopRefusedAt + t.heartbeatMs;
+    if (r.noHostSince !== null && withoutHost(ctx.state)) {
+      const deferred = restored(ctx.state) && (ctx.stopPrep !== null || terminalOpen);
+      if (!deferred) times.push(Math.max(r.noHostSince + t.startDeadlineMs, stopRetryAt));
+    }
+    if (ctx.removalIntent && restored(ctx.state) && ctx.stopPrep === null) times.push(stopRetryAt);
     if (r.notSaved !== null) times.push(r.notSaved.nextRetryAt);
-    if (r.saveRequests.length > 0) times.push(r.nextCaptureAt ?? now + t.pollMs);
+    if (r.saveRequests.length > 0 && r.capture === null) {
+      times.push(Math.max(r.nextCaptureAt ?? now, now + t.pollMs));
+    }
     if (
       r.releases.length > 0 ||
       r.orphans.length > 0 ||
       r.credentialDeletes.length > 0 ||
+      r.credentialUploads.length > 0 ||
       r.deletion !== null ||
       r.reserving !== null
     ) {
       times.push(now + t.heartbeatMs);
     }
-    if (r.terminalOpenUntil !== null) times.push(r.terminalOpenUntil);
+    if (terminalOpen && r.terminalOpenUntil !== null) times.push(r.terminalOpenUntil);
     if (times.length === 0) {
       await this.#d.alarm.clear();
       return;
     }
-    await this.#d.alarm.set(Math.max(now + 1, Math.min(...times)));
+    // Never sooner than a second ahead, so no deadline can make the alarm spin.
+    await this.#d.alarm.set(Math.max(now + MIN_ALARM_MS, Math.min(...times)));
   }
 }

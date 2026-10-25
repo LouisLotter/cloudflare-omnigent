@@ -125,6 +125,25 @@ describe("WorkspaceDO", () => {
     });
   });
 
+  it("carries a restore on from storage after an eviction in the middle of it", async () => {
+    const { stub, computer, client } = fresh();
+    await client.send(client.provisionRequest("managed-7f3c2a9e"));
+    computer.supervisorOptions = { restorePolls: 3 };
+    const [, state] = await stepsWithEviction(stub, [
+      // The restore starts and is still running when the instance is evicted.
+      () => client.send(client.resumeRequest()),
+      async () => {
+        await alarm(stub, computer, 5_000);
+        await alarm(stub, computer, 5_000);
+        await alarm(stub, computer, 5_000);
+        return client.send(client.statusRequest());
+      },
+    ]);
+    expect(state).toMatchObject({ status: "started_no_host", generation: 1 });
+    expect(computer.starts).toHaveLength(1);
+    expect(computer.sup?.restored).toBe(true);
+  });
+
   it("returns a sleep's recorded outcome for a repeated operation ID across eviction", async () => {
     const { stub, computer, client } = fresh();
     await client.send(client.provisionRequest("managed-7f3c2a9e"));
