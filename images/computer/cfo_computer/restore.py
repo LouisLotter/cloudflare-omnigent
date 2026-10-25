@@ -37,6 +37,7 @@ from typing import Any
 
 from .contract import (
     LAYER_INDEX_PATH,
+    LAYER_METADATA_DIR,
     WORKSPACE_FORMAT_VERSION,
     Contract,
     ContractError,
@@ -121,6 +122,47 @@ def _read_layer_index(layer_dir: Path, expected_sha: str, contract: Contract) ->
         raise RestoreFailed("layer_corrupt", "a layer index does not parse") from exc
 
 
+def _source(layer_dir: Path, rel: str) -> str:
+    """``rel`` in the layer directory, every ancestor a real directory: a corrupt layer whose
+    directory is a symbolic link can never make a path resolve outside it."""
+    cur = os.fspath(layer_dir)
+    for part in rel.split("/")[:-1]:
+        cur = os.path.join(cur, part)
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError as exc:
+            raise RestoreFailed("layer_corrupt", "a layer misses an indexed path") from exc
+        if not stat.S_ISDIR(st.st_mode):
+            raise RestoreFailed("layer_corrupt", "a layer directory is not a real directory")
+    return os.path.join(layer_dir, rel)
+
+
+def _forbidden_aliases(layer_dir: Path, policy: Policy) -> set[str]:
+    """Saved paths in a layer that are hard links to a file the policy does not save.
+
+    A layer from an older or a foreign capture could hold ``.codex/auth.json`` and a saved
+    ``work/alias`` sharing its inode: stripping the first by name would leave its bytes in the
+    second. Every file in the layer directory is looked at, indexed or not. Never follows a
+    link."""
+    forbidden: set[tuple[int, int]] = set()
+    saved: dict[tuple[int, int], list[str]] = {}
+    for dirpath, dirnames, filenames in os.walk(layer_dir):
+        rel_dir = os.path.relpath(dirpath, layer_dir)
+        if rel_dir == ".":
+            dirnames[:] = [d for d in dirnames if d != LAYER_METADATA_DIR]
+        for name in filenames:
+            rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+            st = os.lstat(os.path.join(dirpath, name))
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            key = (st.st_dev, st.st_ino)
+            if policy.classify(rel).saved:
+                saved.setdefault(key, []).append(rel)
+            else:
+                forbidden.add(key)
+    return {rel for key in forbidden for rel in saved.get(key, ())}
+
+
 def _place(layer_dir: Path, merge: str, entry: dict[str, Any]) -> None:
     rel = entry["path"]
     dst = _inside(merge, rel)
@@ -130,14 +172,20 @@ def _place(layer_dir: Path, merge: str, entry: dict[str, Any]) -> None:
         have = os.lstat(dst)
     except FileNotFoundError:
         have = None
+    src = _source(layer_dir, rel)
     if kind == "dir":
+        try:
+            src_st = os.lstat(src)
+        except FileNotFoundError:
+            src_st = None
+        if src_st is not None and not stat.S_ISDIR(src_st.st_mode):
+            raise RestoreFailed("layer_corrupt", "a layer directory is not a real directory")
         if have is not None and not stat.S_ISDIR(have.st_mode):
             _remove(dst)
             have = None
         if have is None:
             os.mkdir(dst, 0o700)
         return
-    src = os.path.join(layer_dir, rel)
     try:
         src_st = os.lstat(src)
     except FileNotFoundError as exc:
@@ -151,10 +199,15 @@ def _place(layer_dir: Path, merge: str, entry: dict[str, Any]) -> None:
         return
     if not stat.S_ISREG(src_st.st_mode) or src_st.st_size != entry["size"]:
         raise RestoreFailed("layer_corrupt", "a layer file differs from its index")
-    try:
-        os.link(src, dst, follow_symlinks=False)
-    except OSError:
-        shutil.copyfile(src, dst, follow_symlinks=False)
+    # A file with other links is copied, never linked: owners and modes are applied to the
+    # merge tree, and must never reach an inode shared with anything else.
+    if src_st.st_nlink == 1:
+        try:
+            os.link(src, dst, follow_symlinks=False)
+            return
+        except OSError:
+            pass
+    shutil.copyfile(src, dst, follow_symlinks=False)
 
 
 def restore_workspace(
@@ -193,6 +246,7 @@ def restore_workspace(
     os.makedirs(merge, mode=0o700)
     try:
         index: dict[str, dict[str, Any]] = {}
+        aliases: set[str] = set()
         previous = None
         for meta, layer_dir in zip(manifest["layers"], dirs, strict=True):
             layer = _read_layer_index(layer_dir, meta["indexSha256"], contract)
@@ -216,15 +270,24 @@ def restore_workspace(
                 raise RestoreFailed("index_mismatch", "the merged index differs from its digest")
             for gone in layer["deleted"]:
                 _remove(_inside(merge, gone))
+                aliases.difference_update(
+                    a for a in list(aliases) if a == gone or a.startswith(gone + "/")
+                )
+            layer_aliases = _forbidden_aliases(layer_dir, policy)
             for entry in sorted(layer["entries"], key=lambda e: e["path"].encode("utf-8")):
+                if entry["path"] in layer_aliases:
+                    aliases.add(entry["path"])  # never placed, stripped below
+                    continue
+                aliases.discard(entry["path"])
                 _place(layer_dir, merge, entry)
             previous = layer["treeDigest"]
         if previous != manifest["treeDigest"]:
             raise RestoreFailed("index_mismatch", "the last layer is not the manifest's tree")
         published = sorted(index.values(), key=lambda e: e["path"].encode("utf-8"))
 
-        # The one policy, on restore: strip anything it does not save.
-        stripped = [p for p in index if not policy.classify(p).saved]
+        # The one policy, on restore: strip anything it does not save, and every hard link to
+        # such a file.
+        stripped = [p for p in index if not policy.classify(p).saved or p in aliases]
         for path in sorted(stripped, key=len):
             if path in index:
                 prefix = path + "/"
@@ -270,30 +333,43 @@ def restore_workspace(
 def _move_into_place(
     merge: str, home: Path, roots: list[str], replaced_root: Path, job_id: str
 ) -> None:
+    """Move each merged root into the home; on any failure put everything back.
+
+    Every completed rename is recorded at once, so a failure part-way through a root still
+    puts that root's original back. The originals are deleted only once every root is in
+    place, or once a rollback has fully succeeded; otherwise they stay under ``replaced_root``
+    for recovery, and the failure says so.
+    """
     aside = os.path.join(replaced_root, job_id)
     _remove(aside)
     os.makedirs(aside, mode=0o700)
-    moved: list[tuple[str, bool]] = []  # (root, had an old copy)
+    done: list[tuple[str, str]] = []  # ("aside" | "placed", root), in order
     try:
         for root in roots:
             src = os.path.join(merge, root)
             if not os.path.lexists(src):
                 continue
             dst = os.path.join(home, root)
-            had = os.path.lexists(dst)
-            if had:
+            if os.path.lexists(dst):
                 os.replace(dst, os.path.join(aside, root))
+                done.append(("aside", root))
             os.replace(src, dst)
-            moved.append((root, had))
+            done.append(("placed", root))
     except OSError as exc:
-        for root, had in reversed(moved):
+        intact = True
+        for step, root in reversed(done):
             dst = os.path.join(home, root)
             try:
-                os.replace(dst, os.path.join(merge, root))
-                if had:
+                if step == "placed":
+                    _remove(dst)
+                else:
                     os.replace(os.path.join(aside, root), dst)
             except OSError:
-                pass
-        raise RestoreFailed("move_failed", type(exc).__name__) from exc
-    finally:
-        _remove(aside)
+                intact = False
+        if intact:
+            _remove(aside)
+            raise RestoreFailed("move_failed", type(exc).__name__) from exc
+        raise RestoreFailed(
+            "move_failed", f"{type(exc).__name__}; originals kept under {aside}"
+        ) from exc
+    _remove(aside)
