@@ -13,6 +13,7 @@ import datetime
 from pathlib import Path
 from typing import Any
 
+from .json_size import stringify_units
 from .schema import SchemaSet, ValidationError
 
 DECLARED_CREDENTIAL_PATHS: tuple[str, ...] = (
@@ -32,6 +33,7 @@ CREDENTIAL_FORMAT_VERSION = 1
 MAX_DELTAS_PER_BASE = 20
 MAX_CREDENTIAL_FILE_BYTES = 64 * 1024
 MAX_BODY_BYTES = 512 * 1024
+MAX_HOST_CONFIG_UNITS = 64 * 1024
 LAYER_METADATA_DIR = ".cfo-layer"
 LAYER_INDEX_PATH = f"{LAYER_METADATA_DIR}/index.json"
 
@@ -111,7 +113,19 @@ class Contract:
         """A ``WorkspaceCommand``, schema and refinements; raises :class:`ContractError`."""
         self._schema("WorkspaceCommand", value)
         kind = value["type"]
-        if kind == "install_credentials" and value["bundle"] is not None:
+        if kind == "start_host":
+            # z.record strips this top-level property before HostConfig's refinement.
+            # Return the same normalized config; never measure a filtered copy but then
+            # pass the original, potentially oversized config on to the host.
+            config = {key: item for key, item in value["hostConfig"].items() if key != "__proto__"}
+            try:
+                units = stringify_units(config)
+            except (ValueError, RecursionError) as exc:
+                raise ContractError("bad_request", "invalid host configuration JSON") from exc
+            if units > MAX_HOST_CONFIG_UNITS:
+                raise ContractError("bad_request", "host configuration larger than 64 KiB")
+            value = {**value, "hostConfig": config}
+        elif kind == "install_credentials" and value["bundle"] is not None:
             if value["bundle"]["computerId"] != value["computerId"]:
                 raise ContractError("bad_request", "the bundle is another computer's")
             bundle_refinements(value["bundle"])
@@ -130,9 +144,24 @@ class Contract:
         return value
 
     def parse_layer_index(self, value: Any) -> dict[str, Any]:
+        """Validate and normalize integer fields for Python filesystem consumers."""
         self._schema("LayerIndex", value)
         layer_index_refinements(value)
-        return value
+        # Validation has already rejected booleans, fractions and out-of-range numbers.
+        # JSON's 1.0/1e0 spellings are valid integers, but os.chmod and octal formatting
+        # need Python ints. Do not mutate the input object supplied by the caller.
+        return {
+            **value,
+            "formatVersion": int(value["formatVersion"]),
+            "generation": int(value["generation"]),
+            "entries": [
+                {
+                    key: int(item) if key in ("mode", "uid", "gid", "size") else item
+                    for key, item in entry.items()
+                }
+                for entry in value["entries"]
+            ],
+        }
 
     def parse_supervisor_reply(self, value: Any) -> dict[str, Any]:
         self._schema("SupervisorReply", value)
