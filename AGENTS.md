@@ -102,7 +102,7 @@ pnpm --filter @cfo/worker dry-run # wrangler deploy --dry-run
 | `contracts/` | Wire contract: zod schemas, exported JSON Schema, golden fixtures |
 | `worker/` | Web and platform Workers, Durable Objects and their tests |
 | `python/` | Python schema/vector reference checks; production image code has its own projects |
-| `images/` | Server image and image-local tests; computer and connector images remain unfinished |
+| `images/` | Server and computer images with image-local tests; connector images are planned |
 | `spikes/` | Historical experiments and retained reproduction harnesses; keep required analysis inputs |
 | `scripts/` | Repository tools: the canary scanner and the guarded staging tool |
 | `docs/` | Maintained architecture, decisions, compatibility, testing, secret custody and operating guides |

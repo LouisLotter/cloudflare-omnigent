@@ -7,9 +7,11 @@ Source snapshot dated 24 October 2026, based on platform source `91261d7e8fe4b87
 | Platform baseline `91261d7e8fe4b87c8010d50739cd921dd4bf09fe` | `af3e49de2b169a8593e2d91e7ab98e2581f9f90a` | Integrated platform source; image digest and deployed identity not established by this document |
 | Separate candidate `eb26816c150bb62c2ecc3222991769738b220afb` | `35ac1ebd2405264de7c0456084f45c4af1e657ca` | Startup/recovery and artifact-record candidate; real R2 startup qualification on the target `basic` instance remains pending |
 | Fork integration `184b5cf8b32815b48c7859973a00a139e8aa50f0` | Not selected by either default above | Includes later UI and history-resume corrections; no containing product image is identified here |
-| Paused computer supervisor `e566f7f816c61cb840e872d0fde1256fdb6f4017` | No product computer Dockerfile at this revision | Partial source, not an assembled computer image; CLI/SDK pins and image digest remain unselected |
+| Computer image, branch `wp/3.4-computer-assembly` (25 October) | `184b5cf8b32815b48c7859973a00a139e8aa50f0`, mirroring the fork's `host` target | Built and tested locally (image ID only, no registry digest); not deployed. Claude Code 2.1.302, Codex 0.163.0, gh 2.100.0, `@cloudflare/sandbox`/`sandbox-shim` 1.0.0, ttyd 1.7.7, `python:3.12-slim` and `node:22-slim` by digest. Supervisor protocol 1, workspace and credential formats 1, checkpoint policy 1 |
 
 The [server Dockerfile](../images/server/Dockerfile) pins source/base inputs and checks the fork Dockerfile mirror. Build arguments may override defaults, so record the values actually used. A matching mirror digest only describes build coupling; it does not mean that different fork commits contain the same fixes. Rebuilds also resolve Debian packages, so source pins alone do not promise identical image bytes.
+
+The computer image's fork pin is later than either server pin: a computer and a server built from different fork commits must still speak the same host-tunnel and launcher protocols, which the selected assembly must qualify together.
 
 | Behavior | Baseline server pin | Candidate server pin | Current fork integration |
 |---|---|---|---|

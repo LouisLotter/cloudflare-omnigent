@@ -1,6 +1,6 @@
 # images
 
-The maintained product image source is [server/Dockerfile](server/Dockerfile), targeting `linux/amd64`. A production computer image/supervisor assembly remains unfinished; connector images are planned. Prototype spike images are historical reproduction tools, not selected product artifacts.
+The maintained product image sources are [server/Dockerfile](server/Dockerfile) and [computer/Dockerfile](computer/Dockerfile), targeting `linux/amd64`. The computer image is built and tested locally but not yet deployed or driven by its WorkspaceDO; connector images are planned. Prototype spike images are historical reproduction tools, not selected product artifacts.
 
 ## Server image
 
@@ -15,6 +15,17 @@ The integrated server still registers a [placeholder launcher](server/cfo_server
 | [server/tests/integration/](server/tests/integration/) | Separate built-image tests with Docker, MinIO/Toxiproxy, generated credentials, replacement/fault cases and cleanup ownership |
 
 Use [testing](../docs/testing.md) for the build/run recipes and their prerequisites. CI builds the existing `server` and `test` targets, requires the pinned app/entrypoint/Litestream prerequisites, and runs the image's unit/in-process suite with networking disabled. S3/fault integration and full image credential/artifact qualification remain separate. Candidate-only artifact identity/fork-test targets must not be invoked as if they existed in the integrated source.
+
+## Computer image
+
+Omnigent's host from the pinned fork commit (a mirror of the fork's `host` target, checked by its Dockerfile's SHA-256), Claude Code and Codex exactly as published at exact versions with Codex's managed settings, gh behind the host's credential-broker wrapper, the Sandbox SDK's `sandbox-shim`, ttyd, and the supervisor [cfo_computer](computer/cfo_computer/) as tini's only child. [Architecture](../docs/architecture.md#the-computer-image) describes what it does.
+
+| Dockerfile target / test location | Purpose and prerequisite |
+|---|---|
+| `computer` | Final runtime target (the last stage, which Wrangler builds); downloads base images, fork source, the CLIs, gh, ttyd and `sandbox-shim` |
+| `test` | The same image with the fake CLIs first on `PATH`; its default command runs `python/tests/computer` and [computer/tests/](computer/tests/) inside the image, as root |
+| [computer/integration/](computer/integration/) | Built-image tests with Docker: the supervisor as the main process, an assembled capture through the command port, and a DirectoryBackup round trip with the real SDK (needs `npm ci` in `directory-backup/`) |
+| [computer/tools/rc53_scan.py](computer/tools/rc53_scan.py) | RC-53's layer scan for staged layers, restored trees and `tar+zstd` layer archives |
 
 ## Identity and custody
 
