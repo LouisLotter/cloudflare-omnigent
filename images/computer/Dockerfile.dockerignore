@@ -1,0 +1,10 @@
+# The build context is the repository root; the image needs only these paths.
+*
+!images/computer/
+!contracts/schema/
+!contracts/fixtures/
+!contracts/vectors/
+!python/tests/computer/
+**/__pycache__/
+**/*.pyc
+**/.hypothesis/

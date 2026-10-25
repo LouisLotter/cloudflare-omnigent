@@ -143,6 +143,10 @@ class Supervisor:
         self.capture_margin_bytes = 64 << 20
         self.capture_grace_s = CAPTURE_WORKER_GRACE_S
         self.capture_fault = ""
+        #: Variables added to every workload environment (the image's test variant points the
+        #: fake CLIs at their fake provider; production adds nothing).
+        self.extra_env: dict[str, str] = {}
+        self._outbox_message: dict[str, Any] | None = None
         self.terminal: subprocess.Popen[bytes] | None = None
         self.sigterm = False
         layout.ensure()
@@ -178,7 +182,7 @@ class Supervisor:
             yield
 
     def _env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        return workload_env(self.account.home, self.account.name, extra)
+        return workload_env(self.account.home, self.account.name, {**self.extra_env, **(extra or {})})
 
     def _run(self, argv: list[str], timeout: float, stdin: bytes | None = None) -> tuple[int | None, bytes]:
         """A short workload command, never during a capture (it would escape the pause)."""
@@ -656,8 +660,12 @@ class Supervisor:
     def _publish_bundle(self, bundle: dict[str, Any]) -> str:
         if self.api is None:
             raise Unanswered("no computer API")
-        message = self._envelope("credential_checkpoint")
-        message["bundle"] = bundle
+        # Repeated unchanged, with the same operation ID, until answered.
+        message = self._outbox_message
+        if message is None or message["bundle"] is not bundle:
+            message = self._envelope("credential_checkpoint")
+            message["bundle"] = bundle
+            self._outbox_message = message
         try:
             reply = self.api.send_once(message)
         except Refused as exc:

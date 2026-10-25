@@ -8,7 +8,8 @@ Only the declared files travel (``DeclaredCredentialPath``), as opaque bytes, ne
   never undone by an older copy (S6; ``credentialIsNewer``).
 - **The watcher** polls the files' metadata, waits until a change has settled for 500 ms (Codex
   rewrites its file in place), and then takes a bundle; after 10 s of continuous change it takes
-  one anyway, still with a stable read.
+  one anyway, still with a stable read. A file some process still holds open for writing is
+  never copied (a stalled in-place write would otherwise be copied torn).
 - **Publication** is retried until WorkspaceDO acknowledges it (``published`` or
   ``superseded``, R-18). A newer bundle replaces one still waiting.
 - **Install** writes the files of a bundle into a staging directory first, then replaces only
@@ -58,6 +59,79 @@ def _signature(path: Path) -> tuple[int, ...] | None:
     return (st.st_mode, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
+def _writers_among(pids: list[str], st: os.stat_result) -> tuple[bool, list[str]]:
+    """(found a writer, pids whose descriptors could not be read)."""
+    unreadable = []
+    for pid in pids:
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except PermissionError:
+            unreadable.append(pid)
+            continue
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.stat(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if (target.st_dev, target.st_ino) != (st.st_dev, st.st_ino):
+                continue
+            try:
+                with open(f"/proc/{pid}/fdinfo/{fd}") as info:
+                    flags = next(
+                        (int(line.split()[1], 8) for line in info if line.startswith("flags:")), 0
+                    )
+            except (OSError, ValueError):
+                return True, unreadable
+            if flags & (os.O_WRONLY | os.O_RDWR):
+                return True, unreadable
+    return False, unreadable
+
+
+def open_for_writing(st: os.stat_result) -> bool:
+    """Whether any process holds this inode open for writing.
+
+    Codex rewrites ``auth.json`` in place (truncate, then write), so a writer that stalls
+    mid-write leaves a torn file whose size and modification time hold still: settling and a
+    stable read alone would copy it (found by this package's tests with a slow fake writer).
+    An open write descriptor means the write is not over. Root reads every process's
+    descriptors where it has CAP_SYS_PTRACE (Cloudflare, S3); without it (Docker's default),
+    another account's processes are inspected from a child that drops to that account. A
+    process neither can read counts as a writer: never copy what cannot be checked.
+    """
+    pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    found, unreadable = _writers_among(pids, st)
+    if found or not unreadable:
+        return found
+    if os.geteuid() != 0:
+        # Without root (tests only), another account's processes are out of reach; a declared
+        # file is 0600 and the account's own processes were read above.
+        return False
+    by_uid: dict[int, list[str]] = {}
+    for pid in unreadable:
+        try:
+            by_uid.setdefault(os.stat(f"/proc/{pid}").st_uid, []).append(pid)
+        except OSError:
+            continue
+    for uid, group in by_uid.items():
+        child = os.fork()
+        if child == 0:  # only os calls in the child
+            code = 2
+            try:
+                os.setgroups([])
+                os.setgid(uid)
+                os.setuid(uid)
+                hit, still = _writers_among(group, st)
+                code = 1 if hit or still else 0
+            finally:
+                os._exit(code)
+        _pid, status = os.waitpid(child, 0)
+        if os.waitstatus_to_exitcode(status) != 0:
+            return True
+    return False
+
+
 def read_stably(path: Path) -> tuple[bytes, int] | None:
     """(content, mode) of a declared file, or None when it is absent. Never follows a link."""
     try:
@@ -68,6 +142,8 @@ def read_stably(path: Path) -> tuple[bytes, int] | None:
         raise CredentialAlert("a declared credential path is not a regular file")
     if before.st_size > MAX_CREDENTIAL_FILE_BYTES:
         raise CredentialAlert("a declared credential file is larger than the limit")
+    if open_for_writing(before):
+        raise UnstableRead("a writer still holds the file open")
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:

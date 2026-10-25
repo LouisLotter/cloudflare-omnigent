@@ -66,7 +66,7 @@ class FakeWorkspace:
 
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
-        self.drop = 0  # this many requests are cut without an answer
+        self.drop: dict[str, int] = {}  # per message type: this many are cut unanswered
         self.refuse: str | None = None  # an ErrorBody code to answer with
         self.pointer: dict[str, Any] | None = None  # the published credential bundle
         self.lock = threading.Lock()
@@ -80,8 +80,8 @@ class FakeWorkspace:
                 message = json.loads(body)
                 with outer.lock:
                     outer.messages.append(message)
-                    if outer.drop > 0:
-                        outer.drop -= 1
+                    if outer.drop.get(message["type"], 0) > 0:
+                        outer.drop[message["type"]] -= 1
                         self.close_connection = True
                         self.connection.shutdown(2)
                         return
