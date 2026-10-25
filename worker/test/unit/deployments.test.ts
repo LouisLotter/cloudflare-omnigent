@@ -194,7 +194,7 @@ describe("module rules of the forwarding path", () => {
       "web.ts",
       "internal/omnigent-route.ts",
       "internal/entrypoints.ts",
-      "internal/socket-bridge.ts",
+      "internal/upgrade-answer.ts",
     ]) {
       expect(read(join(SRC, file))).not.toMatch(/\.accept\(/);
     }

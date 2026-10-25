@@ -14,7 +14,7 @@ import {
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { directoryBackups } from "../../src/egress/backups.ts";
 import { LAUNCH_TOKEN_HEADER } from "../../src/internal/omnigent-route.ts";
-import { serverUpgradeAnswer } from "../../src/internal/socket-bridge.ts";
+import { serverUpgradeAnswer } from "../../src/internal/upgrade-answer.ts";
 import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
 import { OMNIGENT_SERVER_OBJECT_NAME } from "../../src/shared/rpc.ts";
 import { defined } from "../support/defined.ts";

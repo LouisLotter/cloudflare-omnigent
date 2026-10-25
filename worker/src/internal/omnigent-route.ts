@@ -11,9 +11,8 @@
 //   4. the block list (design, "The computer's authority in Omnigent"; R-28), matched on a
 //      canonical form of the path, with method overrides refused everywhere.
 // Then the request goes to the server's Durable Object with the trust headers stripped, the
-// interface version set and `redirect: "manual"`, once, never retried. The server's 101 comes
-// back through `closeOnEnd`, which makes every end of the server's side reach the computer as a
-// close frame (WP2.2's design change 7). Requests are logged by method, path (no query string)
+// interface version set and `redirect: "manual"`, once, never retried. The server's 101 goes
+// back unaccepted (`upgrade-answer.ts`). Requests are logged by method, path (no query string)
 // and status; bodies are never read.
 
 import {
@@ -362,7 +361,7 @@ export interface RouteDeps {
   readonly upgradeLimiter: RateLimiter;
   /** One call into OmnigentServer's `fetch`. */
   forward(request: Request): Promise<Response>;
-  /** What happens to the server's 101: see `closeOnEnd`. */
+  /** What happens to the server's 101 (`upgrade-answer.ts`). */
   answerUpgrade(response: Response): Response;
   log(event: string, fields: Readonly<Record<string, unknown>>): void;
   readonly basePath?: string;

@@ -39,7 +39,7 @@ import {
   ROUTE_UPGRADE_LIMITS,
 } from "./omnigent-route.ts";
 import { handleLauncherRequest, signingKeysFrom } from "./platform-api.ts";
-import { serverUpgradeAnswer } from "./socket-bridge.ts";
+import { serverUpgradeAnswer } from "./upgrade-answer.ts";
 
 /** WorkspaceDO as these entrypoints call it (`shared/rpc.ts` `WorkspaceRpc`). */
 interface WorkspaceStub {
@@ -119,10 +119,7 @@ export class OmnigentRoute extends WorkerEntrypoint<PlatformEnv> {
         if (!env.OMNIGENT) throw new Error("no OMNIGENT binding");
         return env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).fetch(forwarded);
       },
-      answerUpgrade: (response) =>
-        serverUpgradeAnswer(response, {
-          onEnd: (fields) => logEvent("computer_route", "socket_end", fields),
-        }),
+      answerUpgrade: serverUpgradeAnswer,
       log: (event, fields) => logEvent("computer_route", event, fields),
     });
   }

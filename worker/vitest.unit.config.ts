@@ -16,7 +16,7 @@ export const runtimeModules = [
   // The private virtual hosts' entrypoints and the WebSocket answer (WorkerEntrypoint, Response
   // 101), and the Sandbox SDK's adapter, which imports `cloudflare:workers` (WP3.3).
   "src/internal/entrypoints.ts",
-  "src/internal/socket-bridge.ts",
+  "src/internal/upgrade-answer.ts",
   "src/egress/backups.ts",
 ];
 
