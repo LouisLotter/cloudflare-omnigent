@@ -10,16 +10,16 @@ import {
   containerMayRun,
   type Effect,
   type GuardInput,
+  type HostSandboxStatus,
   INITIAL_CONTEXT,
   type LifecycleEvent,
   type LifecycleState,
   type MachineContext,
-  type Reply,
   RESTORED_STATES,
+  type Reply,
   ruleFor,
   step,
   typedStatus,
-  type HostSandboxStatus,
 } from "@cfo/contracts";
 
 /** The table's context, with the generation and the latest claimed start attempt. */
@@ -95,7 +95,11 @@ export function transition(
     generation = reservedGeneration;
   }
   if (result.effects.includes("record_attempt")) attempt += 1;
-  return { lifecycle: { context: result.context, generation, attempt }, reply: result.reply, effects: result.effects };
+  return {
+    lifecycle: { context: result.context, generation, attempt },
+    reply: result.reply,
+    effects: result.effects,
+  };
 }
 
 /** The typed status Omnigent sees (R-02), and `is_running`'s answer. */

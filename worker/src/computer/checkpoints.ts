@@ -20,9 +20,9 @@
 //   hard budget above about 2 GB (D25).
 
 import {
-  CREDENTIAL_FORMAT_VERSION,
   type CheckpointId,
   type ComputerId,
+  CREDENTIAL_FORMAT_VERSION,
   type CredentialBundle,
   type CredentialManifest,
   credentialObjectKey,
@@ -339,7 +339,10 @@ export async function credentialManifestOf(input: {
   readonly now: number;
 }): Promise<CredentialManifest> {
   const { bundle } = input;
-  const files = {} as Record<DeclaredCredentialPath, CredentialManifest["files"][DeclaredCredentialPath]>;
+  const files = {} as Record<
+    DeclaredCredentialPath,
+    CredentialManifest["files"][DeclaredCredentialPath]
+  >;
   for (const path of DeclaredCredentialPath.options) {
     const file = bundle.files[path];
     if (file.state === "tombstone") {
@@ -376,7 +379,8 @@ export async function objectMatches(
   object: Uint8Array,
 ): Promise<boolean> {
   return (
-    object.byteLength === manifest.object.size && (await sha256Hex(object)) === manifest.object.sha256
+    object.byteLength === manifest.object.size &&
+    (await sha256Hex(object)) === manifest.object.sha256
   );
 }
 
@@ -393,11 +397,9 @@ export function noDeclaredFile(files: FileStates): boolean {
 }
 
 /**
- * The sign-out event a published bundle means: both providers' login files tombstoned, or a login
- * present (which undoes any sign-out); null if neither.
+ * The sign-out event a published bundle means: a login present undoes any sign-out; otherwise
+ * both providers' login files are tombstoned.
  */
-export function signOutEventOf(files: FileStates): SignOutEvent | null {
-  if (holdsLogin(files)) return "login_published";
-  const tombstoned = Object.values(LOGIN_FILE).every((path) => files[path].state === "tombstone");
-  return tombstoned ? "tombstones_published" : null;
+export function signOutEventOf(files: FileStates): SignOutEvent {
+  return holdsLogin(files) ? "login_published" : "tombstones_published";
 }

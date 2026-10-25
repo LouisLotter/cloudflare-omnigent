@@ -49,7 +49,13 @@ export interface Store {
 const Millis = z.number().int().min(0).max(8.64e15);
 const Count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 
-const StopReasonSchema = z.enum(["sleep", "restart", "removal", "without_saving", "start_deadline"]);
+const StopReasonSchema = z.enum([
+  "sleep",
+  "restart",
+  "removal",
+  "without_saving",
+  "start_deadline",
+]);
 
 const MachineContextSchema = z.strictObject({
   state: LifecycleState,
