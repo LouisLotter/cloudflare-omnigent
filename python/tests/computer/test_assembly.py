@@ -64,7 +64,11 @@ def test_capture_pauses_the_workload_and_copies_a_consistent_cut(tmp_path: Path,
         index = json.loads((Path(job["layerDir"]) / ".cfo-layer" / "index.json").read_text())
         assert index["kind"] == "base" and index["parentTreeDigest"] is None
         assert index["treeDigest"] == job["treeDigest"]
-        assert {e["path"] for e in index["entries"]} >= {"work", "work/notes.txt", "work/writer.log"}
+        assert {e["path"] for e in index["entries"]} >= {
+            "work",
+            "work/notes.txt",
+            "work/writer.log",
+        }
     finally:
         rig.close()
 
@@ -100,7 +104,9 @@ def _populate(home: Path, secrets: dict[str, str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": value}))
     # Continuation state the policy saves: the undelivered-event queue.
-    (home / ".omnigent" / "codex-native" / "abc" / "dead_letter.jsonl").write_text('{"event_type":"x"}\n')
+    (home / ".omnigent" / "codex-native" / "abc" / "dead_letter.jsonl").write_text(
+        '{"event_type":"x"}\n'
+    )
 
 
 def test_base_and_deltas_restore_exactly_into_a_fresh_computer(tmp_path: Path) -> None:
@@ -122,18 +128,24 @@ def test_base_and_deltas_restore_exactly_into_a_fresh_computer(tmp_path: Path) -
         (a.home / "work" / "proj" / "link" / "inside.txt").write_text("x")
         (a.home / ".codex" / "sessions" / "rollout-1.jsonl").unlink()
         (a.home / "work" / "proj" / "new-link").symlink_to("../proj")
-        op2, delta = a.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": base["treeDigest"]})
+        op2, delta = a.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": base["treeDigest"]}
+        )
         assert delta["state"] == "staged" and delta["deleted"] >= 1
         index2 = uploads.upload(delta)
         assert index2["kind"] == "delta" and index2["parentTreeDigest"] == base["treeDigest"]
         a.finish(op2)
         # Nothing changed: a verified-unchanged capture, no layer.
-        _op3, same = a.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": delta["treeDigest"]})
+        _op3, same = a.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": delta["treeDigest"]}
+        )
         assert same["state"] == "unchanged"
         expected = {
             k: v
             for k, v in tree_files(a.home).items()
-            if not k.startswith(("work/node_modules", ".claude/.credentials", ".codex/auth", ".codex/.credentials"))
+            if not k.startswith(
+                ("work/node_modules", ".claude/.credentials", ".codex/auth", ".codex/.credentials")
+            )
             and k not in secrets
         }
         # RC-53-style: no planted secret in any uploaded layer.
@@ -151,7 +163,9 @@ def test_base_and_deltas_restore_exactly_into_a_fresh_computer(tmp_path: Path) -
         assert not (b.home / ".claude" / ".credentials.json").exists()
         # The restored tree is the published one: the next save is a delta against it.
         b.install()
-        _op, again = b.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": delta["treeDigest"]})
+        _op, again = b.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": delta["treeDigest"]}
+        )
         assert again["state"] == "unchanged", again
     finally:
         b.close()
@@ -170,7 +184,10 @@ def test_a_corrupt_or_missing_layer_leaves_the_home_as_it_was(tmp_path: Path) ->
         a.close()
     cases = {
         "layer_missing": lambda dirs: [d + "-gone" for d in dirs],
-        "layer_corrupt": lambda dirs: (Path(dirs[0], ".cfo-layer", "index.json").write_text("{}"), dirs)[1],
+        "layer_corrupt": lambda dirs: (
+            Path(dirs[0], ".cfo-layer", "index.json").write_text("{}"),
+            dirs,
+        )[1],
         "index_mismatch": lambda dirs: (Path(dirs[0], "work", "f.txt").write_text("two"), dirs)[1],
         "path_refused": lambda dirs: ["/etc"],
     }
@@ -270,14 +287,24 @@ def test_capture_failures_stage_nothing_and_resume_the_workload(tmp_path: Path, 
         assert job == {**job, "state": "failed", "reason": "parent_mismatch"}
         # A repeated operation ID returns the job; reused for another body, a conflict.
         status, reply = rig.post(
-            rig.command("capture", op=op, layerId=new_id("lyr"), kind="base", parent=None, policyVersion=1, lease=LEASE)
+            rig.command(
+                "capture",
+                op=op,
+                layerId=new_id("lyr"),
+                kind="base",
+                parent=None,
+                policyVersion=1,
+                lease=LEASE,
+            )
         )
         assert status == 409 and reply["error"]["code"] == "conflict"
     finally:
         rig.close()
 
 
-def test_a_lease_that_expires_during_the_paused_copy_discards_the_capture(tmp_path: Path, writer) -> None:
+def test_a_lease_that_expires_during_the_paused_copy_discards_the_capture(
+    tmp_path: Path, writer
+) -> None:
     proc, _log = writer
     rig = Rig(tmp_path / "a", scope_pids=[proc.pid])
     try:
@@ -303,7 +330,9 @@ def test_a_lease_that_expires_during_the_paused_copy_discards_the_capture(tmp_pa
         assert job["state"] == "failed" and job["reason"] == "lease_expired", job
         assert _state(proc.pid) != "T"
         # The next capture, with time, catches the same-size same-mtime rewrite (IR-011).
-        op, job = rig.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": first["treeDigest"]})
+        op, job = rig.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": first["treeDigest"]}
+        )
         assert job["state"] == "staged"
         index = json.loads((Path(job["layerDir"]) / ".cfo-layer" / "index.json").read_text())
         changed = {e["path"]: e for e in index["entries"]}

@@ -56,7 +56,16 @@ def under_container_init() -> bool:
 
 def terminal_argv(port: int = TERMINAL_PORT) -> list[str]:
     """ttyd for the setup page's terminal: one writable client at a time, a login shell."""
-    return ["/usr/local/bin/ttyd", "--port", str(port), "--writable", "--max-clients", "1", "bash", "-l"]
+    return [
+        "/usr/local/bin/ttyd",
+        "--port",
+        str(port),
+        "--writable",
+        "--max-clients",
+        "1",
+        "bash",
+        "-l",
+    ]
 
 
 def main() -> int:
@@ -71,7 +80,12 @@ def main() -> int:
     try:
         contract.schemas.validate(
             "InterceptProps",
-            {"propsVersion": 1, "computerId": computer_id, "generation": generation, "hostId": None},
+            {
+                "propsVersion": 1,
+                "computerId": computer_id,
+                "generation": generation,
+                "hostId": None,
+            },
         )
     except Exception:  # noqa: BLE001
         print("cfo-supervisor: CFO_COMPUTER_ID or CFO_GENERATION is invalid", file=sys.stderr)

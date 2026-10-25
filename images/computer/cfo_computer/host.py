@@ -52,7 +52,9 @@ class HostManager:
         prepare: Callable[[StartParams], None],
         spawn_gate: Callable[[], Any],
         on_change: Callable[[], None] = lambda: None,
-        backoff: Callable[[int], float] = lambda n: min(RESTART_MAX_DELAY_S, float(2 ** max(0, n - 1))),
+        backoff: Callable[[int], float] = lambda n: min(
+            RESTART_MAX_DELAY_S, float(2 ** max(0, n - 1))
+        ),
     ) -> None:
         self._spawn = spawn
         self._prepare = prepare
@@ -112,19 +114,19 @@ class HostManager:
                     self.state = "restarting"
                 self._on_change()
                 time.sleep(self._backoff(failures))
-            with self._spawn_gate():  # never while a capture pauses the workload
-                with self._lock:
-                    if self._stopping or self.params is not params:
-                        return
-                    try:
-                        if first:
-                            self._prepare(params)
-                        proc = self._spawn(params)
-                    except Exception:  # noqa: BLE001 - a failed spawn is retried like a crash
-                        proc = None
-                    self.proc = proc
-                    if proc is not None:
-                        self.state = "running"
+            # Never while a capture pauses the workload.
+            with self._spawn_gate(), self._lock:
+                if self._stopping or self.params is not params:
+                    return
+                try:
+                    if first:
+                        self._prepare(params)
+                    proc = self._spawn(params)
+                except Exception:  # noqa: BLE001 - a failed spawn is retried like a crash
+                    proc = None
+                self.proc = proc
+                if proc is not None:
+                    self.state = "running"
             self._on_change()
             first = False
             if proc is None:

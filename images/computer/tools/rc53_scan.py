@@ -96,9 +96,13 @@ class Scan:
                 Path(tmp, "db-wal").write_bytes(wal)
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             try:
-                tables = [r[0] for r in con.execute("select name from sqlite_master where type='table'")]
+                tables = [
+                    r[0] for r in con.execute("select name from sqlite_master where type='table'")
+                ]
                 for table in tables:
-                    for row in con.execute(f'select * from "{table.replace(chr(34), chr(34) * 2)}"'):
+                    for row in con.execute(
+                        f'select * from "{table.replace(chr(34), chr(34) * 2)}"'
+                    ):
                         for cell in row:
                             if isinstance(cell, str):
                                 self._cell(where, cell.encode())
@@ -115,7 +119,9 @@ class Scan:
         for label, encoded in self.values:
             for form, needle in encoded.items():
                 if needle in data:
-                    self.findings.append({"file": f"{where} (sqlite value)", "form": form, "value": label})
+                    self.findings.append(
+                        {"file": f"{where} (sqlite value)", "form": form, "value": label}
+                    )
 
     def tree(self, top: Path) -> None:
         before = set(self.seen_controls)
@@ -159,7 +165,9 @@ class Scan:
                     if not member.isfile():
                         continue
                     if member.size > MAX_MEMBER_BYTES:
-                        self.incomplete.append({"file": f"{path}:{member.name}", "why": "too large"})
+                        self.incomplete.append(
+                            {"file": f"{path}:{member.name}", "why": "too large"}
+                        )
                         continue
                     content = tar.extractfile(member).read()
                     self.bytes(f"{path.name}:{member.name}", content)

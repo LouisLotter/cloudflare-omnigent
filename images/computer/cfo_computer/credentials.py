@@ -250,7 +250,9 @@ def declared_present(home: Path) -> list[str]:
     return [rel for rel in DECLARED_CREDENTIAL_PATHS if os.path.lexists(home / rel)]
 
 
-def verify_signed_out(bundle: dict[str, Any] | None, *, scratch: Path, uid: int, gid: int) -> list[str]:
+def verify_signed_out(
+    bundle: dict[str, Any] | None, *, scratch: Path, uid: int, gid: int
+) -> list[str]:
     """Install ``bundle`` into an empty scratch home, as a fresh computer would, and list the
     declared files present afterwards: empty means the bundle is signed out (Q6)."""
     shutil.rmtree(scratch, ignore_errors=True)
@@ -311,7 +313,9 @@ class Credentials:
     def baseline(self) -> None:
         """After an install: the current files are the starting point; the watcher starts."""
         with self._lock:
-            self._signatures = {rel: _signature(self.home / rel) for rel in DECLARED_CREDENTIAL_PATHS}
+            self._signatures = {
+                rel: _signature(self.home / rel) for rel in DECLARED_CREDENTIAL_PATHS
+            }
             self._seen = dict(self._signatures)
             self._started = True
 
@@ -336,7 +340,11 @@ class Credentials:
             for rel, read in reads.items():
                 digest = hashlib.sha256(read[0]).hexdigest() if read is not None else None
                 old = self._copies.get(rel)
-                if old is None or old.digest != digest or (read is not None and old.mode != read[1]):
+                if (
+                    old is None
+                    or old.digest != digest
+                    or (read is not None and old.mode != read[1])
+                ):
                     changed.append(rel)
             if not changed and not force and self._latest is not None:
                 self._signatures = signatures

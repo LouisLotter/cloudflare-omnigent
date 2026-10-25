@@ -18,6 +18,7 @@ before each entry and each chunk, so an expired lease stops the copy within one 
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import secrets
@@ -86,7 +87,9 @@ def _same_content(a: str, b: str, size: int, check: Callable[[], None], stats: S
         return fa.read(1) == fb.read(1) == b""
 
 
-def _copy_file(src: str, dst: str, st: os.stat_result, check: Callable[[], None], stats: SyncStats) -> None:
+def _copy_file(
+    src: str, dst: str, st: os.stat_result, check: Callable[[], None], stats: SyncStats
+) -> None:
     tmp = os.path.join(os.path.dirname(dst), TMP_PREFIX + secrets.token_hex(6))
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
@@ -110,10 +113,8 @@ def _copy_file(src: str, dst: str, st: os.stat_result, check: Callable[[], None]
         os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns), follow_symlinks=False)
         os.replace(tmp, dst)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
     stats.copied_files += 1
 
@@ -212,9 +213,7 @@ def sync_snapshot(
                 have = os.lstat(dst)
             except FileNotFoundError:
                 have = None
-            if have is None or not stat.S_ISREG(have.st_mode):
-                need = True
-            elif have.st_size != cur.st_size:
+            if have is None or not stat.S_ISREG(have.st_mode) or have.st_size != cur.st_size:
                 need = True
             elif not content:
                 need = have.st_mtime_ns != cur.st_mtime_ns

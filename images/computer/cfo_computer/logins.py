@@ -48,7 +48,11 @@ def codex_status(run: Runner, codex: str = "codex") -> str:
     if code is None:
         return "unknown"
     text = out.decode("utf-8", "replace")
-    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("WARNING")]
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("WARNING")
+    ]
     if code == 0 and any(line.startswith("Logged in") for line in lines):
         return "signed_in"
     if code == 1 and any(line == "Not logged in" for line in lines):

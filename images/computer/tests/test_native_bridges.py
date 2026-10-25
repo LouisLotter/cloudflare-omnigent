@@ -90,9 +90,18 @@ def test_paused_secret_writers_never_reach_a_layer(tmp_path: Path) -> None:
         assert writer.wait(timeout=60) == 0
         done = json.loads((ctl / "done.json").read_text())
         targets = {Path(p["target"]).name for p in paused}
-        assert {"policy_hook.json", "bridge.json", "tool_relay.json", "server.json",
-                "turn_router.json", "subagent_router.json", "provider_key"} <= targets, targets
-        assert sum(1 for p in paused if p["target"].endswith("policy_hook.json")) == 2  # and its renewal
+        assert {
+            "policy_hook.json",
+            "bridge.json",
+            "tool_relay.json",
+            "server.json",
+            "turn_router.json",
+            "subagent_router.json",
+            "provider_key",
+        } <= targets, targets
+        assert (
+            sum(1 for p in paused if p["target"].endswith("policy_hook.json")) == 2
+        )  # and its renewal
         op, job = rig.capture()
         code, report = rc53_scan.run([Path(job["layerDir"])], list(done["planted"].values()), [])
         assert code == 0, report
@@ -100,27 +109,53 @@ def test_paused_secret_writers_never_reach_a_layer(tmp_path: Path) -> None:
         rig.close()
 
 
-DECLARED = (".claude/.credentials.json", ".claude/.device-keys.json", ".codex/auth.json", ".codex/.credentials.json")
+DECLARED = (
+    ".claude/.credentials.json",
+    ".claude/.device-keys.json",
+    ".codex/auth.json",
+    ".codex/.credentials.json",
+)
 
 
 def _bundle(computer_id: str, files: dict[str, bytes]) -> dict:
     out = {}
     for rel in DECLARED:
         if rel in files:
-            out[rel] = {"state": "present", "mode": 0o600, "copyOrder": 1,
-                        "contentBase64": base64.b64encode(files[rel]).decode()}
+            out[rel] = {
+                "state": "present",
+                "mode": 0o600,
+                "copyOrder": 1,
+                "contentBase64": base64.b64encode(files[rel]).decode(),
+            }
         else:
             out[rel] = {"state": "tombstone", "copyOrder": 1}
-    return {"formatVersion": 1, "computerId": computer_id, "generation": 1, "order": 1, "files": out}
+    return {
+        "formatVersion": 1,
+        "computerId": computer_id,
+        "generation": 1,
+        "order": 1,
+        "files": out,
+    }
 
 
 def test_codex_session_and_undelivered_events_survive_a_disk_replacement(tmp_path: Path) -> None:
     logins = {
-        ".codex/auth.json": json.dumps({"OPENAI_API_KEY": None, "tokens": {
-            "id_token": canary("cid"), "access_token": canary("cacc"), "refresh_token": canary("cref"),
-            "account_id": "synthetic"}, "last_refresh": "2026-10-25T00:00:00Z"}).encode(),
+        ".codex/auth.json": json.dumps(
+            {
+                "OPENAI_API_KEY": None,
+                "tokens": {
+                    "id_token": canary("cid"),
+                    "access_token": canary("cacc"),
+                    "refresh_token": canary("cref"),
+                    "account_id": "synthetic",
+                },
+                "last_refresh": "2026-10-25T00:00:00Z",
+            }
+        ).encode(),
         ".codex/.credentials.json": json.dumps({"mcp": {"access_token": canary("cmcp")}}).encode(),
-        ".claude/.credentials.json": json.dumps({"claudeAiOauth": {"accessToken": canary("clacc")}}).encode(),
+        ".claude/.credentials.json": json.dumps(
+            {"claudeAiOauth": {"accessToken": canary("clacc")}}
+        ).encode(),
     }
     secrets = [v for data in logins.values() for v in rc53_scan_values(data)]
     uploads = Uploads(tmp_path / "r2")
@@ -143,14 +178,21 @@ def test_codex_session_and_undelivered_events_survive_a_disk_replacement(tmp_pat
         uploads.upload(base)
         a.finish(op)
         assert _writer(a, "session-2", ctl).wait(timeout=120) == 0
-        op, delta = a.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": base["treeDigest"]})
+        op, delta = a.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": base["treeDigest"]}
+        )
         index = uploads.upload(delta)
         a.finish(op)
         changed = {e["path"] for e in index["entries"]}
         bridge = json.loads((ctl / "session.json").read_text())["bridge"]
-        assert f"{bridge}/dead_letter.jsonl" in changed and f"{bridge}/codex-home/config.toml" in changed
+        assert (
+            f"{bridge}/dead_letter.jsonl" in changed
+            and f"{bridge}/codex-home/config.toml" in changed
+        )
         # RC-53: no login, and no link-copied login in the private home, in any layer.
-        code, report = rc53_scan.run([uploads.root / i["layerId"] for _j, i in uploads.jobs], secrets, [])
+        code, report = rc53_scan.run(
+            [uploads.root / i["layerId"] for _j, i in uploads.jobs], secrets, []
+        )
         assert code == 0, report
     finally:
         a.close()
@@ -160,7 +202,9 @@ def test_codex_session_and_undelivered_events_survive_a_disk_replacement(tmp_pat
     for name in ("b", "c"):  # c: the same checkpoint again, as after a crash before the next save
         rig = Rig(tmp_path / name, computer_id=a.computer_id, generation=a.generation + 1)
         try:
-            job = rig.restore(uploads.manifest(a.computer_id, a.generation), uploads.restore_into(rig))
+            job = rig.restore(
+                uploads.manifest(a.computer_id, a.generation), uploads.restore_into(rig)
+            )
             assert job["state"] == "done" and job["stripped"] == 0, job
             rig.install(bundle)
             out = tmp_path / f"reconcile-{name}.json"
@@ -177,7 +221,9 @@ def test_codex_session_and_undelivered_events_survive_a_disk_replacement(tmp_pat
     assert first["queue_before"] == 2 and first["queue_after"] == 0
     assert len(first["server_items"]) == 2
     assert second["server_items"] == first["server_items"], "still one item per event"
-    assert all(n == 2 for n in second["server_posts"].values()), "re-posted under the same source_id"
+    assert all(n == 2 for n in second["server_posts"].values()), (
+        "re-posted under the same source_id"
+    )
 
 
 def rc53_scan_values(data: bytes) -> list[str]:

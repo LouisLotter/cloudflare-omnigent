@@ -196,7 +196,9 @@ def claude(args: list[str]) -> int:
     if cmd == ["auth", "login"]:
         current = read_json(CLAUDE_CREDS) or {}
         access, refresh, exp = provider_issue("claude")
-        claude_store(access, refresh, exp, {k: v for k, v in current.items() if k != "claudeAiOauth"})
+        claude_store(
+            access, refresh, exp, {k: v for k, v in current.items() if k != "claudeAiOauth"}
+        )
         claude_set_global(lambda d: d.update(oauthAccount={"accountUuid": "synthetic"}))
         print("Login successful.")
         return 0
@@ -237,7 +239,12 @@ def claude(args: list[str]) -> int:
         out({"refresh": "ok"})
         return 0
     if args[:1] == ["use"]:
-        return use("claude", lambda: (read_json(CLAUDE_CREDS) or {}).get("claudeAiOauth"), "accessToken", claude)
+        return use(
+            "claude",
+            lambda: (read_json(CLAUDE_CREDS) or {}).get("claudeAiOauth"),
+            "accessToken",
+            claude,
+        )
     print(f"fake claude: unknown command {args}", file=sys.stderr)
     return 2
 
@@ -301,7 +308,9 @@ def codex(args: list[str]) -> int:
         out({"refresh": "ok"})
         return 0
     if args[:1] == ["use"]:
-        return use("codex", lambda: (read_json(CODEX_AUTH) or {}).get("tokens"), "access_token", codex)
+        return use(
+            "codex", lambda: (read_json(CODEX_AUTH) or {}).get("tokens"), "access_token", codex
+        )
     print(f"fake codex: unknown command {args}", file=sys.stderr)
     return 2
 

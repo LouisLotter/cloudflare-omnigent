@@ -37,7 +37,12 @@ def test_capture_freezes_the_workload_cgroup(tmp_path: Path) -> None:
     group.mkdir()
     try:
         proc = subprocess.Popen(
-            ["/bin/sh", "-c", f'echo $$ > "{group}/cgroup.procs" && exec {sys.executable} -c "import time\nwhile True: time.sleep(0.01)"'],
+            [
+                "/bin/sh",
+                "-c",
+                f'echo $$ > "{group}/cgroup.procs" && exec {sys.executable} '
+                '-c "import time\nwhile True: time.sleep(0.01)"',
+            ],
         )
         time.sleep(0.3)
         rig = Rig(tmp_path / "a", cgroup_dir=str(group))

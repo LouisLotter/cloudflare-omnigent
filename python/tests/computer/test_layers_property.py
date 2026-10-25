@@ -19,7 +19,9 @@ from hypothesis import strategies as st
 NAMES = ["a", "b", "c", "d"]
 paths = st.lists(st.sampled_from(NAMES), min_size=1, max_size=3).map(lambda parts: "/".join(parts))
 op = st.one_of(
-    st.tuples(st.just("write"), paths, st.binary(max_size=64), st.sampled_from([0o644, 0o600, 0o755])),
+    st.tuples(
+        st.just("write"), paths, st.binary(max_size=64), st.sampled_from([0o644, 0o600, 0o755])
+    ),
     st.tuples(st.just("mkdir"), paths, st.just(b""), st.sampled_from([0o755, 0o700])),
     st.tuples(st.just("link"), paths, st.sampled_from([b"a", b"../b", b"/nowhere"]), st.just(0)),
     st.tuples(st.just("delete"), paths, st.just(b""), st.just(0)),

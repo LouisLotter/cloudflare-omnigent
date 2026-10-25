@@ -138,14 +138,18 @@ def test_no_planted_token_in_any_archived_layer(tmp_path: Path) -> None:
                 path = rig.home / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
                 encoded = base64.b64encode(value.encode()).decode()
-                path.write_text(json.dumps({"token": value, "header": f"Bearer {value}", "b64": encoded}))
+                path.write_text(
+                    json.dumps({"token": value, "header": f"Bearer {value}", "b64": encoded})
+                )
             control = canary(f"control{round_}")
             controls.append(control)
             (rig.home / "work" / "control.txt").write_text(control)
             if parent is None:
                 op, job = rig.capture()
             else:
-                op, job = rig.capture("delta", {"checkpointId": new_id("ckp"), "treeDigest": parent})
+                op, job = rig.capture(
+                    "delta", {"checkpointId": new_id("ckp"), "treeDigest": parent}
+                )
             assert job["state"] == "staged", job
             archive = archives / f"{round_}.tar.gz"
             with tarfile.open(archive, "w:gz") as tar:

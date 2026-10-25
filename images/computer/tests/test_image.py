@@ -44,14 +44,27 @@ def test_gh_goes_through_the_broker_wrapper() -> None:
 
 def test_codex_managed_settings() -> None:
     text = Path("/etc/codex/managed_config.toml").read_text()
-    for line in ('cli_auth_credentials_store = "file"', "check_for_update_on_startup = false", "enabled = false"):
+    for line in (
+        'cli_auth_credentials_store = "file"',
+        "check_for_update_on_startup = false",
+        "enabled = false",
+    ):
         assert line in text
 
 
 def test_environment_and_account() -> None:
     env = os.environ
     assert env["IS_SANDBOX"] == "1"
-    banned = ("OMNIGENT_GITHUB_APP", "OMNIGENT_DATABRICKS", "DATABRICKS_", "OMNIGENT_CREDENTIAL", "VAULT_", "GIT_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+    banned = (
+        "OMNIGENT_GITHUB_APP",
+        "OMNIGENT_DATABRICKS",
+        "DATABRICKS_",
+        "OMNIGENT_CREDENTIAL",
+        "VAULT_",
+        "GIT_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+    )
     assert not [k for k in env if k.startswith(banned)]
     assert _run("id", "-u", "omnigent").strip() == "1000"
     home = Path("/home/omnigent")
@@ -61,7 +74,7 @@ def test_environment_and_account() -> None:
 
 def test_no_omnigent_login_file_anywhere() -> None:
     found = []
-    for top in ("/", ):
+    for top in ("/",):
         for dirpath, dirnames, filenames in os.walk(top):
             if dirpath.startswith(("/proc", "/sys", "/dev", "/tmp")):
                 dirnames[:] = []

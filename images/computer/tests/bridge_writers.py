@@ -91,17 +91,25 @@ def writers(ctl: Path) -> None:
     xb.write_mcp_bridge_config(bridge)
     delegated = canary("delegated")
     xb.write_policy_hook_config(
-        bridge, ap_server_url="http://127.0.0.1:9", ap_auth_headers={"Authorization": f"Bearer {delegated}"}
+        bridge,
+        ap_server_url="http://127.0.0.1:9",
+        ap_auth_headers={"Authorization": f"Bearer {delegated}"},
     )
     renewed = canary("renewed")
     xb.update_policy_hook_auth_headers(bridge, {"Authorization": f"Bearer {renewed}"})
     planted.update(delegated=delegated, renewed=renewed)
     router = canary("router")
-    subagent_routing.write_advertisement(bridge, url="http://127.0.0.1:9", token=router, filename="turn_router.json")
-    subagent_routing.write_advertisement(bridge, url="http://127.0.0.1:9", token=router, filename="subagent_router.json")
+    subagent_routing.write_advertisement(
+        bridge, url="http://127.0.0.1:9", token=router, filename="turn_router.json"
+    )
+    subagent_routing.write_advertisement(
+        bridge, url="http://127.0.0.1:9", token=router, filename="subagent_router.json"
+    )
     planted["router"] = router
     serve = canary("serve")
-    cb._write_json_file(bridge / "server.json", {"token": serve, "pid": 1, "socket": "/nonexistent.sock"})
+    cb._write_json_file(
+        bridge / "server.json", {"token": serve, "pid": 1, "socket": "/nonexistent.sock"}
+    )
     planted["serve"] = serve
 
     async def relay() -> None:
@@ -109,10 +117,16 @@ def writers(ctl: Path) -> None:
             return {}
 
         handle = cb.start_tool_relay(
-            bridge_dir=bridge, tools=[], tool_executor=no_tool, loop=asyncio.get_running_loop(), session_id=SESSION
+            bridge_dir=bridge,
+            tools=[],
+            tool_executor=no_tool,
+            loop=asyncio.get_running_loop(),
+            session_id=SESSION,
         )
         planted["relay"] = json.loads((bridge / "tool_relay.json").read_text())["token"]
-        env = (bridge / "tool_relay.env").read_text() if (bridge / "tool_relay.env").exists() else ""
+        env = (
+            (bridge / "tool_relay.env").read_text() if (bridge / "tool_relay.env").exists() else ""
+        )
         planted.update({f"relay-env-{i}": v for i, v in enumerate(re.findall(r"='([^']+)'", env))})
         handle.close()
 
@@ -124,9 +138,13 @@ def writers(ctl: Path) -> None:
     overrides = codex_executor._provider_codex_config_overrides(
         model="m", base_url="http://127.0.0.1:9", api_key=key, wire_api="responses"
     )
-    codex_executor.materialize_codex_provider_config(codex_home, overrides, key_file=bridge / "provider_key")
+    codex_executor.materialize_codex_provider_config(
+        codex_home, overrides, key_file=bridge / "provider_key"
+    )
     planted["bridge.json"] = json.loads((bridge / "bridge.json").read_text())["token"]
-    (ctl / "done.json").write_text(json.dumps({"planted": planted, "bridge": str(bridge.relative_to(HOME))}))
+    (ctl / "done.json").write_text(
+        json.dumps({"planted": planted, "bridge": str(bridge.relative_to(HOME))})
+    )
 
 
 def _item(n: int, text: str) -> dict:
@@ -134,7 +152,11 @@ def _item(n: int, text: str) -> dict:
         "item_type": "message",
         "response_id": f"resp_{n}",
         "source_id": f"{THREAD}:turn_{n}:item_{n}",
-        "item_data": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]},
+        "item_data": {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}],
+        },
     }
 
 
@@ -145,11 +167,17 @@ async def _dead_letter(bridge: Path, n: int, text: str) -> None:
     def unreachable(request):
         raise httpx.ConnectError("server unreachable (test)", request=request)
 
-    async with httpx.AsyncClient(base_url="http://omnigent.test", transport=httpx.MockTransport(unreachable)) as down:
+    async with httpx.AsyncClient(
+        base_url="http://omnigent.test", transport=httpx.MockTransport(unreachable)
+    ) as down:
         token = forwarder._dead_letter_dir.set(bridge)
         try:
             result = await forwarder._post_session_event(
-                down, SESSION, event_type="external_conversation_item", data=_item(n, text), max_attempts=1
+                down,
+                SESSION,
+                event_type="external_conversation_item",
+                data=_item(n, text),
+                max_attempts=1,
             )
         finally:
             forwarder._dead_letter_dir.reset(token)
@@ -165,15 +193,31 @@ def session_1(ctl: Path) -> None:
     codex_home = xb.codex_home_for_bridge_dir(bridge)
     codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     codex_executor._populate_codex_home_config(
-        codex_home, HOME / ".codex", minimal_config=False, inject_hooks=False,
-        extend_model_catalog=False, include_credentials=True,
+        codex_home,
+        HOME / ".codex",
+        minimal_config=False,
+        inject_hooks=False,
+        extend_model_catalog=False,
+        include_credentials=True,
     )
     app_server._pin_codex_config_model(codex_home, "gpt-private-34")
     app_server._sync_codex_developer_instructions(codex_home, "WP3.4 private instructions")
     rollout = codex_home / "sessions/2026/10/25" / f"rollout-2026-10-25T00-00-00-{THREAD}.jsonl"
     rollout.parent.mkdir(parents=True, exist_ok=True)
-    rollout.write_text(json.dumps({"type": "session_meta", "payload": {
-        "id": THREAD, "timestamp": "2026-10-25T00:00:00Z", "cwd": str(HOME / "work"), "cli_version": "0.0.0"}}) + "\n")
+    rollout.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": THREAD,
+                    "timestamp": "2026-10-25T00:00:00Z",
+                    "cwd": str(HOME / "work"),
+                    "cli_version": "0.0.0",
+                },
+            }
+        )
+        + "\n"
+    )
     asyncio.run(_dead_letter(bridge, 1, "WP3.4 undelivered item one"))
     (ctl / "session.json").write_text(json.dumps({"bridge": str(bridge.relative_to(HOME))}))
 
@@ -201,8 +245,12 @@ class FakeServer:
         sid = data["source_id"]
         self.posts[sid] = self.posts.get(sid, 0) + 1
         if sid not in self.items:
-            self.items[sid] = {**data["item_data"], "type": data["item_type"],
-                               "response_id": data["response_id"], "id": f"item_{len(self.items)}"}
+            self.items[sid] = {
+                **data["item_data"],
+                "type": data["item_type"],
+                "response_id": data["response_id"],
+                "id": f"item_{len(self.items)}",
+            }
 
     def handle(self, request):
         import httpx
@@ -230,16 +278,23 @@ def reconcile(ctl: Path, server_path: Path, out: Path) -> None:
     codex_home = xb.codex_home_for_bridge_dir(bridge)
     codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
     codex_executor._populate_codex_home_config(
-        codex_home, HOME / ".codex", minimal_config=False, inject_hooks=False,
-        extend_model_catalog=False, include_credentials=True,
+        codex_home,
+        HOME / ".codex",
+        minimal_config=False,
+        inject_hooks=False,
+        extend_model_catalog=False,
+        include_credentials=True,
     )
     queue = bridge / "dead_letter.jsonl"
     before = len([x for x in queue.read_text().splitlines() if x.strip()]) if queue.exists() else 0
-    config = (codex_home / "config.toml").read_text() if (codex_home / "config.toml").exists() else ""
+    config = (
+        (codex_home / "config.toml").read_text() if (codex_home / "config.toml").exists() else ""
+    )
     result = {
         "auth_link_is_symlink": (codex_home / "auth.json").is_symlink(),
         "mcp_login_same_inode": (codex_home / ".credentials.json").exists()
-        and os.stat(codex_home / ".credentials.json").st_ino == os.stat(HOME / ".codex/.credentials.json").st_ino,
+        and os.stat(codex_home / ".credentials.json").st_ino
+        == os.stat(HOME / ".codex/.credentials.json").st_ino,
         "private_model_kept": "gpt-private-34-b" in config,
         "instructions_kept": (codex_home / ".omnigent-developer-instructions-state.toml").exists(),
         "queue_before": before,
@@ -250,8 +305,13 @@ def reconcile(ctl: Path, server_path: Path, out: Path) -> None:
         transport = httpx.MockTransport(server.handle)
         async with httpx.AsyncClient(base_url="http://omnigent.test", transport=transport) as up:
             return await xmain._ensure_local_codex_resume_rollout(
-                up, session_id=SESSION, external_session_id=THREAD, codex_home=codex_home,
-                workspace=HOME / "work", model_provider="openai", codex_path=None,
+                up,
+                session_id=SESSION,
+                external_session_id=THREAD,
+                codex_home=codex_home,
+                workspace=HOME / "work",
+                model_provider="openai",
+                codex_path=None,
             )
 
     text = asyncio.run(resume()).read_text()

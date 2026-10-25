@@ -110,16 +110,30 @@ def test_sign_in_refresh_and_logout_are_published_in_order(rig: Rig) -> None:
     rig.boot()
     ws = rig.workspace
     assert _cli(rig, "claude", "auth", "login").returncode == 0
-    _until(lambda: ws.pointer and ws.pointer["files"][".claude/.credentials.json"]["state"] == "present",
-           what="the Claude login published")
+    _until(
+        lambda: (
+            ws.pointer and ws.pointer["files"][".claude/.credentials.json"]["state"] == "present"
+        ),
+        what="the Claude login published",
+    )
     first = ws.pointer
     assert first["generation"] == rig.generation and first["computerId"] == rig.computer_id
     # Codex rewrites auth.json in place; a slow write must never be copied torn.
-    assert _cli(rig, "codex", "login", "--device-auth", CFO_FAKE_SLOW_WRITE_MS="700").returncode == 0
-    _until(lambda: ws.pointer["files"][".codex/auth.json"]["state"] == "present", what="the Codex login")
+    assert (
+        _cli(rig, "codex", "login", "--device-auth", CFO_FAKE_SLOW_WRITE_MS="700").returncode == 0
+    )
+    _until(
+        lambda: ws.pointer["files"][".codex/auth.json"]["state"] == "present",
+        what="the Codex login",
+    )
     assert _cli(rig, "codex", "refresh", CFO_FAKE_SLOW_WRITE_MS="700").returncode == 0
-    _until(lambda: base64.b64decode(ws.pointer["files"][".codex/auth.json"]["contentBase64"])
-           == (rig.home / ".codex" / "auth.json").read_bytes(), what="the refreshed Codex login")
+    _until(
+        lambda: (
+            base64.b64decode(ws.pointer["files"][".codex/auth.json"]["contentBase64"])
+            == (rig.home / ".codex" / "auth.json").read_bytes()
+        ),
+        what="the refreshed Codex login",
+    )
     for message in ws.of("credential_checkpoint"):
         entry = message["bundle"]["files"][".codex/auth.json"]
         if entry["state"] == "present":
@@ -135,8 +149,10 @@ def test_sign_in_refresh_and_logout_are_published_in_order(rig: Rig) -> None:
     # Sign-out through the receiver: both logouts run, the watcher publishes tombstones.
     reply = rig.ok("sign_out")
     assert reply == {"type": "sign_out", "claude": "ok", "codex": "ok"}
-    _until(lambda: all(ws.pointer["files"][p]["state"] == "tombstone" for p in DECLARED),
-           what="the tombstones")
+    _until(
+        lambda: all(ws.pointer["files"][p]["state"] == "tombstone" for p in DECLARED),
+        what="the tombstones",
+    )
     provider = json.loads(rig.provider.read_text())
     assert provider["claude"]["revoked"] and provider["codex"]["revoked"]
     rig.sup.refresh_logins()
@@ -152,8 +168,10 @@ def test_credential_snapshot_is_a_barrier_and_idempotent(rig: Rig) -> None:
     command = rig.command("credential_snapshot")
     status, reply = rig.post(command)
     assert status == 200 and reply["order"] >= 1
-    _until(lambda: rig.workspace.pointer and rig.workspace.pointer["order"] >= reply["order"],
-           what="the snapshot published")
+    _until(
+        lambda: rig.workspace.pointer and rig.workspace.pointer["order"] >= reply["order"],
+        what="the snapshot published",
+    )
     assert rig.post(command) == (200, reply)
 
 
@@ -184,4 +202,8 @@ def test_a_declared_path_that_is_a_link_is_never_followed(rig: Rig, tmp_path: Pa
     os.symlink(outside, rig.home / ".codex" / "auth.json")
     status, reply = rig.send("credential_snapshot")
     assert status == 500 and reply["error"]["code"] == "internal"
-    assert all(canary_ not in json.dumps(m) for m in rig.workspace.messages for canary_ in [outside.read_text()])
+    assert all(
+        canary_ not in json.dumps(m)
+        for m in rig.workspace.messages
+        for canary_ in [outside.read_text()]
+    )

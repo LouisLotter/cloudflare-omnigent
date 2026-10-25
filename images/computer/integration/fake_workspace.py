@@ -21,7 +21,11 @@ class Handler(BaseHTTPRequestHandler):
             "hello": {"type": "hello", "protocolVersion": 1},
             "report": {"type": "report", "appliedSeq": message.get("report", {}).get("seq", 0)},
             "save_request": {"type": "save_request", "outcome": "accepted"},
-            "credential_checkpoint": {"type": "credential_checkpoint", "outcome": "superseded", "checkpointId": None},
+            "credential_checkpoint": {
+                "type": "credential_checkpoint",
+                "outcome": "superseded",
+                "checkpointId": None,
+            },
         }[kind]
         data = json.dumps(reply).encode()
         self.send_response(200)

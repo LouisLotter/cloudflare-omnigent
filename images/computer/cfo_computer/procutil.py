@@ -12,6 +12,7 @@ the cgroup freezer is in use, so a capture pauses them and everything they start
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -144,9 +145,7 @@ def run_workload(
         out, _ = proc.communicate(timeout=timeout)
         return proc.returncode, out
     except subprocess.TimeoutExpired:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, 9)
-        except ProcessLookupError:
-            pass
         proc.communicate()
         return None, b""

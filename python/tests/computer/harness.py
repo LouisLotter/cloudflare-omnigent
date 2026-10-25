@@ -161,7 +161,9 @@ class Rig:
         contracts = prepare_contracts(root)
         self.home = root / "home"
         self.home.mkdir(exist_ok=True)
-        self.layout = Layout(home=self.home, state=root / "state", log=root / "log", contracts=contracts)
+        self.layout = Layout(
+            home=self.home, state=root / "state", log=root / "log", contracts=contracts
+        )
         self.computer_id = computer_id or new_id("cmp")
         self.generation = generation
         self.contract = Contract(contracts / "schema")
@@ -223,9 +225,13 @@ class Rig:
             time.sleep(0.02)
         raise AssertionError("job did not finish")
 
-    def restore(self, manifest: dict[str, Any] | None = None, layer_dirs: list[str] | None = None) -> dict[str, Any]:
+    def restore(
+        self, manifest: dict[str, Any] | None = None, layer_dirs: list[str] | None = None
+    ) -> dict[str, Any]:
         op = new_operation_id()
-        status, reply = self.send("restore_workspace", op=op, manifest=manifest, layerDirs=layer_dirs or [])
+        status, reply = self.send(
+            "restore_workspace", op=op, manifest=manifest, layerDirs=layer_dirs or []
+        )
         assert status == 200, reply
         return self.wait_job(op)
 
@@ -311,7 +317,9 @@ class Uploads:
         self.jobs.append((job, index))
         return index
 
-    def manifest(self, computer_id: str, generation: int, chain: list[int] | None = None) -> dict[str, Any]:
+    def manifest(
+        self, computer_id: str, generation: int, chain: list[int] | None = None
+    ) -> dict[str, Any]:
         picked = [self.jobs[i] for i in chain] if chain is not None else self.jobs
         layers = [layer_record(job, index) for job, index in picked]
         last = picked[-1][0]

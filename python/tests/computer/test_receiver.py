@@ -13,10 +13,10 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-from harness import REPO, FakeWorkspace, Rig
-
 from cfo_computer.api import ComputerApi, Refused, Unanswered
 from cfo_computer.contract import Contract
+from cfo_computer.schema import ValidationError
+from harness import REPO, FakeWorkspace, Rig
 
 FIXTURES = REPO / "contracts" / "fixtures" / "WorkspaceCommand"
 FIXTURE_COMPUTER = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3"
@@ -77,7 +77,9 @@ def test_refusals_before_any_effect(rig: Rig) -> None:
 
 def test_http_edges(rig: Rig) -> None:
     def raw(method: str, path: str, data: bytes | None, headers: dict) -> int:
-        request = urllib.request.Request(rig.url.replace("/v1/commands", path), data=data, method=method, headers=headers)
+        request = urllib.request.Request(
+            rig.url.replace("/v1/commands", path), data=data, method=method, headers=headers
+        )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return response.status
@@ -113,7 +115,7 @@ def test_api_client_refusals_and_unusable_replies(tmp_path: Path) -> None:
         ws.drop = {"hello": 2}
         assert api.send(hello, attempts=5, sleep=lambda s: None)["type"] == "hello"
         assert [m["operationId"] for m in ws.of("hello")][-3:] == [hello["operationId"]] * 3
-        with pytest.raises(Exception):  # our own malformed message never leaves
+        with pytest.raises(ValidationError):  # our own malformed message never leaves
             api.send_once({**hello, "generation": -1})
     finally:
         ws.close()

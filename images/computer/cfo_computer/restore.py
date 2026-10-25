@@ -267,7 +267,9 @@ def restore_workspace(
         _remove(merge)
 
 
-def _move_into_place(merge: str, home: Path, roots: list[str], replaced_root: Path, job_id: str) -> None:
+def _move_into_place(
+    merge: str, home: Path, roots: list[str], replaced_root: Path, job_id: str
+) -> None:
     aside = os.path.join(replaced_root, job_id)
     _remove(aside)
     os.makedirs(aside, mode=0o700)

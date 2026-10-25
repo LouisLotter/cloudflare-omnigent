@@ -16,9 +16,8 @@ import time
 from pathlib import Path
 
 import pytest
-from harness import FAKES, Rig, canary, scan_for
-
 from cfo_computer.supervisor import Tools
+from harness import FAKES, Rig, canary, scan_for
 
 FAKE_HOST = r"""#!/usr/bin/env python3
 import hashlib, json, os, sys, time
@@ -29,7 +28,9 @@ with open(os.path.join(home, "host-runs.jsonl"), "a") as fh:
         "argv": sys.argv[1:],
         "host_id": os.environ.get("OMNIGENT_HOST_ID"),
         "host_name": os.environ.get("OMNIGENT_HOST_NAME"),
-        "token_sha256": hashlib.sha256(os.environ.get("OMNIGENT_HOST_TOKEN", "").encode()).hexdigest(),
+        "token_sha256": hashlib.sha256(
+            os.environ.get("OMNIGENT_HOST_TOKEN", "").encode()
+        ).hexdigest(),
         "env_keys": sorted(os.environ),
     }) + "\n")
 control = os.path.join(home, "host-exit")
@@ -112,19 +113,36 @@ def test_attempt_rules_and_the_host_started_once_after_both_restores(rig: Rig) -
     assert _start(rig, 2, token) == "taken"
     _until(lambda: len(_runs(rig)) == 1)
     run = _runs(rig)[0]
-    assert run["host_id"] == "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f" and run["host_name"] == "Work computer"
+    assert (
+        run["host_id"] == "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f" and run["host_name"] == "Work computer"
+    )
     assert run["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
-    assert run["argv"] == ["host", "--server", "http://omnigent.internal", "--no-open", "--non-interactive"]
+    assert run["argv"] == [
+        "host",
+        "--server",
+        "http://omnigent.internal",
+        "--no-open",
+        "--non-interactive",
+    ]
     assert token not in json.dumps(run["argv"])
     # The workload's environment is an allowlist: nothing of the supervisor's leaks in.
-    assert not any(k.startswith(("OMNIGENT_GITHUB_APP", "OMNIGENT_DATABRICKS", "OMNIGENT_CREDENTIAL", "CFO_")) for k in run["env_keys"])
-    assert json.loads((rig.home / ".omnigent" / "host-config.json").read_text()) == {"runner": {"idle_timeout_s": 600}}
+    assert not any(
+        k.startswith(("OMNIGENT_GITHUB_APP", "OMNIGENT_DATABRICKS", "OMNIGENT_CREDENTIAL", "CFO_"))
+        for k in run["env_keys"]
+    )
+    assert json.loads((rig.home / ".omnigent" / "host-config.json").read_text()) == {
+        "runner": {"idle_timeout_s": 600}
+    }
     assert _start(rig, 2, token) == "taken"  # a repeat of the taken attempt
     assert _start(rig, 1, token) == "superseded"  # an older one
     assert _start(rig, 3, canary("other")) == "refused_live_host"  # a newer one while live
     time.sleep(0.3)
     assert len(_runs(rig)) == 1, "never restarted while live, never a second host"
-    assert rig.ok("status")["report"]["host"] == {"state": "running", "startAttempt": 2, "restarts": 0}
+    assert rig.ok("status")["report"]["host"] == {
+        "state": "running",
+        "startAttempt": 2,
+        "restarts": 0,
+    }
     # The token is never written anywhere by the supervisor.
     assert scan_for([token], rig.root) == []
 
@@ -159,4 +177,8 @@ def test_token_refused_parks_the_host_and_only_a_newer_attempt_starts_it(rig: Ri
     assert _start(rig, 2, new) == "taken"
     _until(lambda: len(_runs(rig)) == 2)
     assert _runs(rig)[1]["token_sha256"] == hashlib.sha256(new.encode()).hexdigest()
-    assert rig.ok("status")["report"]["host"] == {"state": "running", "startAttempt": 2, "restarts": 0}
+    assert rig.ok("status")["report"]["host"] == {
+        "state": "running",
+        "startAttempt": 2,
+        "restarts": 0,
+    }

@@ -19,6 +19,7 @@ pass compares contents, so a partly updated snapshot is never trusted as it is.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import select
@@ -156,10 +157,8 @@ class Guard:
         return "gone"
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self.inp.close()
-        except OSError:
-            pass
         try:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -238,7 +237,9 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
                 # The whole container (every descendant of init) only when the supervisor
                 # says it is the container's main process; otherwise only the named trees,
                 # and none when none are named, so a test can never pause its host machine.
-                scope=None if spec.get("whole_container") else (lambda: {int(p) for p in scope_pids or ()}),
+                scope=None
+                if spec.get("whole_container")
+                else (lambda: {int(p) for p in scope_pids or ()}),
             )
         t_pause = time.monotonic()
         failure: CaptureFailed | None = None
@@ -274,9 +275,9 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         except CopyFailed as exc:
             failure = CaptureFailed(exc.reason, str(exc))
         except F.FreezeError as exc:
-            failure = CaptureFailed(
-                "lease_expired" if guard.expired else "copy_failed", f"pause: {exc}"
-            )
+            # The lease running out while pausing is an expired lease, whoever noticed first.
+            over = guard.expired or time.monotonic() >= deadline
+            failure = CaptureFailed("lease_expired" if over else "copy_failed", f"pause: {exc}")
         finally:
             # 6. Release. The guard resumes; if it is gone, resume what it confirmed ourselves.
             answer = guard.release()

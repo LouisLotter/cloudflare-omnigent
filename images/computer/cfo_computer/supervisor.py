@@ -30,7 +30,6 @@ import time
 import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from . import SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_VERSION, SUPPORTED_PROTOCOL_VERSIONS
@@ -182,9 +181,13 @@ class Supervisor:
             yield
 
     def _env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        return workload_env(self.account.home, self.account.name, {**self.extra_env, **(extra or {})})
+        return workload_env(
+            self.account.home, self.account.name, {**self.extra_env, **(extra or {})}
+        )
 
-    def _run(self, argv: list[str], timeout: float, stdin: bytes | None = None) -> tuple[int | None, bytes]:
+    def _run(
+        self, argv: list[str], timeout: float, stdin: bytes | None = None
+    ) -> tuple[int | None, bytes]:
         """A short workload command, never during a capture (it would escape the pause)."""
         with self._spawn_gate():
             if stdin is None:
@@ -200,7 +203,9 @@ class Supervisor:
             from .procutil import workload_argv
 
             proc = subprocess.run(
-                workload_argv(argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir),
+                workload_argv(
+                    argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir
+                ),
                 env=self._env(),
                 cwd=str(self.account.home),
                 input=stdin,
@@ -234,12 +239,16 @@ class Supervisor:
         if code != 0:
             raise RuntimeError("the host configuration could not be written")
 
-    def _run_unlocked(self, argv: list[str], *, stdin: bytes, timeout: float) -> tuple[int | None, bytes]:
+    def _run_unlocked(
+        self, argv: list[str], *, stdin: bytes, timeout: float
+    ) -> tuple[int | None, bytes]:
         # Called with the spawn gate already held (from the host manager).
         from .procutil import workload_argv
 
         proc = subprocess.run(
-            workload_argv(argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir),
+            workload_argv(
+                argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir
+            ),
             env=self._env(),
             cwd=str(self.account.home),
             input=stdin,
@@ -315,7 +324,9 @@ class Supervisor:
                 raise CommandError("internal", "the reply failed its own contract check") from exc
             return 200, reply
         except CommandError as exc:
-            return HTTP_STATUS.get(exc.code, 500), error_body(exc.code, str(exc), retryable=exc.retryable)
+            return HTTP_STATUS.get(exc.code, 500), error_body(
+                exc.code, str(exc), retryable=exc.retryable
+            )
         except Exception as exc:  # noqa: BLE001 - an unexpected failure is retryable, unrecorded
             self._alert(f"command failed: {type(exc).__name__}")
             return 500, error_body("internal", type(exc).__name__, retryable=True)
@@ -370,8 +381,10 @@ class Supervisor:
                 contract=self.contract,
                 job_id=op,
             )
-            self._write_published(result.index, command["manifest"]["checkpointId"] if command["manifest"] else None)
-            for path in result.stripped:
+            self._write_published(
+                result.index, command["manifest"]["checkpointId"] if command["manifest"] else None
+            )
+            for _path in result.stripped:
                 self._alert("a restored layer held a member the policy does not save")
             for raw in command["layerDirs"]:
                 shutil.rmtree(raw, ignore_errors=True)
@@ -390,7 +403,12 @@ class Supervisor:
             state = "failed"
         except Exception:  # noqa: BLE001
             self._alert("restore failed unexpectedly")
-            job = {"kind": "restore", "jobOperationId": op, "state": "failed", "reason": "move_failed"}
+            job = {
+                "kind": "restore",
+                "jobOperationId": op,
+                "state": "failed",
+                "reason": "move_failed",
+            }
             state = "failed"
         with self._lock:
             self._jobs[op] = job
@@ -460,7 +478,13 @@ class Supervisor:
             raise CommandError("unsupported_version", "unsupported checkpoint policy version")
         with self._lock:
             if self.capture_running:
-                job = {"kind": "capture", "jobOperationId": op, "state": "failed", "reason": "busy", "pausedMs": 0}
+                job = {
+                    "kind": "capture",
+                    "jobOperationId": op,
+                    "state": "failed",
+                    "reason": "busy",
+                    "pausedMs": 0,
+                }
                 self._jobs[op] = job
                 return {"type": "capture", "job": job}
             parent_path = None
@@ -513,7 +537,7 @@ class Supervisor:
     def _settle_pending(self, parent_digest: str | None) -> None:
         """Resolve a staged layer whose finish_capture never came: if WorkspaceDO now names
         it as the parent, it was published; otherwise it is discarded."""
-        for op, job in list(self._jobs.items()):
+        for _op, job in list(self._jobs.items()):
             if job.get("kind") != "capture" or job.get("state") != "staged" or job.get("finished"):
                 continue
             if parent_digest is not None and job["treeDigest"] == parent_digest:
@@ -588,9 +612,19 @@ class Supervisor:
                 "layerId": result["layerId"],
             }
         elif result.get("state") == "unchanged":
-            job = {**base, "state": "unchanged", "cutAt": result["cutAt"], "pausedMs": int(result["pausedMs"])}
+            job = {
+                **base,
+                "state": "unchanged",
+                "cutAt": result["cutAt"],
+                "pausedMs": int(result["pausedMs"]),
+            }
         else:
-            job = {**base, "state": "failed", "reason": result.get("reason", "copy_failed"), "pausedMs": int(result.get("pausedMs", 0))}
+            job = {
+                **base,
+                "state": "failed",
+                "reason": result.get("reason", "copy_failed"),
+                "pausedMs": int(result.get("pausedMs", 0)),
+            }
         if result.get("skipped"):
             self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
         with self._lock:
@@ -633,7 +667,9 @@ class Supervisor:
                 break
             except UnstableRead as exc:
                 if time.monotonic() > deadline:
-                    raise CommandError("unavailable", "a credential file keeps changing", retryable=True) from exc
+                    raise CommandError(
+                        "unavailable", "a credential file keeps changing", retryable=True
+                    ) from exc
                 time.sleep(0.2)
             except CredentialAlert as exc:
                 raise CommandError("internal", str(exc)) from exc
@@ -642,7 +678,11 @@ class Supervisor:
         return {"type": "credential_snapshot", "order": bundle["order"]}
 
     def _cmd_sign_out(self, command: dict[str, Any]) -> dict[str, Any]:
-        result = L.sign_out(lambda argv, timeout: self._run(list(argv), timeout), self.tools.claude, self.tools.codex)
+        result = L.sign_out(
+            lambda argv, timeout: self._run(list(argv), timeout),
+            self.tools.claude,
+            self.tools.codex,
+        )
         self.creds.tick()
         self._login_wake.set()
         return {"type": "sign_out", "claude": result["claude"], "codex": result["codex"]}
@@ -654,7 +694,10 @@ class Supervisor:
         the lead). The install path is the one ``install_credentials`` uses.
         """
         return verify_signed_out(
-            bundle, scratch=self.layout.scratch / new_operation_id(), uid=self.account.uid, gid=self.account.gid
+            bundle,
+            scratch=self.layout.scratch / new_operation_id(),
+            uid=self.account.uid,
+            gid=self.account.gid,
         )
 
     def _publish_bundle(self, bundle: dict[str, Any]) -> str:
@@ -712,7 +755,10 @@ class Supervisor:
         if not self.credentials_installed:
             return
         run = lambda argv, timeout: self._run(list(argv), timeout)  # noqa: E731
-        status = {"claude": L.claude_status(run, self.tools.claude), "codex": L.codex_status(run, self.tools.codex)}
+        status = {
+            "claude": L.claude_status(run, self.tools.claude),
+            "codex": L.codex_status(run, self.tools.codex),
+        }
         with self._lock:
             changed = status != self.logins
             self.logins = status
@@ -730,10 +776,8 @@ class Supervisor:
             return
         message = self._envelope("report")
         message["report"] = self.report()
-        try:
+        with contextlib.suppress(Unanswered, Refused):  # the next report replaces this one
             self.api.send(message, attempts=3, stop=self._stop.is_set)
-        except (Unanswered, Refused):
-            pass  # the next report replaces this one
 
     def request_save(self) -> None:
         """SIGTERM: a best-effort workspace save (design, capture "at sleep; best-effort on
