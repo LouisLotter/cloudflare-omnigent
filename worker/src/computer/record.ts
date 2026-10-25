@@ -272,6 +272,8 @@ export const ComputerRecord = z.strictObject({
   restoredTo: Timestamp.nullable(),
   /** Sleeps refused in a row because their checkpoints failed (FH-35). */
   refusedSleeps: Count,
+  /** When a stop's preparation last failed: a removal or deadline stop retries a heartbeat later. */
+  stopRefusedAt: Millis.nullable().default(null),
   /** `suspend` operations waiting on the sleep in progress: they share its outcome. */
   sleepOps: z.array(z.string()).max(100),
   /** The setup terminal is open until then (WP3.5's terminal sets it). */
@@ -363,6 +365,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     unexpectedStopAt: null,
     restoredTo: null,
     refusedSleeps: 0,
+    stopRefusedAt: null,
     sleepOps: [],
     terminalOpenUntil: null,
     deletion: null,

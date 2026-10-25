@@ -173,6 +173,25 @@ describe("removal", () => {
     });
   });
 
+  it("retries a removal stop whose checkpoint fails a heartbeat later, until it stops", async () => {
+    const sim = new ComputerSim();
+    await signedIn(sim);
+    live(sim).write("work/later.txt", "unsaved");
+    live(sim).options.failCaptures = 3;
+    await sim.call(sim.client.terminateRequest());
+    await sim.settle();
+    const captures = () =>
+      (sim.computer.supervisors[0]?.commands ?? []).filter((c) => c.type === "capture").length;
+    const first = captures();
+    expect(sim.record().lifecycle.context).toMatchObject({ state: "host_running", stopPrep: null });
+    await sim.advance(30_000);
+    expect(captures()).toBe(first);
+    await sim.advance(5 * 60_000);
+    expect(sim.record().lifecycle.context.state).toBe("removal_pending");
+    expect(captures()).toBeLessThanOrEqual(first + 4);
+    expect(sim.record().stop).toMatchObject({ reason: "removal" });
+  });
+
   it("records a removal intent while waking: the start is fenced and stopped", async () => {
     const sim = new ComputerSim();
     await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));

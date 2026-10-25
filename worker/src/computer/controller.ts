@@ -517,6 +517,7 @@ export class WorkspaceController {
           this.#settleSleeps(d, { operation: "suspend", outcome: "refused", reason });
           this.#log("stop_refused", { generation, stop: before.stopPrep, reason });
           d.stopJob = null;
+          d.stopRefusedAt = now;
           break;
         }
         case "stop_container": {
@@ -1419,17 +1420,19 @@ export class WorkspaceController {
     this.#write((d) => {
       if (d.terminalOpenUntil !== null && d.terminalOpenUntil <= now) d.terminalOpenUntil = null;
       const terminalOpen = d.terminalOpenUntil !== null;
+      // A stop whose preparation just failed is tried again a heartbeat later, not at once.
+      const stopRetryDue = d.stopRefusedAt === null || now - d.stopRefusedAt >= this.#t.heartbeatMs;
       if (
         withoutHost(ctx.state) &&
         d.noHostSince !== null &&
         now - d.noHostSince >= this.#t.startDeadlineMs &&
-        !(restored(ctx.state) && (ctx.stopPrep !== null || terminalOpen))
+        !(restored(ctx.state) && (ctx.stopPrep !== null || terminalOpen || !stopRetryDue))
       ) {
         this.#step(d, "start_deadline", { terminalOpen });
         return;
       }
       if (!restored(ctx.state)) return;
-      if (ctx.removalIntent && ctx.stopPrep === null && d.signOut.job === null) {
+      if (ctx.removalIntent && ctx.stopPrep === null && d.signOut.job === null && stopRetryDue) {
         this.#step(d, "removal_stop_due", {});
         return;
       }
