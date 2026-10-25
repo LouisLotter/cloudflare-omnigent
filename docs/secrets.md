@@ -1,50 +1,60 @@
-# Secret checklist
+# Secret and credential inventory
 
-Every secret the project uses or will use: what it is for, where it lives, who can read it, and how it is removed. A new secret gets a row here before code uses it. Values never appear in this repository, in logs, fixtures, snapshots or images; the canary scan in CI checks for planted ones.
+Record each new credential's purpose, audience, custody, persistence and revocation before using it. Values, login files, account identifiers and personal data do not belong in source, fixtures, test snapshots, build images, public evidence or logs. This inventory describes the server base and accepted future computer/connection design; [compatibility](compatibility.md) identifies what is actually included.
 
-## Rules
+## Handling rules
 
-- [ ] No secret, login file, account ID or personal email address is committed. Local state that identifies the owner lives outside the repository (the staging directory below) or in gitignored files (`.env*`, `.dev.vars*`).
-- [ ] Worker secrets are set from the owner's laptop, with `wrangler secret put`, by the staging tool, or by the bootstrap script (`scripts/bootstrap/`). The tools upload them with the Worker version (`wrangler deploy --secrets-file`) or change them in one request (`cf workers secrets bulk`, which never creates a missing Worker), through an unlinked file on descriptor 3, never written into `wrangler.jsonc` `vars`. Deployments run from that laptop only.
-- [ ] CI holds no secrets. It runs on `pull_request` with a read-only token and no persisted checkout credentials, so code from a fork gets nothing.
-- [ ] Staging uses staging-only values. Deleting a staging Worker deletes its secrets with it.
-- [ ] A cloud computer never holds platform secrets, connected-account credentials or storage keys. It holds only the person's own Omnigent, Claude and Codex logins.
-- [ ] Platform code copies the computer's login files as opaque bytes. It never parses or logs them.
-- [ ] Real-account test runs use reviewed revisions only, are recorded in the work package's evidence, and end with a sign-out that is checked.
-- [ ] Tests use synthetic values and runtime-generated canaries, never real credentials.
+- Keep deployment credentials on the authorized installer's computer. CI uses ordinary pull requests, a read-only repository token and no persisted checkout credentials; untrusted builds receive no provider/deployment secrets.
+- Pass secrets through the checked bootstrap/staging tooling's prompt or stdin, not command arguments, tracked configuration or shell history. The tooling uses transient restricted files/open descriptors for deployment. Preserve its target/account checks; do not replace it with an unchecked bulk secret command.
+- Treat platform secret changes as releases. Removing bootstrap credentials requires durable initialization, not only a successful local account query. Key rotation requires overlap and post-release checks.
+- Copy declared native login files as opaque bytes. Do not parse or log them. Use synthetic runtime-generated canaries in tests, and record which paths, formats and values a scan covered.
+- Do not log credential-bearing request headers or terminal/viewer streams. Both production Worker configurations set `observability.logs.invocation_logs: false` while retaining structured console logs. Do not send credential-bearing traffic through a Worker with invocation logs enabled; custom headers such as `X-Omnigent-Host-Token`, `X-Omnigent-Runner-Tunnel-Token` and `x-api-key` may be recorded. Verify the deployed configuration and keep credentials out of console logs.
 
-## On the owner's laptop (now)
+## Installer-local material
 
-| Secret | Purpose | Where | Removed by |
-|---|---|---|---|
-| Wrangler login | Deploy staging Workers | `~/.config/.wrangler/config/`, mode 600 | `wrangler logout` |
-| `cf` CLI login | Access applications, account checks, Worker lookups | `~/.config/cloudflare/config/`, mode 600 | `cf auth logout` |
-| GitHub CLI login | Pushes and pull requests | `~/.config/gh/`, mode 600 | `gh auth logout` |
-| Staging configuration | Account ID, zone, owner email, identity provider ID. Identifying rather than secret | `~/.config/cloudflare-omnigent/staging/config.json` (or `$CFO_STAGING_DIR`), mode 600, outside the repository and shared by every worktree | Delete the file |
-| Bootstrap state file | An installation's plan and progress: installation ID, account ID, Worker names, hostname, the owner's salted pin and username, the replica's location, the Access AUD. Identifying, not secret; no password or key | `~/.config/cloudflare-omnigent/installations/<platform worker>.json` (or `$CFO_INSTALL_DIR`), mode 600, outside the repository | Delete the file once the installation is gone |
-| Staging registry and locks | Which `cfo-stg-` deployments exist, with owners and expiries; the locks that keep staging commands from overlapping | `resources.json` and `locks/` in the same directory, mode 600 | `stg.ts teardown` or `sweep` |
-| Staging service token (F7-staging, owner-approved for X1 only) | Lets a staging computer pass Access on the hostnames its deployment's `staging.jsonc` names | Created by the staging tool for 24 hours. Its client ID and secret go only to the Worker secrets the manifest names, the same way as the Tunnel token (an unlinked file on descriptor 3), and only when the token is created or rotated. Never in argv, logs, the registry or files that stay | Deleted at teardown, after its Access policies |
-| Staging Tunnel token | Lets a staging deployment's server container run the Tunnel that its `staging.jsonc` asks for | Read from Cloudflare by the staging tool at each deploy and uploaded as the Worker secret the manifest names, through a mode 600 file that is unlinked as soon as it is opened and reaches Wrangler only as an open descriptor (`--secrets-file /dev/fd/3`). Wrangler runs with sanitised logging and writes no log file. Never in argv, logs, the registry or the rendered configuration | Deleted with the Worker; the Tunnel is deleted at teardown |
-| Real Claude and ChatGPT logins | Recorded real-account runs in spikes S6 and later | Only inside the staging computer under test | Sign out after each run, and check |
+| Material | Custody / removal |
+| --- | --- |
+| Wrangler and `cf` authentication | Existing CLI-managed stores on the installer computer; separate logins. Use the relevant CLI logout/revocation workflow when withdrawing access, rather than printing credentials. |
+| GitHub CLI authentication | Existing CLI-managed credential store or keyring; do not assume a token file exists. Git/SSH credentials are separate from platform deployment credentials. |
+| Staging configuration, registry and locks | `CFO_STAGING_DIR` or the staging tool's default config directory, outside the repository. Contains identifying account/zone/ownership data. Tooling manages registry/lifecycle records; do not delete locks to bypass another run. |
+| Bootstrap journal | `CFO_INSTALL_DIR` or the installation tool's default config directory; restricted mode-0600 file in a mode-0700 directory. Identifying installation plan/progress, not passwords or keys. Keep until the installation is intentionally retired. |
+| Optional staging Tunnel/service-token credentials | Only reviewed staging manifests use these; normal computer transport does not depend on an Access service token. Secrets travel through guarded input/upload paths, are scoped to their staging resources and are removed by the guarded teardown. Expiry alone is not proof of resource deletion. |
+| Real native CLI test logins | Only the reviewed computer under test and its intended credential checkpoint; sign out after the run and verify restored absence. Provider-side revocation is separate from local logout. |
 
-## In an installation (from M2 on)
+## Implemented server-base settings
 
-Each installation runs in the person's own Cloudflare account. Rows marked "to confirm" are settled by the named spike or work package.
+Only `SERVER_ENV_<NAME>` values deliberately forwarded by the [server environment adapter](../worker/src/server/server-env.ts) become `<NAME>` in the container. This is an explicit prefix mapping, not a claim that containers contain no secrets. The image also pins or removes settings it does not support.
 
-| Secret | Purpose | Where | Removed or rotated | Package |
-|---|---|---|---|---|
-| `SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` (the username is a plain variable) | Pre-provision the owner's Omnigent account | Platform Worker secret, set by the bootstrap script from the installer's input (never stored on the laptop), forwarded only to the server container at start | Deleted by the bootstrap script only after the watchdog's status in Workers Logs shows the owner initialized and durable for this installation, in the same change that sets `CFO_INSTALLATION_INITIALIZED=true` (RC-02, R-27). The owner should change the password after the first sign-in | 2.4 |
-| `SERVER_ENV_CFO_INSTALLATION_INITIALIZED` | Not secret: tells the server image the owner exists and is durable, so a missing replica is recovery mode | Platform Worker secret, so that the release changes it and deletes the password in one request, and a deploy of a configuration without it cannot reset it (Wrangler deletes variables a deploy leaves out, never secrets) | Never removed; `false` at installation, `true` from the release | 2.4, 2.3 |
-| Platform's Omnigent login | Retired (D15): the platform has no Omnigent login | — | — | — |
-| `SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET` | Omnigent's session cookies | Platform Worker secret, generated by the bootstrap script (32 random bytes, hex), forwarded to the server container | Rotate by setting a new secret; existing sessions end | 2.2, 2.4 |
-| `SERVER_ENV_LITESTREAM_ACCESS_KEY_ID`, `SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY` | Replicate the server database to R2 | Platform Worker secrets, set by the bootstrap script from the installer's input, forwarded to the server container, where only Litestream receives them | Rotate the R2 token | 2.3, 2.4, S4 |
-| Access team domain and audience tag | Validate Access tokens in the Worker | Worker variables. Configuration, not secret | Change with the Access application | 2.1, S5 |
-| Computer login files: `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.omnigent/auth_tokens.json` (list to confirm) | The person's own CLI logins on their computer | On that computer, and in its credential checkpoint in R2. Restored only into the same computer | Sign-out writes a tombstone, so an older copy never brings it back | 3.4, S6 |
-| Connection wrapping keys | Wrap each connected account's data key | Worker secrets, versioned | Rotation rewraps; revocation bumps the connection's generation | 5.3 |
-| Connected-account tokens | GitHub, LinkedIn and later providers | Encrypted in each connection's Durable Object; used only by trusted components | Revoked on the Connected accounts page | 5.3–5.8 |
-| Provider app credentials (to confirm per provider) | OAuth clients for the provider registry | Worker secrets | Rotate at the provider | 5.5–5.8 |
-| Gateway authentication | Lets the server call the gateway for an approved operation | Issued by the server, short-lived | Expires; revoked with the connection | 5.4 |
+| Worker-held name | Purpose and container use | Removal / rotation |
+| --- | --- | --- |
+| `SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD` | Initial owner bootstrap; explicit username is a non-secret setting. Forwarded only to the server while needed. | Checked bootstrap release removes it only after current-installation initialization and replication proof. The owner then verifies sign-in and changes the password as appropriate. |
+| `SERVER_ENV_CFO_INSTALLATION_INITIALIZED` | Non-secret expectation deliberately stored as a secret so ordinary configuration deploys cannot erase it. A missing/old replica must produce recovery mode. | Do not clear it to force setup. Recovery requires an explicit plan. |
+| `SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET` | Server session cookies. | Deliberate secret release; existing cookie sessions end. This is not by itself complete revocation of every bearer/grant. |
+| `SERVER_ENV_LITESTREAM_ACCESS_KEY_ID`, `SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY` | Bucket-scoped database replication credentials. The image gives these to Litestream and removes them from the app child's environment. | Rotate/revoke the scoped R2 credential. Do not broaden it to computer-checkpoint buckets. |
+| Access issuer/audience, hostname and owner pin | Ingress configuration. The salted pin permits guessing attacks against candidate addresses and is not a confidential identity store. | Update through installation configuration; keep identifying configuration out of public run records. |
 
-## Test canaries
+There is no platform Omnigent login. Main/candidate explicitly disable native GitHub linking and the HTTP credential cipher configuration; the registered Cloudflare launcher is a stub. Setting integration environment variables does not enable unfinished wiring.
 
-Tests generate canary values at run time. Committed text contains no canary. The scanner (`scripts/canary-scan.ts`) runs on the sources, the built Worker bundle and, from M2, the images. It must find a planted canary in its self-test before a clean result counts.
+## Accepted computer/connection credential design
+
+| Class | Intended custody and persistence |
+| --- | --- |
+| Host launch token | Supervisor/host memory and process environments, stable only for that live incarnation; no disk login or checkpoint copy. Generation/start claims and launch-token-only registration protect host identity. |
+| Runner binding/delegated tokens | Runtime authority and excluded harness-secret families; short-lived delegated owner-equivalent access with explicit approval/account/policy restrictions. Broad access to other computers' work remains possible. |
+| Native Claude/Codex logins | Declared credential checkpoint files: `.claude/.credentials.json`, `.claude/.device-keys.json`, `.codex/auth.json`, `.codex/.credentials.json`, relative to the computer home. No Omnigent login/refresh-grant file is declared. |
+| Native-harness continuation | Save configuration, rollouts, transcripts, private Codex home and undelivered-event state. Exclude classified credential families and temporary siblings, not whole continuation directories. |
+| Codex key-provider API key | Mode-0600 `provider_key` in `.omnigent/codex-native/<bridge>/`, read through a reference in generated config and removed on app-server close. `provider_key.*` temporary files are also excluded. Saved configuration uses references; computer key-provider configuration must not inline the key. |
+| Native GitHub linking | Planned server-side GitHub App configuration and encrypted access/refresh records. Worker holds encryption keys; server uses plaintext for refresh/vending. Host broker supplies only the access token to git/gh at runtime, without helper-argv/gh token files. The refresh token stays on the server. Other native providers remain unconfigured. |
+| Worker key service | Planned versioned encryption keys in Worker secrets plus a separate server signing credential. Record context/key identity are authenticated; old key versions remain readable while records use them. No deployed secret setting name is promised for this unfinished service. |
+| Launcher and gateway signing | Planned separate server-side bridge credentials with key IDs and overlap for rotation. They authorize private operations, not public access. Keep launcher and key-service signing authority separate. |
+| Platform connected-account tokens and wrapping keys | Planned Worker-side connection service; raw connected-account credentials do not reach computers. This differs from the deliberate native GitHub exception. |
+
+The [policy authority](../contracts/src/checkpoint-policy.ts) classifies secret families; the [manifest contract](../contracts/src/manifests.ts) declares opaque login files/tombstones. Workspace restore filters every layer; the newest credential generation/order is installed separately. A sign-out needs a published tombstone and restore verification so older saves cannot reintroduce login files.
+
+The accepted design keeps checkpoint buckets private and accessible through Worker bindings, with no S3 API token for computers. Version one relies on R2 encryption at rest, without application-level checkpoint encryption. Someone controlling the Worker/account can read saved logins. The database replica contains encrypted native credential-store records only after the planned cipher integration exists; encryption-key separation does not remove server plaintext access.
+
+## Verification and incident response
+
+The [canary scanner](../scripts/canary-scan.ts) checks synthetic markers and exact configured values in selected supported inputs. Its existing CI invocation is not a whole-repository/history/image or arbitrary-secret scan; incomplete input fails. Actual checkpoint qualification additionally walks/decompresses every published layer, covers all live token generations and encoded forms, and proves detection with planted values. Those product tests are still pending integration.
+
+Use [security operations](operations/security.md) for provider-side revocation, account-generation invalidation, persistence review and safe evidence collection. A computer wipe or local CLI logout alone does not establish revocation of copied credentials.

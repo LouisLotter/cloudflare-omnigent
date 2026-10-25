@@ -20,7 +20,7 @@
 #           source, Python tests and docs. Any non-zero exit fails the step: 1 means a canary was
 #           found, 2 a usage error, and 3 an incomplete scan (undecodable data, an unreadable
 #           file, or a path with no files), which is never treated as clean.
-#   images  Not yet: see the placeholder at the end.
+#   images  Build the existing server and test targets; run credential-free image tests.
 #
 # Still to come, as the work packages that need them land: deterministic simulation tests (M3)
 # and Stryker mutation thresholds (75%) for the state machines and the schedule cache.
@@ -98,13 +98,16 @@ jobs:
       - name: Coverage thresholds
         run: pnpm coverage
 
-      - name: Wrangler dry run
-        run: pnpm --filter @cfo/worker dry-run
+      - name: Platform Worker dry run
+        run: pnpm --filter @cfo/worker exec wrangler deploy --config wrangler.jsonc --dry-run --outdir dist/platform
 
-      # Every built artefact is scanned too, not only the sources. A path given explicitly is
+      - name: Web Worker dry run
+        run: pnpm --filter @cfo/worker exec wrangler deploy --config wrangler.web.jsonc --dry-run --outdir dist/web
+
+      # Both built Worker bundles are scanned too, not only the sources. An explicit path is
       # scanned even though it is named dist, and an empty bundle directory exits 3, not 0.
-      - name: Canary scan of the built Worker bundle
-        run: node scripts/canary-scan.ts worker/dist
+      - name: Canary scan of both built Worker bundles
+        run: node scripts/canary-scan.ts worker/dist/platform worker/dist/web
 
   python:
     name: Python (ruff, pytest)
@@ -161,8 +164,33 @@ jobs:
       - name: Scan contracts, Worker source, Python tests and docs
         run: node scripts/canary-scan.ts contracts worker/src python/tests docs
 
-  # images: placeholder, added with the first Dockerfile under images/ (server, computer,
-  # linkedin). It will build each image with `docker build` on the runner, never push it, pin
-  # every base image by digest, run the container smoke tests, and scan the built image with the
-  # canary scanner. Like the rest of this workflow it will use no registry or Cloudflare
-  # credentials.
+  images:
+    name: Server image (build, prerequisites, unit and in-process tests)
+    runs-on: ubuntu-24.04
+    # Initial cold-build budget; local cached timing does not qualify a hosted cold runner.
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Existing Docker targets and pinned dependencies only. No registry login or push.
+      - name: Build the server target
+        run: docker build --platform linux/amd64 -f images/server/Dockerfile --target server -t cfo-server:ci-runtime .
+
+      - name: Build the image's test target
+        run: docker build --platform linux/amd64 -f images/server/Dockerfile --target test -t cfo-server:ci-test .
+
+      # The suite skips app/Litestream cases when prerequisites are absent. Refuse that here.
+      - name: Require the pinned app, entrypoint and Litestream
+        run: >-
+          docker run --rm --network none cfo-server:ci-test python -c
+          'import pathlib, subprocess; import omnigent.server.app;
+          assert pathlib.Path("/app/entrypoint.py").is_file();
+          assert subprocess.check_output(["litestream", "version"], text=True).strip() == "0.5.17"'
+
+      # Uses the Dockerfile's existing CMD: tests excluding tests/integration. Loopback and
+      # local file replicas work with --network none; no provider or Cloudflare account used.
+      - name: Run the image's unit and in-process suite
+        run: docker run --rm --network none -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:ci-test

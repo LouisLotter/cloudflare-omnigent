@@ -1,8 +1,0 @@
-{
- "variant": "tmp-inside",
- "failures": [
-  "the capture takes exactly the paths the classification saves",
-  "the Claude forwarder cursor is captured when $TMPDIR is inside the home",
-  "restore: the Claude forwarder cursor came back"
- ]
-}

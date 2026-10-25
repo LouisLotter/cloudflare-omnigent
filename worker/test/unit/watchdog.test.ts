@@ -34,6 +34,8 @@ const entrypoint = (phase: EntrypointPhase, transient = false): Observation => (
 });
 
 const types = (s: Step) => s.effects.map((e) => e.type);
+/** What the step does, besides logging: starts, stops, kills and outage records. */
+const actions = (s: Step) => types(s).filter((t) => t !== "event");
 const events = (s: Step) =>
   s.effects.flatMap((e) => (e.type === "event" ? [e.name] : [])) as string[];
 const outages = (s: Step) =>
@@ -56,6 +58,8 @@ function run(
 }
 
 const answered = (at: number): WatchdogState => ({ ...INITIAL_WATCHDOG_STATE, lastAnsweredAt: at });
+/** What a start whose status never reads may take: every stage's budget, from the start. */
+const WHOLE_START = T.restoreWaitMs + T.appStartWaitMs + T.readinessWaitMs;
 
 describe("watchdog: first start", () => {
   it("starts a server that was never started, without recording an outage", () => {
@@ -75,17 +79,17 @@ describe("watchdog: first start", () => {
       [T0, STOPPED], // first start
       [T0 + 5_000, STOPPED], // refused: retry due in 5 s
       [T0 + 10_000, STOPPED], // second start
-      [T0 + 10_000 + T.readinessWaitMs, SILENT], // never ready
+      [T0 + 10_000 + WHOLE_START, SILENT], // never ready, and never said why
     ]);
     const record = outages(defined(steps[3]))[0];
     expect(record).toMatchObject({ cause: "start_failed", startedAt: new Date(T0).toISOString() });
   });
 
-  it("waits the full readiness wait for a first start, then stops it to start again", () => {
+  it("gives a start whose status never reads every stage's budget, then stops it to start again (Codex WP2.6 r1-1)", () => {
     const [, waiting, failed] = run(INITIAL_WATCHDOG_STATE, [
       [T0, STOPPED],
-      [T0 + T.readinessWaitMs - 1, SILENT],
-      [T0 + T.readinessWaitMs, SILENT],
+      [T0 + WHOLE_START - 1, SILENT],
+      [T0 + WHOLE_START, SILENT],
     ]);
     expect(waiting?.effects).toEqual([]);
     expect(failed && types(failed)).toEqual(["event", "event", "outage", "stop"]);
@@ -96,7 +100,7 @@ describe("watchdog: first start", () => {
       endedAt: null,
     });
     expect(failed?.state).toMatchObject({ phase: "stopping", failedStarts: 1 });
-    expect(failed?.nextCheckAt).toBe(T0 + T.readinessWaitMs + T.pollMs);
+    expect(failed?.nextCheckAt).toBe(T0 + WHOLE_START + T.pollMs);
   });
 
   it("counts the app's readiness from its first sight past the boot, and keeps the restore's allowance while unknown (Codex r4-3)", () => {
@@ -108,17 +112,18 @@ describe("watchdog: first start", () => {
       [T0 + 300_000 + T.readinessWaitMs - 1, entrypoint("running")],
       [T0 + 300_000 + T.readinessWaitMs, entrypoint("running")],
     ]);
-    for (const s of steps.slice(1, 5)) expect(types(s)).toEqual([]);
+    for (const s of steps.slice(1, 5)) expect(actions(s)).toEqual([]);
     expect(defined(steps[3]).state.bootEndedAt).toBe(T0 + 300_000);
     expect(types(defined(steps[5]))).toContain("stop");
-    // Unknown after a restore, with no sight past it: the restore's allowance, then a stop.
+    // Unknown after a restore, with no sight past it: the start may have moved on to the app's
+    // start unseen, so it gets every stage's budget from the start (Codex WP2.6 r1-1).
     const unknown = run(INITIAL_WATCHDOG_STATE, [
       [T0, STOPPED],
       [T0 + 60_000, entrypoint("restoring")],
-      [T0 + T.restoreWaitMs - 1, SILENT],
-      [T0 + T.restoreWaitMs, SILENT],
+      [T0 + WHOLE_START - 1, SILENT],
+      [T0 + WHOLE_START, SILENT],
     ]);
-    expect(types(defined(unknown[2]))).toEqual([]);
+    expect(actions(defined(unknown[2]))).toEqual([]);
     expect(types(defined(unknown[3]))).toContain("stop");
   });
 
@@ -131,7 +136,7 @@ describe("watchdog: first start", () => {
       [restoredAt + 5_000 + T.readinessWaitMs - 1, SILENT],
       [restoredAt + 5_000 + T.readinessWaitMs, entrypoint("running")],
     ]);
-    for (const s of steps.slice(1, 4)) expect(types(s)).toEqual([]);
+    for (const s of steps.slice(1, 4)) expect(actions(s)).toEqual([]);
     expect(types(defined(steps[4]))).toContain("stop");
   });
 
@@ -142,10 +147,297 @@ describe("watchdog: first start", () => {
       [T0 + T.restoreWaitMs - 1, entrypoint("restoring")],
       [T0 + T.restoreWaitMs, entrypoint("restoring")],
     ]);
-    expect(types(defined(steps[1]))).toEqual([]);
+    expect(actions(defined(steps[1]))).toEqual([]);
     expect(types(defined(steps[2]))).toEqual([]);
     expect(types(defined(steps[3]))).toContain("stop");
     expect(T.restoreWaitMs).toBeGreaterThan(T.readinessWaitMs);
+  });
+});
+
+describe("watchdog: the app's initialization has its own budget (AIR2-010)", () => {
+  const initializing = entrypoint("initializing");
+  const restoring = entrypoint("restoring");
+  const running = entrypoint("running");
+  const stops = (steps: Step[]) => steps.filter((s) => types(s).includes("stop"));
+
+  it("never stops a large-database start while the app initializes within its budget (Codex's startup probe)", () => {
+    // Codex pass 13's probe: restore seen at 5 and 85 s, the app past the restore at 90 s, no
+    // health answer through 210 s. The entrypoint now says `initializing` until the app answers.
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 5_000, restoring],
+      [T0 + 85_000, restoring],
+      [T0 + 90_000, initializing],
+      [T0 + 205_000, initializing],
+      [T0 + 210_000, initializing],
+      [T0 + 90_000 + T.appStartWaitMs - 1, initializing],
+    ]);
+    expect(stops(steps)).toEqual([]);
+    expect(steps.flatMap(events).filter((e) => e === "start_phase")).toHaveLength(2);
+    // An older image says `running` from the app's start: only the readiness wait (unchanged).
+    const older = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 5_000, restoring],
+      [T0 + 85_000, restoring],
+      [T0 + 90_000, running],
+      [T0 + 210_000, running],
+    ]);
+    expect(types(defined(older[4]))).toContain("stop");
+  });
+
+  it("takes WP2.5's 1 GB start on basic once the image's start is cut, and not the uncut one", () => {
+    // WP2.5's run 2 on basic: the restore and the entrypoint's check end at 167 s, the app is
+    // past it from 168 s. With the image's fixes its start is the imports, migrations and
+    // create_app without the second check and the compile (about 100 s there); before them it
+    // took 377 s more and answered at 554 s.
+    const timeline = (answersAt: number): [number, Observation][] => {
+      const seq: [number, Observation][] = [[T0, STOPPED]];
+      for (let at = T0 + 5_000; at <= T0 + 600_000; at += T.pollMs) {
+        if (at >= answersAt) {
+          seq.push([at, ANSWERING]);
+          break;
+        }
+        seq.push([at, at < T0 + 167_000 ? restoring : initializing]);
+      }
+      return seq;
+    };
+    const fixed = run(INITIAL_WATCHDOG_STATE, timeline(T0 + 290_000));
+    expect(stops(fixed)).toEqual([]);
+    const ready = defined(fixed.at(-1)).effects.find(
+      (e): e is Extract<Effect, { type: "event" }> =>
+        e.type === "event" && e.name === "server_ready",
+    );
+    expect(ready?.fields).toMatchObject({ failedStarts: 0, lastStartToReadyMs: 290_000 });
+    const phases = fixed.flatMap((s) =>
+      s.effects.flatMap((e) => (e.type === "event" && e.name === "start_phase" ? [e.fields] : [])),
+    );
+    expect(phases).toEqual([
+      { phase: "restoring", sinceStartMs: 5_000 },
+      { phase: "initializing", sinceStartMs: 170_000 },
+    ]);
+    // The uncut start (answering at 554 s) runs out of the app-start budget at 170 + 300 s.
+    const uncut = run(INITIAL_WATCHDOG_STATE, timeline(T0 + 554_000));
+    const [stop] = stops(uncut);
+    expect(stop?.effects).toContainEqual(
+      expect.objectContaining({
+        type: "event",
+        name: "start_not_ready",
+        fields: expect.objectContaining({ budget: "app_start", waitedMs: 470_000 }),
+      }),
+    );
+  });
+
+  it("restarts a hung initialization once its budget is used up, and counts the failed start", () => {
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 30_000, restoring],
+      [T0 + 60_000, initializing], // first sight: the budget counts from here
+      [T0 + 60_000 + T.appStartWaitMs - 1, initializing],
+      [T0 + 60_000 + T.appStartWaitMs, initializing],
+    ]);
+    expect(actions(defined(steps[3]))).toEqual([]);
+    const failed = defined(steps[4]);
+    expect(types(failed)).toContain("stop");
+    expect(failed.state).toMatchObject({ phase: "stopping", failedStarts: 1 });
+    expect(outages(failed)[0]).toMatchObject({ cause: "start_failed" });
+    // The restart follows the stop, after DC-37's first delay.
+    const sent = signalled(failed.state, T0 + 60_000 + T.appStartWaitMs);
+    const stopped = step(sent, exited(0), T0 + 400_000, T, nextId);
+    expect(stopped.state.phase).toBe("waiting");
+    expect(types(step(stopped.state, STOPPED, stopped.nextCheckAt, T, nextId))).toContain("start");
+  });
+
+  it("gives an initialization whose status turns unreadable the app's and the readiness budget, no more", () => {
+    // Unseen, the app may have finished its start and be answering the entrypoint only.
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 20_000, initializing],
+      [T0 + 20_000 + T.readinessWaitMs + 1, SILENT], // past the readiness wait: still waits
+      [T0 + 20_000 + T.appStartWaitMs + T.readinessWaitMs - 1, SILENT],
+      [T0 + 20_000 + T.appStartWaitMs + T.readinessWaitMs, SILENT],
+    ]);
+    expect(actions(defined(steps[2]))).toEqual([]);
+    expect(actions(defined(steps[3]))).toEqual([]);
+    expect(types(defined(steps[4]))).toContain("stop");
+  });
+
+  it("gives an app the entrypoint reports running the readiness wait from that sight", () => {
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 20_000, initializing],
+      [T0 + 250_000, running], // it answered the entrypoint, not yet the watchdog
+      [T0 + 250_000 + T.readinessWaitMs - 1, SILENT],
+      [T0 + 250_000 + T.readinessWaitMs, running],
+    ]);
+    expect(actions(defined(steps[3]))).toEqual([]);
+    const failed = defined(steps[4]);
+    expect(types(failed)).toContain("stop");
+    expect(failed.effects).toContainEqual(
+      expect.objectContaining({
+        name: "start_not_ready",
+        fields: expect.objectContaining({ budget: "readiness" }),
+      }),
+    );
+  });
+
+  it("does not stop an app that initializes while its status cannot be read (Codex WP2.6 r1-1)", () => {
+    // Codex's example: restore seen through 415 s, the status unreadable from 420 s while the
+    // app initializes until 710 s, within its 300 s.
+    const seq: [number, Observation][] = [[T0, STOPPED]];
+    for (let at = T0 + 5_000; at <= T0 + 415_000; at += 5_000) seq.push([at, restoring]);
+    for (let at = T0 + 420_000; at < T0 + 710_000; at += 5_000) seq.push([at, SILENT]);
+    seq.push([T0 + 710_000, ANSWERING]);
+    const steps = run(INITIAL_WATCHDOG_STATE, seq);
+    expect(stops(steps)).toEqual([]);
+    expect(events(defined(steps.at(-1)))).toContain("server_ready");
+  });
+
+  it("starts the budgets again for a new boot it sees mid-start, and not after an eviction (Codex WP2.6 r1-2)", () => {
+    const boot = (phase: EntrypointPhase, bootId: string): Observation => ({
+      kind: "silent",
+      entrypoint: { phase, recovery: null, bootId },
+    });
+    const A = "a".repeat(32);
+    const B = "b".repeat(32);
+    // Codex's example: initializing at 420 s, then another container's boot at 535 and 540 s.
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 5_000, boot("restoring", A)],
+      [T0 + 420_000, boot("initializing", A)],
+      [T0 + 535_000, boot("starting", B)],
+      [T0 + 540_000, boot("restoring", B)],
+      [T0 + 535_000 + T.restoreWaitMs - 1, boot("restoring", B)],
+      [T0 + 535_000 + T.restoreWaitMs, boot("restoring", B)],
+    ]);
+    expect(events(defined(steps[3]))).toContain("start_reboot");
+    expect(defined(steps[3]).state).toMatchObject({
+      phaseSince: T0 + 535_000,
+      bootId: B,
+      failedStarts: 1, // the replaced container never answered: a failed start (r2-1)
+    });
+    expect(outages(defined(steps[3]))[0]).toMatchObject({ cause: "start_failed", restarts: 1 });
+    expect(stops(steps.slice(0, 6))).toEqual([]);
+    expect(types(defined(steps[6]))).toContain("stop"); // the new boot's own allowance, bounded
+    // The same boot read again after the object's state was stored and reloaded: no reset.
+    const same = run(INITIAL_WATCHDOG_STATE, [
+      [T0, STOPPED],
+      [T0 + 5_000, boot("restoring", A)],
+      [T0 + T.restoreWaitMs, boot("restoring", A)],
+    ]);
+    expect(types(defined(same[2]))).toContain("stop");
+    expect(same.flatMap(events)).not.toContain("start_reboot");
+  });
+
+  it("records every unseen reboot as a failed start, and stops renewing the budgets after DC-37's backoff (Codex WP2.6 r2-1)", () => {
+    // Codex's example: a new boot ID every 500 s, for good.
+    let state = step(INITIAL_WATCHDOG_STATE, STOPPED, T0, T, nextId).state;
+    let stoppedAt: number | null = null;
+    for (let k = 1; k < 10_000 && stoppedAt === null; k += 1) {
+      const at = T0 + k * T.pollMs;
+      const bootId = (Math.floor((at - T0) / 500_000) % 2 === 0 ? "c" : "d").repeat(32);
+      const s = step(
+        state,
+        { kind: "silent", entrypoint: { phase: "restoring", recovery: null, bootId } },
+        at,
+        T,
+        nextId,
+      );
+      if (types(s).includes("stop")) stoppedAt = at;
+      state = s.state;
+    }
+    expect(stoppedAt).not.toBeNull();
+    // Renewed while the failed starts stay within the backoff, then bounded by the last renewal.
+    const renewals = T.startRetryMs.length;
+    expect(stoppedAt).toBeLessThanOrEqual(T0 + (renewals + 1) * 500_000 + T.restoreWaitMs);
+    expect(state.failedStarts).toBeGreaterThan(renewals);
+    expect(state.outage).toMatchObject({ cause: "start_failed" });
+  });
+
+  it("adopts a container it finds initializing, with the app-start budget from then", () => {
+    const found = step(answered(T0), initializing, T0 + 60_000, T, nextId);
+    expect(found.state).toMatchObject({
+      phase: "starting",
+      phaseSince: T0 + 60_000,
+      initSeenAt: T0 + 60_000,
+    });
+    expect(outages(found)[0]).toMatchObject({ cause: "container_stopped" });
+    const later = step(found.state, initializing, T0 + 60_000 + T.appStartWaitMs - 1, T, nextId);
+    expect(actions(later)).toEqual([]);
+    expect(
+      types(step(later.state, initializing, T0 + 60_000 + T.appStartWaitMs, T, nextId)),
+    ).toContain("stop");
+  });
+
+  it("never stops a start whose phases each end within their budget, however its status reads (Codex WP2.6 r1-1)", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: T.restoreWaitMs - 3 * T.pollMs }),
+        fc.integer({ min: 0, max: T.appStartWaitMs - 3 * T.pollMs }),
+        fc.integer({ min: 0, max: T.readinessWaitMs - 3 * T.pollMs }),
+        // Unreadable at any poll, in runs of any length, the whole start included.
+        fc.oneof(
+          fc.array(fc.boolean(), { minLength: 400, maxLength: 400 }),
+          fc
+            .tuple(fc.integer({ min: 0, max: 400 }), fc.integer({ min: 0, max: 400 }))
+            .map(([from, length]) =>
+              Array.from({ length: 400 }, (_, k) => k < from || k >= from + length),
+            ),
+        ),
+        (restoreMs, appMs, runningMs, readable) => {
+          let state = step(INITIAL_WATCHDOG_STATE, STOPPED, T0, T, nextId).state;
+          for (let k = 1; k < 400; k += 1) {
+            const at = T0 + k * T.pollMs;
+            const t = at - T0;
+            let obs: Observation;
+            if (t >= restoreMs + appMs + runningMs) obs = ANSWERING;
+            else if (!readable[k]) obs = SILENT;
+            else if (t < restoreMs) obs = restoring;
+            else if (t < restoreMs + appMs) obs = initializing;
+            else obs = running;
+            const s = step(state, obs, at, T, nextId);
+            if (types(s).includes("stop")) return false;
+            state = s.state;
+            if (obs.kind === "answering") return state.phase === "idle";
+          }
+          return false;
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  it("always stops an initialization that never ends, within a poll of its budget", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: T.restoreWaitMs - 3 * T.pollMs }),
+        fc.boolean(),
+        (restoreMs, unreadableAfter) => {
+          let state = step(INITIAL_WATCHDOG_STATE, STOPPED, T0, T, nextId).state;
+          let firstInit: number | null = null;
+          for (let k = 1; k < 1000; k += 1) {
+            const at = T0 + k * T.pollMs;
+            const inRestore = at - T0 < restoreMs;
+            if (!inRestore && firstInit === null) firstInit = at;
+            const obs = inRestore
+              ? restoring
+              : unreadableAfter && firstInit !== null && at > firstInit
+                ? SILENT
+                : initializing;
+            const s = step(state, obs, at, T, nextId);
+            if (types(s).includes("stop")) {
+              // Unreadable after its first sight, the app's start may also have ended unseen.
+              const budget = T.appStartWaitMs + (unreadableAfter ? T.readinessWaitMs : 0);
+              return (
+                firstInit !== null && at - firstInit >= budget && at - firstInit < budget + T.pollMs
+              );
+            }
+            state = s.state;
+          }
+          return false;
+        },
+      ),
+      { numRuns: 300 },
+    );
   });
 });
 
@@ -454,6 +746,108 @@ describe("watchdog: recovery mode and settings (WP2.3)", () => {
   });
 });
 
+describe("watchdog: leaving recovery mode (AIR2-009)", () => {
+  const recovery = entrypoint("recovery", true);
+  const stops = (steps: Step[]) => steps.filter((s) => types(s).includes("stop")).length;
+
+  it("restarts an app that stays silent after recovery mode, seen running with no boot between (Codex's probe)", () => {
+    // Codex pass 13: recovery seen at 1 s, then `running` at 61, 181, 601 and 3,601 s, never an
+    // answer. The outage keeps its recovery_mode cause; the start that followed gets a budget.
+    const steps = run(INITIAL_WATCHDOG_STATE, [
+      [T0 + 1_000, recovery],
+      [T0 + 61_000, entrypoint("running")],
+      [T0 + 61_000 + T.readinessWaitMs - 1, entrypoint("running")],
+      [T0 + 61_000 + T.readinessWaitMs, entrypoint("running")],
+    ]);
+    expect(events(defined(steps[1]))).toContain("recovery_left");
+    expect(defined(steps[1]).state).toMatchObject({ phase: "starting", recoverySince: null });
+    expect(actions(defined(steps[2]))).toEqual([]);
+    const restart = defined(steps[3]);
+    expect(types(restart)).toContain("stop");
+    expect(restart.state.outage?.cause).toBe("recovery_mode"); // the record's cause is kept
+  });
+
+  it("keeps protecting a container whose status turns unreadable in recovery mode", () => {
+    const seq: [number, Observation][] = [[T0 + 1_000, recovery]];
+    for (let at = T0 + 61_000; at < T0 + 4 * 3_600_000; at += 60_000) seq.push([at, SILENT]);
+    const steps = run(answered(T0), seq);
+    expect(stops(steps)).toBe(0);
+    expect(steps.flatMap(types).some((t) => t === "destroy" || t === "start")).toBe(false);
+    expect(defined(steps.at(-1)).state.recoverySince).toBe(T0 + 1_000);
+  });
+
+  it("follows recovery, then a boot, then running, with the budgets of a start", () => {
+    const answers = run(answered(T0), [
+      [T0 + 1_000, recovery],
+      [T0 + 61_000, entrypoint("restoring")], // the entrypoint's own retry
+      [T0 + 70_000, entrypoint("initializing")],
+      [T0 + 100_000, entrypoint("running")],
+      [T0 + 105_000, ANSWERING],
+    ]);
+    expect(stops(answers)).toBe(0);
+    expect(defined(answers[1]).state).toMatchObject({ phase: "starting", bootSeenAt: T0 + 61_000 });
+    const ended = defined(answers[4]);
+    expect(events(ended)).toEqual(["server_ready", "outage_ended"]);
+    expect(outages(ended)[0]).toMatchObject({ cause: "recovery_mode" });
+    // The same, never answering: stopped once the app-start budget is used up.
+    const hung = run(answered(T0), [
+      [T0 + 1_000, recovery],
+      [T0 + 61_000, entrypoint("restoring")],
+      [T0 + 70_000, entrypoint("initializing")],
+      [T0 + 70_000 + T.appStartWaitMs, entrypoint("initializing")],
+    ]);
+    expect(types(defined(hung[3]))).toContain("stop");
+  });
+
+  it("ends the outage and forgets recovery mode when the server answers", () => {
+    const steps = run(answered(T0), [
+      [T0 + 1_000, recovery],
+      [T0 + 61_000, ANSWERING],
+      [T0 + 61_000 + T.hungAfterMs, SILENT], // a later silence is an ordinary one
+    ]);
+    expect(events(defined(steps[1]))).toEqual(["server_ready", "outage_ended"]);
+    expect(defined(steps[1]).state.recoverySince).toBeNull();
+    expect(events(defined(steps[2]))).toContain("restart_silent");
+    expect(types(defined(steps[2]))).toContain("stop");
+  });
+
+  it("forgets recovery mode when the container stops, and starts it again", () => {
+    const steps = run(answered(T0), [
+      [T0 + 1_000, recovery],
+      [T0 + 61_000, STOPPED],
+    ]);
+    expect(types(defined(steps[1]))).toContain("start");
+    expect(defined(steps[1]).state.recoverySince).toBeNull();
+  });
+
+  it("never stops, kills or starts a container while it reports recovery mode or nothing", () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(fc.integer({ min: 1, max: 600_000 }), fc.boolean()), {
+          minLength: 1,
+          maxLength: 60,
+        }),
+        fc.option(fc.constantFrom(T0 - 60_000, T0 - 3_600_000), { nil: null }),
+        (gaps, lastAnswer) => {
+          let state: WatchdogState = { ...INITIAL_WATCHDOG_STATE, lastAnsweredAt: lastAnswer };
+          let at = T0;
+          state = step(state, recovery, at, T, nextId).state;
+          for (const [gap, readable] of gaps) {
+            at += gap;
+            const s = step(state, readable ? recovery : SILENT, at, T, nextId);
+            if (types(s).some((t) => t === "stop" || t === "destroy" || t === "start")) {
+              return false;
+            }
+            state = s.state;
+          }
+          return state.recoverySince === T0;
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+});
+
 describe("randomOutageId", () => {
   it("makes valid, distinct outage IDs", () => {
     const made = Array.from({ length: 200 }, randomOutageId);
@@ -475,6 +869,8 @@ interface SimServer {
   refusalsLeft: number;
   /** Until when its entrypoint reports a restore. */
   restoringUntil: number;
+  /** Whether its app has answered since its start; until then the entrypoint says `initializing`. */
+  ready: boolean;
   recovery: boolean;
   /** When a SIGTERM stop completes, while stopping. */
   stopsAt: number | null;
@@ -493,20 +889,32 @@ const faultArb = fc.oneof(
     kind: fc.constant("recovery" as const),
     at: fc.integer({ min: 0, max: 3_600_000 }),
     lastsMs: fc.integer({ min: 60_000, max: 1_800_000 }),
+    // After its own retry restored the database the app starts again, and may hang (AIR2-009).
+    hangAfter: fc.boolean(),
   }),
   fc.record({ kind: fc.constant("none" as const), at: fc.integer({ min: 0, max: 3_600_000 }) }),
 );
 
 describe("watchdog simulation", () => {
   it("keeps the server on, records every outage without understating it, and never fights recovery", () => {
-    const seen = { downIntervals: 0, refusedStarts: 0, restarts: 0, recoveries: 0, stops: 0 };
+    const seen = {
+      downIntervals: 0,
+      refusedStarts: 0,
+      restarts: 0,
+      recoveries: 0,
+      stops: 0,
+      hungAfterRecovery: 0,
+      liveness: 0,
+    };
     fc.assert(
       fc.property(
         fc.array(faultArb, { maxLength: 6 }),
-        fc.integer({ min: 1_000, max: 200_000 }),
-        fc.integer({ min: 0, max: 500_000 }),
+        fc.integer({ min: 1_000, max: 400_000 }),
+        fc.integer({ min: 0, max: 600_000 }),
         fc.integer({ min: 0, max: 900_000 }),
-        (faults, bootMs, restoreMs, stopMs) => {
+        // An older image reports `running` from the app's start (WP2.3), a newer `initializing`.
+        fc.boolean(),
+        (faults, bootMs, restoreMs, stopMs, olderImage) => {
           const sorted = [...faults].sort((a, b) => a.at - b.at);
           const server: SimServer = {
             running: false,
@@ -514,11 +922,14 @@ describe("watchdog simulation", () => {
             hung: false,
             refusalsLeft: 0,
             restoringUntil: 0,
+            ready: false,
             recovery: false,
             stopsAt: null,
             lastExit: null,
           };
           let recoveryEndsAt = 0;
+          let hangAfterRecovery = false;
+          let lastDisturbance = T0;
           let state = INITIAL_WATCHDOG_STATE;
           let now = T0;
           let fault = 0;
@@ -552,11 +963,21 @@ describe("watchdog simulation", () => {
               else if (f.kind === "recovery" && server.running && server.stopsAt === null) {
                 server.recovery = true;
                 recoveryEndsAt = now + f.lastsMs;
+                hangAfterRecovery = f.hangAfter;
                 seen.recoveries += 1;
               }
               fault += 1;
+              lastDisturbance = now;
             }
-            if (server.recovery && now >= recoveryEndsAt) server.recovery = false;
+            if (server.recovery && now >= recoveryEndsAt) {
+              // The entrypoint's retry restored the database: the app starts from scratch.
+              server.recovery = false;
+              server.ready = false;
+              server.answersAt = now + bootMs;
+              server.hung = hangAfterRecovery;
+              if (hangAfterRecovery) seen.hungAfterRecovery += 1;
+              lastDisturbance = now;
+            }
             if (server.stopsAt !== null && now >= server.stopsAt) {
               server.running = false;
               server.stopsAt = null;
@@ -564,6 +985,7 @@ describe("watchdog simulation", () => {
               server.lastExit = 0;
             }
             const isUp = answering(now);
+            if (isUp) server.ready = true;
             if (everAnswered && !isUp && currentDown === null) {
               // The truth: the server stopped answering no earlier than its last answer.
               currentDown = { from: state.lastAnsweredAt ?? now, to: null };
@@ -579,7 +1001,9 @@ describe("watchdog simulation", () => {
                   ? "stopping"
                   : now < server.restoringUntil
                     ? "restoring"
-                    : "running";
+                    : server.ready || olderImage
+                      ? "running"
+                      : "initializing";
               obs = entrypoint(phase, true);
             }
             // Recovery as the watchdog sees it, before a stop of its own began.
@@ -597,6 +1021,7 @@ describe("watchdog simulation", () => {
                 } else {
                   server.running = true;
                   server.hung = false;
+                  server.ready = false;
                   server.recovery = false;
                   server.restoringUntil = now + restoreMs;
                   server.answersAt = now + restoreMs + bootMs;
@@ -627,6 +1052,15 @@ describe("watchdog simulation", () => {
           }
 
           seen.downIntervals += downIntervals.length;
+          // Liveness: once nothing disturbs it for an hour, a server whose start fits the budgets
+          // answers again, whatever happened before: a hang after recovery mode included.
+          const fits =
+            restoreMs <= T.restoreWaitMs - 3 * T.pollMs &&
+            bootMs <= (olderImage ? T.readinessWaitMs : T.appStartWaitMs) - 3 * T.pollMs;
+          if (fits && end - lastDisturbance >= 3_600_000 && !server.recovery) {
+            seen.liveness += 1;
+            expect(answering(now)).toBe(true);
+          }
           expect(startsWhileRunning).toBe(0);
           expect(stoppedInRecovery).toBe(0);
           // Every record satisfies the contract, and at most one is ongoing.
@@ -653,6 +1087,8 @@ describe("watchdog simulation", () => {
     expect(seen.restarts).toBeGreaterThan(100);
     expect(seen.recoveries).toBeGreaterThan(20);
     expect(seen.stops).toBeGreaterThan(20);
+    expect(seen.hungAfterRecovery).toBeGreaterThan(10);
+    expect(seen.liveness).toBeGreaterThan(30);
     // 300 simulated hours take a few seconds; CI runners are slower than the default 5 s allows.
   }, 60_000);
 });
@@ -672,7 +1108,10 @@ describe("watchdog: any stored state", () => {
     signalledAt: maybe(time),
     killedAt: maybe(time),
     bootSeenAt: maybe(time),
+    initSeenAt: maybe(time),
     bootEndedAt: maybe(time),
+    bootId: maybe(fc.constantFrom("a".repeat(32), "b".repeat(32))),
+    recoverySince: maybe(time),
     outage: maybe(
       fc.record({
         outageId: fc.constant("out_00000000000000000000000000"),
@@ -702,6 +1141,7 @@ describe("watchdog: any stored state", () => {
         "starting",
         "restoring",
         "recovery",
+        "initializing",
         "running",
         "stopping",
         "stopped",

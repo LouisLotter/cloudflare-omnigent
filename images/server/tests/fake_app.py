@@ -3,7 +3,9 @@
 Serves ``GET /health`` and ``POST /write?value=<v>`` (one committed row each) on ``PORT``,
 writing the database at ``CFO_DB_PATH`` in WAL mode, as Omnigent does. At start it records
 whether Litestream's control socket already answered, to pin the start order. Exits 0 on
-SIGTERM, or at once with ``FAKE_APP_EXIT_CODE`` when that is set.
+SIGTERM, or at once with ``FAKE_APP_EXIT_CODE`` when that is set. ``FAKE_APP_START_DELAY_S``
+delays its listening, as Omnigent's imports and migrations do; ``FAKE_APP_HANG`` keeps it from
+ever listening, as a hung initialization would (it still exits on SIGTERM).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import socket
 import sqlite3
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -59,6 +62,11 @@ def main() -> None:
     code = os.environ.get("FAKE_APP_EXIT_CODE")
     if code is not None:
         sys.exit(int(code))
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if os.environ.get("FAKE_APP_HANG"):
+        while True:
+            time.sleep(1)
+    time.sleep(float(os.environ.get("FAKE_APP_START_DELAY_S", "0")))
     conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE IF NOT EXISTS t (value TEXT)")
