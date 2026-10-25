@@ -46,7 +46,7 @@ For targeted feedback:
 | `pnpm test:scripts` | Canary, staging, bootstrap and restore-drill staging tests. The restore-drill staging suite already runs in Node with mocked platform resources. |
 | `pnpm coverage` | Existing configured per-file thresholds, not whole-product or image/Python coverage and not mutation testing. |
 
-The root [Python project](../python/pyproject.toml) discovers only its own `tests`. It does not discover the server image, restore-drill Python, standalone spike projects or unfinished computer image tests. Its fixture tests use exported JSON Schema and do not cover `refined/` cases; its signing/tree/policy vector tests calculate reference results rather than invoking every production parser.
+The root [Python project](../python/pyproject.toml) discovers only its own `tests`, including the [Cloudflare launcher's](../python/tests/sandbox/): its protocol against the contract's fixtures, schemas and signing vectors, each method against a fake launcher API over real loopback HTTP (signatures checked as the receiver would, lost and trickled replies, the replication fence), and, where the fork's Omnigent is installed, the Omnigent adapter and Omnigent's persistent-host flow driving it. Without Omnigent those last tests skip, as in CI's Python job; the server image's suite covers the registration inside the built image. It does not discover the server image, restore-drill Python, standalone spike projects or unfinished computer image tests. Its fixture tests use exported JSON Schema and do not cover `refined/` cases; its signing/tree/policy vector tests calculate reference results rather than invoking every production parser.
 
 ## Schema and Worker builds
 

@@ -1,6 +1,6 @@
 # 0003 — Durability before acknowledgement or effect
 
-Status: accepted design. Two server barriers are implemented in main; production launcher wiring remains pending.
+Status: accepted design. Two server barriers and the launcher's effect fence are implemented in main; the effect fence is not yet qualified against a real platform receiver.
 
 ## Context
 
@@ -32,4 +32,4 @@ Unreplicated data can still be lost. Replication catch-up and restore durations 
 
 Main [installs both server barriers](../../images/server/cfo_server/app.py); [barrier code](../../images/server/cfo_server/barrier.py) and [Litestream adapter](../../images/server/cfo_server/litestream.py) define their behavior. Tests include [real-route response handling](../../images/server/tests/test_response_barrier_routes.py), [transcript hook](../../images/server/tests/test_transcript_barrier.py) and [forwarding without retries](../../worker/test/unit/forward.test.ts).
 
-The fork supplies [the durability hook](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/omnigent/server/durability.py) and [its tests](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/tests/server/test_durability.py). The paused Cloudflare launcher draft contains the effect fence; main's launcher is still a stub. Reported Litestream/R2 experiments establish only their recorded cases. Final image identity, basic-instance startup and the full creation/re-arm/suspend/removal crash matrix remain separate qualification requirements.
+The fork supplies [the durability hook](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/omnigent/server/durability.py) and [its tests](https://github.com/LouisLotter/omnigent/blob/184b5cf8b32815b48c7859973a00a139e8aa50f0/tests/server/test_durability.py). Main's [Cloudflare launcher](../../python/cloudflare_omnigent/sandbox/core.py) applies the effect fence, wired by the [server image](../../images/server/cfo_server/launcher.py) to the same Litestream position as the barriers; [image tests](../../images/server/tests/test_launcher_registration.py) block replication and observe no request, and [launcher tests](../../python/tests/sandbox/) cover each effect and Omnigent's persistent-host flow against a fake launcher API. The launcher API's receiver is not built yet. Reported Litestream/R2 experiments establish only their recorded cases. Final image identity, basic-instance startup and the full creation/re-arm/suspend/removal crash matrix remain separate qualification requirements.
