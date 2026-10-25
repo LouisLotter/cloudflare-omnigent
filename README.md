@@ -1,79 +1,45 @@
 # cloudflare-omnigent
 
-Run [Omnigent](https://github.com/omnigent-ai/omnigent) on Cloudflare: Workers and Durable Objects as the control plane, and Containers for the Omnigent server, cloud computers and browser-based connectors.
+A Cloudflare deployment layer for [Omnigent](https://github.com/omnigent-ai/omnigent): authenticated ingress, a durable server, and an intended fleet of persistent cloud computers in one person's own Cloudflare account. This is an independent open-source project, not an official Omnigent or Cloudflare service.
 
-This is an independent project. It is not an official Omnigent or Cloudflare project.
+## Status — 24 October 2026
 
-## Status
+| Component | Current state |
+|---|---|
+| Server base | Integrated source for owner-only ingress, two Worker configurations, server lifecycle/recovery, SQLite replication with Litestream, durability barriers, bootstrap and restore-drill tools. Production qualification remains incomplete. |
+| Cloud computers | Version-one contracts are integrated. Controller, private routes, supervisor and real launcher remain separate partial drafts; there is no qualified end-to-end computer assembly. |
+| Connected accounts | Platform connection service and connector runtimes are planned. Main disables native GitHub linking. |
 
-**In development.** Milestone M0, foundations, is done: the wire contract, a Worker with one Durable Object, tests in TypeScript and Python, CI, and a guarded staging tool. Milestone M1 is a set of throwaway spikes under [`spikes/`](spikes/) that settle the design's open questions. Nothing is deployable yet.
+Main registers a [placeholder launcher](images/server/cfo_server/launcher.py) that refuses physical computer effects, and its [private platform bridge](worker/src/server/platform-internal.ts) returns unavailable. The presence of fork capabilities or contracts does not make those integrations usable.
 
-## What it does
+The [compatibility snapshot](docs/compatibility.md) identifies exact revisions and pins. The default server image uses an older fork commit than current fork integration and lacks later Stop and history-resume corrections. No production-ready release or selected, fully qualified image pair is claimed here.
 
-The goal is to bring advanced Claude and Codex use, with accounts such as GitHub and LinkedIn already connected, to people who would never set it up themselves. Each installation serves one person, in that person's own Cloudflare account. It is open-source software, not a hosted service.
+## How it fits together
 
-- **Cloud computers are ordinary Omnigent hosts.** Each is one container running one long-lived `omnigent host` with a fixed host identity. It appears in Omnigent's host picker like a laptop, and conversations share it. It wakes when needed and sleeps when idle.
-- **Sign-in happens on the computer.** The person signs in once to the unmodified Claude Code and Codex CLIs through the providers' own flows. Platform code never reads those logins.
-- **Checkpoints to R2.** A computer's files are saved after each completed turn, at most every 10 minutes. Logins have their own small checkpoint, and are restored into the same computer, never cloned.
-- **An always-on Omnigent server** keeps its SQLite database on the container disk, replicated continuously to R2 with Litestream. Security-relevant writes wait until they are replicated, or report that durability is not yet confirmed.
-- **Owner-only Cloudflare Access** sits in front of everything, together with Omnigent's own login. The owner account is pre-provisioned, so there is no public setup page.
-- **Platform pages** next to Omnigent: cloud computers (add, size, status, restore notices), a short-lived setup page with a terminal and the sign-in cards, and connected accounts.
-- **Connected accounts** come from a provider registry built for many platforms. Their credentials stay encrypted in Durable Objects and never reach a computer; agents use them through Omnigent's MCP gateway.
-- **Scheduled runs** fire from Omnigent's own scheduler. The platform wakes the pinned computer ahead of time and reports availability gaps instead of replaying missed runs.
+The **web Worker** owns public ingress and forwarding. The **platform Worker** owns Durable Objects, container bindings and private virtual hosts; it has no public route. Omnigent owns conversations, schedules, approvals and application work. The platform supplies provider lifecycle and storage interfaces rather than duplicating that state.
 
-## Architecture at a glance
+Cloud computers are intended to be persistent Omnigent hosts shared by conversations. Their checkpoint and lifecycle rules are described in the [architecture](docs/architecture.md) and [engineering decisions](docs/decisions/README.md), with implementation limits alongside each decision. The project requires provider-neutral capabilities in the [Omnigent fork](https://github.com/LouisLotter/omnigent).
 
-| Part | Runs as | Responsibility |
-|---|---|---|
-| Worker | Cloudflare Worker | Access assertion checks and hostname allowlist; the one forwarding path to the server; platform pages; private virtual hosts for containers; git egress |
-| `OmnigentServer` | Durable Object with an always-on container | The Omnigent server, with SQLite replicated by Litestream |
-| `WorkspaceDO` | Durable Object per cloud computer, with a container while awake | Host identity, lifecycle and generations, wake and idle, checkpoint manifests |
-| `ControlDO` | Durable Object per installation | Limits and capacity reservations, the schedule cache and wake plans, availability gaps, the platform's own Omnigent login |
-| `ConnectionDO` | Durable Object per connected account | Encrypted credentials, revocation, operation journal; a LinkedIn browser container on demand |
+Credentials require precise custody: server secrets, computer CLI logins and transient credential use are different materials. Worker-held encryption keys do not imply that usable credentials never reach process memory. Computers and delegated runners also have broad owner-equivalent application access. See the [security model](SECURITY.md) and [identity/credential decision](docs/decisions/0004-identity-credential-authority.md).
 
-## How it relates to Omnigent
+## Start contributing
 
-Omnigent stays the application: its interface, conversations, harnesses, host protocol, tool policies and approvals. The server, cloud computers and scheduled runs need no Omnigent changes, provided the database durability barrier passes its tests. Connected accounts need two small, generic core changes, made as separate branches in the fork [`LouisLotter/omnigent`](https://github.com/LouisLotter/omnigent) and offered upstream only after heavy testing through this platform.
-
-## Design
-
-The design documents (architecture, code structure and implementation plan, with the reviews behind them) are maintained outside this repository. The summary above follows the current design.
-
-## Development
-
-You need Node.js 26 (see `.node-version`; at least 24), pnpm 11.15.1, Python 3.12 with [uv](https://docs.astral.sh/uv/), and Docker for local container tests.
+[CONTRIBUTING.md](CONTRIBUTING.md) separates dependency downloads, local checks, Docker tests and account-backed qualification. From a clean checkout, the Node workspace's basic path is:
 
 ```bash
-pnpm install
-pnpm check                        # lint, typecheck, unit and Workers-runtime tests
-uv run --directory python pytest  # Python contract tests
+pnpm install --frozen-lockfile
+pnpm check
 ```
 
-After changing a contract schema, run `pnpm contracts:export` and commit the regenerated JSON Schema. Contributor and agent rules are in [`AGENTS.md`](AGENTS.md).
+Installation can download dependencies. The checks use local Node/workerd tooling and synthetic test inputs after setup; they do not deploy or qualify real Cloudflare/provider behavior. Python reference checks, additional CI obligations and test prerequisites are described in [contributing](CONTRIBUTING.md) and [testing](docs/testing.md).
 
-## Repository layout
+| Directory | Purpose |
+|---|---|
+| [contracts/](contracts/README.md) | Wire schemas, lifecycle/policy authority, committed schemas, fixtures and vectors |
+| [worker/](worker/README.md) | Web/platform Workers, Durable Objects and local test runtimes |
+| [python/](python/README.md) | Python schema/vector reference checks |
+| [images/](images/README.md) | Server image and image-local tests |
+| [scripts/](scripts/README.md) | Canary scanner, guarded staging/bootstrap and restore tools |
+| [spikes/](spikes/README.md) | Historical experiments and retained reproduction harnesses |
 
-```text
-contracts/   wire contract: zod schemas, exported JSON Schema, golden fixtures
-worker/      the Worker, its Durable Objects and their tests
-python/      Python side: contract tests now, the supervisor and gateway backend later
-images/      container images: server, computer, LinkedIn connector
-spikes/      throwaway M1 experiments
-scripts/     repository tools: canary scanner, guarded staging tool
-docs/        the secret checklist
-```
-
-Each folder has a README describing what lives there.
-
-## Principles
-
-- Omnigent keeps its own data in its own database. Platform state lives in Durable Objects, and the platform adds no tables to Omnigent's database.
-- Each Durable Object's behavior is a pure state machine inside a thin class, so crash and retry behavior can be tested directly.
-- No platform secrets or connected-account credentials in containers. A cloud computer holds only the person's own logins.
-- One wire contract, defined once and checked by both languages.
-- Beta Cloudflare APIs are used only behind small adapter modules, with exact version pins.
-- Everything is public. Secrets and account-specific configuration live in Cloudflare secrets and local configuration, never in this repository.
-
-## License
-
-[Apache-2.0](LICENSE), the same as Omnigent.
+For operation-specific prerequisites, use [recovery](docs/operations/recovery.md), [security operations](docs/operations/security.md) and [troubleshooting](docs/operations/troubleshooting.md). Source and documentation are licensed under [Apache-2.0](LICENSE); retain applicable notices when redistributing dependencies or evidence.

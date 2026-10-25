@@ -99,9 +99,28 @@ def test_entrypoint_order_and_owner_durable_across_replacement(link: Stack, pref
         for line in server.logs().splitlines()
         if line.startswith('{"')
         and (e := json.loads(line))["event"]
-        in ("cfo.restore", "cfo.database.ready", "cfo.started", "cfo.app.built")
+        in (
+            "cfo.restore",
+            "cfo.database.ready",
+            "cfo.started",
+            "cfo.app.configured",
+            "cfo.app.migrated",
+            "cfo.app.built",
+            "cfo.app.ready",
+        )
     ]
-    assert order == ["cfo.restore", "cfo.database.ready", "cfo.started", "cfo.app.built"]
+    assert order == [
+        "cfo.restore",
+        "cfo.database.ready",
+        "cfo.started",
+        "cfo.app.configured",
+        "cfo.app.migrated",
+        "cfo.app.built",
+        "cfo.app.ready",  # the entrypoint saw /health answer: `initializing` became `running`
+    ]
+    status = server.status()
+    assert status["phase"] == "running"
+    assert status["app"]["readyAt"] >= status["app"]["startedAt"]
     # BootstrapStatus, as WP2.2's watchdog reads it: /v1/info first, then a position whose
     # replicatedTxid of the same boot reaches a txid read after it.
     info = httpx.get(f"{server.url}/v1/info", timeout=10).json()

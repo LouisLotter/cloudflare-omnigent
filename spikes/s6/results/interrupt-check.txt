@@ -1,4 +1,0 @@
-interrupt after 9s: {'signed_out_verified': True, 'left_behind': {'computers': [], 'minio': False, 'network': False, 'shm': False}}
-interrupt after 13s: {'signed_out_verified': True, 'left_behind': {'computers': [], 'minio': False, 'network': False, 'shm': False}}
-interrupt after 17s: {'signed_out_verified': True, 'left_behind': {'computers': [], 'minio': False, 'network': False, 'shm': False}}
-exit 0

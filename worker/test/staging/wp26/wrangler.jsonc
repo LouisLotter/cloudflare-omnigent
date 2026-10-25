@@ -1,0 +1,62 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP2.6 staging: the production OmnigentServer and the final server image, on `basic`, against
+  // a 1.2 GB R2 replica that a seeder container writes first (harness.ts). Deploy only with
+  // run.sh, which calls the guarded staging tool:
+  //   pnpm stg deploy --suffix wp26-restore --owner WP2.6 --config <this file> --days 2 --secrets-stdin
+  "name": "cfo-stg-wp26-restore",
+  "main": "harness.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  // As the production Workers: console logs, no invocation logs (they record request headers).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "SEEDER", "class_name": "Seeder" },
+      { "name": "RUN", "class_name": "RestoreRun" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OmnigentServer", "Seeder", "RestoreRun"] }],
+  "containers": [
+    {
+      // The final server image, built as the platform Worker builds it (worker/wrangler.jsonc).
+      "name": "cfo-stg-wp26-restore-server",
+      "class_name": "OmnigentServer",
+      "image": "../../../../images/server/Dockerfile",
+      "image_build_context": "../../../..",
+      "instance_type": "basic",
+      "max_instances": 1
+    },
+    {
+      "name": "cfo-stg-wp26-restore-seeder",
+      "class_name": "Seeder",
+      "image": "./seeder/Dockerfile",
+      "image_build_context": "./seeder",
+      "instance_type": "standard-1",
+      "max_instances": 1
+    }
+  ],
+  // The replica (prefix omnigent/) and the results (results/<run>/).
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp26-restore-db" }],
+  // The run's tick, every minute: it starts once the owner's R2 token is on the Worker.
+  "triggers": { "crons": ["* * * * *"] },
+  // Synthetic values only. The cookie secret, the bootstrap password and the R2 endpoint are
+  // secrets run.sh generates (or reads from the staging config) and pipes to the deploy; the
+  // owner's R2 token arrives later through `run.sh token`.
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    "SEED_MB": "1200",
+    "SERVER_ENV_CFO_INSTALLATION_INITIALIZED": "true",
+    "SERVER_ENV_CFO_REPLICA_URL": "s3://cfo-stg-wp26-restore-db/omnigent",
+    "SERVER_ENV_CFO_REPLICA_REGION": "auto",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL": "https://cfo-stg-wp26-restore.invalid",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary"
+  }
+}

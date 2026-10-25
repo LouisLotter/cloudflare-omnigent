@@ -34,6 +34,7 @@ def main() -> int:
         app_stop_timeout_s=spec.get("app_stop_timeout_s", 10.0),
         recovery_retry_s=spec.get("recovery_retry_s", 60.0),
         app_env_overrides=tuple((k, v) for k, v in spec.get("app_env_overrides", {}).items()),
+        build_info_path=Path(spec.get("build_info_path", "/nonexistent/build.json")),
     )
     try:
         config = image_config.load()

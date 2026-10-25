@@ -32,6 +32,12 @@ def test_unset_settings_are_the_restrictive_defaults(env: dict[str, str]) -> Non
     assert config.final_sync_timeout_s > 30  # raised above Litestream's 30 s default
 
 
+def test_sync_interval_defaults_to_200ms_and_can_be_set(env: dict[str, str]) -> None:
+    # WP2.5 on R2: 200 ms halves the barrier wait's p95 and p99 and adds no idle request.
+    assert load(env).replica.sync_interval == "200ms"
+    assert load({**env, "CFO_SYNC_INTERVAL": "1s"}).replica.sync_interval == "1s"
+
+
 @pytest.mark.parametrize(
     ("name", "value", "fragment"),
     [
