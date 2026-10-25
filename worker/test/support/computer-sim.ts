@@ -402,6 +402,7 @@ export class ComputerSim {
       ...(r.credential === null ? [] : [r.credential.object.key]),
       ...r.credentialDeletes,
       ...r.credentialUploads.map((u) => `credentials/${CMP}/${u.checkpointId}.json`),
+      ...r.credentialSweeps.map((x) => x.key),
     ]);
     for (const key of this.bucket.objects.keys()) {
       if (!tracked.has(key)) problems.push(`untracked credential object ${key}`);

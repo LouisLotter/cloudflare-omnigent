@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_PENDING_RELEASES } from "../../src/computer/controller.ts";
 import { TOKEN_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, Crash, HOST, live } from "../support/computer-sim.ts";
+import { digestOf } from "../support/fake-supervisor.ts";
 
 describe("Codex WP3.1 r1", () => {
   it("r1-1: leaves no credential object behind after a crash between its upload and the pointer", async () => {
@@ -218,5 +219,147 @@ describe("Codex WP3.1 r1", () => {
     await sim.controller.alarm();
     await sim.settle();
     expect((sim.alarmAt ?? 0) - sim.now).toBeGreaterThanOrEqual(1_000);
+  });
+});
+
+describe("Codex WP3.1 r2", () => {
+  it("r2-1: sweeps a credential write that lands after its instance was reset, before the removal resolves", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    let land: () => void = () => undefined;
+    sim.bucket.putGate = new Promise<void>((resolve) => {
+      land = resolve;
+    });
+    live(sim).signIn("claude");
+    const message = live(sim).outbox.pop();
+    const pending = sim.deliver(message as never).catch(() => undefined);
+    await sim.until(() => sim.bucket.puts.length === 1);
+    expect(sim.record().credentialUploads).toHaveLength(1);
+    // The instance is reset while its write is outstanding; the new one deletes the key...
+    await sim.restart();
+    await sim.settle();
+    expect(sim.record().credentialUploads).toHaveLength(0);
+    // ...and the old write lands afterwards.
+    sim.bucket.putGate = null;
+    land();
+    await pending;
+    expect(sim.bucket.objects.size).toBe(1);
+    expect(sim.check()).toEqual([]);
+    await sim.call(sim.client.terminateRequest());
+    await sim.advance(60_000);
+    await sim.controller.pages({
+      interfaceVersion: 1,
+      action: "record_revocation",
+      operationId: "op_00000000000000000000000001",
+    });
+    expect(
+      await sim.controller.pages({
+        interfaceVersion: 1,
+        action: "resolve_removal",
+        operationId: "op_00000000000000000000000002",
+      }),
+    ).toEqual({ action: "resolve_removal", outcome: "accepted" });
+    await sim.advance(10 * 60_000);
+    expect(sim.record().deletion).not.toBeNull();
+    await sim.advance(60 * 60_000);
+    expect(sim.record()).toMatchObject({
+      deletion: null,
+      lifecycle: { context: { state: "removed" } },
+    });
+    expect([...sim.bucket.objects.keys()]).toEqual([]);
+  });
+
+  it("r2-2: keeps a request made after the running capture's cut when the pending requests overflow", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).write("work/a.txt", "old");
+    sim.computer.failBackups = 1;
+    await sim.call(sim.client.checkpointRequest());
+    // While saves back off, 100 requests pile up.
+    for (let i = 0; i < 110; i += 1) await sim.client.send(sim.client.checkpointRequest());
+    expect(sim.record().saveRequests.length).toBe(100);
+    live(sim).options.capturePolls = 10;
+    await sim.advance(61_000);
+    expect(sim.record().capture?.covers.length).toBe(100);
+    // A change after the cut, and its request: folded into a follow-up, never dropped.
+    live(sim).write("work/a.txt", "new");
+    expect(await sim.client.send(sim.client.checkpointRequest())).toMatchObject({
+      outcome: "accepted",
+      folded: true,
+    });
+    await sim.advance(5 * 60_000);
+    const r = sim.record();
+    expect(r.saveRequests).toEqual([]);
+    expect(r.capture).toBeNull();
+    // The published checkpoint is the tree after the change (a follow-up save ran), with no
+    // sleep's checkpoint in between to hide a lost request.
+    expect(r.workspace?.treeDigest).toBe(await digestOf(live(sim).tree));
+  });
+
+  it("r2-3: starts a queued wake after a crash right after ControlDO granted its slot", async () => {
+    const dry = new ComputerSim();
+    dry.control.maxAwakeComputers = 1;
+    await dry.running();
+    let open: () => void = () => undefined;
+    dry.computer.destroyGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    live(dry).runnerProcesses = 0;
+    await dry.client.send(dry.client.suspendRequest());
+    await dry.until(() => dry.record().lifecycle.context.state === "stopping");
+    await dry.client.send(dry.client.resumeRequest());
+    const from = dry.stepLog.length;
+    dry.computer.destroyGate = null;
+    open();
+    await dry.advance(10_000);
+    // The grant of the queued wake's reserve: the second ControlDO call after the stop.
+    const calls = dry.stepLog
+      .map((label, i) => [label, i] as const)
+      .filter(([label, i]) => i >= from && label === "control:after");
+    const grant = calls.find(([, i]) => dry.control.calls.length > 0 && i > from);
+    expect(grant).toBeDefined();
+
+    for (const [, at] of calls) {
+      const sim = new ComputerSim();
+      sim.control.maxAwakeComputers = 1;
+      await sim.running();
+      let release: () => void = () => undefined;
+      sim.computer.destroyGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      live(sim).runnerProcesses = 0;
+      await sim.client.send(sim.client.suspendRequest());
+      await sim.until(() => sim.record().lifecycle.context.state === "stopping");
+      await sim.client.send(sim.client.resumeRequest());
+      sim.crashAt = at + 1;
+      sim.computer.destroyGate = null;
+      release();
+      await sim.advance(10_000);
+      await sim.advance(2 * 60_000);
+      const r = sim.record();
+      expect(r.lifecycle.context.state, `crash after step ${at}`).toBe("started_no_host");
+      expect(sim.control.slots.size, `crash after step ${at}`).toBe(1);
+      expect(sim.check()).toEqual([]);
+    }
+  });
+
+  it("migrates a record from before sleeps were kept as keys", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).runnerProcesses = 0;
+    const sleep = sim.client.suspendRequest();
+    live(sim).options.holdCredentials = true;
+    live(sim).refreshUnpublished("claude");
+    expect(await sim.call(sleep)).toMatchObject({ outcome: "in_progress" });
+    // Rewrite the record in the old shape: the sleep listed in `sleepOps`.
+    const raw = sim.store.get("computer") as Record<string, unknown>;
+    for (const key of sim.store.keys("sleep:")) sim.store.delete(key);
+    sim.store.put("computer", { ...raw, sleepOps: [sleep.operationId] });
+    await sim.restart();
+    await sim.advance(5 * 60_000);
+    expect(await sim.call(sleep)).toMatchObject({
+      outcome: "refused",
+      reason: "credentials_unpublished",
+    });
   });
 });

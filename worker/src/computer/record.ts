@@ -254,6 +254,11 @@ export const ComputerRecord = z.strictObject({
   credentialUploads: z
     .array(z.strictObject({ checkpointId: CheckpointId, generation: Count, order: Count }))
     .default([]),
+  /**
+   * Keys of abandoned uploads, deleted once more at `at`: a write already issued by a reset
+   * instance may still land after the first deletion (Codex WP3.1 r2-1).
+   */
+  credentialSweeps: z.array(z.strictObject({ key: z.string().max(256), at: Millis })).default([]),
   /** A credential checkpoint has held a login at some time. */
   everHeldLogin: z.boolean(),
 
@@ -366,6 +371,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     credentialFloor: null,
     credentialDeletes: [],
     credentialUploads: [],
+    credentialSweeps: [],
     everHeldLogin: false,
     signOut: { phase: "none", loginPossiblyLost: false, revocationRecorded: false, job: null },
     lastContactAt: null,

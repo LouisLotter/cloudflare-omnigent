@@ -175,6 +175,8 @@ export interface ControllerTiming {
   readonly credentialBarrierMs: number;
   /** How long a sign-out run may take before it is given up. */
   readonly signOutMs: number;
+  /** When an abandoned upload's key is deleted a second time (a late write). */
+  readonly credentialSweepMs: number;
   readonly commandTimeoutMs: number;
   /** Repeats of a command after "Network connection lost." (S3): every command is safe to repeat. */
   readonly commandRetries: number;
@@ -199,6 +201,7 @@ export const CONTROLLER_TIMING: ControllerTiming = {
   noContactMs: TIMING.noContactS * 1000,
   credentialBarrierMs: 120_000,
   signOutMs: 300_000,
+  credentialSweepMs: 3_600_000,
   commandTimeoutMs: 30_000,
   commandRetries: 3,
   restoreFailures: 5,
@@ -365,6 +368,38 @@ export class WorkspaceController {
       if (!kept.success || kept.data.attempt !== attempt) return;
     }
     this.#d.store.delete(TOKEN_KEY);
+  }
+
+  /**
+   * An upload that may still be in flight (in a reset instance, or one whose reply was lost):
+   * deleted now, and once more after `credentialSweepMs`, in case its write lands late.
+   */
+  #abandonUpload(d: ComputerRecord, checkpointId: string): void {
+    const key = credentialObjectKey(
+      this.#d.computerId,
+      checkpointId as CredentialManifest["checkpointId"],
+    );
+    d.credentialDeletes.push(key);
+    d.credentialSweeps.push({ key, at: this.#now() + this.#t.credentialSweepMs });
+  }
+
+  /** Deletes the abandoned uploads whose sweep is due. */
+  async #sweep(r: ComputerRecord): Promise<boolean> {
+    const now = this.#now();
+    const due = r.credentialSweeps.find((x) => x.at <= now);
+    if (due === undefined || this.#d.bucket === null) return false;
+    try {
+      await this.#d.bucket.delete(due.key);
+    } catch (error) {
+      this.#log("bundle_delete_failed", { error: describe(error) });
+      return false;
+    }
+    await this.#exclusive(() =>
+      this.#write((d) => {
+        d.credentialSweeps = d.credentialSweeps.filter((x) => x.key !== due.key);
+      }),
+    );
+    return true;
   }
 
   // Operation journal (code-structure plan, Conventions: outcomes kept at least 7 days).
@@ -586,12 +621,17 @@ export class WorkspaceController {
           if (extra.request !== undefined) {
             d.saveRequests.push(extra.request);
             d.lastRequestAt = now;
-            // The next save covers every pending request, so only a bounded number are kept:
-            // the oldest the running capture does not cover go first (R-18 still holds).
+            // Only a bounded number are kept. Two obligations matter: one request the running
+            // capture covers (re-run if it fails), and one it does not (the follow-up whose cut
+            // must come later). So the oldest of whichever group has more than one goes (R-18).
             const running = new Set(d.capture?.covers ?? []);
             while (d.saveRequests.length > MAX_PENDING_SAVES) {
-              const drop = d.saveRequests.findIndex((x) => !running.has(x.id));
-              d.saveRequests.splice(drop < 0 ? 0 : drop, 1);
+              const covered = d.saveRequests.filter((x) => running.has(x.id));
+              const group =
+                covered.length > 1 ? covered : d.saveRequests.filter((x) => !running.has(x.id));
+              const drop = group[0];
+              if (drop === undefined || group.length < 2) break;
+              d.saveRequests.splice(d.saveRequests.indexOf(drop), 1);
             }
           }
           break;
@@ -674,7 +714,10 @@ export class WorkspaceController {
     if (!wouldReserve(r.lifecycle, event, guardInputs(facts))) {
       return this.#write((d) => apply(d, facts, extra).reply);
     }
-    if (r.releases.length >= MAX_PENDING_RELEASES) {
+    // Slots owed back (a crash after a grant, a stopped generation) are returned before a new one
+    // is asked for, so a wake never competes with this computer's own stale slots.
+    await this.#drainReleases();
+    if (this.#require().releases.length >= MAX_PENDING_RELEASES) {
       // ControlDO has not acknowledged earlier releases: ask for no new slot until it has.
       if (unavailable === "throw") {
         throw platformError(
@@ -684,7 +727,8 @@ export class WorkspaceController {
       }
       return this.#write((d) => apply(d, { ...facts, atCapacity: true }, extra).reply);
     }
-    const generation = Math.max(r.lifecycle.generation, r.lastReserved) + 1;
+    const generation =
+      Math.max(r.lifecycle.generation, r.lastReserved, this.#require().lastReserved) + 1;
     const operationId = this.#d.newId("op");
     this.#write((d) => {
       d.reserving = { generation, operationId };
@@ -726,6 +770,27 @@ export class WorkspaceController {
     });
   }
 
+  /** Gives owed slots back to ControlDO, in order, until one fails. Called serialized. */
+  async #drainReleases(): Promise<void> {
+    for (const release of this.#require().releases) {
+      try {
+        await this.#d.control.control({
+          method: "release",
+          interfaceVersion: CONTROL_INTERFACE_VERSION,
+          operationId: release.operationId,
+          computerId: this.#d.computerId,
+          generation: release.generation,
+        });
+      } catch (error) {
+        this.#log("release_failed", { generation: release.generation, error: describe(error) });
+        return;
+      }
+      this.#write((d) => {
+        d.releases = d.releases.filter((x) => x.operationId !== release.operationId);
+      });
+    }
+  }
+
   async #refreshLimits(): Promise<void> {
     try {
       const limits = await this.#d.control.control({
@@ -754,6 +819,7 @@ export class WorkspaceController {
   /** Every new instance: re-arm the inactivity timeout and intercepts, and carry on (FH-36). */
   async boot(): Promise<void> {
     await this.#exclusive(() => {
+      this.#migrateLegacy();
       const r = this.#load();
       if (r === null) return;
       if (r.reserving !== null) {
@@ -766,9 +832,7 @@ export class WorkspaceController {
       if (r.credentialUploads.length > 0) {
         // No upload is in flight in a new instance: what the old one left is deleted.
         this.#write((d) => {
-          for (const u of d.credentialUploads) {
-            d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
-          }
+          for (const u of d.credentialUploads) this.#abandonUpload(d, u.checkpointId);
           d.credentialUploads = [];
         });
       }
@@ -776,6 +840,19 @@ export class WorkspaceController {
       this.#propsKey = null;
     });
     this.#kick();
+  }
+
+  /** Records from before sleeps were kept as keys (`sleepOps`, until `db7fffe`) are converted. */
+  #migrateLegacy(): void {
+    const raw = this.#d.store.get(RECORD_KEY);
+    if (raw === null || typeof raw !== "object" || !("sleepOps" in raw)) return;
+    const { sleepOps, ...rest } = raw as { sleepOps: unknown } & Record<string, unknown>;
+    this.#d.store.transaction(() => {
+      for (const id of Array.isArray(sleepOps) ? sleepOps : []) {
+        if (typeof id === "string") this.#d.store.put(`${SLEEP_PREFIX}${id}`, true);
+      }
+      this.#d.store.put(RECORD_KEY, ComputerRecord.parse(rest));
+    });
   }
 
   /** The heartbeat alarm: schedules the next one first, then starts the runner and returns. */
@@ -1241,7 +1318,7 @@ export class WorkspaceController {
       u.generation === bundle.generation && u.order === bundle.order;
     const checkpointId = this.#write((d) => {
       for (const u of d.credentialUploads.filter((x) => !same(x))) {
-        d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
+        this.#abandonUpload(d, u.checkpointId);
       }
       const pending = d.credentialUploads.find(same);
       d.credentialUploads = pending === undefined ? [] : [pending];
@@ -2355,7 +2432,7 @@ export class WorkspaceController {
       );
       return true;
     }
-    return false;
+    return this.#sweep(r);
   }
 
   /** A resolved removal: layers, then credential bundles, then ControlDO, then the records. */
@@ -2391,15 +2468,15 @@ export class WorkspaceController {
           if (r.credential !== null || r.credentialUploads.length > 0) {
             return set((d) => {
               if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
-              for (const u of d.credentialUploads) {
-                d.credentialDeletes.push(credentialObjectKey(this.#d.computerId, u.checkpointId));
-              }
+              for (const u of d.credentialUploads) this.#abandonUpload(d, u.checkpointId);
               d.credential = null;
               d.credentialUploads = [];
             });
           }
           const key = r.credentialDeletes[0];
           if (key === undefined) {
+            // A late write of an abandoned upload is swept before the removal resolves.
+            if (r.credentialSweeps.length > 0) return this.#sweep(r);
             return set((d) => {
               d.deletion = { forgetOp: deletion.forgetOp, phase: "forget" };
             });
@@ -2565,6 +2642,7 @@ export class WorkspaceController {
     ) {
       times.push(now + t.heartbeatMs);
     }
+    for (const sweep of r.credentialSweeps) times.push(sweep.at);
     if (terminalOpen && r.terminalOpenUntil !== null) times.push(r.terminalOpenUntil);
     if (times.length === 0) {
       await this.#d.alarm.clear();
