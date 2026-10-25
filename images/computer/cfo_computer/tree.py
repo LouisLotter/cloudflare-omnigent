@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -68,19 +70,54 @@ def cache_key(st: os.stat_result) -> list[int]:
 
 
 class HashCache:
-    """SHA-256 per path, reused while the file's inode, size, mtime and ctime are unchanged."""
+    """SHA-256 per path, reused while inode, size, mtime and ctime are unchanged.
+
+    Corrupt optional state is discarded. ``load_errors`` and ``invalid_entries`` expose
+    recovery without logging file names or cache contents. This is an optimization for
+    trusted local state, not authentication of a well-formed but forged digest.
+    """
 
     def __init__(self, entries: dict[str, Any] | None = None) -> None:
-        self.entries: dict[str, Any] = entries or {}
+        self.entries: dict[str, Any] = {}
+        self.invalid_entries = 0
+        self.load_errors = 0
         self.hashed_files = 0
         self.hashed_bytes = 0
+        if entries is not None:
+            if not isinstance(entries, dict):
+                self.invalid_entries += 1
+            else:
+                for rel, entry in entries.items():
+                    if isinstance(rel, str) and self._valid_entry(entry):
+                        self.entries[rel] = [list(entry[0]), entry[1]]
+                    else:
+                        self.invalid_entries += 1
+
+    @staticmethod
+    def _valid_entry(entry: Any) -> bool:
+        return (
+            isinstance(entry, list)
+            and len(entry) == 2
+            and isinstance(entry[0], list)
+            and len(entry[0]) == 4
+            and all(type(n) is int for n in entry[0])
+            and entry[0][0] >= 0
+            and entry[0][1] >= 0
+            and isinstance(entry[1], str)
+            and re.fullmatch(r"[0-9a-f]{64}", entry[1]) is not None
+        )
 
     @classmethod
     def load(cls, path: Path) -> HashCache:
         try:
-            return cls(json.loads(Path(path).read_text()))
-        except (OSError, ValueError):
-            return cls()
+            entries = json.loads(Path(path).read_text())
+            if not isinstance(entries, dict):
+                raise ValueError("cache must be an object")
+            return cls(entries)
+        except (OSError, ValueError, RecursionError):
+            cache = cls()
+            cache.load_errors += 1
+            return cache
 
     def save(self, path: Path) -> None:
         tmp = Path(f"{path}.tmp")
@@ -90,8 +127,12 @@ class HashCache:
     def digest(self, rel: str, full: str, st: os.stat_result) -> str:
         key = cache_key(st)
         hit = self.entries.get(rel)
-        if hit is not None and hit[0] == key:
-            return hit[1]
+        if rel in self.entries:
+            if not self._valid_entry(hit):
+                self.invalid_entries += 1
+                del self.entries[rel]
+            elif hit[0] == key:
+                return hit[1]
         digest = sha256_file(full)
         self.hashed_files += 1
         self.hashed_bytes += st.st_size
@@ -102,7 +143,10 @@ class HashCache:
         return digest
 
     def remember(self, rel: str, st: os.stat_result, digest: str) -> None:
-        self.entries[rel] = [cache_key(st), digest]
+        entry = [cache_key(st), digest]
+        if not self._valid_entry(entry):
+            raise ValueError("invalid hash cache entry")
+        self.entries[rel] = entry
 
 
 def make_entry(rel: str, st: os.stat_result, full: str, cache: HashCache | None) -> dict[str, Any]:
@@ -136,25 +180,45 @@ def make_entry(rel: str, st: os.stat_result, full: str, cache: HashCache | None)
     }
 
 
+def _index_integer(value: Any, maximum: int) -> int:
+    """JSON Schema accepts integral floats; never truncate fractions or coerce booleans."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()))
+        or not 0 <= value <= maximum
+    ):
+        raise ValueError("invalid integer in tree index")
+    return int(value)
+
+
 def canonical_tree_bytes(entries: Iterable[dict[str, Any]]) -> bytes:
     """``canonicalTreeBytes`` of manifests.ts: entries sorted by path as UTF-8 bytes, each as
     NUL-terminated fields with a fixed count per type."""
     out: list[str] = []
     for e in sorted(entries, key=lambda e: e["path"].encode("utf-8")):
+        uid = _index_integer(e["uid"], 0xFFFFFFFF)
+        gid = _index_integer(e["gid"], 0xFFFFFFFF)
         if e["type"] == "file":
             fields = [
                 "F",
                 e["path"],
-                f"{e['mode']:04o}",
-                e["uid"],
-                e["gid"],
-                e["size"],
+                f"{_index_integer(e['mode'], 0o7777):04o}",
+                uid,
+                gid,
+                _index_integer(e["size"], 2**53 - 1),
                 e["sha256"],
             ]
         elif e["type"] == "dir":
-            fields = ["D", e["path"], f"{e['mode']:04o}", e["uid"], e["gid"]]
+            fields = [
+                "D",
+                e["path"],
+                f"{_index_integer(e['mode'], 0o7777):04o}",
+                uid,
+                gid,
+            ]
         else:
-            fields = ["L", e["path"], e["uid"], e["gid"], e["target"]]
+            fields = ["L", e["path"], uid, gid, e["target"]]
         out.append("".join(f"{f}\0" for f in fields))
     return "".join(out).encode("utf-8")
 
