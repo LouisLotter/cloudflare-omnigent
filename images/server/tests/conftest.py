@@ -20,6 +20,11 @@ HERE = Path(__file__).resolve().parent
 IMAGE_DIR = HERE.parent
 sys.path.insert(0, str(IMAGE_DIR))
 sys.path.insert(0, str(HERE))
+# The Cloudflare launcher package: in the image it is on PYTHONPATH (/opt/cfo); in a checkout
+# it is the repository's python/ directory.
+_LAUNCHER_DIR = IMAGE_DIR.parent.parent / "python"
+if (_LAUNCHER_DIR / "cloudflare_omnigent").is_dir():
+    sys.path.insert(0, str(_LAUNCHER_DIR))
 
 from fake_litestream import FakeLitestream  # noqa: E402
 

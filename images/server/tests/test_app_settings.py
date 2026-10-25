@@ -68,7 +68,7 @@ def test_info_reports_pinned_features_and_sharing(app_harness: AppHarness) -> No
 def test_launcher_is_registered_through_sandbox_config_with_the_reaper(
     app_harness: AppHarness,
 ) -> None:
-    from cfo_server.launcher import PROVIDER, StubLauncher
+    from cfo_server.launcher import PROVIDER, CloudflareLauncher
 
     deployment = app_harness.app.state.sandbox_config
     assert deployment.reaper.enabled is True
@@ -76,8 +76,12 @@ def test_launcher_is_registered_through_sandbox_config_with_the_reaper(
     config = deployment.for_provider(PROVIDER)
     assert config is not None
     assert config.online_timeout_s == 240.0
+    assert config.token_ttl_s == 30 * 24 * 3600
+    assert config.server_url == "http://omnigent.internal"
+    assert config.host_config == {"runner": {"idle_timeout_s": 600}}
     assert config.persistent is not None
-    assert isinstance(config.launcher_factory(), StubLauncher)
+    assert config.persistent.manage_url == "http://testserver/platform/computers/{sandbox_id}"
+    assert isinstance(config.launcher_factory(), CloudflareLauncher)
     # Persistent-only: never offered for one-conversation launches.
     assert deployment.launchable_providers() == ()
 

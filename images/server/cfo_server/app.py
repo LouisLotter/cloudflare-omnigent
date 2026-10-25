@@ -35,7 +35,7 @@ from cfo_server import logfilter
 from cfo_server.barrier import ResponseBarrierMiddleware, install_sql_hooks, make_transcript_barrier
 from cfo_server.dbcheck import has_owner
 from cfo_server.events import log
-from cfo_server.launcher import sandbox_deployment
+from cfo_server.launcher import litestream_durability_wait, sandbox_deployment
 from cfo_server.litestream import ReplicationWaiter
 
 if TYPE_CHECKING:
@@ -172,10 +172,11 @@ def build_app(
         raise RuntimeError("accounts mode did not resolve; refusing to start without it")
 
     github_config, github_store = github_linking(database_url)
-    sandbox_config = (
-        sandbox_deployment(config)
-        if launcher_factory is None
-        else sandbox_deployment(config, launcher_factory)
+    # The launcher's own durability fence reads the same Litestream position as the barriers.
+    sandbox_config = sandbox_deployment(
+        config,
+        durability_wait=litestream_durability_wait(waiter.socket_path, waiter.db_path),
+        launcher_factory=launcher_factory,
     )
 
     app = create_app(
