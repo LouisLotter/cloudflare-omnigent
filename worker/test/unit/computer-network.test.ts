@@ -288,6 +288,7 @@ describe("the computer's container port", () => {
 });
 
 describe("observing a start without monitor()", () => {
+  /** A fake clock: polling sleeps advance it; a probe's timer never fires unless asked. */
   const clockFrom = () => {
     let now = 0;
     return {
@@ -295,17 +296,21 @@ describe("observing a start without monitor()", () => {
       sleep: async (ms: number) => {
         now += ms;
       },
+      timer: () => new Promise<void>(() => undefined),
+      advance: (ms: number) => {
+        now += ms;
+      },
     };
   };
 
-  it("is ready once the probe answers", async () => {
+  it("is ready once a probe answers within the deadline", async () => {
     const t = clockFrom();
     let probes = 0;
     const outcome = await observeStart({ ...t, probe: async () => ++probes >= 3 });
     expect(outcome).toEqual({ kind: "ready", afterMs: 500 });
   });
 
-  it("is refused when the probe surfaces Cloudflare's refusal (CF-05)", async () => {
+  it("is refused when a probe surfaces Cloudflare's refusal (CF-05)", async () => {
     const t = clockFrom();
     const outcome = await observeStart({
       ...t,
@@ -328,6 +333,48 @@ describe("observing a start without monitor()", () => {
     expect(outcome).toEqual({ kind: "not_running", afterMs: 10_000 });
   });
 
+  it("bounds a hanging probe, aborts it, and gives up at the deadline (r1-5)", async () => {
+    let now = 0;
+    const signals: AbortSignal[] = [];
+    const outcome = await observeStart({
+      deadlineMs: 10_000,
+      probeTimeoutMs: 2_000,
+      clock: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      // The probe's timer fires at once, as its time passes.
+      timer: async (ms) => {
+        now += ms;
+      },
+      probe: (signal) => {
+        signals.push(signal);
+        return new Promise<boolean>(() => undefined); // never answers
+      },
+    });
+    expect(outcome.kind).toBe("not_running");
+    expect(outcome.afterMs).toBeGreaterThanOrEqual(10_000);
+    expect(signals.length).toBeGreaterThan(1);
+    expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+
+  it("never reports ready for an answer that came after the deadline (r1-5)", async () => {
+    let now = 0;
+    const outcome = await observeStart({
+      deadlineMs: 10_000,
+      clock: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      timer: () => new Promise<void>(() => undefined),
+      probe: async () => {
+        now += 20_000; // the answer arrives 20 s later
+        return true;
+      },
+    });
+    expect(outcome).toEqual({ kind: "not_running", afterMs: 20_000 });
+  });
+
   it("works with the fake port's refused start (DC-37)", async () => {
     const fake = new FakeComputerContainer();
     fake.refuseStarts = 1;
@@ -335,11 +382,11 @@ describe("observing a start without monitor()", () => {
     const t = clockFrom();
     const outcome = await observeStart({
       ...t,
-      probe: async () =>
+      probe: async (signal) =>
         (
           await fake.fetch(
             8090,
-            new Request("http://computer/v1/commands", { method: "POST", body: "{}" }),
+            new Request("http://computer/v1/commands", { method: "POST", body: "{}", signal }),
           )
         ).ok,
     });
@@ -380,5 +427,13 @@ describe("the container port's defaults", () => {
 
   it("observes a start with real timers by default", async () => {
     expect(await observeStart({ probe: async () => true })).toMatchObject({ kind: "ready" });
+    let probes = 0;
+    const late = await observeStart({
+      deadlineMs: 300,
+      pollMs: 10,
+      probeTimeoutMs: 50,
+      probe: () => (probes++ === 0 ? new Promise<boolean>(() => undefined) : Promise.resolve(true)),
+    });
+    expect(late.kind).toBe("ready");
   });
 });

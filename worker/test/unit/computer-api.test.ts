@@ -352,6 +352,27 @@ describe("outbound: a command to the supervisor", () => {
     expect(await sendCommand(quiet, status, quick)).toMatchObject({ kind: "unknown" });
   });
 
+  it("keeps the outcome unknown when an attempt that may have applied is followed by a refusal (r1-4)", async () => {
+    const fake = container();
+    let calls = 0;
+    fake.supervisor = () => {
+      calls += 1;
+      return calls === 1
+        ? Response.json(statusReply)
+        : Response.json(
+            { error: { code: "stale_generation", message: "old", retryable: false } },
+            { status: 409 },
+          );
+    };
+    fake.dropRequests = { count: 1, when: "after" }; // the first applies, its answer is lost
+    const outcome = await sendCommand(fake, status, quick);
+    expect(outcome).toMatchObject({
+      kind: "unknown",
+      reason: "refused_stale_generation_after_lost_answer",
+      attempts: 2,
+    });
+  });
+
   it("returns a refusal without repeating it, and repeats a retryable one", async () => {
     const refused = container(
       { error: { code: "stale_generation", message: "old", retryable: false } },

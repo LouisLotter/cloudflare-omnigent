@@ -322,6 +322,7 @@ async def checks() -> None:
         ("other_tunnel", f"{ws_base}/{other}/tunnel", {"X-Omnigent-Host-Token": token}, 403),
         ("own_tunnel_no_token", f"{ws_base}/{own}/tunnel", {"Authorization": "Bearer x"}, 403),
         ("own_tunnel_both", f"{ws_base}/{own}/tunnel", {"X-Omnigent-Host-Token": token, "Authorization": "Bearer x"}, 403),
+        ("upgrade_blocked_path", "ws://omnigent.internal/auth/users", {}, 403),
     ]
     for name, url, headers, expected in ws_cases:
         status = await ws_status(url, headers)

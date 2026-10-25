@@ -29,7 +29,6 @@ import {
   LAUNCHER_ERROR_CLASS,
   LAUNCHER_ERROR_STATUS,
   LAUNCHER_SIGNATURE_MAX_SKEW_S,
-  LAUNCHER_SIGNING_PROTOCOL,
   type LauncherCall,
   LauncherRequest,
   LauncherResult,
@@ -137,23 +136,48 @@ async function signatureValid(
   );
 }
 
-/** Reads at most `limit` bytes of a body; null when it is larger. */
-async function readBounded(request: Request, limit: number): Promise<Uint8Array | null> {
+/** How long a body may take to arrive; a slow body cannot stretch the signature's window. */
+export const MAX_LAUNCHER_BODY_MS = 10_000;
+
+const SLOW = Symbol("slow");
+
+/**
+ * Reads at most `limit` bytes of a body within `deadlineMs`: null when it is larger, `SLOW` when
+ * it takes longer.
+ */
+async function readBounded(
+  request: Request,
+  limit: number,
+  deadlineMs: number,
+): Promise<Uint8Array | null | typeof SLOW> {
   const declared = request.headers.get("content-length");
   if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) return null;
   if (request.body === null) return new Uint8Array();
   const reader = request.body.getReader();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<typeof SLOW>((resolve) => {
+    timer = setTimeout(() => resolve(SLOW), deadlineMs);
+  });
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      return null;
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.read(), expired]);
+      if (next === SLOW) {
+        await reader.cancel().catch(() => undefined);
+        return SLOW;
+      }
+      const { done, value } = next;
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
   const body = new Uint8Array(size);
   let offset = 0;
@@ -214,7 +238,8 @@ type Checked =
 export async function checkLauncherRequest(
   request: Request,
   keys: SigningKeys | null,
-  nowSeconds: number,
+  nowSeconds: () => number,
+  bodyDeadlineMs = MAX_LAUNCHER_BODY_MS,
 ): Promise<Checked> {
   const fail = (code: ErrorCode, message: string, refused: string): Checked => ({
     ok: false,
@@ -254,8 +279,9 @@ export async function checkLauncherRequest(
       key === null ? "unknown_key" : "malformed_signature",
     );
   }
-  const body = await readBounded(request, MAX_LAUNCHER_BODY_BYTES);
+  const body = await readBounded(request, MAX_LAUNCHER_BODY_BYTES, bodyDeadlineMs);
   if (body === null) return fail("bad_request", "The request is too large.", "too_large");
+  if (body === SLOW) return fail("bad_request", "The request body was too slow.", "slow_body");
   const message = launcherStringToSign({
     operation,
     keyId,
@@ -265,8 +291,8 @@ export async function checkLauncherRequest(
   if (!(await signatureValid(key, message, signature))) {
     return fail("unauthorized", "Not signed.", "bad_signature");
   }
-  // 2. The timestamp.
-  if (Math.abs(nowSeconds - Number(timestamp)) > LAUNCHER_SIGNATURE_MAX_SKEW_S) {
+  // 2. The timestamp, against the clock now, after the body has arrived (Codex WP3.3 r1-6).
+  if (Math.abs(nowSeconds() - Number(timestamp)) > LAUNCHER_SIGNATURE_MAX_SKEW_S) {
     return fail("unauthorized", "Not signed.", "stale_timestamp");
   }
   // 3. The body: UTF-8 JSON, a LauncherRequest for the path's operation.
@@ -371,7 +397,7 @@ export async function handleLauncherRequest(
   const path = new URL(request.url).pathname.slice(0, 64);
   let checked: Checked;
   try {
-    checked = await checkLauncherRequest(request, deps.keys, deps.nowSeconds());
+    checked = await checkLauncherRequest(request, deps.keys, () => deps.nowSeconds());
   } catch {
     checked = {
       ok: false,
@@ -391,6 +417,3 @@ export async function handleLauncherRequest(
   });
   return response;
 }
-
-/** The signing protocol's first line, re-exported for the entrypoint's log. */
-export const SIGNING_PROTOCOL = LAUNCHER_SIGNING_PROTOCOL;

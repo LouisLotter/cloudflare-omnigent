@@ -132,6 +132,17 @@ describe("omnigent.internal: the live connection (A′)", () => {
     expect(fake.requests.length).toBe(before);
   });
 
+  it("refuses an upgrade on a blocked path, even as GET, before the server sees it", async () => {
+    const { route } = computerAt(1, HOST_A);
+    const before = fake.requests.length;
+    const response = await route.fetch("http://omnigent.internal/auth/users", {
+      headers: { upgrade: "websocket" },
+    });
+    expect(response.status).toBe(403);
+    await response.arrayBuffer();
+    expect(fake.requests.length).toBe(before);
+  });
+
   it("refuses a call from an older generation", async () => {
     const computerId = newComputer();
     internalFakes.workspace(computerId).generation = 5;
@@ -141,9 +152,9 @@ describe("omnigent.internal: the live connection (A′)", () => {
     expect(ErrorBody.parse(await response.json()).error.code).toBe("stale_generation");
   });
 
-  it("fails closed when WorkspaceDO does not answer", async () => {
+  it("fails closed when WorkspaceDO does not answer, after one more read", async () => {
     const { route } = computerAt(1, HOST_A);
-    internalFakes.loseWorkspaceCalls = 1;
+    internalFakes.loseWorkspaceCalls = 2;
     const response = await route.fetch("http://omnigent.internal/v1/info");
     expect(response.status).toBe(503);
     await response.arrayBuffer();

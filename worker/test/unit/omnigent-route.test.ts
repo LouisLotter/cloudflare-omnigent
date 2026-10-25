@@ -9,8 +9,8 @@ import {
   canonicalPath,
   handleComputerRequest,
   hostTunnelCredentials,
-  IdentityCache,
   LAUNCH_TOKEN_HEADER,
+  normalizeBasePath,
   normalizeHostId,
   policyDecision,
   ROUTE_HTTP_LIMITS,
@@ -64,7 +64,6 @@ function harness(): Harness {
     deps: undefined as unknown as RouteDeps,
   };
   h.deps = {
-    identities: new IdentityCache(() => h.now),
     httpLimiter: new RateLimiter(() => h.now, ROUTE_HTTP_LIMITS),
     upgradeLimiter: new RateLimiter(() => h.now, ROUTE_UPGRADE_LIMITS),
     readIdentity: async () => {
@@ -304,56 +303,6 @@ describe("host IDs and a host tunnel's credentials", () => {
   });
 });
 
-describe("IdentityCache", () => {
-  it("serves from the cache within its TTL, and reads again after it", async () => {
-    let now = 0;
-    let reads = 0;
-    const cache = new IdentityCache(() => now, 5_000);
-    const read = async () => {
-      reads += 1;
-      return { generation: 3, hostId: null };
-    };
-    await cache.get(COMPUTER, 3, false, read);
-    await cache.get(COMPUTER, 3, false, read);
-    expect(reads).toBe(1);
-    now = 5_000;
-    await cache.get(COMPUTER, 3, false, read);
-    expect(reads).toBe(2);
-    await cache.get(COMPUTER, 3, true, read); // fresh
-    await cache.get(COMPUTER, 4, false, read); // a newer generation than cached
-    expect(reads).toBe(4);
-  });
-
-  it("never caches a failed read", async () => {
-    const cache = new IdentityCache(() => 0);
-    await expect(
-      cache.get(COMPUTER, 1, false, async () => {
-        throw new Error("Network connection lost.");
-      }),
-    ).rejects.toThrow();
-    let reads = 0;
-    await cache.get(COMPUTER, 1, false, async () => {
-      reads += 1;
-      return { generation: 1, hostId: null };
-    });
-    expect(reads).toBe(1);
-  });
-
-  it("forgets the oldest computer past 256", async () => {
-    const cache = new IdentityCache(() => 0);
-    let reads = 0;
-    const read = async () => {
-      reads += 1;
-      return { generation: 1, hostId: null };
-    };
-    for (let i = 0; i < 257; i += 1) {
-      await cache.get(`cmp_${String(i).padStart(26, "0")}` as typeof COMPUTER, 1, false, read);
-    }
-    await cache.get(`cmp_${"0".repeat(26)}` as typeof COMPUTER, 1, false, read);
-    expect(reads).toBe(258);
-  });
-});
-
 describe("handleComputerRequest", () => {
   it("forwards ordinary traffic once, with trust headers stripped and the interface version", async () => {
     const h = harness();
@@ -527,17 +476,33 @@ describe("handleComputerRequest", () => {
     expect(h.forwarded).toHaveLength(0);
   });
 
-  it("reads the identity fresh for a host tunnel, from the cache for ordinary calls", async () => {
+  it("reads the identity for every request, so a generation change fences at once (r1-2)", async () => {
     const h = harness();
-    await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps);
-    await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps);
-    expect(h.reads).toBe(1);
-    await handleComputerRequest(
-      tunnelRequest(HOST_A, { [LAUNCH_TOKEN_HEADER]: TOKEN_A }),
-      props(),
-      h.deps,
-    );
+    expect(
+      (await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps)).status,
+    ).toBe(200);
+    h.identity = { generation: 5, hostId: HOST_A }; // WorkspaceDO started generation 5
+    const old = await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps);
+    expect(old.status).toBe(409);
     expect(h.reads).toBe(2);
+    expect(h.forwarded).toHaveLength(1);
+  });
+
+  it("repeats a failed identity read once before refusing", async () => {
+    const h = harness();
+    let calls = 0;
+    h.deps = {
+      ...h.deps,
+      readIdentity: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("Network connection lost.");
+        return { generation: 4, hostId: HOST_A };
+      },
+    };
+    expect(
+      (await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps)).status,
+    ).toBe(200);
+    expect(calls).toBe(2);
   });
 
   it("limits each computer's requests, upgrades apart from HTTP", async () => {
@@ -563,16 +528,86 @@ describe("handleComputerRequest", () => {
     ).toBe(200);
   });
 
-  it("never repeats a forward that failed, and says the answer was lost", async () => {
+  it("never repeats a forward that failed; a lost change is not retryable, a lost read is (r1-3)", async () => {
     const h = harness();
     h.forwardError = new Error("Network connection lost.");
-    const response = await handleComputerRequest(
-      new Request(`${BASE}/v1/sessions/abc/events`, { method: "POST", body: "{}" }),
+    const change = await handleComputerRequest(
+      new Request(`${BASE}/v1/sessions`, { method: "POST", body: "{}" }),
       props(),
       h.deps,
     );
-    expect(response.status).toBe(502);
+    expect(change.status).toBe(502);
+    expect(await change.json()).toMatchObject({ error: { code: "unavailable", retryable: false } });
     expect(h.forwarded).toHaveLength(1);
+    const read = await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), h.deps);
+    expect(read.status).toBe(503);
+    expect(await read.json()).toMatchObject({ error: { retryable: true } });
+    expect(h.forwarded).toHaveLength(2);
+  });
+
+  it("applies the rules under Omnigent's base path too, and refuses everything with a bad one (r1-1)", async () => {
+    const h = harness();
+    h.deps = { ...h.deps, basePath: "/omnigent" };
+    const sharing = await handleComputerRequest(
+      new Request(`${BASE}/omnigent/v1/sharing`, { method: "PUT", body: "{}" }),
+      props(),
+      h.deps,
+    );
+    expect(sharing.status).toBe(403);
+    const prefixedOther = await handleComputerRequest(
+      new Request(`${BASE}/omnigent/v1/hosts/${HOST_B}/tunnel`, {
+        headers: { upgrade: "websocket", [LAUNCH_TOKEN_HEADER]: TOKEN_A },
+      }),
+      props(),
+      h.deps,
+    );
+    expect(prefixedOther.status).toBe(403);
+    const own = await handleComputerRequest(
+      new Request(`${BASE}/omnigent/v1/hosts/${HOST_A}/tunnel`, {
+        headers: { upgrade: "websocket", [LAUNCH_TOKEN_HEADER]: TOKEN_A },
+      }),
+      props(),
+      h.deps,
+    );
+    expect(own.status).toBe(200);
+    expect(h.forwarded).toHaveLength(1);
+    const bad = await handleComputerRequest(new Request(`${BASE}/v1/info`), props(), {
+      ...h.deps,
+      basePath: null,
+    });
+    expect(bad.status).toBe(503);
+  });
+});
+
+describe("normalizeBasePath (Omnigent's _normalize_base_path)", () => {
+  it.each([
+    [undefined, ""],
+    ["", ""],
+    ["/", ""],
+    [" /omnigent/ ", "/omnigent"],
+    ["proxy/6767", "/proxy/6767"],
+    ["//evil.example", null],
+    ["/a b", null],
+    ["/a%2Fb", null],
+    ["/a/../b", null],
+    ["/a/./b", null],
+  ])("%s → %s", (value, expected) => {
+    expect(normalizeBasePath(value)).toBe(expected);
+  });
+});
+
+describe("upgrades on blocked paths (r1-8)", () => {
+  it("refuses an upgrade on a blocked path even as GET", () => {
+    const url = new URL(`${BASE}/auth/users`);
+    expect(policyDecision("GET", url, new Headers({ upgrade: "websocket" })).allowed).toBe(false);
+    expect(policyDecision("GET", url, new Headers()).allowed).toBe(true);
+    expect(
+      policyDecision(
+        "GET",
+        new URL(`${BASE}/v1/sessions/s/stream`),
+        new Headers({ upgrade: "websocket" }),
+      ).allowed,
+    ).toBe(true);
   });
 });
 

@@ -343,6 +343,15 @@ export async function sendCommand(
     }
     if (response !== null) {
       const outcome = await readCommandResponse(response, parsed.type, attempt);
+      if (outcome.kind === "refused" && !outcome.retryable && maybeDelivered) {
+        // An earlier attempt may have taken effect before its answer was lost; a refusal of this
+        // later one (a generation that changed meanwhile, say) does not settle that (r1-4).
+        return {
+          kind: "unknown",
+          reason: `refused_${outcome.code}_after_lost_answer`,
+          attempts: attempt,
+        };
+      }
       if (outcome.kind !== "refused" || !outcome.retryable) return outcome;
       // The supervisor answered: it saw this attempt.
       maybeDelivered = true;

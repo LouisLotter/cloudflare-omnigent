@@ -157,37 +157,61 @@ export type StartOutcome =
   | { readonly kind: "not_running"; readonly afterMs: number };
 
 export interface ObserveOptions {
-  /** The design's 10 s: a container not running by then counts as refused. */
+  /** The design's 10 s: a container not answering by then counts as refused. */
   readonly deadlineMs?: number;
   readonly pollMs?: number;
-  /** A probe of the container's readiness, for example the supervisor's port. */
-  probe(): Promise<boolean>;
+  /** One probe's own bound, within what is left of the deadline. */
+  readonly probeTimeoutMs?: number;
+  /**
+   * A probe of the container's readiness, for example the supervisor's port. It gets a signal
+   * that aborts when its time is up; it is never awaited past that.
+   */
+  probe(signal: AbortSignal): Promise<boolean>;
   readonly sleep?: (ms: number) => Promise<void>;
+  /** The timer that bounds a probe (tests replace it). */
+  readonly timer?: (ms: number) => Promise<void>;
   readonly clock?: () => number;
 }
 
 /**
  * Watches a start that `start()` accepted, with no `monitor()`: a pending `monitor()` holds the
- * Durable Object in memory for up to 15 minutes and delays idle stops (design, lifecycle step 4).
- * A refusal right after a stop surfaces in the next container call (CF-05), so the probe's error
- * is read: Cloudflare's own refusal text means `refused`. Otherwise the start counts as `ready`
- * once the probe answers, and as `not_running` when the deadline passes first, which WorkspaceDO
- * also retries as a refusal.
+ * Durable Object in memory for up to 15 minutes and delays idle stops (design, lifecycle step 4),
+ * and on staging it reported a failed start no earlier than `running` and a port probe did
+ * (WP3.3's bench, 25 Oct). A refusal right after a stop surfaces in the next container call
+ * (CF-05), so the probe's error is read: Cloudflare's own refusal text means `refused` (it also
+ * follows a start that crashed; both are retried within the same budget). Otherwise the start is
+ * `ready` once a probe answers within the deadline, and `not_running` once the deadline passes;
+ * each probe is bounded by what is left of it, so a hanging probe cannot hold the wake
+ * (Codex WP3.3 r1-5).
  */
 export async function observeStart(options: ObserveOptions): Promise<StartOutcome> {
   const deadline = options.deadlineMs ?? 10_000;
   const poll = options.pollMs ?? 250;
+  const probeTimeout = options.probeTimeoutMs ?? 2_000;
   const wait = options.sleep ?? sleep;
+  const timer = options.timer ?? sleep;
   const clock = options.clock ?? Date.now;
   const started = clock();
+  const elapsed = () => clock() - started;
   for (;;) {
-    const afterMs = clock() - started;
+    const left = deadline - elapsed();
+    if (left <= 0) return { kind: "not_running", afterMs: elapsed() };
+    const controller = new AbortController();
+    let answered: boolean | "refused" | "timeout";
     try {
-      if (await options.probe()) return { kind: "ready", afterMs: clock() - started };
-    } catch (error) {
-      if (isStartRefusedError(error)) return { kind: "refused", afterMs: clock() - started };
+      answered = await Promise.race([
+        options.probe(controller.signal).then(
+          (ok) => ok,
+          (error: unknown) => (isStartRefusedError(error) ? ("refused" as const) : false),
+        ),
+        timer(Math.min(left, probeTimeout)).then(() => "timeout" as const),
+      ]);
+    } finally {
+      controller.abort();
     }
-    if (afterMs >= deadline) return { kind: "not_running", afterMs };
+    if (answered === "refused") return { kind: "refused", afterMs: elapsed() };
+    if (answered === true && elapsed() <= deadline) return { kind: "ready", afterMs: elapsed() };
+    if (elapsed() >= deadline) return { kind: "not_running", afterMs: elapsed() };
     await wait(poll);
   }
 }

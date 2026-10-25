@@ -4,12 +4,14 @@
 //
 // Every request from a computer passes, in this order, before the server is contacted:
 //   1. the intercept's trusted props: a version this code knows, the computer and generation;
-//   2. the computer's current identity from its WorkspaceDO: a request from an older generation
-//      is refused (`stale_generation`), and a host tunnel only for the host ID Omnigent bound to
-//      this computer at its first `start_host` (RC-23, FH-25);
+//   2. the block list (design, "The computer's authority in Omnigent"; R-28), matched on a
+//      canonical form of the path, with and without Omnigent's configured base path, with method
+//      overrides refused everywhere and upgrades refused on blocked paths;
 //   3. per-computer request limits, kept apart for upgrades (reconnect storms) and HTTP;
-//   4. the block list (design, "The computer's authority in Omnigent"; R-28), matched on a
-//      canonical form of the path, with method overrides refused everywhere.
+//   4. the computer's current identity, read from its WorkspaceDO for every request (no cache:
+//      the generation fence is authoritative, Codex WP3.3 r1-2): a request from another
+//      generation is refused (`stale_generation`), and a host tunnel only for the host ID
+//      Omnigent bound to this computer at its first `start_host` (RC-23, FH-25).
 // Then the request goes to the server's Durable Object with the trust headers stripped, the
 // interface version set and `redirect: "manual"`, once, never retried. The server's 101 goes
 // back unaccepted (`upgrade-answer.ts`). Requests are logged by method, path (no query string)
@@ -24,7 +26,7 @@ import {
   SUPPORTED_INTERCEPT_PROPS_VERSIONS,
 } from "@cfo/contracts";
 import type { LimitOptions, RateLimiter } from "../ingress/limits.ts";
-import { isUpgrade, stripTrustHeaders } from "../server/headers.ts";
+import { isSafeMethod, isUpgrade, stripTrustHeaders } from "../server/headers.ts";
 import { errorResponse } from "../server/responses.ts";
 import { FORWARD_VERSION_HEADER, OMNIGENT_SERVER_INTERFACE_VERSION } from "../shared/rpc.ts";
 
@@ -188,7 +190,27 @@ function underPrefix(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 
-/** Removes a configured base path (Omnigent's `BasePathMiddleware`), if the path carries it. */
+/**
+ * Omnigent's base path (`OMNIGENT_WEB_BASE_PATH`), normalized as Omnigent's
+ * `_normalize_base_path` does: "" for none, else a leading slash and no trailing one. Null when
+ * Omnigent would refuse it (then the server does not start; the route refuses everything).
+ */
+export function normalizeBasePath(value: string | undefined): string | null {
+  const trimmed = (value ?? "").trim();
+  if (trimmed === "" || trimmed === "/") return "";
+  const leading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  if (leading.startsWith("//")) return null;
+  const path = leading.replace(/\/+$/, "");
+  if (!/^[A-Za-z0-9\-._~/]+$/.test(path)) return null;
+  const segments = path.split("/");
+  if (segments.includes(".") || segments.includes("..")) return null;
+  return path;
+}
+
+/**
+ * Removes a configured base path (Omnigent's `BasePathMiddleware` strips it when the path
+ * carries it, and routes the path as it is otherwise), so both forms match the same rules.
+ */
 function withoutBasePath(path: string, basePath: string): string {
   if (basePath === "" || basePath === "/") return path;
   const base = canonicalPath(basePath).path;
@@ -251,6 +273,7 @@ export function policyDecision(
   basePath = "",
 ): PolicyDecision {
   const upper = method.toUpperCase();
+  const upgrade = headers.get("upgrade") !== null;
   if (METHOD_OVERRIDE_HEADERS.some((name) => headers.has(name))) {
     return { allowed: false, reason: "method_override" };
   }
@@ -265,7 +288,8 @@ export function policyDecision(
   const managed = MANAGED_PREFIXES.some((prefix) => underPrefix(path, prefix));
   if (managed && canonical.decodedDelimiter) return { allowed: false, reason: "encoded_delimiter" };
   for (const { name, rule } of BLOCK_LIST) {
-    if (ruleMatches(rule, path) && methodBlocked(rule.methods, upper)) {
+    // A blocked path allows only GET and HEAD, and never an upgrade (the 19 Oct rule).
+    if (ruleMatches(rule, path) && (upgrade || methodBlocked(rule.methods, upper))) {
       return { allowed: false, reason: name };
     }
   }
@@ -300,51 +324,6 @@ export interface ComputerIdentity {
   readonly hostId: string | null;
 }
 
-/**
- * The computer's current identity from its WorkspaceDO, cached per isolate for a few seconds so
- * that ordinary HTTP calls do not each cost a Durable Object call. A host tunnel always reads it
- * fresh. A failed read is retried at the next request, never cached.
- */
-export class IdentityCache {
-  readonly #entries = new Map<string, { identity: ComputerIdentity; at: number }>();
-  readonly #clock: () => number;
-  readonly #ttlMs: number;
-
-  constructor(clock: () => number, ttlMs = 5_000) {
-    this.#clock = clock;
-    this.#ttlMs = ttlMs;
-  }
-
-  /**
-   * The identity, read with `read`: fresh when `fresh` is set or when the props name a newer
-   * generation than the cached one (the computer started again since).
-   */
-  async get(
-    computerId: ComputerId,
-    propsGeneration: number,
-    fresh: boolean,
-    read: (computerId: ComputerId) => Promise<ComputerIdentity>,
-  ): Promise<ComputerIdentity> {
-    const now = this.#clock();
-    const cached = this.#entries.get(computerId);
-    if (
-      !fresh &&
-      cached !== undefined &&
-      now - cached.at < this.#ttlMs &&
-      propsGeneration <= cached.identity.generation
-    ) {
-      return cached.identity;
-    }
-    const identity = await read(computerId);
-    this.#entries.set(computerId, { identity, at: now });
-    if (this.#entries.size > 256) {
-      const oldest = this.#entries.keys().next().value as string;
-      this.#entries.delete(oldest);
-    }
-    return identity;
-  }
-}
-
 // ---------------------------------------------------------------------------------------------
 // The handler
 
@@ -354,8 +333,10 @@ export const ROUTE_HTTP_LIMITS: LimitOptions = { burst: 1_000, perSecond: 100, m
 export const ROUTE_UPGRADE_LIMITS: LimitOptions = { burst: 60, perSecond: 2, maxClients: 1_024 };
 
 export interface RouteDeps {
-  readonly identities: IdentityCache;
-  /** The computer's current identity, from its WorkspaceDO. */
+  /**
+   * The computer's current identity, read from its WorkspaceDO for this request. Read-only, so a
+   * failed read is repeated once before the request is refused.
+   */
   readIdentity(computerId: ComputerId): Promise<ComputerIdentity>;
   readonly httpLimiter: RateLimiter;
   readonly upgradeLimiter: RateLimiter;
@@ -364,7 +345,8 @@ export interface RouteDeps {
   /** What happens to the server's 101 (`upgrade-answer.ts`). */
   answerUpgrade(response: Response): Response;
   log(event: string, fields: Readonly<Record<string, unknown>>): void;
-  readonly basePath?: string;
+  /** Omnigent's base path, normalized (`normalizeBasePath`); null refuses every request. */
+  readonly basePath?: string | null;
 }
 
 function refuse(
@@ -404,6 +386,12 @@ export async function handleComputerRequest(
   const { computerId, generation } = props.data;
   const who = { computerId, generation };
 
+  if (deps.basePath === null) {
+    return done(refuse(503, "unavailable", "This route is not available.", false), {
+      ...who,
+      refused: "base_path",
+    });
+  }
   const decision = policyDecision(request.method, url, request.headers, deps.basePath ?? "");
   if (!decision.allowed) {
     return done(refuse(403, "forbidden", "Not allowed from a cloud computer.", false), {
@@ -425,12 +413,7 @@ export async function handleComputerRequest(
 
   let identity: ComputerIdentity;
   try {
-    identity = await deps.identities.get(
-      computerId,
-      generation,
-      decision.hostTunnel !== null,
-      (id) => deps.readIdentity(id),
-    );
+    identity = await deps.readIdentity(computerId).catch(() => deps.readIdentity(computerId));
   } catch {
     return done(refuse(503, "unavailable", "The computer's state cannot be read now.", true), {
       ...who,
@@ -474,11 +457,22 @@ export async function handleComputerRequest(
   try {
     response = await deps.forward(new Request(request, { headers, redirect: "manual" }));
   } catch {
-    // The call into the server's object failed: never repeated here, since it may have arrived.
-    return done(refuse(502, "unavailable", "The server did not answer.", true), {
-      ...who,
-      refused: "forward_failed",
-    });
+    // The call into the server's object failed, and is never repeated here: it may have arrived.
+    // As the web Worker's forward.ts: a request that changes nothing may be repeated; a change
+    // may have been applied, so it is reported as lost, not as retryable (Codex WP3.3 r1-3).
+    return done(
+      isSafeMethod(request.method)
+        ? refuse(503, "unavailable", "The server did not answer. Try again shortly.", true, {
+            "retry-after": "1",
+          })
+        : refuse(
+            502,
+            "unavailable",
+            "The answer from the server was lost. Check the current state before repeating the change.",
+            false,
+          ),
+      { ...who, refused: "forward_failed" },
+    );
   }
   if (response.webSocket) return done(deps.answerUpgrade(response), who);
   return done(response, who);

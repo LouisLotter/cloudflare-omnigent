@@ -34,7 +34,7 @@ import { COMPUTER_API_LIMITS, handleSupervisorMessage, INBOUND_RETRY } from "./c
 import {
   type ComputerIdentity,
   handleComputerRequest,
-  IdentityCache,
+  normalizeBasePath,
   ROUTE_HTTP_LIMITS,
   ROUTE_UPGRADE_LIMITS,
 } from "./omnigent-route.ts";
@@ -92,17 +92,25 @@ export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInte
 }
 
 // Per isolate: a coarse brake, not a global quota (as ingress's limits).
-const identities = new IdentityCache(() => Date.now());
 const httpLimiter = new RateLimiter(() => Date.now(), ROUTE_HTTP_LIMITS);
 const upgradeLimiter = new RateLimiter(() => Date.now(), ROUTE_UPGRADE_LIMITS);
 const messageLimiter = new RateLimiter(() => Date.now(), COMPUTER_API_LIMITS);
 
-/** `omnigent.internal`, with the computer's `InterceptProps`. */
+/**
+ * `omnigent.internal`, with the computer's `InterceptProps`. The computer's identity is read
+ * from WorkspaceDO's page state for every request: its generation and, for a host tunnel, the
+ * host ID bound at the first `start_host`.
+ */
 export class OmnigentRoute extends WorkerEntrypoint<PlatformEnv> {
   override async fetch(request: Request): Promise<Response> {
     const env = internalEnv(this.env);
     return handleComputerRequest(request, this.ctx.props, {
-      identities,
+      // Omnigent strips this prefix before routing (BasePathMiddleware), so the route matches
+      // its rules with and without it. The server reads it from the same Worker secret.
+      basePath: normalizeBasePath(
+        (this.env as unknown as Record<string, string | undefined>)
+          .SERVER_ENV_OMNIGENT_WEB_BASE_PATH,
+      ),
       httpLimiter,
       upgradeLimiter,
       readIdentity: async (computerId): Promise<ComputerIdentity> => {

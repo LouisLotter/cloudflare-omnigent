@@ -91,8 +91,16 @@ def rows(out: Path, kind: str) -> list[dict]:
     return found
 
 
-def disruptions(events: list[dict], server: list[dict], deploys: list[dict], t0: float) -> list[dict]:
+# The run's mode names the deployment whose redeploy causes its version switch (Codex r1-7).
+TARGET_OF_MODE = {"full": "platform", "final": "final"}
+
+
+def disruptions(
+    events: list[dict], server: list[dict], deploys: list[dict], t0: float, target: str
+) -> tuple[list[dict], list[dict]]:
+    """The run's disruptions, and the version switches it expected but did not find."""
     found: list[dict] = []
+    missing: list[dict] = []
     n_reset = 0
     for ev in events:
         if ev.get("ev") == "reset_requested":
@@ -103,7 +111,7 @@ def disruptions(events: list[dict], server: list[dict], deploys: list[dict], t0:
     # The version switch: the server's own close records (code 1006 or None) for computer
     # connections, 200-450 s after a platform upload that ended during the run.
     for deploy in deploys:
-        if deploy.get("target") != "platform" or deploy.get("end", 0) < t0:
+        if deploy.get("target") != target or deploy.get("end", 0) < t0:
             continue
         lo, hi = deploy["end"] + 200_000, deploy["end"] + 450_000
         closes = [
@@ -117,7 +125,9 @@ def disruptions(events: list[dict], server: list[dict], deploys: list[dict], t0:
                 {"kind": "switch", "at": min(closes), "uploadEnd": deploy["end"],
                  "afterUploadS": round((min(closes) - deploy["end"]) / 1000, 1)}
             )
-    return sorted(found, key=lambda d: d["at"])
+        else:
+            missing.append({"kind": "switch", "uploadEnd": deploy["end"], "closesInWindow": len(closes)})
+    return sorted(found, key=lambda d: d["at"]), missing
 
 
 def analyse(out: Path, deploys_path: Path | None) -> dict:
@@ -130,7 +140,8 @@ def analyse(out: Path, deploys_path: Path | None) -> dict:
     deploys: list[dict] = []
     if deploys_path and deploys_path.exists():
         deploys = [json.loads(l) for l in deploys_path.read_text().splitlines() if l.strip()]
-    found = disruptions(events, server, deploys, run["t0"])
+    target = TARGET_OF_MODE.get(run["mode"], run["mode"])
+    found, missing = disruptions(events, server, deploys, run["t0"], target)
     ends = [r for r in probe if r.get("ev") == "end"]
     opens = [r for r in probe if r.get("ev") == "open"]
     pairs = sorted({(r["variant"], r["host"]) for r in opens})
@@ -190,6 +201,9 @@ def analyse(out: Path, deploys_path: Path | None) -> dict:
         "mode": run["mode"],
         "t0": run["t0"],
         "disruptions": table,
+        "missingSwitches": missing,
+        "checks": [{k: r.get(k) for k in ("variant", "name", "status", "ok", "wall")}
+                   for r in probe if r.get("ev") == "check"],
         "unexplainedEnds": unexplained,
         "binaryEchoes": binary,
         "ladder": ladder,

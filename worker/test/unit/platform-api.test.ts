@@ -193,7 +193,7 @@ describe("the receiver's checks, in the contract's order (FH-28)", () => {
       const checked = await checkLauncherRequest(
         request,
         { ...vectorKeys, current: { ...vectorKeys.current, id: v.keyId } },
-        v.timestamp,
+        () => v.timestamp,
       );
       expect(checked.ok, v.operation).toBe(true);
     }
@@ -203,7 +203,7 @@ describe("the receiver's checks, in the contract's order (FH-28)", () => {
     const dir = join(root, "fixtures", "LauncherRequest");
     for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
       const body = readFileSync(join(dir, name), "utf8");
-      const checked = await checkLauncherRequest(await signed(body), keys, NOW);
+      const checked = await checkLauncherRequest(await signed(body), keys, () => NOW);
       expect(checked.ok, name).toBe(true);
     }
   });
@@ -225,20 +225,20 @@ describe("the receiver's checks, in the contract's order (FH-28)", () => {
     const old = await checkLauncherRequest(
       await signed(body, { key: PREVIOUS, keyId: "k-previous" }),
       keys,
-      NOW,
+      () => NOW,
     );
     expect(old.ok).toBe(true);
     const afterRotation = await checkLauncherRequest(
       await signed(body, { key: PREVIOUS, keyId: "k-previous" }),
       { current: keys.current, previous: null },
-      NOW,
+      () => NOW,
     );
     expect(afterRotation.ok).toBe(false);
     // The previous key under the current key's ID does not verify.
     const mixed = await checkLauncherRequest(
       await signed(body, { key: PREVIOUS, keyId: "k-current" }),
       keys,
-      NOW,
+      () => NOW,
     );
     expect(mixed.ok).toBe(false);
   });
@@ -545,6 +545,51 @@ describe("dispatch", () => {
 });
 
 describe("the receiver's edges", () => {
+  it("checks the timestamp against the clock after the body arrived, and bounds the body's time (r1-6)", async () => {
+    const body = encoder.encode(call({ operation: "status", computerId: COMPUTER }));
+    const headers = await signLauncherRequest({
+      key: encoder.encode(CURRENT),
+      keyId: "k-current",
+      operation: "status",
+      timestamp: NOW,
+      body,
+    });
+    // A body that arrives late: the clock has moved on by 1,000 s meanwhile.
+    let now = NOW;
+    const late = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        now += 1_000;
+        controller.enqueue(body);
+        controller.close();
+      },
+    });
+    const stale = await checkLauncherRequest(
+      new Request("http://platform.internal/launcher/status", {
+        method: "POST",
+        headers,
+        body: late,
+        duplex: "half",
+      } as RequestInit),
+      keys,
+      () => now,
+    );
+    expect(stale).toMatchObject({ ok: false, refused: "stale_timestamp" });
+    // A body that never finishes: refused at the body deadline.
+    const stalled = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) });
+    const slow = await checkLauncherRequest(
+      new Request("http://platform.internal/launcher/status", {
+        method: "POST",
+        headers,
+        body: stalled,
+        duplex: "half",
+      } as RequestInit),
+      keys,
+      () => NOW,
+      50,
+    );
+    expect(slow).toMatchObject({ ok: false, refused: "slow_body" });
+  });
+
   it("refuses a declared length over the limit before reading, and an empty body as not JSON", async () => {
     const h = harness();
     const big = await signed(call({ operation: "status", computerId: COMPUTER }), {
