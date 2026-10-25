@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import time
 
-import click
 import pytest
 
 pytest.importorskip("omnigent.onboarding.sandboxes.base")
 
+import click  # noqa: E402
 from conftest import FAST_BACKOFF, FAST_POLICIES, SUSPEND_POLL_S, Fence, launch_token  # noqa: E402
 from fake_platform import FakeLauncherApi  # noqa: E402
 from omnigent.onboarding.sandboxes.base import (  # noqa: E402
