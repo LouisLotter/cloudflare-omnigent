@@ -614,3 +614,84 @@ def test_no_attempt_runs_past_the_call_budget() -> None:
             )
         assert now[0] - started <= budget + 1e-9, (budget, given)
         assert given and all(t > 0 for t in given)
+
+
+# ── Codex review r2: the budget holds through oversleeping backoffs and suspend polls ──
+
+
+class _Clock:
+    """A deterministic clock whose sleeps can oversleep, and a post that uses its timeout."""
+
+    def __init__(self, oversleep_s: float = 0.0, reply: bytes | None = None) -> None:
+        self.now = 1000.0
+        self.oversleep_s = oversleep_s
+        self.reply = reply
+        self.starts: list[tuple[float, float]] = []  # (when, timeout) of each attempt
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds + self.oversleep_s
+
+    def post(self, url: str, headers: Any, body: bytes, timeout: float) -> tuple[int, bytes]:
+        self.starts.append((self.now, timeout))
+        if self.reply is None:
+            self.now += timeout
+            raise TimeoutError("no reply")
+        self.now += 0.01
+        return 200, self.reply
+
+
+@pytest.mark.parametrize("oversleep_s", [0.0, 0.2, 0.9])
+@pytest.mark.parametrize("budget_s", [0.3, 1.03, 1.4, 3.0])
+def test_no_attempt_starts_or_runs_after_the_deadline_even_when_backoff_oversleeps(
+    oversleep_s: float, budget_s: float
+) -> None:
+    from cloudflare_omnigent.sandbox.client import CallPolicy, LauncherClient
+
+    clock = _Clock(oversleep_s)
+    settings = LauncherSettings(signing_key=b"k" * 32, signing_key_id="k1")
+    client = LauncherClient(
+        settings,
+        post=clock.post,
+        clock=lambda: clock.now,
+        monotonic=lambda: clock.now,
+        sleep=clock.sleep,
+    )
+    started = clock.now
+    with pytest.raises(OutcomeUnknown):
+        client.call(
+            protocol.status_request("0" * 31 + "1", "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3"),
+            CallPolicy(attempt_timeout_s=1.0, budget_s=budget_s),
+        )
+    deadline = started + budget_s
+    assert clock.starts
+    for when, timeout in clock.starts:
+        assert when < deadline and when + timeout <= deadline + 1e-9
+
+
+def test_suspend_polls_never_run_past_the_suspend_budget() -> None:
+    from cloudflare_omnigent.sandbox.client import CallPolicy, LauncherClient
+
+    clock = _Clock(reply=b'{"operation":"suspend","outcome":"in_progress"}')
+    settings = LauncherSettings(signing_key=b"k" * 32, signing_key_id="k1")
+    client = LauncherClient(
+        settings,
+        post=clock.post,
+        clock=lambda: clock.now,
+        monotonic=lambda: clock.now,
+        sleep=clock.sleep,
+    )
+    policies = {op: CallPolicy(1.0, 1.03) for op in protocol.OPERATIONS}
+    core = LauncherCore(
+        settings,
+        lambda _t: True,
+        client=client,
+        policies=policies,
+        suspend_poll_s=0.25,
+        monotonic=lambda: clock.now,
+        sleep=clock.sleep,
+    )
+    started = clock.now
+    with pytest.raises(OutcomeUnknown):
+        core.suspend("cmp_01hzy3m8k6q4t2v9w7x5r0s1n3", "0" * 31 + "3")
+    assert clock.now - started <= 1.03 + 1e-9
+    assert all(when + timeout <= started + 1.03 + 1e-9 for when, timeout in clock.starts)

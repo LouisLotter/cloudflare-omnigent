@@ -328,10 +328,18 @@ class LauncherClient:
         deadline = self._monotonic() + policy.budget_s
         backoff = self._first_backoff_s
         attempts = 0
+        reason = "its budget had run out"
         while True:
+            # Never past the budget, however long a backoff slept: an expired call sends
+            # nothing more, and no attempt gets more time than is left.
+            remaining = deadline - self._monotonic()
+            if remaining <= (0.0 if attempts == 0 else _MIN_ATTEMPT_S):
+                raise OutcomeUnknown(
+                    f"The platform gave no readable answer to {operation} "
+                    f"({reason}); its outcome is unknown."
+                )
             attempts += 1
-            # Never past the budget: the first attempt gets at least a moment.
-            timeout = min(policy.attempt_timeout_s, max(deadline - self._monotonic(), 0.05))
+            timeout = min(policy.attempt_timeout_s, remaining)
             sent_at = self._clock()
             headers = {
                 "Content-Type": "application/json",
