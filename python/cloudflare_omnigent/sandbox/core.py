@@ -140,9 +140,7 @@ class LauncherCore:
             raise NotConfigured(
                 f"The launcher has no durability fence, so it never sends {operation}."
             )
-        timeout = (
-            self._settings.durability_timeout_s if self._settings is not None else 10.0
-        )
+        timeout = self._settings.durability_timeout_s if self._settings is not None else 10.0
         started = self._monotonic()
         try:
             confirmed = bool(self._durability_wait(timeout))
@@ -222,9 +220,7 @@ class LauncherCore:
         return result
 
     def keep_alive(self, computer_id: str) -> protocol.KeepAliveResult:
-        request = self._build(
-            protocol.keep_alive_request, protocol.new_operation_id(), computer_id
-        )
+        request = self._build(protocol.keep_alive_request, protocol.new_operation_id(), computer_id)
         result = self._send(request).result
         assert isinstance(result, protocol.KeepAliveResult)
         return result
@@ -241,9 +237,7 @@ class LauncherCore:
         ``observed_at`` is when the request that got the answer was sent: the state it reports
         is at least that recent, so Omnigent's 60 s age limit is never overstated.
         """
-        request = self._build(
-            protocol.admission_request, protocol.new_operation_id(), computer_id
-        )
+        request = self._build(protocol.admission_request, protocol.new_operation_id(), computer_id)
         reply = self._send(request)
         assert isinstance(reply.result, protocol.AdmissionResult)
         return Admission(result=reply.result, observed_at=reply.sent_at)
@@ -288,9 +282,7 @@ class LauncherCore:
 
     def terminate(self, computer_id: str) -> protocol.TerminateResult:
         """Record the removal intent. Idempotent by meaning: each call has its own ID."""
-        request = self._build(
-            protocol.terminate_request, protocol.new_operation_id(), computer_id
-        )
+        request = self._build(protocol.terminate_request, protocol.new_operation_id(), computer_id)
         self._fence("terminate")
         result = self._send(request).result
         assert isinstance(result, protocol.TerminateResult)

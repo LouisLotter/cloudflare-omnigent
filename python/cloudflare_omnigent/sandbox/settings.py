@@ -38,14 +38,16 @@ class LauncherConfigError(ValueError):
 
 
 def check_base_url(url: str, name: str = URL_ENV) -> str:
-    """An ``http(s)`` URL with a host and no credentials, query or fragment; no trailing slash."""
+    """An ``http`` URL with a host and no credentials, query or fragment; no trailing slash."""
     try:
         parts = urlsplit(url)
         port = parts.port
     except ValueError:
         raise LauncherConfigError(f"{name} is not a URL") from None
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise LauncherConfigError(f"{name} must be an http or https URL with a host")
+    # Plain HTTP: the launcher API is a private virtual host reached through the server
+    # container's intercept, never the internet.
+    if parts.scheme != "http" or not parts.hostname:
+        raise LauncherConfigError(f"{name} must be an http URL with a host")
     if parts.username or parts.password or parts.query or parts.fragment or port == 0:
         raise LauncherConfigError(f"{name} must not carry credentials, a query or a fragment")
     return url.rstrip("/")

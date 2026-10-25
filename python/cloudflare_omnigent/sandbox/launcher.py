@@ -166,7 +166,9 @@ class CloudflareLauncher(SandboxHostLauncher):
         """Start the computer, or nothing if it is starting or up. At the limit, refused."""
         with _omnigent_errors():
             result = self._core.resume(sandbox_id)
-        logger.info("resume of %s: %s (generation %d)", sandbox_id, result.outcome, result.generation)
+        logger.info(
+            "resume of %s: %s (generation %d)", sandbox_id, result.outcome, result.generation
+        )
 
     def keep_alive(self, sandbox_id: str) -> bool | None:
         """Renew the activity lease. Soft-fails: ``False`` when not confirmed, never raises."""

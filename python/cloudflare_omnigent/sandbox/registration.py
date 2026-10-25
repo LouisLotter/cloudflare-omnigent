@@ -16,6 +16,8 @@ launcher"; Timing budget):
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from omnigent.server.managed_hosts import (
     ManagedSandboxConfig,
     PersistentHostPolicy,
@@ -25,7 +27,7 @@ from omnigent.server.managed_hosts import (
 from cloudflare_omnigent.sandbox import protocol
 from cloudflare_omnigent.sandbox.core import DurabilityWait
 from cloudflare_omnigent.sandbox.launcher import PROVIDER, CloudflareLauncher
-from cloudflare_omnigent.sandbox.settings import LauncherSettings, check_base_url
+from cloudflare_omnigent.sandbox.settings import LauncherSettings
 
 LAUNCH_TOKEN_TTL_S = 30 * 24 * 3600
 ONLINE_TIMEOUT_S = 240.0
@@ -45,8 +47,11 @@ def host_config() -> dict[str, object]:
 
 
 def manage_url_template(base_url: str) -> str:
-    """The setup page link Omnigent shows per computer, from the installation's origin."""
-    return check_base_url(base_url, "the installation's base URL") + MANAGE_PATH
+    """The setup page link Omnigent shows per computer, on the installation's origin."""
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+        raise ValueError("the installation's base URL must be an http(s) origin")
+    return f"{parts.scheme}://{parts.netloc}{MANAGE_PATH}"
 
 
 def cloudflare_sandbox_config(

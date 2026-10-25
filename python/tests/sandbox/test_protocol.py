@@ -61,7 +61,9 @@ def test_signing_reproduces_the_contract_vectors(case: dict[str, Any]) -> None:
 def test_signing_refuses_a_short_key_and_a_bad_key_id() -> None:
     body = b"{}"
     with pytest.raises(protocol.ProtocolError):
-        protocol.sign_request(key=b"x" * 31, key_id="k", operation="prepare", timestamp=1, body=body)
+        protocol.sign_request(
+            key=b"x" * 31, key_id="k", operation="prepare", timestamp=1, body=body
+        )
     with pytest.raises(protocol.ProtocolError):
         protocol.sign_request(
             key=b"x" * 32, key_id="bad id", operation="prepare", timestamp=1, body=body
@@ -110,7 +112,12 @@ def test_each_request_fixture_is_what_the_launcher_builds(path: Path) -> None:
 
 
 #: Invalid fixtures the builders cannot even express: the fields are fixed by construction.
-UNEXPRESSIBLE = {"extra-field", "unknown-operation", "protocol-version-zero", "start-host-with-repos"}
+UNEXPRESSIBLE = {
+    "extra-field",
+    "unknown-operation",
+    "protocol-version-zero",
+    "start-host-with-repos",
+}
 
 
 @pytest.mark.parametrize("path", _fixtures("LauncherRequest", invalid=True), ids=lambda p: p.stem)
@@ -175,8 +182,9 @@ def test_host_config_is_json_and_at_most_64_kib() -> None:
 _json_leaf = st.none() | st.booleans() | st.integers(-(2**53), 2**53) | st.text(max_size=20)
 _json = st.recursive(
     _json_leaf,
-    lambda children: st.lists(children, max_size=4)
-    | st.dictionaries(st.text(max_size=8), children, max_size=4),
+    lambda children: (
+        st.lists(children, max_size=4) | st.dictionaries(st.text(max_size=8), children, max_size=4)
+    ),
     max_leaves=12,
 )
 _host_name = st.text(
@@ -218,7 +226,13 @@ def test_every_built_start_matches_the_schema_and_its_signature_verifies(
     headers = protocol.sign_request(
         key=key, key_id="kid", operation="start_host", timestamp=timestamp, body=body
     )
-    lines = ["cfo-launcher-v1", "start_host", "kid", str(timestamp), hashlib.sha256(body).hexdigest()]
+    lines = [
+        "cfo-launcher-v1",
+        "start_host",
+        "kid",
+        str(timestamp),
+        hashlib.sha256(body).hexdigest(),
+    ]
     expected = hmac.new(key, "\n".join(lines).encode(), hashlib.sha256).hexdigest()
     assert headers[protocol.SIGNATURE_HEADER] == expected
 
@@ -276,12 +290,30 @@ def test_results_carry_the_contract_fields() -> None:
         {"operation": "status", "running": True, "status": "stopped", "generation": 2**53},
         {"operation": "status", "running": True, "status": "stopped", "generation": 1.5},
         {"operation": "status", "running": True, "status": "unknown", "generation": 0},
-        {"operation": "admission", "admitting": False, "reason": "not_saved", "message": None,
-         "status": "stopped", "generation": 0},
-        {"operation": "admission", "admitting": False, "reason": "not_saved", "message": "",
-         "status": "stopped", "generation": 0},
-        {"operation": "admission", "admitting": False, "reason": "not_saved",
-         "message": "x" * 301, "status": "stopped", "generation": 0},
+        {
+            "operation": "admission",
+            "admitting": False,
+            "reason": "not_saved",
+            "message": None,
+            "status": "stopped",
+            "generation": 0,
+        },
+        {
+            "operation": "admission",
+            "admitting": False,
+            "reason": "not_saved",
+            "message": "",
+            "status": "stopped",
+            "generation": 0,
+        },
+        {
+            "operation": "admission",
+            "admitting": False,
+            "reason": "not_saved",
+            "message": "x" * 301,
+            "status": "stopped",
+            "generation": 0,
+        },
         {"operation": "start_host", "workspacePath": "/home/./work"},
         {"operation": "start_host", "workspacePath": "/home//work"},
         {"operation": "start_host", "workspacePath": "/home/\u0000"},
@@ -305,7 +337,9 @@ _status = st.sampled_from(protocol.HOST_SANDBOX_STATUSES + ("unknown",))
 _generation = st.one_of(
     st.integers(-2, 2**53 + 1), st.booleans(), st.floats(allow_nan=False), st.none()
 )
-_message = st.text(alphabet=st.characters(max_codepoint=0xFFFF, blacklist_categories=("Cs",)), max_size=310)
+_message = st.text(
+    alphabet=st.characters(max_codepoint=0xFFFF, blacklist_categories=("Cs",)), max_size=310
+)
 
 
 @settings(max_examples=300, deadline=None)

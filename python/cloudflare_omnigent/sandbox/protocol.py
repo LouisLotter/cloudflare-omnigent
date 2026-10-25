@@ -450,7 +450,10 @@ def _fields(payload: object, required: set[str], optional: frozenset[str] = froz
     assert isinstance(payload, dict)
     keys = set(payload)
     _require(required <= keys, f"the reply lacks {sorted(required - keys)}")
-    _require(keys <= required | optional, f"the reply has unknown fields {sorted(keys - required - optional)}")
+    _require(
+        keys <= required | optional,
+        f"the reply has unknown fields {sorted(keys - required - optional)}",
+    )
     return payload
 
 

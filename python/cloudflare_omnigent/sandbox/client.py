@@ -12,9 +12,13 @@ body, a header, a token or the key.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
+import io
 import json
 import logging
+import socket
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -77,41 +81,162 @@ BACKOFF_S = 0.25
 MAX_BACKOFF_S = 4.0
 
 
-def http_post(url: str, headers: Mapping[str, str], body: bytes, timeout_s: float) -> tuple[int, bytes]:
-    """One POST with one deadline over connecting, sending and reading the whole reply."""
-    deadline = time.monotonic() + timeout_s
+class _DeadlineSocket:
+    """A connected socket whose every blocking call ends by one absolute deadline.
 
-    def left() -> float:
-        remaining = deadline - time.monotonic()
+    ``http.client`` reads the status line, the headers and the body through ``makefile``, one
+    ``recv_into`` at a time. Each call here gets only the time left before the deadline, so a
+    peer that trickles partial lines can never stretch the attempt (AT3-009); a per-read idle
+    timeout would restart with every byte. :meth:`abort` unblocks a call in progress from
+    another thread; closing stays with the thread that uses the socket, so a descriptor is
+    never closed while a call on it is in flight.
+    """
+
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        self._sock = sock
+        self._deadline = deadline
+        self._io_refs = 0
+        self._closed = False
+        # Shutdown (another thread) and close never interleave, so a shutdown never reaches a
+        # descriptor number the process has already reused.
+        self._lock = threading.Lock()
+
+    def _left(self) -> float:
+        remaining = self._deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("the attempt's deadline passed")
         return remaining
 
-    parts = urlsplit(url)
-    connection_class = (
-        http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    )
-    connection = connection_class(parts.hostname or "", parts.port, timeout=left())
-    try:
-        connection.connect()
-        sock = connection.sock
-        assert sock is not None
-        sock.settimeout(left())
-        connection.request("POST", parts.path or "/", body=body, headers=dict(headers))
-        sock.settimeout(left())
-        response = connection.getresponse()
-        chunks: list[bytes] = []
-        size = 0
-        while size <= protocol.MAX_BODY_BYTES:
-            sock.settimeout(left())
-            chunk = response.read1(16 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            size += len(chunk)
-        return response.status, b"".join(chunks)
-    finally:
-        connection.close()
+    def sendall(self, data: bytes) -> None:
+        self._sock.settimeout(self._left())
+        self._sock.sendall(data)
+
+    def recv_into(self, buffer: Any, nbytes: int = 0) -> int:
+        self._sock.settimeout(self._left())
+        return self._sock.recv_into(buffer, nbytes)
+
+    def makefile(self, mode: str = "rb", *args: Any, **kwargs: Any) -> io.BufferedReader:
+        if mode != "rb":
+            raise ValueError("the launcher's socket is only read as bytes")
+        self._io_refs += 1
+        return io.BufferedReader(socket.SocketIO(self, "rb"))  # type: ignore[arg-type]
+
+    def _decref_socketios(self) -> None:
+        """Called by ``SocketIO.close``; the socket closes once nothing reads it."""
+        self._io_refs = max(self._io_refs - 1, 0)
+        if self._closed and self._io_refs == 0:
+            self.force_close()
+
+    def close(self) -> None:
+        self._closed = True
+        if self._io_refs == 0:
+            self.force_close()
+
+    def force_close(self) -> None:
+        self._closed = True
+        with self._lock:
+            self._sock.close()
+
+    def abort(self) -> None:
+        """Make any call in progress return at once (from another thread)."""
+        with self._lock, contextlib.suppress(OSError):
+            if self._sock.fileno() != -1:
+                self._sock.shutdown(socket.SHUT_RDWR)
+
+
+class _DeadlineConnection(http.client.HTTPConnection):
+    """``HTTPConnection`` over a :class:`_DeadlineSocket`."""
+
+    def __init__(self, host: str, port: int | None, deadline: float) -> None:
+        super().__init__(host, port)
+        self._deadline = deadline
+        self.deadline_socket: _DeadlineSocket | None = None
+        self.aborted = False
+
+    def connect(self) -> None:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("the attempt's deadline passed")
+        raw = socket.create_connection((self.host, self.port), timeout=remaining)
+        wrapped = _DeadlineSocket(raw, self._deadline)
+        self.deadline_socket = wrapped
+        self.sock = wrapped  # type: ignore[assignment]
+        if self.aborted:  # cancelled while resolving or connecting
+            wrapped.force_close()
+            raise TimeoutError("the attempt's deadline passed")
+
+
+class _Exchange:
+    """One request and its whole reply, run in a worker thread."""
+
+    def __init__(self, url: str, headers: Mapping[str, str], body: bytes, deadline: float):
+        parts = urlsplit(url)
+        if parts.scheme != "http" or not parts.hostname:
+            raise ValueError("the launcher API is reached over plain http")
+        self._path = parts.path or "/"
+        self._headers = dict(headers)
+        self._body = body
+        self.connection = _DeadlineConnection(parts.hostname, parts.port, deadline)
+        self.result: tuple[int, bytes] | None = None
+        self.error: BaseException | None = None
+
+    def run(self) -> None:
+        connection = self.connection
+        try:
+            connection.connect()
+            connection.request("POST", self._path, body=self._body, headers=self._headers)
+            response = connection.getresponse()
+            try:
+                chunks: list[bytes] = []
+                size = 0
+                while size <= protocol.MAX_BODY_BYTES:
+                    chunk = response.read1(16 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                if size <= protocol.MAX_BODY_BYTES and response.length:
+                    # The peer closed before the Content-Length it announced: truncated.
+                    raise http.client.IncompleteRead(b"".join(chunks), response.length)
+                self.result = (response.status, b"".join(chunks))
+            finally:
+                response.close()
+        except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
+            self.error = exc
+        finally:
+            connection.close()
+            if connection.deadline_socket is not None:
+                connection.deadline_socket.force_close()
+
+    def abort(self) -> None:
+        self.connection.aborted = True
+        if self.connection.deadline_socket is not None:
+            self.connection.deadline_socket.abort()
+
+
+def http_post(
+    url: str, headers: Mapping[str, str], body: bytes, timeout_s: float
+) -> tuple[int, bytes]:
+    """One POST under one absolute deadline: name lookup, connect, send, headers and body.
+
+    The exchange runs in a worker thread, and every socket call in it is bounded by the
+    deadline. The caller waits at most until the deadline; if the exchange is still running
+    (for example in a name lookup, which no socket timeout covers), its socket is shut down,
+    the worker cleans up by itself, and the caller gets ``TimeoutError``: an unknown outcome,
+    repeated under the same operation ID.
+    """
+    deadline = time.monotonic() + timeout_s
+    exchange = _Exchange(url, headers, body, deadline)
+    worker = threading.Thread(target=exchange.run, name="cfo-launcher-http", daemon=True)
+    worker.start()
+    worker.join(max(deadline - time.monotonic(), 0.0))
+    if worker.is_alive():
+        exchange.abort()
+        raise TimeoutError("the attempt's deadline passed")
+    if exchange.error is not None:
+        raise exchange.error
+    assert exchange.result is not None
+    return exchange.result
 
 
 class LauncherClient:
