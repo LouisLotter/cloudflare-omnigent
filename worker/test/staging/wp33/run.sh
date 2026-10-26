@@ -70,9 +70,10 @@ wait_until() {
 }
 
 wait_for_run() {
-  # Waits up to 10 minutes for the deployment's run with this tag; prints "<t0> <runId>".
+  # Waits up to 20 minutes for the deployment's run with this tag (a fresh deployment's cron
+  # took about 8 minutes to start firing on 25 Oct); prints "<t0> <runId>".
   local target="$1" tag="$2" deadline t0 run_id status run_tag
-  deadline=$(( $(now_ms) + 600000 ))
+  deadline=$(( $(now_ms) + 1200000 ))
   while [ "$(now_ms)" -lt "$deadline" ]; do
     read -r t0 run_id status run_tag < <(current_run "$target") || true
     if [ "${run_tag:-}" = "$tag" ]; then echo "$t0 $run_id"; return 0; fi
