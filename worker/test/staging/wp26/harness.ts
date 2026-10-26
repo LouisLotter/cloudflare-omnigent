@@ -69,6 +69,7 @@ export class OmnigentServer extends PlatformOmnigentServer {
     ctx: this.ctx,
     env: this.env as unknown as Record<string, unknown>,
     forward: (request) => this.fetch(request),
+    outages: (query) => this.outages(query),
   }));
 
   /** G2: the re-snapshot probe after this run's replacement, as the run's generated owner. */
@@ -81,8 +82,19 @@ export class OmnigentServer extends PlatformOmnigentServer {
     );
   }
 
+  /** Destroy calls, one at a time in this instance (Codex G2 review run 2, 2). */
+  #destroys: Promise<unknown> = Promise.resolve();
+
   /** Kills the server container, as a platform loss would; the watchdog replaces it. */
-  async stagingDestroy(): Promise<{ wasRunning: boolean }> {
+  stagingDestroy(): Promise<{ wasRunning: boolean }> {
+    // Overlapping calls (a retry whose first answer was lost) run in turn, so the second sees
+    // the first's persisted kill and never destroys the watchdog's replacement.
+    const run = this.#destroys.then(() => this.#destroyOnce());
+    this.#destroys = run.catch(() => undefined);
+    return run;
+  }
+
+  async #destroyOnce(): Promise<{ wasRunning: boolean }> {
     const container = this.ctx.container;
     const wasRunning = container?.running ?? false;
     if ((this.env as unknown as StagingEnv).G2_RESNAPSHOT === "true") {
@@ -90,6 +102,7 @@ export class OmnigentServer extends PlatformOmnigentServer {
         ctx: this.ctx,
         env: this.env as unknown as Record<string, unknown>,
         forward: (request) => this.fetch(request),
+        outages: (query) => this.outages(query),
       });
       const killed = await ports.load("resnapshot");
       if (killed !== undefined && killed.stage !== "pending") {

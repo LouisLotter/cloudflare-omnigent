@@ -20,6 +20,7 @@ import { cfJson } from "../../../../scripts/bootstrap/cloud.ts";
 import { spawnRunner } from "../../../../scripts/staging/cloud.ts";
 
 const BASE = "g2-sitting";
+const VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const WORKERS = [`cfo-stg-${BASE}-web`, `cfo-stg-${BASE}-platform`];
 const stateDir =
   process.env.CFO_STAGING_DIR ??
@@ -132,10 +133,19 @@ for (const worker of WORKERS) {
     const items = Array.isArray(listed)
       ? listed
       : ((listed as { items?: unknown[] } | null)?.items ?? []);
-    const ids = items
-      .map((v) => (v as { id?: unknown }).id)
-      .filter((id): id is string => typeof id === "string");
+    // Every entry must carry a version ID of Cloudflare's shape (a UUID), whose first eight
+    // characters name its preview URL; a malformed one is failed discovery (Codex run 2, 8).
+    const listedIds = items.map((v) => (v as { id?: unknown } | null)?.id);
+    const ids = listedIds.filter(
+      (id): id is string => typeof id === "string" && VERSION_ID.test(id),
+    );
     versions.set(worker, ids);
+    if (ids.length !== listedIds.length) {
+      failures += 1;
+      console.log(
+        `FAIL      ${worker}: ${listedIds.length - ids.length} of ${listedIds.length} listed versions have no valid ID`,
+      );
+    }
     if (ids.length === 0) {
       // Every deployed Worker has a version: an empty list means the discovery failed.
       failures += 1;

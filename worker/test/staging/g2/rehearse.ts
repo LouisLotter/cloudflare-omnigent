@@ -23,6 +23,7 @@ import {
   type G2Ports,
   type HttpAnswer,
   type KeptSession,
+  type OutageView,
   recordKill,
   runStep,
   type StepName,
@@ -124,11 +125,22 @@ function running(): boolean {
   return out.stdout.trim() === "true";
 }
 
+/** The watchdog's outage records, as the rehearsal's own restarts make them. */
+const outageLog: OutageView[] = [];
+
 /** The controlled restart: SIGTERM (a confirmed final sync), then a fresh container. */
 function restart(): void {
+  const now = Date.now();
+  outageLog.push({ cause: "config_changed", startedAt: now, detectedAt: now, endedAt: null });
   docker("stop", current.name);
   docker("rm", "-f", current.name);
   start();
+}
+
+/** The restarted server answers: the open outage ends. */
+function endOutage(): void {
+  const open = outageLog.findLast((o) => o.endedAt === null);
+  if (open) outageLog[outageLog.indexOf(open)] = { ...open, endedAt: Date.now() };
 }
 
 async function control(path: string): Promise<Response | null> {
@@ -213,6 +225,8 @@ const ports: G2Ports = {
       return { status: 0, headers: {}, cookies: [], json: null, ms: Date.now() - sent };
     }
   },
+  outages: async (fromMs, toMs) =>
+    outageLog.filter((o) => o.detectedAt <= toMs && (o.endedAt ?? toMs) >= fromMs),
   config: async (): Promise<ConfigView> => ({
     startedWith: current.startedWith || null,
     current: fingerprint(config),
@@ -296,6 +310,7 @@ try {
   config = { ...released, CFO_INSTALLATION_INITIALIZED: "true" };
   restart();
   await until("the released server", owner);
+  endOutage();
 
   results["replace-1"] = await run("replace-1", ownerPassword);
 
@@ -303,6 +318,7 @@ try {
   config = { ...config, OMNIGENT_ACCOUNTS_COOKIE_SECRET: randomBytes(32).toString("hex") };
   restart();
   await until("the rotated server", owner);
+  endOutage();
   results.rotate = await run("rotate", ownerPassword);
 
   results["replace-2"] = await run("replace-2");

@@ -12,6 +12,7 @@ import {
   type HttpInit,
   type KeptSession,
   LIMITS,
+  type OutageView,
   RC07_FILES,
   recordKill,
   runStep,
@@ -50,6 +51,15 @@ class FakeServer {
   schedules: { id: string; name: string }[] = [];
   records = new Map<StepName, StepRecord>();
   kept = new Map<string, KeptSession>();
+  /** The watchdog's records: the release's controlled restart, before the test starts. */
+  outageList: OutageView[] = [
+    {
+      cause: "config_changed",
+      startedAt: this.clock - 600_000,
+      detectedAt: this.clock - 600_000,
+      endedAt: this.clock - 540_000,
+    },
+  ];
   /** When the current boot's app first answered (its `/status.app.readyAt`). */
   readyAtMs = this.clock - 60_000;
   logs: { event: string; fields: Record<string, unknown> }[] = [];
@@ -82,6 +92,12 @@ class FakeServer {
     if (ms >= 500 && this.replicated < this.txid) this.replicated += 1;
     if (this.appliesConfig && this.running && this.startedWith !== this.configCurrent) {
       // The watchdog's controlled restart (G2-SEC-001's fix), modelled as an instant restart.
+      this.outageList.push({
+        cause: "config_changed",
+        startedAt: this.clock,
+        detectedAt: this.clock,
+        endedAt: this.replicaUrl.includes("/g2-empty-") ? null : this.clock + 1,
+      });
       this.boot += 1;
       this.startedWith = this.configCurrent;
       this.phase = this.replicaUrl.includes("/g2-empty-") ? "recovery" : "running";
@@ -112,7 +128,7 @@ class FakeServer {
         if (body.password !== PASSWORD) return this.answer(401);
         return this.answer(
           200,
-          { token: `token-${this.cookieKey}` },
+          { token: `token-${this.cookieKey}`, expires_in: 86_400 },
           { cookies: [`s=${this.cookieKey}`] },
         );
       }
@@ -192,6 +208,8 @@ class FakeServer {
             }
           : { status: 0, body: null },
       http: async (method, path, init) => this.http(method, path, init),
+      outages: async (fromMs, toMs) =>
+        this.outageList.filter((o) => o.detectedAt <= toMs && (o.endedAt ?? toMs) >= fromMs),
       config: async (): Promise<ConfigView> => ({
         startedWith: this.startedWith,
         current: this.configCurrent,
@@ -500,9 +518,14 @@ describe("verdicts (Codex G2 review: completion is not acceptance)", () => {
       invocations: 1,
       rotation: { config: { pass: true }, oldCookie: 401, oldBearer: 200, newCookie: 200 },
     };
-    expect(verdictOf(rotated)).toEqual({
-      verdict: "fail",
-      problems: ["the old bearer was not refused"],
+    const verdict = verdictOf(rotated);
+    expect(verdict.verdict).toBe("fail");
+    expect(verdict.problems).toContain("the old bearer was not refused");
+    // An expired session or a missing outage record cannot pass either.
+    const expired = { ...rotated.rotation, oldBearer: 401, beforeExpiry: false };
+    expect(verdictOf({ ...rotated, rotation: { ...expired, outage: { durationS: 60 } } })).toEqual({
+      verdict: "inconclusive",
+      problems: ["the kept session may have expired"],
     });
   });
 
@@ -556,5 +579,67 @@ describe("verdicts (Codex G2 review: completion is not acceptance)", () => {
     const done = await runStep(ports, ctx("replace-2", null));
     expect(done).toMatchObject({ stage: "done", answerResumed: true, verdict: "inconclusive" });
     expect(server.destroys).toBe(1);
+  });
+});
+
+describe("boot identity and the deadline (Codex G2 review run 2)", () => {
+  /** The fake, with the replica behind until `catchUpAfter` reads after the answer. */
+  function lagging() {
+    const server = new FakeServer();
+    server.txid = 40; // the replica needs many half-second ticks to catch up
+    return server;
+  }
+
+  it("a restart while the replica catches up fails replace-2", async () => {
+    const server = lagging();
+    const ports = server.ports();
+    let reads = 0;
+    const restarting: G2Ports = {
+      ...ports,
+      status: async () => {
+        const status = await ports.status();
+        // After the answer, the server restarts under the measurement.
+        if (status?.phase === "running" && server.boot === 2 && ++reads === 3) server.boot = 3;
+        return status;
+      },
+    };
+    const done = await runStep(restarting, ctx("replace-2", null));
+    expect(done).toMatchObject({ stage: "failed", verdict: "fail" });
+    expect(done.failure).toMatch(/restarted/);
+  });
+
+  it("an unreadable boot identity after the measurement is inconclusive, never a pass", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    const blind: G2Ports = {
+      ...ports,
+      // Once the step has its answer, the control port stops naming the boot.
+      status: async () => {
+        const status = await ports.status();
+        const answered = server.records.get("replace-2")?.stage === "answered";
+        return answered && status ? { ...status, bootId: null } : status;
+      },
+    };
+    const done = await runStep(blind, ctx("replace-2", null));
+    expect(done).toMatchObject({ stage: "done", verdict: "inconclusive", bootUnverified: true });
+  });
+
+  it("the deadline also stops control-port reads and sleeps: the step pauses, saved", async () => {
+    const server = lagging();
+    const ports = server.ports();
+    let answeredSleeps = 0;
+    const slow: G2Ports = {
+      ...ports,
+      sleep: async (ms) => {
+        await ports.sleep(ms);
+        // While the replica catches up, the polls take the whole budget.
+        if (server.boot === 2 && server.phase === "running" && ++answeredSleeps === 2) {
+          server.clock += LIMITS.invocationDeadlineMs;
+        }
+      },
+    };
+    const paused = await runStep(slow, ctx("replace-2", null));
+    expect(paused.stage).toBe("answered");
+    expect(server.logs.some((l) => l.event === "step_paused")).toBe(true);
   });
 });

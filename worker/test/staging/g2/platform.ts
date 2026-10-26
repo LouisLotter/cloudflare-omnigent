@@ -37,6 +37,7 @@ export class OmnigentServer extends ProductionOmnigentServer {
     ctx: this.ctx,
     env: this.env as unknown as Record<string, unknown>,
     forward: (request) => this.fetch(request),
+    outages: (query) => this.outages(query),
   }));
 
   /** Runs (or resumes) one step of the sitting (steps.ts). */

@@ -4,6 +4,7 @@
 // as the watchdog reaches it (the control port), requests go through the production forward,
 // and the records live in the object's own storage. Nothing here logs a credential.
 
+import type { OutageRecord } from "@cfo/contracts";
 import {
   bootstrapSecretPresent,
   configFingerprint,
@@ -12,6 +13,7 @@ import {
 import {
   FORWARD_VERSION_HEADER,
   OMNIGENT_SERVER_INTERFACE_VERSION,
+  type OutagesQuery,
 } from "../../../src/shared/rpc.ts";
 import {
   type ConfigView,
@@ -47,6 +49,8 @@ export interface ObjectParts {
   readonly env: Readonly<Record<string, unknown>>;
   /** The production OmnigentServer.fetch: the path the web Worker's requests take. */
   readonly forward: (request: Request) => Promise<Response>;
+  /** The production OmnigentServer.outages: the watchdog's outage records. */
+  readonly outages: (query: OutagesQuery) => Promise<OutageRecord[]>;
 }
 
 /** What a tick reports: the step's progress, never a credential. */
@@ -114,7 +118,7 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
+export function objectPorts({ ctx, env, forward, outages }: ObjectParts): G2Ports {
   const base = String(env.SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL ?? "https://g2-sitting.invalid");
   return {
     now: () => Date.now(),
@@ -163,6 +167,19 @@ export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
         bootstrapPassword: bootstrapSecretPresent(env),
         replicaUrl: typeof replicaUrl === "string" ? replicaUrl : null,
       };
+    },
+    outages: async (fromMs, toMs) => {
+      const records = await outages({
+        interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
+        from: new Date(fromMs).toISOString(),
+        to: new Date(toMs).toISOString(),
+      });
+      return records.map((o) => ({
+        cause: o.cause,
+        startedAt: Date.parse(o.startedAt),
+        detectedAt: Date.parse(o.detectedAt),
+        endedAt: o.endedAt === null ? null : Date.parse(o.endedAt),
+      }));
     },
     load: (step) => ctx.storage.get<StepRecord>(`g2:step:${step}`),
     save: (record) => ctx.storage.put(`g2:step:${record.step}`, record),

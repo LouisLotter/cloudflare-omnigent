@@ -101,6 +101,17 @@ export interface KeptSession {
   readonly token: string;
   readonly fingerprint: string;
   readonly keptAt: number;
+  /** When the session expires (the login's `expires_in`), absolute ms; not a secret. */
+  readonly expiresAt: number | null;
+}
+
+/** An outage the production object recorded (OmnigentServer.outages), times in ms. */
+export interface OutageView {
+  readonly cause: string;
+  /** The last answer before it (the record's interval starts here). */
+  readonly startedAt: number;
+  readonly detectedAt: number;
+  readonly endedAt: number | null;
 }
 
 /** "before": replace-1's session from before its kill; "rotate": the one `rotate` checks. */
@@ -118,6 +129,8 @@ export interface G2Ports {
   /** A request through the production forward; never throws, bounded in time (status 0). */
   http(method: string, path: string, init?: HttpInit): Promise<HttpAnswer>;
   config(): Promise<ConfigView>;
+  /** The production object's outage records overlapping [fromMs, toMs]. */
+  outages(fromMs: number, toMs: number): Promise<OutageView[]>;
   load(step: StepName): Promise<StepRecord | undefined>;
   save(record: StepRecord): Promise<void>;
   keep(name: KeptName, session: KeptSession): Promise<void>;
@@ -174,6 +187,8 @@ export interface StepRecord {
   resumed?: boolean;
   /** The measurement after the answer was interrupted: its timings are not evidence. */
   answerResumed?: boolean;
+  /** The measured boot's identity could not be read back: the measurement is unconfirmed. */
+  bootUnverified?: boolean;
   /** rotate and recovery: when this object first ran the new configuration. */
   switchSeenAt?: number;
   appliedAfterSwitchS?: number;
@@ -208,6 +223,12 @@ export const LIMITS = {
   applyMs: 15 * 60_000,
   /** Recovery mode must hold this long, unrestarted. */
   recoveryHoldMs: 3 * 60_000,
+  /** How long to wait for the watchdog to close a config_changed outage after the answer. */
+  outageEndMs: 120_000,
+  /** How far back to look for the release's config_changed outage. */
+  releaseLookbackMs: 3 * 3_600_000,
+  /** A kept session must have at least this long left when it is checked. */
+  sessionMarginMs: 60_000,
 } as const;
 
 /** The empty replica prefix recovery uses (run.sh recovery sets it). */
@@ -334,14 +355,22 @@ export async function recordKill(ports: G2Ports, step: StepName): Promise<void> 
 
 /** The ports, with every request refused once the invocation's request budget is spent. */
 function bounded(ports: G2Ports, started: number): G2Ports {
+  // Every port that waits: requests, control-port reads, outage reads and sleeps (Codex G2
+  // review run 2, 6). Each is itself bounded (60 s, 15 s), so a step saves before 15 minutes.
+  const spent = () => ports.now() - started > LIMITS.invocationDeadlineMs;
+  const guard = <A extends unknown[], R>(f: (...args: A) => Promise<R>) => {
+    return (...args: A): Promise<R> =>
+      spent()
+        ? Promise.reject(new DeadlineError("this invocation's request budget is spent"))
+        : f(...args);
+  };
   return {
     ...ports,
-    http: (method, path, init) => {
-      if (ports.now() - started > LIMITS.invocationDeadlineMs) {
-        return Promise.reject(new DeadlineError("this invocation's request budget is spent"));
-      }
-      return ports.http(method, path, init);
-    },
+    http: guard(ports.http),
+    status: guard(ports.status),
+    position: guard(ports.position),
+    outages: guard(ports.outages),
+    sleep: guard(ports.sleep),
   };
 }
 
@@ -407,6 +436,7 @@ export async function runStep(base: G2Ports, ctx: StepContext): Promise<StepReco
         record.answerResumed = true;
       }
       await afterAnswer(ports, record, ctx, save);
+      await sameBoot(ports, record);
       const { verdict, problems } = verdictOf(record);
       record.verdict = verdict;
       record.problems = problems;
@@ -534,16 +564,24 @@ async function login(ports: G2Ports, ctx: StepContext, password: string): Promis
   });
 }
 
-async function signIn(
-  ports: G2Ports,
-  ctx: StepContext,
-): Promise<{ token: string; cookie: string }> {
+interface Session {
+  readonly token: string;
+  readonly cookie: string;
+  readonly expiresAt: number | null;
+}
+
+function expiryOf(ports: G2Ports, answer: HttpAnswer): number | null {
+  const seconds = (answer.json as { expires_in?: unknown } | null)?.expires_in;
+  return typeof seconds === "number" && seconds > 0 ? ports.now() + seconds * 1000 : null;
+}
+
+async function signIn(ports: G2Ports, ctx: StepContext): Promise<Session> {
   const answer = await login(ports, ctx, ctx.ownerPassword ?? "");
   const token = (answer.json as { token?: unknown } | null)?.token;
   if (answer.status !== 200 || typeof token !== "string") {
     throw new Error(`the owner's login answered ${answer.status}`);
   }
-  return { token, cookie: answer.cookies.join("; ") };
+  return { token, cookie: answer.cookies.join("; "), expiresAt: expiryOf(ports, answer) };
 }
 
 async function bearer(ports: G2Ports, ctx: StepContext): Promise<string> {
@@ -609,8 +647,14 @@ async function checksBefore(ports: G2Ports, ctx: StepContext): Promise<Record<st
     });
     editMe = idOf(created.json);
   }
+  // The release's controlled restart (G2-SEC-001), which the bootstrap waited for.
+  const lookback = ports.now() - LIMITS.releaseLookbackMs;
+  const released = (await ports.outages(lookback, ports.now()))
+    .filter((o) => o.cause === "config_changed")
+    .map(outageSummary);
   return {
     config,
+    releaseOutages: released,
     login: 200,
     info: await info(ports),
     sharing,
@@ -667,9 +711,13 @@ async function watch(
 
 /** The boot the step measured must still be the one running. */
 async function sameBoot(ports: G2Ports, record: StepRecord): Promise<void> {
-  if (record.newBootId === undefined) return;
   const bootId = (await ports.status())?.bootId;
-  if (bootId && bootId !== record.newBootId) {
+  if (record.newBootId === undefined || !bootId) {
+    // Unreadable identity: the measurement cannot be tied to its boot (Codex run 2, 4).
+    record.bootUnverified = true;
+    return;
+  }
+  if (bootId !== record.newBootId) {
     throw new Error("the server restarted after the measured boot answered");
   }
 }
@@ -695,7 +743,9 @@ async function probe(
     // Both views at once, from the origin (WP2.5 r1-7).
     const [person, replica] = await Promise.all([
       personView(ports, ctx, from).catch((e: unknown) => ({ error: String(e).slice(0, 200) })),
-      replicaView(ports, ctx, from).catch((e: unknown) => ({ error: String(e).slice(0, 200) })),
+      replicaView(ports, ctx, from, record.newBootId).catch((e: unknown) => ({
+        error: String(e).slice(0, 200),
+      })),
     ]);
     record.probe = person;
     record.replica = replica;
@@ -724,12 +774,12 @@ async function afterAnswer(
       }
       return;
     case "rotate":
-      record.rotation = await rotationRefusesOldSession(ports, ctx);
+      record.rotation = await rotationRefusesOldSession(ports, ctx, record);
       return;
     case "replace-2":
       record.replica = record.answerResumed
         ? unmeasured
-        : await caughtUp(ports, record.answeredAt ?? ports.now());
+        : await caughtUp(ports, record.answeredAt ?? ports.now(), record.newBootId);
       record.after = {
         config: await configCheck(ports),
         health: (await ports.http("GET", "/health")).status,
@@ -740,6 +790,8 @@ async function afterAnswer(
       record.recovery = {
         ...record.recovery,
         ...(await recoveryHolds(ports, record, record.answeredAt ?? ports.now())),
+        // A server in recovery mode does not answer, so this outage stays open.
+        outage: await configChangedOutage(ports, record.switchSeenAt ?? ports.now(), false),
       };
       return;
     case "resnapshot":
@@ -780,7 +832,12 @@ async function personView(ports: G2Ports, ctx: StepContext, from: number) {
 }
 
 /** One ordinary commit at once, then the time until the replica's position covers it. */
-async function replicaView(ports: G2Ports, ctx: StepContext, from: number) {
+async function replicaView(
+  ports: G2Ports,
+  ctx: StepContext,
+  from: number,
+  bootId: string | undefined,
+) {
   const token = await bearer(ports, ctx);
   const agent = await agentId(ports, token);
   const commitSentS = secs(ports.now() - from);
@@ -795,10 +852,11 @@ async function replicaView(ports: G2Ports, ctx: StepContext, from: number) {
     const position = await ports.position();
     if (position.status !== 200 || position.body === null) {
       unavailable += 1; // 503 while Litestream uploads (WP2.6): ask again
+    } else if (position.body.bootId !== (bootId ?? target?.bootId ?? position.body.bootId)) {
+      // Every position must come from the measured boot (Codex run 2, 4).
+      throw new Error("the server restarted during the probe");
     } else if (target === null) {
       target = position.body;
-    } else if (position.body.bootId !== target.bootId) {
-      throw new Error("the server restarted during the probe");
     }
     if (target !== null && position.body && position.body.replicatedTxid >= target.txid) {
       return {
@@ -814,9 +872,13 @@ async function replicaView(ports: G2Ports, ctx: StepContext, from: number) {
 }
 
 /** Without a commit of its own: when the new boot's replica first covers its database. */
-async function caughtUp(ports: G2Ports, from: number) {
+async function caughtUp(ports: G2Ports, from: number, bootId: string | undefined) {
   while (ports.now() - from < LIMITS.probeMs) {
-    const replication = (await ports.status())?.replication;
+    const status = await ports.status();
+    if (bootId && status?.bootId && status.bootId !== bootId) {
+      throw new Error("the server restarted while its replica caught up");
+    }
+    const replication = status?.replication;
     if (replication?.caughtUp === true) {
       return { caughtUpAfterS: secs(ports.now() - from), txid: replication.txid ?? null };
     }
@@ -839,7 +901,7 @@ async function checksAfter(ports: G2Ports, ctx: StepContext, record: StepRecord)
   const editMe = tasks.find((t) => idOf(t) === wanted);
   let kept: { cookie: number; bearer: number } | null = null;
   if (owner.status === 200 && typeof token === "string") {
-    const session = { cookie: owner.cookies.join("; "), token };
+    const session = { cookie: owner.cookies.join("; "), token, expiresAt: expiryOf(ports, owner) };
     kept = await sessionAnswers(ports, session);
     // The session `rotate` checks after the cookie key changes, once it is known to work.
     if (kept.cookie === 200 && kept.bearer === 200) {
@@ -905,9 +967,10 @@ async function rc07(ports: G2Ports, ctx: StepContext) {
 }
 
 /** After the cookie key changed: the kept session is refused, cookie and bearer alike. */
-async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext) {
+async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext, record: StepRecord) {
   const kept = await ports.kept("rotate");
   if (kept === undefined) throw new Error("no session kept by replace-1");
+  const checkedAt = ports.now();
   const old = await sessionAnswers(ports, kept);
   const fresh = await signIn(ports, ctx);
   const now = await sessionAnswers(ports, fresh);
@@ -918,9 +981,42 @@ async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext) {
     oldBearer: old.bearer,
     newCookie: now.cookie,
     newBearer: now.bearer,
-    keptAgeS: secs(ports.now() - kept.keptAt),
+    keptAgeS: secs(checkedAt - kept.keptAt),
+    // A refusal proves the key change only while the session was still valid (run 2, 7).
+    beforeExpiry: kept.expiresAt !== null && checkedAt + LIMITS.sessionMarginMs < kept.expiresAt,
     cookieNames: kept.cookie.split("; ").map((pair) => pair.split("=")[0]),
+    outage: await configChangedOutage(ports, record.switchSeenAt ?? checkedAt, true),
   };
+}
+
+function outageSummary(o: OutageView) {
+  return {
+    cause: o.cause,
+    startedAt: new Date(o.startedAt).toISOString(),
+    detectedAt: new Date(o.detectedAt).toISOString(),
+    endedAt: o.endedAt === null ? null : new Date(o.endedAt).toISOString(),
+    /** The record's interval: from the last answer before it to the first answer after. */
+    durationS: o.endedAt === null ? null : secs(o.endedAt - o.startedAt),
+    afterDecisionS: o.endedAt === null ? null : secs(o.endedAt - o.detectedAt),
+  };
+}
+
+/**
+ * The watchdog's config_changed outage that a configuration change caused (G2-SEC-001): the
+ * newest one detected from `sinceMs` on. With `waitForEnd`, it waits briefly for the watchdog
+ * to record the end, which it does at its next check after the server answers.
+ */
+async function configChangedOutage(ports: G2Ports, sinceMs: number, waitForEnd: boolean) {
+  const deadline = ports.now() + (waitForEnd ? LIMITS.outageEndMs : 0);
+  for (;;) {
+    const found = (await ports.outages(sinceMs, ports.now()))
+      .filter((o) => o.cause === "config_changed" && o.detectedAt >= sinceMs)
+      .sort((a, b) => b.detectedAt - a.detectedAt)[0];
+    if ((found && found.endedAt !== null) || ports.now() >= deadline) {
+      return found ? outageSummary(found) : null;
+    }
+    await ports.sleep(5_000);
+  }
 }
 
 /** Recovery mode must answer for itself, never offer setup, and never be restarted. */
@@ -976,12 +1072,20 @@ export function verdictOf(r: StepRecord): { verdict: Verdict; problems: string[]
     at(r, ...path, "status") === 200 &&
     at(r, ...path, "accounts_enabled") === true &&
     at(r, ...path, "needs_setup") === false;
+  want(!r.bootUnverified, "the measured boot could not be confirmed");
   switch (r.step) {
     case "replace-1": {
       need(at(r.before, "config", "pass") === true, "before: the configuration check failed");
       need(at(r.before, "sharing", "managed") === true, "before: sharing not managed");
       need(typeof at(r.before, "editMe", "id") === "string", "before: no edit-me schedule");
       need(infoOk(["before", "info"]), "before: /v1/info not initialized");
+      want(
+        Array.isArray(at(r.before, "releaseOutages")) &&
+          (at(r.before, "releaseOutages") as unknown[]).some(
+            (o) => typeof at(o, "durationS") === "number",
+          ),
+        "no ended config_changed outage from the release recorded",
+      );
       timing();
       need(at(r.after, "ownerLogin") === 200, "after: the owner could not sign in");
       need(at(r.after, "wrongPassword") === 401, "after: a wrong password was not refused");
@@ -1020,6 +1124,11 @@ export function verdictOf(r: StepRecord): { verdict: Verdict; problems: string[]
       need(at(r.rotation, "oldCookie") === 401, "the old cookie was not refused");
       need(at(r.rotation, "oldBearer") === 401, "the old bearer was not refused");
       need(at(r.rotation, "newCookie") === 200, "a new session's cookie was refused");
+      want(at(r.rotation, "beforeExpiry") === true, "the kept session may have expired");
+      want(
+        typeof at(r.rotation, "outage", "durationS") === "number",
+        "no ended config_changed outage from the rotation recorded",
+      );
       break;
     case "replace-2":
       need(at(r.after, "config", "pass") === true, "the configuration check failed");
