@@ -21,10 +21,8 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
-from harness import COMPUTER, Rig, canary, new_id
-
-sys.path.insert(0, str(COMPUTER / "tools"))
-import rc53_scan  # noqa: E402
+from cfo_computer import rc53 as rc53_scan  # noqa: E402
+from harness import Rig, canary, new_id
 
 
 def _encodings(value: str) -> dict[str, bytes]:
@@ -165,4 +163,46 @@ def test_no_planted_token_in_any_archived_layer(tmp_path: Path) -> None:
         assert "./.omnigent/codex-native/b1/dead_letter.jsonl" in names
         assert "./.omnigent/codex-native/b1/codex-home/config.toml" in names
     finally:
+        rig.close()
+
+
+def test_the_opt_in_staging_check_scans_each_staged_layer(tmp_path: Path) -> None:
+    """With ``<state>/rc53/enabled``, the supervisor collects the live values from the
+    workload's processes, the bridge files and the logins before each capture, and the worker
+    scans the staged layer with them; only counts are recorded."""
+    import os
+
+    token = canary("hosttoken")
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        env={**os.environ, "OMNIGENT_HOST_TOKEN": token},
+    )
+    rig = Rig(tmp_path / "a", scope_pids=[holder.pid])
+    try:
+        rig.boot()
+        (rig.layout.state / "rc53").mkdir()
+        (rig.layout.state / "rc53" / "enabled").write_text("")
+        bridge = rig.home / ".omnigent" / "codex-native" / "b1"
+        bridge.mkdir(parents=True)
+        delegated = canary("delegated")
+        (bridge / "policy_hook.json").write_text(
+            json.dumps({"ap_auth_headers": {"Authorization": f"Bearer {delegated}"}})
+        )
+        (rig.home / "work" / "notes.txt").write_text("no token here")
+        op, job = rig.capture()
+        assert job["state"] == "staged"
+        result = rig.result(op)["rc53"]
+        assert result["status"] == 0 and result["findings"] == 0 and result["values"] >= 2
+        values = (rig.layout.state / "rc53" / "values").read_text().splitlines()
+        assert token in values and delegated in values
+        assert oct((rig.layout.state / "rc53" / "values").stat().st_mode & 0o777) == "0o600"
+        # A token copied into a saved file is found, and the report never names it.
+        (rig.home / "work" / "leak.txt").write_text(f"export T={token}")
+        op, job = rig.capture()
+        result = rig.result(op)["rc53"]
+        assert result["status"] == 1 and result["findings"] >= 1
+        assert token not in json.dumps(rig.result(op))
+        assert any("RC-53" in a for a in rig.sup.alerts)
+    finally:
+        holder.kill()
         rig.close()

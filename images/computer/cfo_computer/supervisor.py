@@ -33,7 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_VERSION, SUPPORTED_PROTOCOL_VERSIONS
+from . import (
+    SUPERVISOR_PROTOCOL_VERSION,
+    SUPERVISOR_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+    rc53_collect,
+)
 from . import logins as L
 from . import runners as R
 from .api import ComputerApi, Refused, Unanswered
@@ -149,6 +154,7 @@ class Supervisor:
         self.capture_margin_bytes = 64 << 20
         self.capture_grace_s = CAPTURE_WORKER_GRACE_S
         self.capture_fault = ""
+        self.rc53_tmp_roots: list[Path] | None = None  # where bridges under $TMPDIR live
         #: Variables added to every workload environment (the image's test variant points the
         #: fake CLIs at their fake provider; production adds nothing).
         self.extra_env: dict[str, str] = {}
@@ -565,6 +571,7 @@ class Supervisor:
                 "fault": self.capture_fault,
                 "record_kinds": True,
                 "stop_journal": str(self.layout.log / f"capture-{op}.stops"),
+                "rc53_values": self._rc53_values(),
             }
             threading.Thread(target=self._capture_job, args=(op, spec), daemon=True).start()
         except BaseException:
@@ -577,6 +584,22 @@ class Supervisor:
             raise
         self.changed()
         return {"type": "capture", "job": self._job_view(op)}
+
+    def _rc53_values(self) -> str | None:
+        """RC-53's opt-in staging check: when ``<state>/rc53/enabled`` exists, refresh the live
+        token values before the capture, so its worker scans the staged layer with them."""
+        marker = self.layout.state / "rc53" / "enabled"
+        if not marker.exists():
+            return None
+        out = self.layout.state / "rc53" / "values"
+        try:
+            roots = (
+                None if self.whole_container else set(self.scope_pids or ()) | self._live_workload()
+            )
+            rc53_collect.refresh(out, self.account.home, self.rc53_tmp_roots, roots)
+        except Exception:  # noqa: BLE001 - the check reports, it never stops a save
+            self._alert("RC-53 values could not be collected")
+        return str(out) if out.exists() else None
 
     def _failed_capture(self, op: str, reason: str, *, record: bool = True) -> dict[str, Any]:
         job = {
@@ -674,6 +697,8 @@ class Supervisor:
                 self.capture_running = False
             self._capture_gate.release()
             self.changed()
+        if result.get("rc53", {}).get("status", 0) != 0:
+            self._alert("RC-53: a staged layer holds a live token value or could not be scanned")
         if result.get("skipped"):
             self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
 

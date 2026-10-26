@@ -428,6 +428,20 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     except (OSError, StageError, ValueError) as exc:
         shutil.rmtree(layer_dir, ignore_errors=True)
         raise CaptureFailed("stage_failed", type(exc).__name__) from exc
+    rc53_values = spec.get("rc53_values")
+    if rc53_values:
+        # The opt-in staging check (RC-53): the staged layer holds none of the live tokens.
+        from . import rc53
+
+        values = [v for v in Path(rc53_values).read_text().splitlines() if v]
+        code, report = rc53.run([layer_dir], values, [])
+        result["rc53"] = {
+            "status": code,
+            "values": len(values),
+            "files": report["files"],
+            "findings": len(report["findings"]),
+            "incomplete": len(report["incomplete"]),
+        }
     _write_json(data_dir / f"pending-{layer_id}.json", entries)
     result.update(
         state="staged",

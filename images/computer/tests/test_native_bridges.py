@@ -20,14 +20,12 @@ import base64
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from harness import Rig, Uploads, canary, new_id
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-import rc53_scan  # noqa: E402
+from cfo_computer import rc53 as rc53_scan  # noqa: E402
 
 WRITERS = Path(__file__).resolve().parent / "bridge_writers.py"
 VENV_PYTHON = "/opt/venv/bin/python"
