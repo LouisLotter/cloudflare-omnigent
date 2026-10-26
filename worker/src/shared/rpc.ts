@@ -2,21 +2,23 @@
 // (code-structure plan, module rules). Owned by the integration lead: change it through a pull
 // request to the lead, together with its fake in test/support/.
 
-import type {
-  BootstrapStatus,
-  ComputerCall,
+import {
+  type BootstrapStatus,
+  type ComputerCall,
   ComputerId,
-  ControlCall,
-  ControlResult,
-  LauncherCall,
-  LauncherResult,
-  OutageRecord,
-  PagesCall,
-  PagesResult,
-  ReservationState,
-  SupervisorReply,
-  Timestamp,
+  type ControlCall,
+  type ControlResult,
+  Generation,
+  type LauncherCall,
+  type LauncherResult,
+  type OutageRecord,
+  type PagesCall,
+  type PagesResult,
+  type ReservationState,
+  type SupervisorReply,
+  type Timestamp,
 } from "@cfo/contracts";
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------------------------
 // OmnigentServer (WP2.2), in the platform Worker. The web Worker reaches it through a
@@ -115,6 +117,39 @@ export interface WorkspaceRpc {
   computer(call: ComputerCall): Promise<SupervisorReply>;
   pages(call: PagesCall): Promise<PagesResult>;
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null>;
+  /** The backup gateway's fence (WP3.3), asked before every write into the checkpoint bucket. */
+  writeAllowed(call: WriteCheck): Promise<WriteDecision>;
+}
+
+/**
+ * The write fence (the lead's decision, 26 Oct). Every credential and workspace write reaches R2
+ * through the platform's own backup gateway (`egress/backups.ts`, WP3.3), which asks the
+ * computer's WorkspaceDO before each `put`. A write is allowed only for a computer that exists and
+ * is not fully removed, runs the named generation, and, for a credential bundle, whose key is a
+ * pending upload of that generation (a removal's sign-out run included). The fence means no new
+ * admissions: a write admitted before it may still land, and is cleaned up by WorkspaceDO's
+ * re-delete of abandoned keys and its sweep of a removed computer's prefixes.
+ */
+export const WriteCheck = z.looseObject({
+  interfaceVersion: z.number().int().min(1),
+  computerId: ComputerId,
+  generation: Generation,
+  kind: z.enum(["credential", "workspace"]),
+  /** The R2 key the write targets. */
+  objectKey: z.string().min(1).max(1024),
+});
+export type WriteCheck = z.infer<typeof WriteCheck>;
+
+export interface WriteDecision {
+  readonly allowed: boolean;
+  /** Why not: no such computer, removed, another generation or none running, not a pending upload,
+   * or a key outside this computer's prefix. */
+  readonly reason?:
+    | "unknown_computer"
+    | "removed"
+    | "stale_generation"
+    | "not_pending"
+    | "foreign_key";
 }
 
 /**
@@ -122,6 +157,19 @@ export interface WorkspaceRpc {
  * idempotent by (computer, generation); a wake at the limit is refused at once, with no queue
  * (R-20); a slot is released only once WorkspaceDO's `reservation` shows the generation's
  * container confirmed stopped or its start fenced.
+ *
+ * Generations are finished in order (WP3.2, `control/limits.ts`). WorkspaceDO asks for each
+ * generation once, persisted first, and asks for a newer one only when no container of an older
+ * one can run. So asking for generation G, or releasing it, finishes every older generation of that
+ * computer, and `forget_computer` finishes all of them:
+ * - a `reserve` at or below a finished generation is refused with `stale_generation`, even while
+ *   its slot is still held, and also when a granted operation is replayed after its slot was
+ *   released or its generation finished: the one exception to "a repeat returns the recorded
+ *   outcome" (a delayed or repeated request never takes, or is told it holds, a slot nobody would
+ *   start or release); the refusal itself is recorded, so a repeat is refused the same way;
+ * - a granted `reserve` replaces the computer's older slots, which never count against the limit.
+ * The answer to `reservation` is read-only input to reconciliation: ControlDO never asks a computer
+ * to stop, start or wake.
  */
 export interface ControlRpc {
   control(call: ControlCall): Promise<ControlResult>;

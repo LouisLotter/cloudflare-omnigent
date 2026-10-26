@@ -13,7 +13,11 @@ export const runtimeModules = [
   "src/**/*DO.ts",
   "src/shared/sql.ts",
   "src/server/OmnigentServer.ts",
-  "src/server/platform-internal.ts",
+  // The private virtual hosts' entrypoints and the WebSocket answer (WorkerEntrypoint, Response
+  // 101), and the Sandbox SDK's adapter, which imports `cloudflare:workers` (WP3.3).
+  "src/internal/entrypoints.ts",
+  "src/internal/upgrade-answer.ts",
+  "src/egress/backups.ts",
 ];
 
 // Pure modules only: nothing here may import from "cloudflare:workers".
