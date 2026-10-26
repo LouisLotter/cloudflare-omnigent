@@ -7,7 +7,8 @@
         "container_stopped",
         "not_answering",
         "start_failed",
-        "recovery_mode"
+        "recovery_mode",
+        "config_changed"
       ],
       "type": "string"
     },
