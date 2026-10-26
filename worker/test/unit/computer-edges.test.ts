@@ -408,9 +408,13 @@ describe("the WorkspaceDO fake's write fence (for WP3.3's gateway tests)", () =>
       }),
     ).toEqual({ allowed: false, reason: "unknown_computer" });
     fake.fire("terminate");
+    // A removal intent alone does not refuse (a sign-out run may still publish); the stop does.
+    expect(await check(1, `credentials/${CMP}/a.json`)).toEqual({ allowed: true });
+    fake.fire("stop_prepared");
+    fake.fire("container_stopped");
     expect(await check(1, `credentials/${CMP}/a.json`)).toEqual({
       allowed: false,
-      reason: "removed",
+      reason: "stale_generation",
     });
     await expect(fake.writeAllowed({} as never)).rejects.toThrow(/bad_request/);
   });
