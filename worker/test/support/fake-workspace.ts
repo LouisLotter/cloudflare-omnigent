@@ -46,7 +46,7 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
-import type { WorkspaceRpc } from "../../src/shared/rpc.ts";
+import { type WorkspaceRpc, WriteCheck, type WriteDecision } from "../../src/shared/rpc.ts";
 import { OperationJournal } from "./operation-journal.ts";
 
 type Recorded = { readonly result: LauncherResult } | { readonly error: ErrorCode };
@@ -399,6 +399,27 @@ export class FakeWorkspace implements WorkspaceRpc {
       },
       ...this.page,
     };
+  }
+
+  /** The backup gateway's fence: this computer, no removal intent, the running generation, and
+   * for a credential bundle a key under this computer's prefix (the fake keeps no upload list). */
+  async writeAllowed(raw: WriteCheck): Promise<WriteDecision> {
+    const parsed = WriteCheck.safeParse(raw);
+    if (!parsed.success) throw platformError("bad_request", "not a WriteCheck");
+    checkVersion(parsed.data.interfaceVersion);
+    const call = parsed.data;
+    if (call.computerId !== this.computerId) return { allowed: false, reason: "unknown_computer" };
+    if (this.context.removalIntent) return { allowed: false, reason: "removed" };
+    const live = containerMayRun(this.context.state) && this.context.state !== "waking";
+    if (!live || call.generation !== this.generation) {
+      return { allowed: false, reason: "stale_generation" };
+    }
+    const prefix =
+      call.kind === "credential"
+        ? `credentials/${this.computerId}/`
+        : `workspace/${this.computerId}/`;
+    if (!call.objectKey.startsWith(prefix)) return { allowed: false, reason: "foreign_key" };
+    return { allowed: true };
   }
 
   async reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
