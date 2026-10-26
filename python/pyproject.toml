@@ -1,7 +1,7 @@
 [project]
 name = "cloudflare-omnigent"
 version = "0.0.0"
-description = "Omnigent on Cloudflare: Python side of the platform (contract tests now; supervisor and gateway backend later)."
+description = "Omnigent on Cloudflare: Python side of the platform (the Cloudflare launcher and contract tests now; supervisor and gateway backend later)."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -25,5 +25,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["cloudflare_omnigent"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The package is imported from this directory: the uv project is not installed (package = false).
+pythonpath = ["."]

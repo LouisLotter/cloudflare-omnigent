@@ -199,12 +199,15 @@ def test_initialized_query_names_only_the_pinned_columns() -> None:
 
 
 @requires_omnigent
-def test_stub_launcher_implements_omnigents_launcher_interface() -> None:
-    from cfo_server.launcher import PROVIDER, StubLauncher
+def test_cloudflare_launcher_implements_omnigents_launcher_interface() -> None:
+    from cfo_server.launcher import PROVIDER, CloudflareLauncher
 
-    launcher = StubLauncher()  # abstract methods missing would raise TypeError here
-    assert launcher.provider == PROVIDER
+    launcher = CloudflareLauncher(None, None)  # abstract methods missing would raise TypeError
+    assert launcher.provider == PROVIDER == "cloudflare"
     assert launcher.can_resume is True
+    capabilities = launcher.capabilities
+    assert capabilities.admission and capabilities.start_claims and capabilities.suspend
+    assert capabilities.checkpoint and capabilities.programmatic_terminate
 
 
 def test_pinned_litestream_binary_is_the_tested_release() -> None:

@@ -2,19 +2,18 @@
 
 This is the accepted architecture for a single-person Omnigent installation in that person's Cloudflare account. It describes both implemented components and the remaining integration. It is not a deployment-readiness claim. The [decision index](decisions/README.md) records the invariants behind it.
 
-## Source snapshot — 24 October 2026
+## Source snapshot — 25 October 2026
 
 | Scope | Source revision | Source and qualification status |
 | --- | --- | --- |
-| Platform main | `91261d7e8fe4b87c8010d50739cd921dd4bf09fe` | Ingress, two Worker configurations, server controller and image definition, database durability barriers, bootstrap tooling, restore-drill harness and version-one computer contracts. |
-| Server candidate | `eb26816c150bb62c2ecc3222991769738b220afb` | Startup/recovery watchdog corrections, image build-identity support and logging corrections. Separate from main; basic-instance startup against R2 remains pending qualification. |
+| Platform main | `main` | Ingress, two Worker configurations, the server controller with its phase-aware startup and recovery watchdog, the server image (pinning fork integration, recording its build identity, credential headers kept out of logs), database durability barriers, bootstrap tooling, restore-drill harness and version-one computer contracts. Startup of a large database on the `basic` instance against R2 is being qualified. |
 | Omnigent fork integration | `184b5cf8b32815b48c7859973a00a139e8aa50f0` | Provider-neutral persistent hosts, tunnel recovery, operation outcomes, turn checkpoints, launch-token registration, host credential broker, delegated runners, HTTP credential cipher and native-harness continuation fixes. Availability in source does not establish inclusion in an image. |
-| Cloud-computer platform | Supervisor modules on main (`images/computer/cfo_computer/`); controller `61d3cab`, routes/harness `cb2fe85`, launcher `dc76868` as drafts | Partial. The complete controller/routes/image/launcher assembly is not integrated or qualified. Limits and platform pages remain planned. |
+| Cloud-computer platform | Supervisor modules and launcher on main (`images/computer/cfo_computer/`, `python/cloudflare_omnigent/sandbox/`); controller `61d3cab` and routes/harness `cb2fe85` as drafts | The [Cloudflare launcher](../python/cloudflare_omnigent/sandbox/) is integrated and registered by the server image, tested against a fake launcher API and Omnigent's own persistent-host flow. Controller and routes are drafts, and the computer image does not exist yet; the complete assembly is not integrated or qualified. Limits and platform pages remain planned. |
 | Connected-account gateway | Planned | Worker connection service and connector runtimes, including the later platform GitHub path. |
 
 The default [server image](../images/server/Dockerfile) pins fork integration `184b5cf8b32815b48c7859973a00a139e8aa50f0`, which includes the single-attempt Stop, the provider-key and transcript-replay changes, the main-chat Stop and launch-outcome notices, and the history-unavailable resume refusal. The image records that revision and CI runs the fork's Stop tests against it. Real-platform qualification of this image (a large restore on the target instance against R2) is still pending.
 
-Main currently registers a [launcher placeholder](../images/server/cfo_server/launcher.py), [disables native GitHub linking](../images/server/cfo_server/app.py), and [refuses `platform.internal` requests](../worker/src/server/platform-internal.ts). Thus the launcher effect fence, Worker key service and cloud-computer lifecycle below remain integration requirements. Package and experiment evidence does not establish end-to-end cloud-computer readiness.
+Main [registers the Cloudflare launcher](../images/server/cfo_server/launcher.py) with its replication fence, [disables native GitHub linking](../images/server/cfo_server/app.py), and [refuses `platform.internal` requests](../worker/src/server/platform-internal.ts). Thus the launcher API's receiver, the Worker key service and the cloud-computer lifecycle below remain integration requirements. Package and experiment evidence does not establish end-to-end cloud-computer readiness.
 
 ## Components and flows
 

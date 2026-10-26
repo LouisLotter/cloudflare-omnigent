@@ -13,7 +13,13 @@ from pathlib import Path
 
 import pytest
 
-ROOTS = (Path("/opt/venv"), Path("/build/omnigent"), Path("/opt/cfo/cfo_server"), Path("/app"))
+ROOTS = (
+    Path("/opt/venv"),
+    Path("/build/omnigent"),
+    Path("/opt/cfo/cfo_server"),
+    Path("/opt/cfo/cloudflare_omnigent"),
+    Path("/app"),
+)
 in_image = pytest.mark.skipif(
     not all(root.exists() for root in ROOTS), reason="runs inside the server image"
 )

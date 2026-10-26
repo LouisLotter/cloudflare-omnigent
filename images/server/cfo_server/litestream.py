@@ -2,7 +2,7 @@
 
 One question serves every durability check in the image: the response barrier, the
 transcript barrier, the final sync on shutdown, the replicated position the watchdog reads,
-and (from WP3.6) the Cloudflare launcher's wait before a platform effect.
+and the Cloudflare launcher's wait before a platform effect (WP3.6).
 
 The answer comes from ``POST /sync`` on Litestream's control socket:
 
@@ -257,6 +257,15 @@ class ReplicationWaiter:
                 timeout=self._request_timeout_s,
             )
         return self._client
+
+    @property
+    def socket_path(self) -> str:
+        """Litestream's control socket, which blocking waits (the launcher's) use too."""
+        return self._socket_path
+
+    @property
+    def db_path(self) -> str:
+        return self._db_path
 
     async def aclose(self) -> None:
         if self._client is not None:

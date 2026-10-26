@@ -8,7 +8,7 @@ Start with the selected [source/artifact combination](../compatibility.md). Main
 | --- | --- | --- |
 | `424 durability_unconfirmed`, `applied: true` | The security change committed locally; replica confirmation missed its deadline. Cookies may already have changed. | Inspect current application state before repeating. Neither the forwarding Worker nor a client should blindly retry it. |
 | Transcript HTTP 503 / tunnel `durability_unconfirmed` | The server did not acknowledge durability for an item or terminal status edge. | Let the sender retry with the same `source_id` or status `Idempotency-Key`; do not create a fresh message to imitate that retry. |
-| Launcher fence timeout | The replication-before-effect fence failed before sending its lifecycle effect. | Diagnose replication; a normal lifecycle retry can follow its recorded operation policy. This fence is in the paused launcher draft, not main's stub. |
+| Launcher fence timeout | The replication-before-effect fence failed before sending its lifecycle effect. | Diagnose replication; a normal lifecycle retry can follow its recorded operation policy. A blocked start or creation fails visibly with "not yet replicated"; a blocked sleep stays unknown and is repeated. The server logs `cfo.launcher.durability_unconfirmed`. |
 | Reply lost after a lifecycle request was sent | The physical effect may have happened. | Reconcile with the same operation ID. For unknown suspend, admission stays closed until its recorded outcome is known. |
 | Unsafe browser request returns lost-answer error | The forwarding call failed without knowing whether Omnigent applied it. | Check current state; do not treat a new request as a harmless transport retry. |
 

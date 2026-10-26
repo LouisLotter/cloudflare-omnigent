@@ -1,107 +1,82 @@
-"""The Cloudflare launcher's registration through ``sandbox_config``, with a stub launcher.
+"""The Cloudflare launcher's registration through ``sandbox_config`` (WP3.6).
 
-WP3.6 delivers the real launcher (``cloudflare_omnigent.sandbox``) and replaces
-:class:`StubLauncher` in :func:`sandbox_deployment`. Until then the provider is registered so
-the rest of the image (persistent-host routes, the reaper, ``GET /v1/info``) runs as it will
-in production, and every platform effect fails with a readable error.
+The launcher itself is ``cloudflare_omnigent.sandbox`` (``python/`` in the repository, copied to
+``/opt/cfo`` in the image). This module wires it into the app:
+
+- its settings from the container's environment (``CFO_LAUNCHER_SIGNING_KEY`` and
+  ``CFO_LAUNCHER_SIGNING_KEY_ID``, the launcher's own key). Neither set registers a launcher
+  whose every call fails with a readable error; a malformed or partial setting stops the app;
+- its durability fence: :func:`cfo_server.litestream.wait_replicated_blocking` on the same
+  Litestream position the response barrier reads, before every ``provision``, ``start_host``,
+  ``suspend`` and ``terminate`` (design, "Lifecycle effects wait for durability in the
+  launcher"). Omnigent calls the launcher in worker threads, so the wait never blocks its
+  event loop;
+- the provider entry (``cloudflare_omnigent.sandbox.registration``): persistent-only, the
+  30-day launch-token lifetime, the 240 s online wait, the 600 s runner idle timeout through
+  the host configuration, and each computer's ``manage_url`` on the installation's origin;
+- Omnigent's managed-sandbox reaper, which retries ``terminate`` for deleted computers (R-11).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+import os
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
-import click
-from omnigent.onboarding.sandboxes.base import SandboxHostLauncher
-from omnigent.server.managed_hosts import (
-    ManagedSandboxConfig,
-    ManagedSandboxDeployment,
-    ManagedSandboxReaperConfig,
-    PersistentHostPolicy,
+from cloudflare_omnigent.sandbox.launcher import PROVIDER, CloudflareLauncher
+from cloudflare_omnigent.sandbox.registration import (
+    cloudflare_sandbox_config,
+    manage_url_template,
 )
+from cloudflare_omnigent.sandbox.settings import settings_from_env
+from omnigent.server.managed_hosts import ManagedSandboxDeployment, ManagedSandboxReaperConfig
+
+from cfo_server.events import log
+from cfo_server.litestream import wait_replicated_blocking
 
 if TYPE_CHECKING:
+    from omnigent.onboarding.sandboxes.base import SandboxHostLauncher
+
     from cfo_server.config import ServerImageConfig
 
-PROVIDER = "cloudflare"
-#: Launch-token lifetime. A placeholder until WP3.6 sets the provider's value; it must exceed
-#: the one-day margin after which a host is put to sleep to renew its token (core change 13 k).
-LAUNCH_TOKEN_TTL_S = 7 * 24 * 3600
-#: How long a launch or wake waits for the host to come online (code-structure plan).
-ONLINE_TIMEOUT_S = 240.0
-
-_NOT_INSTALLED = (
-    "Cloud computers are not available yet: this server image registers a placeholder for "
-    "the Cloudflare launcher."
-)
+__all__ = ["PROVIDER", "CloudflareLauncher", "litestream_durability_wait", "sandbox_deployment"]
 
 
-class StubLauncher(SandboxHostLauncher):
-    """A launcher that refuses every platform effect. Replaced by WP3.6's launcher."""
+def litestream_durability_wait(socket_path: str, db_path: str) -> Callable[[float], bool]:
+    """The launcher's fence: True once every commit made before the call is replicated."""
 
-    provider = PROVIDER
-    can_resume = True
+    def wait(timeout_s: float) -> bool:
+        outcome = wait_replicated_blocking(socket_path, db_path, timeout_s)
+        if not outcome.ok:
+            log("launcher.durability_unconfirmed", **outcome.log_fields())
+        return outcome.ok
 
-    def prepare(self) -> None:
-        """Nothing to prepare."""
-
-    def provision(self, name: str) -> str:
-        raise click.ClickException(_NOT_INSTALLED)
-
-    def start_host(
-        self,
-        sandbox_id: str,
-        *,
-        token: str,
-        host_id: str,
-        host_name: str,
-        server_url: str,
-        repos: Sequence[Any] = (),
-        host_config: dict[str, object] | None = None,
-        on_stage: Callable[[str], None] | None = None,
-    ) -> str:
-        raise click.ClickException(_NOT_INSTALLED)
-
-    def resume(self, sandbox_id: str) -> None:
-        raise click.ClickException(_NOT_INSTALLED)
-
-    def terminate(self, sandbox_id: str) -> None:
-        raise click.ClickException(_NOT_INSTALLED)
-
-    def keep_alive(self, sandbox_id: str) -> bool | None:
-        return None
-
-    def is_running(self, sandbox_id: str) -> bool | None:
-        return None
-
-    def admission(self, sandbox_id: str) -> Any:
-        return None
-
-    def claim_start(self, sandbox_id: str, *, operation_id: str) -> Any:
-        raise click.ClickException(_NOT_INSTALLED)
-
-    def suspend(self, sandbox_id: str, *, operation_id: str) -> Any:
-        raise click.ClickException(_NOT_INSTALLED)
+    return wait
 
 
 def sandbox_deployment(
     config: ServerImageConfig,
-    launcher_factory: Callable[[], SandboxHostLauncher] = StubLauncher,
+    *,
+    durability_wait: Callable[[float], bool] | None,
+    env: Mapping[str, str] | None = None,
+    launcher_factory: Callable[[], SandboxHostLauncher] | None = None,
 ) -> ManagedSandboxDeployment:
     """The ``sandbox_config`` the app passes to ``create_app``.
 
-    One persistent-only provider, and the managed-sandbox reaper enabled: with core change 13
-    the reaper retries ``terminate`` only for deleted (tombstoned) persistent hosts, which is
-    upstream's only retry for a removal whose ``terminate`` failed (R-11).
+    :param durability_wait: The replication fence; ``None`` makes every lifecycle effect refuse.
+    :param env: The environment to read the launcher's settings from (default: the process's).
+    :param launcher_factory: For tests: another launcher under the same provider entry.
+    :raises cloudflare_omnigent.sandbox.settings.LauncherConfigError: A malformed setting.
     """
-    return ManagedSandboxDeployment.single(
-        ManagedSandboxConfig(
-            server_url=config.sandbox_server_url,
-            launcher_factory=launcher_factory,
-            token_ttl_s=LAUNCH_TOKEN_TTL_S,
-            provider=PROVIDER,
-            persistent=PersistentHostPolicy(),
-            online_timeout_s=ONLINE_TIMEOUT_S,
-        ),
-        reaper=ManagedSandboxReaperConfig(enabled=True),
+    settings = settings_from_env(os.environ if env is None else env)
+    if settings is None:
+        log("launcher.not_configured", reason="CFO_LAUNCHER_SIGNING_KEY is not set")
+    entry = cloudflare_sandbox_config(
+        settings=settings,
+        durability_wait=durability_wait,
+        manage_url=manage_url_template(config.base_url),
+        server_url=config.sandbox_server_url,
     )
+    if launcher_factory is not None:
+        entry.launcher_factory = launcher_factory
+    return ManagedSandboxDeployment.single(entry, reaper=ManagedSandboxReaperConfig(enabled=True))

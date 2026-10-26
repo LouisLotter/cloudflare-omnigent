@@ -22,6 +22,7 @@
 #   - Litestream at the exact tested release, checksum-verified.
 #   - The image's entrypoint package, cfo_server (restore, recovery mode, settings files, both
 #     durability barriers, the launcher registration).
+#   - The Cloudflare launcher, cloudflare_omnigent.sandbox, from the repository's python/.
 #
 # Every base image is pinned by digest. No secret is baked in: the Worker passes settings and
 # secrets as container environment variables at start.
@@ -110,6 +111,8 @@ COPY --from=builder /build /build
 COPY --from=omnigent-src /deploy/docker/entrypoint.py /app/entrypoint.py
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY images/server/cfo_server/ /opt/cfo/cfo_server/
+# The Cloudflare launcher (WP3.6), which cfo_server registers through sandbox_config.
+COPY python/cloudflare_omnigent/ /opt/cfo/cloudflare_omnigent/
 ENV PYTHONPATH=/opt/cfo \
     CFO_OMNIGENT_DOCKER_ENTRYPOINT=/app/entrypoint.py
 # Bytecode for everything the server imports, compiled here once: with PYTHONDONTWRITEBYTECODE
@@ -142,7 +145,8 @@ CMD ["python", "-m", "cfo_server.entrypoint"]
 # ── Tests: the image's own suite, run inside the image ───────────────────────────────────
 FROM runtime AS test
 # The runtime's Python sources, listed before the test tools join them (test_bytecode.py).
-RUN find /opt/venv /build/omnigent /opt/cfo/cfo_server /app -name '*.py' \
+RUN find /opt/venv /build/omnigent /opt/cfo/cfo_server /opt/cfo/cloudflare_omnigent /app \
+      -name '*.py' \
       -not -path '*/__pycache__/*' | sort > /opt/runtime-python-sources.txt
 RUN /opt/venv/bin/python -m pip install --no-cache-dir \
       pytest==9.1.1 hypothesis==6.169.0 jsonschema==4.26.0

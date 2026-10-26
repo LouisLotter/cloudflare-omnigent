@@ -7,10 +7,10 @@ A Cloudflare deployment layer for [Omnigent](https://github.com/omnigent-ai/omni
 | Component | Current state |
 |---|---|
 | Server base | Integrated source for owner-only ingress, two Worker configurations, server lifecycle/recovery, SQLite replication with Litestream, durability barriers, bootstrap and restore-drill tools. Production qualification remains incomplete. |
-| Cloud computers | Version-one contracts are integrated. Controller, private routes, supervisor and real launcher remain separate partial drafts; there is no qualified end-to-end computer assembly. |
+| Cloud computers | Version-one contracts and the Cloudflare launcher (Omnigent's provider plugin, registered by the server image) are integrated. Controller, private routes and supervisor remain separate partial drafts; there is no qualified end-to-end computer assembly. |
 | Connected accounts | Platform connection service and connector runtimes are planned. Main disables native GitHub linking. |
 
-Main registers a [placeholder launcher](images/server/cfo_server/launcher.py) that refuses physical computer effects, and its [private platform bridge](worker/src/server/platform-internal.ts) returns unavailable. The presence of fork capabilities or contracts does not make those integrations usable.
+Main registers the [Cloudflare launcher](python/cloudflare_omnigent/sandbox/), but its [private platform bridge](worker/src/server/platform-internal.ts) still returns unavailable and no deployment sets the launcher's signing key, so no physical computer effect can happen yet. The presence of fork capabilities, contracts or the launcher does not make cloud computers usable.
 
 The [compatibility snapshot](docs/compatibility.md) identifies exact revisions and pins. The default server image uses an older fork commit than current fork integration and lacks later Stop and history-resume corrections. No production-ready release or selected, fully qualified image pair is claimed here.
 
