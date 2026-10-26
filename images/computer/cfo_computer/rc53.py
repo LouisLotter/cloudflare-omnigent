@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib
 import io
 import json
 import os
@@ -189,8 +190,9 @@ class Scan:
 
 def _zstd(raw: bytes) -> bytes | None:
     try:
-        from compression import zstd  # Python 3.14
-
+        # The standard library's zstd from Python 3.14; the image's 3.12 uses the zstd tool,
+        # and inside a computer the scan reads staged directories, not archives.
+        zstd = importlib.import_module("compression.zstd")
         return zstd.decompress(raw)
     except ImportError:
         pass
