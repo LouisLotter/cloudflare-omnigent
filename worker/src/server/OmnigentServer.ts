@@ -29,6 +29,7 @@ import {
   outageOverlaps,
   REPLICATION_POSITION_PATH,
   REPLICATION_POSITION_PORT,
+  type ReplicationHealth,
   Timestamp,
 } from "@cfo/contracts";
 import { z } from "zod";
@@ -56,6 +57,7 @@ import {
   PLATFORM_INTERNAL_PROPS_VERSION,
   type PlatformInternalProps,
 } from "./platform-internal.ts";
+import { judgeReplication } from "./replication-health.ts";
 import { describeError, errorResponse, logEvent } from "./responses.ts";
 import { SERVER_MIGRATIONS } from "./schema.ts";
 import {
@@ -800,6 +802,17 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   async bootstrapStatus(call: OmnigentServerCall): Promise<BootstrapStatus | null> {
     this.#checkCall(call);
     return this.#loadBootstrap().status;
+  }
+
+  /** The replication warning for the cloud-computers page (WP3.5): one status read, judged. */
+  async replication(call: OmnigentServerCall): Promise<ReplicationHealth> {
+    this.#checkCall(call);
+    const container = this.#container;
+    const status =
+      container?.running === true
+        ? await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH)
+        : null;
+    return judgeReplication(status, this.now());
   }
 
   async ensureStarted(call: OmnigentServerCall): Promise<void> {

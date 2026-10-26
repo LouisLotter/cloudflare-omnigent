@@ -1169,3 +1169,30 @@ describe("OmnigentServer: bootstrap status (G1BR-002, R-30)", () => {
     expect(statusEvents().length).toBe(logged);
   });
 });
+
+describe("OmnigentServer: the replication warning (WP3.5, FH-15)", () => {
+  /** The RPC types of a loose schema's result collapse; read it as the contract says. */
+  const stateOf = async (stub: Stub) =>
+    ((await stub.replication(call)) as unknown as { state: string }).state;
+
+  it("judges the entrypoint's status on demand, and says unknown while it cannot be read", async () => {
+    const stopped = await freshServer();
+    expect(await stateOf(stopped.stub)).toBe("unknown");
+    const { stub, fake } = await runningServer();
+    const status = (replication: unknown) => {
+      fake.replication = replication;
+    };
+    status({ txid: 9, replicatedTxid: 9, caughtUp: true, lastSyncAt: null });
+    expect(await stateOf(stub)).toBe("replicating");
+    status({ txid: 9, replicatedTxid: 4, caughtUp: false, lastSyncAt: null });
+    expect(await stateOf(stub)).toBe("lagging");
+    status({ error: "ClientError: litestream is not running" });
+    expect(await stateOf(stub)).toBe("failing");
+    const starts = fake.starts.length;
+    await stub.replication(call);
+    expect(fake.starts.length).toBe(starts);
+    expect(
+      errorCodeOf(await rejectionOf(stub, (s) => s.replication({ interfaceVersion: 99 }))),
+    ).toBe("unsupported_version");
+  });
+});
