@@ -119,3 +119,28 @@ def test_api_client_refusals_and_unusable_replies(tmp_path: Path) -> None:
             api.send_once({**hello, "generation": -1})
     finally:
         ws.close()
+
+
+def test_the_command_port_binds_whatever_the_hostname(tmp_path: Path, monkeypatch) -> None:
+    """A Cloudflare ``durable_object`` container's hostname is its Durable Object's 64-character
+    ID, and ``socket.getfqdn()`` raises on it, which stops a stock ``http.server`` from binding
+    (found by WP3.3's staging). The command port never resolves the hostname; the container
+    tests run every computer under such a hostname."""
+    import socket
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from cfo_computer.server import CommandServer
+
+    def label_too_long(name: str = "") -> str:
+        raise UnicodeError("encoding with 'idna' codec failed (UnicodeError: label too long)")
+
+    monkeypatch.setattr(socket, "getfqdn", label_too_long)
+    with pytest.raises(UnicodeError):
+        ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler).server_close()
+    rig = Rig(tmp_path / "a")  # the harness's CommandServer, bound with getfqdn raising
+    try:
+        assert isinstance(rig.server, CommandServer)
+        assert rig.server.server_name == "127.0.0.1"
+        rig.boot()  # a restore and an install, answered through that port
+    finally:
+        rig.close()

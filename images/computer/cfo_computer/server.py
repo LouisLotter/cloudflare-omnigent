@@ -9,6 +9,7 @@ carry a launch token or a credential bundle.
 from __future__ import annotations
 
 import json
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -61,6 +62,17 @@ class CommandServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], supervisor: Any) -> None:
         super().__init__(address, _Handler)
         self.supervisor = supervisor
+
+    def server_bind(self) -> None:
+        """Bind without ``HTTPServer.server_bind``'s ``socket.getfqdn()``: on a Cloudflare
+        ``durable_object`` container the hostname is the Durable Object's 64-character ID,
+        longer than a DNS label, and resolving it raises ``UnicodeError: label too long``. The
+        name is only ever used for CGI's ``SERVER_NAME``; nothing here depends on the hostname.
+        """
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
     def start_in_thread(self) -> threading.Thread:
         thread = threading.Thread(target=self.serve_forever, name="commands", daemon=True)

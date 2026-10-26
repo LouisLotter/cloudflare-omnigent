@@ -42,9 +42,14 @@ class DockerComputer {
   constructor(name, env) {
     this.name = name;
     execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" });
-    const args = ["run", "-d", "--name", name, "--network", NETWORK, "-p", "127.0.0.1::8090"];
+    // Cloudflare's durable_object hostname: the 64-character Durable Object ID.
+    const hostname = randomBytes(32).toString("hex");
+    const args = ["run", "-d", "--name", name, "--hostname", hostname, "--network", NETWORK];
+    args.push("-p", "127.0.0.1::8090");
     for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
     execFileSync("docker", [...args, IMAGE], { stdio: "ignore" });
+    const seen = execFileSync("docker", ["exec", name, "hostname"]).toString().trim();
+    check(`${name}: a 64-character hostname`, seen === hostname && seen.length === 64, seen.length);
     const port = execFileSync("docker", ["port", name, "8090/tcp"])
       .toString()
       .trim()

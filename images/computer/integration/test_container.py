@@ -81,7 +81,11 @@ class Computer:
         )
         base_env = {"CFO_COMPUTER_ID": self.computer_id, "CFO_GENERATION": str(self.generation)}
         base_env.update(env or {})
-        args = ["run", "-d", "--name", self.name, "--network", self.net, "-p", "127.0.0.1::8090"]
+        # Cloudflare names a durable_object container after its 64-character Durable Object
+        # ID, longer than a DNS label: every computer here runs under such a hostname.
+        self.hostname = secrets.token_hex(32)
+        args = ["run", "-d", "--name", self.name, "--hostname", self.hostname]
+        args += ["--network", self.net, "-p", "127.0.0.1::8090"]
         for k, v in base_env.items():
             args += ["-e", f"{k}={v}"]
         docker(*args, IMAGE)
@@ -182,6 +186,23 @@ def test_the_supervisor_is_tinis_child_and_says_hello(computer: Computer) -> Non
     assert inspect["Entrypoint"] == ["/usr/bin/tini", "--"]
     banned = ("OMNIGENT_GITHUB_APP", "OMNIGENT_DATABRICKS", "OMNIGENT_CREDENTIAL", "DATABRICKS_")
     assert not [e for e in inspect["Env"] if e.startswith(banned)]
+
+
+def test_the_command_port_answers_under_a_durable_object_hostname(computer: Computer) -> None:
+    """Under Cloudflare's 64-character hostname, a stock ``http.server`` cannot bind (its
+    ``getfqdn`` raises), and the supervisor's command port still answers (WP3.3's staging)."""
+    assert computer.exec("hostname").stdout.strip() == computer.hostname
+    assert len(computer.hostname) == 64
+    stock = computer.exec(
+        "/usr/local/bin/python3",
+        "-I",
+        "-c",
+        "from http.server import HTTPServer, BaseHTTPRequestHandler as H\n"
+        "HTTPServer(('0.0.0.0', 0), H)",
+        check=False,
+    )
+    assert stock.returncode != 0 and "label too long" in stock.stderr, stock.stderr[-300:]
+    assert computer.post("status")[0] == 200
 
 
 def test_the_supervisors_death_stops_the_container(computer: Computer) -> None:
