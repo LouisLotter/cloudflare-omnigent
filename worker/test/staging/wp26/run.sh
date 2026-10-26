@@ -82,10 +82,17 @@ print(json.dumps({
       "${redact[@]}" >"$dir/workers-logs.jsonl"
     account="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["accountId"])' \
       "$state_dir/config.json")"
-    for key in $(CLOUDFLARE_ACCOUNT_ID="$account" cf r2 objects list --bucket-name "$bucket" \
-        --prefix results/ 2>/dev/null | grep -oE 'results/[^" ]+/summary\.json' | sort -u); do
-      pnpm -s --dir "$root/worker" exec wrangler r2 object get "$bucket/$key" --remote \
-        --pipe 2>/dev/null | "${redact[@]}" >"$dir/$(echo "$key" | tr / _)"
+    keys="$(CLOUDFLARE_ACCOUNT_ID="$account" cf r2 objects list --bucket-name "$bucket" \
+      --prefix results/ | grep -oE 'results/[^" ]+/summary\.json' | sort -u)"
+    for key in $keys; do
+      # Wrangler, like cf, needs the account named when the login sees more than one; without
+      # it the read failed quietly and left an empty file (the collect of 26 Oct).
+      CLOUDFLARE_ACCOUNT_ID="$account" pnpm -s --dir "$root/worker" exec wrangler r2 object get \
+        "$bucket/$key" --remote --pipe 2>/dev/null >"$dir/raw.json"
+      python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/raw.json" ||
+        { echo "could not read $key" >&2; rm -f "$dir/raw.json"; exit 1; }
+      "${redact[@]}" <"$dir/raw.json" >"$dir/$(echo "$key" | tr / _)"
+      rm -f "$dir/raw.json"
     done
     ls -la "$dir"
     ;;
