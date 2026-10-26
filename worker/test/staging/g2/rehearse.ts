@@ -1,12 +1,14 @@
 // G2 sitting, local rehearsal (test tooling, laptop only): the sitting's steps (steps.ts), run
 // against the real server image in Docker with an S3 stand-in, before anything is deployed. It
 // checks every Omnigent request the steps make (sign-in and its cookie, agents, schedules,
-// sessions, attachments and their headers, the session check after a cookie-key change,
-// recovery mode) and the step machine around them. Docker plays the platform: a kill removes
+// sessions, attachments and their headers across both kinds of restart, from an artifact bucket
+// of their own, the session check after a cookie-key change, recovery mode) and the step
+// machine around them. `--local-artifacts` runs it with the artifacts on the container's disk
+// instead (the image's test switch): the control, in which replace-1 and rotate must fail. Docker plays the platform: a kill removes
 // the container and starts a fresh one from the replica, as the production watchdog does; a
 // configuration change restarts it once, as G2-SEC-001's controlled restart will.
 //
-//   node worker/test/staging/g2/rehearse.ts [image]     (default cfo-g2-server:dev)
+//   node worker/test/staging/g2/rehearse.ts [image] [--local-artifacts]   (default cfo-g2-server:dev)
 //
 // Containers are named cfo-g2-rh-*, on the Compose project cfo-g2-rh (MinIO only), and removed
 // at the end. Every credential is generated here and never printed.
@@ -31,9 +33,12 @@ import {
 } from "./steps.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-const IMAGE = process.argv[2] ?? "cfo-g2-server:dev";
+const LOCAL_ARTIFACTS = process.argv.includes("--local-artifacts");
+const IMAGE = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "cfo-g2-server:dev";
 const PROJECT = "cfo-g2-rh";
 const BUCKET = "cfo-g2-rh-replica";
+/** Omnigent's artifacts, in a bucket of their own as the bootstrap plans them (G2-DUR-001). */
+const ARTIFACT_BUCKET = "cfo-g2-rh-artifacts";
 const COMPOSE = join(ROOT, "images", "server", "tests", "integration", "compose.yaml");
 const scratch = mkdtempSync(join(homedir(), ".pt", "g2-rh-"));
 
@@ -63,11 +68,23 @@ let config: Record<string, string> = {
   CFO_REPLICA_REGION: "us-east-1",
   LITESTREAM_ACCESS_KEY_ID: s3User,
   LITESTREAM_SECRET_ACCESS_KEY: s3Password,
+  // One stand-in token for both buckets, under each use's own names, as the bootstrap sets them.
+  OMNIGENT_ARTIFACT_URI: `s3://${ARTIFACT_BUCKET}`,
+  AWS_ENDPOINT_URL_S3: "http://minio:9000",
+  AWS_REGION: "us-east-1",
+  AWS_ACCESS_KEY_ID: s3User,
+  AWS_SECRET_ACCESS_KEY: s3Password,
   OMNIGENT_ACCOUNTS_BASE_URL: "http://cfo-g2-rh.invalid",
   OMNIGENT_ACCOUNTS_COOKIE_SECRET: randomBytes(32).toString("hex"),
   OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
   OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: ownerPassword,
 };
+if (LOCAL_ARTIFACTS) {
+  for (const name of ["OMNIGENT_ARTIFACT_URI", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]) {
+    delete config[name];
+  }
+  config.CFO_ALLOW_LOCAL_ARTIFACTS = "true";
+}
 const fingerprint = (env: Record<string, string>) =>
   createHash("sha256")
     .update(JSON.stringify(Object.entries(env).sort(([a], [b]) => a.localeCompare(b))))
@@ -220,6 +237,7 @@ const ports: G2Ports = {
         json,
         ms: Date.now() - sent,
         cookies: response.headers.getSetCookie().map((c) => c.split(";")[0] ?? ""),
+        text,
       };
     } catch {
       return { status: 0, headers: {}, cookies: [], json: null, ms: Date.now() - sent };
@@ -270,6 +288,7 @@ async function run(step: StepName, password?: string): Promise<StepRecord> {
 }
 
 const results: Record<string, unknown> = {
+  artifacts: LOCAL_ARTIFACTS ? "local (control)" : "s3",
   image: IMAGE,
   imageId: docker("image", "inspect", "-f", "{{.Id}}", IMAGE),
 };
@@ -286,9 +305,10 @@ try {
       "python",
       "-I",
       "-c",
-      "import boto3,os,sys,time\nc=boto3.client('s3',endpoint_url=sys.argv[1],region_name='us-east-1',aws_access_key_id=os.environ['CFO_IT_S3_USER'],aws_secret_access_key=os.environ['CFO_IT_S3_PASSWORD'])\nfor i in range(60):\n  try:\n    c.create_bucket(Bucket=sys.argv[2]); break\n  except Exception:\n    time.sleep(1)\nelse:\n  sys.exit(1)",
+      "import boto3,os,sys,time\nc=boto3.client('s3',endpoint_url=sys.argv[1],region_name='us-east-1',aws_access_key_id=os.environ['CFO_IT_S3_USER'],aws_secret_access_key=os.environ['CFO_IT_S3_PASSWORD'])\nfor bucket in sys.argv[2:]:\n  for i in range(60):\n    try:\n      c.create_bucket(Bucket=bucket); break\n    except Exception:\n      time.sleep(1)\n  else:\n    sys.exit(1)",
       `http://127.0.0.1:${minio}`,
       BUCKET,
+      ARTIFACT_BUCKET,
     ],
     composeEnv,
   );
@@ -358,6 +378,23 @@ const verdicts = Object.fromEntries(
     .map(([name, r]) => [name, (r as StepRecord).verdict]),
 );
 console.log(`verdicts: ${JSON.stringify(verdicts)}`);
-if (Object.keys(verdicts).length !== 5 || Object.values(verdicts).some((v) => v !== "pass")) {
+if (LOCAL_ARTIFACTS) {
+  // The control: the files die with the disk, and only the artifact checks may say so.
+  const lost = (step: string, what: string) =>
+    verdicts[step] === "fail" &&
+    ((results[step] as StepRecord).problems ?? []).every((p) => p.startsWith(what));
+  const others = Object.entries(verdicts).filter(([n]) => n !== "replace-1" && n !== "rotate");
+  if (
+    !lost("replace-1", "rc07: ") ||
+    !lost("rotate", "artifacts: ") ||
+    others.length !== 3 ||
+    others.some(([, v]) => v !== "pass")
+  ) {
+    process.exitCode = 1;
+  }
+} else if (
+  Object.keys(verdicts).length !== 5 ||
+  Object.values(verdicts).some((v) => v !== "pass")
+) {
   process.exitCode = 1;
 }

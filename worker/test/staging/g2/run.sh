@@ -4,14 +4,16 @@
 # the sitting's harness (platform.ts, steps.ts) on the same platform Worker. Every deploy and
 # secret change goes through the guarded staging tool. Names: cfo-stg-g2-sitting-*.
 #
-#   run.sh bucket     deploy the replica bucket's holder (cfo-stg-g2-sitting-r2, bucket
-#                     cfo-stg-g2-sitting-r2-db), plan the installation (owner "owner", replica
-#                     s3://cfo-stg-g2-sitting-r2-db/omnigent), generate the owner's password;
-#                     then deploy the 1 GB run (cfo-stg-g2-sitting-1gb, bucket
+#   run.sh bucket     deploy the buckets' holder (cfo-stg-g2-sitting-r2: buckets
+#                     cfo-stg-g2-sitting-r2-db and cfo-stg-g2-sitting-r2-artifacts), plan the
+#                     installation (owner "owner", replica s3://cfo-stg-g2-sitting-r2-db/omnigent,
+#                     artifacts s3://cfo-stg-g2-sitting-r2-artifacts), generate the owner's
+#                     password; then deploy the 1 GB run (cfo-stg-g2-sitting-1gb, bucket
 #                     cfo-stg-g2-sitting-1gb-db), which holds until `big`
-#   run.sh token      [owner] paste the R2 token's two values (not echoed; one token for both
+#   run.sh token      [owner] paste the R2 token's two values (not echoed; one token for all three
 #                     buckets); sets them on the 1 GB run, starts the bootstrap in the background
-#                     (log: $G2_DIR/bootstrap.log) and returns
+#                     (log: $G2_DIR/bootstrap.log), which sets them for the replica and for the
+#                     artifacts, each under its own names, and returns
 #   run.sh follow     wait for the bootstrap to end; then the anonymous probe
 #   run.sh resume     run the bootstrap again (exit 2 or 3 from follow: still waiting or not
 #                     checked yet); it needs no secret once the first deploy is done
@@ -21,7 +23,8 @@
 #   run.sh status     the harness's and the watchdog's lines so far
 #   run.sh probe      RC-01: anonymous requests, and the alternate URLs ([subdomain])
 #   run.sh password   [owner] print the owner's generated password, for the sign-in form
-#   run.sh rc07       the attachment URLs the owner opens (from replace-1's result)
+#   run.sh rc07       the attachment URLs the owner opens: replace-1's files, uploaded before its
+#                     kill; it refuses until rotate showed them served after its restart too
 #   run.sh replace    replace-2: the replacement after the owner's edits (the owner password is
 #                     removed from the Worker in the same change)
 #   run.sh recovery   optional: an empty replica prefix; the server must enter recovery mode
@@ -52,6 +55,8 @@ platform=cfo-stg-g2-sitting-platform
 web=cfo-stg-g2-sitting-web
 big=cfo-stg-g2-sitting-1gb
 big_bucket=cfo-stg-g2-sitting-1gb-db
+replica_bucket=cfo-stg-g2-sitting-r2-db
+artifacts_bucket=cfo-stg-g2-sitting-r2-artifacts
 mkdir -p "$out"
 chmod 700 "$out"
 
@@ -129,10 +134,18 @@ for line in sys.stdin:
             "rotation": r.get("rotation"),
             "recovery": r.get("recovery"),
             "rc07": [
-                {"file": f.get("filename"), "content": f.get("content"),
+                {"file": f.get("filename"),
+                 "uploadedBeforeKill": (r.get("rc07") or {}).get("uploadedBeforeKill"),
+                 "before": (f.get("before") or {}).get("content"),
+                 "content": f.get("content"), "same": f.get("same"),
                  "disposition": (f.get("headers") or {}).get("content-disposition"),
                  "nosniff": (f.get("headers") or {}).get("x-content-type-options")}
                 for f in ((r.get("rc07") or {}).get("files") or [])
+            ],
+            # rotate: the files from replace-1 after the controlled restart (G2-DUR-001).
+            "artifacts": [
+                {"file": f.get("filename"), "content": f.get("content"), "same": f.get("same")}
+                for f in ((r.get("artifacts") or {}).get("files") or [])
             ],
         }
         compact = {k: v for k, v in compact.items() if v not in (None, {}, [])}
@@ -149,8 +162,10 @@ case "${1:-}" in
     logged bucket "${stg[@]}" deploy --suffix g2-sitting-r2 --owner "$owner" \
       --config worker/test/staging/g2/bucket/wrangler.jsonc --days 1
     logged plan "${bootstrap[@]}" plan --staging g2-sitting --staging-owner "$owner" \
-      --owner-username owner --replica-url s3://cfo-stg-g2-sitting-r2-db/omnigent \
+      --owner-username owner --replica-url "s3://$replica_bucket/omnigent" \
+      --artifacts-url "s3://$artifacts_bucket" \
       --replica-endpoint "https://$(account).r2.cloudflarestorage.com" --days 1
+    logged buckets "${bootstrap[@]}" buckets --staging g2-sitting
     if [ ! -f "$secrets" ]; then
       (umask 077; python3 -I -c 'import json,secrets; print(json.dumps({"ownerPassword": "cfo-stg-" + secrets.token_urlsafe(18)}))' >"$secrets")
     fi
@@ -166,11 +181,11 @@ print(json.dumps({
     "SERVER_ENV_CFO_REPLICA_ENDPOINT": f"https://{account}.r2.cloudflarestorage.com",
 }))' "$state_dir/config.json" | logged big-deploy "${stg[@]}" deploy --suffix g2-sitting-1gb \
       --owner "$owner" --config worker/test/staging/g2/resnapshot/wrangler.jsonc --days 1 --secrets-stdin
-    echo "Ready for the owner's R2 token: buckets cfo-stg-g2-sitting-r2-db and $big_bucket."
+    echo "Ready for the owner's R2 token: buckets $replica_bucket, $artifacts_bucket and $big_bucket."
     ;;
   token)
     [ -f "$secrets" ] || { echo "run.sh bucket first"; exit 2; }
-    echo "Paste the R2 token's values (they are not shown). Buckets: cfo-stg-g2-sitting-r2-db, $big_bucket"
+    echo "Paste the R2 token's values (they are not shown). Buckets: $replica_bucket, $artifacts_bucket, $big_bucket"
     read -rsp "Access Key ID: " key_id
     echo
     read -rsp "Secret Access Key: " key_secret
@@ -262,6 +277,7 @@ import json, re, sys
 host = sys.argv[1]
 path_shape = re.compile(r"^/v1/sessions/[0-9a-f]{32}/resources/files/[0-9a-f]{32}/content$")
 urls = {}
+survived = {}
 for line in sys.stdin:
     try:
         source = json.loads(line).get("source")
@@ -272,16 +288,25 @@ for line in sys.stdin:
     if not isinstance(source, dict) or source.get("event") != "step_done":
         continue
     record = source.get("record") or {}
+    if record.get("step") == "rotate":
+        # G2-DUR-001: the files must have survived the controlled restart of rotate as well.
+        survived = {f.get("path"): f.get("content") == 200 and f.get("same") is True
+                    for f in (record.get("artifacts") or {}).get("files") or []}
     if record.get("step") != "replace-1":
         continue
+    if (record.get("rc07") or {}).get("uploadedBeforeKill") is not True:
+        sys.exit("replace-1 did not upload its files before the kill: no RC-07 URL from it")
     for f in (record.get("rc07") or {}).get("files") or []:
         path = f.get("path") or ""
-        if path_shape.match(path):
-            urls[f.get("filename")] = "https://" + host + path
-for name, url in sorted(urls.items()):
-    print(name, url)
+        if path_shape.match(path) and f.get("same") is True:
+            urls[f.get("filename")] = path
 if len(urls) != 2:
     sys.exit(f"expected the two attachment URLs from replace-1, found {len(urls)}")
+lost = [name for name, path in urls.items() if not survived.get(path)]
+if lost:
+    sys.exit(f"rotate has not shown {sorted(lost)} served after its restart: run rotate first")
+for name, path in sorted(urls.items()):
+    print(name, "https://" + host + path)
 ' "$web.$z"
     ;;
   password)

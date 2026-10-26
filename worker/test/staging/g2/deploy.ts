@@ -13,7 +13,7 @@
 // Wrangler pushes nothing and starts no rollout.
 //
 // dry-run renders, from a synthetic installation, every configuration the sitting deploys (the
-// replica bucket's holder, the production platform and web Workers as the bootstrap renders
+// buckets' holder, the production platform and web Workers as the bootstrap renders
 // them, the harness and its recovery variant, and the 1 GB run), checks the staging ones with
 // the staging tool's own rules, and runs `wrangler deploy --dry-run` on each. No Cloudflare
 // call.
@@ -46,6 +46,8 @@ export const PLATFORM = `cfo-stg-${BASE}-platform`;
 export const PLATFORM_SUFFIX = `${BASE}-platform`;
 export const HOLDER = `cfo-stg-${BASE}-r2`;
 export const BUCKET = `${HOLDER}-db`;
+/** Omnigent's artifacts, a bucket of their own beside the replica's (G2-DUR-001). */
+export const ARTIFACT_BUCKET = `${HOLDER}-artifacts`;
 /** VD-15 at 1 GB: WP2.6's harness under the sitting's names (resnapshot/wrangler.jsonc). */
 export const BIG = `cfo-stg-${BASE}-1gb`;
 /** The local server image the 1 GB run's seeder builds on. */
@@ -113,6 +115,7 @@ async function dryRun(outdir: string): Promise<number> {
       url: `s3://${BUCKET}/omnigent`,
       endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     },
+    artifacts: { url: `s3://${ARTIFACT_BUCKET}` },
     target: {
       kind: "staging",
       owner: OWNER,

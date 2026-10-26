@@ -1,7 +1,8 @@
 // The G2 sitting's steps (worker/test/staging/g2/steps.ts) against a fake server: one kill per
 // step whatever restarts in between (persist before effect), the probe's views from the first
 // `running` report, the checks before and after, the rotation's refusal of the old session, and
-// recovery mode reached by the watchdog's restart or, failing that, by a kill.
+// recovery mode reached by the watchdog's restart or, failing that, by a kill; and RC-07's files,
+// uploaded before replace-1's kill, served after it and after rotate's restart (G2-DUR-001).
 import { describe, expect, it } from "vitest";
 import {
   type ConfigView,
@@ -49,6 +50,10 @@ class FakeServer {
   /** Where a kill leads: the normal start, or recovery mode (an empty replica). */
   bootsInto: "running" | "recovery" = "running";
   schedules: { id: string; name: string }[] = [];
+  /** Uploaded files' bytes by file ID: in an artifact bucket, or on the container's disk. */
+  files = new Map<string, string>();
+  /** Whether the files outlive a container (G2-DUR-001's fix) or die with its disk. */
+  artifactsInBucket = true;
   records = new Map<StepName, StepRecord>();
   kept = new Map<string, KeptSession>();
   /** The watchdog's records: the release's controlled restart, before the test starts. */
@@ -75,6 +80,7 @@ class FakeServer {
     if (this.restartPhase >= 0 && ms >= 1000) {
       if (!this.running) {
         this.running = true;
+        this.loseDisk();
         this.boot += 1;
         this.startedWith = this.configCurrent;
         this.restartPhase = 0;
@@ -98,11 +104,17 @@ class FakeServer {
         detectedAt: this.clock,
         endedAt: this.replicaUrl.includes("/g2-empty-") ? null : this.clock + 1,
       });
+      this.loseDisk();
       this.boot += 1;
       this.startedWith = this.configCurrent;
       this.phase = this.replicaUrl.includes("/g2-empty-") ? "recovery" : "running";
       this.readyAtMs = this.clock;
     }
+  }
+
+  /** A new container: files kept only on its disk are gone. */
+  loseDisk() {
+    if (!this.artifactsInBucket) this.files.clear();
   }
 
   answer(status: number, json: unknown = null, extra: Partial<HttpAnswer> = {}): HttpAnswer {
@@ -157,10 +169,18 @@ class FakeServer {
         return this.answer(200, { id: `session-${this.txid}` });
       default:
         if (/^POST \/v1\/sessions\/session-\d+\/resources\/files$/.test(route)) {
-          return this.answer(201, { id: `file-${init?.upload?.filename.replace(/\W/g, "-")}` });
+          const id = `file-${this.files.size}-${init?.upload?.filename.replace(/\W/g, "-")}`;
+          this.files.set(id, init?.upload?.content ?? "");
+          return this.answer(201, { id });
         }
         if (route.endsWith("/:file/content")) {
+          if (!this.authorised(init)) return this.answer(401);
+          const id = path.split("/").at(-2) ?? "";
+          const text = this.files.get(id);
+          // Omnigent at the pinned fork: a row without its blob is a 500 (upstream candidate).
+          if (text === undefined) return this.answer(500, { error: { code: "internal_error" } });
           return this.answer(200, null, {
+            text,
             headers: {
               "content-type": "text/html",
               "content-disposition": 'attachment; filename="x"',
@@ -280,6 +300,14 @@ describe("replace-1", () => {
     const files = (done.rc07 as { files: { filename: string; headers: object }[] }).files;
     expect(files.map((f) => f.filename)).toEqual(RC07_FILES.map((f) => f.filename));
     expect(files[0]?.headers).toMatchObject({ "x-content-type-options": "nosniff" });
+    // Uploaded before the kill, served the same after it (G2-DUR-001).
+    expect(done.rc07).toMatchObject({ uploadedBeforeKill: true, checkedAfter: true });
+    for (const f of files) {
+      expect(f).toMatchObject({ before: { content: 200, same: true }, content: 200, same: true });
+    }
+    // The files' text stays out of the record and the logs.
+    expect(JSON.stringify(done)).not.toContain("SCRIPT RAN");
+    expect(JSON.stringify(server.logs)).not.toContain("SCRIPT RAN");
     expect(server.kept.get("rotate")).toMatchObject({ fingerprint: "fp-released" });
     expect(server.kept.has("before")).toBe(false);
     // Nothing logged carries the password or a session.
@@ -327,6 +355,25 @@ describe("replace-1", () => {
     expect(failed).toMatchObject({ stage: "failed", recovery: { reason: "replica_empty" } });
   });
 
+  it("fails when the replacement lost the files uploaded before the kill (G2-DUR-001)", async () => {
+    const server = new FakeServer();
+    server.artifactsInBucket = false;
+    const done = await runStep(server.ports(), ctx("replace-1"));
+    expect(done).toMatchObject({ stage: "done", verdict: "fail" });
+    expect(done.problems).toEqual([
+      "rc07: g2-rc07.html content not served after the replacement",
+      "rc07: g2-rc07.html is not the uploaded file after the replacement",
+      "rc07: g2-rc07.html not served as an attachment",
+      "rc07: g2-rc07.html without nosniff",
+      "rc07: g2-rc07.svg content not served after the replacement",
+      "rc07: g2-rc07.svg is not the uploaded file after the replacement",
+      "rc07: g2-rc07.svg not served as an attachment",
+      "rc07: g2-rc07.svg without nosniff",
+    ]);
+    const first = (done.rc07 as { files: Record<string, unknown>[] }).files[0];
+    expect(first).toMatchObject({ before: { same: true }, content: 500, code: "internal_error" });
+  });
+
   it("waits without the owner's password", async () => {
     const server = new FakeServer();
     expect(await runStep(server.ports(), ctx("replace-1", null))).toMatchObject({
@@ -359,8 +406,28 @@ describe("rotate", () => {
       verdict: "pass",
       rotation: { oldCookie: 401, oldBearer: 401, newCookie: 200 },
     });
+    // replace-1's files, after the controlled restart: the URLs the owner opens (G2-DUR-001).
+    const files = (done.artifacts as { files: Record<string, unknown>[] }).files;
+    expect(files.map((f) => f.filename)).toEqual(RC07_FILES.map((f) => f.filename));
+    for (const f of files) expect(f).toMatchObject({ content: 200, same: true });
     expect(server.destroys).toBe(1); // only replace-1's
     expect(server.kept.size).toBe(0);
+  });
+
+  it("fails when the controlled restart lost RC-07's files, as in the G2 sitting", async () => {
+    const server = await afterReplace1();
+    server.artifactsInBucket = false; // from here on, the next container starts without them
+    server.cookieKey = "k2";
+    server.configCurrent = "fp-rotated";
+    server.tick(1000);
+    const done = await runStep(server.ports(), ctx("rotate"));
+    expect(done).toMatchObject({ stage: "done", verdict: "fail" });
+    expect(done.problems).toEqual([
+      "artifacts: g2-rc07.html lost after the controlled restart (G2-DUR-001)",
+      "artifacts: g2-rc07.html without its download headers after the restart",
+      "artifacts: g2-rc07.svg lost after the controlled restart (G2-DUR-001)",
+      "artifacts: g2-rc07.svg without its download headers after the restart",
+    ]);
   });
 
   it("fails, naming G2-SEC-001, when the server keeps the old configuration", async () => {
@@ -518,6 +585,14 @@ describe("verdicts (Codex G2 review: completion is not acceptance)", () => {
       updatedAt: 0,
       invocations: 1,
       rotation: { config: { pass: true }, oldCookie: 401, oldBearer: 200, newCookie: 200 },
+      artifacts: {
+        files: RC07_FILES.map((f) => ({
+          filename: f.filename,
+          content: 200,
+          same: true,
+          headers: { "content-disposition": "attachment", "x-content-type-options": "nosniff" },
+        })),
+      },
     };
     const verdict = verdictOf(rotated);
     expect(verdict.verdict).toBe("fail");
@@ -538,6 +613,15 @@ describe("verdicts (Codex G2 review: completion is not acceptance)", () => {
     const files = (done.rc07 as { files: Record<string, unknown>[] }).files;
     const stripped = files.map((f) => ({ ...f, headers: { "content-type": "text/html" } }));
     expect(verdictOf({ ...done, rc07: { files: stripped } })).toMatchObject({ verdict: "fail" });
+    // Files uploaded only after the kill prove nothing about the replacement (G2-DUR-001).
+    const late = { ...done.rc07, uploadedBeforeKill: false };
+    expect(verdictOf({ ...done, rc07: late }).problems).toEqual([
+      "rc07: the files were not uploaded before the kill",
+    ]);
+    const changed = files.map((f) => ({ ...f, same: false }));
+    expect(verdictOf({ ...done, rc07: { ...done.rc07, files: changed } }).problems).toEqual(
+      RC07_FILES.map((f) => `rc07: ${f.filename} is not the uploaded file after the replacement`),
+    );
   });
 
   it("recovery fails if setup is offered, recovery ends, or the server restarts", () => {

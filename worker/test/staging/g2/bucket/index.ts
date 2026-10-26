@@ -1,4 +1,5 @@
-// G2 sitting: the replica bucket's holder (wrangler.jsonc). It serves nothing.
+// G2 sitting: the holder of the replica's and the artifacts' buckets (wrangler.jsonc). It serves
+// nothing.
 export default {
   fetch: () => new Response("not found", { status: 404 }),
 } satisfies ExportedHandler;

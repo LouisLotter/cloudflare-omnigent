@@ -246,5 +246,7 @@ async function request(
     cookies: response.headers.getSetCookie().map((cookie) => cookie.split(";")[0] ?? ""),
     json,
     ms: Date.now() - sent,
+    // Compared with an upload by the steps, never logged.
+    text,
   };
 }

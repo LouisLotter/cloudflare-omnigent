@@ -13,12 +13,15 @@
 //              security write every 2 s until one is confirmed, and one ordinary commit timed
 //              until the replica covers it). Then the checks after (RC-02's durable half: the
 //              owner, restored from R2, signs in; a session from before the restart still
-//              works) and RC-07's fixtures (an HTML and an SVG attachment, with their content
-//              headers as Omnigent answers through the forward). It keeps a fresh, checked
-//              session for `rotate`.
+//              works) and RC-07's fixtures (an HTML and an SVG attachment, uploaded before the
+//              kill and served after it, byte for byte, with their content headers as Omnigent
+//              answers through the forward: the artifacts survive a replacement, G2-DUR-001).
+//              It keeps a fresh, checked session for `rotate`.
 //   rotate     after `run.sh rotate` set a new cookie secret: waits until the watchdog has
 //              restarted the server with it (G2-SEC-001's controlled restart, no kill here), then
-//              checks that the kept session's cookie and bearer are both refused.
+//              checks that the kept session's cookie and bearer are both refused, and that
+//              RC-07's files are still served after that restart (G2-DUR-001): the URLs the
+//              owner opens come from files that have survived both kinds of restart.
 //   replace-2  after the owner's edits: the same replacement, timed, with no credential (the
 //              owner changed the password); the owner then checks the edits in the browser.
 //   recovery   once the platform runs with an empty replica prefix: the server must be in
@@ -69,6 +72,8 @@ export interface HttpAnswer {
   readonly cookies: readonly string[];
   readonly json: unknown;
   readonly ms: number;
+  /** The body as text, for comparing a downloaded file with its upload; never recorded. */
+  readonly text?: string;
 }
 
 export interface Upload {
@@ -196,8 +201,11 @@ export interface StepRecord {
   probe?: Record<string, unknown>;
   replica?: Record<string, unknown>;
   after?: Record<string, unknown>;
+  /** replace-1: RC-07's files, uploaded before the kill, and each one's answers. */
   rc07?: Record<string, unknown>;
   rotation?: Record<string, unknown>;
+  /** rotate: RC-07's files again, after the controlled restart (G2-DUR-001). */
+  artifacts?: Record<string, unknown>;
   recovery?: Record<string, unknown>;
 }
 
@@ -548,8 +556,11 @@ async function kill(
   ctx: StepContext,
   save: () => Promise<void>,
 ): Promise<void> {
-  if (ctx.step === "replace-1") record.before = await checksBefore(ports, ctx);
-  else record.before = { config: await configCheck(ports) };
+  if (ctx.step === "replace-1") {
+    record.before = await checksBefore(ports, ctx);
+    // Uploaded before the kill, so the replacement must serve them from the artifact bucket.
+    record.rc07 = await rc07Upload(ports, ctx);
+  } else record.before = { config: await configCheck(ports) };
   // Persist before the effect: a restart after this line never kills twice.
   record.killSentAt = ports.now();
   record.stage = "killed";
@@ -770,13 +781,14 @@ async function afterAnswer(
         record.after = await checksAfter(ports, ctx, record);
         await save();
       }
-      if (record.rc07 === undefined) {
-        record.rc07 = await rc07(ports, ctx);
+      if (at(record.rc07, "checkedAfter") !== true) {
+        record.rc07 = await rc07After(ports, ctx, record.rc07);
         await save();
       }
       return;
     case "rotate":
       record.rotation = await rotationRefusesOldSession(ports, ctx);
+      record.artifacts = await artifactsAfterRestart(ports, ctx);
       return;
     case "replace-2":
       record.replica = record.answerResumed
@@ -929,8 +941,28 @@ async function checksAfter(ports: G2Ports, ctx: StepContext, record: StepRecord)
   };
 }
 
-/** RC-07's fixtures: a session holding the hostile artifacts, and their content headers. */
-async function rc07(ports: G2Ports, ctx: StepContext) {
+/** One file's content as served now: its status, whether it is the upload, its headers. */
+async function served(ports: G2Ports, token: string, path: string, filename: string) {
+  const content = await ports.http("GET", path, { bearer: token });
+  const upload = RC07_FILES.find((f) => f.filename === filename);
+  return {
+    content: content.status,
+    code: codeOf(content.json),
+    same: content.status === 200 && content.text === upload?.content,
+    headers: Object.fromEntries(
+      RC07_HEADERS.filter((h) => content.headers[h] !== undefined).map((h) => [
+        h,
+        content.headers[h],
+      ]),
+    ),
+  };
+}
+
+/**
+ * RC-07's fixtures, before replace-1's kill: a session holding the hostile artifacts, each read
+ * back once. The replacement must then serve the same bytes (G2-DUR-001).
+ */
+async function rc07Upload(ports: G2Ports, ctx: StepContext) {
   const token = await bearer(ports, ctx);
   const agent = await agentId(ports, token);
   const session = await ports.http("POST", "/v1/sessions", {
@@ -939,7 +971,7 @@ async function rc07(ports: G2Ports, ctx: StepContext) {
   });
   const sessionId = idOf(session.json);
   if (!ok(session.status) || sessionId === undefined) {
-    return { session: session.status, files: [] };
+    return { uploadedBeforeKill: true, session: session.status, files: [] };
   }
   const base = `/v1/sessions/${encodeURIComponent(sessionId)}/resources/files`;
   const files = [];
@@ -951,21 +983,48 @@ async function rc07(ports: G2Ports, ctx: StepContext) {
       continue;
     }
     const path = `${base}/${encodeURIComponent(fileId)}/content`;
-    const content = await ports.http("GET", path, { bearer: token });
+    const before = await served(ports, token, path, upload.filename);
     files.push({
       filename: upload.filename,
       upload: created.status,
       path,
-      content: content.status,
-      headers: Object.fromEntries(
-        RC07_HEADERS.filter((h) => content.headers[h] !== undefined).map((h) => [
-          h,
-          content.headers[h],
-        ]),
-      ),
+      before: { content: before.content, same: before.same },
     });
   }
-  return { sessionId, files };
+  return { uploadedBeforeKill: true, sessionId, files };
+}
+
+/** The files uploaded before the kill, as the replacement serves them. */
+async function rc07After(ports: G2Ports, ctx: StepContext, uploaded: unknown) {
+  const token = await bearer(ports, ctx);
+  const files = [];
+  for (const file of (at(uploaded, "files") as Record<string, unknown>[] | undefined) ?? []) {
+    if (typeof file.path !== "string") {
+      files.push(file);
+      continue;
+    }
+    files.push({ ...file, ...(await served(ports, token, file.path, String(file.filename))) });
+  }
+  return { ...(uploaded as Record<string, unknown>), checkedAfter: true, files };
+}
+
+/**
+ * After rotate's controlled restart: replace-1's files, uploaded before its kill, must still be
+ * served, byte for byte (G2-DUR-001; the G2 sitting found them lost after this very restart).
+ */
+async function artifactsAfterRestart(ports: G2Ports, ctx: StepContext) {
+  const uploaded = (await ports.load("replace-1"))?.rc07;
+  const token = await bearer(ports, ctx);
+  const files = [];
+  for (const file of (at(uploaded, "files") as Record<string, unknown>[] | undefined) ?? []) {
+    if (typeof file.path !== "string") continue;
+    files.push({
+      filename: file.filename,
+      path: file.path,
+      ...(await served(ports, token, file.path, String(file.filename))),
+    });
+  }
+  return { files };
 }
 
 /** After the cookie key changed: the kept session is refused, cookie and bearer alike. */
@@ -1108,10 +1167,17 @@ export function verdictOf(r: StepRecord): { verdict: Verdict; problems: string[]
         "no checked session kept for rotate",
       );
       const files = (at(r.rc07, "files") as Record<string, unknown>[] | undefined) ?? [];
+      need(
+        at(r.rc07, "uploadedBeforeKill") === true,
+        "rc07: the files were not uploaded before the kill",
+      );
       need(files.length === RC07_FILES.length, "rc07: not every file uploaded");
       for (const f of files) {
         const name = String(f.filename);
-        need(f.content === 200, `rc07: ${name} content not served`);
+        need(at(f, "before", "same") === true, `rc07: ${name} not served before the kill`);
+        // G2-DUR-001: the replacement's disk is new; the file must come from the artifact bucket.
+        need(f.content === 200, `rc07: ${name} content not served after the replacement`);
+        need(f.same === true, `rc07: ${name} is not the uploaded file after the replacement`);
         need(
           String(at(f, "headers", "content-disposition") ?? "").startsWith("attachment"),
           `rc07: ${name} not served as an attachment`,
@@ -1133,6 +1199,25 @@ export function verdictOf(r: StepRecord): { verdict: Verdict; problems: string[]
         typeof at(r.rotation, "outage", "durationS") === "number",
         "no ended config_changed outage from the rotation recorded",
       );
+      {
+        const files = (at(r.artifacts, "files") as Record<string, unknown>[] | undefined) ?? [];
+        need(
+          files.length === RC07_FILES.length,
+          "artifacts: replace-1's files are not all recorded",
+        );
+        for (const f of files) {
+          const name = String(f.filename);
+          need(
+            f.content === 200 && f.same === true,
+            `artifacts: ${name} lost after the controlled restart (G2-DUR-001)`,
+          );
+          need(
+            String(at(f, "headers", "content-disposition") ?? "").startsWith("attachment") &&
+              at(f, "headers", "x-content-type-options") === "nosniff",
+            `artifacts: ${name} without its download headers after the restart`,
+          );
+        }
+      }
       break;
     case "replace-2":
       need(at(r.after, "config", "pass") === true, "the configuration check failed");
