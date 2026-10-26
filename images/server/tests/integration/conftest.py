@@ -30,9 +30,13 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 IMAGE = os.environ.get("CFO_IT_IMAGE", "cfo-wp23-server:dev")
-PROJECT = "cfo-wp23"
+#: The Compose project, which also names the server containers; a gate rerun may set its own.
+PROJECT = os.environ.get("CFO_IT_PROJECT", "cfo-wp23")
 NETWORK = f"{PROJECT}_default"
 BUCKET = "cfo-wp23-replica"
+#: Omnigent's artifacts, in a bucket of their own as on Cloudflare (G2-DUR-001). Reached
+#: directly, not through the faulty "R2" link, whose tests are about the replica.
+ARTIFACT_BUCKET = "cfo-wp23-artifacts"
 OWNER = "owner"
 
 
@@ -73,8 +77,8 @@ class Stack:
             aws_secret_access_key=self.env["CFO_IT_S3_PASSWORD"],
         )
 
-    def objects(self, prefix: str) -> list[str]:
-        response = self.s3().list_objects_v2(Bucket=BUCKET, Prefix=prefix.rstrip("/") + "/")
+    def objects(self, prefix: str, bucket: str = BUCKET) -> list[str]:
+        response = self.s3().list_objects_v2(Bucket=bucket, Prefix=prefix.rstrip("/") + "/")
         return [o["Key"] for o in response.get("Contents", [])]
 
     # The "R2" link ---------------------------------------------------------------------
@@ -112,6 +116,8 @@ class Stack:
 
     # Servers ---------------------------------------------------------------------------
     def server(self, prefix: str, *, initialized: bool, **extra: str) -> Server:
+        # One stand-in credential for both buckets, as one R2 token may cover both, but each use
+        # has its own variables: LITESTREAM_* for the replica, AWS_* for the artifact store.
         env = {
             "CFO_INSTALLATION_INITIALIZED": "true" if initialized else "false",
             "CFO_REPLICA_URL": f"s3://{BUCKET}/{prefix}",
@@ -119,6 +125,11 @@ class Stack:
             "CFO_REPLICA_REGION": "us-east-1",
             "LITESTREAM_ACCESS_KEY_ID": self.env["CFO_IT_S3_USER"],
             "LITESTREAM_SECRET_ACCESS_KEY": self.env["CFO_IT_S3_PASSWORD"],
+            "OMNIGENT_ARTIFACT_URI": f"s3://{ARTIFACT_BUCKET}/{prefix}",
+            "AWS_ENDPOINT_URL_S3": "http://minio:9000",
+            "AWS_REGION": "us-east-1",
+            "AWS_ACCESS_KEY_ID": self.env["CFO_IT_S3_USER"],
+            "AWS_SECRET_ACCESS_KEY": self.env["CFO_IT_S3_PASSWORD"],
             "OMNIGENT_ACCOUNTS_BASE_URL": "http://cfo-wp23.invalid",
             "OMNIGENT_ACCOUNTS_COOKIE_SECRET": self.env["CFO_IT_COOKIE_SECRET"],
             "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,
@@ -357,6 +368,7 @@ def stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Stack]:
                 pass
             time.sleep(0.5)
         stack.s3().create_bucket(Bucket=BUCKET)
+        stack.s3().create_bucket(Bucket=ARTIFACT_BUCKET)
         stack.reset_link()
         yield stack
         _scan_logs(stack)

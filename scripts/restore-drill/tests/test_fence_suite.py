@@ -9,10 +9,11 @@ read-only and the stack's generated credentials passed in an environment file.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 from conftest import requires_docker
-from harness_stack import BUCKET, HERE, NETWORK, Stack, docker
+from harness_stack import BUCKET, HERE, NETWORK, PROJECT, Stack, docker
 
 pytestmark = requires_docker
 
@@ -45,7 +46,7 @@ def test_launcher_fence_in_process(stack: Stack) -> None:
                 "run",
                 "--rm",
                 "--name",
-                "cfo-wp25-server-fence",
+                f"{PROJECT}-server-fence",
                 "--network",
                 NETWORK,
                 "--env-file",
@@ -74,4 +75,7 @@ def test_launcher_fence_in_process(stack: Stack) -> None:
     logs.mkdir(exist_ok=True)
     (logs / "fence-suite.log").write_text(result.stdout + result.stderr)
     assert result.returncode == 0, (result.stdout + result.stderr)[-6000:]
-    assert " passed" in result.stdout and " failed" not in result.stdout
+    # Passes only: a skipped, errored or xfailed in-process test is not a pass.
+    summary = [line for line in result.stdout.splitlines() if re.match(r"^\d+ passed", line)]
+    assert summary, result.stdout[-2000:]
+    assert re.match(r"^\d+ passed(, \d+ warnings?)? in ", summary[-1]), summary[-1]

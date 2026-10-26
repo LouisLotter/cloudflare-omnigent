@@ -143,12 +143,13 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[World]:
     missing = [name for name in REQUIRED if not os.environ.get(name)]
     if missing:
         pytest.skip(f"run by tests/test_fence_suite.py; missing {missing}")
+    from cloudflare_omnigent.sandbox import registration
     from starlette.testclient import TestClient
 
     from cfo_drill.fence import EffectLog, RecordingStubLauncher, ReplicationFence
     from cfo_server import app as image_app
     from cfo_server import config as image_config
-    from cfo_server import entrypoint, launcher
+    from cfo_server import entrypoint
     from cfo_server.barrier import install_sql_hooks
     from cfo_server.litestream import ReplicationWaiter
 
@@ -167,6 +168,8 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[World]:
         "CFO_REPLICA_REGION": "us-east-1",
         "LITESTREAM_ACCESS_KEY_ID": os.environ["CFO_FENCE_S3_USER"],
         "LITESTREAM_SECRET_ACCESS_KEY": os.environ["CFO_FENCE_S3_PASSWORD"],
+        # The fence is this suite's subject; artifacts stay on disk here (tests only).
+        "CFO_ALLOW_LOCAL_ARTIFACTS": "true",
         "OMNIGENT_ACCOUNTS_BASE_URL": BASE_URL,
         "OMNIGENT_ACCOUNTS_COOKIE_SECRET": COOKIE_SECRET,
         "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,
@@ -204,8 +207,9 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[World]:
         for key, value in app_env.items():
             mp.setenv(key, value)
         # A short online wait, so a wake whose host never dials back (there is no computer)
-        # gives up in seconds instead of the image's 240 s.
-        mp.setattr(launcher, "ONLINE_TIMEOUT_S", ONLINE_TIMEOUT_S)
+        # gives up in seconds instead of the image's 240 s. The provider entry reads it from
+        # the Cloudflare launcher's registration since WP3.6 (it was cfo_server.launcher's).
+        mp.setattr(registration, "ONLINE_TIMEOUT_S", ONLINE_TIMEOUT_S)
         install_sql_hooks()
         ep = image_app.load_docker_entrypoint()
         resolved = ep._resolve_config()

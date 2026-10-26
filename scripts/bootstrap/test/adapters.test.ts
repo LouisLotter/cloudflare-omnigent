@@ -12,7 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandResult, RunOptions } from "../../staging/cloud.ts";
-import { accountCloud, cfJson, queryWorkerLogs, workerMissing } from "../cloud.ts";
+import {
+  accountCloud,
+  bucketExists,
+  cfJson,
+  ensureBuckets,
+  queryWorkerLogs,
+  workerMissing,
+} from "../cloud.ts";
 import { INITIALIZED_SECRET, PASSWORD_SECRET, RELEASE_CHANGES } from "../settings.ts";
 import { stagingCloud } from "../staging.ts";
 import {
@@ -64,6 +71,57 @@ function fakeRunner(answer: (call: Call) => Partial<CommandResult>) {
 }
 
 const wranglerArgs = (call: Call) => call.args.slice(2);
+
+describe("the plan's R2 buckets (G2-DUR-001)", () => {
+  /** A fake R2: `cf r2 buckets get` and `create`, with the buckets that exist. */
+  function r2(existing: string[], failCreate = false) {
+    const buckets = new Set(existing);
+    return fakeRunner((call) => {
+      const [, , verb, name] = call.args;
+      if (call.command !== "cf" || call.args[0] !== "r2") throw new Error("not an R2 call");
+      if (verb === "get") {
+        return buckets.has(String(name))
+          ? { stdout: JSON.stringify({ result: { name } }) }
+          : { status: 1, stderr: "[10006] The specified bucket does not exist. 404 Not Found" };
+      }
+      if (verb === "create" && !failCreate) {
+        const body = JSON.parse(String(call.args[call.args.indexOf("--body") + 1]));
+        buckets.add(body.name);
+        return { stdout: JSON.stringify({ result: { name: body.name } }) };
+      }
+      return { status: 1, stderr: "[10000] Authentication error 403 Forbidden" };
+    });
+  }
+
+  it("creates only the missing ones, and never deletes or changes another", () => {
+    const fake = r2(["cfo-canary-replica"]);
+    expect(ensureBuckets(fake.runner, ["cfo-canary-replica", "cfo-canary-artifacts"])).toEqual([
+      "cfo-canary-artifacts",
+    ]);
+    expect(fake.calls.map((c) => c.args.slice(0, 3).join(" "))).toEqual([
+      "r2 buckets get",
+      "r2 buckets get",
+      "r2 buckets create",
+      "r2 buckets get",
+    ]);
+    expect(fake.calls.every((c) => c.options.inherit === false)).toBe(true);
+    // Run again: nothing to create.
+    const again = r2(["cfo-canary-replica", "cfo-canary-artifacts"]);
+    expect(ensureBuckets(again.runner, ["cfo-canary-replica", "cfo-canary-artifacts"])).toEqual([]);
+    expect(again.calls.some((c) => c.args.includes("create"))).toBe(false);
+  });
+
+  it("stops when a lookup or a creation fails, rather than guess", () => {
+    expect(() => ensureBuckets(r2([], true).runner, ["cfo-canary-artifacts"])).toThrow(
+      /cf r2 buckets create failed/,
+    );
+    const unknown = fakeRunner(() => ({ status: 1, stderr: "network unreachable" }));
+    expect(() => bucketExists(unknown.runner, "cfo-canary-artifacts")).toThrow(
+      /could not tell whether R2 bucket cfo-canary-artifacts exists/,
+    );
+    expect(bucketExists(r2([]).runner, "cfo-canary-artifacts")).toBe(false);
+  });
+});
 
 describe("cfJson and workerMissing", () => {
   it("unwraps cf's result, and reports failures without their secrets", () => {

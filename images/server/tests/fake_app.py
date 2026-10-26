@@ -43,6 +43,8 @@ def main() -> None:
                 "litestream_ready_at_start": litestream_answers(
                     os.environ["CFO_LITESTREAM_SOCKET"]
                 ),
+                # Names only: which variables reached the app, never their values.
+                "envNames": sorted(os.environ),
                 "env": {
                     k: os.environ.get(k)
                     for k in (
@@ -54,6 +56,7 @@ def main() -> None:
                         "OMNIGENT_DATABRICKS_CLIENT_ID",
                         "OMNIGENT_CREDENTIAL_CIPHER",
                         "OMNIGENT_WS_ALLOWED_ORIGINS",
+                        "OMNIGENT_ARTIFACT_URI",
                     )
                 },
             }

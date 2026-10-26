@@ -9,7 +9,8 @@
 //   - the platform Worker's variables: the installation ID, and the server container's settings
 //     as `SERVER_ENV_<NAME>` (WP2.2 forwards them as `<NAME>`; WP2.3's image reads them);
 //   - the platform Worker's secrets: Omnigent's cookie secret, the replica's credentials, the
-//     pre-provisioned owner's password, and `CFO_INSTALLATION_INITIALIZED`. The last one is not
+//     artifact bucket's credentials (the same R2 token's values may serve both, under their own
+//     names), the pre-provisioned owner's password, and `CFO_INSTALLATION_INITIALIZED`. The last one is not
 //     secret, but held as a Worker secret so that the bootstrap can flip it and delete the
 //     password in one atomic change (one bulk secrets request), one platform release (R-27), and
 //     so that no later deploy of the plain configuration can reset it (Wrangler deletes
@@ -34,6 +35,14 @@ export const INITIALIZED_SECRET = `${SERVER_ENV}CFO_INSTALLATION_INITIALIZED`;
 export const COOKIE_SECRET = `${SERVER_ENV}OMNIGENT_ACCOUNTS_COOKIE_SECRET`;
 export const REPLICA_KEY_ID_SECRET = `${SERVER_ENV}LITESTREAM_ACCESS_KEY_ID`;
 export const REPLICA_SECRET_KEY_SECRET = `${SERVER_ENV}LITESTREAM_SECRET_ACCESS_KEY`;
+/**
+ * The artifact bucket's credentials (G2-DUR-001): Omnigent's S3 artifact store reads them as
+ * boto3 does, and the server image gives them to the app only, never to Litestream.
+ */
+export const ARTIFACTS_KEY_ID_SECRET = `${SERVER_ENV}AWS_ACCESS_KEY_ID`;
+export const ARTIFACTS_SECRET_KEY_SECRET = `${SERVER_ENV}AWS_SECRET_ACCESS_KEY`;
+/** R2's region for the S3 API. */
+export const R2_REGION = "auto";
 
 /** Omnigent's minimum password length at login (WP2.3's MIN_PASSWORD_LENGTH). */
 export const MIN_PASSWORD_LENGTH = 8;
@@ -46,6 +55,8 @@ const HOSTNAME =
 /** Ingress's own rule for the AUD tag (worker/src/ingress/index.ts, AUD_TAG). */
 const AUD = /^[A-Za-z0-9_-]{1,256}$/;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/;
+/** An R2 bucket name: lowercase letters, digits and hyphens, 3 to 63, no hyphen at either end. */
+const R2_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const BASE32 = "0123456789abcdefghjkmnpqrstvwxyz";
 const STAGING_PREFIX = "cfo-stg-";
@@ -71,6 +82,18 @@ export interface Replica {
   readonly endpoint?: string;
 }
 
+/**
+ * Where Omnigent keeps its artifacts (uploaded files, session resources, agent bundles): a bucket
+ * of their own (design, Operations), because the container's disk is lost at every replacement
+ * and every release's restart (G2-DUR-001).
+ */
+export interface Artifacts {
+  /** `s3://<bucket>[/<prefix>]`. */
+  readonly url: string;
+  /** The S3 endpoint; the replica's when not given. */
+  readonly endpoint?: string;
+}
+
 /** The plan: everything the bootstrap writes that is not a secret. Fixed once planned. */
 export interface Installation {
   readonly installationId: string;
@@ -84,6 +107,11 @@ export interface Installation {
   /** The pre-provisioned owner's Omnigent username, always explicit (design, Bootstrap). */
   readonly ownerUsername: string;
   readonly replica: Replica;
+  /**
+   * Required with an S3 replica. Only a staging test installation with a file replica may leave
+   * it out: its server then keeps artifacts on the container's disk (the image's test switch).
+   */
+  readonly artifacts?: Artifacts;
   readonly target: Target;
   readonly plannedAt: string;
 }
@@ -99,6 +127,30 @@ export interface SuppliedSecrets {
   readonly ownerPassword?: string;
   readonly replicaAccessKeyId?: string;
   readonly replicaSecretAccessKey?: string;
+  /** The artifact bucket's; when not given, the replica's (one R2 token covering both buckets). */
+  readonly artifactsAccessKeyId?: string;
+  readonly artifactsSecretAccessKey?: string;
+}
+
+/** The artifact bucket a plan gets unless the installer names one: `<platform Worker>-artifacts`. */
+export function defaultArtifactsUrl(platformWorker: string): string {
+  return `s3://${platformWorker}-artifacts`;
+}
+
+/** The bucket of an `s3://` URL, or undefined. */
+export function bucketOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "s3:" && parsed.hostname !== "" ? parsed.hostname : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The R2 buckets an installation uses: the replica's (when on S3) and the artifacts'. */
+export function bucketsOf(plan: Installation): string[] {
+  const names = [bucketOf(plan.replica.url), plan.artifacts && artifactsBucket(plan.artifacts.url)];
+  return [...new Set(names.filter((n): n is string => n !== undefined))];
 }
 
 /** A new installation ID: `ins_` and 26 Crockford base32 digits (130 random bits). */
@@ -129,6 +181,61 @@ export function passwordProblem(password: string): string | undefined {
   return undefined;
 }
 
+function httpsProblem(endpoint: string | undefined, what: string): string[] {
+  if (endpoint === undefined) return [];
+  let url: URL | undefined;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    url = undefined;
+  }
+  return url?.protocol !== "https:" || url.username !== "" || url.password !== ""
+    ? [`the ${what} endpoint must be an https:// URL`]
+    : [];
+}
+
+/**
+ * The bucket of an artifacts URL as Omnigent's own parser splits it (the literal `s3://`, then
+ * the bucket up to the first `/`), when the server image would accept it: an R2 bucket name and
+ * a plain prefix. Never through a URL parser, which reads `S3://` or a lone `?` differently.
+ */
+export function artifactsBucket(url: string): string | undefined {
+  if (!url.startsWith("s3://")) return undefined;
+  const rest = url.slice("s3://".length);
+  const slash = rest.indexOf("/");
+  const bucket = slash < 0 ? rest : rest.slice(0, slash);
+  const prefix = slash < 0 ? "" : rest.slice(slash + 1);
+  if (!R2_BUCKET.test(bucket)) return undefined;
+  // The image's rule (Python's isspace or not isprintable): every Unicode separator and
+  // "other" character (controls, format characters such as U+200B or U+202E, unassigned).
+  if (/[?#\\\p{C}\p{Z}]/u.test(prefix)) return undefined;
+  if (prefix.split("/").some((s) => s === "." || s === "..")) return undefined;
+  return bucket;
+}
+
+function artifactsProblems(plan: Installation): string[] {
+  const artifacts = plan.artifacts;
+  if (artifacts === undefined) {
+    return plan.replica.url.startsWith("file:")
+      ? []
+      : [
+          "the plan names no artifact bucket: uploaded files would be lost at every restart (plan the installation again; G2-DUR-001)",
+        ];
+  }
+  const problems: string[] = [];
+  const bucket = artifactsBucket(artifacts.url);
+  if (bucket === undefined) {
+    problems.push("the artifacts URL must be s3://<bucket>[/<prefix>], with an R2 bucket name");
+  } else if (bucket === bucketOf(plan.replica.url)) {
+    problems.push("the artifacts need a bucket of their own, not the replica's");
+  }
+  problems.push(...httpsProblem(artifacts.endpoint, "artifacts"));
+  if (artifacts.endpoint === undefined && plan.replica.endpoint === undefined) {
+    problems.push("the artifacts need an S3 endpoint: give --artifacts-endpoint or the replica's");
+  }
+  return problems;
+}
+
 function replicaProblems(replica: Replica, target: Target): string[] {
   const problems: string[] = [];
   let url: URL;
@@ -151,17 +258,7 @@ function replicaProblems(replica: Replica, target: Target): string[] {
   } else {
     problems.push("the replica URL must be s3://<bucket>/<path>");
   }
-  if (replica.endpoint !== undefined) {
-    let endpoint: URL | undefined;
-    try {
-      endpoint = new URL(replica.endpoint);
-    } catch {
-      endpoint = undefined;
-    }
-    if (endpoint?.protocol !== "https:" || endpoint.username !== "" || endpoint.password !== "") {
-      problems.push("the replica endpoint must be an https:// URL");
-    }
-  }
+  problems.push(...httpsProblem(replica.endpoint, "replica"));
   return problems;
 }
 
@@ -188,6 +285,7 @@ export function installationProblems(plan: Installation): string[] {
   const username = usernameProblem(plan.ownerUsername);
   if (username) problems.push(username);
   problems.push(...replicaProblems(plan.replica, plan.target));
+  problems.push(...artifactsProblems(plan));
   if (plan.target.kind === "staging") {
     for (const name of [plan.platformWorker, plan.webWorker]) {
       if (!name.startsWith(STAGING_PREFIX)) {
@@ -224,12 +322,26 @@ export function platformVars(plan: Installation): Record<string, string> {
     vars[`${SERVER_ENV}CFO_REPLICA_ENDPOINT`] = plan.replica.endpoint;
   }
   if (plan.replica.url.startsWith("file:")) vars[`${SERVER_ENV}CFO_ALLOW_FILE_REPLICA`] = "true";
+  if (plan.artifacts !== undefined) {
+    vars[`${SERVER_ENV}OMNIGENT_ARTIFACT_URI`] = plan.artifacts.url;
+    const endpoint = plan.artifacts.endpoint ?? plan.replica.endpoint;
+    if (endpoint !== undefined) vars[`${SERVER_ENV}AWS_ENDPOINT_URL_S3`] = endpoint;
+    vars[`${SERVER_ENV}AWS_REGION`] = R2_REGION;
+  } else {
+    // Only a staging test installation with a file replica (installationProblems).
+    vars[`${SERVER_ENV}CFO_ALLOW_LOCAL_ARTIFACTS`] = "true";
+  }
   return vars;
 }
 
 /** Whether the replica is reached over S3, and so needs the two credentials. */
 export function needsReplicaCredentials(plan: Installation): boolean {
   return plan.replica.url.startsWith("s3:");
+}
+
+/** Whether the artifacts are in a bucket, and so need the two credentials. */
+export function needsArtifactCredentials(plan: Installation): boolean {
+  return plan.artifacts !== undefined;
 }
 
 /** The platform Worker's secrets, by name, that an installation holds before its release. */
@@ -239,6 +351,9 @@ export function requiredSecretNames(plan: Installation): string[] {
     INITIALIZED_SECRET,
     PASSWORD_SECRET,
     ...(needsReplicaCredentials(plan) ? [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET] : []),
+    ...(needsArtifactCredentials(plan)
+      ? [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET]
+      : []),
   ];
 }
 
@@ -273,6 +388,19 @@ export function secretsToAdd(
     need(REPLICA_KEY_ID_SECRET, supplied.replicaAccessKeyId, "the replica's access key ID");
     need(REPLICA_SECRET_KEY_SECRET, supplied.replicaSecretAccessKey, "the replica's secret key");
   }
+  if (needsArtifactCredentials(plan)) {
+    // One R2 token may cover both buckets: the installer pastes its values once.
+    need(
+      ARTIFACTS_KEY_ID_SECRET,
+      supplied.artifactsAccessKeyId ?? supplied.replicaAccessKeyId,
+      "the artifact bucket's access key ID",
+    );
+    need(
+      ARTIFACTS_SECRET_KEY_SECRET,
+      supplied.artifactsSecretAccessKey ?? supplied.replicaSecretAccessKey,
+      "the artifact bucket's secret key",
+    );
+  }
   return add;
 }
 
@@ -303,6 +431,9 @@ export function containerEnvProblems(
     ...(needsReplicaCredentials(plan)
       ? ["LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"]
       : []),
+    ...(needsArtifactCredentials(plan)
+      ? ["OMNIGENT_ARTIFACT_URI", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+      : ["CFO_ALLOW_LOCAL_ARTIFACTS"]),
   ];
   for (const name of required) if (!(name in env)) problems.push(`${name} would be missing`);
   return problems;

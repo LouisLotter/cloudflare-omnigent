@@ -17,7 +17,8 @@ import {
 } from "@cfo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import platform from "../../src/index.ts";
-import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
+import { APPLIED_NOTICE_MS, type OmnigentServer } from "../../src/server/OmnigentServer.ts";
+import { UNKNOWN_DEADLINES } from "../../src/server/server-env.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
 import {
   FORWARD_VERSION_HEADER,
@@ -1148,24 +1149,347 @@ describe("OmnigentServer: bootstrap status (G1BR-002, R-30)", () => {
     expect(JSON.parse(target.value)).toEqual({ bootId: "b".repeat(32), txid: 20 });
   });
 
-  it("stops checking once the owner is durable and the secret is gone", async () => {
+  it("after the release, logs the replaced server's status with configApplied for a while, then stops checking", async () => {
     const { stub, fake } = await freshServer();
     fake.info = { accounts_enabled: true, needs_setup: false };
     fake.position = position(5, 5);
     await check(stub);
     await nextCheck(stub);
     expect((await stub.bootstrapStatus(call))?.initialized).toBe(true);
-    await runInDurableObject(stub, (instance: OmnigentServer) => {
-      const withoutSecret: Record<string, unknown> = {
-        ...(instance as unknown as { env: object }).env,
-      };
-      delete withoutSecret.SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD;
-      Object.defineProperty(instance, "env", { value: withoutSecret });
+    expect(events("bootstrap").at(-1)).toMatchObject({ secretPresent: true, configApplied: true });
+    // The bootstrap's release: the password deleted and the installation marked initialized,
+    // one new version; the object switches to it.
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
     });
-    const reads = fake.requests.length;
-    const logged = statusEvents().length;
+    await evictDurableObject(stub);
+    const before = events("bootstrap").length;
+    await nextCheck(stub); // replaced: no status from a server on its way down
+    expect(fake.signals).toEqual([15]);
+    await nextCheck(stub); // seen stopped
+    await nextCheck(stub); // started with the released configuration
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.starts[1]?.env).not.toHaveProperty("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD");
+    expect(fake.starts[1]?.env.CFO_INSTALLATION_INITIALIZED).toBe("true");
+    expect(events("bootstrap").length).toBe(before);
+    // The replacement is a new boot; its owner is durable once its position says so.
+    fake.position = position(7, 7, "d".repeat(32));
     await nextCheck(stub);
-    expect(fake.requests.length).toBe(reads + 1); // the health check only
-    expect(statusEvents().length).toBe(logged);
+    const applied = events("bootstrap").slice(before);
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toMatchObject({
+      reason: "durable",
+      secretPresent: false,
+      configApplied: true,
+      bootstrapStatus: { installationId: INSTALLATION, initialized: true },
+    });
+    // Logged on every check for the notice window, so a lost line recurs; then no more reads.
+    const appliedAt = testServers.clock.now();
+    while (testServers.clock.now() - appliedAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    const logged = events("bootstrap").length;
+    expect(logged - before).toBeGreaterThanOrEqual(APPLIED_NOTICE_MS / T.intervalMs);
+    const reads = fake.requests.length;
+    await nextCheck(stub);
+    await evictDurableObject(stub); // a new instance does not announce the same configuration
+    await nextCheck(stub);
+    expect(fake.requests.length).toBe(reads + 2); // the health checks only
+    expect(events("bootstrap").length).toBe(logged);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.signals).toEqual([15]);
+  });
+});
+
+describe("OmnigentServer: the release's notice waits for a durable owner (Codex G2-SEC-001 r1-2)", () => {
+  const BOOT = "c".repeat(32);
+  const position = (txid: number, replicatedTxid: number, bootId = BOOT): ReplicationPosition => ({
+    protocolVersion: 1,
+    bootId,
+    txid,
+    replicatedTxid,
+  });
+
+  it("logs until the replaced server shows a durable owner, however late, then for the notice", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 5);
+    await check(stub);
+    await nextCheck(stub);
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub); // replaced and started again
+    expect(fake.starts).toHaveLength(2);
+    // The replacement's replica lags (R2 unreachable) for longer than the notice.
+    fake.position = position(9, 4, "d".repeat(32));
+    const before = events("bootstrap").length;
+    const answeredAt = testServers.clock.now();
+    while (testServers.clock.now() - answeredAt < 2 * APPLIED_NOTICE_MS) await nextCheck(stub);
+    const waiting = events("bootstrap").slice(before);
+    expect(waiting.length).toBeGreaterThanOrEqual((2 * APPLIED_NOTICE_MS) / T.intervalMs);
+    expect(waiting.every((e) => e.reason === "not_replicated" && e.configApplied === true)).toBe(
+      true,
+    );
+    // It catches up: the durable line is published, and repeated for the notice from then.
+    fake.position = position(12, 12, "d".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({
+      reason: "durable",
+      secretPresent: false,
+      configApplied: true,
+      bootstrapStatus: { initialized: true },
+    });
+    const durableAt = testServers.clock.now();
+    while (testServers.clock.now() - durableAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    const logged = events("bootstrap").length;
+    await nextCheck(stub);
+    expect(events("bootstrap").length).toBe(logged);
+    // A setback after the notice (a status stored as not durable, as a check of a new boot
+    // stores it) is published, and so is its end: the last line is durable.
+    await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+      state.storage.sql.exec(
+        "UPDATE server_state SET value = json_set(value, '$.initialized', json('false')) WHERE key = 'bootstrap_status'",
+      ),
+    );
+    fake.position = position(20, 15, "e".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "not_replicated" });
+    fake.position = position(21, 21, "e".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    // The return to durable is published for a whole notice (r2-2), then the lines stop.
+    const backAt = testServers.clock.now();
+    while (testServers.clock.now() - backAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    const settled = events("bootstrap").length;
+    await nextCheck(stub);
+    expect(events("bootstrap").length).toBe(settled);
+  });
+
+  it("publishes a return to durable for a whole notice, so one lost line is not the only one (Codex r2-2)", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 5);
+    await check(stub);
+    await nextCheck(stub);
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
+    fake.position = position(7, 7, "d".repeat(32));
+    await nextCheck(stub); // durable: the notice starts
+    const durableAt = testServers.clock.now();
+    while (testServers.clock.now() - durableAt < APPLIED_NOTICE_MS - 2 * T.intervalMs) {
+      await nextCheck(stub);
+    }
+    // The position cannot be read from near the notice's end until well past it.
+    fake.position = null;
+    while (testServers.clock.now() - durableAt < 2 * APPLIED_NOTICE_MS) await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "position_unavailable" });
+    // It recovers. Even if that first line is lost, and the object is recreated, the durable
+    // status is logged again on the following checks.
+    fake.position = position(8, 8, "d".repeat(32));
+    await nextCheck(stub);
+    const recovered = events("bootstrap").length;
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 5; i += 1) await nextCheck(stub);
+    const after = events("bootstrap").slice(recovered);
+    expect(after).toHaveLength(5);
+    expect(after.every((e) => e.reason === "durable" && e.configApplied === true)).toBe(true);
+  });
+});
+
+describe("OmnigentServer: a release reaches the running server (G2-SEC-001)", () => {
+  const ROTATED_COOKIE_SECRET = "c0".repeat(32); // synthetic
+  const COOKIE = "SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET";
+
+  it("adopts a healthy server across a version switch, then replaces it once, gracefully, because its configuration changed", async () => {
+    const { stub, fake } = await runningServer();
+    // A cookie-key rotation: a new version; its objects adopt the running container.
+    testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+    await evictDurableObject(stub);
+    await stub.bootstrapStatus(call);
+    expect(fake.running).toBe(true);
+    expect(fake.signals).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    // Every check on a new instance (eviction after each persisted transition).
+    await stepsWithEviction(
+      stub,
+      Array.from({ length: 7 }, () => () => nextCheck(stub)),
+      { evictAfterLast: true },
+    );
+    expect(fake.signals).toEqual([15]); // SIGTERM: the entrypoint's final sync, never a kill
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.starts[0]?.env).not.toHaveProperty("OMNIGENT_ACCOUNTS_COOKIE_SECRET");
+    expect(fake.starts[1]?.env.OMNIGENT_ACCOUNTS_COOKIE_SECRET).toBe(ROTATED_COOKIE_SECRET);
+    // The stop came before the start: the old server was never running beside the new one.
+    expect(fake.ops.filter((op) => op === "signal:15" || op === "start")).toEqual([
+      "start",
+      "signal:15",
+      "start",
+    ]);
+    const records = await stub.outages(everything);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ cause: "config_changed", restarts: 1, exitCode: 0 });
+    expect(records[0]?.endedAt).not.toBeNull();
+    const replaced = events("watchdog").filter((e) => e.event === "config_changed");
+    expect(replaced).toHaveLength(1);
+    // Neither a secret nor the configuration's digest reaches a log line.
+    const stored = await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+      state.storage.sql
+        .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_config'")
+        .one(),
+    );
+    const fingerprint = JSON.parse(stored.value) as string;
+    expect(fingerprint).toMatch(/^[0-9a-f]{32}$/);
+    const text = logs.join("\n");
+    expect(text).not.toContain(fingerprint);
+    expect(text).not.toContain(ROTATED_COOKIE_SECRET);
+    expect(text).not.toContain("cfo-canary-bootstrap-password");
+  });
+
+  it("restarts nothing when a new version changes nothing the server gets", async () => {
+    const { stub, fake } = await runningServer();
+    testServers.release(stub.id, { ACCESS_AUD: "cfo-canary-access-aud-2" }); // not the server's
+    await evictDurableObject(stub);
+    await stepsWithEviction(
+      stub,
+      Array.from({ length: 4 }, () => () => nextCheck(stub)),
+    );
+    expect(fake.signals).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    expect(await stub.outages(everything)).toEqual([]);
+  });
+
+  it("never stops a start still restoring, nor recovery mode, for its configuration; replaces it once it answers", async () => {
+    const { stub, fake } = await freshServer();
+    fake.entrypointPhase = "restoring";
+    await check(stub); // started with the old configuration, still restoring
+    testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+    await evictDurableObject(stub);
+    const from = testServers.clock.now();
+    while (testServers.clock.now() - from < 120_000) await nextCheck(stub);
+    fake.entrypointPhase = "recovery";
+    fake.recovery = { reason: "restore_failed", transient: true };
+    while (testServers.clock.now() - from < 30 * 60_000) await nextCheck(stub);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    // The entrypoint's own retry restored the database and the app answers: now replaced.
+    fake.entrypointPhase = "running";
+    fake.recovery = null;
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    for (let i = 0; i < 4; i += 1) await nextCheck(stub);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.starts[1]?.env.OMNIGENT_ACCOUNTS_COOKIE_SECRET).toBe(ROTATED_COOKIE_SECRET);
+    expect(fake.signals).toEqual([15]);
+  });
+
+  it("keeps the grace the running container started with when a release lowers it (Codex r1-1)", async () => {
+    const started = { ...TEST_TIMING, stopGraceMs: 300_000 };
+    const lowered = { ...TEST_TIMING, stopGraceMs: 60_000 };
+    testServers.timing = started;
+    try {
+      const { stub, fake } = await runningServer();
+      // The release lowers the final-sync setting and rotates the cookie key; the container
+      // keeps the settings it started with, so its final sync may take its full allowance.
+      testServers.timing = lowered;
+      testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+      await evictDurableObject(stub);
+      fake.stopMs = null; // still confirming its final sync
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([15]);
+      const signalledAt = testServers.clock.now();
+      while (testServers.clock.now() - signalledAt < started.stopGraceMs - 2 * T.pollMs) {
+        await nextCheck(stub);
+      }
+      await evictDurableObject(stub); // a new instance keeps it too
+      await nextCheck(stub);
+      expect(testServers.clock.now() - signalledAt).toBeLessThan(started.stopGraceMs);
+      expect(fake.destroys).toEqual([]);
+      // Past the container's own grace: killed, once, and started with the new configuration.
+      await nextCheck(stub);
+      expect(fake.destroys).toEqual(["the stop outran its grace"]);
+      for (let i = 0; i < 4; i += 1) await nextCheck(stub);
+      expect(fake.starts).toHaveLength(2);
+      // The replacement was started under the lowered settings: its own grace is the lower one.
+      const timing = await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql
+          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_timing'")
+          .one(),
+      );
+      expect(JSON.parse(timing.value)).toMatchObject({ stopGraceMs: lowered.stopGraceMs });
+    } finally {
+      testServers.timing = TEST_TIMING;
+    }
+  });
+
+  it("gives a container an older build started without recorded deadlines a long grace, or its own (Codex r2-1)", async () => {
+    const dropTiming = (stub: Stub) =>
+      runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql.exec("DELETE FROM server_state WHERE key = 'start_timing'"),
+      );
+    const storedTiming = (stub: Stub) =>
+      runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql
+          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_timing'")
+          .toArray()
+          .map((row) => JSON.parse(row.value) as unknown),
+      );
+    // Same configuration: its deadlines are this version's, and are recorded.
+    const same = await runningServer();
+    await dropTiming(same.stub);
+    await evictDurableObject(same.stub);
+    await nextCheck(same.stub);
+    expect(await storedTiming(same.stub)).toEqual([
+      { stopGraceMs: T.stopGraceMs, restoreWaitMs: T.restoreWaitMs },
+    ]);
+    // Another configuration, settings unknown: replaced, and never killed within the long grace.
+    const { stub, fake } = await runningServer();
+    await dropTiming(stub);
+    testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+    await evictDurableObject(stub);
+    fake.stopMs = null; // still confirming its final sync
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    const signalledAt = testServers.clock.now();
+    while (testServers.clock.now() - signalledAt < 15 * 60_000) await nextCheck(stub);
+    expect(fake.destroys).toEqual([]);
+    expect(await storedTiming(stub)).toEqual([]); // nothing invented for it
+    testServers.clock.advance(UNKNOWN_DEADLINES.stopGraceMs - 15 * 60_000);
+    await check(stub);
+    expect(fake.destroys).toEqual(["the stop outran its grace"]);
+  });
+
+  it("sends an undelivered replacement stop again while the server answers, and never kills it", async () => {
+    const { stub, fake } = await runningServer();
+    const signal = fake.signal.bind(fake);
+    fake.signal = () => {
+      throw new Error("signal failed");
+    };
+    testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+    await evictDurableObject(stub);
+    await nextCheck(stub);
+    await nextCheck(stub);
+    expect(events("watchdog").filter((e) => e.event === "stop_error")).toHaveLength(2);
+    expect(events("watchdog").some((e) => e.event === "stop_cancelled")).toBe(false);
+    // Requests wait meanwhile: the server is being replaced.
+    expect((await forward(stub, "/v1/sessions")).status).toBe(503);
+    fake.signal = signal;
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    expect(fake.destroys).toEqual([]);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
+    expect(fake.starts).toHaveLength(2);
+    expect(await stub.outages(everything)).toEqual([
+      expect.objectContaining({ cause: "config_changed", restarts: 1 }),
+    ]);
   });
 });

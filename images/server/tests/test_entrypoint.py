@@ -471,6 +471,79 @@ def test_start_order_then_clean_stop_confirms_the_final_sync(rig: Rig) -> None:
 
 
 @requires_litestream
+def test_each_child_gets_only_the_credentials_it_needs(rig: Rig) -> None:
+    """Litestream's restore and replicate get the replica's credentials and the process basics,
+    nothing else; the app gets the server's secrets and the artifact store's settings, never the
+    replica's credentials (G2-SEC-001, G2-DUR-001)."""
+    dumps = rig.root / "litestream-env"
+    dumps.mkdir()
+    # Records each Litestream process's environment, then becomes the real binary. Python adds
+    # nothing to the environment it was given, unlike a shell.
+    wrapper = rig.root / "litestream-recording"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"out = os.path.join({str(dumps)!r}, sys.argv[1] + '-' + str(os.getpid()) + '.json')\n"
+        "with open(out, 'w') as f:\n"
+        "    json.dump(dict(os.environ), f)\n"
+        f"os.execv({str(LITESTREAM)!r}, [{str(LITESTREAM)!r}, *sys.argv[1:]])\n"
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    rig.litestream_bin = wrapper
+    server_secrets = {
+        "CFO_LAUNCHER_SIGNING_KEY": "k" * 40,  # synthetic
+        "CFO_LAUNCHER_SIGNING_KEY_ID": "k-test",
+        "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-artifacts-secret",
+    }
+    # The artifact store as an installation sets it: its own bucket, its endpoint and region.
+    artifact_settings = {
+        "OMNIGENT_ARTIFACT_URI": "s3://cfo-test-artifacts",
+        "AWS_ENDPOINT_URL_S3": "https://r2.example.test",
+        "AWS_REGION": "auto",
+    }
+    env = rig.env(
+        LITESTREAM_ACCESS_KEY_ID="synthetic-replica-id", **server_secrets, **artifact_settings
+    )
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    # The bootstrap password and the cookie secret come from the base environment.
+    assert env["OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD"] and env["OMNIGENT_ACCOUNTS_COOKIE_SECRET"]
+    rig.start(env)
+    rig.wait_phase("running")
+    rig.wait_app()
+    seen = {path.name.split("-")[0]: json.loads(path.read_text()) for path in dumps.iterdir()}
+    assert set(seen) == {"restore", "replicate"}
+    forbidden = {
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET",
+        *server_secrets,
+    }
+    for command, child_env in seen.items():
+        assert set(child_env) <= set(image_config.LITESTREAM_ENV), command
+        assert child_env["LITESTREAM_SECRET_ACCESS_KEY"] == SYNTHETIC_KEY, command
+        assert child_env["LITESTREAM_ACCESS_KEY_ID"] == "synthetic-replica-id", command
+        for name in forbidden:
+            assert env[name] not in child_env.values(), (command, name)
+        assert not {n for n in child_env if n.startswith(("AWS_", "OMNIGENT_"))}, command
+    start = json.loads(rig.marker.read_text())
+    app_names = set(start["envNames"])
+    assert {
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET",
+        "CFO_LAUNCHER_SIGNING_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ENDPOINT_URL_S3",
+        "AWS_REGION",
+    } <= app_names
+    assert not {"LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"} & app_names
+    assert start["env"]["OMNIGENT_ARTIFACT_URI"] == "s3://cfo-test-artifacts"
+    boot = rig_events_live(rig)
+    assert any(e.get("event") == "cfo.boot" and e.get("artifacts") == "s3" for e in boot)
+    assert rig.stop() == entrypoint.EXIT_OK
+
+
+@requires_litestream
 def test_status_and_boot_line_report_the_image_build(rig: Rig) -> None:
     record = {
         "omnigentRepo": "https://example.test/fork.git",
@@ -599,6 +672,37 @@ def test_transient_recovery_retries_the_restore(rig: Rig) -> None:
     gate.write_text("ok")
     rig.wait_phase("running", timeout=30)
     assert rig.stop() == entrypoint.EXIT_OK
+
+
+def test_no_artifact_store_exits_78_before_starting_anything(rig: Rig) -> None:
+    """An initialized installation without its artifact bucket fails visibly (G2-DUR-001):
+    never Omnigent on the container's disk, whose files the next restart loses."""
+    env = rig.env(initialized="true")
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    rig.start(env)
+    assert rig.wait(30) == entrypoint.EXIT_CONFIG
+    error = rig.events("config.error")
+    assert error and "OMNIGENT_ARTIFACT_URI is required" in error[-1]["message"]
+    assert not rig.db.exists() and not rig.marker.exists()
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://synthetic-id:cfo-test-url-secret-0001@cfo-test-artifacts",
+        "s3://[cfo-test-url-secret-0001",
+        "S3://cfo-test-artifacts/cfo-test-url-secret-0001",
+    ],
+)
+def test_a_malformed_artifact_uri_exits_78_without_repeating_it(rig: Rig, uri: str) -> None:
+    """A URI Omnigent cannot use, or one the URL parser cannot read, is a configuration error
+    (exit 78, which the watchdog holds), never a crash; the log never repeats it."""
+    env = rig.env(OMNIGENT_ARTIFACT_URI=uri, AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="y")
+    rig.start(env)
+    assert rig.wait(30) == entrypoint.EXIT_CONFIG
+    error = rig.events("config.error")
+    assert error and "OMNIGENT_ARTIFACT_URI" in error[-1]["message"]
+    assert "cfo-test-url-secret-0001" not in rig.output
 
 
 def test_bad_configuration_exits_78_before_starting_anything(rig: Rig) -> None:

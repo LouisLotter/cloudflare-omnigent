@@ -8,6 +8,8 @@ import {
   runBootstrap,
 } from "../machine.ts";
 import {
+  ARTIFACTS_KEY_ID_SECRET,
+  ARTIFACTS_SECRET_KEY_SECRET,
   COOKIE_SECRET,
   INITIALIZED_SECRET,
   type Installation,
@@ -22,6 +24,7 @@ import {
   type CrashPoint,
   FakeWorld,
   MemoryStore,
+  REPLACE_MS,
   type ServerTruth,
   SWITCH_MS,
 } from "./fake-cloud.ts";
@@ -140,8 +143,13 @@ describe("runBootstrap: the whole bootstrap", () => {
         PASSWORD_SECRET,
         REPLICA_KEY_ID_SECRET,
         REPLICA_SECRET_KEY_SECRET,
+        ARTIFACTS_KEY_ID_SECRET,
+        ARTIFACTS_SECRET_KEY_SECRET,
       ].sort(),
     );
+    // The installer gave one R2 token: its values serve both buckets, under their own names.
+    expect(first?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(first?.get(REPLICA_KEY_ID_SECRET));
+    expect(first?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(first?.get(REPLICA_SECRET_KEY_SECRET));
     expect(first?.get(INITIALIZED_SECRET)).toBe("false");
     expect(first?.get(PASSWORD_SECRET)).toBe(OWNER_PASSWORD);
     expect(first?.get(COOKIE_SECRET)).toMatch(/^[0-9a-f]{64}$/);
@@ -156,9 +164,10 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(last?.get(INITIALIZED_SECRET)).toBe("true");
     expect(last?.has(PASSWORD_SECRET)).toBe(false);
     expect(last?.get(COOKIE_SECRET)).toBe(first?.get(COOKIE_SECRET));
-    // The check after the release waited past the objects' switch.
+    // The check after the release waited past the objects' switch, and past the server's
+    // replacement with the released configuration (G2-SEC-001).
     expect(Date.parse(h.store.state.journal.verifiedAt ?? "")).toBeGreaterThanOrEqual(
-      releasedAt + SWITCH_MS,
+      releasedAt + SWITCH_MS + REPLACE_MS,
     );
     expect(h.store.state.journal.accepted?.status).toMatchObject({
       installationId: INSTALLATION,
@@ -313,6 +322,92 @@ describe("runBootstrap: the whole bootstrap", () => {
     const updates = h.world.secretChanges.length;
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.secretChanges).toHaveLength(updates);
+  });
+
+  it("reports released, not yet applied, while the running server keeps its old configuration (G2-SEC-001)", async () => {
+    const h = harness(await accountPlan());
+    // A platform build that never replaces the server: the release stays in the Worker.
+    h.world.appliesReleases = false;
+    const outcome = await h.run();
+    expect(outcome).toEqual({
+      kind: "released",
+      why: expect.stringMatching(/^released, not yet applied: /),
+    });
+    expect(h.world.released()).toBe(true);
+    expect(h.store.state.journal.verifiedAt).toBeUndefined();
+    expect(h.lines.some((l) => l.startsWith("checked:"))).toBe(false);
+    // Once the server is replaced with the released configuration, a later run completes,
+    // without another release.
+    h.world.appliesReleases = true;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretChanges).toHaveLength(1);
+  });
+
+  it("waits for the replacement within its existing deadline, and says so", async () => {
+    const h = harness(await accountPlan());
+    // The check after the switch stops after the released version ran, before the
+    // replacement it began could answer.
+    expect(await h.run({ verifyWaitMs: 0, switchMs: SWITCH_MS + CHECK_MS })).toEqual({
+      kind: "released",
+      why: expect.stringMatching(/^released, not yet applied: /),
+    });
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
+  it("completes a release whose confirmation was lost, when the run resumes long after the server's notice (Codex r1-3)", async () => {
+    for (const point of [
+      { call: "updateSecrets", nth: 1, when: "after" },
+      { call: "secretNames", nth: 4, when: "before" },
+      { call: "activeVersion", nth: 1, when: "before" },
+    ] as const) {
+      const h = harness(await accountPlan());
+      h.world.crash = point;
+      await expect(h.run()).rejects.toThrow(Crash);
+      expect(h.world.released()).toBe(true);
+      // The installer comes back an hour later: the replaced server's notice is long over.
+      h.world.now += 60 * 60_000;
+      expect(await h.run()).toEqual({ kind: "done" });
+      expect(h.world.secretChanges).toHaveLength(1);
+    }
+  });
+
+  it("completes once the restarted server's owner is durable again, however late (Codex r1-2)", async () => {
+    const h = harness(await accountPlan());
+    // After the release, the replaced server's replica lags for 40 minutes.
+    let releasedAt: number | undefined;
+    h.world.truth = (t) =>
+      releasedAt !== undefined && t > releasedAt && t < releasedAt + 40 * 60_000
+        ? { initialized: false, reason: "not_replicated" }
+        : { initialized: true, reason: "durable" };
+    h.world.before = {
+      call: "updateSecrets",
+      nth: 1,
+      run: () => {
+        releasedAt = h.world.now;
+      },
+    };
+    expect(await h.run()).toEqual({
+      kind: "released",
+      why: expect.stringContaining("does not show a durable owner yet"),
+    });
+    h.world.now += 45 * 60_000;
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
+  it("finds the release's evidence behind more later activity than one query returns (Codex r2-3)", async () => {
+    const h = harness(await accountPlan());
+    h.world.noisePerMinute = 40; // about 2,400 lines an hour
+    h.world.logCap = 2_000;
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "after" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    // The installer comes back three hours later: the newest 2,000 events are all later activity.
+    h.world.now += 3 * 60 * 60_000;
+    const newest = h.world
+      .logEvents(h.world.plan.platformWorker, 0, h.world.now)
+      .slice(0, 2_000) as { source?: { cfo?: string } }[];
+    expect(newest.some((e) => e.source?.cfo === "bootstrap")).toBe(false);
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretChanges).toHaveLength(1);
   });
 
   it("reports released but unchecked when no newer version has run yet", async () => {
@@ -512,6 +607,22 @@ describe("runBootstrap: Cloudflare misbehaving", () => {
     h.world.dropOnDeploy = [];
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
+  });
+
+  it("asks the installer again when only the artifacts' credentials are missing (G2-DUR-001)", async () => {
+    const h = harness(await accountPlan());
+    h.world.dropOnDeploy = [ARTIFACTS_SECRET_KEY_SECRET];
+    await expect(h.run()).rejects.toThrow(
+      `after the deploy, cloudflare-omnigent lacks ${ARTIFACTS_SECRET_KEY_SECRET}; run again`,
+    );
+    expect(h.asked).toBe(1);
+    h.world.dropOnDeploy = [];
+    expect(await h.run()).toEqual({ kind: "done" });
+    // The password and the replica's pair are held: only the artifacts' half was missing.
+    expect(h.asked).toBe(2);
+    expect(h.world.secretsOf(h.world.plan.platformWorker)?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(
+      REPLICA_SECRET,
+    );
   });
 
   it("stops when the platform Worker vanishes before the release", async () => {

@@ -224,6 +224,9 @@ function workerEnv(
     CFO_REPLICA_REGION: "us-east-1",
     LITESTREAM_ACCESS_KEY_ID: stack.s3User,
     LITESTREAM_SECRET_ACCESS_KEY: stack.s3Password,
+    // The watchdog's decisions are this drill's subject and it uploads no file: artifacts stay
+    // on the container's disk, which the image allows for tests only (G2-DUR-001).
+    CFO_ALLOW_LOCAL_ARTIFACTS: "true",
     OMNIGENT_ACCOUNTS_BASE_URL: "http://cfo-drill.invalid",
     OMNIGENT_ACCOUNTS_COOKIE_SECRET: stack.cookieSecret,
     OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",

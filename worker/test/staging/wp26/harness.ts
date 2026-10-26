@@ -21,6 +21,8 @@ import {
   OMNIGENT_SERVER_INTERFACE_VERSION,
   OMNIGENT_SERVER_OBJECT_NAME,
 } from "../../../src/shared/rpc.ts";
+import { log as gLog, objectPorts, StepRunner, type StepSummary } from "../g2/object.ts";
+import { recordKill } from "../g2/steps.ts";
 import { RunDriver, type RunPorts } from "./driver.ts";
 import { INITIAL_RUN, type RunState, type SeedResult } from "./plan.ts";
 
@@ -34,6 +36,14 @@ interface StagingEnv {
   readonly SEED_MB?: string;
   /** The run's object: a new name starts a new run on a redeploy (a finished one stays done). */
   readonly RUN_NAME?: string;
+  /**
+   * G2's 1 GB re-snapshot run (worker/test/staging/g2/resnapshot): "true" adds the G2 probe
+   * after the replacement (steps.ts, "resnapshot").
+   */
+  readonly G2_RESNAPSHOT?: string;
+  /** "true": the run waits for WP26_GO = "go" as well as the token (one token, two runs). */
+  readonly WP26_HOLD?: string;
+  readonly WP26_GO?: string;
 }
 
 const SEEDER_PORT = 8080;
@@ -55,10 +65,59 @@ export class OmnigentServer extends PlatformOmnigentServer {
     return { lastAnsweredAt: state.lastAnsweredAt ?? null, phase: state.phase ?? null };
   }
 
+  readonly #steps = new StepRunner(() => ({
+    ctx: this.ctx,
+    env: this.env as unknown as Record<string, unknown>,
+    forward: (request) => this.fetch(request),
+    outages: (query) => this.outages(query),
+  }));
+
+  /** G2: the re-snapshot probe after this run's replacement, as the run's generated owner. */
+  async g2Run(step: string): Promise<StepSummary> {
+    const env = this.env as unknown as Record<string, unknown>;
+    return this.#steps.run(
+      step,
+      env.SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD,
+      env.SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME,
+    );
+  }
+
+  /** Destroy calls, one at a time in this instance (Codex G2 review run 2, 2). */
+  #destroys: Promise<unknown> = Promise.resolve();
+
   /** Kills the server container, as a platform loss would; the watchdog replaces it. */
-  async stagingDestroy(): Promise<{ wasRunning: boolean }> {
+  stagingDestroy(): Promise<{ wasRunning: boolean }> {
+    // Overlapping calls (a retry whose first answer was lost) run in turn, so the second sees
+    // the first's persisted kill and never destroys the watchdog's replacement.
+    const run = this.#destroys.then(() => this.#destroyOnce());
+    this.#destroys = run.catch(() => undefined);
+    return run;
+  }
+
+  async #destroyOnce(): Promise<{ wasRunning: boolean }> {
     const container = this.ctx.container;
     const wasRunning = container?.running ?? false;
+    if ((this.env as unknown as StagingEnv).G2_RESNAPSHOT === "true") {
+      const ports = objectPorts({
+        ctx: this.ctx,
+        env: this.env as unknown as Record<string, unknown>,
+        forward: (request) => this.fetch(request),
+        outages: (query) => this.outages(query),
+      });
+      const killed = await ports.load("resnapshot");
+      if (killed !== undefined && killed.stage !== "pending") {
+        // A kill was sent already and the run asks again (its answer was lost): send it again
+        // only to the same boot, never to the watchdog's replacement (Codex G2 review, 2).
+        const bootId = (await ports.status())?.bootId ?? null;
+        if (!killed.bootIdBefore || bootId !== killed.bootIdBefore) {
+          gLog("destroy_repeat_skipped", { bootIdBefore: killed.bootIdBefore ?? null, bootId });
+          return { wasRunning: false };
+        }
+      } else if (wasRunning) {
+        // Before the kill (persist before effect): the G2 probe's watch starts from it.
+        await recordKill(ports, "resnapshot");
+      }
+    }
     if (container && wasRunning) await container.destroy("wp26 staging: the replacement");
     return { wasRunning };
   }
@@ -159,7 +218,9 @@ export class RestoreRun extends DurableObject<StagingEnv> {
         return {
           tokenPresent:
             typeof env.SERVER_ENV_LITESTREAM_ACCESS_KEY_ID === "string" &&
-            typeof env.SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY === "string",
+            typeof env.SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY === "string" &&
+            // G2: one token for two runs; this one starts only when released.
+            (this.env.WP26_HOLD !== "true" || this.env.WP26_GO === "go"),
           seederRunning,
           seedResult,
           serverLastAnsweredAt: serverState?.lastAnsweredAt ?? null,
@@ -198,8 +259,19 @@ export class RestoreRun extends DurableObject<StagingEnv> {
 }
 
 export default {
-  async scheduled(_controller, env): Promise<void> {
-    await env.RUN.getByName(env.RUN_NAME ?? "run").tick();
+  async scheduled(_controller, env, ctx): Promise<void> {
+    const run = env.RUN.getByName(env.RUN_NAME ?? "run");
+    await run.tick();
+    // G2: the probe, only once the run has killed the server (before that, touching the server
+    // object would arm its watchdog on a replica still being seeded).
+    if (env.G2_RESNAPSHOT !== "true" || (await run.status()).killSentAt === null) return;
+    const server = env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME);
+    ctx.waitUntil(
+      server.g2Run("resnapshot").then(
+        (result) => log("g2_tick", { result }),
+        (error: unknown) => log("g2_tick_error", { error: String(error).slice(0, 200) }),
+      ),
+    );
   },
   async fetch(request, env): Promise<Response> {
     // Behind the staging tool's owner-only Access application; read-only.

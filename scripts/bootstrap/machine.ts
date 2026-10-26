@@ -3,8 +3,8 @@
 //
 // In order, each run:
 //   1. deploys the platform Worker with the installation's variables, adding only the secrets it
-//      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password and the
-//      replica's credentials (one Worker version, `--secrets-file`);
+//      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password, the
+//      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`);
 //   2. reads the hostname's Access application and checks that it is owner-only (no bypass, no
 //      service token, the owner's pin as its one identity) and sets SameSite=lax;
 //   3. deploys the web Worker with ingress's variables, behind that Access application;
@@ -15,7 +15,10 @@
 //      deletes the password, a deliberate platform release (R-27), sent only while the
 //      accepted status is still fresh;
 //   6. checks, after the objects switch to the released version (about 300 s), that the
-//      OmnigentServer object runs it and no longer reports the password.
+//      OmnigentServer object runs it and no longer reports the password, and that the release
+//      is applied: the watchdog replaced the server (one controlled restart), and the server
+//      started with the released configuration reports a durable owner (G2-SEC-001). Until
+//      then the outcome is "released", not yet applied, and a later run checks again.
 //
 // Crash safety. The journal in the state file is written before each effect and after it.
 // A run re-reads the platform Worker's secret names first, so a step whose effect landed
@@ -43,11 +46,14 @@ import {
 } from "./events.ts";
 import {
   type AccessSettings,
+  ARTIFACTS_KEY_ID_SECRET,
+  ARTIFACTS_SECRET_KEY_SECRET,
   accessProblems,
   containerEnvProblems,
   INITIALIZED_SECRET,
   type Installation,
   installationProblems,
+  needsArtifactCredentials,
   needsReplicaCredentials,
   PASSWORD_SECRET,
   platformVars,
@@ -185,6 +191,36 @@ export const DEFAULT_RUN_OPTIONS: RunOptions = {
 
 /** How far back a Workers Logs query looks for the newest status. */
 const LOOKBACK_MS = 15 * 60_000;
+/**
+ * After a release, Workers Logs are read in slices this long: one query answers at most 2,000
+ * events, newest first, so over a long interval later activity would hide the release's
+ * evidence (Codex G2-SEC-001 r2-3).
+ */
+export const LOG_SLICE_MS = 5 * 60_000;
+/** A slice that ended this long ago is complete: it is read once per run. */
+const SETTLED_MS = 10 * 60_000;
+
+/** Reads a Worker's logs between two times, slice by slice, reading settled slices once. */
+function slicedLogs(
+  ctx: RunContext,
+  worker: string,
+): (fromMs: number, toMs: number) => Promise<unknown[]> {
+  const settled = new Map<number, unknown[]>();
+  return async (fromMs, toMs) => {
+    const events: unknown[] = [];
+    for (let start = fromMs; start < toMs; start += LOG_SLICE_MS) {
+      const end = Math.min(toMs, start + LOG_SLICE_MS);
+      const whole = end === start + LOG_SLICE_MS;
+      let slice = whole ? settled.get(start) : undefined;
+      if (slice === undefined) {
+        slice = await ctx.cloud.logs(worker, start, end);
+        if (whole && end <= ctx.now() - SETTLED_MS) settled.set(start, slice);
+      }
+      events.push(...slice);
+    }
+    return events;
+  };
+}
 
 export type Outcome =
   /** Released and checked after the version switch. */
@@ -218,6 +254,7 @@ function eventOf(seen: SeenStatus | undefined): StatusEvent | undefined {
         status: seen.status,
         reason: seen.reason,
         secretPresent: undefined,
+        configApplied: undefined,
       };
 }
 
@@ -285,7 +322,9 @@ export async function runBootstrap(
     const needsInstaller =
       !present.has(PASSWORD_SECRET) ||
       (needsReplicaCredentials(plan) &&
-        (!present.has(REPLICA_KEY_ID_SECRET) || !present.has(REPLICA_SECRET_KEY_SECRET)));
+        (!present.has(REPLICA_KEY_ID_SECRET) || !present.has(REPLICA_SECRET_KEY_SECRET))) ||
+      (needsArtifactCredentials(plan) &&
+        (!present.has(ARTIFACTS_KEY_ID_SECRET) || !present.has(ARTIFACTS_SECRET_KEY_SECRET)));
     const add = secretsToAdd(plan, present, needsInstaller ? ctx.secrets() : {}, {
       cookieSecret: hex(ctx.random(32)),
     });
@@ -433,15 +472,22 @@ async function verifyAfterRelease(
     if (version !== undefined) record({ releasedVersionId: version });
   }
   const { journal, installation: plan } = current();
-  const releasedAt = Date.parse(String(journal.releasedAt));
+  // The release took effect between its journalled start and its confirmation. A run that found
+  // it already in effect records the confirmation only when it resumes, maybe long after: the
+  // start bounds it instead, so the server's lines since then still count (Codex G2-SEC-001
+  // r1-3). The released version's ID is what ties a line to the release.
+  const confirmedAt = Date.parse(String(journal.releasedAt));
+  const startedAt = Date.parse(String(journal.releaseStartedAt));
+  const releasedAt = Number.isFinite(startedAt) ? Math.min(startedAt, confirmedAt) : confirmedAt;
   const switchAt = releasedAt + options.switchMs;
   if (ctx.now() < switchAt) {
     ctx.log("waiting for the platform objects to switch to the released version (about 5 minutes)");
     await ctx.sleep(switchAt - ctx.now());
   }
   const deadline = ctx.now() + options.verifyWaitMs;
+  const logsSince = slicedLogs(ctx, plan.platformWorker);
   for (;;) {
-    const events = await ctx.cloud.logs(plan.platformWorker, releasedAt - LOOKBACK_MS, ctx.now());
+    const events = await logsSince(releasedAt - LOOKBACK_MS, ctx.now());
     const logs = parseLogs(events, plan.platformWorker);
     const result = verifyRelease(logs, {
       installationId: plan.installationId,
@@ -450,7 +496,9 @@ async function verifyAfterRelease(
     });
     if (result.verified) {
       record({ verifiedAt: iso(ctx.now()) });
-      ctx.log("checked: the server's object runs the released version, without the password");
+      ctx.log(
+        "checked: the server's object runs the released version, and the server restarted with it, without the password",
+      );
       return { kind: "done" };
     }
     if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };

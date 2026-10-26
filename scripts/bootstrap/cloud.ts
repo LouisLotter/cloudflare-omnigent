@@ -10,7 +10,9 @@
 // mode 0600, and removed after the deploy.
 //
 // What it never does: create, change or delete an Access application, policy or service
-// token; send a request to the installation's hostname; create a Worker by a secret change.
+// token; send a request to the installation's hostname; create a Worker by a secret change;
+// delete or empty an R2 bucket. The only thing it creates outside the deploys is a missing R2
+// bucket of the plan (`bootstrap.ts buckets`), before the installer makes the R2 token for it.
 // The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`), which fails for
 // a missing Worker, where `wrangler secret bulk` would create a draft one.
 
@@ -19,6 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  bucketLookup,
   type CommandResult,
   diagnostic,
   type Runner,
@@ -140,6 +143,26 @@ export function bulkSecrets(
     throw new Error(`cf workers secrets bulk failed: ${diagnostic(result.stderr)}`);
   }
   return "sent";
+}
+
+/** Whether the account holds the R2 bucket; read-only (`cf r2 buckets get`). */
+export function bucketExists(run: Runner, name: string): boolean {
+  return bucketLookup(run("cf", ["r2", "buckets", "get", name], { inherit: false }), name);
+}
+
+/**
+ * Creates the plan's R2 buckets that do not exist yet, in the account's default location, and
+ * says which it created. An existing bucket is left as it is; nothing is ever deleted.
+ */
+export function ensureBuckets(run: Runner, names: readonly string[]): string[] {
+  const created: string[] = [];
+  for (const name of names) {
+    if (bucketExists(run, name)) continue;
+    cfJson(run, ["r2", "buckets", "create", "--body", JSON.stringify({ name })]);
+    if (!bucketExists(run, name)) throw new Error(`R2 bucket ${name} was not created`);
+    created.push(name);
+  }
+  return created;
 }
 
 /** Whether cf's failure says the Worker does not exist (Cloudflare's error 10007). */

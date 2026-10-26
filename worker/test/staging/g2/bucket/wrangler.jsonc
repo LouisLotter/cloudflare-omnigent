@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../../../node_modules/wrangler/config-schema.json",
+  // G2 sitting: holds the installation's R2 buckets, the replica's and Omnigent's artifacts'
+  // (G2-DUR-001), so that they exist before the owner makes one token for both (the production
+  // platform Worker declares no bucket: Litestream and Omnigent reach R2 over S3). The Worker
+  // itself answers 404 to everything. Deploy only with run.sh:
+  //   pnpm stg deploy --suffix g2-sitting-r2 --owner G2-sitting --config <this file> --days 1
+  "name": "cfo-stg-g2-sitting-r2",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
+  "r2_buckets": [
+    { "binding": "REPLICA", "bucket_name": "cfo-stg-g2-sitting-r2-db" },
+    { "binding": "ARTIFACTS", "bucket_name": "cfo-stg-g2-sitting-r2-artifacts" }
+  ]
+}

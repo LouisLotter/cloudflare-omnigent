@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from conftest import requires_docker
-from harness_stack import BUCKET, IMAGE, NETWORK, Stack, docker
+from harness_stack import BUCKET, IMAGE, NETWORK, PROJECT, Stack, docker
 
 pytestmark = requires_docker
 
@@ -91,8 +91,8 @@ def test_measurement_run_and_container_replacement(stack: Stack) -> None:
         "LITESTREAM_SECRET_ACCESS_KEY": stack.env["CFO_IT_S3_PASSWORD"],
     }
     stack.extra_canaries += [env["DRILL_OWNER_PASSWORD"], env["DRILL_COOKIE_SECRET"]]
-    first = f"cfo-wp25-server-harness-{uuid.uuid4().hex[:6]}"
-    second = f"cfo-wp25-server-replaced-{uuid.uuid4().hex[:6]}"
+    first = f"{PROJECT}-server-harness-{uuid.uuid4().hex[:6]}"
+    second = f"{PROJECT}-server-replaced-{uuid.uuid4().hex[:6]}"
     try:
         port = _start(stack, first, env)
         status = _wait(port, lambda s: s.get("awaiting_replacement") or s.get("done"), 1500)

@@ -23,7 +23,8 @@ import httpx
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 IMAGE = os.environ.get("CFO_DRILL_IMAGE", "cfo-wp25-drill:dev")
-PROJECT = "cfo-wp25"
+#: The Compose project, which also names the server containers; a gate rerun may set its own.
+PROJECT = os.environ.get("CFO_DRILL_PROJECT", "cfo-wp25")
 NETWORK = f"{PROJECT}_default"
 BUCKET = "cfo-wp25-replica"
 OWNER = "owner"
@@ -92,6 +93,9 @@ class Stack:
             "CFO_REPLICA_REGION": "us-east-1",
             "LITESTREAM_ACCESS_KEY_ID": self.env["CFO_IT_S3_USER"],
             "LITESTREAM_SECRET_ACCESS_KEY": self.env["CFO_IT_S3_PASSWORD"],
+            # The database's durability is this suite's subject; the image tests cover the
+            # artifact bucket (G2-DUR-001), so the artifacts stay on disk here (tests only).
+            "CFO_ALLOW_LOCAL_ARTIFACTS": "true",
             "OMNIGENT_ACCOUNTS_BASE_URL": "http://cfo-wp25.invalid",
             "OMNIGENT_ACCOUNTS_COOKIE_SECRET": self.env["CFO_IT_COOKIE_SECRET"],
             "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,

@@ -12,7 +12,9 @@ In order (code-structure plan, ``images/server``):
    port 8000 answers 503 ``recovery_mode``, ``/status`` says why, and a transient cause
    (a failed or timed-out restore) is retried.
 4. **Deployment-managed settings files** from the environment: the admin list, the allowed
-   domains, an empty server config; stale sharing override files are removed.
+   domains, an empty server config; stale sharing override files are removed. Omnigent's
+   artifacts go to their own S3 bucket (``OMNIGENT_ARTIFACT_URI``, checked in step 1): the
+   local artifact directory holds only Omnigent's cache.
 5. **Litestream, then Omnigent.** ``litestream replicate`` starts first; once its control
    socket lists the database, the app starts (:mod:`cfo_server.app`). Both are supervised: if
    either exits, the other is stopped. ``/status`` says ``initializing`` while the app starts
@@ -613,6 +615,7 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         boot_id=board.boot_id,
         installation_id=config.installation_id,
         omnigent_commit=None if build is None else build["omnigentCommit"],
+        artifacts="local" if config.artifacts.uri is None else "s3",
     )
     supervisor = Supervisor(config, layout, env, board)
     supervisor.install_signal_handlers()

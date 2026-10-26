@@ -2,9 +2,13 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { InstallationId } from "../../../contracts/src/index.ts";
 import {
+  ARTIFACTS_KEY_ID_SECRET,
+  ARTIFACTS_SECRET_KEY_SECRET,
   accessProblems,
+  bucketsOf,
   COOKIE_SECRET,
   containerEnvProblems,
+  defaultArtifactsUrl,
   INITIALIZED_SECRET,
   installationProblems,
   newInstallationId,
@@ -98,7 +102,12 @@ describe("installationProblems", () => {
 
   it("allows a file replica only for a staging test installation", async () => {
     expect(
-      installationProblems(await accountPlan({ replica: { url: "file:///replica" } })),
+      installationProblems(
+        await accountPlan({
+          replica: { url: "file:///replica" },
+          artifacts: { url: "s3://cfo-canary-artifacts", endpoint: "https://r2.example.test" },
+        }),
+      ),
     ).toEqual(["a file:// replica is only for staging tests"]);
     expect(installationProblems(await stagingPlan({ replica: { url: "file:///" } }))).toEqual([
       "a file:// replica needs an absolute path",
@@ -107,7 +116,11 @@ describe("installationProblems", () => {
 
   it("checks the replica URL's form", async () => {
     for (const url of ["s3://", "s3://bucket/x?y=1", "s3://user@bucket/x", "not a url"]) {
-      expect(installationProblems(await accountPlan({ replica: { url } })).length).toBe(1);
+      expect(installationProblems(await accountPlan({ replica: { url } }))).toContain(
+        url === "not a url"
+          ? "the replica URL must be s3://<bucket>/<path>"
+          : "the replica URL must be s3://<bucket>/<path> with nothing else",
+      );
     }
     expect(
       installationProblems(await accountPlan({ replica: { url: "s3://b/x", endpoint: "nope" } })),
@@ -147,11 +160,18 @@ describe("the platform Worker's settings and secrets", () => {
       SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
       SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-canary-replica/omnigent",
       SERVER_ENV_CFO_REPLICA_ENDPOINT: "https://canary.r2.example.test",
+      SERVER_ENV_OMNIGENT_ARTIFACT_URI: "s3://cfo-canary-artifacts",
+      SERVER_ENV_AWS_ENDPOINT_URL_S3: "https://canary.r2.example.test",
+      SERVER_ENV_AWS_REGION: "auto",
     });
     expect(platformVars(await stagingPlan())).toMatchObject({
       SERVER_ENV_CFO_REPLICA_URL: "file:///replica",
       SERVER_ENV_CFO_ALLOW_FILE_REPLICA: "true",
+      SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS: "true",
     });
+    expect(platformVars(await stagingPlan())).not.toHaveProperty(
+      "SERVER_ENV_OMNIGENT_ARTIFACT_URI",
+    );
     expect(platformVars(await stagingPlan())).not.toHaveProperty("SERVER_ENV_CFO_REPLICA_ENDPOINT");
   });
 
@@ -164,8 +184,38 @@ describe("the platform Worker's settings and secrets", () => {
       [PASSWORD_SECRET]: OWNER_PASSWORD,
       [REPLICA_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
       [REPLICA_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
+      // One R2 token for both buckets: its values, set again under the artifacts' own names.
+      [ARTIFACTS_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
+      [ARTIFACTS_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
     });
     expect(Object.keys(add).sort()).toEqual(requiredSecretNames(plan).sort());
+    expect(ARTIFACTS_KEY_ID_SECRET).toBe("SERVER_ENV_AWS_ACCESS_KEY_ID");
+    expect(ARTIFACTS_SECRET_KEY_SECRET).toBe("SERVER_ENV_AWS_SECRET_ACCESS_KEY");
+  });
+
+  it("takes a second token's values for the artifacts when the installer gives them", async () => {
+    const plan = await accountPlan();
+    const add = secretsToAdd(
+      plan,
+      new Set(),
+      {
+        ...SUPPLIED,
+        artifactsAccessKeyId: "cfo-canary-artifacts-id",
+        artifactsSecretAccessKey: "cfo-canary-artifacts-secret",
+      },
+      { cookieSecret: COOKIE },
+    );
+    expect(add[ARTIFACTS_KEY_ID_SECRET]).toBe("cfo-canary-artifacts-id");
+    expect(add[ARTIFACTS_SECRET_KEY_SECRET]).toBe("cfo-canary-artifacts-secret");
+    expect(add[REPLICA_KEY_ID_SECRET]).toBe(SUPPLIED.replicaAccessKeyId);
+    // A Worker holding the artifacts' pair keeps it; one missing half is asked for.
+    const present = new Set(requiredSecretNames(plan).filter((n) => n !== ARTIFACTS_KEY_ID_SECRET));
+    expect(Object.keys(secretsToAdd(plan, present, SUPPLIED, { cookieSecret: COOKIE }))).toEqual([
+      ARTIFACTS_KEY_ID_SECRET,
+    ]);
+    expect(() =>
+      secretsToAdd(plan, present, { ownerPassword: OWNER_PASSWORD }, { cookieSecret: COOKIE }),
+    ).toThrow(`the artifact bucket's access key ID is needed (${ARTIFACTS_KEY_ID_SECRET})`);
   });
 
   it("never overwrites a secret the Worker holds", async () => {
@@ -210,9 +260,106 @@ describe("the platform Worker's settings and secrets", () => {
     expect(containerEnvProblems(vars, withoutKey, plan)).toEqual([
       "LITESTREAM_ACCESS_KEY_ID would be missing",
     ]);
+    const { [ARTIFACTS_SECRET_KEY_SECRET]: _alsoGone, ...withoutArtifactsKey } = secrets;
+    expect(containerEnvProblems(vars, withoutArtifactsKey, plan)).toEqual([
+      "AWS_SECRET_ACCESS_KEY would be missing",
+    ]);
+    const { SERVER_ENV_OMNIGENT_ARTIFACT_URI: _uri, ...withoutUri } = vars;
+    expect(containerEnvProblems(withoutUri, secrets, plan)).toEqual([
+      "OMNIGENT_ARTIFACT_URI would be missing",
+    ]);
+    const staging = await stagingPlan();
+    const { SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS: _switch, ...withoutSwitch } =
+      platformVars(staging);
+    expect(
+      containerEnvProblems(
+        withoutSwitch,
+        secretsToAdd(staging, new Set(), SUPPLIED, { cookieSecret: COOKIE }),
+        staging,
+      ),
+    ).toEqual(["CFO_ALLOW_LOCAL_ARTIFACTS would be missing"]);
     expect(containerEnvProblems({ ...vars, "SERVER_ENV_BAD-NAME": "x" }, secrets, plan)).toEqual([
       "SERVER_ENV_BAD-NAME would not reach the server: invalid name",
     ]);
+  });
+});
+
+describe("the artifact bucket (G2-DUR-001)", () => {
+  it("is required beside an S3 replica: the container's disk loses files at every restart", async () => {
+    const { artifacts: _none, ...plan } = await accountPlan();
+    expect(installationProblems(plan)).toEqual([
+      "the plan names no artifact bucket: uploaded files would be lost at every restart (plan the installation again; G2-DUR-001)",
+    ]);
+    // A staging test installation with a file replica may keep them on the disk.
+    expect(installationProblems(await stagingPlan())).toEqual([]);
+  });
+
+  it("is a bucket of its own, at an https endpoint", async () => {
+    const problems = async (artifacts: { url: string; endpoint?: string }) =>
+      installationProblems(await accountPlan({ artifacts }));
+    expect(await problems({ url: "s3://cfo-canary-artifacts/omnigent" })).toEqual([]);
+    for (const url of [
+      "s3://",
+      "gs://cfo-canary-artifacts",
+      "s3://Cfo-Artifacts",
+      "s3://cfo_artifacts",
+      "s3://ab",
+      `s3://${"a".repeat(64)}`,
+      "s3://cfo-canary-artifacts?x=1",
+      "s3://cfo-canary-artifacts#x",
+      "s3://user@cfo-canary-artifacts",
+      "s3://cfo-canary-artifacts:9000",
+      "s3://cfo-canary-artifacts/a/../b",
+      "s3://cfo-canary-artifacts/./b",
+      "not a url",
+      // Codex G2-DUR-001 r1-2: what a URL parser accepts and Omnigent's own parser does not.
+      "S3://cfo-canary-artifacts",
+      "s3://cfo-canary-artifacts?",
+      "s3://cfo-canary-artifacts/x?y",
+      "s3://cfo-canary-artifacts/x#",
+      "s3://cfo-canary-artifacts/a b",
+      "s3://cfo-canary-artifacts/a\\b",
+      "s3://[broken",
+      "s3:/cfo-canary-artifacts",
+      // Codex G2-DUR-001 r2-2: invisible characters the image refuses (Python's isprintable).
+      "s3://cfo-canary-artifacts/a\u200bb",
+      "s3://cfo-canary-artifacts/a\u0085b",
+      "s3://cfo-canary-artifacts/a\u202eb",
+      "s3://cfo-canary-artifacts/a\u00a0b",
+      "s3://cfo-canary-artifacts/a\u2028b",
+    ]) {
+      expect(await problems({ url }), url).toEqual([
+        "the artifacts URL must be s3://<bucket>[/<prefix>], with an R2 bucket name",
+      ]);
+    }
+    expect(await problems({ url: "s3://cfo-canary-replica/artifacts" })).toEqual([
+      "the artifacts need a bucket of their own, not the replica's",
+    ]);
+    expect(
+      await problems({ url: "s3://cfo-canary-artifacts", endpoint: "http://r2.example.test" }),
+    ).toEqual(["the artifacts endpoint must be an https:// URL"]);
+    const noEndpoint = await accountPlan({
+      replica: { url: "s3://cfo-canary-replica/omnigent" },
+    });
+    expect(installationProblems(noEndpoint)).toEqual([
+      "the artifacts need an S3 endpoint: give --artifacts-endpoint or the replica's",
+    ]);
+  });
+
+  it("takes its own endpoint when given, and names the plan's buckets", async () => {
+    const plan = await accountPlan({
+      artifacts: { url: "s3://cfo-canary-artifacts/x", endpoint: "https://other.example.test" },
+    });
+    expect(platformVars(plan)).toMatchObject({
+      SERVER_ENV_OMNIGENT_ARTIFACT_URI: "s3://cfo-canary-artifacts/x",
+      SERVER_ENV_AWS_ENDPOINT_URL_S3: "https://other.example.test",
+    });
+    expect(bucketsOf(plan)).toEqual(["cfo-canary-replica", "cfo-canary-artifacts"]);
+    expect(bucketsOf(await stagingPlan())).toEqual([]);
+    expect(defaultArtifactsUrl("cloudflare-omnigent")).toBe("s3://cloudflare-omnigent-artifacts");
+    expect(
+      installationProblems(await accountPlan({ artifacts: { url: defaultArtifactsUrl("x") } })),
+    ).toEqual([]);
   });
 });
 
