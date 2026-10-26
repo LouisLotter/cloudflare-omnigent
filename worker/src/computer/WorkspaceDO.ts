@@ -16,10 +16,15 @@ import {
   type InterceptProps,
   type LauncherCall,
   type LauncherResult,
+  type PageFrontCall,
+  type PageFrontResult,
   type PagesCall,
   type PagesResult,
   type ReservationState,
   type SupervisorReply,
+  TERMINAL_PORT,
+  TERMINAL_SUBPROTOCOL,
+  TERMINAL_WS_PATH,
 } from "@cfo/contracts";
 import type { PlatformEnv } from "../env.ts";
 import { logEvent } from "../server/responses.ts";
@@ -42,8 +47,10 @@ import {
   WorkspaceController,
 } from "./controller.ts";
 import { randomId } from "./ids.ts";
+import { PageFront } from "./page-front.ts";
 import type { Store } from "./record.ts";
 import { WORKSPACE_MIGRATIONS } from "./schema.ts";
+import { type BridgeSocket, TerminalBridge, type TerminalTiming } from "./terminal.ts";
 
 /** The controller's store on the Durable Object's SQLite storage: one JSON value per key. */
 export class SqlStore implements Store {
@@ -93,6 +100,7 @@ export class SqlStore implements Store {
 
 export class WorkspaceDO extends DurableObject<PlatformEnv> implements WorkspaceRpc {
   readonly #controller: WorkspaceController | null;
+  readonly #front: PageFront | null;
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
@@ -100,13 +108,15 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     const computerId = ComputerId.safeParse(ctx.id.name);
     if (!computerId.success) {
       this.#controller = null;
+      this.#front = null;
       return;
     }
     const store = new SqlStore(ctx.storage);
+    const port = this.openPort();
     this.#controller = new WorkspaceController({
       computerId: computerId.data,
       store,
-      port: this.openPort(),
+      port,
       control: this.controlRpc(),
       bucket: this.checkpointBucket(),
       clock: () => this.now(),
@@ -128,6 +138,50 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       log: (event, fields) => logEvent("workspace", event, fields),
     });
     const controller = this.#controller;
+    let front: PageFront | null = null;
+    const terminal = new TerminalBridge({
+      computerId: computerId.data,
+      store,
+      now: () => this.now(),
+      timing: this.terminalTiming(),
+      target: () => {
+        if (front === null) throw platformError("internal", "no page front");
+        return front.target();
+      },
+      dial: () => {
+        if (port === null) throw platformError("unavailable", "no container");
+        return port.fetch(
+          TERMINAL_PORT,
+          new Request(`http://computer${TERMINAL_WS_PATH}`, {
+            headers: { upgrade: "websocket", "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+          }),
+        );
+      },
+      setWindow: (until) =>
+        until === null ? controller.setTerminal(false) : controller.setTerminal(true, until),
+      pair: () => {
+        const pair = new WebSocketPair();
+        return [pair[0] as BridgeSocket, pair[1] as BridgeSocket];
+      },
+      upgradeResponse: (client) =>
+        new Response(null, {
+          status: 101,
+          webSocket: client as unknown as WebSocket,
+          headers: { "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+        }),
+      socketOf: (response) => (response.webSocket as BridgeSocket | null) ?? null,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      log: (event, fields) => logEvent("workspace", event, fields),
+    });
+    front = new PageFront(computerId.data, {
+      store,
+      controller,
+      terminal,
+      log: (event, fields) => logEvent("workspace", event, fields),
+    });
+    this.#front = front;
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage, WORKSPACE_MIGRATIONS);
       await controller.boot();
@@ -161,6 +215,11 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return CONTROLLER_TIMING;
   }
 
+  /** The setup terminal's timing (WP3.5); the production values unless a test overrides them. */
+  protected terminalTiming(): Partial<TerminalTiming> {
+    return {};
+  }
+
   protected get controller(): WorkspaceController {
     if (this.#controller === null) {
       throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
@@ -168,7 +227,16 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.#controller;
   }
 
-  launcher(call: LauncherCall): Promise<LauncherResult> {
+  protected get front(): PageFront {
+    if (this.#front === null) {
+      throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
+    }
+    return this.#front;
+  }
+
+  async launcher(call: LauncherCall): Promise<LauncherResult> {
+    // `terminate` closes the setup terminal first; a sleep finds an expired window closed.
+    await this.front.beforeLauncher(call);
     return this.controller.launcher(call);
   }
 
@@ -176,8 +244,15 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.controller.computer(call);
   }
 
-  pages(call: PagesCall): Promise<PagesResult> {
-    return this.controller.pages(call);
+  /** The pages, through the page front (WP3.5): intent tokens, the terminal, removal. */
+  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
+    return this.front.pages(call);
+  }
+
+  /** The setup terminal's upgrade from the web Worker (WP3.5). */
+  override async fetch(request: Request): Promise<Response> {
+    if (this.#front === null) return new Response(null, { status: 404 });
+    return this.#front.fetch(request);
   }
 
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
@@ -189,6 +264,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   }
 
   override async alarm(): Promise<void> {
+    if (this.#front !== null) await this.#front.beforeAlarm();
     if (this.#controller !== null) await this.#controller.alarm();
   }
 }

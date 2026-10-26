@@ -12,7 +12,12 @@
  * can tell a planned stop from an unexpected one. Every start, stop, signal, intercept and timeout
  * is also logged in order in `ops`.
  */
-import { COMPUTER_START_ENV, type DirectoryBackupRecord, type InstanceSize } from "@cfo/contracts";
+import {
+  COMPUTER_START_ENV,
+  type DirectoryBackupRecord,
+  type InstanceSize,
+  TERMINAL_PORT,
+} from "@cfo/contracts";
 import {
   type BackupOptions,
   CONNECTION_LOST_MESSAGE,
@@ -53,6 +58,8 @@ export class FakeComputerContainer implements ComputerContainerPort {
   dropRequests: { count: number; when: "before" | "after" } = { count: 0, when: "before" };
   /** The supervisor's command API; without one, the container is not listening. */
   supervisor: SupervisorHandler | null = null;
+  /** ttyd on the setup terminal's port (WP3.5); without one, that port is not listening. */
+  terminal: SupervisorHandler | null = null;
   /** The next backup uploads fail; `holdBackups` makes them wait for their abort signal. */
   failBackups = 0;
   holdBackups = false;
@@ -127,6 +134,12 @@ export class FakeComputerContainer implements ComputerContainerPort {
     // A refused start surfaces in the next container call (CF-05).
     if (!this.running && this.#lastStartRefused) throw new Error(NO_INSTANCE_MESSAGE);
     if (!this.running) throw new Error("Container is not running.");
+    if (port === TERMINAL_PORT) {
+      if (!this.terminal) {
+        throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
+      }
+      return this.terminal(request);
+    }
     if (!this.supervisor) {
       throw new Error(`The container is not listening on the TCP address 10.0.0.1:${port}`);
     }

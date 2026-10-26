@@ -77,6 +77,11 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     return testComputers.now();
   }
 
+  /** The setup terminal's checks run every few milliseconds, so a test need not wait (WP3.5). */
+  protected override terminalTiming() {
+    return testComputers.terminalTiming;
+  }
+
   /** The production defaults the overrides above replace: no container or intercepts until they
    * are wired, R2 where CHECKPOINTS is bound, the real clock and timing. */
   defaults() {
