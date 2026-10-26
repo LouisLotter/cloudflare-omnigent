@@ -731,12 +731,27 @@ async function seed(prefix: string, megabytes: number, image: string): Promise<v
     sh("docker", ["exec", "-i", name, "sqlite3", "/data/omnigent.db"], seedSql(rows));
     const seedSeconds = (Date.now() - seeded) / 1000;
     // Until the replica covers every commit (the watchdog's own check, one boot).
-    const position = async () =>
-      (await (
-        await fetch(`http://127.0.0.1:${control}/position`, { signal: AbortSignal.timeout(10_000) })
-      ).json()) as { txid: number; replicatedTxid: number };
-    const target = (await position()).txid;
     const syncFrom = Date.now();
+    // `/position` answers 503 (retryable) while Litestream cannot say, as when it is busy with a
+    // large seed's backlog: ask again until a position comes back (the WP2.6 staging seeder
+    // failed on the first 503, and this wait would have ended early on one).
+    const position = async (): Promise<{ txid: number; replicatedTxid: number }> => {
+      for (;;) {
+        const answer = await fetch(`http://127.0.0.1:${control}/position`, {
+          signal: AbortSignal.timeout(10_000),
+        }).then(
+          async (r) =>
+            r.ok ? ((await r.json()) as { txid?: unknown; replicatedTxid?: unknown }) : null,
+          () => null,
+        );
+        if (typeof answer?.txid === "number" && typeof answer.replicatedTxid === "number") {
+          return { txid: answer.txid, replicatedTxid: answer.replicatedTxid };
+        }
+        if (Date.now() - syncFrom > 1_800_000) throw new Error("the position never answered");
+        await sleep(2_000);
+      }
+    };
+    const target = (await position()).txid;
     while ((await position()).replicatedTxid < target) {
       if (Date.now() - syncFrom > 1_800_000) throw new Error("never replicated");
       await sleep(1_000);
