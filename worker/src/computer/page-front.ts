@@ -79,7 +79,10 @@ export function constantTimeEqual(a: string, b: string): boolean {
 /** Whether the computer can have a terminal, from the controller's page state. */
 export function terminalTarget(state: ComputerPageState): TerminalTarget {
   if (state.removal.state !== "none") return { ok: false, reason: "not_offered" };
-  if (state.status === "stopping") return { ok: false, reason: "busy" };
+  // A stop being prepared, or a sign-out run until its tombstones are published (Codex r1-1).
+  if (state.status === "stopping" || state.removal.signOut === "requested") {
+    return { ok: false, reason: "busy" };
+  }
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
   return { ok: true, generation: state.generation };
 }
@@ -96,10 +99,21 @@ async function launcherOperationId(pageOperationId: string): Promise<string> {
 export class PageFront {
   readonly #d: PageFrontDeps;
   readonly #computerId: string;
+  /**
+   * Terminal admission and the steps that end it run one at a time (Codex r1-1): opening a window
+   * never interleaves with a sign-out, a restart, a stop without saving or a removal.
+   */
+  #serial: Promise<unknown> = Promise.resolve();
 
   constructor(computerId: string, deps: PageFrontDeps) {
     this.#computerId = computerId;
     this.#d = deps;
+  }
+
+  #exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#serial.then(fn, fn);
+    this.#serial = run.catch(() => undefined);
+    return run;
   }
 
   async #secret(): Promise<CryptoKey> {
@@ -164,7 +178,7 @@ export class PageFront {
       this.#checkInterface(front.data.interfaceVersion);
       await this.#state(); // `not_found` for a computer that does not exist: nothing is stored
       const owner = await this.#checkIntent(front.data);
-      return this.#front(front.data, owner);
+      return this.#exclusive(() => this.#front(front.data, owner));
     }
     const parsed = PagesCall.safeParse(raw);
     if (!parsed.success) throw platformError("bad_request", "not a page call");
@@ -182,7 +196,10 @@ export class PageFront {
     await this.#checkIntent(call as Record<string, unknown>);
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
-      await this.#d.terminal.close("a sign-in-sensitive step started");
+      return this.#exclusive(async () => {
+        await this.#d.terminal.close("a sign-in-sensitive step started");
+        return this.#d.controller.pages(stripped);
+      });
     }
     return this.#d.controller.pages(stripped);
   }
@@ -227,8 +244,9 @@ export class PageFront {
   /** Before a launcher call: `terminate` closes the terminal; a sleep checks the window first. */
   async beforeLauncher(raw: LauncherCall | unknown): Promise<void> {
     const operation = (raw as { request?: { operation?: unknown } } | null)?.request?.operation;
-    if (operation === "terminate") await this.#d.terminal.close("the computer is being removed");
-    else if (operation === "suspend") await this.#d.terminal.enforce();
+    if (operation === "terminate") {
+      await this.#exclusive(() => this.#d.terminal.close("the computer is being removed"));
+    } else if (operation === "suspend") await this.#d.terminal.enforce();
   }
 
   /** Before the controller's alarm: an expired window closes before a start-deadline stop. */

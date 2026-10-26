@@ -17,7 +17,7 @@ import { OMNIGENT_SERVER_OBJECT_NAME, workspaceObjectName } from "../../src/shar
 import web, { routeAdmitted } from "../../src/web.ts";
 import { FakeLauncherClient } from "../support/fake-launcher-client.ts";
 import type { FakeServerContainer } from "../support/fake-server-container.ts";
-import type { SimulatedComputer } from "../support/fake-supervisor.ts";
+import type { SimulatedComputer, SupervisorOptions } from "../support/fake-supervisor.ts";
 import type { WorkspaceDO } from "../support/platform-test-worker.ts";
 import { testServers } from "../support/server-harness.ts";
 import { testComputers } from "../support/workspace-harness.ts";
@@ -107,11 +107,12 @@ async function settle(stub: Stub, computer: SimulatedComputer): Promise<void> {
 }
 
 /** A computer that runs, restored, with a fake ttyd. */
-async function running() {
+async function running(options: Partial<SupervisorOptions> = {}) {
   serial += 1;
   const computerId = `cmp_01hzy3m8k6q4t2v9w7x5r1${String(serial).padStart(4, "0")}` as ComputerId;
   const stub = workspaces.getByName(workspaceObjectName(computerId)) as Stub;
   const computer = testComputers.create(stub.id, computerId);
+  computer.supervisorOptions = options;
   const shells = installTtyd(computer);
   const client = new FakeLauncherClient(computerId, (request) =>
     stub.launcher({ ...call, request }),
@@ -404,5 +405,67 @@ describe("the bridged terminal (R-29, RC-24)", () => {
     await until(() => second.received.length === 1);
     expect(shells).toHaveLength(1);
     second.socket.close(1000);
+  });
+
+  it("refuses a terminal while a sign-out runs, and the sign-out ends an open one first (Codex r1-1)", async () => {
+    const { path, stub, computer } = await running({ holdCredentials: true });
+    computer.sup?.signIn("claude");
+    await settle(stub, computer);
+    const browser = connectBrowser(await upgrade(path, (await open(path)).capability));
+    const commandsWhenClosed: string[] = [];
+    void browser.closed.then(() => {
+      for (const r of computer.requests) commandsWhenClosed.push(r.body);
+    });
+    const intent = await intentOf(path);
+    await route(`${path}/do/sign-out`, {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ op: OP(21), intent }).toString(),
+    });
+    expect((await browser.closed).code).toBe(4001);
+    expect(commandsWhenClosed.some((body) => body.includes('"sign_out"'))).toBe(false);
+    await settle(stub, computer);
+    const state = PagesResult.parse(await stub.pages({ ...call, action: "state" }));
+    expect(
+      state.action === "state" &&
+        (state.computer as { removal: { signOut: string } }).removal.signOut,
+    ).toBe("requested");
+    const again = await terminalPost(path, {
+      op: OP(22),
+      intent: await intentOf(path),
+      mode: "open",
+    });
+    expect(again).toEqual({ action: "open_terminal", outcome: "refused", reason: "busy" });
+  });
+});
+
+describe("closure at the controller's credential-sensitive steps (Codex r1-2)", () => {
+  it("a start-deadline stop reached from a supervisor report closes the stream before its commands", async () => {
+    const timing = testComputers.terminalTiming as { checkMs?: number | undefined };
+    const checkMs = timing.checkMs;
+    timing.checkMs = 3_600_000; // the bridge's own check never runs in this test
+    try {
+      const { path, stub, computer } = await running();
+      const browser = connectBrowser(await upgrade(path, (await open(path)).capability));
+      const commandsWhenClosed: string[] = [];
+      void browser.closed.then(() => {
+        for (const r of computer.requests) commandsWhenClosed.push(r.body);
+      });
+      const before = computer.requests.length;
+      // Past the window's deadline and the start deadline; the bridge has not noticed yet.
+      testComputers.advance(31 * 60_000);
+      computer.sup?.report();
+      await settle(stub, computer);
+      const event = await browser.closed;
+      expect(event.code).toBe(4001);
+      expect(event.reason).toContain("the computer is stopping");
+      const stopCommands = commandsWhenClosed.slice(before);
+      expect(stopCommands.some((body) => body.includes("credential_snapshot"))).toBe(false);
+      expect(
+        computer.requests.slice(before).some((r) => r.body.includes("credential_snapshot")),
+      ).toBe(true);
+    } finally {
+      timing.checkMs = checkMs;
+    }
   });
 });

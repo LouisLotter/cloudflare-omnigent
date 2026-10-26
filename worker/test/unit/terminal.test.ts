@@ -488,3 +488,24 @@ describe("bridge edges", () => {
     expect(h.store.keys("terminal/op/").length).toBeLessThanOrEqual(64);
   });
 });
+
+describe("closeNow, the controller's hook before a credential-sensitive step (Codex r1-2)", () => {
+  it("ends every stream and the window synchronously, without calling the controller", async () => {
+    const h = harness();
+    const opened = await h.open();
+    const spare = await h.open(OP(1), opened.window);
+    const browser = browserOf(await h.connect(opened.capability));
+    const told = h.windows.length;
+    h.bridge.closeNow("the computer is stopping");
+    expect(browser.closed).toEqual({
+      code: CLOSED_BY_PLATFORM,
+      reason: "terminal closed: the computer is stopping",
+    });
+    expect(h.ttyd.shell.closed).not.toBeNull();
+    expect(h.bridge.view().open).toBe(false);
+    expect(h.windows.length).toBe(told);
+    expect((await h.connect(spare.capability)).status).toBe(403);
+    h.bridge.closeNow("again");
+    expect(h.logs.filter((l) => l.event === "terminal_window_closed")).toHaveLength(1);
+  });
+});

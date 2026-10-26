@@ -270,6 +270,35 @@ async function main(): Promise<number> {
       await page.click("#terminal-close");
     });
 
+    await run("J2b-reconnect-retries-a-failed-handshake", async (page, checks) => {
+      const id = ids["managed-new"] ?? "";
+      // The second WebSocket the page makes (the first reconnect) fails its handshake.
+      await page.addInitScript({
+        content: `(() => {
+          const Native = window.WebSocket;
+          let made = 0;
+          window.WebSocket = class extends Native {
+            constructor(url, protocols) {
+              super(url, protocols);
+              made += 1;
+              if (made === 2) this.close();
+            }
+          };
+        })();`,
+      });
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor();
+      const dropped = Date.now();
+      await page.evaluate(`window.cfoTerminal.socket.close(3000, "dropped")`);
+      await page.getByText("Reconnecting…").waitFor();
+      await page.getByText("Connected.").waitFor({ timeout: 10_000 });
+      const ms = Date.now() - dropped;
+      if (ms > 10_000) throw new Error(`reconnected after ${ms} ms`);
+      checks.push(`a failed reconnect handshake was retried; connected again in ${ms} ms`);
+      await page.click("#terminal-close");
+    });
+
     await run("J3-hostile-origin", async (page, checks) => {
       const id = ids["managed-ready"] ?? "";
       const before = await state(id);
@@ -335,15 +364,12 @@ async function main(): Promise<number> {
       await page.locator('button:has-text("Sign out")').click();
       await page.getByText("Sign out of Claude and Codex: Done.").waitFor();
       checks.push("sign-out started for the removal");
-      await waitFor(
-        "the finished sign-out",
-        async () => {
-          const s = await state(id);
-          return ["tombstoned", "verified"].includes((s.removal as { signOut: string }).signOut);
-        },
-        60_000,
+      // The page follows the removal by itself: no reload until "Finish the removal" appears.
+      await page.locator('#removal a:has-text("Finish the removal")').waitFor({ timeout: 60_000 });
+      checks.push(
+        "the page offered 'Finish the removal' once the controller settled it, without a reload",
       );
-      await page.goto(`${base}/platform/computers/${id}/do/resolve-removal`);
+      await page.locator('#removal a:has-text("Finish the removal")').click();
       await page.locator('button:has-text("Delete its saved files and logins")').click();
       await waitFor(
         "the resolved removal",
@@ -366,14 +392,8 @@ async function main(): Promise<number> {
       checks.push("no deletion link before the sign-out");
       await page.goto(`${base}/platform/computers/${id}/do/sign-out`);
       await page.locator('button:has-text("Sign out")').click();
-      await waitFor(
-        "the delete step",
-        async () => {
-          await page.goto(`${base}/platform/computers/${id}`);
-          return (await page.locator('[data-removal-step="delete"]').count()) > 0;
-        },
-        60_000,
-      );
+      // The page follows the sign-out by itself: no reload until the deletion link appears.
+      await page.locator('[data-removal-step="delete"]').waitFor({ timeout: 60_000 });
       const href = await page.locator('a[data-link="omnigent-delete"]').getAttribute("href");
       if (href !== "/settings/computers") throw new Error(`delete link: ${href}`);
       checks.push("after the sign-out, the page links to Omnigent's deletion");

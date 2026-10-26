@@ -299,61 +299,54 @@ describe("the removal flow (design, Signing in, Removal)", () => {
     expect(removalStep(pageState(overrides as Partial<ComputerPageState>))).toBe(step);
   });
 
-  it("a pending removal needs a sign-out while a login may be saved (P4)", () => {
+  const none = {
+    signOut: false,
+    signingOut: false,
+    verifying: false,
+    recordRevocation: false,
+    revocationRequired: false,
+    resolvable: false,
+  };
+
+  it("follows the controller's settlement: only `settled` makes a removal resolvable (Codex r1-4)", () => {
     expect(pendingRemoval(pageState())).toBeNull();
     expect(pendingRemoval(pageState(removal({})))).toEqual({
+      ...none,
       signOut: true,
-      recordRevocation: false,
-      resolvable: false,
+      recordRevocation: true,
     });
-    expect(
-      pendingRemoval(
-        pageState({
-          ...removal({}),
-          setupCards: [
-            { provider: "claude", state: "unknown" },
-            { provider: "codex", state: "unknown" },
-          ],
-        }),
-      ),
-    ).toEqual({
-      signOut: true,
-      recordRevocation: false,
-      resolvable: false,
+    expect(pendingRemoval(pageState(removal({ signOut: "requested" })))).toEqual({
+      ...none,
+      signingOut: true,
+      recordRevocation: true,
     });
+    // Tombstones published but not yet verified: not resolvable (the controller would refuse).
     expect(pendingRemoval(pageState(removal({ signOut: "tombstoned" })))).toEqual({
-      signOut: false,
-      recordRevocation: false,
+      ...none,
+      verifying: true,
+      recordRevocation: true,
+    });
+    expect(pendingRemoval(pageState(removal({ signOut: "verified", settled: true })))).toEqual({
+      ...none,
       resolvable: true,
     });
-    expect(pendingRemoval(pageState({ ...removal({}), setupCards: [...NEVER_SIGNED_IN] }))).toEqual(
-      {
-        signOut: false,
-        recordRevocation: false,
-        resolvable: true,
-      },
-    );
+    // An older WorkspaceDO without `settled`: never resolvable from the page.
+    expect(pendingRemoval(pageState(removal({ signOut: "verified" })))?.resolvable).toBe(false);
   });
 
-  it("a possibly lost login needs the owner's revocation record before it resolves (P5)", () => {
+  it("offers the revocation record while unsettled, requires it for a lost login, and honours it (P5)", () => {
     expect(
       pendingRemoval(pageState(removal({ signOut: "verified", loginPossiblyLost: true }))),
     ).toEqual({
-      signOut: false,
+      ...none,
       recordRevocation: true,
-      resolvable: false,
+      revocationRequired: true,
     });
     expect(
       pendingRemoval(
-        pageState(
-          removal({ signOut: "verified", loginPossiblyLost: true, revocationRecorded: true }),
-        ),
+        pageState(removal({ loginPossiblyLost: true, revocationRecorded: true, settled: true })),
       ),
-    ).toEqual({
-      signOut: false,
-      recordRevocation: false,
-      resolvable: true,
-    });
+    ).toEqual({ ...none, resolvable: true });
   });
 });
 

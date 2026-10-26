@@ -62,11 +62,17 @@ export type RemovalStep =
   | "resolved";
 
 export interface PendingRemoval {
-  /** The sign-out still to run (needs the computer started once). */
+  /** The sign-out has not run: offer it (it starts the computer once for the CLIs' logouts). */
   readonly signOut: boolean;
-  /** The person must revoke at the providers and record it (P5). */
+  /** The sign-out runs now. */
+  readonly signingOut: boolean;
+  /** Tombstones are published; the controller verifies them by a restore into a fresh computer. */
+  readonly verifying: boolean;
+  /** The owner's record that they revoked the sessions at the providers is offered (P5). */
   readonly recordRevocation: boolean;
-  /** Everything needed is done: the removal can be resolved. */
+  /** A login may have been lost unsaved: only that record can settle the removal (P5). */
+  readonly revocationRequired: boolean;
+  /** The controller would resolve it now (`removal.settled`). */
   readonly resolvable: boolean;
 }
 
@@ -217,18 +223,24 @@ export function removalStep(state: ComputerPageState): RemovalStep {
   return "delete_then_sign_out";
 }
 
-/** What a pending removal still needs (P4, P5): unknown state is never "signed out". */
+/**
+ * What a pending removal still needs (P4, P5), from the controller's own facts: it resolves only
+ * when the controller says it is settled (a verified sign-out, a computer that never held a login,
+ * or the owner's revocation record); unknown state is never "signed out". The revocation record is
+ * always offered while unsettled, so a sign-out that cannot run (for example at capacity) has a way
+ * forward; it is required when a login may have been lost unsaved.
+ */
 export function pendingRemoval(state: ComputerPageState): PendingRemoval | null {
   if (state.removal.state !== "pending") return null;
-  const signedOut = state.removal.signOut === "verified" || state.removal.signOut === "tombstoned";
-  const anyLogin = state.setupCards.some(
-    (card) => !(card.state === "needs_sign_in" && card.reason === "not_signed_in"),
-  );
-  const recordRevocation = state.removal.loginPossiblyLost && !state.removal.revocationRecorded;
+  const settled = state.removal.settled === true;
+  const phase = state.removal.signOut;
   return {
-    signOut: !signedOut && anyLogin,
-    recordRevocation,
-    resolvable: (signedOut || !anyLogin) && !recordRevocation,
+    signOut: !settled && phase === "none",
+    signingOut: !settled && phase === "requested",
+    verifying: !settled && phase === "tombstoned",
+    recordRevocation: !settled && !state.removal.revocationRecorded,
+    revocationRequired: state.removal.loginPossiblyLost && !state.removal.revocationRecorded,
+    resolvable: settled,
   };
 }
 

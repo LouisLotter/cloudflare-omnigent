@@ -355,6 +355,28 @@ describe("whether a computer can have a terminal", () => {
     ],
     [{ status: "stopping" }, { ok: false, reason: "busy" }],
     [
+      {
+        removal: {
+          state: "none",
+          signOut: "requested",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      },
+      { ok: false, reason: "busy" },
+    ],
+    [
+      {
+        removal: {
+          state: "none",
+          signOut: "tombstoned",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      },
+      { ok: true, generation: 7 },
+    ],
+    [
       { lifecycle: "asleep", status: "stopped" },
       { ok: false, reason: "not_running" },
     ],
@@ -408,5 +430,87 @@ describe("the page front's own failures", () => {
     expect(
       (await front.fetch(new Request("https://w/", { headers: { upgrade: "websocket" } }))).status,
     ).toBe(404);
+  });
+});
+
+describe("terminal admission is serialized with the steps that end it (Codex r1-1)", () => {
+  it("an open that arrives during a sign-out waits for it, then finds the sign-out running", async () => {
+    const { front, controller, terminal } = harness();
+    const intent = await intentOf(front);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pages = controller.pages.bind(controller);
+    controller.pages = async (call: unknown) => {
+      const c = call as { action: string };
+      if (c.action === "sign_out") {
+        await gate;
+        controller.state = pageState({
+          removal: {
+            state: "none",
+            signOut: "requested",
+            loginPossiblyLost: false,
+            revocationRecorded: false,
+          },
+        });
+      }
+      return pages(call);
+    };
+    const signOut = front.pages({
+      action: "sign_out",
+      interfaceVersion: 1,
+      operationId: OP(1),
+      owner: OWNER,
+      intent,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const opening = front.pages({
+      action: "open_terminal",
+      interfaceVersion: 1,
+      operationId: OP(2),
+      owner: OWNER,
+      intent,
+      window: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(terminal.view().open).toBe(false);
+    release();
+    await signOut;
+    expect(await opening).toEqual({ action: "open_terminal", outcome: "refused", reason: "busy" });
+    expect(terminal.view().open).toBe(false);
+  });
+
+  it("a failed step does not block the next one", async () => {
+    const { front, controller } = harness();
+    const intent = await intentOf(front);
+    controller.pages = async (call: unknown) => {
+      if ((call as { action: string }).action === "restart")
+        throw platformError("internal", "boom");
+      return { action: "state", computer: pageState() } as PagesResult;
+    };
+    expect(
+      await codeOf(
+        front.pages({
+          action: "restart",
+          interfaceVersion: 1,
+          operationId: OP(1),
+          owner: OWNER,
+          intent,
+        }),
+      ),
+    ).toBe("internal");
+    expect(
+      await front.pages({
+        action: "close_terminal",
+        interfaceVersion: 1,
+        operationId: OP(2),
+        owner: OWNER,
+        intent,
+      }),
+    ).toEqual({
+      action: "close_terminal",
+      closed: false,
+    });
   });
 });

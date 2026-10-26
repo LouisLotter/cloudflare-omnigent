@@ -104,7 +104,7 @@ export const ACTIONS: readonly ActionSpec[] = [
     danger: false,
     offered: (view) => view.pending?.recordRevocation ?? false,
     explain: () =>
-      "<p>A login on this computer may have changed after it was last saved, so signing out here cannot reach it. Sign this computer's sessions out at the providers first: at claude.ai, in your account's settings, and in ChatGPT's security settings. Then record it here. The record is kept even if the computer's data is deleted.</p>",
+      "<p>Use this when a sign-out on the computer cannot reach a login: a login that may have changed after the last save, or a sign-out that cannot run. Sign this computer's sessions out at the providers first: at claude.ai, in your account's settings, and in ChatGPT's security settings. Then record it here. The record is kept even if the computer's data is deleted, and it lets the removal finish.</p>",
     call: (base) => ({ action: "record_revocation", interfaceVersion: v, ...base }),
   },
   {
@@ -194,10 +194,14 @@ ${view.notices.map(notice).join("\n")}
 function pendingLine(view: ComputerView): string {
   const p = view.pending;
   if (p === null) return "";
-  const needs: string[] = [];
-  if (p.signOut) needs.push("a sign-out on the computer");
-  if (p.recordRevocation) needs.push("your record that you revoked its sessions at the providers");
-  const what = needs.length > 0 ? `Still needs ${needs.join(" and ")}.` : "Ready to finish.";
+  let what: string;
+  if (p.resolvable) what = "Ready to finish.";
+  else if (p.revocationRequired) {
+    what = "Still needs your record that you revoked its sessions at the providers.";
+  } else if (p.signingOut) what = "Signing out now.";
+  else if (p.verifying) what = "Signed out; the sign-out is being verified.";
+  else
+    what = "Still needs a sign-out on the computer, or your record that you revoked its sessions.";
   return `<li data-removal="${escapeHtml(view.id)}"><a href="${computerPath(view.id)}">${escapeHtml(view.name)}</a>: ${escapeHtml(what)} Its saved logins are kept until then.</li>`;
 }
 
@@ -298,9 +302,15 @@ export function removalSection(view: ComputerView): string {
           `<li><a class="button danger" href="${actionPath(view.id, "sign-out")}">Sign out of Claude and Codex</a>: starts the computer once for the CLIs' logouts.</li>`,
         );
       }
+      if (p?.signingOut) items.push("<li>Signing out… This page updates when it is done.</li>");
+      if (p?.verifying) {
+        items.push(
+          "<li>Signed out. The sign-out is being verified by restoring into a fresh computer; this page updates when it is done.</li>",
+        );
+      }
       if (p?.recordRevocation) {
         items.push(
-          `<li>A login may have changed after the last save, so a sign-out cannot reach it. Revoke this computer's sessions at claude.ai and in ChatGPT's settings, then <a class="button" href="${actionPath(view.id, "record-revocation")}">record that you did</a>.</li>`,
+          `<li>${p.revocationRequired ? "A login may have changed after the last save, so a sign-out cannot reach it. Revoke" : "If the sign-out cannot run, revoke"} this computer's sessions at claude.ai and in ChatGPT's settings, then <a class="button" href="${actionPath(view.id, "record-revocation")}">record that you did</a>.</li>`,
         );
       }
       if (p?.resolvable) {
@@ -315,7 +325,7 @@ export function removalSection(view: ComputerView): string {
       steps = `<p data-removal-step="resolved">Removed.</p>`;
       break;
   }
-  return `<section><h2>Remove this computer</h2>${steps}</section>`;
+  return `<section id="removal"><h2>Remove this computer</h2>${steps}</section>`;
 }
 
 /**

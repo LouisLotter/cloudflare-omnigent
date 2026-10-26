@@ -1,28 +1,31 @@
-// The setup page's terminal client (WP3.5). Served by the web Worker from this origin only; it
-// speaks ttyd 1.7.7's WebSocket protocol through the platform's bridge. It asks for a capability
-// with a guarded POST, offers it as a WebSocket subprotocol (never in the URL), and after a drop
-// that the platform did not cause (a web Worker deploy, FH-38) asks for a fresh capability for the
-// same window and reconnects, within about ten seconds. It refreshes the sign-in cards from the
-// page's state every few seconds. Nothing here stores or logs what the terminal shows.
+// The setup page's script (WP3.5). Served by the web Worker from this origin only.
+//
+// - It refreshes the page's state every few seconds: the status, the notices, the two sign-in
+//   cards and the removal steps, from server-rendered, escaped markup, and the page's
+//   request-intent token.
+// - When the page has a terminal, it speaks ttyd 1.7.7's WebSocket protocol through the platform's
+//   bridge. It asks for a capability with a guarded POST and offers it as a WebSocket subprotocol,
+//   never in the URL. After a drop the platform did not cause (a web Worker deploy, FH-38), it asks
+//   for a fresh capability for the same window and reconnects, retrying a failed handshake too,
+//   within about ten seconds.
+// Nothing here stores or logs what the terminal shows.
 (() => {
+  const root = document.getElementById("computer-page");
+  if (root === null) return;
   const panel = document.getElementById("terminal-panel");
-  if (panel === null) return;
-  const openButton = document.getElementById("terminal-open");
-  const closeButton = document.getElementById("terminal-close");
-  const statusLine = document.getElementById("terminal-status");
-  const screen = document.getElementById("terminal");
-  const cards = document.getElementById("cards");
   const encoder = new TextEncoder();
   const BASE32 = "0123456789abcdefghjkmnpqrstvwxyz";
-  /** Waits between reconnect attempts after a drop: about 8 s in all, under the 10 s target. */
+  /** Waits before each reconnect attempt after a drop: about 8 s in all, under the 10 s target. */
   const RECONNECT_WAITS = [250, 500, 1000, 2000, 4000];
+  /** A handshake that has not opened by then counts as failed. */
+  const HANDSHAKE_MS = 5000;
   /** The platform closed the stream on purpose, or the computer's side ended. */
   const CLOSED_BY_PLATFORM = 4001;
   const CLOSED_BY_COMPUTER = 4002;
 
   const state = {
-    intent: panel.dataset.intent || "",
-    window: panel.dataset.window ? Number(panel.dataset.window) : null,
+    intent: panel?.dataset.intent || "",
+    window: panel?.dataset.window ? Number(panel.dataset.window) : null,
     socket: null,
     term: null,
     fit: null,
@@ -36,6 +39,58 @@
     for (const b of bytes) id += BASE32[b % 32];
     return id;
   }
+
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // ------------------------------------------------------------------------------------------
+  // The page's state.
+
+  function replace(id, html) {
+    const node = document.getElementById(id);
+    if (node !== null && typeof html === "string") node.outerHTML = html;
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch(root.dataset.stateUrl, { credentials: "same-origin" });
+      if (!response.ok) return;
+      const json = await response.json();
+      if (typeof json.intent === "string") state.intent = json.intent;
+      const cards = document.getElementById("cards");
+      if (cards !== null && Array.isArray(json.cards)) {
+        cards.innerHTML = json.cards.map((card) => card.html).join("\n");
+      }
+      const status = document.getElementById("status");
+      if (status !== null && typeof json.statusHtml === "string")
+        status.innerHTML = json.statusHtml;
+      const notices = document.getElementById("notices");
+      if (notices !== null && typeof json.noticesHtml === "string") {
+        notices.innerHTML = json.noticesHtml;
+      }
+      replace("removal", json.removalHtml);
+      for (const node of document.querySelectorAll("[data-saving]")) {
+        node.textContent = json.saving;
+      }
+      const openButton = document.getElementById("terminal-open");
+      if (openButton !== null) openButton.disabled = !json.running;
+    } catch {
+      // the next refresh tries again
+    }
+  }
+
+  setInterval(() => {
+    if (document.visibilityState === "visible") void refresh();
+  }, 5000);
+
+  if (panel === null) return;
+
+  // ------------------------------------------------------------------------------------------
+  // The terminal.
+
+  const openButton = document.getElementById("terminal-open");
+  const closeButton = document.getElementById("terminal-close");
+  const statusLine = document.getElementById("terminal-status");
+  const screen = document.getElementById("terminal");
 
   function say(text) {
     statusLine.textContent = text;
@@ -93,51 +148,66 @@
     sendBytes(encoder.encode(text));
   }
 
+  /** Opens a stream with this capability. Resolves true once it is open, false if it never opens. */
   function connect(capability, windowNumber) {
     ensureTerminal();
+    state.window = windowNumber;
     const url = new URL(panel.dataset.terminalUrl, location.href);
     url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(url.href, ["tty", `cfo-capability.${capability}`]);
-    socket.binaryType = "arraybuffer";
-    state.socket = socket;
-    state.window = windowNumber;
-    socket.addEventListener("open", () => {
-      state.reconnecting = false;
-      showOpen(true);
-      say("Connected. The terminal closes at its deadline, and before a sign-out or a stop.");
-      state.fit.fit();
-      // ttyd's first message: its auth token (unused: the platform checked the capability) and
-      // the terminal's size.
-      send(JSON.stringify({ AuthToken: "", columns: state.term.cols, rows: state.term.rows }));
-      state.term.focus();
-    });
-    socket.addEventListener("message", (event) => {
-      if (!(event.data instanceof ArrayBuffer) || event.data.byteLength === 0) return;
-      const command = new Uint8Array(event.data, 0, 1)[0];
-      if (command === 0x30) state.term.write(new Uint8Array(event.data, 1));
-    });
-    socket.addEventListener("close", (event) => {
-      if (state.socket !== socket) return;
-      state.socket = null;
-      if (state.closing) {
-        state.closing = false;
-        return;
-      }
-      if (event.code === CLOSED_BY_PLATFORM) {
-        state.window = null;
-        showOpen(false);
-        say(
-          event.reason ? `Closed: ${event.reason.replace(/^terminal closed: /, "")}.` : "Closed.",
-        );
-        return;
-      }
-      if (event.code === CLOSED_BY_COMPUTER) {
-        state.window = null;
-        showOpen(false);
-        say("The terminal session on the computer ended. Open it again for a new one.");
-        return;
-      }
-      void reconnect();
+    return new Promise((resolve) => {
+      let opened = false;
+      const socket = new WebSocket(url.href, ["tty", `cfo-capability.${capability}`]);
+      socket.binaryType = "arraybuffer";
+      const timer = setTimeout(() => {
+        if (!opened) socket.close();
+      }, HANDSHAKE_MS);
+      socket.addEventListener("open", () => {
+        opened = true;
+        clearTimeout(timer);
+        state.socket = socket;
+        state.reconnecting = false;
+        showOpen(true);
+        say("Connected. The terminal closes at its deadline, and before a sign-out or a stop.");
+        state.fit.fit();
+        // ttyd's first message: its auth token (unused: the platform checked the capability) and
+        // the terminal's size.
+        send(JSON.stringify({ AuthToken: "", columns: state.term.cols, rows: state.term.rows }));
+        state.term.focus();
+        resolve(true);
+      });
+      socket.addEventListener("message", (event) => {
+        if (!(event.data instanceof ArrayBuffer) || event.data.byteLength === 0) return;
+        const command = new Uint8Array(event.data, 0, 1)[0];
+        if (command === 0x30) state.term.write(new Uint8Array(event.data, 1));
+      });
+      socket.addEventListener("close", (event) => {
+        clearTimeout(timer);
+        if (!opened) {
+          resolve(false);
+          return;
+        }
+        if (state.socket !== socket) return;
+        state.socket = null;
+        if (state.closing) {
+          state.closing = false;
+          return;
+        }
+        if (event.code === CLOSED_BY_PLATFORM) {
+          state.window = null;
+          showOpen(false);
+          say(
+            event.reason ? `Closed: ${event.reason.replace(/^terminal closed: /, "")}.` : "Closed.",
+          );
+          return;
+        }
+        if (event.code === CLOSED_BY_COMPUTER) {
+          state.window = null;
+          showOpen(false);
+          say("The terminal session on the computer ended. Open it again for a new one.");
+          return;
+        }
+        void reconnect();
+      });
     });
   }
 
@@ -145,29 +215,34 @@
     if (state.reconnecting || state.window === null) return;
     state.reconnecting = true;
     say("Reconnecting…");
-    for (const wait of RECONNECT_WAITS) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-      let answer;
-      try {
-        answer = await post({ mode: "reconnect", window: state.window });
-      } catch {
-        continue;
+    try {
+      for (const pause of RECONNECT_WAITS) {
+        await wait(pause);
+        if (state.closing || state.window === null) return;
+        let answer;
+        try {
+          answer = await post({ mode: "reconnect", window: state.window });
+        } catch {
+          continue;
+        }
+        if (answer.status === 403) {
+          await refresh();
+          continue;
+        }
+        const json = answer.json;
+        if (json?.action === "open_terminal" && json.outcome === "accepted") {
+          // A handshake that fails is retried with the next fresh capability.
+          if (await connect(json.capability, json.window)) return;
+          continue;
+        }
+        if (json?.outcome === "refused") break;
       }
-      if (answer.status === 403) {
-        await refresh();
-        continue;
-      }
-      const json = answer.json;
-      if (json && json.action === "open_terminal" && json.outcome === "accepted") {
-        connect(json.capability, json.window);
-        return;
-      }
-      if (json && json.outcome === "refused") break;
+      state.window = null;
+      showOpen(false);
+      say("The terminal could not reconnect. Open it again.");
+    } finally {
+      state.reconnecting = false;
     }
-    state.reconnecting = false;
-    state.window = null;
-    showOpen(false);
-    say("The terminal could not reconnect. Open it again.");
   }
 
   async function open() {
@@ -176,8 +251,10 @@
     try {
       const answer = await post({ mode: "open" });
       const json = answer.json;
-      if (json && json.action === "open_terminal" && json.outcome === "accepted") {
-        connect(json.capability, json.window);
+      if (json?.action === "open_terminal" && json.outcome === "accepted") {
+        if (!(await connect(json.capability, json.window))) {
+          say("The terminal could not connect. Try again.");
+        }
         return;
       }
       const reason = json?.reason;
@@ -212,29 +289,8 @@
     say("Closed. The computer may go to sleep again.");
   }
 
-  async function refresh() {
-    try {
-      const response = await fetch(panel.dataset.stateUrl, { credentials: "same-origin" });
-      if (!response.ok) return;
-      const json = await response.json();
-      if (typeof json.intent === "string") state.intent = json.intent;
-      if (cards !== null && Array.isArray(json.cards)) {
-        cards.innerHTML = json.cards.map((card) => card.html).join("\n");
-      }
-      for (const node of document.querySelectorAll("[data-saving]")) {
-        node.textContent = json.saving;
-      }
-      openButton.disabled = !json.running;
-    } catch {
-      // the next refresh tries again
-    }
-  }
-
   openButton.addEventListener("click", () => void open());
   closeButton.addEventListener("click", () => void close());
-  setInterval(() => {
-    if (document.visibilityState === "visible") void refresh();
-  }, 5000);
   // For the local journeys only: lets a test drop the stream as a web Worker deploy would.
   window.cfoTerminal = state;
 })();

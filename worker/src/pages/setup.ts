@@ -76,8 +76,7 @@ export async function setupPage(
   data-computer="${escapeHtml(id)}"
   data-intent="${escapeHtml(state.intentToken)}"
   data-window="${terminal?.open ? terminal.window : ""}"
-  data-terminal-url="${escapeHtml(`${computerPath(id)}/terminal`)}"
-  data-state-url="${escapeHtml(`${computerPath(id)}/state`)}">
+  data-terminal-url="${escapeHtml(`${computerPath(id)}/terminal`)}">
 <div class="actions">
   <button type="button" class="primary" id="terminal-open"${view.running ? "" : " disabled"}>Open the terminal</button>
   <button type="button" id="terminal-close" hidden>Close the terminal</button>
@@ -90,9 +89,9 @@ export async function setupPage(
 <p class="muted" data-paste-hint>${escapeHtml(PASTE_HINT)}</p>
 <div id="terminal" hidden></div>
 </div>`;
-  const body = `
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}">
 <h1>${escapeHtml(view.name)}</h1>
-<p>${badge(view.statusTone, view.status)} <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
+<p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
 <div id="notices">${view.notices.map(notice).join("\n")}</div>
 <div class="layout">
@@ -107,7 +106,8 @@ ${terminalPanel}
 </section>
 </div>
 ${removing ? "" : manageSection(view, state.computer, state.intentToken)}
-${removalSection(view)}`;
+${removalSection(view)}
+</div>`;
   return htmlResponse(
     layout(`Set up ${view.name}`, body, [
       `${ASSETS_PATH}/xterm.js`,
@@ -141,6 +141,10 @@ export async function stateJson(
     terminal: state.computer.terminal ?? null,
     cards: view.cards.map((c) => ({ ...c, html: card(c) })),
     notices: view.notices,
+    // Server-rendered, escaped markup the page swaps in, so its sections follow the state.
+    statusHtml: badge(view.statusTone, view.status),
+    noticesHtml: view.notices.map(notice).join("\n"),
+    removalHtml: removalSection(view),
   });
 }
 

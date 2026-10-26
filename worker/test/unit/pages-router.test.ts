@@ -461,7 +461,7 @@ describe("the cloud-computers page", () => {
     const html = await (await route("/platform/computers")).text();
     expect(html).toContain("Removals in progress");
     expect(html).toContain(
-      "Still needs a sign-out on the computer and your record that you revoked its sessions",
+      "Still needs your record that you revoked its sessions at the providers.",
     );
     expect(html).toContain("Its saved logins are kept until then.");
   });
@@ -825,6 +825,7 @@ describe("edges", () => {
           signOut: "verified",
           loginPossiblyLost: false,
           revocationRecorded: false,
+          settled: true,
         },
       }),
       intentToken: INTENT,
@@ -955,5 +956,76 @@ describe("edges", () => {
       },
     });
     expect(logs.at(-1)).toMatchObject({ reason: "error_unknown" });
+  });
+});
+
+describe("a pending removal's steps (Codex r1-4)", () => {
+  const pending = (removal: Record<string, unknown>) => ({
+    action: "state" as const,
+    computer: pageState({
+      lifecycle: "removal_pending",
+      status: "stopped",
+      removal: {
+        state: "pending",
+        signOut: "none",
+        loginPossiblyLost: false,
+        revocationRecorded: false,
+        ...removal,
+      } as never,
+    }),
+    intentToken: INTENT,
+  });
+
+  it("show the sign-out running, then its verification, and offer the revocation record meanwhile", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, pending({ signOut: "requested" }));
+    let html = await (await route(page)).text();
+    expect(html).toContain("Signing out…");
+    expect(html).toContain("If the sign-out cannot run, revoke this computer's sessions");
+    expect(html).not.toContain("Finish the removal");
+    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned" }));
+    html = await (await route(page)).text();
+    expect(html).toContain("being verified by restoring into a fresh computer");
+    expect(html).not.toContain("Finish the removal");
+    expect(await (await route("/platform/computers")).text()).toContain(
+      "Signed out; the sign-out is being verified.",
+    );
+    backend.states.set(PAGE_CMP, pending({ signOut: "requested" }));
+    expect(await (await route("/platform/computers")).text()).toContain("Signing out now.");
+    backend.states.set(PAGE_CMP, pending({}));
+    expect(await (await route("/platform/computers")).text()).toContain(
+      "Still needs a sign-out on the computer, or your record",
+    );
+  });
+
+  it("offer 'Finish the removal' exactly when the controller says it is settled", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, pending({ revocationRecorded: true, settled: true }));
+    const html = await (await route(page)).text();
+    expect(html).toContain("Finish the removal");
+    expect(html).not.toContain("record that you did");
+    expect(await (await route(`${page}/do/resolve-removal`)).text()).toContain(
+      'data-confirm="resolve-removal"',
+    );
+    backend.states.set(PAGE_CMP, pending({ signOut: "verified" }));
+    expect(await (await route(`${page}/do/resolve-removal`)).text()).toContain(
+      'data-confirm="not-offered"',
+    );
+  });
+
+  it("serve the removal section in the live state, so the page follows it without a reload", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned" }));
+    const body = (await (await route(`${page}/state`)).json()) as {
+      removalHtml: string;
+      statusHtml: string;
+      noticesHtml: string;
+    };
+    expect(body.removalHtml).toMatch(/^<section id="removal">/);
+    expect(body.removalHtml).toContain("being verified");
+    expect(body.statusHtml).toContain("Removal pending");
+    expect(body.noticesHtml).toContain('data-notice="removal_pending"');
+    const html = await (await route(page)).text();
+    expect(html).toContain(`<div id="computer-page" data-state-url="${page}/state">`);
   });
 });

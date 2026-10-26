@@ -365,6 +365,27 @@ export class TerminalBridge {
   }
 
   /**
+   * Ends every stream and closes the window at once, synchronously, without telling the
+   * controller: for the controller itself, when a transition starts a credential-sensitive step
+   * (its `terminal.closeNow` hook), inside that transition.
+   */
+  closeNow(reason: string): void {
+    this.#endAll(reason);
+    const w = this.#window();
+    this.#dropCapabilities();
+    if (w.open) {
+      this.#d.store.put(WINDOW_KEY, {
+        ...w,
+        open: false,
+        until: null,
+        generation: null,
+        sessionId: null,
+      });
+      this.#d.log("terminal_window_closed", { window: w.window, reason });
+    }
+  }
+
+  /**
    * Checks every stream against the window and the computer, and closes those that may no
    * longer run. Also expires a window past its deadline. Never throws.
    */
