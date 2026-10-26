@@ -22,6 +22,9 @@ import type { WorkspaceDO } from "../support/platform-test-worker.ts";
 import { testComputers } from "../support/workspace-harness.ts";
 
 type Stub = DurableObjectStub<WorkspaceDO>;
+/** The controller under test (wrangler.test.jsonc): WORKSPACE itself is the routes' stand-in. */
+const workspaces = (env as unknown as { WORKSPACE_CONTROLLER: DurableObjectNamespace<WorkspaceDO> })
+  .WORKSPACE_CONTROLLER;
 const HOST = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f";
 const TOKEN = "synthetic-launch-token-canary-workers-0001";
 const call = { interfaceVersion: WORKSPACE_INTERFACE_VERSION };
@@ -37,7 +40,7 @@ function fresh(): {
 } {
   serial += 1;
   const computerId = `cmp_01hzy3m8k6q4t2v9w7x5r0${String(serial).padStart(4, "0")}` as ComputerId;
-  const stub = env.WORKSPACE.getByName(workspaceObjectName(computerId)) as Stub;
+  const stub = workspaces.getByName(workspaceObjectName(computerId)) as Stub;
   const computer = testComputers.create(stub.id, computerId);
   const client = new FakeLauncherClient(computerId, (request) =>
     stub.launcher({ ...call, request }),
@@ -300,7 +303,7 @@ describe("WorkspaceDO", () => {
   });
 
   it("refuses everything when it is not named by a computer ID", async () => {
-    const stub = env.WORKSPACE.get(env.WORKSPACE.newUniqueId()) as Stub;
+    const stub = workspaces.get(workspaces.newUniqueId()) as Stub;
     expect(await code(stub.reservation(call))).toBe("bad_request");
   });
 });

@@ -155,10 +155,14 @@ describe("OmnigentServer: always on", () => {
       OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner-canary",
       OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: "cfo-canary-bootstrap-password",
       CFO_INSTALLATION_ID: INSTALLATION,
+      // The launcher's signing key (WP3.3, WP3.6), the same secret the launcher API verifies.
+      CFO_LAUNCHER_SIGNING_KEY_ID: "k-test-current",
+      CFO_LAUNCHER_SIGNING_KEY: "cfo-canary-launcher-key-current-0000000000",
     });
     expect(new Set(fake.inactivityTimeouts)).toEqual(new Set([T.inactivityTimeoutMs]));
-    // The secret's value never reaches a log line.
+    // The secrets' values never reach a log line.
     expect(logs.join("\n")).not.toContain("cfo-canary-bootstrap-password");
+    expect(logs.join("\n")).not.toContain("cfo-canary-launcher-key");
   });
 
   it("checks an answering server every interval, renews its timeout, and never stops it, across evictions", async () => {
@@ -999,25 +1003,32 @@ describe("OmnigentServer: native forwarding", () => {
     expect(await stub.outages(tolerant)).toEqual([]);
   });
 
-  it("refuses everything on platform.internal until the launcher API exists", async () => {
+  it("reaches the launcher API on platform.internal, which refuses an unsigned call (WP3.3)", async () => {
     const { stub, fake } = await runningServer();
     expect(fake.intercepts.map((i) => i.host)).toEqual(["platform.internal"]);
     // The intercept's target belongs to the object's I/O context: call it from there, as the
     // container's egress would.
-    const [status, body] = await runInDurableObject(stub, async () => {
-      const response = await defined(fake.intercepts[0]).target.fetch(
-        "http://platform.internal/v1/provision",
-        {
-          method: "POST",
-          body: "{}",
-        },
-      );
-      return [response.status, await response.json()] as const;
+    const answers = await runInDurableObject(stub, async () => {
+      const target = defined(fake.intercepts[0]).target;
+      const unsigned = await target.fetch("http://platform.internal/launcher/provision", {
+        method: "POST",
+        body: "{}",
+      });
+      const unknown = await target.fetch("http://platform.internal/v1/provision", {
+        method: "POST",
+        body: "{}",
+      });
+      return [
+        [unsigned.status, await unsigned.json()],
+        [unknown.status, await unknown.json()],
+      ] as const;
     });
-    expect(status).toBe(503);
-    expect(ErrorBody.parse(body).error.code).toBe("unavailable");
-    expect(events("platform_internal")).toMatchObject([
-      { event: "refused", path: "/v1/provision", propsVersion: 1 },
+    expect(answers[0][0]).toBe(401);
+    expect(ErrorBody.parse(answers[0][1]).error.code).toBe("unauthorized");
+    expect(answers[1][0]).toBe(404);
+    expect(events("launcher_api")).toMatchObject([
+      { event: "refused", path: "/launcher/provision", status: 401, refused: "unsigned" },
+      { event: "refused", path: "/v1/provision", status: 404, refused: "path" },
     ]);
   });
 });

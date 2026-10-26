@@ -1,0 +1,78 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP3.3 staging, mode "final": the reviewed head's production routes (OmnigentRoute on
+  // omnigent.internal, ComputerApi on computer.internal) between two stand-in computers and the
+  // production OmnigentServer with a stand-in server container, with a stand-in for WP3.1's
+  // WorkspaceDO (platform.ts). The same disruptions as the diagnostic run. Deploy only with
+  // run.sh; the cron starts the run by itself.
+  "name": "cfo-stg-wp33-final",
+  "main": "platform.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "COMPUTER_DEF_OFF", "class_name": "ComputerDefOff" },
+      { "name": "COMPUTER_DO_ON", "class_name": "ComputerDoOn" },
+      { "name": "WORKSPACE", "class_name": "WorkspaceStandIn" },
+      { "name": "RUN", "class_name": "StagingRun" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OmnigentServer",
+        "ComputerDefOff",
+        "ComputerDoOn",
+        "WorkspaceStandIn",
+        "StagingRun"
+      ]
+    }
+  ],
+  "containers": [
+    {
+      "name": "cfo-stg-wp33-final-server",
+      "class_name": "OmnigentServer",
+      "image": "./server/Dockerfile",
+      "image_build_context": "./server",
+      "max_instances": 1,
+      "instance_type": "basic"
+    },
+    {
+      "name": "cfo-stg-wp33-final-def-off",
+      "class_name": "ComputerDefOff",
+      "image": "./computer/Dockerfile",
+      "image_build_context": "./computer",
+      "max_instances": 1,
+      "instance_type": "lite"
+    },
+    {
+      "name": "cfo-stg-wp33-final-do-on",
+      "class_name": "ComputerDoOn",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "probe": { "dockerfile": "./computer/Dockerfile", "build_context": "./computer" }
+      }
+    }
+  ],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp33-final-results" }],
+  // Synthetic values only. The launcher's key reaches the server as CFO_LAUNCHER_SIGNING_KEY,
+  // as the production Worker's would.
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary",
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-staging",
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY": "cfo-canary-launcher-key-staging-000000000",
+    "WP33_MODE": "final",
+    "WP33_RUN_TAG": "final-1"
+  }
+}

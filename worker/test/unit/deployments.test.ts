@@ -150,9 +150,23 @@ describe("Workers Logs: no request header is recorded (WP2.6)", () => {
 });
 
 describe("the Workers-runtime test configuration (wrangler.test.jsonc)", () => {
-  it("binds and migrates the platform Worker's classes the same way", () => {
-    expect(test.durable_objects?.bindings).toEqual(platform.durable_objects?.bindings);
-    expect(test.migrations).toEqual(platform.migrations);
+  // Stand-ins for classes the platform Worker does not have yet, which the tests of their
+  // callers need (WP3.3's routes call WP3.1's WorkspaceDO). Each goes once its class ships.
+  const STAND_INS = {
+    bindings: [{ name: "WORKSPACE", class_name: "WorkspaceDO" }],
+    classes: ["WorkspaceDO"],
+  };
+
+  it("binds and migrates the platform Worker's classes the same way, plus declared stand-ins", () => {
+    expect(test.durable_objects?.bindings).toEqual([
+      ...(platform.durable_objects?.bindings ?? []),
+      ...STAND_INS.bindings,
+    ]);
+    const platformMigrations = platform.migrations ?? [];
+    expect(test.migrations?.slice(0, platformMigrations.length)).toEqual(platformMigrations);
+    expect(
+      test.migrations?.slice(platformMigrations.length).flatMap((m) => m.new_sqlite_classes ?? []),
+    ).toEqual(STAND_INS.classes);
     expect(test.compatibility_date).toBe(platform.compatibility_date);
   });
 });
@@ -178,26 +192,47 @@ describe("module rules of the forwarding path", () => {
       "server/forward.ts",
       "server/proxy.ts",
       "web.ts",
+      "internal/omnigent-route.ts",
+      "internal/entrypoints.ts",
+      "internal/upgrade-answer.ts",
     ]) {
       expect(read(join(SRC, file))).not.toMatch(/\.accept\(/);
     }
   });
 
   it("registers platform.internal for the server container only", () => {
+    // The name comes from the contracts; no source spells it.
     const literal = sources().filter((file) => read(file).includes('"platform.internal"'));
-    expect(literal.map(rel)).toEqual(["server/platform-internal.ts"]);
+    expect(literal.map(rel)).toEqual([]);
     const users = sources()
       .filter((file) => /\bPLATFORM_INTERNAL_HOST\b/.test(read(file)))
       .map(rel)
       .sort();
-    expect(users).toEqual(["server/OmnigentServer.ts", "server/platform-internal.ts"]);
+    // OmnigentServer registers it; the computer's network module names it only to refuse it.
+    expect(users).toEqual([
+      "computer/network.ts",
+      "server/OmnigentServer.ts",
+      "server/platform-internal.ts",
+    ]);
     const registrations = sources().flatMap((file) =>
       [...read(file).matchAll(/interceptOutboundHttp\(\s*([A-Z_a-z."]+)/g)].map(
         (m) => `${rel(file)}:${m[1]}`,
       ),
     );
-    expect(registrations.filter((r) => !r.startsWith("server/container-port.ts"))).toEqual([
-      "server/OmnigentServer.ts:PLATFORM_INTERNAL_HOST",
-    ]);
+    // The two container ports pass registrations through; the computer's checks each host.
+    expect(registrations.filter((r) => !/^(server|computer)\/container-port\.ts:/.test(r))).toEqual(
+      ["server/OmnigentServer.ts:PLATFORM_INTERNAL_HOST"],
+    );
+  });
+
+  it("uses the Sandbox SDK only in its adapter module (egress/backups.ts)", () => {
+    const users = sources()
+      .filter((file) => /@cloudflare\/sandbox/.test(read(file).replace(/^\s*\/\/.*$/gm, "")))
+      .map(rel);
+    expect(users).toEqual(["egress/backups.ts"]);
+    const pkg = JSON.parse(read(join(WORKER, "package.json"))) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkg.dependencies["@cloudflare/sandbox"]).toBe("1.0.0");
   });
 });

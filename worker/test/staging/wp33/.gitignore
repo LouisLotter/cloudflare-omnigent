@@ -1,0 +1,5 @@
+# Configurations the staging tool renders next to the checked ones.
+.stg-rendered.*.jsonc
+__pycache__/
+# The web harness configuration with ingress variables (unused here).
+generated/

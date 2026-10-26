@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@cfo/contracts": "workspace:*",
+    "@cloudflare/sandbox": "1.0.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

@@ -1,0 +1,34 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  // WP3.3 staging, mode "bench": the start bench alone, on a second fresh deployment
+  // (platform.ts). Deploy only with run.sh. The cron starts the bench by itself.
+  "name": "cfo-stg-wp33-bench",
+  "main": "platform.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "BENCH", "class_name": "StartBench" },
+      { "name": "RUN", "class_name": "StagingRun" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["StartBench", "StagingRun"] }],
+  "containers": [
+    {
+      "name": "cfo-stg-wp33-bench-bench",
+      "class_name": "StartBench",
+      "scheduling_policy": "durable_object",
+      "images": { "bench": { "dockerfile": "./bench/Dockerfile", "build_context": "./bench" } }
+    }
+  ],
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-wp33-bench-results" }],
+  "vars": { "WP33_MODE": "bench", "WP33_RUN_TAG": "bench-4" }
+}

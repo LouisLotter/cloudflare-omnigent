@@ -29,7 +29,7 @@ import {
 } from "../../../src/shared/rpc.ts";
 import { BUILD } from "./build.ts";
 
-export { PlatformInternal } from "../../../src/server/platform-internal.ts";
+export { PlatformInternal } from "../../../src/internal/entrypoints.ts";
 
 interface StagingEnv {
   readonly OMNIGENT: DurableObjectNamespace<OmnigentServer>;
