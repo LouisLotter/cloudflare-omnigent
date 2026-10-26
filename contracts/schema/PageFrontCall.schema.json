@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "open_terminal",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "window"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "close_terminal",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "remove",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "PageFrontCall"
+}

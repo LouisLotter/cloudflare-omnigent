@@ -12,6 +12,25 @@
           "maximum": 9007199254740991,
           "minimum": 1,
           "type": "integer"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
         }
       },
       "required": [
