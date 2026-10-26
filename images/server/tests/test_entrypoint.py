@@ -471,6 +471,61 @@ def test_start_order_then_clean_stop_confirms_the_final_sync(rig: Rig) -> None:
 
 
 @requires_litestream
+def test_each_child_gets_only_the_credentials_it_needs(rig: Rig) -> None:
+    """Litestream's restore and replicate get the replica's credentials and the process basics,
+    nothing else; the app gets the server's secrets, never the replica's (G2-SEC-001)."""
+    dumps = rig.root / "litestream-env"
+    dumps.mkdir()
+    # Records each Litestream process's environment, then becomes the real binary. Python adds
+    # nothing to the environment it was given, unlike a shell.
+    wrapper = rig.root / "litestream-recording"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"out = os.path.join({str(dumps)!r}, sys.argv[1] + '-' + str(os.getpid()) + '.json')\n"
+        "with open(out, 'w') as f:\n"
+        "    json.dump(dict(os.environ), f)\n"
+        f"os.execv({str(LITESTREAM)!r}, [{str(LITESTREAM)!r}, *sys.argv[1:]])\n"
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    rig.litestream_bin = wrapper
+    server_secrets = {
+        "CFO_LAUNCHER_SIGNING_KEY": "k" * 40,  # synthetic
+        "CFO_LAUNCHER_SIGNING_KEY_ID": "k-test",
+        "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-artifacts-secret",
+    }
+    env = rig.env(LITESTREAM_ACCESS_KEY_ID="synthetic-replica-id", **server_secrets)
+    # The bootstrap password and the cookie secret come from the base environment.
+    assert env["OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD"] and env["OMNIGENT_ACCOUNTS_COOKIE_SECRET"]
+    rig.start(env)
+    rig.wait_phase("running")
+    rig.wait_app()
+    seen = {path.name.split("-")[0]: json.loads(path.read_text()) for path in dumps.iterdir()}
+    assert set(seen) == {"restore", "replicate"}
+    forbidden = {
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET",
+        *server_secrets,
+    }
+    for command, child_env in seen.items():
+        assert set(child_env) <= set(image_config.LITESTREAM_ENV), command
+        assert child_env["LITESTREAM_SECRET_ACCESS_KEY"] == SYNTHETIC_KEY, command
+        assert child_env["LITESTREAM_ACCESS_KEY_ID"] == "synthetic-replica-id", command
+        for name in forbidden:
+            assert env[name] not in child_env.values(), (command, name)
+    app_names = set(json.loads(rig.marker.read_text())["envNames"])
+    assert {
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET",
+        "CFO_LAUNCHER_SIGNING_KEY",
+        "AWS_ACCESS_KEY_ID",
+    } <= app_names
+    assert not {"LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"} & app_names
+    assert rig.stop() == entrypoint.EXIT_OK
+
+
+@requires_litestream
 def test_status_and_boot_line_report_the_image_build(rig: Rig) -> None:
     record = {
         "omnigentRepo": "https://example.test/fork.git",

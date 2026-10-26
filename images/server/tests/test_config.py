@@ -9,7 +9,13 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from cfo_server import config as image_config
-from cfo_server.config import ConfigError, app_environment, litestream_environment, load
+from cfo_server.config import (
+    LITESTREAM_ENV,
+    ConfigError,
+    app_environment,
+    litestream_environment,
+    load,
+)
 
 from conftest import base_env
 
@@ -151,6 +157,46 @@ def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
     ls_env = litestream_environment(env)
     assert "AWS_ACCESS_KEY_ID" not in ls_env
     assert ls_env["LITESTREAM_SECRET_ACCESS_KEY"] == "synthetic-secret"
+
+
+def test_litestream_gets_the_replica_credentials_and_nothing_else(env: dict[str, str]) -> None:
+    """An allowlist (G2-SEC-001): the bootstrap password, the cookie secret, the launcher's key
+    and the artifact store's credentials never reach Litestream's processes."""
+    secrets = {
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD": "synthetic-bootstrap-password",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET": "ab" * 32,
+        "CFO_LAUNCHER_SIGNING_KEY": "k" * 40,
+        "CFO_LAUNCHER_SIGNING_KEY_ID": "k-test",
+        "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-artifacts-secret",
+        "AWS_SESSION_TOKEN": "synthetic-artifacts-token",
+        "VAULT_TOKEN": "synthetic-vault",
+        "SOMETHING_NEW_SECRET": "synthetic-future-secret",
+    }
+    env.update(secrets)
+    env.update(
+        {
+            "LITESTREAM_ACCESS_KEY_ID": "synthetic-id",
+            "LITESTREAM_SECRET_ACCESS_KEY": "synthetic-secret",
+            "PATH": "/usr/bin:/bin",
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+        }
+    )
+    ls_env = litestream_environment(env)
+    assert set(ls_env) <= set(LITESTREAM_ENV)
+    assert ls_env == {
+        "LITESTREAM_ACCESS_KEY_ID": "synthetic-id",
+        "LITESTREAM_SECRET_ACCESS_KEY": "synthetic-secret",
+        "PATH": "/usr/bin:/bin",
+        "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+    }
+    for value in secrets.values():
+        assert value not in ls_env.values()
+    # The app keeps what it needs, and never the replica's credentials.
+    app_env = app_environment(load(env), env)
+    assert app_env["OMNIGENT_ACCOUNTS_COOKIE_SECRET"] == "ab" * 32
+    assert app_env["CFO_LAUNCHER_SIGNING_KEY"] == "k" * 40
+    assert "LITESTREAM_SECRET_ACCESS_KEY" not in app_env
 
 
 def test_the_app_process_parses_without_the_replica_credentials(env: dict[str, str]) -> None:

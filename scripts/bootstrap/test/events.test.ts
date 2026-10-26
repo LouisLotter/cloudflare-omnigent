@@ -11,7 +11,12 @@ function line(
   at: number,
   initialized: boolean,
   reason: string,
-  extra: { installationId?: string; version?: string; secretPresent?: boolean } = {},
+  extra: {
+    installationId?: string;
+    version?: string;
+    secretPresent?: boolean;
+    configApplied?: boolean;
+  } = {},
 ) {
   return {
     cfo: "bootstrap",
@@ -24,7 +29,17 @@ function line(
       checkedAt: new Date(at).toISOString(),
     },
     secretPresent: extra.secretPresent ?? true,
+    ...(extra.configApplied === undefined ? {} : { configApplied: extra.configApplied }),
   };
+}
+
+/** A status line from a server started with the logging version's configuration, after the release. */
+function appliedLine(at: number, initialized = true, reason = "durable", installationId?: string) {
+  return line(at, initialized, reason, {
+    secretPresent: false,
+    configApplied: true,
+    ...(installationId === undefined ? {} : { installationId }),
+  });
 }
 
 function event(at: number, source: unknown, version = "v1", script = SCRIPT, eventType = "alarm") {
@@ -58,6 +73,7 @@ function status(
     },
     reason,
     secretPresent: true,
+    configApplied: true,
   };
 }
 
@@ -139,9 +155,14 @@ describe("parseLogs", () => {
     expect(parsed.malformed).toBe(2);
   });
 
-  it("keeps the version, the reason and the secret flag only when they are given properly", () => {
+  it("keeps the version, the reason and the flags only when they are given properly", () => {
     const raw = {
-      ...event(NOW, { ...line(NOW, true, "durable"), reason: 7, secretPresent: "yes" }),
+      ...event(NOW, {
+        ...line(NOW, true, "durable"),
+        reason: 7,
+        secretPresent: "yes",
+        configApplied: "true",
+      }),
     };
     (raw.$workers as { scriptVersion: unknown }).scriptVersion = { id: "" };
     const [only] = parseLogs([raw], SCRIPT).statuses;
@@ -149,7 +170,10 @@ describe("parseLogs", () => {
       versionId: undefined,
       reason: undefined,
       secretPresent: undefined,
+      configApplied: undefined,
     });
+    const [applied] = parseLogs([event(NOW, appliedLine(NOW))], SCRIPT).statuses;
+    expect(applied).toMatchObject({ secretPresent: false, configApplied: true });
   });
 });
 
@@ -303,13 +327,68 @@ describe("verifyRelease", () => {
   const rules = { installationId: INSTALLATION, releasedVersionId: "v2", releasedAt: released };
   const logsOf = (events: unknown[]) => parseLogs(events, SCRIPT);
 
-  it("passes once OmnigentServer runs the released version, and nothing reports the password after", () => {
-    const logs = logsOf([
+  it("passes once a server started with the released configuration reports itself, and nothing reports the password after", () => {
+    const before = [
       event(released - 60_000, line(released - 60_000, true, "durable")),
       event(released + 60_000, line(released + 60_000, true, "durable")),
-      event(released + 360_000, { cfo: "watchdog", event: "noop" }, "v2"),
+      event(released + 360_000, { cfo: "watchdog", event: "first_alarm" }, "v2"),
+    ];
+    // The released version runs, but the server it adopted still holds the old configuration.
+    expect(verifyRelease(logsOf(before), rules)).toEqual({
+      verified: false,
+      why: expect.stringMatching(/^released, not yet applied: /),
+    });
+    const logs = logsOf([
+      ...before,
+      event(released + 450_000, appliedLine(released + 450_000), "v2"),
     ]);
     expect(verifyRelease(logs, rules)).toEqual({ verified: true });
+  });
+
+  it("counts as applied only this installation's line from the released version, after the release, without the password", () => {
+    const run = event(released + 360_000, { cfo: "watchdog", event: "first_alarm" }, "v2");
+    const notApplied = [
+      // A build that does not say which configuration its server runs: never proof.
+      event(
+        released + 400_000,
+        line(released + 400_000, true, "durable", { secretPresent: false }),
+        "v2",
+      ),
+      event(
+        released + 400_000,
+        line(released + 400_000, true, "durable", { secretPresent: false, configApplied: false }),
+        "v2",
+      ),
+      // Another version's, another installation's, or one from before the release.
+      event(released + 400_000, appliedLine(released + 400_000), "v3"),
+      event(released + 400_000, appliedLine(released + 400_000, true, "durable", OTHER), "v2"),
+      event(released - 1, appliedLine(released - 1), "v2"),
+    ];
+    for (const lineEvent of notApplied) {
+      expect(verifyRelease(logsOf([run, lineEvent]), rules)).toMatchObject({
+        verified: false,
+        why: expect.stringContaining("not yet applied"),
+      });
+    }
+  });
+
+  it("waits while the restarted server does not show a durable owner", () => {
+    const run = event(released + 360_000, { cfo: "watchdog", event: "first_alarm" }, "v2");
+    const notDurable = event(
+      released + 420_000,
+      appliedLine(released + 420_000, false, "not_replicated"),
+      "v2",
+    );
+    expect(verifyRelease(logsOf([run, notDurable]), rules)).toEqual({
+      verified: false,
+      why: "released and applied, but the restarted server does not show a durable owner yet: the owner exists but its record is not replicated yet",
+    });
+    const unknown = event(released + 420_000, appliedLine(released + 420_000, false, "odd"), "v2");
+    expect(verifyRelease(logsOf([run, unknown]), rules)).toMatchObject({
+      why: expect.stringContaining("the owner is not initialized and durable yet"),
+    });
+    const durable = event(released + 480_000, appliedLine(released + 480_000), "v2");
+    expect(verifyRelease(logsOf([run, notDurable, durable]), rules)).toEqual({ verified: true });
   });
 
   it("waits while the old version runs, and fails while the released one reports the password", () => {

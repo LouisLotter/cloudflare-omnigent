@@ -1,7 +1,7 @@
 /**
  * The platform Worker as the Workers-runtime tests run it (wrangler.test.jsonc): the production
- * classes, except that OmnigentServer gets its container port, clock and timing from
- * `server-harness.ts`; WorkspaceDO (WP3.1's controller, bound as WORKSPACE_CONTROLLER) gets its
+ * classes, except that OmnigentServer gets its container port, clock, timing and any release a
+ * test made from `server-harness.ts`; WorkspaceDO (WP3.1's controller, bound as WORKSPACE_CONTROLLER) gets its
  * computer, ControlDO, bucket and clock from `workspace-harness.ts`; ControlDO (WP3.2) gets its
  * computers' WorkspaceDOs, clock, timing and limit settings from `control-harness.ts`, except that
  * the production-named object the routes call (WP3.3) answers from the fake in `internal-harness.ts`;
@@ -25,6 +25,7 @@ import type {
 } from "@cfo/contracts";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
+import type { PlatformEnv } from "../../src/env.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../src/server/OmnigentServer.ts";
 import {
   CONTROL_OBJECT_NAME,
@@ -43,6 +44,12 @@ export { default } from "../../src/index.ts";
 export { ComputerApi, OmnigentRoute, PlatformInternal } from "../../src/internal/entrypoints.ts";
 
 export class OmnigentServer extends PlatformOmnigentServer {
+  // A release the test made (`testServers.release`) reaches every new instance, as a new Worker
+  // version's environment does.
+  constructor(ctx: DurableObjectState, env: PlatformEnv) {
+    super(ctx, testServers.envFor(ctx.id, env));
+  }
+
   protected override openContainer() {
     return testServers.container(this.ctx.id.toString());
   }

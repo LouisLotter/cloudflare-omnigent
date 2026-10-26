@@ -1,0 +1,9 @@
+{
+  "outageId": "out_01hs3f9q2m8z4w7k6t5r1n0ybd",
+  "cause": "config_changed",
+  "startedAt": "2026-10-26T03:00:00.000Z",
+  "detectedAt": "2026-10-26T03:00:00.000Z",
+  "endedAt": "2026-10-26T03:00:41.000Z",
+  "restarts": 1,
+  "exitCode": 0
+}

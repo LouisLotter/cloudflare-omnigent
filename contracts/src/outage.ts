@@ -16,11 +16,19 @@ export const OutageRecord = z
   .strictObject({
     outageId: OutageId,
     /**
-     * Found stopped, running but not answering, not ready within the readiness wait, or in the
+     * Found stopped, running but not answering, not ready within the readiness wait, in the
      * server image's recovery mode (its database could not be restored safely; WP2.3), which
-     * needs the owner rather than a restart.
+     * needs the owner rather than a restart, or replaced by the watchdog because it runs with
+     * another configuration than the platform Worker now holds (a secret or setting release,
+     * G2-SEC-001): one controlled restart applies the release.
      */
-    cause: z.enum(["container_stopped", "not_answering", "start_failed", "recovery_mode"]),
+    cause: z.enum([
+      "container_stopped",
+      "not_answering",
+      "start_failed",
+      "recovery_mode",
+      "config_changed",
+    ]),
     startedAt: Timestamp,
     detectedAt: Timestamp,
     /** When the server answered again; null while the outage lasts. */

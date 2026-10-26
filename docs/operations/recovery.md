@@ -34,6 +34,7 @@ The server's port 8001 exposes `GET /status` and `/position` only to its Durable
 | `424 durability_unconfirmed`, `applied: true` | A security change committed locally but replication was not confirmed before its deadline. | Inspect current state before repeating the change; follow [troubleshooting](troubleshooting.md). |
 | Final sync unconfirmed / exit 75 | Shutdown could not confirm the replica covered all commits. | Preserve replica/local-state evidence and identify the loss window before starting recovery from an older point. |
 | Exit 78 / held configuration | A required setting is absent or invalid. | Correct the identified deployment setting through a deliberate release; the watchdog holds this exit until configuration changes. |
+| `config_changed` outage | A release changed the server's configuration; the watchdog replaced the running server once to apply it. | Expected after a secret or setting release. It ends when the replacement answers; if it does not, diagnose it as a server start or restore. The bootstrap reports "released, not yet applied" until then. |
 
 Main uses older startup/recovery logic than the separate candidate. The candidate's per-phase startup budgets and local constrained-Docker results do not establish real R2 startup on `basic`: that production-object qualification remains pending. Do not treat a comment saying “qualified” as completion evidence or copy the candidate's timing defaults onto main.
 

@@ -3,11 +3,11 @@
 // structured lines are wrapped as Workers Logs delivers them, in both shapes, and the script
 // decides. Also: the web Worker's variables the script renders are what ingress accepts.
 
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { ReplicationPosition } from "@cfo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decide, parseLogs } from "../../../scripts/bootstrap/events.ts";
+import { decide, parseLogs, verifyRelease } from "../../../scripts/bootstrap/events.ts";
 import { type Installation, webVars } from "../../../scripts/bootstrap/settings.ts";
 import { parseIngressEnv } from "../../src/ingress/index.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
@@ -24,12 +24,15 @@ const call = { interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION };
 type Stub = DurableObjectStub<OmnigentServer>;
 
 let serial = 0;
-let lines: { at: number; text: string }[] = [];
+let lines: { at: number; version: string; text: string }[] = [];
+/** The platform Worker version the object runs: Workers Logs tags each line with it. */
+let version = "v1";
 beforeEach(() => {
   testServers.clock.reset();
   lines = [];
+  version = "v1";
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
-    lines.push({ at: testServers.clock.now(), text: String(line) });
+    lines.push({ at: testServers.clock.now(), version, text: String(line) });
   });
 });
 afterEach(() => vi.restoreAllMocks());
@@ -59,11 +62,11 @@ const position = (txid: number, replicatedTxid: number): ReplicationPosition => 
 
 /** The logged lines as Workers Logs events: parsed into `source`, or kept as its message. */
 function workersLogs(asMessage = false): unknown[] {
-  return lines.map(({ at, text }) => ({
+  return lines.map(({ at, version: id, text }) => ({
     timestamp: at,
     $workers: {
       scriptName: SCRIPT,
-      scriptVersion: { id: "v1" },
+      scriptVersion: { id },
       eventType: "alarm",
       entrypoint: "OmnigentServer",
     },
@@ -134,6 +137,48 @@ describe("the bootstrap script reads what OmnigentServer logs", () => {
     fake.position = { ...position(20, 6), bootId: "f".repeat(32) };
     await nextCheck(stub);
     expect(scriptDecides()).toMatchObject({ accepted: false });
+  });
+});
+
+describe("the bootstrap's check after its release reads what OmnigentServer logs (G2-SEC-001)", () => {
+  it("is released but not applied until a server started with the released configuration reports itself", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 5);
+    await nextCheck(stub);
+    await nextCheck(stub);
+    expect(scriptDecides().accepted).toBe(true);
+    // The release: one new version without the password, marked initialized.
+    const releasedAt = testServers.clock.now();
+    const rules = { installationId: INSTALLATION, releasedVersionId: "v2", releasedAt };
+    const verify = (asMessage = false) =>
+      verifyRelease(parseLogs(workersLogs(asMessage), SCRIPT), rules);
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    expect(verify()).toMatchObject({
+      verified: false,
+      why: expect.stringContaining("has not run"),
+    });
+    // The objects switch to v2: the new instance adopts the server still holding the password.
+    version = "v2";
+    await evictDurableObject(stub);
+    await nextCheck(stub); // v2 runs, and replaces the server
+    expect(fake.signals).toEqual([15]);
+    expect(verify()).toMatchObject({
+      verified: false,
+      why: expect.stringContaining("released, not yet applied"),
+    });
+    await nextCheck(stub); // seen stopped
+    await nextCheck(stub); // started with v2's configuration, restoring
+    fake.position = { ...position(6, 6), bootId: "a".repeat(32) };
+    expect(verify().verified).toBe(false);
+    await nextCheck(stub); // the replacement answers and reports itself
+    for (const asMessage of [false, true]) expect(verify(asMessage)).toEqual({ verified: true });
+    expect(fake.starts.at(-1)?.env).not.toHaveProperty("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD");
+    // The lines name no secret.
+    expect(lines.map((l) => l.text).join("\n")).not.toContain("cfo-canary-bootstrap-password");
   });
 });
 

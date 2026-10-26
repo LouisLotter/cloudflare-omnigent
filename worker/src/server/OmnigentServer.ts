@@ -5,12 +5,18 @@
 //     stopped, follows the entrypoint's phases after each start (a restore allowance, then an
 //     app-start budget, AIR2-010), retries a refused start (DC-37), and restarts a server that
 //     stopped answering. Its decisions are the pure `watchdog.ts`.
+//   - Releases are applied. A container gets its environment only at its start, and a new
+//     version adopts the running one. The configuration fingerprint each start used is stored,
+//     and an answering server started with another one than this version would use is replaced
+//     once, gracefully (G2-SEC-001).
 //   - Outage records. Every interval in which the server did not answer is stored as an
 //     `OutageRecord`, from the last time it answered to the first time it answered again.
 //   - Bootstrap status. While the server answers, the watchdog reads `/v1/info` and the
 //     entrypoint's replication position over the container's ports and stores a
 //     `BootstrapStatus`; while the bootstrap secret exists it logs that status as a structured
-//     event on every check (G1BR-002, R-30). The decision is the pure `bootstrap.ts`.
+//     event on every check (G1BR-002, R-30). The decision is the pure `bootstrap.ts`. After a
+//     release, a server started with the new configuration logs it too, for a while, with
+//     `configApplied`: the bootstrap's proof that its release reached the server (G2-SEC-001).
 //   - Native forwarding (R-24). `fetch` passes a request to port 8000 with
 //     `getTcpPort(8000).fetch` over `http://`, once, and returns the answer; a WebSocket comes back
 //     unaccepted under a bare 101 that carries at most the subprotocol.
@@ -63,6 +69,7 @@ import {
   configFingerprint,
   serverContainerEnv,
   serverDeadlines,
+  UNKNOWN_DEADLINES,
 } from "./server-env.ts";
 import {
   ANSWERING,
@@ -124,7 +131,13 @@ const StoredWatchdogState = z.strictObject({
   outage: z
     .strictObject({
       outageId: OutageId,
-      cause: z.enum(["container_stopped", "not_answering", "start_failed", "recovery_mode"]),
+      cause: z.enum([
+        "container_stopped",
+        "not_answering",
+        "start_failed",
+        "recovery_mode",
+        "config_changed",
+      ]),
       startedAt: Millis,
       detectedAt: Millis,
       restarts: z.number().int().min(0).max(1_000_000),
@@ -180,8 +193,29 @@ const STATE_KEY = "watchdog";
  * (Codex WP2.2 r3-5).
  */
 const LAST_EXIT_KEY = "last_exit";
-/** The configuration fingerprint the running container was started with (Codex WP2.2 r4-2). */
+/**
+ * The configuration fingerprint the running container was started with (Codex WP2.2 r4-2): the
+ * watchdog replaces an answering server whose fingerprint is not the current one (G2-SEC-001).
+ * A digest, kept in storage and never logged or returned.
+ */
 const START_CONFIG_KEY = "start_config";
+/**
+ * The configuration last seen applied (a server started with it answered), and when a check under
+ * it first showed the owner initialized and durable: the bootstrap status is logged until then,
+ * and for `APPLIED_NOTICE_MS` after (G2-SEC-001, Codex r1-2).
+ */
+const CONFIG_APPLIED_KEY = "config_applied";
+/**
+ * How long after a configuration seen applied first shows a durable owner the bootstrap status
+ * is still logged without the bootstrap secret: a check a minute, so a lost line recurs, and long
+ * enough for the bootstrap's check after its release to find one.
+ */
+export const APPLIED_NOTICE_MS = 15 * 60_000;
+/**
+ * The deadlines the running container's own settings gave the watchdog at its start: a stop's
+ * grace and a start's restore allowance (Codex G2-SEC-001 r1-1).
+ */
+const START_TIMING_KEY = "start_timing";
 const BOOTSTRAP_STATUS_KEY = "bootstrap_status";
 const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
 
@@ -401,29 +435,38 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   async #checkNow(): Promise<void> {
-    const timing = this.timing();
-    let nextCheckAt = this.now() + timing.pollMs;
+    const current = this.timing();
+    let nextCheckAt = this.now() + current.pollMs;
     try {
       const container = this.#container;
       if (container === null) {
         logEvent("watchdog", "no_container");
-        nextCheckAt = this.now() + timing.intervalMs;
+        nextCheckAt = this.now() + current.intervalMs;
         return;
       }
       const config = await configFingerprint(
         serverContainerEnv(this.env as unknown as Record<string, unknown>).vars,
       );
+      const timing = this.#containerTiming(current, config);
       const observedFrom = Date.now();
       const seen = await this.#observe(container);
+      // The configuration the running container was started with: an answering server started
+      // with another one than this version's is replaced (G2-SEC-001).
+      const ranWith = this.#startConfig();
+      const answering: Observation = { kind: "answering", ranWith };
       // The exit is read here, with no await before the decision is persisted and the record
       // consumed, so an exit reported meanwhile is never deleted unread (Codex WP2.2 r4-4).
       const observation: Observation =
-        seen.kind === "stopped" ? { kind: "stopped", ...this.#lastExit() } : seen;
+        seen.kind === "stopped"
+          ? { kind: "stopped", ...this.#lastExit() }
+          : seen.kind === "answering"
+            ? answering
+            : seen;
       let result = step(this.#loadState(), observation, this.now(), timing, randomOutageId, config);
       this.#persist(result.state, result.effects, observation.kind === "stopped");
       nextCheckAt = result.nextCheckAt;
       this.#ready = observation.kind === "answering";
-      if (result.effects.some((effect) => effect.type === "stop")) {
+      if (result.effects.some((effect) => effect.type === "stop" && effect.onSilence)) {
         // A restart decided on silence. Admit nothing from here, then take a last look: if the
         // server answered meanwhile, a request or a health check saw it, so the restart is
         // called off and the answer recorded instead (Codex WP2.2 r1, finding 1). Requests
@@ -440,7 +483,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           );
           logEvent("watchdog", "restart_called_off");
           const resumed: WatchdogState = { ...result.state, phase: "idle", phaseSince: null };
-          result = step(resumed, ANSWERING, this.now(), timing, randomOutageId, config);
+          // Answering, as any answer: still replaced if it runs another configuration.
+          result = step(resumed, answering, this.now(), timing, randomOutageId, config);
           this.#persist(result.state, result.effects, false);
           nextCheckAt = result.nextCheckAt;
           this.#ready = true;
@@ -450,6 +494,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       // r3-1); the persisted `stopping` phase keeps it so until the container is seen stopped.
       if (result.effects.some((effect) => effect.type === "stop" || effect.type === "destroy")) {
         this.#stopping = true;
+        this.#ready = false;
       }
       try {
         await this.#apply(container, result.effects);
@@ -462,7 +507,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           this.#interceptPending = !(await this.#registerIntercepts(container));
         }
       }
-      if (this.#ready) await this.#bootstrapCheck(container);
+      if (this.#ready) await this.#bootstrapCheck(container, ranWith === config, config);
     } catch (error) {
       logEvent("watchdog", "check_error", { error: describeError(error) });
     } finally {
@@ -492,6 +537,49 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       recovery: parsed.data.recovery ?? null,
       bootId: parsed.data.bootId ?? null,
     };
+  }
+
+  /**
+   * The watchdog's timing for the current container: a stop's grace and a start's restore
+   * allowance are never shorter than its own settings gave it at its start, so a release that
+   * lowers them (a new version adopts the running container) cannot cut its final sync or its
+   * restore short (Codex G2-SEC-001 r1-1). A container started before they were recorded (an
+   * older build) and running this version's configuration has this version's: they are recorded
+   * now. One running another configuration gets the long deadlines assumed for a setting the
+   * watchdog cannot read (r2-1).
+   */
+  #containerTiming(timing: ServerTiming, config: string): ServerTiming {
+    const sql = this.ctx.storage.sql;
+    const row = sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_TIMING_KEY)
+      .toArray()[0];
+    const parsed = z
+      .object({ stopGraceMs: Millis, restoreWaitMs: Millis })
+      .safeParse(row === undefined ? undefined : parseJson(row.value));
+    let started: { stopGraceMs: number; restoreWaitMs: number };
+    if (parsed.success) started = parsed.data;
+    else if (this.#startConfig() === config) {
+      started = { stopGraceMs: timing.stopGraceMs, restoreWaitMs: timing.restoreWaitMs };
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_TIMING_KEY,
+        JSON.stringify(started),
+      );
+    } else started = UNKNOWN_DEADLINES;
+    return {
+      ...timing,
+      stopGraceMs: Math.max(timing.stopGraceMs, started.stopGraceMs),
+      restoreWaitMs: Math.max(timing.restoreWaitMs, started.restoreWaitMs),
+    };
+  }
+
+  /** The configuration fingerprint the current container was started with, if recorded. */
+  #startConfig(): string | null {
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_CONFIG_KEY)
+      .toArray()[0];
+    const value = row === undefined ? null : parseJson(row.value);
+    return typeof value === "string" ? value : null;
   }
 
   /**
@@ -584,13 +672,24 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#interceptPending = false;
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
-    // An exit left from an earlier container is not this one's; this one runs with `vars`.
-    this.ctx.storage.sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
-    this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
-      START_CONFIG_KEY,
-      JSON.stringify(await configFingerprint(vars)),
-    );
+    // An exit left from an earlier container is not this one's; this one runs with `vars`, and
+    // with the deadlines its settings give it, whatever a later release sets.
+    const fingerprint = await configFingerprint(vars);
+    const { stopGraceMs, restoreWaitMs } = this.timing();
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_CONFIG_KEY,
+        JSON.stringify(fingerprint),
+      );
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_TIMING_KEY,
+        JSON.stringify({ stopGraceMs, restoreWaitMs }),
+      );
+    });
     try {
       container.start(vars);
     } catch (error) {
@@ -614,18 +713,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         });
         // Kept until a check consumes it, so the outage record can carry it, with the
         // configuration the container ran with, which an exit 78 holds.
-        const startRow = this.ctx.storage.sql
-          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_CONFIG_KEY)
-          .toArray()[0];
-        const ranWith = startRow === undefined ? null : parseJson(startRow.value);
         this.ctx.storage.sql.exec(
           "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
           LAST_EXIT_KEY,
-          JSON.stringify({
-            exitCode,
-            ranWith: typeof ranWith === "string" ? ranWith : null,
-            at: this.now(),
-          }),
+          JSON.stringify({ exitCode, ranWith: this.#startConfig(), at: this.now() }),
         );
       });
     } catch (error) {
@@ -697,10 +788,30 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   // -------------------------------------------------------------------------------------------
   // The bootstrap check
 
-  async #bootstrapCheck(container: ServerContainer): Promise<void> {
+  /**
+   * `configApplied`: the answering server was started with the configuration this version would
+   * start it with. The status is logged while the bootstrap secret exists, and, under a
+   * configuration seen applied, until a check shows the owner initialized and durable and for
+   * `APPLIED_NOTICE_MS` after, and again whenever it stops being so, until it is again and for
+   * `APPLIED_NOTICE_MS` after that: after the bootstrap's
+   * release, the lines from the replaced server are its proof that the release reached the
+   * running server, not only the Worker (G2-SEC-001). The last line under a configuration always
+   * shows the owner durable, however late that came (Codex r1-2). No line carries a secret or a
+   * digest of one.
+   */
+  async #bootstrapCheck(
+    container: ServerContainer,
+    configApplied: boolean,
+    config: string,
+  ): Promise<void> {
     const secretPresent = bootstrapSecretPresent(this.env as unknown as Record<string, unknown>);
     const stored = this.#loadBootstrap();
-    if (!secretPresent && stored.status?.initialized === true) return;
+    const notice = configApplied ? this.#appliedNotice(config) : null;
+    const storedDurable = stored.status?.initialized === true;
+    const recent =
+      notice !== null &&
+      (notice.durableAt === null || this.now() - notice.durableAt < APPLIED_NOTICE_MS);
+    if (!secretPresent && !recent && stored.status?.initialized === true) return;
     // In this order: the position, /v1/info, the position again (see bootstrap.ts).
     const before = await this.#read(
       container,
@@ -733,16 +844,56 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           JSON.stringify(check.target),
         );
       }
+      // The notice runs from the first durable check under this configuration, and again from
+      // each return to durable, so the change back is published on every check for a while,
+      // not once (Codex r2-2).
+      const durable = check.status?.initialized === true;
+      if (notice !== null && durable && (notice.durableAt === null || !storedDurable)) {
+        sql.exec(
+          "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+          CONFIG_APPLIED_KEY,
+          JSON.stringify({ config, durableAt: this.now() }),
+        );
+      }
     });
-    if (secretPresent) {
+    // Past the notice, a check runs here only when the stored status was not initialized: its
+    // line is logged too, so the change back to durable is always published.
+    const announcing = notice !== null && check.status !== null;
+    if (secretPresent || announcing) {
       // The bootstrap script (WP2.4) deletes the secret only after an event with
-      // `initialized: true` for its own installation. Logged on every check, so a lost line recurs.
+      // `initialized: true` for its own installation, and counts its release done only after an
+      // event without the secret from a server running the released configuration. Logged on
+      // every check, so a lost line recurs.
       logEvent("bootstrap", "status", {
         reason: check.reason,
         bootstrapStatus: check.status,
         secretPresent,
+        configApplied,
       });
     }
+  }
+
+  /**
+   * The notice for `config`, seen applied now: when a check under it first showed the owner
+   * durable, or null while none has. Records the first sight of each new configuration.
+   */
+  #appliedNotice(config: string): { durableAt: number | null } {
+    const sql = this.ctx.storage.sql;
+    const row = sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", CONFIG_APPLIED_KEY)
+      .toArray()[0];
+    const stored = z
+      .object({ config: z.string().max(64), durableAt: Millis.nullable() })
+      .safeParse(row === undefined ? undefined : parseJson(row.value));
+    if (stored.success && stored.data.config === config) {
+      return { durableAt: stored.data.durableAt };
+    }
+    sql.exec(
+      "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+      CONFIG_APPLIED_KEY,
+      JSON.stringify({ config, durableAt: null }),
+    );
+    return { durableAt: null };
   }
 
   #loadBootstrap(): { status: BootstrapStatus | null; target: BootstrapTarget | null } {
