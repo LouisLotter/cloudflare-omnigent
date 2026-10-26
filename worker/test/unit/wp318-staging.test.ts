@@ -1,7 +1,18 @@
 // WP3.18's staging soak (RC-26): the schedule, the rendered configuration and the reconnect
 // analysis, in Node (worker/test/staging/wp318).
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { withRenderedConfig } from "../../../scripts/bootstrap/cloud.ts";
 import {
+  type Installation,
+  installationProblems,
+  renderPlatformConfig,
+} from "../../../scripts/bootstrap/settings.ts";
+import { ownerPin } from "../../../scripts/bootstrap/test/fixtures.ts";
+import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
+import { validateDeployConfig } from "../../../scripts/staging/guard.ts";
+import {
+  configRestarts,
   dueEvents,
   HEARTBEAT_MS,
   HEARTBEAT_WINDOW_MS,
@@ -265,5 +276,123 @@ describe("the soak's analysis", () => {
       // B first connected after the reset: only A is judged by it.
       expect.objectContaining({ kind: "server_reset", computerId: A, gapMs: null, ok: false }),
     ]);
+  });
+});
+
+describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR-001)", () => {
+  const WORKER = resolve(import.meta.dirname, "..", "..");
+  const ACCOUNT = "1".repeat(32);
+  /** The plan `run.sh bucket` makes: one holder's two buckets, one endpoint, staging wp318. */
+  const planned = async (): Promise<Installation> => ({
+    installationId: "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    accountId: ACCOUNT,
+    platformWorker: "cfo-stg-wp318-platform",
+    webWorker: "cfo-stg-wp318-web",
+    hostname: "cfo-stg-wp318-web.example.test",
+    ownerPin: await ownerPin(),
+    ownerUsername: "owner",
+    replica: {
+      url: "s3://cfo-stg-wp318-r2-db/omnigent",
+      endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+    },
+    artifacts: { url: "s3://cfo-stg-wp318-r2-artifacts" },
+    target: {
+      kind: "staging",
+      owner: "WP3.18",
+      platformSuffix: "wp318-platform",
+      webSuffix: "wp318-web",
+      days: 2,
+    },
+    plannedAt: "2026-10-26T12:00:00.000Z",
+  });
+  const guard = (path: string, name: string) =>
+    validateDeployConfig(readWranglerConfig(path, WORKER), ACCOUNT, name, {
+      registry: { owner: "WP3.18", deployments: [] },
+    });
+
+  it("runs the server with its artifacts in R2, never on the disk, and passes the staging guard", async () => {
+    const plan = await planned();
+    expect(installationProblems(plan)).toEqual([]);
+    const base = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER).raw;
+    const config = soakPlatformConfig(renderPlatformConfig(base, plan), "b1");
+    const vars = config.vars as Record<string, string>;
+    expect(vars).toMatchObject({
+      SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-stg-wp318-r2-db/omnigent",
+      SERVER_ENV_OMNIGENT_ARTIFACT_URI: "s3://cfo-stg-wp318-r2-artifacts",
+      SERVER_ENV_AWS_ENDPOINT_URL_S3: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+      WP318_BUILD: "b1",
+    });
+    expect(vars).not.toHaveProperty("SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS");
+    expect(vars).not.toHaveProperty("SERVER_ENV_CFO_ALLOW_FILE_REPLICA");
+    // No SERVER_ENV_ value differs between two soak deploys: they never restart the server.
+    const again = soakPlatformConfig(renderPlatformConfig(base, plan), "b2").vars as Record<
+      string,
+      string
+    >;
+    const serverEnv = (v: Record<string, string>) =>
+      Object.entries(v).filter(([k]) => k.startsWith("SERVER_ENV_"));
+    expect(serverEnv(again)).toEqual(serverEnv(vars));
+    expect(config.r2_buckets).toEqual([
+      { binding: "CHECKPOINTS", bucket_name: "cfo-stg-wp318-platform-checkpoints" },
+      { binding: "RESULTS", bucket_name: "cfo-stg-wp318-platform-results" },
+    ]);
+    withRenderedConfig(WORKER, config, (path) =>
+      expect(() => guard(path, "cfo-stg-wp318-platform")).not.toThrow(),
+    );
+  });
+
+  it("holds the replica's and the artifacts' buckets under the holder's own name", () => {
+    const path = join(WORKER, "test", "staging", "wp318", "bucket", "wrangler.jsonc");
+    expect(readWranglerConfig(path, WORKER).raw.r2_buckets).toEqual([
+      { binding: "REPLICA", bucket_name: "cfo-stg-wp318-r2-db" },
+      { binding: "ARTIFACTS", bucket_name: "cfo-stg-wp318-r2-artifacts" },
+    ]);
+    expect(() => guard(path, "cfo-stg-wp318-r2")).not.toThrow();
+  });
+});
+
+describe("the watchdog's controlled restarts (G2-SEC-001's config_changed)", () => {
+  const line = (at: number, source: Record<string, unknown> | string): LogLine => ({
+    timestamp: at,
+    version: "v1",
+    source,
+  });
+  const started = (at: number, id: string, cause = "config_changed") =>
+    line(at, { cfo: "watchdog", event: "outage_started", outageId: id, cause });
+  const ended = (at: number, id: string, durationMs: number, cause = "config_changed") =>
+    line(at, { cfo: "watchdog", event: "outage_ended", outageId: id, cause, durationMs });
+
+  it("finds each config_changed outage in the window, with its end once logged", () => {
+    const lines = [
+      ended(T0 + 40_000, "out_a", 34_000),
+      started(T0 + 6_000, "out_a"),
+      started(T0 + 100_000, "out_b"),
+      // Another cause, and a line outside the window, are not this.
+      started(T0 + 50_000, "out_c", "not_answering"),
+      ended(T0 + 60_000, "out_c", 9_000, "not_answering"),
+      started(T0 - 1, "out_d"),
+      // A line Workers Logs kept as a string still counts; malformed ones do not.
+      line(
+        T0 + 101_000,
+        JSON.stringify({
+          cfo: "watchdog",
+          event: "outage_ended",
+          outageId: "out_b",
+          cause: "config_changed",
+          durationMs: 31_000,
+        }),
+      ),
+      line(T0 + 102_000, "{not json"),
+      line(T0 + 103_000, { cfo: "watchdog", event: "outage_ended", cause: "config_changed" }),
+    ];
+    expect(configRestarts(lines, T0, T0 + SOAK_MS)).toEqual([
+      { outageId: "out_a", startedAt: T0 + 6_000, endedAt: T0 + 40_000, durationMs: 34_000 },
+      { outageId: "out_b", startedAt: T0 + 100_000, endedAt: T0 + 101_000, durationMs: 31_000 },
+    ]);
+    // Still restarting: started, not ended.
+    expect(configRestarts([started(T0 + 1, "out_e")], T0, T0 + 10)).toEqual([
+      { outageId: "out_e", startedAt: T0 + 1, endedAt: null, durationMs: null },
+    ]);
+    expect(configRestarts(lines, T0 + SOAK_MS, T0 + 2 * SOAK_MS)).toEqual([]);
   });
 });

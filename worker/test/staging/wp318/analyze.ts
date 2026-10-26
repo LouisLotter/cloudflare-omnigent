@@ -2,10 +2,19 @@
 //   node worker/test/staging/wp318/analyze.ts <run directory>
 // The directory holds what run.sh collect wrote: events.json (the soak run's own events, from
 // the results bucket), deploys.jsonl (the laptop's deploys) and logs.jsonl (the platform
-// Worker's Workers Logs). Prints the table and writes verdict.json next to them.
+// Worker's Workers Logs). Prints the table and writes verdict.json next to them. A controlled
+// restart (`config_changed`, G2-SEC-001) during the soak fails it: no soak deploy changes the
+// server's configuration, so one would be a restart nobody planned.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Disruption, type LogLine, reconnects, type SoakEventKind } from "./plan.ts";
+import {
+  configRestarts,
+  type Disruption,
+  type LogLine,
+  reconnects,
+  SOAK_MS,
+  type SoakEventKind,
+} from "./plan.ts";
 
 const dir = process.argv[2];
 if (dir === undefined) throw new Error("analyze.ts <run directory>");
@@ -55,11 +64,21 @@ for (const r of results) {
     `${r.ok ? "ok  " : "FAIL"} ${r.kind.padEnd(16)} ${at.padEnd(10)} ${r.computerId} ${gap} ${r.note ?? ""}`,
   );
 }
+const restarts = configRestarts(lines, run.t0, run.t0 + SOAK_MS);
+for (const r of restarts) {
+  const at = r.startedAt ?? r.endedAt;
+  const when = at === null ? "?" : `T0+${((at - run.t0) / 60_000).toFixed(1)}m`;
+  const length = r.durationMs === null ? "still open" : `${(r.durationMs / 1000).toFixed(1)} s`;
+  console.log(
+    `FAIL config_changed     ${when.padEnd(10)} a controlled restart during the soak, ${length}`,
+  );
+}
 const verdict = {
   runId: run.runId,
   disruptions: disruptions.length,
   checks: results.length,
-  failed: results.filter((r) => !r.ok).length,
+  failed: results.filter((r) => !r.ok).length + restarts.length,
+  configRestarts: restarts,
   inconclusive: results.filter((r) => r.note?.startsWith("inconclusive")).length,
   failedDeploys: deploys.filter((d) => d.status !== 0).length,
   results,

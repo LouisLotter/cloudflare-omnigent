@@ -285,3 +285,66 @@ export function reconnects(
   }
   return results;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The watchdog's controlled restarts (G2-SEC-001). A release that changes the server's
+// configuration (the bootstrap's release, the launcher's key) is applied by one restart, logged
+// as a `config_changed` outage. The sitting waits for each before it goes on; during the soak no
+// deploy changes the server's configuration, so any such restart there is a finding.
+
+/** One `config_changed` outage the watchdog logged: when it started and, once logged, ended. */
+export interface ConfigRestart {
+  readonly outageId: string;
+  /** The `outage_started` line's time (ms), or null if only its end is in the window. */
+  readonly startedAt: number | null;
+  /** The `outage_ended` line's time (ms), or null while it lasts. */
+  readonly endedAt: number | null;
+  /** The outage's length as the watchdog recorded it (from the server's last answer). */
+  readonly durationMs: number | null;
+}
+
+function sourceOf(line: LogLine): Readonly<Record<string, unknown>> | null {
+  if (typeof line.source === "object" && line.source !== null) return line.source;
+  if (typeof line.source !== "string") return null;
+  try {
+    const parsed = JSON.parse(line.source) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The watchdog's `config_changed` outages with a line in [from, to), in time order. */
+export function configRestarts(
+  lines: readonly LogLine[],
+  from: number,
+  to: number,
+): ConfigRestart[] {
+  const byId = new Map<string, ConfigRestart>();
+  const sorted = [...lines].sort((a, b) => a.timestamp - b.timestamp);
+  for (const line of sorted) {
+    if (line.timestamp < from || line.timestamp >= to) continue;
+    const s = sourceOf(line);
+    if (s === null || s.cfo !== "watchdog" || s.cause !== "config_changed") continue;
+    if (typeof s.outageId !== "string") continue;
+    const known = byId.get(s.outageId) ?? {
+      outageId: s.outageId,
+      startedAt: null,
+      endedAt: null,
+      durationMs: null,
+    };
+    if (s.event === "outage_started") byId.set(s.outageId, { ...known, startedAt: line.timestamp });
+    else if (s.event === "outage_ended") {
+      byId.set(s.outageId, {
+        ...known,
+        endedAt: line.timestamp,
+        durationMs: typeof s.durationMs === "number" ? s.durationMs : null,
+      });
+    }
+  }
+  return [...byId.values()].sort(
+    (a, b) => (a.startedAt ?? a.endedAt ?? 0) - (b.startedAt ?? b.endedAt ?? 0),
+  );
+}

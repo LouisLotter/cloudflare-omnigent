@@ -4,13 +4,13 @@
 // guarded staging tool puts behind an owner-only Access application:
 //   - `OmnigentServer.stagingReset` and `WorkspaceDO.stagingReset`: a forced reset (ctx.abort),
 //     the disruption RC-26 and FH-36 name, without a deploy;
-//   - `OmnigentServer.stagingRestartContainer`: stops the server container once, so the watchdog
-//     starts it again with the Worker's current secrets (the launcher's signing key, set after
-//     the bootstrap, reaches the server only at its next start);
 //   - SoakRun: the schedule (plan.ts), started by the owner's Start click on /__soak, ticked by
 //     the production cron; its events go to Workers Logs and the results bucket. Around each
 //     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
 //     object's version switch.
+// The launcher's signing key, set after the bootstrap, reaches the server through the watchdog's
+// controlled restart (G2-SEC-001's `config_changed`); run.sh waits for it, so this module needs no
+// restart of its own.
 // soak-config.ts renders the configuration: the bootstrap's own, with this module as main, the
 // SOAK binding and the RESULTS bucket added. The setup terminal is the platform pages' own (WP3.5:
 // the web Worker's /platform/computers/<computer>, bridged in WorkspaceDO); this module never
@@ -20,7 +20,6 @@ import { DurableObject } from "cloudflare:workers";
 import { WORKSPACE_INTERFACE_VERSION } from "@cfo/contracts";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../../src/computer/WorkspaceDO.ts";
 import production from "../../../src/index.ts";
-import { serverContainerOf } from "../../../src/server/container-port.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../../src/server/OmnigentServer.ts";
 import { logEvent } from "../../../src/server/responses.ts";
 import { CONTROL_OBJECT_NAME, OMNIGENT_SERVER_OBJECT_NAME } from "../../../src/shared/rpc.ts";
@@ -53,15 +52,6 @@ export class OmnigentServer extends PlatformOmnigentServer {
    */
   async stagingBeat(runId: string): Promise<void> {
     logEvent("soak", "heartbeat", { runId, from: "server" });
-  }
-
-  /** Stops the server container once; the watchdog starts it with the current secrets. */
-  async stagingRestartContainer(): Promise<boolean> {
-    const container = serverContainerOf(this.ctx);
-    if (container === null || !container.running) return false;
-    logEvent("soak", "server_container_restart", {});
-    await container.destroy("soak: start again with the current secrets");
-    return true;
   }
 }
 
@@ -217,8 +207,7 @@ function page(status: unknown, list: unknown[], web: string | null): Response {
     .join("");
   const html = `<!doctype html><meta charset="utf-8"><title>WP3.18 soak</title>
 <h1>WP3.18 soak (staging only)</h1>
-<form method="post" action="/__soak/prepare"><button>1. Restart the server with the current secrets</button></form>
-<form method="post" action="/__soak/start"><button>2. Start the 3-hour soak (T0 = now)</button></form>
+<form method="post" action="/__soak/start"><button>Start the 3-hour soak (T0 = now)</button></form>
 <h2>Computers</h2><ul>${rows}</ul>
 <h2>Status</h2><pre>${JSON.stringify(status, null, 2).replace(/[<>&]/g, "")}</pre>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -239,9 +228,7 @@ async function soakRoute(request: Request, env: SoakEnv): Promise<Response> {
       return new Response("Forbidden.", { status: 403 });
     }
     if (url.pathname === "/__soak/start") await run.start();
-    else if (url.pathname === "/__soak/prepare") {
-      await env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).stagingRestartContainer();
-    } else return new Response("Not found.", { status: 404 });
+    else return new Response("Not found.", { status: 404 });
     return Response.redirect(`${url.origin}/__soak`, 303);
   }
   const status = await run.status();
