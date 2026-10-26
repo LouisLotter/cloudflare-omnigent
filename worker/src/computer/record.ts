@@ -255,10 +255,15 @@ export const ComputerRecord = z.strictObject({
     .array(z.strictObject({ checkpointId: CheckpointId, generation: Count, order: Count }))
     .default([]),
   /**
-   * Keys of abandoned uploads, deleted once more at `at`: a write already issued by a reset
-   * instance may still land after the first deletion (Codex WP3.1 r2-1).
+   * Tombstones of abandoned uploads (Codex WP3.1 r2-1, r3): a write already issued may still land
+   * after the key was deleted. `fencedAt`: when the key stopped being a pending upload, so the
+   * backup gateway refuses it from then on; `at`: the next deletion. A tombstone is retired only
+   * once the gateway's fence is enforced and its maximum request time has passed since
+   * `fencedAt`; until then it is deleted again on a slow sweep.
    */
-  credentialSweeps: z.array(z.strictObject({ key: z.string().max(256), at: Millis })).default([]),
+  credentialSweeps: z
+    .array(z.strictObject({ key: z.string().max(256), fencedAt: Millis, at: Millis }))
+    .default([]),
   /** A credential checkpoint has held a login at some time. */
   everHeldLogin: z.boolean(),
 

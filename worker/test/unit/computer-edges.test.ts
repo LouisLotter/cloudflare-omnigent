@@ -376,3 +376,42 @@ describe("more failure paths", () => {
     );
   });
 });
+
+describe("the WorkspaceDO fake's write fence (for WP3.3's gateway tests)", () => {
+  it("allows only the running generation's writes under this computer's prefixes", async () => {
+    const { FakeWorkspace } = await import("../support/fake-workspace.ts");
+    const fake = new FakeWorkspace(CMP);
+    const check = (
+      generation: number,
+      objectKey: string,
+      kind: "credential" | "workspace" = "credential",
+    ) => fake.writeAllowed({ interfaceVersion: 1, computerId: CMP, generation, kind, objectKey });
+    expect(await check(0, `credentials/${CMP}/a.json`)).toEqual({
+      allowed: false,
+      reason: "stale_generation",
+    });
+    fake.fire("resume");
+    fake.fire("container_running");
+    expect(await check(1, `credentials/${CMP}/a.json`)).toEqual({ allowed: true });
+    expect(await check(1, "credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n4/a.json")).toEqual({
+      allowed: false,
+      reason: "foreign_key",
+    });
+    expect(await check(1, `workspace/${CMP}/l`, "workspace")).toEqual({ allowed: true });
+    expect(
+      await fake.writeAllowed({
+        interfaceVersion: 1,
+        computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4",
+        generation: 1,
+        kind: "workspace",
+        objectKey: "x",
+      }),
+    ).toEqual({ allowed: false, reason: "unknown_computer" });
+    fake.fire("terminate");
+    expect(await check(1, `credentials/${CMP}/a.json`)).toEqual({
+      allowed: false,
+      reason: "removed",
+    });
+    await expect(fake.writeAllowed({} as never)).rejects.toThrow(/bad_request/);
+  });
+});

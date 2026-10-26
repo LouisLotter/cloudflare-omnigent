@@ -71,7 +71,7 @@ import {
   isStartRefusedError,
 } from "../shared/computer-port.ts";
 import { errorCodeOf, platformError } from "../shared/errors.ts";
-import type { ControlRpc } from "../shared/rpc.ts";
+import { type ControlRpc, WriteCheck, type WriteDecision } from "../shared/rpc.ts";
 import {
   bundleObject,
   credentialManifestOf,
@@ -175,7 +175,7 @@ export interface ControllerTiming {
   readonly credentialBarrierMs: number;
   /** How long a sign-out run may take before it is given up. */
   readonly signOutMs: number;
-  /** When an abandoned upload's key is deleted a second time (a late write). */
+  /** How often an abandoned upload's key is deleted again while its tombstone is kept. */
   readonly credentialSweepMs: number;
   readonly commandTimeoutMs: number;
   /** Repeats of a command after "Network connection lost." (S3): every command is safe to repeat. */
@@ -201,12 +201,25 @@ export const CONTROLLER_TIMING: ControllerTiming = {
   noContactMs: TIMING.noContactS * 1000,
   credentialBarrierMs: 120_000,
   signOutMs: 300_000,
-  credentialSweepMs: 3_600_000,
+  credentialSweepMs: 6 * 3_600_000,
   commandTimeoutMs: 30_000,
   commandRetries: 3,
   restoreFailures: 5,
   operationRecordMs: TIMING.operationRecordS * 1000,
 };
+
+export interface WriteFence {
+  readonly enforced: boolean;
+  readonly maxRequestMs: number;
+}
+
+/**
+ * Not enforced until WP3.3 routes every write through the fenced gateway. The bound is the
+ * 15 minutes a pending operation can hold a Durable Object (CF-07), which the gateway must apply
+ * to its own requests (it refuses to start a put on a check older than that, and gives up past it);
+ * WP3.3 confirms it with measurements before setting `enforced`.
+ */
+export const WRITE_FENCE: WriteFence = { enforced: false, maxRequestMs: 15 * 60_000 };
 
 export interface ControllerDeps {
   readonly computerId: ComputerId;
@@ -228,6 +241,13 @@ export interface ControllerDeps {
   readonly intercepts: (props: InterceptProps) => readonly InterceptTarget[];
   readonly timing?: ControllerTiming;
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  /**
+   * The backup gateway's write fence (WP3.3). `enforced`: every write into the checkpoint bucket,
+   * this controller's credential bundles included, goes through the gateway, which asks
+   * `writeAllowed` first and never runs a request longer than `maxRequestMs`. Until it is,
+   * abandoned uploads' tombstones are never retired.
+   */
+  readonly writeFence?: WriteFence;
 }
 
 /** The soonest the alarm is ever set after now. */
@@ -371,19 +391,27 @@ export class WorkspaceController {
   }
 
   /**
-   * An upload that may still be in flight (in a reset instance, or one whose reply was lost):
-   * deleted now, and once more after `credentialSweepMs`, in case its write lands late.
+   * An upload that may still be in flight (in a reset instance, or one whose reply was lost). Its
+   * key stops being a pending upload in this transaction, which is the fence: the gateway refuses
+   * it from now on. It is deleted now, and its tombstone kept for later deletions.
    */
   #abandonUpload(d: ComputerRecord, checkpointId: string): void {
     const key = credentialObjectKey(
       this.#d.computerId,
       checkpointId as CredentialManifest["checkpointId"],
     );
+    const now = this.#now();
     d.credentialDeletes.push(key);
-    d.credentialSweeps.push({ key, at: this.#now() + this.#t.credentialSweepMs });
+    const fence = this.#d.writeFence ?? WRITE_FENCE;
+    const next = fence.enforced ? fence.maxRequestMs : this.#t.credentialSweepMs;
+    d.credentialSweeps.push({ key, fencedAt: now, at: now + next });
   }
 
-  /** Deletes the abandoned uploads whose sweep is due. */
+  /**
+   * Deletes a tombstoned key whose sweep is due. Its tombstone is retired only when no write can
+   * still land: the gateway's fence is enforced and its maximum request time has passed since the
+   * key was fenced. Otherwise the key is deleted again on the next slow sweep (the lead, 26 Oct).
+   */
   async #sweep(r: ComputerRecord): Promise<boolean> {
     const now = this.#now();
     const due = r.credentialSweeps.find((x) => x.at <= now);
@@ -394,9 +422,15 @@ export class WorkspaceController {
       this.#log("bundle_delete_failed", { error: describe(error) });
       return false;
     }
+    const fence = this.#d.writeFence ?? WRITE_FENCE;
+    const settled = fence.enforced && now >= due.fencedAt + fence.maxRequestMs;
     await this.#exclusive(() =>
       this.#write((d) => {
-        d.credentialSweeps = d.credentialSweeps.filter((x) => x.key !== due.key);
+        d.credentialSweeps = settled
+          ? d.credentialSweeps.filter((x) => x.key !== due.key)
+          : d.credentialSweeps.map((x) =>
+              x.key === due.key ? { ...x, at: now + this.#t.credentialSweepMs } : x,
+            );
       }),
     );
     return true;
@@ -702,9 +736,9 @@ export class WorkspaceController {
     event: LifecycleEvent,
     facts: Facts,
     extra: Extra = {},
-    unavailable: "throw" | "at_capacity" = "throw",
+    unavailable: "throw" | "at_capacity" | "defer" = "throw",
     commit: (d: ComputerRecord, reply: Reply | undefined) => void = () => undefined,
-  ): Promise<Reply | undefined> {
+  ): Promise<Reply | undefined | "deferred"> {
     const r = this.#require();
     const apply = (d: ComputerRecord, f: Facts, x: Extra) => {
       const t = this.#step(d, event, f, x);
@@ -716,7 +750,10 @@ export class WorkspaceController {
     }
     // Slots owed back (a crash after a grant, a stopped generation) are returned before a new one
     // is asked for, so a wake never competes with this computer's own stale slots.
-    await this.#drainReleases();
+    const drained = await this.#drainReleases();
+    // `defer`: a queued wake waits, rather than ask for a slot while one of this computer's own
+    // stale slots may still hold capacity.
+    if (unavailable === "defer" && !drained) return "deferred";
     if (this.#require().releases.length >= MAX_PENDING_RELEASES) {
       // ControlDO has not acknowledged earlier releases: ask for no new slot until it has.
       if (unavailable === "throw") {
@@ -749,6 +786,7 @@ export class WorkspaceController {
         d.releases.push({ generation, operationId: this.#d.newId("op") });
       });
       this.#log("reserve_failed", { generation, error: describe(error) });
+      if (unavailable === "defer") return "deferred";
       if (unavailable === "throw") {
         throw platformError(
           "unavailable",
@@ -770,8 +808,8 @@ export class WorkspaceController {
     });
   }
 
-  /** Gives owed slots back to ControlDO, in order, until one fails. Called serialized. */
-  async #drainReleases(): Promise<void> {
+  /** Gives owed slots back to ControlDO, in order, until one fails; true if none is left. */
+  async #drainReleases(): Promise<boolean> {
     for (const release of this.#require().releases) {
       try {
         await this.#d.control.control({
@@ -783,12 +821,13 @@ export class WorkspaceController {
         });
       } catch (error) {
         this.#log("release_failed", { generation: release.generation, error: describe(error) });
-        return;
+        return false;
       }
       this.#write((d) => {
         d.releases = d.releases.filter((x) => x.operationId !== release.operationId);
       });
     }
+    return true;
   }
 
   async #refreshLimits(): Promise<void> {
@@ -958,7 +997,8 @@ export class WorkspaceController {
     }
     switch (request.operation) {
       case "resume": {
-        const reply = await this.#reserving("resume", {});
+        // Never deferred: only a queued wake defers.
+        const reply = (await this.#reserving("resume", {})) as Reply | undefined;
         if (reply?.kind === "error") throw this.#replyError(reply.code);
         const resumed = expectReply(reply, "resume");
         return {
@@ -1514,6 +1554,45 @@ export class WorkspaceController {
   }
 
   // -------------------------------------------------------------------------------------------
+  // The backup gateway's write fence (WP3.3; the lead's decision, 26 Oct).
+
+  /**
+   * Whether a write into this computer's checkpoint objects may go ahead: the computer exists,
+   * has no removal intent, and runs this generation; a credential bundle only while its key is a
+   * pending upload. Read-only, so the answer reflects every committed abandonment.
+   */
+  async writeAllowed(raw: unknown): Promise<WriteDecision> {
+    const parsed = WriteCheck.safeParse(raw);
+    if (!parsed.success) throw platformError("bad_request", "not a WriteCheck");
+    checkInterface(parsed.data.interfaceVersion);
+    const call = parsed.data;
+    return this.#exclusive((): WriteDecision => {
+      const r = this.#load();
+      if (r === null || call.computerId !== this.#d.computerId) {
+        return { allowed: false, reason: "unknown_computer" };
+      }
+      const ctx = r.lifecycle.context;
+      if (ctx.removalIntent) return { allowed: false, reason: "removed" };
+      const fenced = r.reservation?.generation === call.generation && r.reservation.fenced;
+      const live = containerMayRun(ctx.state) && ctx.state !== "waking" && !fenced;
+      if (!live || call.generation !== r.lifecycle.generation) {
+        return { allowed: false, reason: "stale_generation" };
+      }
+      if (call.kind === "workspace") {
+        return call.objectKey.startsWith(workspaceBackupPrefix(this.#d.computerId))
+          ? { allowed: true }
+          : { allowed: false, reason: "foreign_key" };
+      }
+      const pending = r.credentialUploads.some(
+        (u) =>
+          u.generation === call.generation &&
+          credentialObjectKey(this.#d.computerId, u.checkpointId) === call.objectKey,
+      );
+      return pending ? { allowed: true } : { allowed: false, reason: "not_pending" };
+    });
+  }
+
+  // -------------------------------------------------------------------------------------------
   // ControlDO's reconciliation.
 
   async reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
@@ -1571,7 +1650,10 @@ export class WorkspaceController {
     if (r === null) return false;
     if (await this.#exclusive(() => this.#timeEvents())) return true;
     const port = this.#d.port;
-    if (r.lifecycle.context.state === "removed") return this.#advanceDeletion(r, port);
+    if (r.lifecycle.context.state === "removed") {
+      if (r.deletion !== null) return this.#advanceDeletion(r, port);
+      return this.#sweep(r);
+    }
     if (port !== null) {
       if (await this.#observe(r, port)) return true;
       if (await this.#rearm(r, port)) return true;
@@ -1654,7 +1736,8 @@ export class WorkspaceController {
     const running = port.running;
     if (expectsContainer(state) && !running) {
       const old = r.reservation;
-      if (state === "stopping" && r.lifecycle.context.wakeQueued && old !== null) {
+      const queued = state === "stopping" && r.lifecycle.context.wakeQueued;
+      if (queued && old !== null) {
         // The container is confirmed stopped: give its slot back before the queued wake asks for
         // one, so the two never compete at the limit. The transition queues the same release
         // again; ControlDO's release is idempotent.
@@ -1667,10 +1750,20 @@ export class WorkspaceController {
             generation: old.generation,
           });
         } catch (error) {
-          this.#log("release_failed", { generation: old.generation, error: describe(error) });
+          // The wake stays queued and the computer `stopping`; the next poll tries again.
+          this.#log("queued_wake_waits", { generation: old.generation, error: describe(error) });
+          return false;
         }
       }
-      await this.#exclusive(() => this.#reserving("container_stopped", {}, {}, "at_capacity"));
+      // A queued wake is never refused for this computer's own stale slots, nor for ControlDO
+      // being unreachable: it waits (`deferred`) and is retried; only a real refusal ends it.
+      const outcome = await this.#exclusive(() =>
+        this.#reserving("container_stopped", {}, {}, queued ? "defer" : "at_capacity"),
+      );
+      if (outcome === "deferred") {
+        this.#log("queued_wake_waits", { generation: r.lifecycle.generation });
+        return false;
+      }
       return true;
     }
     if (!containerMayRun(state) && running) {
@@ -2475,8 +2568,6 @@ export class WorkspaceController {
           }
           const key = r.credentialDeletes[0];
           if (key === undefined) {
-            // A late write of an abandoned upload is swept before the removal resolves.
-            if (r.credentialSweeps.length > 0) return this.#sweep(r);
             return set((d) => {
               d.deletion = { forgetOp: deletion.forgetOp, phase: "forget" };
             });
@@ -2512,6 +2603,8 @@ export class WorkspaceController {
                 lifecycle: d.lifecycle,
                 lastReserved: d.lastReserved,
                 releases: d.releases,
+                // The tombstones outlive the records: a late write is still deleted.
+                credentialSweeps: d.credentialSweeps,
               });
             }),
           );

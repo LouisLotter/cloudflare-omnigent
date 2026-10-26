@@ -25,7 +25,13 @@ import type { PlatformEnv } from "../env.ts";
 import { logEvent } from "../server/responses.ts";
 import type { ComputerContainerPort } from "../shared/computer-port.ts";
 import { platformError } from "../shared/errors.ts";
-import { CONTROL_OBJECT_NAME, type ControlRpc, type WorkspaceRpc } from "../shared/rpc.ts";
+import {
+  CONTROL_OBJECT_NAME,
+  type ControlRpc,
+  type WorkspaceRpc,
+  type WriteCheck,
+  type WriteDecision,
+} from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
 import { r2Bucket } from "./bucket.ts";
 import {
@@ -34,6 +40,8 @@ import {
   type ControllerTiming,
   type InterceptTarget,
   WorkspaceController,
+  WRITE_FENCE,
+  type WriteFence,
 } from "./controller.ts";
 import { randomId } from "./ids.ts";
 import type { Store } from "./record.ts";
@@ -119,6 +127,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       },
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
+      writeFence: this.writeFence(),
       log: (event, fields) => logEvent("workspace", event, fields),
     });
     const controller = this.#controller;
@@ -145,6 +154,11 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   /** The intercepts registered before every start and in every new instance (WP3.3). */
   protected intercepts(_props: InterceptProps): readonly InterceptTarget[] {
     return [];
+  }
+
+  /** Whether every checkpoint write goes through WP3.3's fenced gateway; not until it is wired. */
+  protected writeFence(): WriteFence {
+    return WRITE_FENCE;
   }
 
   protected now(): number {
@@ -176,6 +190,10 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
 
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
     return this.controller.reservation(call);
+  }
+
+  writeAllowed(call: WriteCheck): Promise<WriteDecision> {
+    return this.controller.writeAllowed(call);
   }
 
   override async alarm(): Promise<void> {

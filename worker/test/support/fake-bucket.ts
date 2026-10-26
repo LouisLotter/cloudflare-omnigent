@@ -12,7 +12,7 @@ export class FakeBucket implements CheckpointBucket {
   blocked = false;
   readonly deleted: string[] = [];
 
-  /** While set, writes wait for it, then land: a write that completes late. */
+  /** The next write waits for it, then lands: a write that completes late. Later writes don't. */
   putGate: Promise<void> | null = null;
 
   /** Every write issued, by key, whether or not it landed. */
@@ -20,7 +20,9 @@ export class FakeBucket implements CheckpointBucket {
 
   async put(key: string, body: Uint8Array): Promise<void> {
     this.puts.push(key);
-    if (this.putGate !== null) await this.putGate;
+    const gate = this.putGate;
+    this.putGate = null;
+    if (gate !== null) await gate;
     if (this.blocked || this.failPuts > 0) {
       if (this.failPuts > 0) this.failPuts -= 1;
       throw new Error("R2: we encountered an internal error");

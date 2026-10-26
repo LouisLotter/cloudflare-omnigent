@@ -222,8 +222,10 @@ describe("Codex WP3.1 r1", () => {
   });
 });
 
-describe("Codex WP3.1 r2", () => {
-  it("r2-1: sweeps a credential write that lands after its instance was reset, before the removal resolves", async () => {
+describe("Codex WP3.1 r2 and the lead's verification (r3)", () => {
+  it("r2-1, r3-1: never retires a tombstone blind: a write landing after every deletion and the removal is deleted again", async () => {
+    // Codex's late-completion sequence (lead's verification, r3): the upload is held through the
+    // reset, the first deletion, a sweep and the resolved removal, then lands.
     const sim = new ComputerSim();
     await sim.running();
     let land: () => void = () => undefined;
@@ -235,16 +237,9 @@ describe("Codex WP3.1 r2", () => {
     const pending = sim.deliver(message as never).catch(() => undefined);
     await sim.until(() => sim.bucket.puts.length === 1);
     expect(sim.record().credentialUploads).toHaveLength(1);
-    // The instance is reset while its write is outstanding; the new one deletes the key...
     await sim.restart();
     await sim.settle();
     expect(sim.record().credentialUploads).toHaveLength(0);
-    // ...and the old write lands afterwards.
-    sim.bucket.putGate = null;
-    land();
-    await pending;
-    expect(sim.bucket.objects.size).toBe(1);
-    expect(sim.check()).toEqual([]);
     await sim.call(sim.client.terminateRequest());
     await sim.advance(60_000);
     await sim.controller.pages({
@@ -260,13 +255,79 @@ describe("Codex WP3.1 r2", () => {
       }),
     ).toEqual({ action: "resolve_removal", outcome: "accepted" });
     await sim.advance(10 * 60_000);
-    expect(sim.record().deletion).not.toBeNull();
-    await sim.advance(60 * 60_000);
     expect(sim.record()).toMatchObject({
       deletion: null,
       lifecycle: { context: { state: "removed" } },
     });
+    // A sweep runs (the second deletion) while the write is still held.
+    const deletions = sim.bucket.deleted.length;
+    await sim.advance(7 * 3_600_000);
+    expect(sim.bucket.deleted.length).toBeGreaterThan(deletions);
+    // The write lands now, after everything.
+    land();
+    await pending;
+    expect(sim.bucket.objects.size).toBe(1);
+    expect(sim.check()).toEqual([]);
+    // The tombstone outlived the records, so the slow sweep deletes it, and keeps doing so.
+    expect(sim.record().credentialSweeps).toHaveLength(1);
+    await sim.advance(7 * 3_600_000);
     expect([...sim.bucket.objects.keys()]).toEqual([]);
+    expect(sim.record().credentialSweeps).toHaveLength(1);
+    expect(sim.alarmAt).not.toBeNull();
+    expect(sim.check()).toEqual([]);
+  }, 30_000);
+
+  it("r3-1: retires a tombstone once the gateway's fence is enforced and its maximum request time has passed", async () => {
+    const sim = new ComputerSim({ writeFence: { enforced: true, maxRequestMs: 15 * 60_000 } });
+    await sim.running();
+    sim.bucket.failPuts = 1;
+    live(sim).signIn("claude");
+    const message = live(sim).outbox.pop();
+    await expect(sim.deliver(message as never)).rejects.toThrow(/unavailable/);
+    const upload = sim.record().credentialUploads[0];
+    if (upload === undefined) throw new Error("no upload recorded");
+    const key = `credentials/${sim.computer.computerId}/${upload.checkpointId}.json`;
+    const check = (
+      objectKey: string,
+      generation = 1,
+      kind: "credential" | "workspace" = "credential",
+    ) =>
+      sim.controller.writeAllowed({
+        interfaceVersion: 1,
+        computerId: sim.computer.computerId,
+        generation,
+        kind,
+        objectKey,
+      });
+    // A pending upload may be written; once abandoned (a new instance), it may not.
+    expect(await check(key)).toEqual({ allowed: true });
+    await sim.restart();
+    await sim.settle();
+    expect(await check(key)).toEqual({ allowed: false, reason: "not_pending" });
+    expect(await check(key, 2)).toEqual({ allowed: false, reason: "stale_generation" });
+    expect(await check(`workspace/${sim.computer.computerId}/x`, 1, "workspace")).toEqual({
+      allowed: true,
+    });
+    expect(await check("workspace/cmp_01hzy3m8k6q4t2v9w7x5r0s1n4/x", 1, "workspace")).toEqual({
+      allowed: false,
+      reason: "foreign_key",
+    });
+    expect(
+      await sim.controller.writeAllowed({
+        interfaceVersion: 1,
+        computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4",
+        generation: 1,
+        kind: "credential",
+        objectKey: key,
+      }),
+    ).toEqual({ allowed: false, reason: "unknown_computer" });
+    expect(sim.record().credentialSweeps).toHaveLength(1);
+    await sim.advance(14 * 60_000);
+    expect(sim.record().credentialSweeps).toHaveLength(1);
+    await sim.advance(2 * 60_000);
+    expect(sim.record().credentialSweeps).toHaveLength(0);
+    await sim.call(sim.client.terminateRequest());
+    expect(await check(key)).toEqual({ allowed: false, reason: "removed" });
   });
 
   it("r2-2: keeps a request made after the running capture's cut when the pending requests overflow", async () => {
@@ -361,5 +422,66 @@ describe("Codex WP3.1 r2", () => {
       outcome: "refused",
       reason: "credentials_unpublished",
     });
+  });
+});
+
+describe("the lead's verification (r3)", () => {
+  it("r3-2: keeps a queued wake through a failed recovery release, and starts it once ControlDO answers", async () => {
+    // Codex's sequence: capacity one, a wake queued while stopping, a crash right after the new
+    // slot was granted, then the first recovery release failing.
+    const dry = new ComputerSim();
+    dry.control.maxAwakeComputers = 1;
+    await dry.running();
+    let openDry: () => void = () => undefined;
+    dry.computer.destroyGate = new Promise<void>((resolve) => {
+      openDry = resolve;
+    });
+    live(dry).runnerProcesses = 0;
+    await dry.client.send(dry.client.suspendRequest());
+    await dry.until(() => dry.record().lifecycle.context.state === "stopping");
+    await dry.client.send(dry.client.resumeRequest());
+    const from = dry.stepLog.length;
+    dry.computer.destroyGate = null;
+    openDry();
+    await dry.advance(10_000);
+    const grants = dry.stepLog.flatMap((label, i) =>
+      i >= from && label === "control:after" ? [i] : [],
+    );
+    expect(grants.length).toBeGreaterThanOrEqual(2);
+
+    for (const at of grants) {
+      const sim = new ComputerSim();
+      sim.control.maxAwakeComputers = 1;
+      await sim.running();
+      let open: () => void = () => undefined;
+      sim.computer.destroyGate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      live(sim).runnerProcesses = 0;
+      await sim.client.send(sim.client.suspendRequest());
+      await sim.until(() => sim.record().lifecycle.context.state === "stopping");
+      await sim.client.send(sim.client.resumeRequest());
+      sim.crashAt = at + 1;
+      sim.onCrash = () => {
+        sim.control.unavailable = true;
+      };
+      sim.computer.destroyGate = null;
+      open();
+      await sim.advance(10_000);
+      await sim.advance(60_000);
+      // While ControlDO cannot be reached, the wake stays queued: never a capacity refusal.
+      const waiting = sim.record();
+      if (waiting.lifecycle.context.state === "stopping") {
+        expect(waiting.lifecycle.context.wakeQueued, `crash after step ${at}`).toBe(true);
+      }
+      sim.control.unavailable = false;
+      await sim.advance(2 * 60_000);
+      const r = sim.record();
+      expect(r.lifecycle.context.state, `crash after step ${at}`).toBe("started_no_host");
+      expect([...sim.control.slots], `crash after step ${at}`).toEqual([
+        `${sim.computer.computerId}/${r.lifecycle.generation}`,
+      ]);
+      expect(sim.check()).toEqual([]);
+    }
   });
 });

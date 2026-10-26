@@ -278,6 +278,27 @@ describe("WorkspaceDO", () => {
     expect(await code(stub.reservation({ interfaceVersion: 99 }))).toBe("unsupported_version");
   });
 
+  it("answers the backup gateway's write check for the running generation only", async () => {
+    const { stub, computer, computerId, client } = fresh();
+    const check = (generation: number, kind: "credential" | "workspace" = "workspace") =>
+      stub.writeAllowed({
+        ...call,
+        computerId,
+        generation,
+        kind,
+        objectKey: `${kind === "workspace" ? "workspace" : "credentials"}/${computerId}/x`,
+      });
+    expect(await check(1)).toEqual({ allowed: false, reason: "unknown_computer" });
+    await client.send(client.provisionRequest("managed-7f3c2a9e"));
+    await client.send(client.resumeRequest());
+    await settle(stub, computer);
+    const [now, later] = await stepsWithEviction(stub, [() => check(1), () => check(2)]);
+    expect(now).toEqual({ allowed: true });
+    expect(later).toEqual({ allowed: false, reason: "stale_generation" });
+    expect(await check(1, "credential")).toEqual({ allowed: false, reason: "not_pending" });
+    expect(await code(stub.writeAllowed({ ...call, computerId } as never))).toBe("bad_request");
+  });
+
   it("refuses everything when it is not named by a computer ID", async () => {
     const stub = env.WORKSPACE.get(env.WORKSPACE.newUniqueId()) as Stub;
     expect(await code(stub.reservation(call))).toBe("bad_request");
@@ -294,6 +315,7 @@ describe("WorkspaceDO's production defaults", () => {
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,
       control: "function",
+      fence: { enforced: false, maxRequestMs: 15 * 60_000 },
     });
     expect((await stub.defaults()).clockSkewMs).toBeLessThan(5_000);
   });

@@ -26,6 +26,7 @@ import {
   CONTROLLER_TIMING,
   type ControllerTiming,
   WorkspaceController,
+  type WriteFence,
 } from "../../src/computer/controller.ts";
 import { ComputerRecord, RECORD_KEY, TOKEN_KEY } from "../../src/computer/record.ts";
 import type { ComputerContainerPort } from "../../src/shared/computer-port.ts";
@@ -54,6 +55,8 @@ export interface SimOptions {
   readonly timing?: Partial<ControllerTiming>;
   /** No checkpoint bucket is bound. */
   readonly noBucket?: boolean;
+  /** The backup gateway's write fence, as WP3.3 will enforce it. */
+  readonly writeFence?: WriteFence;
   readonly start?: number;
 }
 
@@ -92,9 +95,11 @@ export class ComputerSim {
   #ids = 0;
 
   readonly #noBucket: boolean;
+  readonly #writeFence: WriteFence | undefined;
 
   constructor(options: SimOptions = {}) {
     this.#noBucket = options.noBucket ?? false;
+    this.#writeFence = options.writeFence;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, async (request) => {
@@ -215,6 +220,7 @@ export class ComputerSim {
         { host: "omnigent.internal", target: { props } as unknown as Fetcher },
       ],
       timing: this.timing,
+      ...(this.#writeFence === undefined ? {} : { writeFence: this.#writeFence }),
       log: (event, fields) => {
         if (life.dead) return;
         const text = JSON.stringify(fields);
