@@ -1,3 +1,4 @@
+import { WorkspaceDO } from "./computer/WorkspaceDO.ts";
 import { ControlDO } from "./control/ControlDO.ts";
 import { OmnigentServer } from "./server/OmnigentServer.ts";
 import { PlatformInternal } from "./server/platform-internal.ts";
@@ -6,7 +7,7 @@ import { OMNIGENT_SERVER_INTERFACE_VERSION, OMNIGENT_SERVER_OBJECT_NAME } from "
 // The platform Worker (AR-17): every Durable Object and container class, the private virtual
 // hosts' entrypoints, and no public route. Browser traffic reaches OmnigentServer only through
 // the web Worker's cross-script binding (src/web.ts).
-export { ControlDO, OmnigentServer, PlatformInternal };
+export { ControlDO, OmnigentServer, PlatformInternal, WorkspaceDO };
 
 export default {
   async fetch(request): Promise<Response> {

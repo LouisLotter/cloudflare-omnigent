@@ -12,7 +12,8 @@
   "durable_objects": {
     "bindings": [
       { "name": "CONTROL", "class_name": "ControlDO" },
-      { "name": "OMNIGENT", "class_name": "OmnigentServer" }
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" }
     ]
   },
   // Synthetic values only (canaries), as an installation would set them.
@@ -24,6 +25,7 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] }
+    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] },
+    { "tag": "v3", "new_sqlite_classes": ["WorkspaceDO"] }
   ]
 }
