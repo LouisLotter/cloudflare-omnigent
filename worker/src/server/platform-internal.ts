@@ -1,14 +1,10 @@
 // `platform.internal`, the virtual host only the server container reaches (design: "Internal
-// bridges"). OmnigentServer registers this entrypoint for it before every start and in every new
-// instance; no other container gets it. The launcher API and the key service behind it arrive
-// with WP3.3 (`internal/platform-api.ts`, `internal/key-service.ts`), which checks each call's
-// HMAC. Until then every call is refused before any effect.
+// bridges"). OmnigentServer registers the `PlatformInternal` entrypoint for it before every start
+// and in every new instance; no other container gets it. The entrypoint, which serves the
+// launcher API with its HMAC checks, is in `internal/entrypoints.ts` (WP3.3); core change 19's
+// key service (WP3.14) joins it there. These are the registration's constants.
 
-import { WorkerEntrypoint } from "cloudflare:workers";
-import type { PlatformEnv } from "../env.ts";
-import { errorResponse, logEvent } from "./responses.ts";
-
-export const PLATFORM_INTERNAL_HOST = "platform.internal";
+export { PLATFORM_INTERNAL_HOST } from "@cfo/contracts";
 
 /** Intercept props carry a version (R-26): a running container keeps props an older build wrote. */
 export const PLATFORM_INTERNAL_PROPS_VERSION = 1;
@@ -19,14 +15,13 @@ export interface PlatformInternalProps {
   readonly caller: "omnigent-server";
 }
 
-export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInternalProps> {
-  override async fetch(request: Request): Promise<Response> {
-    const props = this.ctx.props;
-    logEvent("platform_internal", "refused", {
-      method: request.method,
-      path: new URL(request.url).pathname,
-      propsVersion: props?.propsVersion ?? null,
-    });
-    return errorResponse(503, "unavailable", "This platform service is not available.", false);
-  }
+/** Whether `props` are the server's own, of a version this code knows. */
+export function isServerProps(props: unknown): props is PlatformInternalProps {
+  const p = props as Partial<PlatformInternalProps> | null | undefined;
+  return (
+    typeof p === "object" &&
+    p !== null &&
+    p.caller === "omnigent-server" &&
+    p.propsVersion === PLATFORM_INTERNAL_PROPS_VERSION
+  );
 }

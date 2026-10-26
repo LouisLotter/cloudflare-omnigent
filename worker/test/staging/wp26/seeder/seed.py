@@ -7,6 +7,11 @@ transactions of 5,000 until the database file reaches ``SEED_MB`` megabytes, wai
 replica covers every commit (``/position``: a same-boot ``replicatedTxid`` reaching the
 ``txid`` read after the last commit), then stops the entrypoint with SIGTERM, which confirms the
 final sync and exits 0. ``GET :8080/result`` reports the outcome; it holds sizes and times only.
+
+``/position`` answers 503 ``unavailable`` (retryable) while Litestream cannot say, for example
+while it is busy uploading the backlog of a large seed and its control socket's sync outlasts
+the entrypoint's 2 s; the seeder asks again, as the platform's own reader does, until the
+catch-up deadline (the staging run of 25 Oct failed on the first such answer).
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -47,6 +53,37 @@ def say(event: str, **fields: object) -> None:
 def get_json(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=10) as response:
         return json.loads(response.read())
+
+
+class Unavailable(Exception):
+    """The control port could not say, this time."""
+
+
+def position() -> dict:
+    """One ``/position`` answer; :class:`Unavailable` for a retryable 503 or a lost request."""
+    try:
+        answer = get_json("http://127.0.0.1:8001/position")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            raise Unavailable("503") from exc
+        raise
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        raise Unavailable(type(exc).__name__) from exc
+    if not isinstance(answer.get("txid"), int) or not isinstance(answer.get("replicatedTxid"), int):
+        raise TypeError("/position answered without a position")
+    return answer
+
+
+def position_until(deadline: float, fields: dict[str, object]) -> dict | None:
+    """``/position``, asked again while it cannot say, until ``deadline``; None after it."""
+    while True:
+        try:
+            return position()
+        except Unavailable:
+            fields["positionUnavailable"] = int(fields.get("positionUnavailable", 0)) + 1
+            if time.monotonic() > deadline:
+                return None
+            time.sleep(2)
 
 
 def healthy() -> bool:
@@ -110,13 +147,23 @@ def run() -> dict[str, object]:
         )
         say("seeded", rows=rows, bytes=pages * size)
         catching_up = time.monotonic()
-        target_txid = get_json("http://127.0.0.1:8001/position")["txid"]
+        deadline = catching_up + 3600
+        target = position_until(deadline, fields)
+        if target is None:
+            return {"ok": False, "detail": "the position never answered", "fields": fields}
+        boot_id = target.get("bootId")
         while True:
-            position = get_json("http://127.0.0.1:8001/position")
-            if position["replicatedTxid"] >= target_txid:
-                break
-            if time.monotonic() - catching_up > 3600:
+            reached = position_until(deadline, fields)
+            if reached is None or time.monotonic() > deadline:
                 return {"ok": False, "detail": "the replica never caught up", "fields": fields}
+            if reached.get("bootId") != boot_id:
+                return {
+                    "ok": False,
+                    "detail": "the server restarted while catching up",
+                    "fields": fields,
+                }
+            if reached["replicatedTxid"] >= target["txid"]:
+                break
             time.sleep(1)
         fields["replicatedAfterSeconds"] = round(time.monotonic() - catching_up, 1)
         child.send_signal(signal.SIGTERM)

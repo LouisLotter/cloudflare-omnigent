@@ -53,6 +53,9 @@
   "vars": {
     "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
     "SEED_MB": "1200",
+    // The run's object. A finished run stays done; bump this to start a new run on a redeploy
+    // (run 1, 25 Oct, failed in its seeder: run-2 is the rerun).
+    "RUN_NAME": "run-2",
     "SERVER_ENV_CFO_INSTALLATION_INITIALIZED": "true",
     "SERVER_ENV_CFO_REPLICA_URL": "s3://cfo-stg-wp26-restore-db/omnigent",
     "SERVER_ENV_CFO_REPLICA_REGION": "auto",

@@ -10,8 +10,17 @@ import type { OmnigentServer } from "./server/OmnigentServer.ts";
 export interface PlatformVars {
   /** This installation's ID, an `InstallationId` (WP2.4). */
   readonly CFO_INSTALLATION_ID?: string;
-  /** Variables and secrets for the server container: `SERVER_ENV_<NAME>` reaches it as `<NAME>`. */
+  /** How many computers may be awake at once (ControlDO, WP3.2): 0 to 1000; unset means 2. */
+  readonly CFO_MAX_AWAKE_COMPUTERS?: string;
+  /** The largest instance size a computer may start with (ControlDO); unset means `standard-4`. */
+  readonly CFO_MAX_INSTANCE_SIZE?: string;
+  /** Variables and secrets for the server container: `SERVER_ENV_<NAME>` reaches it as `<NAME>`.
+   * The launcher API verifies with the server's own `SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY` and
+   * `…_ID` (WP3.3, `internal/platform-api.ts`). */
   readonly [name: `SERVER_ENV_${string}`]: string | undefined;
+  /** The launcher's previous signing key and its ID, set only during a rotation (WP3.3). */
+  readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS?: string;
+  readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS_ID?: string;
 }
 
 /** The platform Worker (`wrangler.jsonc`): every Durable Object and container class. */

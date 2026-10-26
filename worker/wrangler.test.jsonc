@@ -12,18 +12,32 @@
   "durable_objects": {
     "bindings": [
       { "name": "CONTROL", "class_name": "ControlDO" },
-      { "name": "OMNIGENT", "class_name": "OmnigentServer" }
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      // WORKSPACE is the binding the routes and the backup gateway use (WP3.3). Their tests
+      // program it through a stand-in answered by test/support/internal-harness.ts; the
+      // controller itself (WP3.1) is tested on WORKSPACE_CONTROLLER.
+      { "name": "WORKSPACE", "class_name": "WorkspaceStandIn" },
+      { "name": "WORKSPACE_CONTROLLER", "class_name": "WorkspaceDO" }
     ]
   },
+  // The computers' checkpoint bucket, for the Sandbox SDK's gateway (WP3.3, egress/backups.ts).
+  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cfo-test-checkpoints" }],
   // Synthetic values only (canaries), as an installation would set them.
   "vars": {
     "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
     "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary",
     "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD": "cfo-canary-bootstrap-password",
-    "ACCESS_AUD": "cfo-canary-access-aud"
+    "ACCESS_AUD": "cfo-canary-access-aud",
+    // The launcher API's signing keys (WP3.3): the server's own, and a previous one in rotation.
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-test-current",
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY": "cfo-canary-launcher-key-current-0000000000",
+    "CFO_LAUNCHER_SIGNING_KEY_PREVIOUS_ID": "k-test-previous",
+    "CFO_LAUNCHER_SIGNING_KEY_PREVIOUS": "cfo-canary-launcher-key-previous-000000000"
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] }
+    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] },
+    { "tag": "v3", "new_sqlite_classes": ["WorkspaceDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["WorkspaceStandIn"] }
   ]
 }
