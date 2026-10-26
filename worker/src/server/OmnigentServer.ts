@@ -199,16 +199,22 @@ const LAST_EXIT_KEY = "last_exit";
  */
 const START_CONFIG_KEY = "start_config";
 /**
- * The configuration last seen applied (a server started with it answered), and when: the
- * bootstrap status is logged for `APPLIED_NOTICE_MS` after each new one (G2-SEC-001).
+ * The configuration last seen applied (a server started with it answered), and when a check under
+ * it first showed the owner initialized and durable: the bootstrap status is logged until then,
+ * and for `APPLIED_NOTICE_MS` after (G2-SEC-001, Codex r1-2).
  */
 const CONFIG_APPLIED_KEY = "config_applied";
 /**
- * How long after a new configuration is first seen applied the bootstrap status is still logged
- * without the bootstrap secret: a check a minute, so a lost line recurs, and long enough for the
- * bootstrap's check after its release to find one.
+ * How long after a configuration seen applied first shows a durable owner the bootstrap status
+ * is still logged without the bootstrap secret: a check a minute, so a lost line recurs, and long
+ * enough for the bootstrap's check after its release to find one.
  */
 export const APPLIED_NOTICE_MS = 15 * 60_000;
+/**
+ * The deadlines the running container's own settings gave the watchdog at its start: a stop's
+ * grace and a start's restore allowance (Codex G2-SEC-001 r1-1).
+ */
+const START_TIMING_KEY = "start_timing";
 const BOOTSTRAP_STATUS_KEY = "bootstrap_status";
 const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
 
@@ -428,7 +434,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   async #checkNow(): Promise<void> {
-    const timing = this.timing();
+    const timing = this.#containerTiming(this.timing());
     let nextCheckAt = this.now() + timing.pollMs;
     try {
       const container = this.#container;
@@ -531,6 +537,28 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     };
   }
 
+  /**
+   * The watchdog's timing for the current container: a stop's grace and a start's restore
+   * allowance are never shorter than its own settings gave it at its start, so a release that
+   * lowers them (a new version adopts the running container) cannot cut its final sync or its
+   * restore short (Codex G2-SEC-001 r1-1). A container started before they were recorded gets
+   * the current ones.
+   */
+  #containerTiming(timing: ServerTiming): ServerTiming {
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_TIMING_KEY)
+      .toArray()[0];
+    const started = z
+      .object({ stopGraceMs: Millis, restoreWaitMs: Millis })
+      .safeParse(row === undefined ? undefined : parseJson(row.value));
+    if (!started.success) return timing;
+    return {
+      ...timing,
+      stopGraceMs: Math.max(timing.stopGraceMs, started.data.stopGraceMs),
+      restoreWaitMs: Math.max(timing.restoreWaitMs, started.data.restoreWaitMs),
+    };
+  }
+
   /** The configuration fingerprint the current container was started with, if recorded. */
   #startConfig(): string | null {
     const row = this.ctx.storage.sql
@@ -630,13 +658,24 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#interceptPending = false;
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
-    // An exit left from an earlier container is not this one's; this one runs with `vars`.
-    this.ctx.storage.sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
-    this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
-      START_CONFIG_KEY,
-      JSON.stringify(await configFingerprint(vars)),
-    );
+    // An exit left from an earlier container is not this one's; this one runs with `vars`, and
+    // with the deadlines its settings give it, whatever a later release sets.
+    const fingerprint = await configFingerprint(vars);
+    const { stopGraceMs, restoreWaitMs } = this.timing();
+    this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM server_state WHERE key = ?", LAST_EXIT_KEY);
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_CONFIG_KEY,
+        JSON.stringify(fingerprint),
+      );
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_TIMING_KEY,
+        JSON.stringify({ stopGraceMs, restoreWaitMs }),
+      );
+    });
     try {
       container.start(vars);
     } catch (error) {
@@ -737,10 +776,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
 
   /**
    * `configApplied`: the answering server was started with the configuration this version would
-   * start it with. The status is logged while the bootstrap secret exists, and for
-   * `APPLIED_NOTICE_MS` after a new configuration is first seen applied: after the bootstrap's
+   * start it with. The status is logged while the bootstrap secret exists, and, under a
+   * configuration seen applied, until a check shows the owner initialized and durable and for
+   * `APPLIED_NOTICE_MS` after, and again whenever it stops being so: after the bootstrap's
    * release, the lines from the replaced server are its proof that the release reached the
-   * running server, not only the Worker (G2-SEC-001). No line carries a secret or a digest of one.
+   * running server, not only the Worker (G2-SEC-001). The last line under a configuration always
+   * shows the owner durable, however late that came (Codex r1-2). No line carries a secret or a
+   * digest of one.
    */
   async #bootstrapCheck(
     container: ServerContainer,
@@ -749,8 +791,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   ): Promise<void> {
     const secretPresent = bootstrapSecretPresent(this.env as unknown as Record<string, unknown>);
     const stored = this.#loadBootstrap();
-    const announcing = configApplied && this.#newlyApplied(config);
-    if (!secretPresent && !announcing && stored.status?.initialized === true) return;
+    const notice = configApplied ? this.#appliedNotice(config) : null;
+    const recent =
+      notice !== null &&
+      (notice.durableAt === null || this.now() - notice.durableAt < APPLIED_NOTICE_MS);
+    if (!secretPresent && !recent && stored.status?.initialized === true) return;
     // In this order: the position, /v1/info, the position again (see bootstrap.ts).
     const before = await this.#read(
       container,
@@ -783,7 +828,17 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           JSON.stringify(check.target),
         );
       }
+      if (notice !== null && notice.durableAt === null && check.status?.initialized === true) {
+        sql.exec(
+          "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+          CONFIG_APPLIED_KEY,
+          JSON.stringify({ config, durableAt: this.now() }),
+        );
+      }
     });
+    // Past the notice, a check runs here only when the stored status was not initialized: its
+    // line is logged too, so the change back to durable is always published.
+    const announcing = notice !== null && check.status !== null;
     if (secretPresent || announcing) {
       // The bootstrap script (WP2.4) deletes the secret only after an event with
       // `initialized: true` for its own installation, and counts its release done only after an
@@ -799,26 +854,26 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   /**
-   * Whether `config`, seen applied now, was first seen applied less than `APPLIED_NOTICE_MS`
-   * ago. Records the first sight of each new configuration.
+   * The notice for `config`, seen applied now: when a check under it first showed the owner
+   * durable, or null while none has. Records the first sight of each new configuration.
    */
-  #newlyApplied(config: string): boolean {
+  #appliedNotice(config: string): { durableAt: number | null } {
     const sql = this.ctx.storage.sql;
     const row = sql
       .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", CONFIG_APPLIED_KEY)
       .toArray()[0];
     const stored = z
-      .object({ config: z.string().max(64), at: Millis })
+      .object({ config: z.string().max(64), durableAt: Millis.nullable() })
       .safeParse(row === undefined ? undefined : parseJson(row.value));
     if (stored.success && stored.data.config === config) {
-      return this.now() - stored.data.at < APPLIED_NOTICE_MS;
+      return { durableAt: stored.data.durableAt };
     }
     sql.exec(
       "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
       CONFIG_APPLIED_KEY,
-      JSON.stringify({ config, at: this.now() }),
+      JSON.stringify({ config, durableAt: null }),
     );
-    return true;
+    return { durableAt: null };
   }
 
   #loadBootstrap(): { status: BootstrapStatus | null; target: BootstrapTarget | null } {

@@ -4,7 +4,8 @@
 // holds the bootstrap password (WP2.2's OmnigentServer), as Workers Logs delivers them.
 // The server container keeps the configuration it was started with: a new version adopts it,
 // and its watchdog replaces it once (a restart of `REPLACE_MS`) when its configuration differs.
-// The server then logs its status for `NOTICE_MS` without the password (G2-SEC-001).
+// The server then logs its status without the password until it shows a durable owner, and for
+// `NOTICE_MS` after (G2-SEC-001).
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
@@ -245,7 +246,15 @@ export class FakeWorld {
     if (first === undefined || worker !== this.plan.platformWorker) return [...this.foreign];
     const events: unknown[] = [];
     const startAt = first.at + START_MS;
+    // When each container started with a new configuration first showed a durable owner: its
+    // notice runs until then and for NOTICE_MS after (OmnigentServer's, Codex r1-2).
+    const durableSince = new Map<number, number>();
     for (let t = startAt; t <= Math.min(toMs, this.now); t += CHECK_MS) {
+      const running = this.containerAt(worker, t);
+      const truth = this.truth(t);
+      if (running !== undefined && t >= running.since && truth.initialized) {
+        if (!durableSince.has(running.since)) durableSince.set(running.since, t);
+      }
       if (t < fromMs) continue;
       if (this.lossEvery > 0 && Math.floor(t / CHECK_MS) % Math.round(1 / this.lossEvery) === 0) {
         continue;
@@ -267,9 +276,9 @@ export class FakeWorld {
         t >= container.since &&
         sameSecrets(container.version.secrets, version.secrets);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
-      const announcing = container !== undefined && t - container.since < NOTICE_MS;
+      const durableAt = container === undefined ? undefined : durableSince.get(container.since);
+      const announcing = !truth.initialized || durableAt === undefined || t - durableAt < NOTICE_MS;
       if (!applied || !(secretPresent || (announcing && this.appliesReleases))) continue;
-      const truth = this.truth(t);
       events.push({
         timestamp: t,
         $workers,

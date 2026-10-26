@@ -437,7 +437,13 @@ async function verifyAfterRelease(
     if (version !== undefined) record({ releasedVersionId: version });
   }
   const { journal, installation: plan } = current();
-  const releasedAt = Date.parse(String(journal.releasedAt));
+  // The release took effect between its journalled start and its confirmation. A run that found
+  // it already in effect records the confirmation only when it resumes, maybe long after: the
+  // start bounds it instead, so the server's lines since then still count (Codex G2-SEC-001
+  // r1-3). The released version's ID is what ties a line to the release.
+  const confirmedAt = Date.parse(String(journal.releasedAt));
+  const startedAt = Date.parse(String(journal.releaseStartedAt));
+  const releasedAt = Number.isFinite(startedAt) ? Math.min(startedAt, confirmedAt) : confirmedAt;
   const switchAt = releasedAt + options.switchMs;
   if (ctx.now() < switchAt) {
     ctx.log("waiting for the platform objects to switch to the released version (about 5 minutes)");

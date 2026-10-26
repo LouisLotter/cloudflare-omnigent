@@ -1199,6 +1199,71 @@ describe("OmnigentServer: bootstrap status (G1BR-002, R-30)", () => {
   });
 });
 
+describe("OmnigentServer: the release's notice waits for a durable owner (Codex G2-SEC-001 r1-2)", () => {
+  const BOOT = "c".repeat(32);
+  const position = (txid: number, replicatedTxid: number, bootId = BOOT): ReplicationPosition => ({
+    protocolVersion: 1,
+    bootId,
+    txid,
+    replicatedTxid,
+  });
+
+  it("logs until the replaced server shows a durable owner, however late, then for the notice", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 5);
+    await check(stub);
+    await nextCheck(stub);
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub); // replaced and started again
+    expect(fake.starts).toHaveLength(2);
+    // The replacement's replica lags (R2 unreachable) for longer than the notice.
+    fake.position = position(9, 4, "d".repeat(32));
+    const before = events("bootstrap").length;
+    const answeredAt = testServers.clock.now();
+    while (testServers.clock.now() - answeredAt < 2 * APPLIED_NOTICE_MS) await nextCheck(stub);
+    const waiting = events("bootstrap").slice(before);
+    expect(waiting.length).toBeGreaterThanOrEqual((2 * APPLIED_NOTICE_MS) / T.intervalMs);
+    expect(waiting.every((e) => e.reason === "not_replicated" && e.configApplied === true)).toBe(
+      true,
+    );
+    // It catches up: the durable line is published, and repeated for the notice from then.
+    fake.position = position(12, 12, "d".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({
+      reason: "durable",
+      secretPresent: false,
+      configApplied: true,
+      bootstrapStatus: { initialized: true },
+    });
+    const durableAt = testServers.clock.now();
+    while (testServers.clock.now() - durableAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    const logged = events("bootstrap").length;
+    await nextCheck(stub);
+    expect(events("bootstrap").length).toBe(logged);
+    // A setback after the notice (a status stored as not durable, as a check of a new boot
+    // stores it) is published, and so is its end: the last line is durable.
+    await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+      state.storage.sql.exec(
+        "UPDATE server_state SET value = json_set(value, '$.initialized', json('false')) WHERE key = 'bootstrap_status'",
+      ),
+    );
+    fake.position = position(20, 15, "e".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "not_replicated" });
+    fake.position = position(21, 21, "e".repeat(32));
+    await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    const settled = events("bootstrap").length;
+    await nextCheck(stub);
+    expect(events("bootstrap").length).toBe(settled);
+  });
+});
+
 describe("OmnigentServer: a release reaches the running server (G2-SEC-001)", () => {
   const ROTATED_COOKIE_SECRET = "c0".repeat(32); // synthetic
   const COOKIE = "SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET";
@@ -1285,6 +1350,45 @@ describe("OmnigentServer: a release reaches the running server (G2-SEC-001)", ()
     expect(fake.starts).toHaveLength(2);
     expect(fake.starts[1]?.env.OMNIGENT_ACCOUNTS_COOKIE_SECRET).toBe(ROTATED_COOKIE_SECRET);
     expect(fake.signals).toEqual([15]);
+  });
+
+  it("keeps the grace the running container started with when a release lowers it (Codex r1-1)", async () => {
+    const started = { ...TEST_TIMING, stopGraceMs: 300_000 };
+    const lowered = { ...TEST_TIMING, stopGraceMs: 60_000 };
+    testServers.timing = started;
+    try {
+      const { stub, fake } = await runningServer();
+      // The release lowers the final-sync setting and rotates the cookie key; the container
+      // keeps the settings it started with, so its final sync may take its full allowance.
+      testServers.timing = lowered;
+      testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+      await evictDurableObject(stub);
+      fake.stopMs = null; // still confirming its final sync
+      await nextCheck(stub);
+      expect(fake.signals).toEqual([15]);
+      const signalledAt = testServers.clock.now();
+      while (testServers.clock.now() - signalledAt < started.stopGraceMs - 2 * T.pollMs) {
+        await nextCheck(stub);
+      }
+      await evictDurableObject(stub); // a new instance keeps it too
+      await nextCheck(stub);
+      expect(testServers.clock.now() - signalledAt).toBeLessThan(started.stopGraceMs);
+      expect(fake.destroys).toEqual([]);
+      // Past the container's own grace: killed, once, and started with the new configuration.
+      await nextCheck(stub);
+      expect(fake.destroys).toEqual(["the stop outran its grace"]);
+      for (let i = 0; i < 4; i += 1) await nextCheck(stub);
+      expect(fake.starts).toHaveLength(2);
+      // The replacement was started under the lowered settings: its own grace is the lower one.
+      const timing = await runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql
+          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_timing'")
+          .one(),
+      );
+      expect(JSON.parse(timing.value)).toMatchObject({ stopGraceMs: lowered.stopGraceMs });
+    } finally {
+      testServers.timing = TEST_TIMING;
+    }
   });
 
   it("sends an undelivered replacement stop again while the server answers, and never kills it", async () => {

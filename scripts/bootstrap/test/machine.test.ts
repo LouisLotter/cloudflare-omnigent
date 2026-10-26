@@ -347,6 +347,46 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(await h.run()).toEqual({ kind: "done" });
   });
 
+  it("completes a release whose confirmation was lost, when the run resumes long after the server's notice (Codex r1-3)", async () => {
+    for (const point of [
+      { call: "updateSecrets", nth: 1, when: "after" },
+      { call: "secretNames", nth: 4, when: "before" },
+      { call: "activeVersion", nth: 1, when: "before" },
+    ] as const) {
+      const h = harness(await accountPlan());
+      h.world.crash = point;
+      await expect(h.run()).rejects.toThrow(Crash);
+      expect(h.world.released()).toBe(true);
+      // The installer comes back an hour later: the replaced server's notice is long over.
+      h.world.now += 60 * 60_000;
+      expect(await h.run()).toEqual({ kind: "done" });
+      expect(h.world.secretChanges).toHaveLength(1);
+    }
+  });
+
+  it("completes once the restarted server's owner is durable again, however late (Codex r1-2)", async () => {
+    const h = harness(await accountPlan());
+    // After the release, the replaced server's replica lags for 40 minutes.
+    let releasedAt: number | undefined;
+    h.world.truth = (t) =>
+      releasedAt !== undefined && t > releasedAt && t < releasedAt + 40 * 60_000
+        ? { initialized: false, reason: "not_replicated" }
+        : { initialized: true, reason: "durable" };
+    h.world.before = {
+      call: "updateSecrets",
+      nth: 1,
+      run: () => {
+        releasedAt = h.world.now;
+      },
+    };
+    expect(await h.run()).toEqual({
+      kind: "released",
+      why: expect.stringContaining("does not show a durable owner yet"),
+    });
+    h.world.now += 45 * 60_000;
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
   it("reports released but unchecked when no newer version has run yet", async () => {
     const h = harness(await accountPlan());
     // Workers Logs loses every line: nothing can be accepted, so first seed a release by hand.
