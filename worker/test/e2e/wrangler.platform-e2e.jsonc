@@ -1,0 +1,28 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Local journeys only (WP3.5, journeys.ts): the platform Worker's classes with simulated
+  // computers and a fake terminal shell, under the platform Worker's name so the web Worker's
+  // cross-script bindings resolve. Never deployed.
+  "name": "cloudflare-omnigent",
+  "main": "platform-e2e.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONTROL", "class_name": "ControlDO" },
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" }
+    ]
+  },
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    "CFO_MAX_AWAKE_COMPUTERS": "10"
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] },
+    { "tag": "v3", "new_sqlite_classes": ["WorkspaceDO"] }
+  ]
+}

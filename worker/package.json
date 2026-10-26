@@ -11,7 +11,8 @@
     "coverage": "pnpm coverage:unit && pnpm coverage:workers",
     "coverage:unit": "vitest run -c vitest.unit.config.ts --coverage",
     "coverage:workers": "vitest run -c vitest.workers.config.ts --coverage",
-    "dry-run": "wrangler deploy --dry-run --outdir dist"
+    "dry-run": "wrangler deploy --dry-run --outdir dist",
+    "journeys": "node test/e2e/journeys.ts"
   },
   "dependencies": {
     "@cfo/contracts": "workspace:*",
