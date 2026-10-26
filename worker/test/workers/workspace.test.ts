@@ -309,11 +309,13 @@ describe("WorkspaceDO", () => {
 });
 
 describe("WorkspaceDO's production defaults", () => {
-  it("has no container, bucket or intercepts until WP3.3 wires them, and the real clock", async () => {
+  // The bucket is R2 wherever CHECKPOINTS is bound: the test configuration binds it for WP3.3's
+  // gateway; the platform Worker's configuration does not yet.
+  it("has no container or intercepts until they are wired, R2 where CHECKPOINTS is bound, and the real clock", async () => {
     const { stub } = fresh();
     expect(await stub.defaults()).toEqual({
       port: null,
-      bucket: null,
+      bucket: "r2",
       intercepts: [],
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,

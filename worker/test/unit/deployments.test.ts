@@ -150,16 +150,22 @@ describe("Workers Logs: no request header is recorded (WP2.6)", () => {
 });
 
 describe("the Workers-runtime test configuration (wrangler.test.jsonc)", () => {
-  // Stand-ins for classes the platform Worker does not have yet, which the tests of their
-  // callers need (WP3.3's routes call WP3.1's WorkspaceDO). Each goes once its class ships.
+  // Stand-ins for the tests of callers that need a programmable callee. WP3.3's routes and
+  // backup gateway reach WorkspaceDO through WORKSPACE, so their tests bind it to a stand-in
+  // answered by fakes; WP3.1's controller itself is tested on WORKSPACE_CONTROLLER. Each goes
+  // once the callers are tested against the real class.
   const STAND_INS = {
-    bindings: [{ name: "WORKSPACE", class_name: "WorkspaceDO" }],
-    classes: ["WorkspaceDO"],
+    replaced: { WORKSPACE: "WorkspaceStandIn" } as Record<string, string>,
+    bindings: [{ name: "WORKSPACE_CONTROLLER", class_name: "WorkspaceDO" }],
+    classes: ["WorkspaceStandIn"],
   };
 
   it("binds and migrates the platform Worker's classes the same way, plus declared stand-ins", () => {
     expect(test.durable_objects?.bindings).toEqual([
-      ...(platform.durable_objects?.bindings ?? []),
+      ...(platform.durable_objects?.bindings ?? []).map((b) => ({
+        ...b,
+        class_name: STAND_INS.replaced[b.name] ?? b.class_name,
+      })),
       ...STAND_INS.bindings,
     ]);
     const platformMigrations = platform.migrations ?? [];

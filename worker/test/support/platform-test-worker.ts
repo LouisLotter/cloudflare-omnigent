@@ -67,12 +67,12 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     return testComputers.now();
   }
 
-  /** The production defaults the overrides above replace: no container, bucket or intercepts
-   * until WP3.3 wires them, the real clock and timing. */
+  /** The production defaults the overrides above replace: no container or intercepts until they
+   * are wired, R2 where CHECKPOINTS is bound, the real clock and timing. */
   defaults() {
     return {
       port: super.openPort(),
-      bucket: super.checkpointBucket(),
+      bucket: super.checkpointBucket() === null ? null : "r2",
       intercepts: super.intercepts({
         propsVersion: 1,
         computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
