@@ -20,6 +20,7 @@ Only the declared files travel (``DeclaredCredentialPath``), as opaque bytes, ne
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 import secrets
@@ -32,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .backoff import capped_backoff
 from .contract import (
     CREDENTIAL_FORMAT_VERSION,
     DECLARED_CREDENTIAL_PATHS,
@@ -73,8 +75,13 @@ def _writers_among(pids: list[str], st: os.stat_result) -> tuple[bool, list[str]
         for fd in fds:
             try:
                 target = os.stat(f"/proc/{pid}/fd/{fd}")
+            except FileNotFoundError:
+                continue  # the descriptor closed meanwhile
             except OSError:
-                continue
+                # Listed but not readable (Codex r1, finding 7): an observation that failed is
+                # never taken as "no writer"; the PID is looked at again as its own account.
+                unreadable.append(pid)
+                break
             if (target.st_dev, target.st_ino) != (st.st_dev, st.st_ino):
                 continue
             try:
@@ -132,10 +139,70 @@ def open_for_writing(st: os.stat_result) -> bool:
     return False
 
 
-def read_stably(path: Path) -> tuple[bytes, int] | None:
-    """(content, mode) of a declared file, or None when it is absent. Never follows a link."""
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def open_credential_dir(
+    home: Path, rel_dir: str, *, create: bool = False, owner: tuple[int, int] | None = None
+) -> int | None:
+    """A descriptor for ``home/rel_dir``, every component a real directory, never a link.
+
+    ``None`` when a component is missing and ``create`` is false. A component that is a
+    symbolic link or not a directory raises :class:`CredentialAlert`: a restored ``~/.codex``
+    that points elsewhere must never make an install, a deletion or a copy reach outside the
+    home (Codex r1, finding 5).
+    """
     try:
-        before = os.lstat(path)
+        fd = os.open(home, _DIR_FLAGS)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CredentialAlert("the home directory is not a real directory") from exc
+    try:
+        for part in rel_dir.split("/"):
+            try:
+                child = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    os.close(fd)
+                    return None
+                os.mkdir(part, 0o700, dir_fd=fd)
+                if owner is not None and os.geteuid() == 0:
+                    os.chown(part, *owner, dir_fd=fd, follow_symlinks=False)
+                child = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except OSError as exc:
+                raise CredentialAlert(
+                    "a credential directory is a link or not a directory"
+                ) from exc
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_stably(path: Path, home: Path | None = None) -> tuple[bytes, int] | None:
+    """(content, mode) of a declared file, or None when it is absent. Never follows a link,
+    neither the file nor a directory on its way (when ``home`` is given)."""
+    if home is not None:
+        rel = path.relative_to(home)
+        dir_fd = open_credential_dir(home, str(rel.parent))
+        if dir_fd is None:
+            return None
+        name = rel.name
+    else:
+        dir_fd, name = None, str(path)
+    try:
+        return _read_stably_at(dir_fd, name)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _read_stably_at(dir_fd: int | None, name: str) -> tuple[bytes, int] | None:
+    try:
+        before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return None
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
@@ -145,7 +212,7 @@ def read_stably(path: Path) -> tuple[bytes, int] | None:
     if open_for_writing(before):
         raise UnstableRead("a writer still holds the file open")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
     try:
@@ -161,10 +228,13 @@ def read_stably(path: Path) -> tuple[bytes, int] | None:
     finally:
         os.close(fd)
     try:
-        after = os.lstat(path)
+        after = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError as exc:
         raise UnstableRead("the file went away while it was read") from exc
-    same = lambda a, b: (a.st_ino, a.st_size, a.st_mtime_ns) == (b.st_ino, b.st_size, b.st_mtime_ns)  # noqa: E731
+
+    def same(a: os.stat_result, b: os.stat_result) -> bool:
+        return (a.st_ino, a.st_size, a.st_mtime_ns) == (b.st_ino, b.st_size, b.st_mtime_ns)
+
     if not (same(before, during) and same(during, after)) or len(data) != after.st_size:
         raise UnstableRead("the file changed while it was read")
     return data, stat.S_IMODE(after.st_mode) & 0o777
@@ -192,57 +262,69 @@ def install_bundle(
     uid: int,
     gid: int,
 ) -> InstallResult:
-    """Install a bundle's declared files into ``home`` through ``staging``.
+    """Install a bundle's declared files into ``home``.
 
-    Present files are written whole into the staging directory, then renamed over their
-    targets one by one; tombstoned files are deleted. Nothing else in the home changes.
+    Every file is decoded and checked first; then each present file is written whole beside
+    its target and renamed over it, and each tombstoned file is deleted. Every step works on a
+    directory descriptor opened without following links, so nothing outside the home is ever
+    written or deleted. Nothing else in the home changes. ``staging`` is left unused and kept
+    for the call's shape.
     """
     result = InstallResult()
     if bundle is None:
         return result
-    root = os.geteuid() == 0
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(mode=0o700, parents=True)
-    staged: dict[str, Path] = {}
-    try:
-        for rel in DECLARED_CREDENTIAL_PATHS:
-            entry = bundle["files"][rel]
-            if entry["state"] != "present":
-                continue
+    contents: dict[str, bytes] = {}
+    for rel in DECLARED_CREDENTIAL_PATHS:
+        entry = bundle["files"][rel]
+        if entry["state"] == "present":
             content = base64.b64decode(entry["contentBase64"], validate=True)
             if len(content) > MAX_CREDENTIAL_FILE_BYTES:
                 raise CredentialAlert("a bundle file is larger than the limit")
-            tmp = staging / secrets.token_hex(8)
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            contents[rel] = content
+    root = os.geteuid() == 0
+    written: list[tuple[int, str, str, str]] = []  # (dir fd, temporary, target, rel)
+    try:
+        for rel, content in contents.items():
+            parent, name = rel.rsplit("/", 1)
+            dir_fd = open_credential_dir(home, parent, create=True, owner=(uid, gid))
+            assert dir_fd is not None
+            tmp = f".{name}.cfo-install.{secrets.token_hex(6)}"
+            written.append((dir_fd, tmp, name, rel))
+            fd = os.open(
+                tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+            )
             try:
                 os.write(fd, content)
+                if root:
+                    os.fchown(fd, uid, gid)
+                os.fchmod(fd, int(bundle["files"][rel]["mode"]) & 0o777)
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            staged[rel] = tmp
+        for dir_fd, tmp, name, rel in written:
+            os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            result.installed.append(rel)
         for rel in DECLARED_CREDENTIAL_PATHS:
-            entry = bundle["files"][rel]
-            target = home / rel
-            parent = target.parent
-            if entry["state"] == "present":
-                if not parent.exists():
-                    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    if root:
-                        os.chown(parent, uid, gid)
-                if parent.is_symlink():
-                    raise CredentialAlert("a credential directory is a symbolic link")
-                tmp = parent / f".{target.name}.cfo-install.{secrets.token_hex(6)}"
-                shutil.move(str(staged[rel]), tmp)
-                if root:
-                    os.chown(tmp, uid, gid)
-                os.chmod(tmp, int(entry["mode"]) & 0o777)
-                os.replace(tmp, target)
-                result.installed.append(rel)
-            elif os.path.lexists(target):
-                os.unlink(target)
+            if bundle["files"][rel]["state"] == "present":
+                continue
+            parent, name = rel.rsplit("/", 1)
+            dir_fd = open_credential_dir(home, parent)
+            if dir_fd is None:
+                continue
+            try:
+                os.unlink(name, dir_fd=dir_fd)
                 result.removed.append(rel)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(dir_fd)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        for dir_fd, tmp, _name, rel in written:
+            if rel not in result.installed:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp, dir_fd=dir_fd)
+            os.close(dir_fd)
+    result.installed.sort(key=DECLARED_CREDENTIAL_PATHS.index)
     return result
 
 
@@ -332,7 +414,7 @@ class Credentials:
                 path = self.home / rel
                 signatures[rel] = _signature(path)
                 try:
-                    reads[rel] = read_stably(path)
+                    reads[rel] = read_stably(path, self.home)
                 except CredentialAlert as exc:
                     self._alert(str(exc))
                     raise
@@ -454,7 +536,9 @@ class Credentials:
             self.enqueue(bundle)
             self.on_change()
 
-    def run(self, retry_s: Callable[[int], float] = lambda n: min(30.0, 0.5 * 2**n)) -> None:
+    def run(
+        self, retry_s: Callable[[int], float] = lambda n: capped_backoff(n + 1, 0.5, 30.0)
+    ) -> None:
         """The watcher and publisher loop, until :meth:`stop`."""
         failures = 0
         next_send = 0.0

@@ -30,12 +30,14 @@ import time
 import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from . import SUPERVISOR_PROTOCOL_VERSION, SUPERVISOR_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from . import logins as L
 from . import runners as R
 from .api import ComputerApi, Refused, Unanswered
+from .capture import resume_journal
 from .contract import Contract, ContractError, error_body
 from .credentials import (
     CredentialAlert,
@@ -53,6 +55,10 @@ from .restore import RestoreFailed, restore_workspace
 from .tree import tree_digest
 
 REPORT_INTERVAL_S = 30.0
+#: How long a repeat of a command still being handled waits for the first delivery's answer.
+REPEAT_WAIT_S = 120.0
+#: How long a capture waits for a workload command (a CLI check, a sign-out) to finish.
+GATE_WAIT_S = 150.0
 LOGIN_INTERVAL_S = 300.0
 #: The capture worker is given this long after its lease before it is killed as wedged.
 CAPTURE_WORKER_GRACE_S = 900.0
@@ -124,6 +130,7 @@ class Supervisor:
         self.scope_pids = scope_pids
         self._lock = threading.RLock()
         self._journal: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._running: dict[str, tuple[str, threading.Event]] = {}
         self._jobs: dict[str, dict[str, Any]] = {}
         self.restore_state = "pending"
         self.published_digest: str | None = None
@@ -339,18 +346,48 @@ class Supervisor:
             return {"type": "job_status", "job": self._job_view(command["jobOperationId"])}
         op = command["operationId"]
         fingerprint = _fingerprint(command)
+        # Reserve the operation ID before any effect (Codex r1, finding 6): a concurrent repeat
+        # waits for the first one's answer instead of running the command again, and the same
+        # ID with another body is refused. A failure releases the reservation unrecorded.
         with self._lock:
             known = self._journal.get(op)
-            if known is not None:
-                if known[0] != fingerprint:
-                    raise CommandError("conflict", "this operation ID was used for another command")
-                if kind in ("restore_workspace", "capture"):
-                    return {"type": kind, "job": self._job_view(op)}
-                return known[1]
-        handler = getattr(self, f"_cmd_{kind}")
-        reply = handler(command)
-        with self._lock:
-            self._journal.setdefault(op, (fingerprint, reply))
+            if known is None:
+                pending = self._running.get(op)
+                if pending is not None:
+                    if pending[0] != fingerprint:
+                        raise CommandError(
+                            "conflict", "this operation ID was used for another command"
+                        )
+                    wait = pending[1]
+                else:
+                    wait = None
+                    self._running[op] = (fingerprint, threading.Event())
+            elif known[0] != fingerprint:
+                raise CommandError("conflict", "this operation ID was used for another command")
+        if known is not None:
+            return self._recorded(kind, op, known[1])
+        if wait is not None:
+            wait.wait(REPEAT_WAIT_S)
+            with self._lock:
+                known = self._journal.get(op)
+            if known is None:
+                raise CommandError(
+                    "unavailable", "the first delivery has not finished", retryable=True
+                )
+            return self._recorded(kind, op, known[1])
+        try:
+            reply = getattr(self, f"_cmd_{kind}")(command)
+            with self._lock:
+                self._journal[op] = (fingerprint, reply)
+        finally:
+            with self._lock:
+                _fp, event = self._running.pop(op)
+            event.set()
+        return reply
+
+    def _recorded(self, kind: str, op: str, reply: dict[str, Any]) -> dict[str, Any]:
+        if kind in ("restore_workspace", "capture"):
+            return {"type": kind, "job": self._job_view(op)}
         return reply
 
     # restore_workspace ----------------------------------------------------------------------
@@ -478,61 +515,80 @@ class Supervisor:
             raise CommandError("unsupported_version", "unsupported checkpoint policy version")
         with self._lock:
             if self.capture_running:
-                job = {
-                    "kind": "capture",
-                    "jobOperationId": op,
-                    "state": "failed",
-                    "reason": "busy",
-                    "pausedMs": 0,
-                }
-                self._jobs[op] = job
-                return {"type": "capture", "job": job}
-            parent_path = None
-            if command["kind"] == "delta":
-                want = command["parent"]["treeDigest"]
-                self._settle_pending(want)
-                if self.published_digest != want:
-                    job = {
-                        "kind": "capture",
-                        "jobOperationId": op,
-                        "state": "failed",
-                        "reason": "parent_mismatch",
-                        "pausedMs": 0,
-                    }
-                    self._jobs[op] = job
-                    return {"type": "capture", "job": job}
-                parent_path = str(self.layout.data / "published-index.json")
-            else:
-                self._settle_pending(None)
-            self.capture_running = True
-            self._jobs[op] = {"kind": "capture", "jobOperationId": op, "state": "running"}
-        spec = {
-            "home": str(self.account.home),
-            "snapshot": str(self.layout.snapshot),
-            "staged_root": str(self.layout.staged),
-            "data_dir": str(self.layout.data),
-            "log_dir": str(self.layout.log),
-            "policy_file": str(self.layout.policy_file),
-            "schema_dir": str(self.layout.schema_dir),
-            "layer_id": command["layerId"],
-            "kind": command["kind"],
-            "parent": command["parent"],
-            "parent_index": parent_path,
-            "lease": command["lease"],
-            "computer_id": self.computer_id,
-            "generation": self.generation,
-            "supervisor_pid": os.getpid(),
-            "workload_pids": sorted(self._live_workload() | set(self.scope_pids or ())),
-            "cgroup_dir": self.cgroup_dir,
-            "scope_pids": self.scope_pids,
-            "whole_container": self.whole_container,
-            "margin_bytes": self.capture_margin_bytes,
-            "fault": self.capture_fault,
-            "record_kinds": True,
-        }
-        threading.Thread(target=self._capture_job, args=(op, spec), daemon=True).start()
+                return {"type": "capture", "job": self._failed_capture(op, "busy")}
+        # The spawn gate is taken BEFORE the workload's processes are listed and held until the
+        # worker has exited, so no host restart, terminal or CLI can start in between and
+        # escape the pause (Codex r1, finding 2). A spawn in progress finishes first.
+        if not self._capture_gate.acquire(timeout=GATE_WAIT_S):
+            raise CommandError("unavailable", "a workload command is still running", retryable=True)
+        try:
+            with self._lock:
+                if self.capture_running:
+                    self._capture_gate.release()
+                    return {"type": "capture", "job": self._failed_capture(op, "busy")}
+                parent_path = None
+                if command["kind"] == "delta":
+                    want = command["parent"]["treeDigest"]
+                    self._settle_pending(want)
+                    if self.published_digest != want:
+                        self._capture_gate.release()
+                        return {
+                            "type": "capture",
+                            "job": self._failed_capture(op, "parent_mismatch"),
+                        }
+                    parent_path = str(self.layout.data / "published-index.json")
+                else:
+                    self._settle_pending(None)
+                self.capture_running = True
+                self._jobs[op] = {"kind": "capture", "jobOperationId": op, "state": "running"}
+            spec = {
+                "home": str(self.account.home),
+                "snapshot": str(self.layout.snapshot),
+                "staged_root": str(self.layout.staged),
+                "data_dir": str(self.layout.data),
+                "log_dir": str(self.layout.log),
+                "policy_file": str(self.layout.policy_file),
+                "schema_dir": str(self.layout.schema_dir),
+                "layer_id": command["layerId"],
+                "kind": command["kind"],
+                "parent": command["parent"],
+                "parent_index": parent_path,
+                "lease": command["lease"],
+                "computer_id": self.computer_id,
+                "generation": self.generation,
+                "supervisor_pid": os.getpid(),
+                "workload_pids": sorted(self._live_workload() | set(self.scope_pids or ())),
+                "cgroup_dir": self.cgroup_dir,
+                "scope_pids": self.scope_pids,
+                "whole_container": self.whole_container,
+                "margin_bytes": self.capture_margin_bytes,
+                "fault": self.capture_fault,
+                "record_kinds": True,
+                "stop_journal": str(self.layout.log / f"capture-{op}.stops"),
+            }
+            threading.Thread(target=self._capture_job, args=(op, spec), daemon=True).start()
+        except BaseException:
+            # Nothing started: give the gate back and end the job.
+            with self._lock:
+                if self._jobs.get(op, {}).get("state") == "running":
+                    self._jobs[op] = self._failed_capture(op, "copy_failed", record=False)
+                    self.capture_running = False
+            self._capture_gate.release()
+            raise
         self.changed()
         return {"type": "capture", "job": self._job_view(op)}
+
+    def _failed_capture(self, op: str, reason: str, *, record: bool = True) -> dict[str, Any]:
+        job = {
+            "kind": "capture",
+            "jobOperationId": op,
+            "state": "failed",
+            "reason": reason,
+            "pausedMs": 0,
+        }
+        if record:
+            self._jobs[op] = job
+        return job
 
     def _settle_pending(self, parent_digest: str | None) -> None:
         """Resolve a staged layer whose finish_capture never came: if WorkspaceDO now names
@@ -573,32 +629,58 @@ class Supervisor:
             return alive
 
     def _capture_job(self, op: str, spec: dict[str, Any]) -> None:
+        """Run the worker; whatever happens, end the job, clear the flag, resume anything the
+        worker or its guard left stopped, and give the spawn gate back (findings 8 and 9)."""
         spec_path = self.layout.log / f"capture-{op}.spec.json"
         result_path = self.layout.log / f"capture-{op}.result.json"
-        spec_path.write_text(json.dumps(spec))
-        with contextlib.suppress(FileNotFoundError):
-            result_path.unlink()
-        job: dict[str, Any]
-        with self._capture_gate:
+        result: dict[str, Any] = {"state": "failed", "reason": "copy_failed", "pausedMs": 0}
+        try:
+            spec_path.write_text(json.dumps(spec))
+            with contextlib.suppress(FileNotFoundError):
+                result_path.unlink()
+            worker = subprocess.Popen(
+                module_argv("cfo_computer.capture", str(spec_path), str(result_path)),
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+            )
+            limit = spec["lease"]["hardMs"] / 1000.0 + self.capture_grace_s
             try:
-                worker = subprocess.Popen(
-                    module_argv("cfo_computer.capture", str(spec_path), str(result_path)),
-                    start_new_session=True,
-                    stdin=subprocess.DEVNULL,
-                )
-                limit = spec["lease"]["hardMs"] / 1000.0 + self.capture_grace_s
-                try:
-                    worker.wait(timeout=limit)
-                except subprocess.TimeoutExpired:
-                    # Wedged: its guard has resumed everything at the lease's end already.
-                    worker.kill()
-                    worker.wait()
-                result = json.loads(result_path.read_text())
-            except Exception:  # noqa: BLE001 - a dead worker is a failed capture
-                result = {"state": "failed", "reason": "copy_failed", "pausedMs": 0}
+                worker.wait(timeout=limit)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait()
+            result = json.loads(result_path.read_text())
+        except Exception:  # noqa: BLE001 - a setup failure or a dead worker: a failed capture
+            self._alert("a capture failed before it produced a result")
+        finally:
+            try:
+                resumed = resume_journal(Path(spec["stop_journal"]))
+                if resumed:
+                    self._alert(f"resumed {resumed} processes a capture left stopped")
+            except Exception:  # noqa: BLE001
+                self._alert("the capture's stop journal could not be replayed")
+            try:
+                job = self._capture_job_view(op, result)
+            except Exception:  # noqa: BLE001
+                job = {
+                    "kind": "capture",
+                    "jobOperationId": op,
+                    "state": "failed",
+                    "reason": "copy_failed",
+                    "pausedMs": 0,
+                }
+            with self._lock:
+                self._jobs[op] = job
+                self.capture_running = False
+            self._capture_gate.release()
+            self.changed()
+        if result.get("skipped"):
+            self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
+
+    def _capture_job_view(self, op: str, result: dict[str, Any]) -> dict[str, Any]:
         base = {"kind": "capture", "jobOperationId": op}
         if result.get("state") == "staged":
-            job = {
+            return {
                 **base,
                 "state": "staged",
                 "layerDir": result["layerDir"],
@@ -611,26 +693,19 @@ class Supervisor:
                 "pausedMs": int(result["pausedMs"]),
                 "layerId": result["layerId"],
             }
-        elif result.get("state") == "unchanged":
-            job = {
+        if result.get("state") == "unchanged":
+            return {
                 **base,
                 "state": "unchanged",
                 "cutAt": result["cutAt"],
                 "pausedMs": int(result["pausedMs"]),
             }
-        else:
-            job = {
-                **base,
-                "state": "failed",
-                "reason": result.get("reason", "copy_failed"),
-                "pausedMs": int(result.get("pausedMs", 0)),
-            }
-        if result.get("skipped"):
-            self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
-        with self._lock:
-            self._jobs[op] = job
-            self.capture_running = False
-        self.changed()
+        return {
+            **base,
+            "state": "failed",
+            "reason": result.get("reason", "copy_failed"),
+            "pausedMs": int(result.get("pausedMs", 0)),
+        }
 
     def _cmd_finish_capture(self, command: dict[str, Any]) -> dict[str, Any]:
         capture_op = command["captureOperationId"]

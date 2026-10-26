@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .backoff import capped_backoff
+
 HOST_TOKEN_REFUSED_EXIT_CODE = 77
 RESTART_MAX_DELAY_S = 30.0
 
@@ -52,9 +54,7 @@ class HostManager:
         prepare: Callable[[StartParams], None],
         spawn_gate: Callable[[], Any],
         on_change: Callable[[], None] = lambda: None,
-        backoff: Callable[[int], float] = lambda n: min(
-            RESTART_MAX_DELAY_S, float(2 ** max(0, n - 1))
-        ),
+        backoff: Callable[[int], float] = lambda n: capped_backoff(n, 1.0, RESTART_MAX_DELAY_S),
     ) -> None:
         self._spawn = spawn
         self._prepare = prepare
@@ -105,6 +105,7 @@ class HostManager:
     def _run(self, params: StartParams) -> None:
         failures = 0
         first = True
+        prepared = False  # the attempt's configuration is written (Codex r1, finding 10)
         while True:
             with self._lock:
                 if self._stopping or self.params is not params:
@@ -119,8 +120,11 @@ class HostManager:
                 if self._stopping or self.params is not params:
                     return
                 try:
-                    if first:
+                    if not prepared:
+                        # Never start the host without its configuration: retried until
+                        # written, like a crash.
                         self._prepare(params)
+                        prepared = True
                     proc = self._spawn(params)
                 except Exception:  # noqa: BLE001 - a failed spawn is retried like a crash
                     proc = None

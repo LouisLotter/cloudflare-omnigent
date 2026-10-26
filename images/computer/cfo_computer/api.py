@@ -16,6 +16,7 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from .backoff import capped_backoff
 from .contract import MAX_BODY_BYTES, Contract, ContractError
 
 REQUEST_TIMEOUT_S = 15.0
@@ -85,7 +86,7 @@ class ComputerApi:
         *,
         attempts: int | None = None,
         stop: Callable[[], bool] = lambda: False,
-        backoff: Callable[[int], float] = lambda n: min(30.0, 0.5 * 2**n),
+        backoff: Callable[[int], float] = lambda n: capped_backoff(n + 1, 0.5, 30.0),
         sleep: Callable[[float], None] = time.sleep,
     ) -> dict[str, Any]:
         """Repeat ``message`` unchanged until it is answered (or ``attempts`` run out)."""

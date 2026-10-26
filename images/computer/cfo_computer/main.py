@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -39,9 +40,17 @@ def workload_cgroup() -> str | None:
         os.makedirs(WORKLOAD_CGROUP, exist_ok=True)
     except OSError:
         return None
-    if os.access(os.path.join(WORKLOAD_CGROUP, "cgroup.freeze"), os.W_OK):
-        return WORKLOAD_CGROUP
-    return None
+    if not os.access(os.path.join(WORKLOAD_CGROUP, "cgroup.freeze"), os.W_OK):
+        return None
+    # A process must be able to join it, or every workload start would fail; otherwise the
+    # captures pause with SIGSTOP instead.
+    probe = subprocess.run(
+        ["/bin/sh", "-c", f'echo $$ > "{WORKLOAD_CGROUP}/cgroup.procs"'],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    return WORKLOAD_CGROUP if probe.returncode == 0 else None
 
 
 def under_container_init() -> bool:

@@ -166,6 +166,70 @@ class Guard:
             self.proc.wait()
 
 
+def _guard_dies_after_stop(guard: Guard, pid: int, start: int, fault: str) -> str:
+    """Test seam: the guard stops the process, then dies before its answer is read; with
+    ``..._worker_too`` the worker dies right after, leaving recovery to the supervisor."""
+    guard.send(f"stop {pid} {start}")
+    end = time.monotonic() + 5
+    while time.monotonic() < end:
+        st = P.read_stat(pid)
+        if st is None or st[0] in ("T", "t"):
+            break
+        time.sleep(0.005)
+    guard.proc.kill()
+    guard.proc.wait()
+    if fault.endswith("worker_too"):
+        os._exit(9)
+    raise F.FreezeError("lease guard is gone")
+
+
+class StopJournal:
+    """The pause's own record of every stop and freeze it asked for, one line each."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.write_text("")
+
+    def add(self, line: str) -> None:
+        with open(self.path, "a") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+
+
+def resume_journal(path: Path) -> int:
+    """Resume what a capture asked to pause and may have left paused.
+
+    Run by the worker when its guard is gone, and by the supervisor whenever a worker has
+    exited, however: the last, independent recovery if both the guard and the worker died
+    during a pause. A process is resumed only if it is still stopped and still has the start
+    time the capture saw (never a reused PID); a process that was already stopped before the
+    capture is never in the journal (the freezer leaves it alone). A frozen cgroup is thawed.
+    Returns how many processes and cgroups it resumed.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return 0
+    resumed = 0
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "cgroup":
+            try:
+                with open(os.path.join(parts[1], "cgroup.freeze")) as fh:
+                    frozen = fh.read().strip() == "1"
+                if frozen:
+                    F.thaw_cgroup(parts[1])
+                    resumed += 1
+            except OSError:
+                continue
+        elif len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            pid, start = int(parts[0]), int(parts[1])
+            st = P.read_stat(pid)
+            if st is not None and st[0] in ("T", "t") and st[3] == start:
+                resumed += F.thaw_pids([(pid, start)])
+    return resumed
+
+
 def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """Fill ``result`` as the capture goes, so a failure still reports what happened."""
     t_start = time.monotonic()
@@ -224,15 +288,31 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         workload = {int(p) for p in spec.get("workload_pids", [])}
         scope_pids = spec.get("scope_pids")
         cgroup_dir = spec.get("cgroup_dir")
+        journal = StopJournal(Path(spec["stop_journal"])) if spec.get("stop_journal") else None
+
+        def request_stop(pid: int, start: int) -> str:
+            # Written down before the guard is asked: a guard that stops the process and dies
+            # before answering leaves it recoverable from the journal (Codex r1, finding 8).
+            if journal is not None:
+                journal.add(f"{pid} {start}")
+            if fault.startswith("guard_dies_after_stop"):
+                return _guard_dies_after_stop(guard, pid, start, fault)
+            return guard.ask(f"stop {pid} {start}", f"stop {pid}")
+
+        def request_freeze(cg: str) -> str:
+            if journal is not None:
+                journal.add(f"cgroup {cg}")
+            return guard.ask(f"freeze {cg}", "freeze")
+
         if cgroup_dir:
             fz: F.SignalFreezer | F.CgroupFreezer = F.CgroupFreezer(
-                cgroup_dir, lambda cg: guard.ask(f"freeze {cg}", "freeze"), lease_alive
+                cgroup_dir, request_freeze, lease_alive
             )
         else:
             fz = F.SignalFreezer(
                 lambda: {supervisor_pid, os.getpid(), guard.proc.pid},
                 lambda: workload,
-                lambda pid, start: guard.ask(f"stop {pid} {start}", f"stop {pid}"),
+                request_stop,
                 lease_alive,
                 # The whole container (every descendant of init) only when the supervisor
                 # says it is the container's main process; otherwise only the named trees,
@@ -283,6 +363,8 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
             answer = guard.release()
             if answer == "gone":
                 fz.thaw()
+                if journal is not None:
+                    resume_journal(journal.path)  # also what was asked for but not answered
             paused_ms = int((time.monotonic() - t_pause) * 1000)
             result["pausedMs"] = paused_ms
             result["guard"] = answer

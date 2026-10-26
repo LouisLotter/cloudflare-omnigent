@@ -61,3 +61,16 @@ def test_capture_freezes_the_workload_cgroup(tmp_path: Path) -> None:
     finally:
         time.sleep(0.1)
         group.rmdir()
+
+
+def test_the_supervisor_uses_the_cgroup_only_when_a_process_can_join_it() -> None:
+    from cfo_computer import main
+
+    group = Path(main.WORKLOAD_CGROUP)
+    existed = group.exists()
+    try:
+        assert main.workload_cgroup() == str(group)
+        assert (group / "cgroup.procs").read_text().strip() == ""  # the probe has exited
+    finally:
+        if not existed:
+            group.rmdir()
