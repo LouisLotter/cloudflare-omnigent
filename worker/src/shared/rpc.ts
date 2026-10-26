@@ -9,6 +9,7 @@ import {
   type ControlCall,
   type ControlResult,
   Generation,
+  HostId,
   type LauncherCall,
   type LauncherResult,
   type OutageRecord,
@@ -110,6 +111,7 @@ export const CONTROL_OBJECT_NAME = "control";
  * - `computer`: `internal/computer-api.ts`, with the intercept's trusted props (WP3.3).
  * - `pages`: the web Worker's pages (WP3.5), never the launcher's operations.
  * - `reservation`: ControlDO's reconciliation (WP3.2).
+ * - `identity`: the computer's route (`internal/omnigent-route.ts`, WP3.3), on every request.
  * The setup terminal's stream goes through `fetch` (WP3.5).
  */
 export interface WorkspaceRpc {
@@ -119,7 +121,22 @@ export interface WorkspaceRpc {
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null>;
   /** The backup gateway's fence (WP3.3), asked before every write into the checkpoint bucket. */
   writeAllowed(call: WriteCheck): Promise<WriteDecision>;
+  /**
+   * The computer's current generation and bound host ID, or null if it has no record (WP3.18).
+   * A lock-free read of committed state, so a busy computer's runner traffic never waits behind
+   * a long effect, and nothing else of the page state is read.
+   */
+  identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null>;
 }
+
+/** What the computer's route checks each request against (`identity`). */
+export const WorkspaceIdentity = z.looseObject({
+  computerId: ComputerId,
+  generation: Generation,
+  /** The host ID bound at the first `start_host`; null before it. */
+  hostId: HostId.nullable(),
+});
+export type WorkspaceIdentity = z.infer<typeof WorkspaceIdentity>;
 
 /**
  * The write fence (the lead's decision, 26 Oct). Every credential and workspace write reaches R2

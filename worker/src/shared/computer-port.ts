@@ -18,6 +18,11 @@ export interface BackupOptions {
   readonly name: string;
   /** The computer's key prefix, `workspaceBackupPrefix(computerId)` (RC-25). */
   readonly prefix: string;
+  /**
+   * The generation whose capture this is. The backup gateway's write fence admits the upload only
+   * while WorkspaceDO runs this generation (egress/backups.ts, `writeAllowed`).
+   */
+  readonly generation: number;
   /** The upload deadline; the SDK sets none (design, capture step 5). */
   readonly signal?: AbortSignal;
 }
