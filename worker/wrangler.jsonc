@@ -8,6 +8,16 @@
   // OmnigentServer's container: the server image (WP2.3), built from the repository root with
   // BuildKit (its Dockerfile uses `ADD <git>`, `ADD --checksum` and a `# syntax` line, and reads
   // images/server/Dockerfile.dockerignore). The default scheduling policy, one `basic` instance.
+  //
+  // WorkspaceDO's container: the computer image (WP3.4), one per computer under the
+  // `durable_object` policy, built from the repository root. Its key, `computer`, is the one
+  // `computer/container-port.ts` names at each start. Its size is not set here: WorkspaceDO
+  // passes it at every start, capped by CFO_MAX_INSTANCE_SIZE (ControlDO). How many run at once
+  // is CFO_MAX_AWAKE_COMPUTERS. Both are per-installation variables, never in this file.
+  //
+  // CHECKPOINTS: the computers' checkpoint bucket (workspace layers and credential bundles).
+  // WorkspaceDO reads and deletes there directly; every write goes through the Sandbox SDK's
+  // fenced backup gateway (egress/backups.ts). An installation renders its own bucket name.
   "name": "cloudflare-omnigent",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
@@ -22,8 +32,16 @@
       "image_build_context": "..",
       "instance_type": "basic",
       "max_instances": 1
+    },
+    {
+      "class_name": "WorkspaceDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "computer": { "dockerfile": "../images/computer/Dockerfile", "build_context": ".." }
+      }
     }
   ],
+  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cloudflare-omnigent-checkpoints" }],
   "durable_objects": {
     "bindings": [
       { "name": "CONTROL", "class_name": "ControlDO" },
