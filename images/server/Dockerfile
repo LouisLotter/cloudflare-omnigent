@@ -12,10 +12,11 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
 #     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
-#     entrypoint's GET /status (`build`) and boot log line. 184b5cf8b (22 Oct 2026) has the
+#     entrypoint's GET /status (`build`) and boot log line. 3228d4de3 (26 Oct 2026) has the
 #     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
-#     the main-chat Stop and launch-outcome notices (WP3.16) and the history-unavailable resume
-#     refusal (AIR2-008). The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
+#     the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable resume
+#     refusal (AIR2-008) and, since 184b5cf8b, persistent hosts provisioned by the whole host ID,
+#     with one sandbox never shared by two hosts (WP3.8b). The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
 #     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Two
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
 #     resolves them afresh), and psycopg is left out (this image uses SQLite only).
@@ -28,7 +29,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=184b5cf8b32815b48c7859973a00a139e8aa50f0
+ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 

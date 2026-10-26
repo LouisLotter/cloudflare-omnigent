@@ -29,6 +29,6 @@ Omnigent's host from the pinned fork commit (a mirror of the fork's `host` targe
 
 ## Identity and custody
 
-The default server fork pin is fork integration `184b5cf8b32815b48c7859973a00a139e8aa50f0`. [Compatibility](../docs/compatibility.md) maps which fixes earlier pins lacked. Record actual build arguments and immutable artifact identities before claiming a fix; source/base pins do not alone make rebuilt image bytes identical.
+The default server fork pin is fork integration `3228d4de38ef05f69ecc80a4539d7c02727ce314`; the computer image pins the same commit. [Compatibility](../docs/compatibility.md) maps which fixes earlier pins lacked. Record actual build arguments and immutable artifact identities before claiming a fix; source/base pins do not alone make rebuilt image bytes identical.
 
 Builds must not embed installation credential values in images. Required server secrets are supplied at runtime, and computers are intended to hold native CLI logins and specified runtime credentials. Worker-held keys do not prevent authorized plaintext use inside a process. Follow [credential authority](../docs/decisions/0004-identity-credential-authority.md) and [the secret inventory](../docs/secrets.md) rather than a blanket “containers have no secrets” assumption. Preserve dependency licences and notices when changing the fork build or redistribution.
