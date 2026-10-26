@@ -1,0 +1,120 @@
+# The server image's Docker suites, which CI's `images` job does not run:
+#   - the image tests (images/server/tests/integration): an S3 stand-in behind a faulty link,
+#     SIGKILL replacements, the 424 and 503 answers, recovery mode, S7's sharing variants, the
+#     final sync, and the image's fork revision, checked file by file against the fork;
+#   - the durability suite (scripts/restore-drill/tests): the restore drill, the lag warning,
+#     the harness rehearsal, and the in-process launcher fence suite inside the image's test
+#     target.
+# They take about ten minutes after the build and pull MinIO and Toxiproxy (pinned by digest in
+# their compose files), so they run nightly on main and on demand, not on every pull request.
+# A skipped test fails the run: a missing prerequisite is never a pass. (The fence suite broke
+# unseen for a day when PR #23 moved a constant it patches; G2's local rerun found it.)
+#
+# As ci.yml: nothing here references a secret, the token can only read the repository, every
+# action is pinned to a full commit SHA (the comment names its release), and nothing deploys.
+# The fork is public and checked out read-only at the commit the Dockerfile pins.
+
+name: Docker suites
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  suites:
+    name: Image and durability suites (Docker, MinIO, Toxiproxy)
+    runs-on: ubuntu-24.04
+    # A cold build of three images, then about ten minutes of tests.
+    timeout-minutes: 75
+    env:
+      CFO_IT_IMAGE: cfo-server:nightly
+      CFO_DRILL_IMAGE: cfo-drill:nightly
+      CFO_FENCE_IMAGE: cfo-server:nightly-test
+      CFO_OMNIGENT_FORK: ${{ github.workspace }}/omnigent-fork
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The suites scan every server's log with scripts/canary-scan.ts, on Node's built-in
+      # TypeScript support; no dependencies are installed.
+      - name: Set up Node.js (version from .node-version)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.10"
+
+      - name: The fork commit the image pins
+        id: pin
+        run: |
+          commit="$(sed -nE 's/^ARG OMNIGENT_COMMIT=([0-9a-f]{40})$/\1/p' images/server/Dockerfile)"
+          if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::images/server/Dockerfile pins no full fork commit"
+            exit 1
+          fi
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+
+      # For test_image_revision.py: the installed Omnigent must be this commit's tree.
+      - name: Check out the fork at that commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: LouisLotter/omnigent
+          ref: ${{ steps.pin.outputs.commit }}
+          path: omnigent-fork
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The Dockerfile's existing targets, as ci.yml's images job builds them; the drill image is
+      # the server image plus the drill. No registry login or push.
+      - name: Build the server target
+        run: docker build --platform linux/amd64 -f images/server/Dockerfile --target server -t "$CFO_IT_IMAGE" .
+
+      - name: Build the image's test target
+        run: docker build --platform linux/amd64 -f images/server/Dockerfile --target test -t "$CFO_FENCE_IMAGE" .
+
+      - name: Build the drill image
+        run: >-
+          docker build --platform linux/amd64 -f scripts/restore-drill/staging/Dockerfile
+          --build-arg SERVER_IMAGE="$CFO_IT_IMAGE" -t "$CFO_DRILL_IMAGE" .
+
+      - name: Image tests (images/server/tests/integration)
+        run: |
+          uv run --python 3.12 --no-project --with pytest==9.1.1 --with httpx==0.28.1 \
+            --with boto3==1.40.0 --with jsonschema==4.26.0 \
+            pytest -p no:cacheprovider -rA --basetemp "$RUNNER_TEMP/it" \
+            images/server/tests/integration 2>&1 | tee "$RUNNER_TEMP/it.txt"
+          if grep -qE '[0-9]+ skipped' "$RUNNER_TEMP/it.txt"; then
+            echo "::error::image tests were skipped: a missing prerequisite is not a pass"
+            exit 1
+          fi
+
+      - name: Durability suite, the fence suite included (scripts/restore-drill/tests)
+        run: |
+          uv run --python 3.12 --no-project --with pytest==9.1.1 --with httpx==0.28.1 \
+            --with hypothesis==6.169.0 --with boto3==1.40.0 \
+            pytest -p no:cacheprovider -rA --basetemp "$RUNNER_TEMP/drill" \
+            scripts/restore-drill/tests 2>&1 | tee "$RUNNER_TEMP/drill.txt"
+          if grep -qE '[0-9]+ skipped' "$RUNNER_TEMP/drill.txt"; then
+            echo "::error::durability tests were skipped: a missing prerequisite is not a pass"
+            exit 1
+          fi
+          # The in-process suite reports its own count inside test_fence_suite.py.
+          grep -E '^[0-9]+ passed' "$RUNNER_TEMP/drill/drill0/logs/fence-suite.log"
