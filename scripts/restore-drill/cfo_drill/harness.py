@@ -252,6 +252,9 @@ class Server:
                 "CFO_RESPONSE_BARRIER_TIMEOUT_S": f"{self.response_timeout_s:g}",
                 "CFO_TRANSCRIPT_BARRIER_TIMEOUT_S": f"{self.transcript_timeout_s:g}",
                 "CFO_RESTORE_DEADLINE_S": f"{self.restore_deadline_s:g}",
+                # The drill measures the database's durability and uploads no file; its
+                # servers keep artifacts on disk, which the image allows for tests only.
+                "CFO_ALLOW_LOCAL_ARTIFACTS": "true",
                 "OMNIGENT_ACCOUNTS_BASE_URL": self.settings.base_url,
                 "OMNIGENT_ACCOUNTS_COOKIE_SECRET": self.settings.cookie_secret,
                 "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": canaries.OWNER,

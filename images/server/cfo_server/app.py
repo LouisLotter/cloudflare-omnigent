@@ -4,7 +4,9 @@ Run by the entrypoint as ``python -m cfo_server.app``, once Litestream is replic
 
 1. installs the response barrier's SQLAlchemy listeners before any engine exists;
 2. resolves Omnigent's configuration and runs its migrations through Omnigent's own Docker
-   entrypoint module (``/app/entrypoint.py``, importable without side effects);
+   entrypoint module (``/app/entrypoint.py``, importable without side effects), and checks that
+   Omnigent selected the artifact store the image configured (an S3 bucket; the container's
+   disk only in tests);
 3. wires the stores exactly as that module's ``build_app`` does, and calls ``create_app``
    itself with what the platform adds: static sharing values (Omnigent's sharing settings
    become authoritative, D4), the launcher registration through ``sandbox_config``, the
@@ -234,7 +236,16 @@ def main() -> None:
     resolved = ep._resolve_config()
     if resolved.database_url != f"sqlite:///{db_path}":
         raise RuntimeError("the database URL does not name the file Litestream replicates")
-    log("app.configured", seconds=round(time.monotonic() - started, 2))
+    # Omnigent selects its artifact store from this value: it must be the one the image checked,
+    # so a missing setting is the configuration error above, never a silent fall back to the
+    # container's disk (G2-DUR-001).
+    if resolved.artifact_store_uri != config.artifacts.uri:
+        raise RuntimeError("Omnigent's artifact store is not the one the image configured")
+    log(
+        "app.configured",
+        artifacts="local" if config.artifacts.uri is None else "s3",
+        seconds=round(time.monotonic() - started, 2),
+    )
     ep.run_migrations(resolved.database_url)
     log("app.migrated", seconds=round(time.monotonic() - started, 2))
 

@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import OWNER, Server, Stack
+from conftest import ARTIFACT_BUCKET, OWNER, Server, Stack
 from sharing_variants import REACHED_THE_HANDLER, send, variants
 
 EDITABLE_KEYS = (
@@ -360,7 +360,116 @@ def test_sharing_settings_refuse_s7_variants_straight_to_the_server(
     print(json.dumps(results, sort_keys=True))
 
 
+# ── Uploaded files across a replacement (G2-DUR-001) ──────────────────────────────────
+
+#: Hostile active content, as RC-07 uploads it: it must download, never render.
+HOSTILE_HTML = (
+    b'<!doctype html><meta charset="utf-8"><title>cfo-dur-001</title>'
+    b"<script>document.title = 'SCRIPT RAN'</script><p>cfo-dur-001 artifact canary</p>"
+)
+
+
+def _upload(server: Server, filename: str, content: bytes) -> tuple[str, dict[str, str]]:
+    """A session with one uploaded file, through Omnigent's own route: its content path."""
+    bearer = server.bearer()
+    with server.client() as c:
+        session = c.post("/v1/sessions", headers=bearer, json={"agent_id": _agent_id(c, bearer)})
+        assert session.status_code in (200, 201), session.text
+        base = f"/v1/sessions/{session.json()['id']}/resources/files"
+        created = c.post(base, headers=bearer, files={"file": (filename, content, "text/html")})
+        assert created.status_code in (200, 201), created.text
+    return f"{base}/{created.json()['id']}/content", bearer
+
+
+def _content(server: Server, path: str) -> httpx.Response:
+    with server.client() as c:
+        return c.get(path, headers=server.bearer())
+
+
+def test_an_uploaded_file_survives_a_replacement_with_its_headers(link: Stack, prefix: str) -> None:
+    """Uploaded before a SIGKILL replacement, served after it from the artifact bucket, with the
+    same download headers (RC-07): the container's disk is gone, the file is not."""
+    server = link.server(prefix, initialized=False).start()
+    server.wait_healthy()
+    path, _ = _upload(server, "cfo-dur-001.html", HOSTILE_HTML)
+    before = _content(server, path)
+    assert before.status_code == 200 and before.content == HOSTILE_HTML
+    # The blob is in the artifact bucket, under this installation's prefix; never in the replica.
+    file_id = path.split("/")[-2]
+    assert any(key.endswith(file_id) for key in link.objects(prefix, ARTIFACT_BUCKET))
+    assert not any(file_id in key for key in link.objects(prefix))
+    server.wait_replicated()  # the file's row, as for any acknowledged write
+    nxt = server.replace(CFO_INSTALLATION_INITIALIZED="true")
+    nxt.wait_healthy()
+    after = _content(nxt, path)
+    assert after.status_code == 200, after.text
+    assert after.content == HOSTILE_HTML
+    for header in ("content-disposition", "x-content-type-options", "content-type"):
+        assert after.headers[header] == before.headers[header], header
+    assert after.headers["content-disposition"].startswith("attachment")
+    assert after.headers["x-content-type-options"] == "nosniff"
+    assert [e.get("artifacts") for e in nxt.events("boot")] == ["s3"]
+
+
+def test_without_the_artifact_bucket_a_replacement_loses_the_file(link: Stack, prefix: str) -> None:
+    """The control, and the G2 sitting's finding: on the container's disk (allowed here only by
+    the test switch), the file's row survives the replacement and its bytes do not. Omnigent at
+    the pinned fork answers 500 internal_error for it, not 404 or 410 (an upstream candidate)."""
+    server = link.server(prefix, initialized=False, CFO_ALLOW_LOCAL_ARTIFACTS="true")
+    for name in ("OMNIGENT_ARTIFACT_URI", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        server.env.pop(name)
+    server.start()
+    server.wait_healthy()
+    assert any("CFO_ALLOW_LOCAL_ARTIFACTS" in e["message"] for e in server.events("config.warning"))
+    path, _ = _upload(server, "cfo-dur-001.html", HOSTILE_HTML)
+    assert _content(server, path).status_code == 200
+    assert link.objects(prefix, ARTIFACT_BUCKET) == []
+    server.wait_replicated()
+    nxt = server.replace(CFO_INSTALLATION_INITIALIZED="true")
+    nxt.wait_healthy()
+    lost = _content(nxt, path)
+    assert lost.status_code != 200
+    assert lost.status_code in (404, 410, 500), lost.text
+
+
+def test_an_initialized_installation_without_its_artifact_bucket_stops_with_78(
+    link: Stack, prefix: str
+) -> None:
+    server = link.server(prefix, initialized=True)
+    server.env.pop("OMNIGENT_ARTIFACT_URI")
+    server.start()
+    assert server.wait_exit(60) == 78
+    assert "OMNIGENT_ARTIFACT_URI is required" in server.events("config.error")[-1]["message"]
+    assert link.objects(prefix) == []  # nothing restored, nothing replicated
+
+
 # ── Pinned settings in the running image ──────────────────────────────────────────────
+
+#: Prints the variable names (never the values) of the one process whose command line holds
+#: argv[1]. The slim image has no pgrep, so it reads /proc itself.
+_ENV_NAMES = """
+import os, sys
+found = []
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\\0", b" ").decode()
+        if sys.argv[1] in cmd and "_ENV_NAMES" not in cmd:
+            env = open(f"/proc/{pid}/environ", "rb").read().split(b"\\0")
+            found.append(sorted(e.split(b"=", 1)[0].decode() for e in env if e))
+    except OSError:
+        pass
+if len(found) != 1:
+    sys.exit(f"{len(found)} processes match")
+print("\\n".join(found[0]))
+"""
+
+
+def _process_env_names(server: Server, needle: str) -> set[str]:
+    result = server.exec("python", "-I", "-c", f"_ENV_NAMES = 1\n{_ENV_NAMES}", needle)
+    assert result.returncode == 0, result.stderr
+    names = set(result.stdout.split())
+    assert names, f"no environment read for {needle!r}"
+    return names
 
 
 def test_running_image_pins_features_and_wires_no_extra_integrations(
@@ -377,11 +486,14 @@ def test_running_image_pins_features_and_wires_no_extra_integrations(
     info = httpx.get(f"{server.url}/v1/info", timeout=10).json()
     assert not any(info["features"].values())
     assert info["sharing_mode"] == "off" and info["public_sharing_enabled"] is False
-    environ = server.exec("sh", "-c", "cat /proc/$(pgrep -f cfo_server.app | head -1)/environ")
-    names = {item.split("=", 1)[0] for item in environ.stdout.split("\0") if item}
+    names = _process_env_names(server, "cfo_server.app")
     assert "OMNIGENT_DATABRICKS_CLIENT_ID" not in names
     assert "OMNIGENT_CREDENTIAL_CIPHER" not in names
     assert "LITESTREAM_SECRET_ACCESS_KEY" not in names
+    assert {"OMNIGENT_ARTIFACT_URI", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} <= names
+    ls_names = _process_env_names(server, "litestream replicate")
+    assert "LITESTREAM_SECRET_ACCESS_KEY" in ls_names
+    assert not {n for n in ls_names if n.startswith(("AWS_", "OMNIGENT_"))}
     warnings = [e["message"] for e in server.events("config.warning")]
     assert any("OMNIGENT_FEATURES" in w for w in warnings)
 

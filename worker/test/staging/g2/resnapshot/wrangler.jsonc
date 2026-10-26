@@ -63,6 +63,9 @@
     "SERVER_ENV_CFO_INSTALLATION_INITIALIZED": "true",
     "SERVER_ENV_CFO_REPLICA_URL": "s3://cfo-stg-g2-sitting-1gb-db/omnigent",
     "SERVER_ENV_CFO_REPLICA_REGION": "auto",
+    // A restore measurement that uploads no file: artifacts on the container's disk, which the
+    // image allows for tests only (G2-DUR-001).
+    "SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS": "true",
     "SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL": "https://cfo-stg-g2-sitting-1gb.invalid",
     "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary"
   }

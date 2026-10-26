@@ -40,11 +40,13 @@ BASE_URL = "http://testserver"
 
 
 def base_env(tmp: Path, *, initialized: str = "false") -> dict[str, str]:
-    """A complete, valid image environment for tests, rooted at ``tmp``."""
+    """A complete, valid image environment for tests, rooted at ``tmp``: a file replica and the
+    artifacts on local disk, both allowed for tests only."""
     return {
         "CFO_INSTALLATION_INITIALIZED": initialized,
         "CFO_REPLICA_URL": f"file://{tmp / 'replica'}",
         "CFO_ALLOW_FILE_REPLICA": "1",
+        "CFO_ALLOW_LOCAL_ARTIFACTS": "1",
         "OMNIGENT_ACCOUNTS_BASE_URL": BASE_URL,
         "OMNIGENT_ACCOUNTS_COOKIE_SECRET": COOKIE_SECRET,
         "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,

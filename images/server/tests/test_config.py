@@ -222,3 +222,138 @@ def test_bootstrap_credentials_are_reported(env: dict[str, str]) -> None:
     del env["OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD"]
     del env["OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME"]
     assert load(env).bootstrap_credentials is False  # allowed: the database may have an owner
+
+
+# ── The artifact store (G2-DUR-001) ───────────────────────────────────────────────────
+
+
+def _s3_artifacts(env: dict[str, str]) -> dict[str, str]:
+    """``env`` with an S3 replica and an S3 artifact store in a bucket of its own."""
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    env.update(
+        {
+            "CFO_REPLICA_URL": "s3://cfo-db/omnigent",
+            "LITESTREAM_ACCESS_KEY_ID": "synthetic-replica-id",
+            "LITESTREAM_SECRET_ACCESS_KEY": "synthetic-replica-secret",
+            "OMNIGENT_ARTIFACT_URI": "s3://cfo-artifacts",
+            "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-artifacts-secret",
+            "AWS_ENDPOINT_URL_S3": "https://r2.example.test",
+            "AWS_REGION": "auto",
+        }
+    )
+    return env
+
+
+def test_artifacts_never_fall_back_to_the_containers_disk(env: dict[str, str]) -> None:
+    """Unset is a refusal, initialized or not: files on the disk die at every restart."""
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    for initialized in ("false", "true"):
+        env["CFO_INSTALLATION_INITIALIZED"] = initialized
+        with pytest.raises(ConfigError, match="OMNIGENT_ARTIFACT_URI is required"):
+            load(env)
+        with pytest.raises(ConfigError, match="OMNIGENT_ARTIFACT_URI is required"):
+            load({**env, "OMNIGENT_ARTIFACT_URI": "  "})
+        with pytest.raises(ConfigError, match="CFO_ALLOW_LOCAL_ARTIFACTS must be true or false"):
+            load({**env, "CFO_ALLOW_LOCAL_ARTIFACTS": "sure"})
+        with pytest.raises(ConfigError, match="OMNIGENT_ARTIFACT_URI is required"):
+            load({**env, "CFO_ALLOW_LOCAL_ARTIFACTS": "false"})
+
+
+def test_local_artifacts_only_with_the_test_switch_and_a_warning(env: dict[str, str]) -> None:
+    config = load(env)
+    assert config.artifacts.uri is None and config.artifacts.bucket is None
+    assert any("CFO_ALLOW_LOCAL_ARTIFACTS" in w for w in config.warnings)
+    # A blank or stale value never reaches Omnigent, which would read it as a store.
+    app_env = app_environment(config, {**env, "OMNIGENT_ARTIFACT_URI": " "})
+    assert "OMNIGENT_ARTIFACT_URI" not in app_env
+
+
+@pytest.mark.parametrize(
+    ("value", "fragment"),
+    [
+        ("gs://cfo-artifacts", "must be s3://"),
+        ("/data/artifacts", "must be s3://"),
+        ("s3://", "valid bucket name"),
+        ("s3:///prefix", "valid bucket name"),
+        ("s3://Cfo_Artifacts", "valid bucket name"),
+        ("s3://ab", "valid bucket name"),
+        ("s3://cfo-artifacts?x=1", "nothing else"),
+        ("s3://cfo-artifacts#x", "nothing else"),
+        ("s3://key:secret@cfo-artifacts", "nothing else"),
+        ("s3://cfo-artifacts:9000", "nothing else"),
+        ("s3://cfo-artifacts/../replica", "plain path"),
+        ("s3://cfo-artifacts/a/./b", "plain path"),
+        ("s3://cfo-db/artifacts", "bucket of its own"),
+    ],
+)
+def test_malformed_artifact_uris_refuse_to_start(
+    env: dict[str, str], value: str, fragment: str
+) -> None:
+    env = _s3_artifacts(env)
+    env["OMNIGENT_ARTIFACT_URI"] = value
+    with pytest.raises(ConfigError) as excinfo:
+        load(env)
+    assert fragment in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "fragment"),
+    [
+        ("AWS_ACCESS_KEY_ID", "", "AWS_ACCESS_KEY_ID is required"),
+        ("AWS_SECRET_ACCESS_KEY", " ", "AWS_SECRET_ACCESS_KEY is required"),
+        ("AWS_ENDPOINT_URL_S3", "r2.example.test", "http or https"),
+        ("AWS_ENDPOINT_URL_S3", "https://id:key@r2.example.test", "must not carry credentials"),
+    ],
+)
+def test_the_s3_artifact_store_needs_its_credentials_and_a_sound_endpoint(
+    env: dict[str, str], name: str, value: str, fragment: str
+) -> None:
+    env = _s3_artifacts(env)
+    env[name] = value
+    with pytest.raises(ConfigError) as excinfo:
+        load(env)
+    assert fragment in str(excinfo.value)
+    assert "id:key" not in str(excinfo.value)  # a credential in the endpoint is never echoed
+
+
+def test_s3_artifacts_reach_the_app_only_and_the_app_reads_them_alike(
+    env: dict[str, str],
+) -> None:
+    """Custody (G2-SEC-001): the artifact credentials reach the app, never Litestream; the
+    replica's reach Litestream, never the app. One R2 token may cover both buckets, but each
+    use has its own variables."""
+    env = _s3_artifacts(env)
+    env["OMNIGENT_ARTIFACT_URI"] = "s3://cfo-artifacts/omnigent"
+    env["CFO_ALLOW_LOCAL_ARTIFACTS"] = "true"  # the store, when named, wins over the switch
+    config = load(env)
+    assert config.artifacts.uri == "s3://cfo-artifacts/omnigent"
+    assert config.artifacts.bucket == "cfo-artifacts"
+    assert not any("CFO_ALLOW_LOCAL_ARTIFACTS" in w for w in config.warnings)
+    app_env = app_environment(config, env)
+    assert app_env["OMNIGENT_ARTIFACT_URI"] == "s3://cfo-artifacts/omnigent"
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_ENDPOINT_URL_S3", "AWS_REGION"):
+        assert app_env[name] == env[name], name
+    assert not {"LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"} & set(app_env)
+    ls_env = litestream_environment(env)
+    assert not {n for n in ls_env if n.startswith("AWS_") or n.startswith("OMNIGENT_")}
+    assert ls_env["LITESTREAM_SECRET_ACCESS_KEY"] == "synthetic-replica-secret"
+    assert "synthetic-artifacts-secret" not in ls_env.values()
+    app_config = load(app_env, for_app=True)
+    assert app_config.artifacts == config.artifacts
+    # Equal values in both pairs (one token for both buckets) change nothing of that.
+    same = {
+        **env,
+        "AWS_ACCESS_KEY_ID": "synthetic-one",
+        "LITESTREAM_ACCESS_KEY_ID": "synthetic-one",
+    }
+    assert "AWS_ACCESS_KEY_ID" not in litestream_environment(same)
+    assert "LITESTREAM_ACCESS_KEY_ID" not in app_environment(load(same), same)
+
+
+def test_the_app_process_checks_the_artifacts_without_the_replica(env: dict[str, str]) -> None:
+    env = _s3_artifacts(env)
+    app_env = app_environment(load(env), env)
+    del app_env["AWS_SECRET_ACCESS_KEY"]
+    with pytest.raises(ConfigError, match="AWS_SECRET_ACCESS_KEY is required"):
+        load(app_env, for_app=True)

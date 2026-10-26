@@ -168,6 +168,8 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[World]:
         "CFO_REPLICA_REGION": "us-east-1",
         "LITESTREAM_ACCESS_KEY_ID": os.environ["CFO_FENCE_S3_USER"],
         "LITESTREAM_SECRET_ACCESS_KEY": os.environ["CFO_FENCE_S3_PASSWORD"],
+        # The fence is this suite's subject; artifacts stay on disk here (tests only).
+        "CFO_ALLOW_LOCAL_ARTIFACTS": "true",
         "OMNIGENT_ACCOUNTS_BASE_URL": BASE_URL,
         "OMNIGENT_ACCOUNTS_COOKIE_SECRET": COOKIE_SECRET,
         "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,

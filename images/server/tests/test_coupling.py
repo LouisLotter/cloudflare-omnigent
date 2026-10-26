@@ -278,3 +278,71 @@ def test_a_build_without_a_target_is_the_server() -> None:
     )
     base, name = stages[-1]
     assert base == "runtime" and name == "server"
+
+
+# ── The artifact store (G2-DUR-001) ───────────────────────────────────────────────────
+
+
+@requires_omnigent
+def test_omnigent_selects_its_s3_store_from_the_uri_the_image_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The image sets ``OMNIGENT_ARTIFACT_URI``; Omnigent's Docker entrypoint must read it and
+    build its S3 store against the endpoint and region in the app's environment, the variables
+    ``boto3`` reads (``AWS_ENDPOINT_URL_S3``, ``AWS_REGION``). No request is made."""
+    from omnigent.stores.artifact_store.s3 import S3ArtifactStore
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}\n")
+    for key in list(os.environ):
+        if key.startswith(("OMNIGENT_", "AWS_", "ARTIFACT_")):
+            monkeypatch.delenv(key)
+    for key, value in {
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'omnigent.db'}",
+        "ARTIFACT_DIR": str(tmp_path / "artifacts"),
+        "OMNIGENT_CONFIG": str(config_path),
+        "OMNIGENT_AUTH_PROVIDER": "accounts",
+        "OMNIGENT_AUTH_ENABLED": "1",
+        "OMNIGENT_ACCOUNTS_COOKIE_SECRET": "ab" * 32,  # synthetic
+        "OMNIGENT_ACCOUNTS_BASE_URL": "http://testserver",
+        "OMNIGENT_ARTIFACT_URI": "s3://cfo-test-artifacts/omnigent",
+        "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-artifacts-secret",
+        "AWS_ENDPOINT_URL_S3": "https://r2.example.test",
+        "AWS_REGION": "auto",
+    }.items():
+        monkeypatch.setenv(key, value)
+    ep = image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT)
+    resolved = ep._resolve_config()
+    assert resolved.artifact_store_uri == "s3://cfo-test-artifacts/omnigent"
+    store = ep._select_artifact_store(resolved)
+    assert isinstance(store, S3ArtifactStore)
+    assert (store._bucket, store._prefix) == ("cfo-test-artifacts", "omnigent")
+    assert store._client.meta.endpoint_url == "https://r2.example.test"
+    assert store._client.meta.region_name == "auto"
+    # Without the URI, Omnigent would silently use the local disk: why the image refuses that.
+    monkeypatch.delenv("OMNIGENT_ARTIFACT_URI")
+    assert ep._resolve_config().artifact_store_uri is None
+
+
+@requires_omnigent
+def test_the_image_installs_boto3_at_the_fork_locks_version() -> None:
+    """boto3 comes from the fork's ``s3`` extra, at its uv.lock's exact version."""
+    import tomllib
+
+    import boto3
+    import botocore
+    import omnigent
+
+    lock_path = Path(omnigent.__file__).resolve().parents[1] / "uv.lock"
+    if not lock_path.exists():
+        pytest.skip(f"the fork's uv.lock is not next to the installed Omnigent ({lock_path})")
+    locked = {p["name"]: p["version"] for p in tomllib.loads(lock_path.read_text())["package"]}
+    assert boto3.__version__ == locked["boto3"]
+    assert botocore.__version__ == locked["botocore"]
+
+
+def test_the_dockerfile_installs_the_s3_extra_from_the_lock() -> None:
+    dockerfile = (IMAGE_DIR / "Dockerfile").read_text()
+    assert re.search(r"uv export --frozen --no-dev --extra s3 ", dockerfile)
+    assert 'python -c "import cfo_server.entrypoint, cfo_server.app, boto3"' in dockerfile

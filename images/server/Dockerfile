@@ -16,12 +16,15 @@
 #     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
 #     the main-chat Stop and launch-outcome notices (WP3.16) and the history-unavailable resume
 #     refusal (AIR2-008). The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
-#     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Two
+#     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Three
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
-#     resolves them afresh), and psycopg is left out (this image uses SQLite only).
+#     resolves them afresh), the `s3` extra is installed with them (the fork's image adds
+#     extras only on request), and psycopg is left out (this image uses SQLite only).
 #   - Litestream at the exact tested release, checksum-verified.
 #   - The image's entrypoint package, cfo_server (restore, recovery mode, settings files, both
-#     durability barriers, the launcher registration).
+#     durability barriers, the launcher registration, the artifact store's settings).
+#   - boto3 for Omnigent's S3 artifact store (the fork's `s3` extra, from its uv.lock): the
+#     artifacts live in their own R2 bucket, which survives a replacement.
 #   - The Cloudflare launcher, cloudflare_omnigent.sandbox, from the repository's python/.
 #
 # Every base image is pinned by digest. No secret is baked in: the Worker passes settings and
@@ -76,8 +79,10 @@ COPY --from=omnigent-src /examples/ ./examples/
 RUN python -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}"
-# Locked dependencies, then Omnigent itself (editable, as the fork's image installs it).
-RUN uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-editable \
+# Locked dependencies, then Omnigent itself (editable, as the fork's image installs it). The
+# `s3` extra is Omnigent's S3 artifact store's boto3, at the lock's exact versions and hashes:
+# the image keeps artifacts in R2, never on the container's disk (G2-DUR-001).
+RUN uv export --frozen --no-dev --extra s3 --no-emit-project --no-emit-workspace --no-editable \
       -o /tmp/requirements.txt \
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps -e .
@@ -122,7 +127,7 @@ ENV PYTHONPATH=/opt/cfo \
 RUN python -m compileall -q -f -j 0 --invalidation-mode checked-hash \
       /opt/venv /build/omnigent /opt/cfo /app \
  && mkdir -p /data /run/cfo \
- && python -c "import cfo_server.entrypoint, cfo_server.app"
+ && python -c "import cfo_server.entrypoint, cfo_server.app, boto3"
 # What the image was built from (AIR2-007 at artifact scope): the fork commit, which must be a
 # full commit ID, and the Litestream binary's own version. Read by the entrypoint (/status).
 ARG OMNIGENT_REPO

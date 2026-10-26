@@ -93,6 +93,9 @@ class Stack:
             "CFO_REPLICA_REGION": "us-east-1",
             "LITESTREAM_ACCESS_KEY_ID": self.env["CFO_IT_S3_USER"],
             "LITESTREAM_SECRET_ACCESS_KEY": self.env["CFO_IT_S3_PASSWORD"],
+            # The database's durability is this suite's subject; the image tests cover the
+            # artifact bucket (G2-DUR-001), so the artifacts stay on disk here (tests only).
+            "CFO_ALLOW_LOCAL_ARTIFACTS": "true",
             "OMNIGENT_ACCOUNTS_BASE_URL": "http://cfo-wp25.invalid",
             "OMNIGENT_ACCOUNTS_COOKIE_SECRET": self.env["CFO_IT_COOKIE_SECRET"],
             "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": OWNER,

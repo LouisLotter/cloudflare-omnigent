@@ -56,6 +56,7 @@ def main() -> None:
                         "OMNIGENT_DATABRICKS_CLIENT_ID",
                         "OMNIGENT_CREDENTIAL_CIPHER",
                         "OMNIGENT_WS_ALLOWED_ORIGINS",
+                        "OMNIGENT_ARTIFACT_URI",
                     )
                 },
             }
