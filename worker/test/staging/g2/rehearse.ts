@@ -10,8 +10,8 @@
 //
 //   node worker/test/staging/g2/rehearse.ts [image] [--local-artifacts]   (default cfo-g2-server:dev)
 //
-// Containers are named cfo-g2-rh-*, on the Compose project cfo-g2-rh (MinIO only), and removed
-// at the end. Every credential is generated here and never printed.
+// Containers are named cfo-g2-rh-*, on the Compose project cfo-g2-rh (MinIO only; another
+// name with CFO_G2_RH_PROJECT), and removed at the end. Every credential is generated here and never printed.
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -35,7 +35,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const LOCAL_ARTIFACTS = process.argv.includes("--local-artifacts");
 const IMAGE = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? "cfo-g2-server:dev";
-const PROJECT = "cfo-g2-rh";
+const PROJECT = process.env.CFO_G2_RH_PROJECT ?? "cfo-g2-rh";
 const BUCKET = "cfo-g2-rh-replica";
 /** Omnigent's artifacts, in a bucket of their own as the bootstrap plans them (G2-DUR-001). */
 const ARTIFACT_BUCKET = "cfo-g2-rh-artifacts";
