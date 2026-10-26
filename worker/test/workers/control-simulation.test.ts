@@ -382,10 +382,14 @@ describe("FakeControl keeps ControlDO's rules", () => {
         readonly c: number;
         readonly g: number;
         readonly op: number;
+        /** A field a later caller adds: ignored by both. */
+        readonly extra: boolean;
       }
     | { readonly kind: "forget"; readonly c: number; readonly op: number }
     | { readonly kind: "register"; readonly n: number; readonly op: number }
-    | { readonly kind: "list" | "limits" };
+    | { readonly kind: "list" | "limits" | "newer" }
+    /** The installation's limit changes between calls. */
+    | { readonly kind: "set_limit"; readonly limit: number };
   const op = fc.nat(7); // 0-3: one of four reusable IDs; 4-7: a fresh one
   const call: fc.Arbitrary<Call> = fc.oneof(
     {
@@ -393,9 +397,14 @@ describe("FakeControl keeps ControlDO's rules", () => {
       arbitrary: fc.record({
         kind: fc.constantFrom("reserve" as const, "release" as const),
         c: fc.nat(2),
-        g: fc.nat(6),
+        g: fc.nat(4),
         op,
+        extra: fc.boolean(),
       }),
+    },
+    {
+      weight: 1,
+      arbitrary: fc.record({ kind: fc.constant("set_limit" as const), limit: fc.nat(3) }),
     },
     { weight: 1, arbitrary: fc.record({ kind: fc.constant("forget" as const), c: fc.nat(2), op }) },
     {
@@ -404,7 +413,9 @@ describe("FakeControl keeps ControlDO's rules", () => {
     },
     {
       weight: 1,
-      arbitrary: fc.record({ kind: fc.constantFrom("list" as const, "limits" as const) }),
+      arbitrary: fc.record({
+        kind: fc.constantFrom("list" as const, "limits" as const, "newer" as const),
+      }),
     },
   );
 
@@ -456,7 +467,8 @@ describe("FakeControl keeps ControlDO's rules", () => {
                   operationId: opOf(c.op),
                   computerId: ids[c.c] as ComputerId,
                   generation: c.g,
-                };
+                  ...(c.extra ? { addedLater: true } : {}),
+                } as ControlCall;
                 break;
               case "forget":
                 request = {
@@ -480,6 +492,14 @@ describe("FakeControl keeps ControlDO's rules", () => {
               case "limits":
                 request = { method: "limits", interfaceVersion: 1 };
                 break;
+              case "newer":
+                request = { method: "drain_all", interfaceVersion: 2 } as unknown as ControlCall;
+                break;
+              case "set_limit":
+                fake.maxAwakeComputers = c.limit;
+                testControl.setSettings(name, { CFO_MAX_AWAKE_COMPUTERS: c.limit });
+                trace.push(JSON.stringify(c));
+                continue;
             }
             trace.push(JSON.stringify(c));
             const fromFake = await fake.control(request).then(
@@ -492,7 +512,25 @@ describe("FakeControl keeps ControlDO's rules", () => {
           expect(await slots(stub)).toEqual([...fake.slots].map((x) => x).sort());
         },
       ),
-      { numRuns: 80 },
+      {
+        numRuns: 150,
+        examples: [
+          // A finished generation whose slot is still held (Codex r1-3): granted, the limit drops,
+          // the next generation is refused, then the finished one is asked again, under a fresh and
+          // under its original operation ID.
+          [
+            1,
+            [
+              { kind: "reserve", c: 0, g: 1, op: 0, extra: false },
+              { kind: "set_limit", limit: 0 },
+              { kind: "reserve", c: 0, g: 2, op: 4, extra: false },
+              { kind: "reserve", c: 0, g: 1, op: 5, extra: false },
+              { kind: "reserve", c: 0, g: 1, op: 0, extra: true },
+              { kind: "newer" },
+            ],
+          ],
+        ],
+      },
     );
   }, 180_000);
 });

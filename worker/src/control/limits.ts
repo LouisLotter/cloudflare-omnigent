@@ -94,7 +94,7 @@ export function parseLimits(settings: LimitSettings): ParsedLimits {
 // Reservations and releases.
 
 export type ReserveDecision =
-  /** The slot is already held: the same answer, granted. */
+  /** The slot is already held, and its generation is not finished: the same answer, granted. */
   | { readonly kind: "held"; readonly floor: number }
   /** At or below the computer's floor: a generation its computer has already finished. */
   | { readonly kind: "stale"; readonly floor: number }
@@ -122,11 +122,13 @@ export function decideReserve(input: {
 }): ReserveDecision {
   const { slots, computerId, generation } = input;
   // Asking for G finishes every older generation of this computer, whatever the answer.
+  // A finished generation is refused first, even while its slot is still held: once a computer has
+  // asked past it, released or been forgotten, nothing may be told it holds that slot (Codex r1-3).
+  if (generation <= input.floor) return { kind: "stale", floor: input.floor };
   const floor = Math.max(input.floor, generation - 1);
   if (slots.some((s) => s.computerId === computerId && s.generation === generation)) {
     return { kind: "held", floor };
   }
-  if (generation <= input.floor) return { kind: "stale", floor: input.floor };
   const replaces = slots.filter((s) => s.computerId === computerId && s.generation < generation);
   const competing = slots.length - replaces.length;
   if (competing >= input.limit) {
@@ -192,7 +194,8 @@ export function judgeSlot(slot: Slot, report: Report): Verdict {
  * The slot a computer's report shows it holds, if ControlDO does not hold it: WorkspaceDO's
  * startup intent names a reservation for its current generation, which must be counted (one
  * reservation per live container). Never at or below the computer's floor, so a report read
- * before a release cannot bring the released slot back.
+ * before a release cannot bring the released slot back. Adopting generation G finishes every older
+ * one, as asking for G does: the caller raises the floor to G - 1.
  */
 export function adoption(
   computerId: ComputerId,

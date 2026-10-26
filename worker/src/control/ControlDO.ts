@@ -236,10 +236,11 @@ export class ControlDO extends DurableObject<PlatformEnv> implements ControlRpc 
         "result" in outcome &&
         outcome.result.method === "reserve" &&
         outcome.result.granted &&
-        !this.#held(call.computerId, call.generation)
+        (call.generation <= this.#floor(call.computerId) ||
+          !this.#held(call.computerId, call.generation))
       ) {
-        // The slot this operation was granted has been released or superseded since: a replay
-        // must not tell its caller it holds capacity it no longer has.
+        // The slot this operation was granted has been released, superseded or finished since: a
+        // replay must not tell its caller it holds capacity it no longer has.
         return {
           refused: "stale_generation",
           message: "the slot granted to this operation was released",
@@ -413,6 +414,8 @@ export class ControlDO extends DurableObject<PlatformEnv> implements ControlRpc 
           slot.generation,
           now,
         );
+        // Like a reservation for this generation: every older one of the computer is finished.
+        this.#raiseFloor(slot.computerId, slot.generation - 1);
         log("reconciled_adopt", { ...slot, report: summary(reports.get(slot.computerId)) });
       }
       if (sweep) this.#setMeta("last_sweep_at", String(now));

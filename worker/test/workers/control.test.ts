@@ -535,6 +535,23 @@ describe("reservations", () => {
     ]);
   });
 
+  it("refuses a finished generation even while its slot is still held (Codex r1-3)", async () => {
+    const stub = control({ CFO_MAX_AWAKE_COMPUTERS: 1 });
+    const a = newComputerId();
+    const granted = newOperationId();
+    expect(await call(stub, reserve(a, 1, granted))).toEqual(GRANTED);
+    testControl.setSettings(stub.id.name as string, { CFO_MAX_AWAKE_COMPUTERS: 0 });
+    const results = await stepsWithEviction(stub, [
+      // A asks for generation 2 and is refused: generation 1 is finished, though its slot stays
+      // (counted) until A's release or reconciliation gives it back.
+      (s) => s.control(reserve(a, 2)),
+      (s) => refusal(s, reserve(a, 1)),
+      (s) => refusal(s, reserve(a, 1, granted)),
+      () => slots(stub),
+    ]);
+    expect(results).toEqual([refused(0, 0), "stale_generation", "stale_generation", [`${a}/1`]]);
+  });
+
   it("answers a lost release's repeat with its recorded outcome", async () => {
     const stub = control();
     const computerId = newComputerId();
@@ -783,6 +800,12 @@ describe("reconciliation", () => {
     await reconcile(stub);
     expect(await slots(stub)).toEqual([`${computerId}/4 (adopted)`]);
     expect(await call(stub, reserve(newComputerId(), 1))).toEqual(refused(1, 1));
+    // Adopting generation 4 finishes the older ones: a delayed request for 3 takes nothing
+    // (Codex r1-2).
+    testControl.setSettings(stub.id.name as string, { CFO_MAX_AWAKE_COMPUTERS: 2 });
+    expect(await refusal(stub, reserve(computerId, 3))).toBe("stale_generation");
+    expect(await slots(stub)).toEqual([`${computerId}/4 (adopted)`]);
+    testControl.setSettings(stub.id.name as string, { CFO_MAX_AWAKE_COMPUTERS: 1 });
     // Released like any other once its stop is confirmed.
     reports(computerId, 4, null, { containerRunning: false });
     await reconcile(stub);

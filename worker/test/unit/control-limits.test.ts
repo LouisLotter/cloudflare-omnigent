@@ -123,6 +123,15 @@ describe("decideReserve", () => {
     });
   });
 
+  it("refuses a finished generation even while its slot is still held (Codex r1-3)", () => {
+    // A/1 is held, A asked for 2 (refused at the limit), so generation 1 is finished.
+    const slots = [{ computerId: A, generation: 1 }];
+    expect(decideReserve({ slots, floor: 1, limit: 0, computerId: A, generation: 1 })).toEqual({
+      kind: "stale",
+      floor: 1,
+    });
+  });
+
   it("refuses a generation at or below the floor as stale", () => {
     for (const generation of [0, 4, 5]) {
       expect(decideReserve({ slots: [], floor: 5, limit: 9, computerId: A, generation })).toEqual({
