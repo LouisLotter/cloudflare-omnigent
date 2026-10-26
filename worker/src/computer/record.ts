@@ -254,6 +254,8 @@ export const ComputerRecord = z.strictObject({
   credentialUploads: z
     .array(z.strictObject({ checkpointId: CheckpointId, generation: Count, order: Count }))
     .default([]),
+  /** A removed computer's next sweep of its prefixes (null before removal). */
+  prefixSweepAt: Millis.nullable().default(null),
   /**
    * Tombstones of abandoned uploads (Codex WP3.1 r2-1, r3, r4). A write already issued may land
    * after its key was deleted, and nothing bounds when (R2 can commit an ambiguous in-flight PUT
@@ -263,8 +265,6 @@ export const ComputerRecord = z.strictObject({
    * a pending upload, after which the backup gateway admits no write to it; null in records from
    * before it was kept (read as "not known to be fenced"). `at`: the next deletion.
    */
-  /** A removed computer's next sweep of its prefixes (null before removal). */
-  prefixSweepAt: Millis.nullable().default(null),
   credentialSweeps: z
     .array(
       z.strictObject({

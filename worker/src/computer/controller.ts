@@ -297,6 +297,11 @@ function checkInterface(version: number): void {
   }
 }
 
+/** Where a computer's credential bundles live (the prefix of `credentialObjectKey`, RC-25). */
+function credentialPrefix(computerId: ComputerId): string {
+  return `credentials/${computerId}/`;
+}
+
 function isMissingLayer(error: unknown): boolean {
   const message = describe(error).toLowerCase();
   return message.includes("backup_not_found") || message.includes("not found");
@@ -430,7 +435,7 @@ export class WorkspaceController {
     try {
       for (const prefix of [
         workspaceBackupPrefix(this.#d.computerId),
-        `credentials/${this.#d.computerId}/`,
+        credentialPrefix(this.#d.computerId),
       ]) {
         for (const key of await bucket.list(prefix)) await bucket.delete(key);
       }
@@ -1751,6 +1756,11 @@ export class WorkspaceController {
   /** Whether the container's state matches the lifecycle; corrects it if not. */
   async #observe(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean | "deferred"> {
     const state = r.lifecycle.context.state;
+    // The backoff belongs to one queued wake: whatever ends it, the next one starts afresh.
+    if (!(state === "stopping" && r.lifecycle.context.wakeQueued)) {
+      this.#wakeDeferrals = 0;
+      this.#wakeRetryAt = 0;
+    }
     const running = port.running;
     if (expectsContainer(state) && !running) {
       const old = r.reservation;

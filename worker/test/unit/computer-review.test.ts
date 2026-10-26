@@ -591,6 +591,22 @@ describe("the lead's verification (r4)", () => {
     sim.control.unavailable = false;
     await sim.advance(2 * 60_000);
     expect(sim.record().lifecycle.context.state).toBe("started_no_host");
+    // The next queued wake does not inherit that backoff: it starts within a poll or two.
+    let reopen: () => void = () => undefined;
+    sim.computer.destroyGate = new Promise<void>((resolve) => {
+      reopen = resolve;
+    });
+    live(sim).runnerProcesses = 0;
+    await sim.client.send(sim.client.suspendRequest());
+    await sim.until(() => sim.record().lifecycle.context.state === "stopping");
+    await sim.client.send(sim.client.resumeRequest());
+    sim.computer.destroyGate = null;
+    reopen();
+    await sim.advance(2 * sim.timing.pollMs);
+    expect(sim.record().lifecycle).toMatchObject({
+      generation: 3,
+      context: { state: "started_no_host" },
+    });
   }, 30_000);
 });
 
