@@ -2,14 +2,17 @@
  * The platform Worker as the Workers-runtime tests run it (wrangler.test.jsonc): the production
  * classes, except that OmnigentServer gets its container port, clock and timing from
  * `server-harness.ts`; WorkspaceDO (WP3.1's controller, bound as WORKSPACE_CONTROLLER) gets its
- * computer, ControlDO, bucket and clock from `workspace-harness.ts`; and the WORKSPACE binding the
- * routes and the backup gateway use (WP3.3) is a stand-in, as is WP3.2's ControlDO method, that
- * calls the fakes in `internal-harness.ts`. workerd runs this module in the tests' own isolate, so
- * a test and the Durable Objects share those registries.
+ * computer, ControlDO, bucket and clock from `workspace-harness.ts`; ControlDO (WP3.2) gets its
+ * computers' WorkspaceDOs, clock, timing and limit settings from `control-harness.ts`, except that
+ * the production-named object the routes call (WP3.3) answers from the fake in `internal-harness.ts`;
+ * and the WORKSPACE binding the routes and the backup gateway use is a stand-in over the same fakes.
+ * workerd runs this module in the tests' own isolate, so a test and the Durable Objects share
+ * those registries.
  */
 import { DurableObject } from "cloudflare:workers";
 import type {
   ComputerCall,
+  ComputerId,
   ControlCall,
   ControlResult,
   InterceptProps,
@@ -23,7 +26,14 @@ import type {
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../src/server/OmnigentServer.ts";
-import type { ControlRpc, WorkspaceRpc, WriteCheck, WriteDecision } from "../../src/shared/rpc.ts";
+import {
+  CONTROL_OBJECT_NAME,
+  type ControlRpc,
+  type WorkspaceRpc,
+  type WriteCheck,
+  type WriteDecision,
+} from "../../src/shared/rpc.ts";
+import { testControl } from "./control-harness.ts";
 import { internalFakes } from "./internal-harness.ts";
 import { testServers } from "./server-harness.ts";
 import { testComputers } from "./workspace-harness.ts";
@@ -91,10 +101,39 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
   }
 }
 
-/** The scaffold ControlDO, with WP3.2's `control` method answered by the fake. */
-export class ControlDO extends PlatformControlDO implements ControlRpc {
-  async control(call: ControlCall): Promise<ControlResult> {
-    return internalFakes.control.control(call);
+export class ControlDO extends PlatformControlDO {
+  /** The production-named object is the one the routes call (WP3.3): its answers come from the fake. */
+  override async control(call: ControlCall): Promise<ControlResult> {
+    return this.ctx.id.name === CONTROL_OBJECT_NAME
+      ? internalFakes.control.control(call)
+      : super.control(call);
+  }
+
+  protected override workspace(computerId: ComputerId) {
+    return testControl.productionWorkspace
+      ? super.workspace(computerId)
+      : testControl.workspace(computerId);
+  }
+
+  protected override settings() {
+    return testControl.settings(this.ctx.id.name) ?? super.settings();
+  }
+
+  protected override now() {
+    return testControl.now();
+  }
+
+  protected override timing() {
+    return testControl.timing;
+  }
+
+  /** The production defaults the overrides above replace (tests only). */
+  defaults() {
+    return {
+      settings: super.settings(),
+      timing: super.timing(),
+      clockSkewMs: Math.abs(super.now() - Date.now()),
+    };
   }
 }
 
