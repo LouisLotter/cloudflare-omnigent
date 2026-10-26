@@ -150,6 +150,9 @@
                 "revocationRecorded": {
                   "type": "boolean"
                 },
+                "settled": {
+                  "type": "boolean"
+                },
                 "signOut": {
                   "enum": [
                     "none",

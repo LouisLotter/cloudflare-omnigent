@@ -35,7 +35,8 @@
       "state": "pending",
       "signOut": "tombstoned",
       "loginPossiblyLost": true,
-      "revocationRecorded": false
+      "revocationRecorded": false,
+      "settled": false
     }
   }
 }
