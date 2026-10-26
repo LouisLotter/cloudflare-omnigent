@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { serverContainerEnv } from "../../../worker/src/server/server-env.ts";
 import {
   type Installation,
+  installationProblems,
   PASSWORD_SECRET,
   platformVars,
   RELEASE_CHANGES,
@@ -110,6 +111,38 @@ describe.skipIf(!python)(
         stagingSecrets,
       );
       expect(imageReads(noSwitch).error).toMatch(/^OMNIGENT_ARTIFACT_URI is required/);
+    });
+
+    it("every artifacts URL the bootstrap accepts, the image accepts (Codex G2-DUR-001 r1-2)", async () => {
+      const corpus = [
+        "s3://cfo-canary-artifacts",
+        "s3://cfo-canary-artifacts/",
+        "s3://cfo-canary-artifacts/omnigent/x",
+        "S3://cfo-canary-artifacts",
+        "s3://cfo-canary-artifacts?",
+        "s3://cfo-canary-artifacts#x",
+        "s3://cfo-canary-artifacts/x?y",
+        "s3://cfo-canary-artifacts/a b",
+        "s3://cfo-canary-artifacts/../x",
+        "s3://user@cfo-canary-artifacts",
+        "s3://cfo-canary-artifacts:9000",
+        "s3://[broken",
+        "s3://cfo.canary.artifacts",
+      ];
+      for (const url of corpus) {
+        const plan = await accountPlan({ artifacts: { url } });
+        const bootstrapOk = installationProblems(plan).length === 0;
+        const secrets = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+        const read = imageReads(containerEnv(plan, secrets));
+        if (bootstrapOk) expect(read, url).toMatchObject({ artifacts: url });
+        expect(bootstrapOk, url).toBe(
+          [
+            "s3://cfo-canary-artifacts",
+            "s3://cfo-canary-artifacts/",
+            "s3://cfo-canary-artifacts/omnigent/x",
+          ].includes(url),
+        );
+      }
     });
 
     it("an account installation without the file-replica switch refuses a file replica", async () => {

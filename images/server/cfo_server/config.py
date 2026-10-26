@@ -6,7 +6,8 @@ value is checked here, once, before anything starts. Two rules:
 - **Unset means the restrictive default.** Sharing is off, public access is off, new sessions
   are never public by default, and no extra admins or domains are listed.
 - **Malformed means refuse to start.** Omnigent's own parsers fail open (an unknown sharing
-  mode becomes ``on``); this module never does. :class:`ConfigError` names the variable.
+  mode becomes ``on``); this module never does. :class:`ConfigError` names the variable. An
+  error never repeats a URL-valued setting: a mistaken one may carry credentials.
 
 Omnigent's artifacts (uploaded files, agent bundles, session resources) live in their own S3
 bucket, an R2 bucket on Cloudflare (``OMNIGENT_ARTIFACT_URI``, with the ``AWS_*`` credentials
@@ -31,7 +32,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 # ── Fixed paths inside the image ─────────────────────────────────────────
 
@@ -103,6 +104,15 @@ REMOVED_APP_ENV: tuple[str, ...] = (
 )
 #: The artifact store's credentials, read by ``boto3`` in the app process only.
 ARTIFACT_CREDENTIALS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+#: The S3 store's checksum settings unless the environment names others: checksums only where
+#: S3 requires them. botocore's default since 1.36 (``when_supported``) sends CRC32 checksums,
+#: as an ``aws-chunked`` trailer over HTTPS, which R2 must accept; ``when_required`` sends a
+#: plain ``PutObject``, the same request over HTTPS as over the tests' HTTP (Codex G2-DUR-001).
+ARTIFACT_CHECKSUM_DEFAULTS: Mapping[str, str] = {
+    "AWS_REQUEST_CHECKSUM_CALCULATION": "when_required",
+    "AWS_RESPONSE_CHECKSUM_VALIDATION": "when_required",
+}
+_S3 = "s3://"
 #: An S3 bucket name as S3 and R2 accept it (lowercase letters, digits, dots and hyphens).
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 #: The only variables Litestream's processes (``restore`` and ``replicate``) receive: the
@@ -159,7 +169,7 @@ class ArtifactSettings:
 
     @property
     def bucket(self) -> str | None:
-        return None if self.uri is None else urlsplit(self.uri).netloc
+        return None if self.uri is None else self.uri[len(_S3) :].partition("/")[0]
 
 
 @dataclass(frozen=True)
@@ -257,10 +267,20 @@ def parse_list(env: Mapping[str, str], name: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(items))
 
 
+def _split(url: str, name: str) -> SplitResult:
+    """``urlsplit``, whose ``ValueError`` (an unclosed ``[``, a bad port) is a refusal too."""
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - raises for a malformed port
+    except ValueError:
+        raise ConfigError(f"{name} is not a well-formed URL") from None
+    return parts
+
+
 def _origin(url: str, name: str) -> str:
-    parts = urlsplit(url)
+    parts = _split(url, name)
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ConfigError(f"{name} must be an http or https URL, not {url!r}")
+        raise ConfigError(f"{name} must be an http or https URL with a host")
     if parts.username or parts.password:
         raise ConfigError(f"{name} must not carry credentials")
     return f"{parts.scheme}://{parts.netloc.lower()}"
@@ -294,7 +314,7 @@ def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:
     url = _get(env, "CFO_REPLICA_URL")
     if url is None:
         raise ConfigError("CFO_REPLICA_URL is required, for example s3://<bucket>/omnigent")
-    parts = urlsplit(url)
+    parts = _split(url, "CFO_REPLICA_URL")
     if parts.scheme == "s3":
         if not parts.netloc:
             raise ConfigError("CFO_REPLICA_URL must name a bucket: s3://<bucket>/<path>")
@@ -309,7 +329,7 @@ def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:
         if not parts.path.startswith("/"):
             raise ConfigError("CFO_REPLICA_URL must be an absolute file:// path")
     else:
-        raise ConfigError(f"CFO_REPLICA_URL must be s3:// (or file:// in tests), not {url!r}")
+        raise ConfigError("CFO_REPLICA_URL must be s3://<bucket>/<path> (or file:// in tests)")
     endpoint = _get(env, "CFO_REPLICA_ENDPOINT")
     if endpoint is not None:
         _origin(endpoint, "CFO_REPLICA_ENDPOINT")
@@ -345,22 +365,20 @@ def parse_artifacts(
             "are lost at every restart; for tests only"
         )
         return ArtifactSettings(uri=None)
-    parts = urlsplit(uri)
-    if parts.scheme != "s3":
-        raise ConfigError(f"OMNIGENT_ARTIFACT_URI must be s3://<bucket>[/<prefix>], not {uri!r}")
-    if (
-        parts.query
-        or parts.fragment
-        or "@" in parts.netloc
-        or ":" in parts.netloc
-        or not _BUCKET.fullmatch(parts.netloc)
-    ):
+    # Checked as the string Omnigent's own parser splits (``_parse_s3_uri``: the literal
+    # ``s3://`` prefix, then the bucket up to the first ``/``), never through a URL parser that
+    # would read it differently. No error repeats the value.
+    if not uri.startswith(_S3):
+        raise ConfigError("OMNIGENT_ARTIFACT_URI must be s3://<bucket>[/<prefix>]")
+    bucket, _, prefix = uri[len(_S3) :].partition("/")
+    if not _BUCKET.fullmatch(bucket):
         raise ConfigError(
             "OMNIGENT_ARTIFACT_URI must be s3://<bucket>[/<prefix>] with a valid bucket name "
             "and nothing else"
         )
-    segments = [s for s in parts.path.split("/") if s]
-    if any(s in (".", "..") for s in segments) or "\\" in parts.path:
+    if any(ch in "?#\\" or ch.isspace() or not ch.isprintable() for ch in prefix) or any(
+        s in (".", "..") for s in prefix.split("/")
+    ):
         raise ConfigError("OMNIGENT_ARTIFACT_URI's prefix must be a plain path")
     for name in ARTIFACT_CREDENTIALS:
         if _get(env, name) is None:
@@ -371,7 +389,7 @@ def parse_artifacts(
     if (
         replica is not None
         and replica.url.startswith("s3:")
-        and urlsplit(replica.url).netloc == parts.netloc
+        and urlsplit(replica.url).netloc == bucket
     ):
         raise ConfigError("OMNIGENT_ARTIFACT_URI must name a bucket of its own, not the replica's")
     return ArtifactSettings(uri=uri)
@@ -485,6 +503,8 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
     out.update(PINNED_ENV)
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
+        for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():
+            out.setdefault(name, value)
     out["OMNIGENT_WS_ALLOWED_ORIGINS"] = ",".join(config.ws_allowed_origins)
     # Omnigent reads these only when create_app gets no static value; the app passes static
     # values, so they are set for consistency with GET /v1/info, never as the authority.

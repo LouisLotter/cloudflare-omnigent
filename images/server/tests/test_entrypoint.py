@@ -686,6 +686,25 @@ def test_no_artifact_store_exits_78_before_starting_anything(rig: Rig) -> None:
     assert not rig.db.exists() and not rig.marker.exists()
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://synthetic-id:cfo-test-url-secret-0001@cfo-test-artifacts",
+        "s3://[cfo-test-url-secret-0001",
+        "S3://cfo-test-artifacts/cfo-test-url-secret-0001",
+    ],
+)
+def test_a_malformed_artifact_uri_exits_78_without_repeating_it(rig: Rig, uri: str) -> None:
+    """A URI Omnigent cannot use, or one the URL parser cannot read, is a configuration error
+    (exit 78, which the watchdog holds), never a crash; the log never repeats it."""
+    env = rig.env(OMNIGENT_ARTIFACT_URI=uri, AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="y")
+    rig.start(env)
+    assert rig.wait(30) == entrypoint.EXIT_CONFIG
+    error = rig.events("config.error")
+    assert error and "OMNIGENT_ARTIFACT_URI" in error[-1]["message"]
+    assert "cfo-test-url-secret-0001" not in rig.output
+
+
 def test_bad_configuration_exits_78_before_starting_anything(rig: Rig) -> None:
     env = rig.env(OMNIGENT_SHARING_MODE="everyone")
     rig.start(env)

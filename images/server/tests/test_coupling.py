@@ -19,10 +19,11 @@ from pathlib import Path
 import pytest
 
 from cfo_server import app as image_app
+from cfo_server import config as image_config
 from cfo_server.barrier import IGNORED_UPDATE_COLUMNS, SECURITY_TABLES
 from cfo_server.dbcheck import INITIALIZED_SQL, check_database
 
-from conftest import DOCKER_ENTRYPOINT, IMAGE_DIR, requires_omnigent
+from conftest import DOCKER_ENTRYPOINT, IMAGE_DIR, base_env, requires_omnigent
 
 #: SHA-256 of the functions of Omnigent's ``deploy/docker/entrypoint.py`` that
 #: ``cfo_server.app`` mirrors, at the pinned fork commit ``af3e49de2``. When this changes,
@@ -323,6 +324,69 @@ def test_omnigent_selects_its_s3_store_from_the_uri_the_image_pins(
     # Without the URI, Omnigent would silently use the local disk: why the image refuses that.
     monkeypatch.delenv("OMNIGENT_ARTIFACT_URI")
     assert ep._resolve_config().artifact_store_uri is None
+
+
+@requires_omnigent
+def test_every_artifact_uri_the_image_accepts_omnigent_reads_alike() -> None:
+    """The image checks the string Omnigent splits; a URI it accepts must give Omnigent's own
+    parser the same bucket, and one Omnigent cannot use must be refused (Codex G2-DUR-001 r1-2)."""
+    from omnigent.stores.artifact_store.s3 import _parse_s3_uri
+
+    env = base_env(Path("/nonexistent"))
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    env.update({"AWS_ACCESS_KEY_ID": "synthetic-id", "AWS_SECRET_ACCESS_KEY": "synthetic-key"})
+    corpus = [
+        "s3://cfo-artifacts",
+        "s3://cfo-artifacts/",
+        "s3://cfo-artifacts/omnigent",
+        "s3://cfo.artifacts/a/b",
+        "S3://cfo-artifacts",
+        "s3://cfo-artifacts?",
+        "s3://cfo-artifacts#x",
+        "s3://cfo-artifacts/x?y",
+        "s3://user@cfo-artifacts",
+        "s3://cfo-artifacts:9000/x",
+        "s3://[broken",
+        "s3://",
+        "s3:///x",
+    ]
+    for uri in corpus:
+        try:
+            accepted = image_config.load({**env, "OMNIGENT_ARTIFACT_URI": uri}).artifacts
+        except image_config.ConfigError:
+            continue
+        bucket, prefix = _parse_s3_uri(uri)
+        assert bucket == accepted.bucket, uri
+        assert "?" not in bucket + prefix and "#" not in bucket + prefix, uri
+
+
+@requires_omnigent
+def test_the_s3_store_built_in_the_apps_environment_asks_checksums_only_where_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """botocore reads the image's checksum settings: a plain PutObject over HTTPS too."""
+    from omnigent.stores.artifact_store.s3 import S3ArtifactStore
+
+    env = base_env(tmp_path)
+    del env["CFO_ALLOW_LOCAL_ARTIFACTS"]
+    env.update(
+        {
+            "OMNIGENT_ARTIFACT_URI": "s3://cfo-test-artifacts",
+            "AWS_ACCESS_KEY_ID": "synthetic-id",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-key",
+            "AWS_ENDPOINT_URL_S3": "https://r2.example.test",
+        }
+    )
+    app_env = image_config.app_environment(image_config.load(env), env)
+    for key in list(os.environ):
+        if key.startswith("AWS_"):
+            monkeypatch.delenv(key)
+    for key, value in app_env.items():
+        if key.startswith("AWS_"):
+            monkeypatch.setenv(key, value)
+    store = S3ArtifactStore(app_env["OMNIGENT_ARTIFACT_URI"])
+    assert store._client.meta.config.request_checksum_calculation == "when_required"
+    assert store._client.meta.config.response_checksum_validation == "when_required"
 
 
 @requires_omnigent

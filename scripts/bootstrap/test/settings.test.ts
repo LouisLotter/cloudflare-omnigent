@@ -312,6 +312,15 @@ describe("the artifact bucket (G2-DUR-001)", () => {
       "s3://cfo-canary-artifacts/a/../b",
       "s3://cfo-canary-artifacts/./b",
       "not a url",
+      // Codex G2-DUR-001 r1-2: what a URL parser accepts and Omnigent's own parser does not.
+      "S3://cfo-canary-artifacts",
+      "s3://cfo-canary-artifacts?",
+      "s3://cfo-canary-artifacts/x?y",
+      "s3://cfo-canary-artifacts/x#",
+      "s3://cfo-canary-artifacts/a b",
+      "s3://cfo-canary-artifacts/a\\b",
+      "s3://[broken",
+      "s3:/cfo-canary-artifacts",
     ]) {
       expect(await problems({ url }), url).toEqual([
         "the artifacts URL must be s3://<bucket>[/<prefix>], with an R2 bucket name",

@@ -432,6 +432,24 @@ def test_without_the_artifact_bucket_a_replacement_loses_the_file(link: Stack, p
     assert lost.status_code in (404, 410, 500), lost.text
 
 
+def test_an_artifact_bucket_the_token_cannot_reach_stops_the_start_visibly(
+    link: Stack, prefix: str
+) -> None:
+    """Omnigent checks its built-in agents' bundles in the artifact store when it starts, so a
+    token without the artifacts' bucket stops the app before it serves; the entrypoint confirms
+    the final sync and exits with the app's code, and the watchdog starts it again. The replica
+    is not affected (Codex G2-DUR-001 r1-1)."""
+    wrong = f"wrong-{uuid.uuid4().hex}"
+    link.extra_canaries.append(wrong)
+    server = link.server(prefix, initialized=False, AWS_SECRET_ACCESS_KEY=wrong).start()
+    code = server.wait_exit(180)
+    final = server.events("final_sync")
+    assert final and final[-1]["why"] == "app_exited" and final[-1]["confirmed"] is True
+    assert code == final[-1]["app_returncode"] and code not in (0, 78)
+    assert not server.events("app.ready")
+    assert wrong not in server.logs()
+
+
 def test_an_initialized_installation_without_its_artifact_bucket_stops_with_78(
     link: Stack, prefix: str
 ) -> None:

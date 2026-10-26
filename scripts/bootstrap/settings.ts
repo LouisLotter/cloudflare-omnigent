@@ -149,7 +149,7 @@ export function bucketOf(url: string): string | undefined {
 
 /** The R2 buckets an installation uses: the replica's (when on S3) and the artifacts'. */
 export function bucketsOf(plan: Installation): string[] {
-  const names = [bucketOf(plan.replica.url), plan.artifacts && bucketOf(plan.artifacts.url)];
+  const names = [bucketOf(plan.replica.url), plan.artifacts && artifactsBucket(plan.artifacts.url)];
   return [...new Set(names.filter((n): n is string => n !== undefined))];
 }
 
@@ -194,6 +194,24 @@ function httpsProblem(endpoint: string | undefined, what: string): string[] {
     : [];
 }
 
+/**
+ * The bucket of an artifacts URL as Omnigent's own parser splits it (the literal `s3://`, then
+ * the bucket up to the first `/`), when the server image would accept it: an R2 bucket name and
+ * a plain prefix. Never through a URL parser, which reads `S3://` or a lone `?` differently.
+ */
+export function artifactsBucket(url: string): string | undefined {
+  if (!url.startsWith("s3://")) return undefined;
+  const rest = url.slice("s3://".length);
+  const slash = rest.indexOf("/");
+  const bucket = slash < 0 ? rest : rest.slice(0, slash);
+  const prefix = slash < 0 ? "" : rest.slice(slash + 1);
+  if (!R2_BUCKET.test(bucket)) return undefined;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are refused
+  if (/[?#\\\s\x00-\x1f\x7f]/.test(prefix)) return undefined;
+  if (prefix.split("/").some((s) => s === "." || s === "..")) return undefined;
+  return bucket;
+}
+
 function artifactsProblems(plan: Installation): string[] {
   const artifacts = plan.artifacts;
   if (artifacts === undefined) {
@@ -204,25 +222,10 @@ function artifactsProblems(plan: Installation): string[] {
         ];
   }
   const problems: string[] = [];
-  let url: URL | undefined;
-  try {
-    url = new URL(artifacts.url);
-  } catch {
-    url = undefined;
-  }
-  // The raw prefix: the URL parser drops dot segments, which the server image refuses.
-  const segments = artifacts.url.replace(/^[^/]*\/\/[^/]*/, "").split("/");
-  if (
-    url?.protocol !== "s3:" ||
-    !R2_BUCKET.test(url.hostname) ||
-    url.port !== "" ||
-    url.search !== "" ||
-    url.hash !== "" ||
-    url.username !== "" ||
-    segments.some((s) => s === "." || s === "..")
-  ) {
+  const bucket = artifactsBucket(artifacts.url);
+  if (bucket === undefined) {
     problems.push("the artifacts URL must be s3://<bucket>[/<prefix>], with an R2 bucket name");
-  } else if (url.hostname === bucketOf(plan.replica.url)) {
+  } else if (bucket === bucketOf(plan.replica.url)) {
     problems.push("the artifacts need a bucket of their own, not the replica's");
   }
   problems.push(...httpsProblem(artifacts.endpoint, "artifacts"));

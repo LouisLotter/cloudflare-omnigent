@@ -285,6 +285,16 @@ def test_local_artifacts_only_with_the_test_switch_and_a_warning(env: dict[str, 
         ("s3://cfo-artifacts/../replica", "plain path"),
         ("s3://cfo-artifacts/a/./b", "plain path"),
         ("s3://cfo-db/artifacts", "bucket of its own"),
+        # Codex G2-DUR-001 r1-2: values a URL parser accepts and Omnigent's own parser does not.
+        ("S3://cfo-artifacts", "must be s3://"),
+        ("s3://cfo-artifacts?", "nothing else"),
+        ("s3://cfo-artifacts#", "nothing else"),
+        ("s3://cfo-artifacts/x?", "plain path"),
+        ("s3://cfo-artifacts/x#y", "plain path"),
+        ("s3://cfo-artifacts/a b", "plain path"),
+        ("s3://cfo-artifacts/a\\b", "plain path"),
+        ("s3://[broken", "nothing else"),
+        ("s3:/cfo-artifacts", "must be s3://"),
     ],
 )
 def test_malformed_artifact_uris_refuse_to_start(
@@ -349,6 +359,70 @@ def test_s3_artifacts_reach_the_app_only_and_the_app_reads_them_alike(
     }
     assert "AWS_ACCESS_KEY_ID" not in litestream_environment(same)
     assert "LITESTREAM_ACCESS_KEY_ID" not in app_environment(load(same), same)
+
+
+SECRET = "synthetic-url-secret"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OMNIGENT_ARTIFACT_URI",
+        "AWS_ENDPOINT_URL_S3",
+        "CFO_REPLICA_URL",
+        "CFO_REPLICA_ENDPOINT",
+        "OMNIGENT_ACCOUNTS_BASE_URL",
+        "OMNIGENT_WS_ALLOWED_ORIGINS",
+        "CFO_SANDBOX_SERVER_URL",
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://synthetic-id:{SECRET}@cfo-artifacts.example.test",
+        f"ftp://synthetic-id:{SECRET}@cfo-artifacts.example.test",
+        f"s3://synthetic-id:{SECRET}@cfo-artifacts",
+        f"http://[{SECRET}",
+        f"http://host.example.test:{SECRET}",
+    ],
+)
+def test_a_url_setting_is_refused_without_repeating_it(
+    env: dict[str, str], name: str, value: str
+) -> None:
+    """A mistaken URL may carry credentials: the refusal names the variable, never the value,
+    and a URL the parser cannot read is a refusal (exit 78), not a crash (Codex G2-DUR-001 r1-3)."""
+    env = _s3_artifacts(env)
+    env[name] = value
+    with pytest.raises(ConfigError) as excinfo:
+        load(env)
+    assert name in str(excinfo.value)
+    assert SECRET not in str(excinfo.value)
+
+
+def test_omnigents_parser_reads_every_accepted_uri_as_the_image_does(env: dict[str, str]) -> None:
+    """The image's acceptance against Omnigent's ``_parse_s3_uri`` rule (the literal ``s3://``,
+    then the bucket up to the first ``/``), restated here and pinned to the source by
+    ``test_coupling.py``."""
+    env = _s3_artifacts(env)
+    for uri in ("s3://cfo-artifacts", "s3://cfo-artifacts/", "s3://cfo.artifacts/a/b-c_d"):
+        config = load({**env, "OMNIGENT_ARTIFACT_URI": uri})
+        bucket, _, prefix = uri[len("s3://") :].partition("/")
+        assert config.artifacts.bucket == bucket and config.artifacts.uri == uri
+        assert "?" not in prefix and "#" not in prefix
+
+
+def test_the_store_asks_checksums_only_where_s3_requires_them(env: dict[str, str]) -> None:
+    env = _s3_artifacts(env)
+    app_env = app_environment(load(env), env)
+    assert app_env["AWS_REQUEST_CHECKSUM_CALCULATION"] == "when_required"
+    assert app_env["AWS_RESPONSE_CHECKSUM_VALIDATION"] == "when_required"
+    # A deployment may name others; the disk never gets them.
+    named = {**env, "AWS_REQUEST_CHECKSUM_CALCULATION": "when_supported"}
+    assert app_environment(load(named), named)["AWS_REQUEST_CHECKSUM_CALCULATION"] == (
+        "when_supported"
+    )
+    local = base_env(Path("/nonexistent"))
+    assert "AWS_REQUEST_CHECKSUM_CALCULATION" not in app_environment(load(local), local)
 
 
 def test_the_app_process_checks_the_artifacts_without_the_replica(env: dict[str, str]) -> None:
