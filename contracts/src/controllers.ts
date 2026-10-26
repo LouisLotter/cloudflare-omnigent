@@ -170,6 +170,10 @@ export const ComputerPageState = z.looseObject({
     /** Whether a removal may resolve now (`signOutSettled`), as the controller decides it. Additive
      * (WP3.5); absent from an older WorkspaceDO, where the pages treat it as false. */
     settled: z.boolean().optional(),
+    /** A sign-out job runs now (its logouts, tombstones, publication or verification), whatever its
+     * persisted phase. Additive (WP3.5); absent from an older WorkspaceDO, where the pages read
+     * `signOut === "requested"` instead. */
+    signOutRunning: z.boolean().optional(),
   }),
   // Additive (WP3.5): the page's notices, as the controller derives them, and the setup terminal's
   // window, from WorkspaceDO's page front. Optional, so an older WorkspaceDO still parses.

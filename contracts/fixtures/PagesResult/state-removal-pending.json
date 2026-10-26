@@ -36,7 +36,8 @@
       "signOut": "tombstoned",
       "loginPossiblyLost": true,
       "revocationRecorded": false,
-      "settled": false
+      "settled": false,
+      "signOutRunning": false
     }
   }
 }

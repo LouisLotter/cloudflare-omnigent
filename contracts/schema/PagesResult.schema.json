@@ -162,6 +162,9 @@
                   ],
                   "type": "string"
                 },
+                "signOutRunning": {
+                  "type": "boolean"
+                },
                 "state": {
                   "enum": [
                     "none",
