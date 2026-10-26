@@ -46,7 +46,7 @@ For targeted feedback:
 | `pnpm test:scripts` | Canary, staging, bootstrap and restore-drill staging tests. The restore-drill staging suite already runs in Node with mocked platform resources. |
 | `pnpm coverage` | Existing configured per-file thresholds, not whole-product or image/Python coverage and not mutation testing. |
 
-The root [Python project](../python/pyproject.toml) discovers only its own `tests`, including the [Cloudflare launcher's](../python/tests/sandbox/): its protocol against the contract's fixtures, schemas and signing vectors, each method against a fake launcher API over real loopback HTTP (signatures checked as the receiver would, lost and trickled replies, the replication fence), and, where the fork's Omnigent is installed, the Omnigent adapter and Omnigent's persistent-host flow driving it. Without Omnigent those last tests skip, as in CI's Python job; the server image's suite covers the registration inside the built image. It does not discover the server image, restore-drill Python, standalone spike projects or unfinished computer image tests. Its fixture tests use exported JSON Schema and do not cover `refined/` cases; its signing/tree/policy vector tests calculate reference results rather than invoking every production parser.
+The root [Python project](../python/pyproject.toml) discovers only its own `tests`, including the [Cloudflare launcher's](../python/tests/sandbox/): its protocol against the contract's fixtures, schemas and signing vectors, each method against a fake launcher API over real loopback HTTP (signatures checked as the receiver would, lost and trickled replies, the replication fence), and, where the fork's Omnigent is installed, the Omnigent adapter and Omnigent's persistent-host flow driving it. Without Omnigent those last tests skip, as in CI's Python job; the server image's suite covers the registration inside the built image. It also discovers `tests/computer`: the computer supervisor's receiver, capture, restore, credential and host tests, which need no image or root. It does not discover the server image, restore-drill Python, standalone spike projects or the computer image's in-image and container tests. Its fixture tests use exported JSON Schema and do not cover `refined/` cases; its signing/tree/policy vector tests calculate reference results rather than invoking every production parser.
 
 ## Schema and Worker builds
 
@@ -96,13 +96,37 @@ The last command uses the existing image CMD: unit/in-process tests excluding `t
 
 The heavier [server integration suite](../images/server/tests/integration/conftest.py) uses actual containers, MinIO/Toxiproxy, generated credentials, local ports and kill/replace cleanup. Its conftest documents the required image tag and separate uv invocation. The [restore-drill Python suite](../scripts/restore-drill/tests/conftest.py) needs its own dependencies/drill image and local services; the root Python lock alone is insufficient. Its in-process fence launcher is a recording stub, not the production Cloudflare adapter. Read those suite-specific prerequisites and ownership/cleanup behavior before running; do not point them at real installation storage.
 
-The separate server candidate adds a `fork-tests` build target and image-revision tests. Those do not exist in main. Its tree-comparison test needs a matching fork checkout and is excluded by the default image test CMD. The paused supervisor has no product Dockerfile/test directory, so there is no computer-image test command to recommend yet.
+The separate server candidate adds a `fork-tests` build target and image-revision tests. Those do not exist in main. Its tree-comparison test needs a matching fork checkout and is excluded by the default image test CMD.
+
+## Computer image tests — local Docker
+
+The [computer Dockerfile](../images/computer/Dockerfile) has `computer` (the default, last stage) and `test` targets; the test variant adds the fake Claude and Codex CLIs first on `PATH` and their file-backed fake provider. Three layers of tests, all with synthetic values only:
+
+```bash
+# 1. The supervisor's receiver and processes, without root (also run by the Python CI job).
+uv run --locked --directory python pytest tests/computer
+
+# 2. Inside the image, as root: the same suite plus image-only tests (contents and pins,
+#    Omnigent's own native-harness writers paused before their renames, Codex's restore test,
+#    the real host under the supervisor). --privileged adds the cgroup-freezer case.
+docker build --platform linux/amd64 -f images/computer/Dockerfile --target test -t cfo-computer:local-test .
+docker run --rm --privileged cfo-computer:local-test
+
+# 3. The built image as containers: the supervisor as tini's only child, its death ending the
+#    container, an assembled restore/install/host/capture/SIGTERM through the command port, and
+#    (after `npm ci --prefix images/computer/integration/directory-backup`) a base and a delta
+#    carried between two computers by the Sandbox SDK's real DirectoryBackup and sandbox-shim.
+docker build --platform linux/amd64 -f images/computer/Dockerfile -t cfo-computer:dev .
+CFO_IT_IMAGE=cfo-computer:dev uv run --no-project --with pytest==9.1.1 pytest -p no:cacheprovider images/computer/integration
+```
+
+`--privileged` is only for the local cgroup case; never mount host directories or credentials. The container tests create and remove their own `cfo-wp34-it-*`/`cfo-wp34-rt-*` containers and networks. Every computer container there runs under a 64-character hostname, as a Cloudflare `durable_object` container does (its Durable Object ID); a stock Python `http.server` cannot bind under it, because `socket.getfqdn()` raises. These are local qualifications of the source and the built image, not of Cloudflare: the real container disk, cgroupfs and capabilities, R2 through the platform's gateway, WorkspaceDO and real sign-ins remain staging work. [`images/computer/tools/rc53_scan.py`](../images/computer/tools/rc53_scan.py) scans staged layers, restored trees or `tar+zstd` layer archives for planted tokens in every encoded form, with per-layer controls; use it on layers downloaded from a staging bucket.
 
 ## Existing CI and remaining qualification
 
 Current [CI](../.github/workflows/ci.yml) runs Node checks/coverage/schema drift, the root Python project, selected source canary scans, both Worker bundles and their canary scans, plus the existing server/test image builds and isolated image unit/in-process suite. It uses ordinary pull requests, read-only repository permissions and pinned actions, with no registry push or deployment. The 45-minute image-job cap is an initial budget; a cached local run does not establish hosted cold-build duration.
 
-Server S3/fault integration, Python restore-drill, candidate-only fork/artifact tests, full image filesystem/layer credential scans and real Cloudflare/provider qualification remain outside these jobs. There is no computer image job until an actual product Dockerfile and suite exist.
+Server S3/fault integration, Python restore-drill, candidate-only fork/artifact tests, full image filesystem/layer credential scans and real Cloudflare/provider qualification remain outside these jobs. The computer supervisor's receiver tests run in the Python job; the computer image's build, in-image and container suites are not yet a CI job.
 
 Before qualification, record actual platform/fork revisions, Worker versions, final server/computer image digests and architecture, CLI/SDK/Litestream identities, packaged contract/policy assets, commands/results/skips and accepted limits. Then test actual receivers and the selected runtime assembly: version/generation refusal, replication-before-response/ack/effect, lost replies, sleep/start fencing, pause expiry, publication/unchanged freshness, credential families/tombstones, native continuation and real browser behavior. Generic reference fixtures and source ancestry do not replace those checks.
 

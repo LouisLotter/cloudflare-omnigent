@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake Codex for tests and the image's test variant; see ../fake_cli.py.
+exec python3 -I "$(dirname "$(readlink -f "$0")")/../fake_cli.py" codex "$@"

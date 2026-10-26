@@ -1,0 +1,9 @@
+{
+  "name": "cfo-computer-directory-backup-harness",
+  "private": true,
+  "type": "module",
+  "description": "Local round trip of the computer's layers through the Sandbox SDK's DirectoryBackup and the image's sandbox-shim. Not part of the pnpm workspace; install with `npm ci --prefix images/computer/integration/directory-backup`.",
+  "dependencies": {
+    "@cloudflare/sandbox": "1.0.0"
+  }
+}
