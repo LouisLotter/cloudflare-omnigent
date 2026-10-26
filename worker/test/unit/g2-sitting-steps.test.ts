@@ -13,6 +13,7 @@ import {
   type KeptSession,
   LIMITS,
   RC07_FILES,
+  recordKill,
   runStep,
   type StepContext,
   type StepName,
@@ -395,5 +396,38 @@ describe("recovery", () => {
     const done = await runStep(server.ports(), ctx("recovery"));
     expect(done).toMatchObject({ stage: "done", appliedBy: "harness kill" });
     expect(server.destroys).toBe(1);
+  });
+});
+
+describe("resnapshot (WP2.6's 1 GB run kills the server itself)", () => {
+  it("waits for the run's kill, then probes from the new boot's first running report", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    expect(await runStep(ports, ctx("resnapshot"))).toMatchObject({
+      stage: "pending",
+      waiting: "the run has not killed the server yet",
+    });
+    await recordKill(ports, "resnapshot"); // over the pending record a tick left
+    await ports.destroy(); // the run's own kill
+    const done = await runStep(ports, ctx("resnapshot"));
+    expect(done).toMatchObject({
+      stage: "done",
+      bootIdBefore: "boot-1",
+      newBootId: "boot-2",
+      probe: { unconfirmedWritesBefore: 2, interrupted: false },
+      replica: { newCommitDurableAfterS: expect.any(Number) },
+    });
+    expect(done.after).toBeUndefined();
+    expect(done.rc07).toBeUndefined();
+  });
+
+  it("counts only the first kill", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    await recordKill(ports, "resnapshot");
+    const first = structuredClone(server.records.get("resnapshot"));
+    server.clock += 60_000;
+    await recordKill(ports, "resnapshot");
+    expect(server.records.get("resnapshot")).toEqual(first);
   });
 });

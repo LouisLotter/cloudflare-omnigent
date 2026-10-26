@@ -23,6 +23,7 @@ import {
   type G2Ports,
   type HttpAnswer,
   type KeptSession,
+  recordKill,
   runStep,
   type StepName,
   type StepRecord,
@@ -305,6 +306,11 @@ try {
   results.rotate = await run("rotate", ownerPassword);
 
   results["replace-2"] = await run("replace-2");
+
+  // WP2.6's 1 GB run kills the server itself and the probe follows it (here at a small size).
+  await recordKill(ports, "resnapshot");
+  await ports.destroy();
+  results.resnapshot = await run("resnapshot", ownerPassword);
 
   config = {
     ...config,

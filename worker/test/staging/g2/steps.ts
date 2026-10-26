@@ -21,13 +21,22 @@
 //              owner changed the password); the owner then checks the edits in the browser.
 //   recovery   optional, once the platform runs with an empty replica prefix: the server must
 //              be in recovery mode (never setup) and stay there, unrestarted.
+//   resnapshot for WP2.6's 1 GB harness, whose own run kills the server (recordKill marks the
+//              kill first): the watch, then the same re-snapshot probe as replace-1 (VD-15 at
+//              1 GB on `basic`), as that harness's generated owner.
 //
 // Requests go through the production forward (OmnigentServer.fetch), the path the web Worker's
 // take after ingress. The control port (8001) is read directly, as the watchdog reads it.
 // Results are console lines {"cfo":"g2_sitting",...}; no credential is ever logged.
 
-export type StepName = "replace-1" | "rotate" | "replace-2" | "recovery";
-export const STEP_NAMES: readonly StepName[] = ["replace-1", "rotate", "replace-2", "recovery"];
+export type StepName = "replace-1" | "rotate" | "replace-2" | "recovery" | "resnapshot";
+export const STEP_NAMES: readonly StepName[] = [
+  "replace-1",
+  "rotate",
+  "replace-2",
+  "recovery",
+  "resnapshot",
+];
 
 export interface EntrypointStatus {
   readonly phase: string;
@@ -160,12 +169,15 @@ export interface StepRecord {
 export const LIMITS = {
   /** From the kill to the new boot's answer. */
   watchMs: 20 * 60_000,
-  /** One invocation's share of a step; the next cron tick resumes it. */
-  invocationMs: 12 * 60_000,
+  /**
+   * One invocation's share of a step's waits; the next cron tick resumes it. With the probe's
+   * limit it stays inside a cron invocation's 15 minutes.
+   */
+  invocationMs: 8 * 60_000,
   pollMs: 1_000,
   /** WP2.5's probe: a security write every 2 s until one is confirmed. */
   probeIntervalMs: 2_000,
-  probeMs: 10 * 60_000,
+  probeMs: 6 * 60_000,
   positionPollMs: 500,
   /** From this object's first sight of a new configuration to the restarted server's answer. */
   applyMs: 15 * 60_000,
@@ -265,6 +277,26 @@ export async function configCheck(ports: G2Ports) {
   };
 }
 
+/**
+ * For a harness that kills the server itself (WP2.6's run): records the kill as `step`'s own,
+ * before it is sent, so the step's watch and probe start from it. Only the first kill counts.
+ */
+export async function recordKill(ports: G2Ports, step: StepName): Promise<void> {
+  const existing = await ports.load(step);
+  if (existing !== undefined && existing.stage !== "pending") return;
+  const now = ports.now();
+  await ports.save({
+    step,
+    stage: "killed",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    invocations: existing?.invocations ?? 0,
+    bootIdBefore: (await ports.status())?.bootId ?? null,
+    killSentAt: now,
+  });
+  ports.log("kill_recorded", { step });
+}
+
 /** Runs one step as far as it can in this invocation. Never throws; the record says why. */
 export async function runStep(ports: G2Ports, ctx: StepContext): Promise<StepRecord> {
   const started = ports.now();
@@ -349,6 +381,7 @@ async function prerequisites(
   record: StepRecord,
   started: number,
 ): Promise<string> {
+  if (ctx.step === "resnapshot") return "the run has not killed the server yet";
   if (ctx.step === "replace-1" || ctx.step === "replace-2") {
     if (ctx.step === "replace-1") {
       const config = await ports.config();
@@ -565,6 +598,15 @@ async function afterAnswer(ports: G2Ports, record: StepRecord, ctx: StepContext)
     case "recovery":
       record.recovery = { ...record.recovery, ...(await recoveryHolds(ports, record, from)) };
       return;
+    case "resnapshot": {
+      const [probe, replica] = await Promise.all([
+        personView(ports, ctx, from).catch((e: unknown) => ({ error: String(e).slice(0, 200) })),
+        replicaView(ports, ctx, from).catch((e: unknown) => ({ error: String(e).slice(0, 200) })),
+      ]);
+      record.probe = { ...probe, interrupted: record.resumed ?? false };
+      record.replica = replica;
+      return;
+    }
   }
 }
 

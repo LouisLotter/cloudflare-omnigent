@@ -6,9 +6,12 @@
 #
 #   run.sh bucket     deploy the replica bucket's holder (cfo-stg-g2-sitting-r2, bucket
 #                     cfo-stg-g2-sitting-r2-db), plan the installation (owner "owner", replica
-#                     s3://cfo-stg-g2-sitting-r2-db/omnigent), generate the owner's password
-#   run.sh token      [owner] paste the R2 token's two values (not echoed); starts the bootstrap
-#                     in the background (log: $G2_DIR/bootstrap.log) and returns
+#                     s3://cfo-stg-g2-sitting-r2-db/omnigent), generate the owner's password;
+#                     then deploy the 1 GB run (cfo-stg-g2-sitting-1gb, bucket
+#                     cfo-stg-g2-sitting-1gb-db), which holds until `big`
+#   run.sh token      [owner] paste the R2 token's two values (not echoed; one token for both
+#                     buckets); sets them on the 1 GB run, starts the bootstrap in the background
+#                     (log: $G2_DIR/bootstrap.log) and returns
 #   run.sh follow     wait for the bootstrap to end; then the anonymous probe
 #   run.sh resume     run the bootstrap again (exit 2 or 3 from follow: still waiting or not
 #                     checked yet); it needs no secret once the first deploy is done
@@ -23,8 +26,10 @@
 #                     removed from the Worker in the same change)
 #   run.sh recovery   optional: an empty replica prefix; the server must enter recovery mode
 #   run.sh collect    every line of the run, redacted, into $G2_DIR/collected-<time>/
-#   run.sh teardown   tear everything down (web, platform, holder), list and sweep, and remove
-#                     the state and password files
+#   run.sh big        after the sitting: release the 1 GB run (VD-15 at 1 GB on `basic`, about
+#                     35 minutes, unattended); big-status and big-collect follow it
+#   run.sh teardown   tear everything down (web, platform, 1 GB run, holder), list and sweep,
+#                     and remove the state and password files
 #
 # Output goes to $G2_DIR (default $HOME/.pt/g2-sitting), redacted with spikes/x1/scripts/redact.py
 # (account, zone, owner address) before it leaves the laptop. Push images one at a time: run no
@@ -42,6 +47,8 @@ stg=(pnpm -s --dir "$root" stg)
 owner=G2-sitting
 platform=cfo-stg-g2-sitting-platform
 web=cfo-stg-g2-sitting-web
+big=cfo-stg-g2-sitting-1gb
+big_bucket=cfo-stg-g2-sitting-1gb-db
 mkdir -p "$out"
 chmod 700 "$out"
 
@@ -85,28 +92,50 @@ case "${1:-}" in
     if [ ! -f "$secrets" ]; then
       (umask 077; python3 -I -c 'import json,secrets; print(json.dumps({"ownerPassword": "cfo-stg-" + secrets.token_urlsafe(18)}))' >"$secrets")
     fi
-    echo "Ready for the owner's R2 token: bucket cfo-stg-g2-sitting-r2-db."
+    # The 1 GB run (WP2.6's harness): the server image as the seeder's base, then its deploy
+    # with generated secrets; it holds until the token and `big`.
+    logged big-build docker build -q -f "$root/images/server/Dockerfile" -t cfo-g2-server:dev "$root"
+    python3 -I -c '
+import json, secrets, sys
+account = json.load(open(sys.argv[1]))["accountId"]
+print(json.dumps({
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET": secrets.token_hex(32),
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD": "cfo-stg-" + secrets.token_urlsafe(18),
+    "SERVER_ENV_CFO_REPLICA_ENDPOINT": f"https://{account}.r2.cloudflarestorage.com",
+}))' "$state_dir/config.json" | logged big-deploy "${stg[@]}" deploy --suffix g2-sitting-1gb \
+      --owner "$owner" --config worker/test/staging/g2/resnapshot/wrangler.jsonc --days 1 --secrets-stdin
+    echo "Ready for the owner's R2 token: buckets cfo-stg-g2-sitting-r2-db and $big_bucket."
     ;;
   token)
     [ -f "$secrets" ] || { echo "run.sh bucket first"; exit 2; }
-    echo "Paste the R2 token's values (they are not shown). Bucket: cfo-stg-g2-sitting-r2-db"
+    echo "Paste the R2 token's values (they are not shown). Buckets: cfo-stg-g2-sitting-r2-db, $big_bucket"
     read -rp "Access Key ID: " key_id
     read -rsp "Secret Access Key: " key_secret
     echo
     now >"$out/token-at"
-    # The values go from this shell's builtin printf, through a pipe, to Python and then to the
-    # bootstrap's stdin: never on a command line, in an environment or in a file.
+    # The values go from this shell's builtin printf, through a pipe, to Python, and from it to
+    # the staging tool's stdin (the 1 GB run) and the bootstrap's stdin: never on a command
+    # line, in an environment or in a file.
     printf '%s\n%s\n' "$key_id" "$key_secret" | python3 -I -c '
-import json, sys
+import json, subprocess, sys
 key_id = sys.stdin.readline().strip()
 key_secret = sys.stdin.readline().strip()
 if not key_id or not key_secret:
     sys.exit("both values are needed")
+# The 1 GB run first; its output (names only) goes to the terminal, never to the bootstrap.
+big = subprocess.run(
+    ["node", "--no-warnings", sys.argv[2] + "/scripts/staging/stg.ts", "secrets",
+     "--suffix", "g2-sitting-1gb", "--owner", "G2-sitting"],
+    input=json.dumps({
+        "SERVER_ENV_LITESTREAM_ACCESS_KEY_ID": key_id,
+        "SERVER_ENV_LITESTREAM_SECRET_ACCESS_KEY": key_secret,
+    }), text=True, cwd=sys.argv[2], stdout=sys.stderr, stderr=sys.stderr)
+print("1 GB run: token " + ("set" if big.returncode == 0 else "NOT set (tell the lead)"), file=sys.stderr)
 print(json.dumps({
     "ownerPassword": json.load(open(sys.argv[1]))["ownerPassword"],
     "replicaAccessKeyId": key_id,
     "replicaSecretAccessKey": key_secret,
-}))' "$secrets" | setsid nohup bash -c '
+}))' "$secrets" "$root" | setsid nohup bash -c '
       node "$1/scripts/bootstrap/bootstrap.ts" run --staging g2-sitting --secrets-stdin --wait-minutes 45 2>&1 |
         python3 -I "$1/spikes/x1/scripts/redact.py" "$2" - |
         sed -E -e "s#[a-z0-9-]+\.cloudflareaccess\.com#<team>#g" -e "s#hmac-sha256:[A-Za-z0-9_:-]+#<owner-pin>#g" >"$3"
@@ -203,14 +232,41 @@ for line in sys.stdin:
     cp "$out"/*.log "$dir/" 2>/dev/null || true
     ls -la "$dir"
     ;;
+  big)
+    now >"$out/big-at"
+    echo '{"WP26_GO": "go"}' | logged big "${stg[@]}" secrets --suffix g2-sitting-1gb --owner "$owner"
+    echo "The 1 GB run starts within a minute and takes about 35 minutes; follow it with big-status."
+    ;;
+  big-status)
+    lines "$big" "$(cat "$out/big-at")" |
+      grep -E '"cfo\\?":\\?"(wp26_staging|wp26_seeder|g2_sitting|watchdog)' | cut -c1-600 | tail -${2:-30}
+    ;;
+  big-collect)
+    dir="$out/big-collected-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$dir"
+    lines "$big" "$(cat "$out/big-at")" >"$dir/$big.jsonl"
+    keys="$(CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects list --bucket-name "$big_bucket" \
+      --prefix results/ | grep -oE 'results/[^" ]+/summary\.json' | sort -u)"
+    for key in $keys; do
+      CLOUDFLARE_ACCOUNT_ID="$(account)" pnpm -s --dir "$root/worker" exec wrangler r2 object get \
+        "$big_bucket/$key" --remote --pipe 2>/dev/null >"$dir/raw.json"
+      python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/raw.json" ||
+        { echo "could not read $key" >&2; rm -f "$dir/raw.json"; exit 1; }
+      scrub <"$dir/raw.json" >"$dir/$(echo "$key" | tr / _)"
+      rm -f "$dir/raw.json"
+    done
+    ls -la "$dir"
+    ;;
   teardown)
     logged teardown-web "${stg[@]}" teardown --suffix g2-sitting-web || true
     logged teardown-platform "${stg[@]}" teardown --suffix g2-sitting-platform || true
+    logged teardown-big "${stg[@]}" teardown --suffix g2-sitting-1gb || true
     logged teardown-bucket "${stg[@]}" teardown --suffix g2-sitting-r2 || true
     logged teardown-list "${stg[@]}" list
     logged teardown-sweep "${stg[@]}" sweep
     rm -f "$secrets" "$install_dir/$platform.json"
+    docker image rm cfo-g2-server:dev >/dev/null 2>&1 || true
     # Lock files stay: deleting one would let two holders coexist (scripts/staging/lock.ts).
     ;;
-  *) sed -n '2,33p' "$0"; exit 2 ;;
+  *) sed -n '2,40p' "$0"; exit 2 ;;
 esac

@@ -1,0 +1,69 @@
+{
+  "$schema": "../../../../../node_modules/wrangler/config-schema.json",
+  // G2 sitting, VD-15 at 1 GB on `basic`: WP2.6's harness (../../wp26/harness.ts), under the
+  // sitting's names, with the G2 re-snapshot probe after its replacement (G2_RESNAPSHOT). The
+  // production OmnigentServer and the final server image on `basic`; a seeder on `standard-1`
+  // grows the database to 1.2 GB first. It waits for the owner's R2 token (the same token as
+  // the sitting, scoped to both buckets) and for WP26_GO, which run.sh big sets after the
+  // sitting. Deploy only with run.sh (bucket):
+  //   pnpm stg deploy --suffix g2-sitting-1gb --owner G2-sitting --config <this file> --days 1 --secrets-stdin
+  "name": "cfo-stg-g2-sitting-1gb",
+  "main": "../../wp26/harness.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  // As the production Workers: console logs, no invocation logs (they record request headers).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "OMNIGENT", "class_name": "OmnigentServer" },
+      { "name": "SEEDER", "class_name": "Seeder" },
+      { "name": "RUN", "class_name": "RestoreRun" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OmnigentServer", "Seeder", "RestoreRun"] }],
+  "containers": [
+    {
+      // The final server image, built as the platform Worker builds it (worker/wrangler.jsonc).
+      "name": "cfo-stg-g2-sitting-1gb-server",
+      "class_name": "OmnigentServer",
+      "image": "../../../../../images/server/Dockerfile",
+      "image_build_context": "../../../../..",
+      "instance_type": "basic",
+      "max_instances": 1
+    },
+    {
+      "name": "cfo-stg-g2-sitting-1gb-seeder",
+      "class_name": "Seeder",
+      "image": "../../wp26/seeder/Dockerfile",
+      "image_build_context": "../../wp26/seeder",
+      // The seeder is the server image plus seed.py: run.sh builds that image locally first.
+      "image_vars": { "SERVER_IMAGE": "cfo-g2-server:dev" },
+      "instance_type": "standard-1",
+      "max_instances": 1
+    }
+  ],
+  // The replica (prefix omnigent/) and the results (results/<run>/).
+  "r2_buckets": [{ "binding": "RESULTS", "bucket_name": "cfo-stg-g2-sitting-1gb-db" }],
+  "triggers": { "crons": ["* * * * *"] },
+  // Synthetic values only. The cookie secret, the bootstrap password and the R2 endpoint are
+  // secrets run.sh generates (or reads from the staging config); the R2 token arrives with the
+  // sitting's `run.sh token`, and WP26_GO with `run.sh big`.
+  "vars": {
+    "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0g2b",
+    "SEED_MB": "1200",
+    "RUN_NAME": "g2-1gb",
+    "G2_RESNAPSHOT": "true",
+    "WP26_HOLD": "true",
+    "SERVER_ENV_CFO_INSTALLATION_INITIALIZED": "true",
+    "SERVER_ENV_CFO_REPLICA_URL": "s3://cfo-stg-g2-sitting-1gb-db/omnigent",
+    "SERVER_ENV_CFO_REPLICA_REGION": "auto",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL": "https://cfo-stg-g2-sitting-1gb.invalid",
+    "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary"
+  }
+}

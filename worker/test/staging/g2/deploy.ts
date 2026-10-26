@@ -12,10 +12,11 @@
 // own deployment and owner; its secrets stay, and the image is the same (same build epoch), so
 // Wrangler pushes nothing and starts no rollout.
 //
-// dry-run renders, from a synthetic installation, the four configurations the sitting deploys
-// (the replica bucket's holder, the production platform and web Workers as the bootstrap
-// renders them, and the harness), checks the staging ones with the staging tool's own rules,
-// and runs `wrangler deploy --dry-run` on each. No Cloudflare call.
+// dry-run renders, from a synthetic installation, every configuration the sitting deploys (the
+// replica bucket's holder, the production platform and web Workers as the bootstrap renders
+// them, the harness and its recovery variant, and the 1 GB run), checks the staging ones with
+// the staging tool's own rules, and runs `wrangler deploy --dry-run` on each. No Cloudflare
+// call.
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -45,6 +46,10 @@ export const PLATFORM = `cfo-stg-${BASE}-platform`;
 export const PLATFORM_SUFFIX = `${BASE}-platform`;
 export const HOLDER = `cfo-stg-${BASE}-r2`;
 export const BUCKET = `${HOLDER}-db`;
+/** VD-15 at 1 GB: WP2.6's harness under the sitting's names (resnapshot/wrangler.jsonc). */
+export const BIG = `cfo-stg-${BASE}-1gb`;
+/** The local server image the 1 GB run's seeder builds on. */
+export const SEEDER_BASE = "cfo-g2-server:dev";
 /** The harness entry, relative to worker/, where the rendered configuration is written. */
 const HARNESS_MAIN = "test/staging/g2/platform.ts";
 
@@ -129,13 +134,26 @@ async function dryRun(outdir: string): Promise<number> {
     ],
     ["platform (harness)", PLATFORM, harnessConfig(plan), true],
     ["platform (recovery)", PLATFORM, harnessConfig(plan, emptyReplicaUrl(plan)), true],
+    ["1 GB run", BIG, base("test/staging/g2/resnapshot/wrangler.jsonc"), true],
   ];
+  // The 1 GB run's seeder builds FROM this local tag (resnapshot/wrangler.jsonc, image_vars).
+  const built = spawnSync(
+    "docker",
+    ["build", "-q", "-f", join(ROOT, "images/server/Dockerfile"), "-t", SEEDER_BASE, ROOT],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
+  if (built.status !== 0) throw new Error(`docker build of ${SEEDER_BASE} failed`);
   let failures = 0;
   for (const [label, name, config, guarded] of configs) {
     const dir = join(outdir, label.replace(/\W+/g, "-"));
     mkdirSync(dir, { recursive: true });
     // The holder's paths are relative to its own directory; the others' to worker/.
-    const at = label === "holder" ? join(HERE, "bucket") : WORKER;
+    const at =
+      label === "holder"
+        ? join(HERE, "bucket")
+        : label === "1 GB run"
+          ? join(HERE, "resnapshot")
+          : WORKER;
     const status = withRenderedConfig(at, { ...config, name }, (path) => {
       if (guarded) validateDeployConfig(readWranglerConfig(path, WORKER), accountId, name);
       const wrangler = spawnSync(
