@@ -9,15 +9,19 @@
 // the production Workers (deploy.ts renders the bootstrap's own configuration with this entry).
 
 import type { PlatformEnv } from "../../../src/env.ts";
-import platform, {
-  ControlDO,
-  PlatformInternal,
-  OmnigentServer as ProductionOmnigentServer,
-} from "../../../src/index.ts";
+import platform, { OmnigentServer as ProductionOmnigentServer } from "../../../src/index.ts";
 import { OMNIGENT_SERVER_OBJECT_NAME } from "../../../src/shared/rpc.ts";
 import { log, StepRunner, type StepSummary } from "./object.ts";
 
-export { ControlDO, PlatformInternal };
+// Every other class and entrypoint of the production platform Worker, unchanged.
+export {
+  ComputerApi,
+  ControlDO,
+  DirectoryBackupGateway,
+  OmnigentRoute,
+  PlatformInternal,
+  WorkspaceDO,
+} from "../../../src/index.ts";
 
 /** The staging-only settings: secrets that never reach the container (no SERVER_ENV_ prefix). */
 interface G2Settings {
