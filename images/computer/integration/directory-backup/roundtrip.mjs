@@ -17,6 +17,7 @@ import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
+import { zstdDecompressSync } from "node:zlib";
 import { DirectoryBackup, DirectoryBackupGateway } from "@cloudflare/sandbox";
 import { fileBucket } from "./fake-r2.mjs";
 
@@ -30,6 +31,8 @@ if (!IMAGE || !NETWORK || !R2_ROOT || !OUT || !TAG) throw new Error("run through
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 const ulid = (prefix) => `${prefix}_${[...randomBytes(26)].map((b) => ALPHABET[b % 32]).join("")}`;
 const bucket = fileBucket(R2_ROOT);
+// A synthetic login, built at run time (no canary literal in source): never in any object.
+const LOGIN = `${"CFO_"}CANARY_RT${randomBytes(12).toString("hex")}`;
 const checks = [];
 const check = (name, ok, detail) => {
   checks.push({ name, ok: Boolean(ok), ...(ok ? {} : { detail }) });
@@ -162,7 +165,7 @@ try {
       "chmod 0750 work/proj/run.sh && ln -s src/main.py work/proj/link && " +
       "head -c 3000000 /dev/urandom > work/proj/blob.bin && ln work/proj/blob.bin work/proj/blob-alias.bin && " +
       "printf '{\"type\":\"user\"}\\n' > .claude/projects/-w/s.jsonl && printf '{}' > .claude.json && " +
-      "printf 'CFO_CANARY_RTLOGIN0123456789' > .claude/.credentials.json && " +
+      `printf '%s' '${LOGIN}' > .claude/.credentials.json && ` +
       "chown -R omnigent:omnigent work .claude .claude.json .codex",
   );
   const records = [];
@@ -267,6 +270,16 @@ try {
   check("B holds no login", !b.sh("ls -A /home/omnigent/.claude").includes(".credentials.json"));
   const objects = (await bucket.list({ prefix: `workspace/${computerId}/` })).objects;
   result.objects = objects.length;
+  // RC-53 on the archives as stored: decompressed, no object holds the login.
+  for (const { key } of objects) {
+    const object = await bucket.get(key);
+    const raw = Buffer.from(await new Response(object.body).arrayBuffer());
+    const tar = zstdDecompressSync(raw);
+    check(
+      `object ${objects.indexOf(objects.find((o) => o.key === key))} holds no login`,
+      !tar.includes(LOGIN),
+    );
+  }
 } catch (error) {
   check("no exception", false, String(error?.stack ?? error));
 } finally {
