@@ -34,14 +34,16 @@ export async function accountPlan(overrides: Partial<Installation> = {}): Promis
       url: "s3://cfo-canary-replica/omnigent",
       endpoint: "https://canary.r2.example.test",
     },
+    artifacts: { url: "s3://cfo-canary-artifacts" },
     target: { kind: "account" },
     plannedAt: "2026-10-22T11:00:00.000Z",
     ...overrides,
   };
 }
 
+/** A staging test installation: a file replica, and the artifacts on the container's disk. */
 export async function stagingPlan(overrides: Partial<Installation> = {}): Promise<Installation> {
-  return accountPlan({
+  const { artifacts: _onDisk, ...plan } = await accountPlan({
     platformWorker: "cfo-stg-wp24-platform",
     webWorker: "cfo-stg-wp24-web",
     hostname: "cfo-stg-wp24-web.example.test",
@@ -53,8 +55,8 @@ export async function stagingPlan(overrides: Partial<Installation> = {}): Promis
       webSuffix: "wp24-web",
       days: 1,
     },
-    ...overrides,
   });
+  return { ...plan, ...overrides };
 }
 
 export function freshState(installation: Installation): BootstrapState {

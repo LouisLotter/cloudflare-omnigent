@@ -1,7 +1,8 @@
 // Couplings the bootstrap depends on, checked against the other side's own code:
 //   - the server image (WP2.3) reads the environment the bootstrap gives it, before and after the
 //     release, with its own parser (images/server/cfo_server/config.py, standard library only);
-//   - the bootstrap script never talks to the installation, and never touches Access or tokens.
+//   - the bootstrap script never talks to the installation, and never touches Access or tokens;
+//     the only thing it creates besides its deploys is a missing R2 bucket of the plan.
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -29,7 +30,8 @@ function imageReads(env: Record<string, string>): Record<string, unknown> {
     "try:",
     "    c = config.load(env)",
     "    print(json.dumps({'initialized': c.installation_initialized, 'bootstrap': c.bootstrap_credentials,",
-    "                      'replica': c.replica.url, 'base': c.base_url, 'id': c.installation_id}))",
+    "                      'replica': c.replica.url, 'base': c.base_url, 'id': c.installation_id,",
+    "                      'artifacts': c.artifacts.uri}))",
     "except config.ConfigError as e:",
     "    print(json.dumps({'error': str(e)}))",
   ].join("\n");
@@ -75,6 +77,7 @@ describe.skipIf(!python)(
           replica: plan.replica.url,
           base: `https://${plan.hostname}`,
           id: plan.installationId,
+          artifacts: plan.artifacts?.url ?? null,
         });
         const after = { ...before, ...RELEASE_CHANGES };
         expect(after).not.toHaveProperty(PASSWORD_SECRET, OWNER_PASSWORD);
@@ -86,9 +89,28 @@ describe.skipIf(!python)(
           replica: plan.replica.url,
           base: `https://${plan.hostname}`,
           id: plan.installationId,
+          artifacts: plan.artifacts?.url ?? null,
         });
       },
     );
+
+    it("an installation without its artifact bucket is refused by the image (G2-DUR-001)", async () => {
+      const plan = await accountPlan();
+      const secrets = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+      const released = { ...secrets, ...RELEASE_CHANGES };
+      const { OMNIGENT_ARTIFACT_URI: _uri, ...env } = containerEnv(plan, released);
+      expect(imageReads(env).error).toMatch(/^OMNIGENT_ARTIFACT_URI is required/);
+      // The staging test switch is the bootstrap's only way to the container's disk.
+      const staging = await stagingPlan();
+      const stagingSecrets = secretsToAdd(staging, new Set(), supplied, {
+        cookieSecret: "d".repeat(64),
+      });
+      const { CFO_ALLOW_LOCAL_ARTIFACTS: _switch, ...noSwitch } = containerEnv(
+        staging,
+        stagingSecrets,
+      );
+      expect(imageReads(noSwitch).error).toMatch(/^OMNIGENT_ARTIFACT_URI is required/);
+    });
 
     it("an account installation without the file-replica switch refuses a file replica", async () => {
       const plan = await stagingPlan();
@@ -130,10 +152,13 @@ describe("the bootstrap never talks to the installation, Access or tokens", () =
   it.each(sources)(
     "%s creates or changes no Access application, policy or service token",
     (_file, text) => {
-      const code = text.replace(/^\s*\/\/.*$/gm, "");
+      // The one creation allowed: a missing R2 bucket of the plan (`bootstrap.ts buckets`).
+      const bucketCreate = /"r2",\s*"buckets",\s*"create",\s*"--body"/g;
+      const code = text.replace(/^\s*\/\/.*$/gm, "").replace(bucketCreate, "");
       expect(code).not.toMatch(/service[-_]tokens?"/);
       expect(code).not.toMatch(/"(create|update|delete|rotate|edit)"/);
       expect(code).not.toMatch(/"policies"/);
+      expect(code).not.toMatch(/"r2",\s*"(buckets|objects)",\s*"delete"/);
     },
   );
 });

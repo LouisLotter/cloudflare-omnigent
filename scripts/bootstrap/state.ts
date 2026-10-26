@@ -102,6 +102,17 @@ function parseInstallation(value: unknown): Installation {
   if (endpoint !== undefined && typeof endpoint !== "string") {
     throw new Error("the state file's replica endpoint is not text");
   }
+  let artifacts: Installation["artifacts"];
+  if (i.artifacts !== undefined) {
+    const a = object(i.artifacts, "installation.artifacts");
+    if (a.endpoint !== undefined && typeof a.endpoint !== "string") {
+      throw new Error("the state file's artifacts endpoint is not text");
+    }
+    artifacts = {
+      url: str(a, "url", "installation.artifacts"),
+      ...(a.endpoint === undefined ? {} : { endpoint: a.endpoint }),
+    };
+  }
   const installation: Installation = {
     installationId: str(i, "installationId", "installation"),
     accountId: str(i, "accountId", "installation"),
@@ -114,6 +125,7 @@ function parseInstallation(value: unknown): Installation {
       url: str(replica, "url", "installation.replica"),
       ...(endpoint === undefined ? {} : { endpoint }),
     },
+    ...(artifacts === undefined ? {} : { artifacts }),
     target: parseTarget(i.target),
     plannedAt: str(i, "plannedAt", "installation"),
   };

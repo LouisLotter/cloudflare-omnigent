@@ -7,7 +7,9 @@
 //   node scripts/bootstrap/bootstrap.ts plan --hostname <host> --account <id> \
 //       --owner-email <address> --owner-username <name> \
 //       --replica-url s3://<bucket>/<path> --replica-endpoint https://<account>.r2.cloudflarestorage.com \
+//       [--artifacts-url s3://<bucket>[/<prefix>]] [--artifacts-endpoint <url>] \
 //       [--platform-worker cloudflare-omnigent] [--web-worker cloudflare-omnigent-web] [--state <file>]
+//   node scripts/bootstrap/bootstrap.ts buckets [--platform-worker <name> | --state <file>]
 //   node scripts/bootstrap/bootstrap.ts run [--platform-worker <name> | --state <file>]
 //       [--secrets-stdin] [--wait-minutes 30] [--no-verify]
 //   node scripts/bootstrap/bootstrap.ts status [--platform-worker <name> | --state <file>] [--logs]
@@ -19,15 +21,28 @@
 //       --owner-username <name> --replica-url file:///replica [--days 1]
 //
 // `plan` records the installation in a state file (state.ts) and touches nothing at Cloudflare.
-// It generates the installation ID and the owner pin; the owner's address is not kept. Create
-// the hostname's owner-only Access application before `run` (cookie SameSite=lax, the owner's
-// address as the only rule, no bypass, no service token): `run` checks it and never changes it.
+// It generates the installation ID and the owner pin; the owner's address is not kept. With an
+// S3 replica, Omnigent's artifacts (uploaded files, session resources) get a bucket of their
+// own, `<platform Worker>-artifacts` unless --artifacts-url names another, at the replica's
+// endpoint unless --artifacts-endpoint names another: the container's disk is lost at every
+// restart (G2-DUR-001). Create the hostname's owner-only Access application before `run`
+// (cookie SameSite=lax, the owner's address as the only rule, no bypass, no service token):
+// `run` checks it and never changes it.
+//
+// `buckets` creates the plan's R2 buckets that are missing (the replica's and the artifacts'),
+// with the installer's `cf` login, and changes nothing else. Then make one R2 API token with
+// Object Read & Write on exactly those buckets: `run` asks for its two values once, and sets
+// them for both uses, under their own names (the replica's for Litestream, the artifacts' for
+// Omnigent). A staging installation's buckets come from the staging tool's deployments instead;
+// for it, `buckets` only checks them. `run` refuses to make the first deploy while a bucket is
+// missing.
 //
 // `run` does the rest (machine.ts) and can be repeated at any point, also after a crash: it
-// continues where the last run stopped. It reads the owner's password (and the replica's
-// credentials) only when they must be uploaded: from a JSON object on stdin with
-// --secrets-stdin ({"ownerPassword": …, "replicaAccessKeyId": …, "replicaSecretAccessKey": …}),
-// or else from a prompt. Exit status: 0 done; 2 still waiting for the owner to be initialized
+// continues where the last run stopped. It reads the owner's password (and the R2 token's
+// values) only when they must be uploaded: from a JSON object on stdin with --secrets-stdin
+// ({"ownerPassword": …, "replicaAccessKeyId": …, "replicaSecretAccessKey": …}, and optionally
+// "artifactsAccessKeyId" and "artifactsSecretAccessKey" for a second token; without them the
+// replica's serve both buckets), or else from a prompt. Exit status: 0 done; 2 still waiting for the owner to be initialized
 // and durable (run again); 3 released, but the check after the version switch has not passed
 // yet (run again); 1 an error or a refusal.
 //
@@ -42,7 +57,7 @@ import { parseArgs } from "node:util";
 import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
 import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
 import { acquireLock } from "../staging/lock.ts";
-import { accountCloud, queryWorkerLogs } from "./cloud.ts";
+import { accountCloud, bucketExists, ensureBuckets, queryWorkerLogs } from "./cloud.ts";
 import { decide, parseLogs } from "./events.ts";
 import {
   BootstrapRefusal,
@@ -51,6 +66,8 @@ import {
   runBootstrap,
 } from "./machine.ts";
 import {
+  bucketsOf,
+  defaultArtifactsUrl,
   type Installation,
   installationProblems,
   newInstallationId,
@@ -125,6 +142,12 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
     webWorker = text("web-worker") ?? "cloudflare-omnigent-web";
   }
   const endpoint = text("replica-endpoint");
+  const replicaUrl = required("replica-url");
+  // A file replica (staging tests) keeps the artifacts on the container's disk unless named.
+  const artifactsUrl =
+    text("artifacts-url") ??
+    (replicaUrl.startsWith("s3:") ? defaultArtifactsUrl(platformWorker) : undefined);
+  const artifactsEndpoint = text("artifacts-endpoint");
   const installation: Installation = {
     installationId: newInstallationId((n) => new Uint8Array(randomBytes(n))),
     accountId,
@@ -133,7 +156,15 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
     hostname,
     ownerPin: await makeOwnerPin(email, new Uint8Array(randomBytes(32))),
     ownerUsername: username,
-    replica: { url: required("replica-url"), ...(endpoint === undefined ? {} : { endpoint }) },
+    replica: { url: replicaUrl, ...(endpoint === undefined ? {} : { endpoint }) },
+    ...(artifactsUrl === undefined
+      ? {}
+      : {
+          artifacts: {
+            url: artifactsUrl,
+            ...(artifactsEndpoint === undefined ? {} : { endpoint: artifactsEndpoint }),
+          },
+        }),
     target,
     plannedAt: new Date().toISOString(),
   };
@@ -150,6 +181,40 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
   console.log(
     `planned ${installation.installationId}: ${platformWorker} and ${webWorker} for https://${hostname}; state in ${path}`,
   );
+  const buckets = bucketsOf(installation);
+  if (buckets.length > 0) {
+    console.log(
+      `R2 buckets: ${buckets.join(", ")}. Next: bootstrap.ts buckets, then one R2 token with Object Read & Write on exactly these buckets.`,
+    );
+  }
+}
+
+/** The plan's R2 buckets: created when missing in the installer's account, checked in staging. */
+function buckets(path: string): number {
+  const installation = fileStateStore(path).load().installation;
+  const problems = installationProblems(installation);
+  if (problems.length > 0) throw new Error(`the plan is not usable: ${problems.join("; ")}`);
+  const names = bucketsOf(installation);
+  const run = spawnRunner(installation.accountId);
+  if (installation.target.kind === "staging") {
+    // The staging tool creates and tears down its buckets with the deployments that declare them.
+    const missing = names.filter((name) => !bucketExists(run, name));
+    if (missing.length > 0) {
+      throw new Error(
+        `missing R2 buckets: ${missing.join(", ")}; a staging installation's buckets come from the staging tool (a deployment that declares them)`,
+      );
+    }
+    console.log(`bootstrap: the R2 buckets exist: ${names.join(", ") || "none needed"}`);
+    return 0;
+  }
+  const created = ensureBuckets(run, names);
+  for (const name of names) {
+    console.log(`bootstrap: R2 bucket ${name}: ${created.includes(name) ? "created" : "exists"}`);
+  }
+  console.log(
+    "bootstrap: next, one R2 API token with Object Read & Write on exactly these buckets; `run` asks for its two values once.",
+  );
+  return 0;
 }
 
 /** Reads a line without echoing it, from the terminal. */
@@ -198,10 +263,14 @@ async function suppliedSecrets(
     const ownerPassword = pick("ownerPassword");
     const replicaAccessKeyId = pick("replicaAccessKeyId");
     const replicaSecretAccessKey = pick("replicaSecretAccessKey");
+    const artifactsAccessKeyId = pick("artifactsAccessKeyId");
+    const artifactsSecretAccessKey = pick("artifactsSecretAccessKey");
     return {
       ...(ownerPassword === undefined ? {} : { ownerPassword }),
       ...(replicaAccessKeyId === undefined ? {} : { replicaAccessKeyId }),
       ...(replicaSecretAccessKey === undefined ? {} : { replicaSecretAccessKey }),
+      ...(artifactsAccessKeyId === undefined ? {} : { artifactsAccessKeyId }),
+      ...(artifactsSecretAccessKey === undefined ? {} : { artifactsSecretAccessKey }),
     };
   }
   const ownerPassword = await prompt("The owner's Omnigent password (not shown): ");
@@ -209,8 +278,11 @@ async function suppliedSecrets(
   if (problem) throw new Error(problem);
   if ((await prompt("Again: ")) !== ownerPassword) throw new Error("the passwords differ");
   if (!needsReplica) return { ownerPassword };
-  const replicaAccessKeyId = await prompt("The replica's R2 access key ID (not shown): ");
-  const replicaSecretAccessKey = await prompt("The replica's R2 secret access key (not shown): ");
+  // One token for the replica's and the artifacts' buckets: its values serve both.
+  const replicaAccessKeyId = await prompt(
+    "The R2 token's access key ID, for the replica's and the artifacts' buckets (not shown): ",
+  );
+  const replicaSecretAccessKey = await prompt("The R2 token's secret access key (not shown): ");
   return { ownerPassword, replicaAccessKeyId, replicaSecretAccessKey };
 }
 
@@ -225,11 +297,23 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       releases.push(acquireLock(lock, 0, holder));
     }
     const installation = store.load().installation;
+    // The first deploy needs the plan's buckets, which the R2 token must cover (G2-DUR-001).
+    if (store.load().journal.platformDeployedAt === undefined) {
+      const runner = spawnRunner(installation.accountId);
+      const missing = bucketsOf(installation).filter((name) => !bucketExists(runner, name));
+      if (missing.length > 0) {
+        throw new BootstrapRefusal(
+          `missing R2 buckets: ${missing.join(", ")}. Run bootstrap.ts buckets first, then make the R2 token cover them`,
+        );
+      }
+    }
     // The secrets are read once, before anything else, only if this run will upload them.
     const fromStdin = values["secrets-stdin"] === true;
     const supplied = fromStdin ? await suppliedSecrets(true, false) : undefined;
     let prompted: SuppliedSecrets | undefined;
-    const needsReplica = installation.replica.url.startsWith("s3:");
+    // An R2 token for the replica's bucket, the artifacts' or both.
+    const needsReplica =
+      installation.replica.url.startsWith("s3:") || installation.artifacts !== undefined;
     if (
       !fromStdin &&
       process.stdin.isTTY &&
@@ -336,6 +420,8 @@ async function main(): Promise<number> {
       "owner-username": { type: "string" },
       "replica-url": { type: "string" },
       "replica-endpoint": { type: "string" },
+      "artifacts-url": { type: "string" },
+      "artifacts-endpoint": { type: "string" },
       "platform-worker": { type: "string" },
       "web-worker": { type: "string" },
       state: { type: "string" },
@@ -358,13 +444,15 @@ async function main(): Promise<number> {
     case "plan":
       await plan(values);
       return 0;
+    case "buckets":
+      return buckets(statePath());
     case "run":
       return run(values, statePath());
     case "status":
       await status(statePath(), values.logs === true);
       return 0;
     default:
-      throw new Error("usage: bootstrap.ts plan|run|status (see the header comment)");
+      throw new Error("usage: bootstrap.ts plan|buckets|run|status (see the header comment)");
   }
 }
 

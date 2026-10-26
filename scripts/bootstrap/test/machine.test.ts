@@ -8,6 +8,8 @@ import {
   runBootstrap,
 } from "../machine.ts";
 import {
+  ARTIFACTS_KEY_ID_SECRET,
+  ARTIFACTS_SECRET_KEY_SECRET,
   COOKIE_SECRET,
   INITIALIZED_SECRET,
   type Installation,
@@ -141,8 +143,13 @@ describe("runBootstrap: the whole bootstrap", () => {
         PASSWORD_SECRET,
         REPLICA_KEY_ID_SECRET,
         REPLICA_SECRET_KEY_SECRET,
+        ARTIFACTS_KEY_ID_SECRET,
+        ARTIFACTS_SECRET_KEY_SECRET,
       ].sort(),
     );
+    // The installer gave one R2 token: its values serve both buckets, under their own names.
+    expect(first?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(first?.get(REPLICA_KEY_ID_SECRET));
+    expect(first?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(first?.get(REPLICA_SECRET_KEY_SECRET));
     expect(first?.get(INITIALIZED_SECRET)).toBe("false");
     expect(first?.get(PASSWORD_SECRET)).toBe(OWNER_PASSWORD);
     expect(first?.get(COOKIE_SECRET)).toMatch(/^[0-9a-f]{64}$/);
@@ -600,6 +607,22 @@ describe("runBootstrap: Cloudflare misbehaving", () => {
     h.world.dropOnDeploy = [];
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
+  });
+
+  it("asks the installer again when only the artifacts' credentials are missing (G2-DUR-001)", async () => {
+    const h = harness(await accountPlan());
+    h.world.dropOnDeploy = [ARTIFACTS_SECRET_KEY_SECRET];
+    await expect(h.run()).rejects.toThrow(
+      `after the deploy, cloudflare-omnigent lacks ${ARTIFACTS_SECRET_KEY_SECRET}; run again`,
+    );
+    expect(h.asked).toBe(1);
+    h.world.dropOnDeploy = [];
+    expect(await h.run()).toEqual({ kind: "done" });
+    // The password and the replica's pair are held: only the artifacts' half was missing.
+    expect(h.asked).toBe(2);
+    expect(h.world.secretsOf(h.world.plan.platformWorker)?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(
+      REPLICA_SECRET,
+    );
   });
 
   it("stops when the platform Worker vanishes before the release", async () => {

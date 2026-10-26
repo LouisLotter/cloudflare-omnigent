@@ -3,8 +3,8 @@
 //
 // In order, each run:
 //   1. deploys the platform Worker with the installation's variables, adding only the secrets it
-//      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password and the
-//      replica's credentials (one Worker version, `--secrets-file`);
+//      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password, the
+//      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`);
 //   2. reads the hostname's Access application and checks that it is owner-only (no bypass, no
 //      service token, the owner's pin as its one identity) and sets SameSite=lax;
 //   3. deploys the web Worker with ingress's variables, behind that Access application;
@@ -46,11 +46,14 @@ import {
 } from "./events.ts";
 import {
   type AccessSettings,
+  ARTIFACTS_KEY_ID_SECRET,
+  ARTIFACTS_SECRET_KEY_SECRET,
   accessProblems,
   containerEnvProblems,
   INITIALIZED_SECRET,
   type Installation,
   installationProblems,
+  needsArtifactCredentials,
   needsReplicaCredentials,
   PASSWORD_SECRET,
   platformVars,
@@ -319,7 +322,9 @@ export async function runBootstrap(
     const needsInstaller =
       !present.has(PASSWORD_SECRET) ||
       (needsReplicaCredentials(plan) &&
-        (!present.has(REPLICA_KEY_ID_SECRET) || !present.has(REPLICA_SECRET_KEY_SECRET)));
+        (!present.has(REPLICA_KEY_ID_SECRET) || !present.has(REPLICA_SECRET_KEY_SECRET))) ||
+      (needsArtifactCredentials(plan) &&
+        (!present.has(ARTIFACTS_KEY_ID_SECRET) || !present.has(ARTIFACTS_SECRET_KEY_SECRET)));
     const add = secretsToAdd(plan, present, needsInstaller ? ctx.secrets() : {}, {
       cookieSecret: hex(ctx.random(32)),
     });
