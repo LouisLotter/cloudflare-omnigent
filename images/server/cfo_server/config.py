@@ -93,11 +93,21 @@ REMOVED_APP_ENV: tuple[str, ...] = (
     "LITESTREAM_ACCESS_KEY_ID",
     "LITESTREAM_SECRET_ACCESS_KEY",
 )
-#: Variables removed from Litestream's environment: the artifact store's credentials.
-REMOVED_LITESTREAM_ENV: tuple[str, ...] = (
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
+#: The only variables Litestream's processes (``restore`` and ``replicate``) receive: the
+#: replica's credentials, and what any process needs to run and to make TLS connections. Its
+#: settings come from its configuration file, read with ``-no-expand-env``. An allowlist, so no
+#: other credential the container holds reaches it: not the bootstrap password, the cookie
+#: secret, the launcher's signing key or the artifact store's credentials (G2-SEC-001).
+LITESTREAM_ENV: tuple[str, ...] = (
+    "LITESTREAM_ACCESS_KEY_ID",
+    "LITESTREAM_SECRET_ACCESS_KEY",
+    "PATH",
+    "HOME",
+    "TZ",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
 )
 
 
@@ -404,5 +414,6 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
 
 
 def litestream_environment(env: Mapping[str, str]) -> dict[str, str]:
-    """The environment Litestream runs with: the container's, without the artifact token."""
-    return {k: v for k, v in env.items() if k not in REMOVED_LITESTREAM_ENV}
+    """The environment Litestream runs with: the replica's credentials and the process basics in
+    :data:`LITESTREAM_ENV`, nothing else from the container's."""
+    return {k: env[k] for k in LITESTREAM_ENV if k in env}
