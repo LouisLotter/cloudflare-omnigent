@@ -239,6 +239,12 @@ export const LIMITS = {
   releaseLookbackMs: 3 * 3_600_000,
   /** A kept session must have at least this long left when it is checked. */
   sessionMarginMs: 60_000,
+  /**
+   * How long replace-1 waits for the replica to cover RC-07's uploads before its kill. An upload
+   * is an ordinary write, not behind the security barrier: killed within the sync interval, its
+   * rows can be lost, which would test the replica's window instead of the artifact bucket.
+   */
+  replicateBeforeKillMs: 60_000,
 } as const;
 
 /** The empty replica prefix recovery uses (run.sh recovery sets it). */
@@ -558,8 +564,17 @@ async function kill(
 ): Promise<void> {
   if (ctx.step === "replace-1") {
     record.before = await checksBefore(ports, ctx);
-    // Uploaded before the kill, so the replacement must serve them from the artifact bucket.
-    record.rc07 = await rc07Upload(ports, ctx);
+    // Uploaded before the kill, so the replacement must serve them from the artifact bucket;
+    // their rows replicated first, so that only the bytes' store is under test.
+    const uploaded = await rc07Upload(ports, ctx);
+    record.rc07 = {
+      ...uploaded,
+      replicatedBeforeKill: await replicated(
+        ports,
+        record.bootIdBefore,
+        LIMITS.replicateBeforeKillMs,
+      ),
+    };
   } else record.before = { config: await configCheck(ports) };
   // Persist before the effect: a restart after this line never kills twice.
   record.killSentAt = ports.now();
@@ -994,6 +1009,27 @@ async function rc07Upload(ports: G2Ports, ctx: StepContext) {
   return { uploadedBeforeKill: true, sessionId, files };
 }
 
+/**
+ * Whether the replica covers every commit made so far: a position read now is the target, and a
+ * later one of the same boot must reach it (the watchdog's check). Bounded; never throws.
+ */
+async function replicated(ports: G2Ports, bootId: string | null | undefined, ms: number) {
+  const started = ports.now();
+  let target: number | null = null;
+  while (ports.now() - started < ms) {
+    const position = await ports.position();
+    if (position.status === 200 && position.body !== null) {
+      if (bootId && position.body.bootId !== bootId) return { replicated: false, why: "restarted" };
+      target ??= position.body.txid;
+      if (position.body.replicatedTxid >= target) {
+        return { replicated: true, afterS: secs(ports.now() - started) };
+      }
+    }
+    await ports.sleep(LIMITS.positionPollMs);
+  }
+  return { replicated: false, why: `not within ${ms / 1000} s` };
+}
+
 /** The files uploaded before the kill, as the replacement serves them. */
 async function rc07After(ports: G2Ports, ctx: StepContext, uploaded: unknown) {
   const token = await bearer(ports, ctx);
@@ -1170,6 +1206,10 @@ export function verdictOf(r: StepRecord): { verdict: Verdict; problems: string[]
       need(
         at(r.rc07, "uploadedBeforeKill") === true,
         "rc07: the files were not uploaded before the kill",
+      );
+      need(
+        at(r.rc07, "replicatedBeforeKill", "replicated") === true,
+        "rc07: the uploads' rows were not replicated before the kill",
       );
       need(files.length === RC07_FILES.length, "rc07: not every file uploaded");
       for (const f of files) {

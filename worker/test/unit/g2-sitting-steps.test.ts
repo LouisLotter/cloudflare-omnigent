@@ -54,6 +54,8 @@ class FakeServer {
   files = new Map<string, string>();
   /** Whether the files outlive a container (G2-DUR-001's fix) or die with its disk. */
   artifactsInBucket = true;
+  /** Litestream makes no progress until the next kill. */
+  replicationStalled = false;
   records = new Map<StepName, StepRecord>();
   kept = new Map<string, KeptSession>();
   /** The watchdog's records: the release's controlled restart, before the test starts. */
@@ -95,7 +97,7 @@ class FakeServer {
         this.unconfirmedLeft = this.unconfirmedAfterBoot;
       }
     }
-    if (ms >= 500 && this.replicated < this.txid) this.replicated += 1;
+    if (ms >= 500 && this.replicated < this.txid && !this.replicationStalled) this.replicated += 1;
     if (this.appliesConfig && this.running && this.startedWith !== this.configCurrent) {
       // The watchdog's controlled restart (G2-SEC-001's fix), modelled as an instant restart.
       this.outageList.push({
@@ -200,6 +202,7 @@ class FakeServer {
       running: () => this.running,
       destroy: async () => {
         this.destroys += 1;
+        this.replicationStalled = false;
         if (this.crashOnDestroy) throw new Error("the object restarted");
         this.running = false;
         this.restartPhase = 0;
@@ -300,8 +303,12 @@ describe("replace-1", () => {
     const files = (done.rc07 as { files: { filename: string; headers: object }[] }).files;
     expect(files.map((f) => f.filename)).toEqual(RC07_FILES.map((f) => f.filename));
     expect(files[0]?.headers).toMatchObject({ "x-content-type-options": "nosniff" });
-    // Uploaded before the kill, served the same after it (G2-DUR-001).
-    expect(done.rc07).toMatchObject({ uploadedBeforeKill: true, checkedAfter: true });
+    // Uploaded before the kill, their rows replicated, served the same after it (G2-DUR-001).
+    expect(done.rc07).toMatchObject({
+      uploadedBeforeKill: true,
+      replicatedBeforeKill: { replicated: true },
+      checkedAfter: true,
+    });
     for (const f of files) {
       expect(f).toMatchObject({ before: { content: 200, same: true }, content: 200, same: true });
     }
@@ -372,6 +379,19 @@ describe("replace-1", () => {
     ]);
     const first = (done.rc07 as { files: Record<string, unknown>[] }).files[0];
     expect(first).toMatchObject({ before: { same: true }, content: 500, code: "internal_error" });
+  });
+
+  it("waits for the uploads' rows on the replica before the kill, and fails without them", async () => {
+    const server = new FakeServer();
+    server.replicationStalled = true;
+    const done = await runStep(server.ports(), ctx("replace-1"));
+    expect(server.destroys).toBe(1);
+    expect(done.rc07).toMatchObject({
+      replicatedBeforeKill: { replicated: false, why: "not within 60 s" },
+    });
+    expect(done.killSentAt).toBeGreaterThanOrEqual(done.createdAt + LIMITS.replicateBeforeKillMs);
+    expect(done.verdict).toBe("fail");
+    expect(done.problems).toContain("rc07: the uploads' rows were not replicated before the kill");
   });
 
   it("waits without the owner's password", async () => {
