@@ -127,9 +127,11 @@ export interface WorkspaceRpc {
  * generation once, persisted first, and asks for a newer one only when no container of an older
  * one can run. So asking for generation G, or releasing it, finishes every older generation of that
  * computer, and `forget_computer` finishes all of them:
- * - a `reserve` at or below a finished generation is refused with `stale_generation`, also when a
- *   granted operation is replayed after its slot was released (a delayed or repeated request never
- *   takes a slot nobody would start or release);
+ * - a `reserve` at or below a finished generation is refused with `stale_generation`, even while
+ *   its slot is still held, and also when a granted operation is replayed after its slot was
+ *   released or its generation finished: the one exception to "a repeat returns the recorded
+ *   outcome" (a delayed or repeated request never takes, or is told it holds, a slot nobody would
+ *   start or release); the refusal itself is recorded, so a repeat is refused the same way;
  * - a granted `reserve` replaces the computer's older slots, which never count against the limit.
  * The answer to `reservation` is read-only input to reconciliation: ControlDO never asks a computer
  * to stop, start or wake.
