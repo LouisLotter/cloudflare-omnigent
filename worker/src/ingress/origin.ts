@@ -8,6 +8,9 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * OPTIONS) or a WebSocket upgrade whose `Origin` is present must carry exactly `origin`:
  * `null`, a foreign origin and a same-site sibling are refused. A request without `Origin`
  * passes, as non-browser clients send none; the platform pages refuse that case themselves.
+ * The safe-method exemption assumes a GET changes nothing. One Omnigent route does:
+ * `GET /auth/magic/redeem` consumes a one-time sign-in token and sets a session cookie
+ * (docs/architecture.md, "Access and authority"). It needs a valid magic token.
  */
 export function originAllowed(request: Request, origin: string): boolean {
   const sent = request.headers.get("origin");
