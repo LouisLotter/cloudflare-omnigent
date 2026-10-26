@@ -69,6 +69,7 @@ import {
   configFingerprint,
   serverContainerEnv,
   serverDeadlines,
+  UNKNOWN_DEADLINES,
 } from "./server-env.ts";
 import {
   ANSWERING,
@@ -434,18 +435,19 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   async #checkNow(): Promise<void> {
-    const timing = this.#containerTiming(this.timing());
-    let nextCheckAt = this.now() + timing.pollMs;
+    const current = this.timing();
+    let nextCheckAt = this.now() + current.pollMs;
     try {
       const container = this.#container;
       if (container === null) {
         logEvent("watchdog", "no_container");
-        nextCheckAt = this.now() + timing.intervalMs;
+        nextCheckAt = this.now() + current.intervalMs;
         return;
       }
       const config = await configFingerprint(
         serverContainerEnv(this.env as unknown as Record<string, unknown>).vars,
       );
+      const timing = this.#containerTiming(current, config);
       const observedFrom = Date.now();
       const seen = await this.#observe(container);
       // The configuration the running container was started with: an answering server started
@@ -541,21 +543,33 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
    * The watchdog's timing for the current container: a stop's grace and a start's restore
    * allowance are never shorter than its own settings gave it at its start, so a release that
    * lowers them (a new version adopts the running container) cannot cut its final sync or its
-   * restore short (Codex G2-SEC-001 r1-1). A container started before they were recorded gets
-   * the current ones.
+   * restore short (Codex G2-SEC-001 r1-1). A container started before they were recorded (an
+   * older build) and running this version's configuration has this version's: they are recorded
+   * now. One running another configuration gets the long deadlines assumed for a setting the
+   * watchdog cannot read (r2-1).
    */
-  #containerTiming(timing: ServerTiming): ServerTiming {
-    const row = this.ctx.storage.sql
+  #containerTiming(timing: ServerTiming, config: string): ServerTiming {
+    const sql = this.ctx.storage.sql;
+    const row = sql
       .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", START_TIMING_KEY)
       .toArray()[0];
-    const started = z
+    const parsed = z
       .object({ stopGraceMs: Millis, restoreWaitMs: Millis })
       .safeParse(row === undefined ? undefined : parseJson(row.value));
-    if (!started.success) return timing;
+    let started: { stopGraceMs: number; restoreWaitMs: number };
+    if (parsed.success) started = parsed.data;
+    else if (this.#startConfig() === config) {
+      started = { stopGraceMs: timing.stopGraceMs, restoreWaitMs: timing.restoreWaitMs };
+      sql.exec(
+        "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+        START_TIMING_KEY,
+        JSON.stringify(started),
+      );
+    } else started = UNKNOWN_DEADLINES;
     return {
       ...timing,
-      stopGraceMs: Math.max(timing.stopGraceMs, started.data.stopGraceMs),
-      restoreWaitMs: Math.max(timing.restoreWaitMs, started.data.restoreWaitMs),
+      stopGraceMs: Math.max(timing.stopGraceMs, started.stopGraceMs),
+      restoreWaitMs: Math.max(timing.restoreWaitMs, started.restoreWaitMs),
     };
   }
 
@@ -778,7 +792,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
    * `configApplied`: the answering server was started with the configuration this version would
    * start it with. The status is logged while the bootstrap secret exists, and, under a
    * configuration seen applied, until a check shows the owner initialized and durable and for
-   * `APPLIED_NOTICE_MS` after, and again whenever it stops being so: after the bootstrap's
+   * `APPLIED_NOTICE_MS` after, and again whenever it stops being so, until it is again and for
+   * `APPLIED_NOTICE_MS` after that: after the bootstrap's
    * release, the lines from the replaced server are its proof that the release reached the
    * running server, not only the Worker (G2-SEC-001). The last line under a configuration always
    * shows the owner durable, however late that came (Codex r1-2). No line carries a secret or a
@@ -792,6 +807,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const secretPresent = bootstrapSecretPresent(this.env as unknown as Record<string, unknown>);
     const stored = this.#loadBootstrap();
     const notice = configApplied ? this.#appliedNotice(config) : null;
+    const storedDurable = stored.status?.initialized === true;
     const recent =
       notice !== null &&
       (notice.durableAt === null || this.now() - notice.durableAt < APPLIED_NOTICE_MS);
@@ -828,7 +844,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           JSON.stringify(check.target),
         );
       }
-      if (notice !== null && notice.durableAt === null && check.status?.initialized === true) {
+      // The notice runs from the first durable check under this configuration, and again from
+      // each return to durable, so the change back is published on every check for a while,
+      // not once (Codex r2-2).
+      const durable = check.status?.initialized === true;
+      if (notice !== null && durable && (notice.durableAt === null || !storedDurable)) {
         sql.exec(
           "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
           CONFIG_APPLIED_KEY,

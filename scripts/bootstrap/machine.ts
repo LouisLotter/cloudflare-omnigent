@@ -188,6 +188,36 @@ export const DEFAULT_RUN_OPTIONS: RunOptions = {
 
 /** How far back a Workers Logs query looks for the newest status. */
 const LOOKBACK_MS = 15 * 60_000;
+/**
+ * After a release, Workers Logs are read in slices this long: one query answers at most 2,000
+ * events, newest first, so over a long interval later activity would hide the release's
+ * evidence (Codex G2-SEC-001 r2-3).
+ */
+export const LOG_SLICE_MS = 5 * 60_000;
+/** A slice that ended this long ago is complete: it is read once per run. */
+const SETTLED_MS = 10 * 60_000;
+
+/** Reads a Worker's logs between two times, slice by slice, reading settled slices once. */
+function slicedLogs(
+  ctx: RunContext,
+  worker: string,
+): (fromMs: number, toMs: number) => Promise<unknown[]> {
+  const settled = new Map<number, unknown[]>();
+  return async (fromMs, toMs) => {
+    const events: unknown[] = [];
+    for (let start = fromMs; start < toMs; start += LOG_SLICE_MS) {
+      const end = Math.min(toMs, start + LOG_SLICE_MS);
+      const whole = end === start + LOG_SLICE_MS;
+      let slice = whole ? settled.get(start) : undefined;
+      if (slice === undefined) {
+        slice = await ctx.cloud.logs(worker, start, end);
+        if (whole && end <= ctx.now() - SETTLED_MS) settled.set(start, slice);
+      }
+      events.push(...slice);
+    }
+    return events;
+  };
+}
 
 export type Outcome =
   /** Released and checked after the version switch. */
@@ -450,8 +480,9 @@ async function verifyAfterRelease(
     await ctx.sleep(switchAt - ctx.now());
   }
   const deadline = ctx.now() + options.verifyWaitMs;
+  const logsSince = slicedLogs(ctx, plan.platformWorker);
   for (;;) {
-    const events = await ctx.cloud.logs(plan.platformWorker, releasedAt - LOOKBACK_MS, ctx.now());
+    const events = await logsSince(releasedAt - LOOKBACK_MS, ctx.now());
     const logs = parseLogs(events, plan.platformWorker);
     const result = verifyRelease(logs, {
       installationId: plan.installationId,

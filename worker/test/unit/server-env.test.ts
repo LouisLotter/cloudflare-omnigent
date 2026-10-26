@@ -7,6 +7,7 @@ import {
   DATABASE_CHECK_ALLOWANCE_S,
   serverContainerEnv,
   serverDeadlines,
+  UNKNOWN_DEADLINES,
 } from "../../src/server/server-env.ts";
 import { WATCHDOG_TIMING } from "../../src/server/watchdog.ts";
 
@@ -125,6 +126,29 @@ describe("the server image's deadlines (WP2.3)", () => {
       expect(grace(value), value).toBe(2 * 3_600_000 + 60_000);
     }
     expect(serverDeadlines({}).stopGraceMs).toBe(660_000);
+  });
+});
+
+describe("the deadlines of a container whose settings are unknown (Codex G2-SEC-001 r2-1)", () => {
+  it("are never shorter than the image's from unreadable settings or ones up to an hour", () => {
+    const setting = fc.oneof(
+      fc.constant(undefined),
+      fc.constantFrom("soon", "", "0", "-5", "nan"),
+      fc.integer({ min: 1, max: 3600 }).map(String),
+    );
+    fc.assert(
+      fc.property(setting, setting, setting, (restore, ready, finalSync) => {
+        const env: Record<string, unknown> = {};
+        if (restore !== undefined) env.SERVER_ENV_CFO_RESTORE_DEADLINE_S = restore;
+        if (ready !== undefined) env.SERVER_ENV_CFO_LITESTREAM_READY_TIMEOUT_S = ready;
+        if (finalSync !== undefined) env.SERVER_ENV_CFO_FINAL_SYNC_TIMEOUT_S = finalSync;
+        const read = serverDeadlines(env);
+        return (
+          read.restoreWaitMs <= UNKNOWN_DEADLINES.restoreWaitMs &&
+          read.stopGraceMs <= UNKNOWN_DEADLINES.stopGraceMs
+        );
+      }),
+    );
   });
 });
 

@@ -18,6 +18,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import platform from "../../src/index.ts";
 import { APPLIED_NOTICE_MS, type OmnigentServer } from "../../src/server/OmnigentServer.ts";
+import { UNKNOWN_DEADLINES } from "../../src/server/server-env.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
 import {
   FORWARD_VERSION_HEADER,
@@ -1258,9 +1259,48 @@ describe("OmnigentServer: the release's notice waits for a durable owner (Codex 
     fake.position = position(21, 21, "e".repeat(32));
     await nextCheck(stub);
     expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    // The return to durable is published for a whole notice (r2-2), then the lines stop.
+    const backAt = testServers.clock.now();
+    while (testServers.clock.now() - backAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
     const settled = events("bootstrap").length;
     await nextCheck(stub);
     expect(events("bootstrap").length).toBe(settled);
+  });
+
+  it("publishes a return to durable for a whole notice, so one lost line is not the only one (Codex r2-2)", async () => {
+    const { stub, fake } = await freshServer();
+    fake.info = { accounts_enabled: true, needs_setup: false };
+    fake.position = position(5, 5);
+    await check(stub);
+    await nextCheck(stub);
+    testServers.release(stub.id, {
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
+    fake.position = position(7, 7, "d".repeat(32));
+    await nextCheck(stub); // durable: the notice starts
+    const durableAt = testServers.clock.now();
+    while (testServers.clock.now() - durableAt < APPLIED_NOTICE_MS - 2 * T.intervalMs) {
+      await nextCheck(stub);
+    }
+    // The position cannot be read from near the notice's end until well past it.
+    fake.position = null;
+    while (testServers.clock.now() - durableAt < 2 * APPLIED_NOTICE_MS) await nextCheck(stub);
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "position_unavailable" });
+    // It recovers. Even if that first line is lost, and the object is recreated, the durable
+    // status is logged again on the following checks.
+    fake.position = position(8, 8, "d".repeat(32));
+    await nextCheck(stub);
+    const recovered = events("bootstrap").length;
+    expect(events("bootstrap").at(-1)).toMatchObject({ reason: "durable" });
+    await evictDurableObject(stub);
+    for (let i = 0; i < 5; i += 1) await nextCheck(stub);
+    const after = events("bootstrap").slice(recovered);
+    expect(after).toHaveLength(5);
+    expect(after.every((e) => e.reason === "durable" && e.configApplied === true)).toBe(true);
   });
 });
 
@@ -1389,6 +1429,43 @@ describe("OmnigentServer: a release reaches the running server (G2-SEC-001)", ()
     } finally {
       testServers.timing = TEST_TIMING;
     }
+  });
+
+  it("gives a container an older build started without recorded deadlines a long grace, or its own (Codex r2-1)", async () => {
+    const dropTiming = (stub: Stub) =>
+      runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql.exec("DELETE FROM server_state WHERE key = 'start_timing'"),
+      );
+    const storedTiming = (stub: Stub) =>
+      runInDurableObject(stub, (_i: OmnigentServer, state) =>
+        state.storage.sql
+          .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_timing'")
+          .toArray()
+          .map((row) => JSON.parse(row.value) as unknown),
+      );
+    // Same configuration: its deadlines are this version's, and are recorded.
+    const same = await runningServer();
+    await dropTiming(same.stub);
+    await evictDurableObject(same.stub);
+    await nextCheck(same.stub);
+    expect(await storedTiming(same.stub)).toEqual([
+      { stopGraceMs: T.stopGraceMs, restoreWaitMs: T.restoreWaitMs },
+    ]);
+    // Another configuration, settings unknown: replaced, and never killed within the long grace.
+    const { stub, fake } = await runningServer();
+    await dropTiming(stub);
+    testServers.release(stub.id, { [COOKIE]: ROTATED_COOKIE_SECRET });
+    await evictDurableObject(stub);
+    fake.stopMs = null; // still confirming its final sync
+    await nextCheck(stub);
+    expect(fake.signals).toEqual([15]);
+    const signalledAt = testServers.clock.now();
+    while (testServers.clock.now() - signalledAt < 15 * 60_000) await nextCheck(stub);
+    expect(fake.destroys).toEqual([]);
+    expect(await storedTiming(stub)).toEqual([]); // nothing invented for it
+    testServers.clock.advance(UNKNOWN_DEADLINES.stopGraceMs - 15 * 60_000);
+    await check(stub);
+    expect(fake.destroys).toEqual(["the stop outran its grace"]);
   });
 
   it("sends an undelivered replacement stop again while the server answers, and never kills it", async () => {

@@ -5,7 +5,8 @@
 // The design's rules (hybrid-architecture.md, "Scheduling" and "Server restarts"; DC-37, DC-47),
 // with the server image's facts (WP2.3, its evidence's "Container environment"):
 //   - the server is always on: a container found stopped is started again, and the watchdog
-//     itself never stops a server that answers;
+//     itself never stops a server that answers, except once to apply a changed configuration
+//     (below);
 //   - after each start it follows the entrypoint's phases (`GET :8001/status`) before it records
 //     a failed start (AIR2-010): a boot and restore get the restore allowance from the start
 //     (the restore deadline, the database check and Litestream's start); the app's

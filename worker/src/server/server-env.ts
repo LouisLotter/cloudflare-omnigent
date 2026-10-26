@@ -121,6 +121,18 @@ export function serverDeadlines(env: Readonly<Record<string, unknown>>): {
 }
 
 /**
+ * The deadlines of a container whose settings are unknown (one an older build started without
+ * recording them, now running another configuration): each setting taken as an hour, as for a
+ * value the watchdog cannot read, so its final sync or restore is not cut short by a release.
+ */
+export const UNKNOWN_DEADLINES: { readonly restoreWaitMs: number; readonly stopGraceMs: number } = {
+  restoreWaitMs: Math.ceil(
+    (UNREAD_SECONDS + DATABASE_CHECK_ALLOWANCE_S + UNREAD_SECONDS + 60) * 1000,
+  ),
+  stopGraceMs: Math.ceil((2 * UNREAD_SECONDS + 60) * 1000),
+};
+
+/**
  * A fingerprint of the container's configuration: after an exit 78, the watchdog starts the
  * server again only once this changes. A digest, stored, never logged.
  */

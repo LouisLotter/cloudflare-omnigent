@@ -387,6 +387,22 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(await h.run()).toEqual({ kind: "done" });
   });
 
+  it("finds the release's evidence behind more later activity than one query returns (Codex r2-3)", async () => {
+    const h = harness(await accountPlan());
+    h.world.noisePerMinute = 40; // about 2,400 lines an hour
+    h.world.logCap = 2_000;
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "after" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    // The installer comes back three hours later: the newest 2,000 events are all later activity.
+    h.world.now += 3 * 60 * 60_000;
+    const newest = h.world
+      .logEvents(h.world.plan.platformWorker, 0, h.world.now)
+      .slice(0, 2_000) as { source?: { cfo?: string } }[];
+    expect(newest.some((e) => e.source?.cfo === "bootstrap")).toBe(false);
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretChanges).toHaveLength(1);
+  });
+
   it("reports released but unchecked when no newer version has run yet", async () => {
     const h = harness(await accountPlan());
     // Workers Logs loses every line: nothing can be accepted, so first seed a release by hand.

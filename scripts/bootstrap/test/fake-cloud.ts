@@ -76,6 +76,10 @@ export class FakeWorld {
   noVersions = false;
   /** Workers Logs loses this share of lines (0..1), deterministically by time. */
   lossEvery = 0;
+  /** Unrelated lines the platform Worker logs each minute (computers, other objects). */
+  noisePerMinute = 0;
+  /** At most this many events per query, newest first, as `cf o11y telemetry query` pages. */
+  logCap: number | undefined;
   /**
    * Whether the platform's watchdog replaces a server whose configuration changed. False models
    * a build without G2-SEC-001: a release never reaches the running server.
@@ -213,7 +217,7 @@ export class FakeWorld {
         const n = world.#enter("logs");
         const events = world.logEvents(worker, fromMs, toMs);
         world.#leave("logs", n);
-        return events;
+        return world.logCap === undefined ? events : events.slice(0, world.logCap);
       },
     };
   }
@@ -246,15 +250,18 @@ export class FakeWorld {
     if (first === undefined || worker !== this.plan.platformWorker) return [...this.foreign];
     const events: unknown[] = [];
     const startAt = first.at + START_MS;
-    // When each container started with a new configuration first showed a durable owner: its
-    // notice runs until then and for NOTICE_MS after (OmnigentServer's, Codex r1-2).
+    // When each container started with a new configuration last became durable: its notice
+    // runs until then and for NOTICE_MS after, and again from each return to durable
+    // (OmnigentServer's, Codex r1-2 and r2-2).
     const durableSince = new Map<number, number>();
+    let wasDurable = false;
     for (let t = startAt; t <= Math.min(toMs, this.now); t += CHECK_MS) {
       const running = this.containerAt(worker, t);
       const truth = this.truth(t);
       if (running !== undefined && t >= running.since && truth.initialized) {
-        if (!durableSince.has(running.since)) durableSince.set(running.since, t);
+        if (!durableSince.has(running.since) || !wasDurable) durableSince.set(running.since, t);
       }
+      wasDurable = truth.initialized;
       if (t < fromMs) continue;
       if (this.lossEvery > 0 && Math.floor(t / CHECK_MS) % Math.round(1 / this.lossEvery) === 0) {
         continue;
@@ -268,6 +275,13 @@ export class FakeWorld {
         entrypoint: "OmnigentServer",
       };
       events.push({ timestamp: t, $workers, source: { level: "info", message: "" } });
+      for (let i = 1; i <= this.noisePerMinute; i++) {
+        events.push({
+          timestamp: t + i,
+          $workers: { ...$workers, eventType: "fetch", entrypoint: "ControlDO" },
+          source: { cfo: "control", event: "noise" },
+        });
+      }
       // The status comes only from a server that answers with this version's configuration:
       // one being replaced, or one an older build never replaced, logs none.
       const container = this.containerAt(worker, t);
