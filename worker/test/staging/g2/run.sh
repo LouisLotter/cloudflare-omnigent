@@ -10,6 +10,8 @@
 #   run.sh token      [owner] paste the R2 token's two values (not echoed); starts the bootstrap
 #                     in the background (log: $G2_DIR/bootstrap.log) and returns
 #   run.sh follow     wait for the bootstrap to end; then the anonymous probe
+#   run.sh resume     run the bootstrap again (exit 2 or 3 from follow: still waiting or not
+#                     checked yet); it needs no secret once the first deploy is done
 #   run.sh harness    redeploy the platform Worker with the harness; replace-1 runs by itself
 #   run.sh rotate     a new cookie secret (generated here, never shown); the step "rotate" checks
 #                     that the session from before is refused once the watchdog restarted
@@ -121,6 +123,10 @@ print(json.dumps({
     [ "$last" = "exit 0" ] || { echo "the bootstrap ended with: $last"; exit 1; }
     "$0" probe-anonymous
     ;;
+  resume)
+    logged resume "${bootstrap[@]}" run --staging g2-sitting --wait-minutes 30
+    "$0" probe-anonymous
+    ;;
   probe-anonymous)
     z="$(zone)"
     for host in "$web.$z" "$platform.$z"; do
@@ -206,5 +212,5 @@ for line in sys.stdin:
     rm -f "$secrets" "$install_dir/$platform.json"
     # Lock files stay: deleting one would let two holders coexist (scripts/staging/lock.ts).
     ;;
-  *) sed -n '2,31p' "$0"; exit 2 ;;
+  *) sed -n '2,33p' "$0"; exit 2 ;;
 esac
