@@ -179,7 +179,15 @@ for line in sys.stdin:
     python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
     ;;
   probe)
-    logged probe node "$here/probe.ts" "${2:-}"
+    # The account's workers.dev subdomain (the dashboard shows it) is not in the redaction list.
+    sub="${2:-${CFO_WORKERS_DEV_SUBDOMAIN:-}}"
+    set +e
+    node "$here/probe.ts" "$sub" 2>&1 | scrub | sed -E "s#${sub:-^$}\.workers\.dev#<subdomain>.workers.dev#g" |
+      tee "$out/probe.log"
+    status=${PIPESTATUS[0]}
+    set -e
+    echo "exit $status" >>"$out/probe.log"
+    exit "$status"
     ;;
   collect)
     from="$(cat "$out/t0")"
