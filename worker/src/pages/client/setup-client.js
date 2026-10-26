@@ -29,8 +29,12 @@
     socket: null,
     term: null,
     fit: null,
-    closing: false,
     reconnecting: false,
+    /** Counts open, close and reconnect attempts: a late answer or handshake of an older one is
+     * ignored and its socket closed (Codex r2-3). */
+    attempt: 0,
+    /** The socket whose handshake is in progress, so a close can cancel it. */
+    pending: null,
   };
 
   function operationId() {
@@ -149,7 +153,8 @@
   }
 
   /** Opens a stream with this capability. Resolves true once it is open, false if it never opens. */
-  function connect(capability, windowNumber) {
+  function connect(capability, windowNumber, attempt) {
+    if (attempt !== state.attempt) return Promise.resolve(false);
     ensureTerminal();
     state.window = windowNumber;
     const url = new URL(panel.dataset.terminalUrl, location.href);
@@ -158,12 +163,20 @@
       let opened = false;
       const socket = new WebSocket(url.href, ["tty", `cfo-capability.${capability}`]);
       socket.binaryType = "arraybuffer";
+      state.pending = socket;
       const timer = setTimeout(() => {
         if (!opened) socket.close();
       }, HANDSHAKE_MS);
       socket.addEventListener("open", () => {
-        opened = true;
         clearTimeout(timer);
+        if (state.pending === socket) state.pending = null;
+        if (attempt !== state.attempt) {
+          // Closed or superseded while the handshake ran: never show it.
+          socket.close(1000, "cancelled");
+          resolve(false);
+          return;
+        }
+        opened = true;
         state.socket = socket;
         state.reconnecting = false;
         showOpen(true);
@@ -182,16 +195,14 @@
       });
       socket.addEventListener("close", (event) => {
         clearTimeout(timer);
+        if (state.pending === socket) state.pending = null;
         if (!opened) {
           resolve(false);
           return;
         }
+        // A socket the page let go of (closed, or replaced) ends quietly.
         if (state.socket !== socket) return;
         state.socket = null;
-        if (state.closing) {
-          state.closing = false;
-          return;
-        }
         if (event.code === CLOSED_BY_PLATFORM) {
           state.window = null;
           showOpen(false);
@@ -214,17 +225,20 @@
   async function reconnect() {
     if (state.reconnecting || state.window === null) return;
     state.reconnecting = true;
+    state.attempt += 1;
+    const attempt = state.attempt;
     say("Reconnecting…");
     try {
       for (const pause of RECONNECT_WAITS) {
         await wait(pause);
-        if (state.closing || state.window === null) return;
+        if (attempt !== state.attempt || state.window === null) return;
         let answer;
         try {
           answer = await post({ mode: "reconnect", window: state.window });
         } catch {
           continue;
         }
+        if (attempt !== state.attempt) return;
         if (answer.status === 403) {
           await refresh();
           continue;
@@ -232,7 +246,8 @@
         const json = answer.json;
         if (json?.action === "open_terminal" && json.outcome === "accepted") {
           // A handshake that fails is retried with the next fresh capability.
-          if (await connect(json.capability, json.window)) return;
+          if (await connect(json.capability, json.window, attempt)) return;
+          if (attempt !== state.attempt) return;
           continue;
         }
         if (json?.outcome === "refused") break;
@@ -247,12 +262,15 @@
 
   async function open() {
     openButton.disabled = true;
+    state.attempt += 1;
+    const attempt = state.attempt;
     say("Opening…");
     try {
       const answer = await post({ mode: "open" });
+      if (attempt !== state.attempt) return;
       const json = answer.json;
       if (json?.action === "open_terminal" && json.outcome === "accepted") {
-        if (!(await connect(json.capability, json.window))) {
+        if (!(await connect(json.capability, json.window, attempt)) && attempt === state.attempt) {
           say("The terminal could not connect. Try again.");
         }
         return;
@@ -275,15 +293,20 @@
   }
 
   async function close() {
-    state.closing = true;
+    // Cancels everything in flight first: a pending handshake, a reconnect, a late answer.
+    state.attempt += 1;
+    if (state.pending !== null) {
+      state.pending.close(1000, "closed");
+      state.pending = null;
+    }
     const socket = state.socket;
+    state.socket = null;
     try {
       await post({ mode: "close" });
     } catch {
       // the platform closes it at its deadline anyway
     }
     if (socket !== null) socket.close(1000, "closed");
-    state.socket = null;
     state.window = null;
     showOpen(false);
     say("Closed. The computer may go to sleep again.");

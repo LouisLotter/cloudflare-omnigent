@@ -983,7 +983,7 @@ describe("a pending removal's steps (Codex r1-4)", () => {
     expect(html).toContain("Signing out…");
     expect(html).toContain("If the sign-out cannot run, revoke this computer's sessions");
     expect(html).not.toContain("Finish the removal");
-    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned" }));
+    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned", signOutRunning: true }));
     html = await (await route(page)).text();
     expect(html).toContain("being verified by restoring into a fresh computer");
     expect(html).not.toContain("Finish the removal");
@@ -995,6 +995,33 @@ describe("a pending removal's steps (Codex r1-4)", () => {
     backend.states.set(PAGE_CMP, pending({}));
     expect(await (await route("/platform/computers")).text()).toContain(
       "Still needs a sign-out on the computer, or your record",
+    );
+  });
+
+  it("offer a retry after a sign-out that ended unverified, and wait for the computer to stop", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned", signOutRunning: false }));
+    expect(await (await route(page)).text()).toContain("The last sign-out did not finish.");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "started_no_host",
+        status: "started_no_host",
+        removal: {
+          state: "pending",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: true,
+          settled: true,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    const html = await (await route(page)).text();
+    expect(html).toContain("The removal can finish once the computer has stopped");
+    expect(html).not.toContain("Finish the removal");
+    expect(await (await route("/platform/computers")).text()).toContain(
+      "Waiting for the computer to stop",
     );
   });
 
@@ -1015,7 +1042,7 @@ describe("a pending removal's steps (Codex r1-4)", () => {
 
   it("serve the removal section in the live state, so the page follows it without a reload", async () => {
     const { route, backend } = setup();
-    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned" }));
+    backend.states.set(PAGE_CMP, pending({ signOut: "tombstoned", signOutRunning: true }));
     const body = (await (await route(`${page}/state`)).json()) as {
       removalHtml: string;
       statusHtml: string;

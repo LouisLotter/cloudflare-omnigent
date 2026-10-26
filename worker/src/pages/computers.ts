@@ -196,12 +196,13 @@ function pendingLine(view: ComputerView): string {
   if (p === null) return "";
   let what: string;
   if (p.resolvable) what = "Ready to finish.";
+  else if (p.signingOut) what = "Signing out now.";
+  else if (p.verifying) what = "Signed out; the sign-out is being verified.";
   else if (p.revocationRequired) {
     what = "Still needs your record that you revoked its sessions at the providers.";
-  } else if (p.signingOut) what = "Signing out now.";
-  else if (p.verifying) what = "Signed out; the sign-out is being verified.";
-  else
+  } else if (p.signOut) {
     what = "Still needs a sign-out on the computer, or your record that you revoked its sessions.";
+  } else what = "Waiting for the computer to stop before its removal can finish.";
   return `<li data-removal="${escapeHtml(view.id)}"><a href="${computerPath(view.id)}">${escapeHtml(view.name)}</a>: ${escapeHtml(what)} Its saved logins are kept until then.</li>`;
 }
 
@@ -298,8 +299,21 @@ export function removalSection(view: ComputerView): string {
       const p = view.pending;
       const items: string[] = [];
       if (p?.signOut) {
+        const again = view.signOutPhase === "none" ? "" : "The last sign-out did not finish. ";
         items.push(
-          `<li><a class="button danger" href="${actionPath(view.id, "sign-out")}">Sign out of Claude and Codex</a>: starts the computer once for the CLIs' logouts.</li>`,
+          `<li>${again}<a class="button danger" href="${actionPath(view.id, "sign-out")}">Sign out of Claude and Codex</a>: starts the computer once for the CLIs' logouts.</li>`,
+        );
+      }
+      if (
+        p !== null &&
+        !p.resolvable &&
+        !p.signOut &&
+        !p.signingOut &&
+        !p.verifying &&
+        !p.revocationRequired
+      ) {
+        items.push(
+          "<li>The removal can finish once the computer has stopped; this page updates when it has.</li>",
         );
       }
       if (p?.signingOut) items.push("<li>Signing out… This page updates when it is done.</li>");

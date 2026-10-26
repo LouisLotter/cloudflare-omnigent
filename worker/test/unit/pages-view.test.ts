@@ -320,18 +320,80 @@ describe("the removal flow (design, Signing in, Removal)", () => {
       signingOut: true,
       recordRevocation: true,
     });
-    // Tombstones published but not yet verified: not resolvable (the controller would refuse).
+    // Tombstones published but not verified, and no job running: not resolvable (the controller
+    // would refuse), and the sign-out is offered again.
     expect(pendingRemoval(pageState(removal({ signOut: "tombstoned" })))).toEqual({
+      ...none,
+      signOut: true,
+      recordRevocation: true,
+    });
+    expect(
+      pendingRemoval(
+        pageState({
+          lifecycle: "removal_pending",
+          ...removal({ signOut: "verified", settled: true }),
+        }),
+      ),
+    ).toEqual({ ...none, resolvable: true });
+    // An older WorkspaceDO without `settled`: never resolvable from the page.
+    expect(pendingRemoval(pageState(removal({ signOut: "verified" })))?.resolvable).toBe(false);
+  });
+
+  it("follows a running sign-out job whatever its phase, and offers a retry after one ends unverified (Codex r2-1, r2-4)", () => {
+    const pendingState = (
+      r: Partial<ComputerPageState["removal"]>,
+      lifecycle = "removal_pending",
+    ) => pageState({ lifecycle: lifecycle as never, status: "stopped", ...removal(r) });
+    // A job running at its verification (phase tombstoned) or on a repeat (phase verified).
+    expect(pendingRemoval(pendingState({ signOut: "tombstoned", signOutRunning: true }))).toEqual({
       ...none,
       verifying: true,
       recordRevocation: true,
     });
-    expect(pendingRemoval(pageState(removal({ signOut: "verified", settled: true })))).toEqual({
+    expect(pendingRemoval(pendingState({ signOut: "verified", signOutRunning: true }))).toEqual({
       ...none,
-      resolvable: true,
+      signingOut: true,
+      recordRevocation: true,
     });
-    // An older WorkspaceDO without `settled`: never resolvable from the page.
-    expect(pendingRemoval(pageState(removal({ signOut: "verified" })))?.resolvable).toBe(false);
+    // A job that ended without a verified sign-out: offer it again.
+    expect(pendingRemoval(pendingState({ signOut: "tombstoned", signOutRunning: false }))).toEqual({
+      ...none,
+      signOut: true,
+      recordRevocation: true,
+    });
+    expect(pendingRemoval(pendingState({ signOut: "requested", signOutRunning: false }))).toEqual({
+      ...none,
+      signOut: true,
+      recordRevocation: true,
+    });
+    // Settled, but the computer has not stopped again: not yet resolvable (Codex r2-2).
+    expect(
+      pendingRemoval(pendingState({ revocationRecorded: true, settled: true }, "started_no_host"))
+        ?.resolvable,
+    ).toBe(false);
+    expect(
+      pendingRemoval(
+        pendingState({ revocationRecorded: true, settled: true, signOutRunning: true }),
+      )?.resolvable,
+    ).toBe(false);
+    expect(
+      pendingRemoval(
+        pendingState({ revocationRecorded: true, settled: true, signOutRunning: false }),
+      )?.resolvable,
+    ).toBe(true);
+    expect(
+      removalStep(
+        pageState({
+          removal: {
+            state: "none",
+            signOut: "verified",
+            loginPossiblyLost: false,
+            revocationRecorded: false,
+            signOutRunning: true,
+          },
+        }),
+      ),
+    ).toBe("signing_out");
   });
 
   it("offers the revocation record while unsettled, requires it for a lost login, and honours it (P5)", () => {
@@ -344,7 +406,10 @@ describe("the removal flow (design, Signing in, Removal)", () => {
     });
     expect(
       pendingRemoval(
-        pageState(removal({ loginPossiblyLost: true, revocationRecorded: true, settled: true })),
+        pageState({
+          lifecycle: "removal_pending",
+          ...removal({ loginPossiblyLost: true, revocationRecorded: true, settled: true }),
+        }),
       ),
     ).toEqual({ ...none, resolvable: true });
   });

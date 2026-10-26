@@ -426,10 +426,11 @@ describe("the bridged terminal (R-29, RC-24)", () => {
     expect(commandsWhenClosed.some((body) => body.includes('"sign_out"'))).toBe(false);
     await settle(stub, computer);
     const state = PagesResult.parse(await stub.pages({ ...call, action: "state" }));
-    expect(
-      state.action === "state" &&
-        (state.computer as { removal: { signOut: string } }).removal.signOut,
-    ).toBe("requested");
+    const removal =
+      state.action === "state"
+        ? (state.computer as { removal: Record<string, unknown> }).removal
+        : {};
+    expect(removal).toMatchObject({ signOut: "requested", signOutRunning: true });
     const again = await terminalPost(path, {
       op: OP(22),
       intent: await intentOf(path),

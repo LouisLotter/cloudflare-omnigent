@@ -377,6 +377,42 @@ describe("whether a computer can have a terminal", () => {
       { ok: true, generation: 7 },
     ],
     [
+      {
+        removal: {
+          state: "none",
+          signOut: "verified",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          signOutRunning: true,
+        },
+      },
+      { ok: false, reason: "busy" },
+    ],
+    [
+      {
+        removal: {
+          state: "none",
+          signOut: "tombstoned",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          signOutRunning: true,
+        },
+      },
+      { ok: false, reason: "busy" },
+    ],
+    [
+      {
+        removal: {
+          state: "none",
+          signOut: "requested",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          signOutRunning: false,
+        },
+      },
+      { ok: true, generation: 7 },
+    ],
+    [
       { lifecycle: "asleep", status: "stopped" },
       { ok: false, reason: "not_running" },
     ],

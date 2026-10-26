@@ -76,13 +76,19 @@ export function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Whether a sign-out job runs now: the controller's `signOutRunning`, or, from an older
+ * WorkspaceDO without it, a sign-out still `requested`.
+ */
+export function signOutRunning(state: ComputerPageState): boolean {
+  return state.removal.signOutRunning ?? state.removal.signOut === "requested";
+}
+
 /** Whether the computer can have a terminal, from the controller's page state. */
 export function terminalTarget(state: ComputerPageState): TerminalTarget {
   if (state.removal.state !== "none") return { ok: false, reason: "not_offered" };
-  // A stop being prepared, or a sign-out run until its tombstones are published (Codex r1-1).
-  if (state.status === "stopping" || state.removal.signOut === "requested") {
-    return { ok: false, reason: "busy" };
-  }
+  // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1).
+  if (state.status === "stopping" || signOutRunning(state)) return { ok: false, reason: "busy" };
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
   return { ok: true, generation: state.generation };
 }

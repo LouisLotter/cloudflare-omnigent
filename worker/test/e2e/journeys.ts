@@ -299,6 +299,45 @@ async function main(): Promise<number> {
       await page.click("#terminal-close");
     });
 
+    await run("J2c-close-during-a-reconnect-handshake", async (page, checks) => {
+      const id = ids["managed-new"] ?? "";
+      // The second WebSocket (the first reconnect) reports "open" two seconds late.
+      await page.addInitScript({
+        content: `(() => {
+          const Native = window.WebSocket;
+          let made = 0;
+          window.WebSocket = class extends Native {
+            constructor(url, protocols) {
+              super(url, protocols);
+              made += 1;
+              if (made === 2) {
+                const add = this.addEventListener.bind(this);
+                this.addEventListener = (type, fn, ...rest) =>
+                  add(type, type === "open" ? (e) => setTimeout(() => fn(e), 2000) : fn, ...rest);
+              }
+            }
+          };
+        })();`,
+      });
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor();
+      await page.evaluate(`window.cfoTerminal.socket.close(3000, "dropped")`);
+      await page.getByText("Reconnecting…").waitFor();
+      // The reconnect's handshake is under way (its open is held); the person closes the terminal.
+      await page.waitForTimeout(700);
+      await page.click("#terminal-close");
+      await page.getByText("Closed. The computer may go to sleep again.").waitFor();
+      await page.waitForTimeout(2500);
+      const after = (await page.evaluate(
+        `({ text: document.getElementById("terminal-status").textContent, socket: window.cfoTerminal.socket === null, hidden: document.getElementById("terminal").hidden })`,
+      )) as { text: string; socket: boolean; hidden: boolean };
+      if (!after.text.startsWith("Closed.") || !after.socket || !after.hidden) {
+        throw new Error(`the terminal came back: ${JSON.stringify(after)}`);
+      }
+      checks.push("a close during a reconnect handshake stays closed; the late socket is dropped");
+    });
+
     await run("J3-hostile-origin", async (page, checks) => {
       const id = ids["managed-ready"] ?? "";
       const before = await state(id);

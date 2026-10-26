@@ -95,6 +95,8 @@ export interface ComputerView {
   readonly offerStopWithoutSaving: boolean;
   readonly removal: RemovalStep;
   readonly pending: PendingRemoval | null;
+  /** The sign-out's persisted phase, for the removal steps' wording. */
+  readonly signOutPhase: ComputerPageState["removal"]["signOut"];
 }
 
 const PROVIDER_TITLE: Record<SetupProvider, string> = { claude: "Claude", codex: "Codex" };
@@ -211,10 +213,10 @@ const RUNNING = new Set(["started_no_host", "start_claimed", "host_running", "ho
 export function removalStep(state: ComputerPageState): RemovalStep {
   if (state.removal.state === "resolved" || state.lifecycle === "removed") return "resolved";
   if (state.removal.state === "pending") return "pending";
+  if (running(state)) return "signing_out";
   if (state.removal.signOut === "tombstoned" || state.removal.signOut === "verified") {
     return "delete";
   }
-  if (state.removal.signOut === "requested") return "signing_out";
   const anyLogin = state.setupCards.some(
     (card) => !(card.state === "needs_sign_in" && card.reason === "not_signed_in"),
   );
@@ -234,14 +236,22 @@ export function pendingRemoval(state: ComputerPageState): PendingRemoval | null 
   if (state.removal.state !== "pending") return null;
   const settled = state.removal.settled === true;
   const phase = state.removal.signOut;
+  const active = running(state);
   return {
-    signOut: !settled && phase === "none",
-    signingOut: !settled && phase === "requested",
-    verifying: !settled && phase === "tombstoned",
+    // Offered again when an unsettled job ended without a verified sign-out (Codex r2-4).
+    signOut: !settled && !active && phase !== "verified",
+    signingOut: active && phase !== "tombstoned",
+    verifying: active && phase === "tombstoned",
     recordRevocation: !settled && !state.removal.revocationRecorded,
     revocationRequired: state.removal.loginPossiblyLost && !state.removal.revocationRecorded,
-    resolvable: settled,
+    // `resolve_removal` also needs the computer stopped again in `removal_pending` (Codex r2-2).
+    resolvable: settled && !active && state.lifecycle === "removal_pending",
   };
+}
+
+/** A sign-out job runs: the controller's `signOutRunning`, or an older one's `requested`. */
+function running(state: ComputerPageState): boolean {
+  return state.removal.signOutRunning ?? state.removal.signOut === "requested";
 }
 
 export function computerView(state: ComputerPageState, nowMs: number): ComputerView {
@@ -352,6 +362,7 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     offerStopWithoutSaving,
     removal: removalStep(state),
     pending: pendingRemoval(state),
+    signOutPhase: state.removal.signOut,
   };
 }
 
