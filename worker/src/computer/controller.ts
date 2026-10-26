@@ -1583,6 +1583,8 @@ export class WorkspaceController {
           loginPossiblyLost: r.signOut.loginPossiblyLost,
           revocationRecorded: r.signOut.revocationRecorded,
         }),
+        // Additive (WP3.5): a sign-out job runs now, whatever its persisted phase.
+        signOutRunning: r.signOut.job !== null,
       },
       // Additive fields (the schema is loose): the page's notices.
       noContact: !ctx.removalIntent && noContact(r.lastContactAt, now, this.#t.noContactMs),
