@@ -1,4 +1,5 @@
 {
   "method": "reserve",
-  "granted": true
+  "granted": true,
+  "maxInstanceSize": "standard-4"
 }

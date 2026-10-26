@@ -80,7 +80,17 @@ export const ControlResult = z.discriminatedUnion("method", [
     computers: z.array(z.looseObject({ computerId: ComputerId, name: ProvisionName })).max(1000),
   }),
   z.discriminatedUnion("granted", [
-    z.looseObject({ method: z.literal("reserve"), granted: z.literal(true) }),
+    z.looseObject({
+      method: z.literal("reserve"),
+      granted: z.literal(true),
+      /**
+       * The installation's largest instance size, read when this answer is given (a replay gets
+       * the current value), so a start never needs a second call that could be lost (WP3.2 r1-1).
+       * Optional only for an older ControlDO during a deploy: a caller that gets no size must
+       * not start above a cap it cannot confirm.
+       */
+      maxInstanceSize: InstanceSize.optional(),
+    }),
     z.looseObject({
       method: z.literal("reserve"),
       granted: z.literal(false),
