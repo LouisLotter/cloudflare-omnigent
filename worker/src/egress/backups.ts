@@ -23,7 +23,7 @@
 // (RC-25). No platform code registers that host.
 
 import { DirectoryBackup, DirectoryBackupGateway as SdkGateway } from "@cloudflare/sandbox";
-import type { DirectoryBackups, DirectoryBackupsFor } from "../computer/container-port.ts";
+import type { DirectoryBackups } from "../computer/container-port.ts";
 import {
   type BackupFence,
   checkWrite,
@@ -164,16 +164,21 @@ export interface WriterIdentity {
 /**
  * `DirectoryBackup` for one computer's container and generation, by key prefix: every gateway
  * it builds (the container's write grant and the control calls) carries the workspace fence.
+ * With no writer (a restore or a delete) the gateways carry no fence, so any write through them
+ * is refused (`unfenced`); reads and deletes are never fenced.
  */
 export function directoryBackups(
   container: Container,
   exports: GatewayExports,
-  writer: WriterIdentity,
+  writer: WriterIdentity | null,
   binding: string = CHECKPOINTS_BINDING,
-): DirectoryBackupsFor {
-  const fence: BackupFence = { fenceVersion: 1, ...writer, kind: "workspace" };
+): (prefix: string) => DirectoryBackups {
+  const fence: BackupFence | null =
+    writer === null ? null : { fenceVersion: 1, ...writer, kind: "workspace" };
   const gateway = (options: { readonly props: Record<string, unknown> }) =>
-    exports.DirectoryBackupGateway({ props: { ...options.props, fence } });
+    exports.DirectoryBackupGateway({
+      props: fence === null ? { ...options.props } : { ...options.props, fence },
+    });
   return (prefix: string): DirectoryBackups =>
     new DirectoryBackup(
       container,

@@ -391,13 +391,17 @@ describe("rendering the configurations", () => {
   it("adds name, account and variables to the platform configuration, and nothing else", async () => {
     const plan = await accountPlan();
     const rendered = renderPlatformConfig(BASE.platform, plan);
-    const { name, account_id, vars, ...rest } = rendered;
+    const { name, account_id, vars, r2_buckets, ...rest } = rendered;
     expect({ name, account_id, vars }).toEqual({
       name: plan.platformWorker,
       account_id: plan.accountId,
       vars: platformVars(plan),
     });
-    const { name: _n, ...base } = BASE.platform;
+    // The checkpoint bucket is named after this installation's platform Worker (WP3.18).
+    expect(r2_buckets).toEqual([
+      { binding: "CHECKPOINTS", bucket_name: `${plan.platformWorker}-checkpoints` },
+    ]);
+    const { name: _n, r2_buckets: _b, ...base } = BASE.platform;
     expect(rest).toEqual(base);
     expect(() => renderPlatformConfig({ ...BASE.platform, vars: {} }, plan)).toThrow(
       /already has variables/,

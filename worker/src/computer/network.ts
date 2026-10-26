@@ -42,6 +42,22 @@ export type InterceptExports = Readonly<
   Record<ComputerEntrypoint, (options: { readonly props: InterceptProps }) => Fetcher>
 >;
 
+/**
+ * The intercept targets for these props: each computer host and its entrypoint, bound to the
+ * props, which the handlers trust (WorkspaceDO's `intercepts`). The backup host is not among them:
+ * `DirectoryBackup` registers it for each operation, with a grant fenced to the generation.
+ */
+export function interceptTargets(
+  exports: InterceptExports,
+  props: InterceptProps,
+): readonly { readonly host: string; readonly target: Fetcher }[] {
+  const checked = InterceptProps.parse(props);
+  return COMPUTER_INTERCEPTS.map(({ host, entrypoint }) => ({
+    host,
+    target: exports[entrypoint]({ props: checked }),
+  }));
+}
+
 /** Hosts a computer must never have intercepted (a catch-all, or another component's). */
 export function interceptHostAllowed(host: string): boolean {
   const name = host.trim().toLowerCase();

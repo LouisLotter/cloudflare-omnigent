@@ -59,6 +59,9 @@ export class FakeControl implements ControlRpc {
   maxAwakeComputers = 2;
   maxInstanceSize: InstanceSize = "standard-4";
   unavailable = false;
+  /** Grants carry the current `maxInstanceSize`, as ControlDO's do; false models an older
+   * ControlDO during a deploy, whose grants carry none. */
+  grantsCarrySize = true;
   readonly calls: ControlCall[] = [];
   /** name → computer. */
   readonly computers = new Map<string, ComputerId>();
@@ -97,11 +100,17 @@ export class FakeControl implements ControlRpc {
       ) {
         throw platformError("stale_generation", "the slot granted to this operation was released");
       }
-      return recorded;
+      return this.#withSize(recorded);
     }
     const result = this.#answer(call);
     if (operationId !== undefined) this.#operations.settle(operationId, result);
-    return result;
+    return this.#withSize(result);
+  }
+
+  /** A grant carries the size cap as it is when answered, a replay's too (ControlDO's rule). */
+  #withSize(result: ControlResult): ControlResult {
+    if (result.method !== "reserve" || !result.granted || !this.grantsCarrySize) return result;
+    return { ...result, maxInstanceSize: this.maxInstanceSize };
   }
 
   #answer(call: ControlCall): ControlResult {

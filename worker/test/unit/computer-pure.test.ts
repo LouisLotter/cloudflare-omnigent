@@ -605,37 +605,44 @@ describe("WorkspaceDO's schema", () => {
 });
 
 describe("the R2 adapter for credential bundles", () => {
-  it("stores, reads back and deletes bytes, and reads a missing object as null", async () => {
+  it("puts through the fence with the writer's generation, reads back and deletes bytes directly, and reads a missing object as null", async () => {
     const { r2Bucket } = await import("../../src/computer/bucket.ts");
     const objects = new Map<string, Uint8Array>();
-    const bucket = r2Bucket({
-      put: async (key, body) => objects.set(key, body),
-      get: async (key) => {
-        const body = objects.get(key);
-        return body === undefined ? null : { arrayBuffer: async () => body.slice().buffer };
+    const fenced: string[] = [];
+    const bucket = r2Bucket(
+      {
+        get: async (key) => {
+          const body = objects.get(key);
+          return body === undefined ? null : { arrayBuffer: async () => body.slice().buffer };
+        },
+        delete: async (key) => {
+          objects.delete(key);
+        },
+        // Two pages, so the adapter follows the cursor.
+        list: async ({ prefix, cursor }) => {
+          const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+          const start = cursor === undefined ? 0 : Number(cursor);
+          const page = keys.slice(start, start + 1);
+          const next = start + 1 < keys.length ? String(start + 1) : undefined;
+          return {
+            objects: page.map((key) => ({ key })),
+            truncated: next !== undefined,
+            ...(next === undefined ? {} : { cursor: next }),
+          };
+        },
       },
-      delete: async (key) => {
-        objects.delete(key);
+      async (key, body, generation) => {
+        fenced.push(`${key}@${generation}`);
+        objects.set(key, body);
       },
-      // Two pages, so the adapter follows the cursor.
-      list: async ({ prefix, cursor }) => {
-        const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
-        const start = cursor === undefined ? 0 : Number(cursor);
-        const page = keys.slice(start, start + 1);
-        const next = start + 1 < keys.length ? String(start + 1) : undefined;
-        return {
-          objects: page.map((key) => ({ key })),
-          truncated: next !== undefined,
-          ...(next === undefined ? {} : { cursor: next }),
-        };
-      },
-    });
-    await bucket.put("credentials/a.json", new TextEncoder().encode("bundle"));
+    );
+    await bucket.put("credentials/a.json", new TextEncoder().encode("bundle"), { generation: 3 });
     expect(
       new TextDecoder().decode((await bucket.get("credentials/a.json")) ?? new Uint8Array()),
     ).toBe("bundle");
-    await bucket.put("credentials/b.json", new TextEncoder().encode("b"));
-    await bucket.put("workspace/x", new TextEncoder().encode("x"));
+    await bucket.put("credentials/b.json", new TextEncoder().encode("b"), { generation: 4 });
+    await bucket.put("workspace/x", new TextEncoder().encode("x"), { generation: 4 });
+    expect(fenced).toEqual(["credentials/a.json@3", "credentials/b.json@4", "workspace/x@4"]);
     expect(await bucket.list("credentials/")).toEqual(["credentials/a.json", "credentials/b.json"]);
     await bucket.delete("credentials/a.json");
     expect(await bucket.get("credentials/a.json")).toBeNull();

@@ -248,6 +248,8 @@ export const CONTAINER_STOPPED_STATES: readonly LifecycleState[] = [
 ];
 
 const goneReply: Reply = { kind: "error", code: "gone" };
+/** Once a removal intent is recorded, every launcher call but `terminate` answers `gone` (FH-29),
+ * `suspend` included: the launcher (3.6) reads `gone` as a removed computer, never a stop. */
 const gone: Rule = { when: ["removal_intent"], reply: goneReply };
 const conflict: Rule = { reply: { kind: "error", code: "conflict" } };
 const refused: Rule = { reply: { kind: "refused" } };
@@ -282,7 +284,7 @@ function notRunning(): Partial<Record<LifecycleEvent, Cell>> {
     ],
     claim_start: [gone, claimRefused],
     start_host: [gone, conflict],
-    suspend: [suspendStopped],
+    suspend: [gone, suspendStopped],
     terminate: [
       {
         to: "removal_pending",
@@ -317,7 +319,7 @@ function starting(state: "waking" | "restoring"): Partial<Record<LifecycleEvent,
       },
       conflict,
     ],
-    suspend: [{ reply: { kind: "suspend_refused", reason: "restoring" } }],
+    suspend: [gone, { reply: { kind: "suspend_refused", reason: "restoring" } }],
     terminate:
       state === "waking"
         ? [
@@ -365,6 +367,7 @@ function restored(): Partial<Record<LifecycleEvent, Cell>> {
     resume: [gone, { reply: { kind: "resume", outcome: "running" } }],
     start_host: [gone, conflict],
     suspend: [
+      gone,
       { when: ["stop_prep"], ...suspendInProgress },
       { when: ["capturing"], reply: { kind: "suspend_refused", reason: "capture_running" } },
       { when: ["terminal_open"], reply: { kind: "suspend_refused", reason: "terminal_open" } },
@@ -582,7 +585,7 @@ export const LIFECYCLE_TABLE: Table = {
     resume: [gone, { reply: { kind: "resume", outcome: "after_stop" }, set: { wakeQueued: true } }],
     claim_start: [gone, claimRefused],
     start_host: [gone, conflict],
-    suspend: [suspendInProgress],
+    suspend: [gone, suspendInProgress],
     terminate: [
       {
         reply: { kind: "terminate", removal: "pending" },
@@ -623,7 +626,7 @@ export const LIFECYCLE_TABLE: Table = {
     resume: [{ reply: goneReply }],
     claim_start: [{ reply: goneReply }],
     start_host: [{ reply: goneReply }],
-    suspend: [suspendStopped],
+    suspend: [{ reply: goneReply }],
     terminate: [{ reply: { kind: "terminate", removal: "pending" } }],
     checkpoint: [{ reply: goneReply }],
     capture_started: [refused],
@@ -649,7 +652,7 @@ export const LIFECYCLE_TABLE: Table = {
     resume: [{ reply: goneReply }],
     claim_start: [{ reply: goneReply }],
     start_host: [{ reply: goneReply }],
-    suspend: [suspendStopped],
+    suspend: [{ reply: goneReply }],
     terminate: [{ reply: { kind: "terminate", removal: "resolved" } }],
     checkpoint: [{ reply: goneReply }],
     capture_started: [refused],

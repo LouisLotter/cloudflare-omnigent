@@ -81,6 +81,26 @@ describe("the platform Worker (wrangler.jsonc)", () => {
     expect((web as unknown as { triggers?: unknown }).triggers).toBeUndefined();
   });
 
+  it("runs each computer's container under WorkspaceDO, with the image key the port names (WP3.18)", async () => {
+    const { COMPUTER_IMAGE_KEY } = await import("../../src/computer/container-port.ts");
+    const containers = (platform.containers ?? []) as Record<string, unknown>[];
+    const computer = containers.find((c) => c.class_name === "WorkspaceDO");
+    // One container per computer (the `durable_object` policy), sized at each start, so the
+    // configuration names no instance type or count; the image is built from the repository.
+    expect(computer).toEqual({
+      class_name: "WorkspaceDO",
+      scheduling_policy: "durable_object",
+      images: {
+        [COMPUTER_IMAGE_KEY]: { dockerfile: "../images/computer/Dockerfile", build_context: ".." },
+      },
+    });
+    const buckets = (platform as unknown as { r2_buckets?: { binding: string }[] }).r2_buckets;
+    expect(buckets?.map((b) => b.binding)).toEqual(["CHECKPOINTS"]);
+    expect((test as unknown as { r2_buckets?: { binding: string }[] }).r2_buckets).toEqual([
+      { binding: "CHECKPOINTS", bucket_name: "cfo-test-checkpoints" },
+    ]);
+  });
+
   it("hosts OmnigentServer as a SQLite Durable Object class", () => {
     expect(platform.durable_objects?.bindings).toContainEqual({
       name: "OMNIGENT",
@@ -150,14 +170,13 @@ describe("Workers Logs: no request header is recorded (WP2.6)", () => {
 });
 
 describe("the Workers-runtime test configuration (wrangler.test.jsonc)", () => {
-  // Stand-ins for the tests of callers that need a programmable callee. WP3.3's routes and
-  // backup gateway reach WorkspaceDO through WORKSPACE, so their tests bind it to a stand-in
-  // answered by fakes; WP3.1's controller itself is tested on WORKSPACE_CONTROLLER. Each goes
-  // once the callers are tested against the real class.
+  // Every platform binding is its production class (WP3.18): the routes, the backup gateway and
+  // ControlDO reach the real WorkspaceDO, with only its container and clock simulated. One extra
+  // binding: WP3.1's controller under fakes, for its own Workers-runtime tests.
   const STAND_INS = {
-    replaced: { WORKSPACE: "WorkspaceStandIn" } as Record<string, string>,
-    bindings: [{ name: "WORKSPACE_CONTROLLER", class_name: "WorkspaceDO" }],
-    classes: ["WorkspaceStandIn"],
+    replaced: {} as Record<string, string>,
+    bindings: [{ name: "WORKSPACE_CONTROLLER", class_name: "WorkspaceUnderFakes" }],
+    classes: ["WorkspaceUnderFakes"],
   };
 
   it("binds and migrates the platform Worker's classes the same way, plus declared stand-ins", () => {
@@ -185,11 +204,12 @@ describe("module rules of the forwarding path", () => {
     for (const file of sources()) expect(read(file)).not.toMatch(/@cloudflare\/containers/);
   });
 
-  it("touches ctx.container only in the container port", () => {
+  it("touches ctx.container only in the container ports", () => {
     const touching = sources()
       .filter((file) => /\bctx\.container\b/.test(read(file).replace(/^\s*\/\/.*$/gm, "")))
-      .map(rel);
-    expect(touching).toEqual(["server/container-port.ts"]);
+      .map(rel)
+      .sort();
+    expect(touching).toEqual(["computer/container-port.ts", "server/container-port.ts"]);
   });
 
   it("never accepts a forwarded socket in JavaScript", () => {

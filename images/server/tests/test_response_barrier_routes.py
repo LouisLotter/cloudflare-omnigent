@@ -291,7 +291,9 @@ def test_launch_token_rearm_and_revocation_are_security_writes(app_harness: AppH
     store.create_persistent_host(
         host_id=host_id, name=f"rearm-{host_id[:6]}", user_id=OWNER, provider="cloudflare"
     )
-    attached = store.attach_persistent_sandbox(host_id, sandbox_id="sb-synthetic")
+    attached = store.attach_persistent_sandbox(
+        host_id, provider="cloudflare", sandbox_id="sb-synthetic"
+    )
     assert attached is not None
 
     def in_scope(action):  # noqa: ANN001, ANN202

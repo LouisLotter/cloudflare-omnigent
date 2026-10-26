@@ -46,7 +46,12 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
-import { type WorkspaceRpc, WriteCheck, type WriteDecision } from "../../src/shared/rpc.ts";
+import {
+  type WorkspaceIdentity,
+  type WorkspaceRpc,
+  WriteCheck,
+  type WriteDecision,
+} from "../../src/shared/rpc.ts";
 import { OperationJournal } from "./operation-journal.ts";
 
 type Recorded = { readonly result: LauncherResult } | { readonly error: ErrorCode };
@@ -427,5 +432,11 @@ export class FakeWorkspace implements WorkspaceRpc {
   async reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
     checkVersion(call.interfaceVersion);
     return this.reservationState;
+  }
+
+  /** The route's identity read: this computer's generation and bound host. */
+  async identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null> {
+    checkVersion(call.interfaceVersion);
+    return { computerId: this.computerId, generation: this.generation, hostId: this.hostId };
   }
 }

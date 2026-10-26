@@ -28,7 +28,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=184b5cf8b32815b48c7859973a00a139e8aa50f0
+ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -157,7 +157,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="184b5cf8b32815b48c7859973a00a139e8aa50f0" \
+      cloudflare-omnigent.omnigent-commit="3228d4de38ef05f69ecc80a4539d7c02727ce314" \
       cloudflare-omnigent.claude-code="2.1.302" \
       cloudflare-omnigent.codex="0.163.0"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through
@@ -173,6 +173,9 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir pytest==9.1.1 hypothesi
 COPY contracts/ /opt/cfo/repo/contracts/
 COPY images/computer/ /opt/cfo/repo/images/computer/
 COPY python/tests/computer/ /opt/cfo/repo/python/tests/computer/
+# The commands WorkspaceDO sends, recorded from the controller, which the supervisor's parser
+# must accept (python/tests/computer/test_workspace_commands.py).
+COPY worker/test/fixtures/workspace-commands.json /opt/cfo/repo/worker/test/fixtures/
 # The fake CLIs come first on PATH in this variant only; their provider lives outside homes.
 ENV PATH="/opt/cfo/repo/images/computer/fakes/bin:${PATH}"
 RUN mkdir -p /var/lib/cfo-fake-provider && chown omnigent:omnigent /var/lib/cfo-fake-provider
