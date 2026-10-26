@@ -20,13 +20,12 @@ import time
 from pathlib import Path
 
 import pytest
-from harness import FAKES, FakeWorkspace, Rig, Uploads, canary, new_id, tree_files
-
 from cfo_computer import credentials as C
 from cfo_computer import restore as R
 from cfo_computer.backoff import capped_backoff
 from cfo_computer.supervisor import Tools
 from cfo_computer.tree import tree_digest
+from harness import FAKES, FakeWorkspace, Rig, Uploads, canary, new_id, tree_files
 
 DECLARED = (
     ".claude/.credentials.json",
@@ -344,7 +343,8 @@ FAKE_HOST = r"""#!/usr/bin/env python3
 import json, os
 home = os.environ["HOME"]
 with open(os.path.join(home, "host-runs.jsonl"), "a") as fh:
-    fh.write(json.dumps({"config": os.path.exists(os.path.join(home, ".omnigent", "host-config.json"))}) + "\n")
+    config = os.path.join(home, ".omnigent", "host-config.json")
+    fh.write(json.dumps({"config": os.path.exists(config)}) + "\n")
 import time
 time.sleep(60)
 """
