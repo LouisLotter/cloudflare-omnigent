@@ -369,6 +369,7 @@ SECRET = "synthetic-url-secret"
     [
         "OMNIGENT_ARTIFACT_URI",
         "AWS_ENDPOINT_URL_S3",
+        "AWS_ENDPOINT_URL",
         "CFO_REPLICA_URL",
         "CFO_REPLICA_ENDPOINT",
         "OMNIGENT_ACCOUNTS_BASE_URL",
@@ -397,6 +398,18 @@ def test_a_url_setting_is_refused_without_repeating_it(
         load(env)
     assert name in str(excinfo.value)
     assert SECRET not in str(excinfo.value)
+
+
+def test_the_fallback_endpoint_is_checked_too(env: dict[str, str]) -> None:
+    """Without AWS_ENDPOINT_URL_S3, Omnigent's store uses AWS_ENDPOINT_URL (Codex r2-1)."""
+    env = _s3_artifacts(env)
+    del env["AWS_ENDPOINT_URL_S3"]
+    assert load({**env, "AWS_ENDPOINT_URL": "https://r2.example.test"}).artifacts.uri
+    with pytest.raises(ConfigError, match="AWS_ENDPOINT_URL must be an http or https URL"):
+        load({**env, "AWS_ENDPOINT_URL": f"ftp://synthetic-id:{SECRET}@host.example.test"})
+    # The test switch's disk store reads no endpoint: nothing to check there.
+    local = base_env(Path("/nonexistent"))
+    assert load({**local, "AWS_ENDPOINT_URL": "not a url"}).artifacts.uri is None
 
 
 def test_omnigents_parser_reads_every_accepted_uri_as_the_image_does(env: dict[str, str]) -> None:

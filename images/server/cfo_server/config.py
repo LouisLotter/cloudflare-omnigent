@@ -383,9 +383,13 @@ def parse_artifacts(
     for name in ARTIFACT_CREDENTIALS:
         if _get(env, name) is None:
             raise ConfigError(f"{name} is required for the artifact store")
-    endpoint = _get(env, "AWS_ENDPOINT_URL_S3")
-    if endpoint is not None:
-        _origin(endpoint, "AWS_ENDPOINT_URL_S3")
+    # Omnigent's store takes AWS_ENDPOINT_URL_S3, else AWS_ENDPOINT_URL: both are checked, so a
+    # malformed one is exit 78, never botocore's error at the first request, which would print it
+    # whole (Codex G2-DUR-001 r2-1).
+    for name in ("AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL"):
+        endpoint = _get(env, name)
+        if endpoint is not None:
+            _origin(endpoint, name)
     if (
         replica is not None
         and replica.url.startswith("s3:")

@@ -321,6 +321,12 @@ describe("the artifact bucket (G2-DUR-001)", () => {
       "s3://cfo-canary-artifacts/a\\b",
       "s3://[broken",
       "s3:/cfo-canary-artifacts",
+      // Codex G2-DUR-001 r2-2: invisible characters the image refuses (Python's isprintable).
+      "s3://cfo-canary-artifacts/a\u200bb",
+      "s3://cfo-canary-artifacts/a\u0085b",
+      "s3://cfo-canary-artifacts/a\u202eb",
+      "s3://cfo-canary-artifacts/a\u00a0b",
+      "s3://cfo-canary-artifacts/a\u2028b",
     ]) {
       expect(await problems({ url }), url).toEqual([
         "the artifacts URL must be s3://<bucket>[/<prefix>], with an R2 bucket name",

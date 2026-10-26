@@ -128,6 +128,11 @@ describe.skipIf(!python)(
         "s3://cfo-canary-artifacts:9000",
         "s3://[broken",
         "s3://cfo.canary.artifacts",
+        "s3://cfo-canary-artifacts/a\u200bb",
+        "s3://cfo-canary-artifacts/a\u0085b",
+        "s3://cfo-canary-artifacts/a\u202eb",
+        "s3://cfo-canary-artifacts/a\u00a0b",
+        "s3://cfo-canary-artifacts/é/ü",
       ];
       for (const url of corpus) {
         const plan = await accountPlan({ artifacts: { url } });
@@ -140,8 +145,12 @@ describe.skipIf(!python)(
             "s3://cfo-canary-artifacts",
             "s3://cfo-canary-artifacts/",
             "s3://cfo-canary-artifacts/omnigent/x",
+            "s3://cfo-canary-artifacts/é/ü",
           ].includes(url),
         );
+        // And what the bootstrap refuses, the image refuses (r2-2): one rule both ways, but for
+        // bucket names S3 allows and R2 does not (dots), which only the bootstrap refuses.
+        if (url !== "s3://cfo.canary.artifacts") expect("error" in read, url).toBe(!bootstrapOk);
       }
     });
 

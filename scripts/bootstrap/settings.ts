@@ -206,8 +206,9 @@ export function artifactsBucket(url: string): string | undefined {
   const bucket = slash < 0 ? rest : rest.slice(0, slash);
   const prefix = slash < 0 ? "" : rest.slice(slash + 1);
   if (!R2_BUCKET.test(bucket)) return undefined;
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are refused
-  if (/[?#\\\s\x00-\x1f\x7f]/.test(prefix)) return undefined;
+  // The image's rule (Python's isspace or not isprintable): every Unicode separator and
+  // "other" character (controls, format characters such as U+200B or U+202E, unassigned).
+  if (/[?#\\\p{C}\p{Z}]/u.test(prefix)) return undefined;
   if (prefix.split("/").some((s) => s === "." || s === "..")) return undefined;
   return bucket;
 }
