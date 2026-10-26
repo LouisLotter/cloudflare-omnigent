@@ -44,6 +44,26 @@ describe("the simulated container's sandbox-shim", () => {
     second.kill();
     expect(await second.exitCode).toBe(137);
     expect(c.shimRuns).toEqual(["backup:/var/cfo/x", "restore:/var/cfo/x"]);
+  });
+
+  it("keeps the holder's lock when a queued waiter is killed (Codex WP3.18 r2-4)", async () => {
+    const c = new FakeRuntimeContainer(CMP);
+    c.start({
+      instance: "standard-1",
+      env: { CFO_COMPUTER_ID: CMP, CFO_GENERATION: "1" },
+    } as never);
+    const request = JSON.stringify({ gateway: "backups.sandbox.internal", dir: "/var/cfo/y" });
+    const a = await c.exec([...SHIM, "backup", request]);
+    const b = await c.exec([...SHIM, "backup", request]);
+    expect(await firstFrame(a)).toEqual({ kind: "locked" });
+    b.kill();
+    expect(await b.exitCode).toBe(137);
+    const third = await c.exec([...SHIM, "backup", request]);
+    // A still holds the lock: the third waits.
+    expect(await firstFrame(third)).toBe("none");
+    await (a.stdin as WritableStream<Uint8Array>).close();
+    expect(await firstFrame(third, 1_000)).toEqual({ kind: "locked" });
+    third.kill();
     await expect(c.exec(["/bin/sh", "-c", "true"])).rejects.toThrow("unexpected exec");
   });
 });

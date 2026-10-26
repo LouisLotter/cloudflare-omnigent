@@ -76,11 +76,16 @@ function shimProcess(
   lock: { held: Promise<void> },
   run: (io: ShimIo) => Promise<number>,
 ): ExecProcess {
+  // A queue: each shim waits for every one before it. A successor waits for this one's own part
+  // and, through it, for the predecessor's, so a waiter killed while queued gives up only its own
+  // turn, never its predecessor's hold (Codex WP3.18 r2-4).
   const previous = lock.held;
   let release: () => void = () => undefined;
-  lock.held = new Promise<void>((resolve) => {
+  const own = new Promise<void>((resolve) => {
     release = resolve;
   });
+  lock.held = previous.then(() => own);
+  let killed = false;
   const stdin = new TransformStream<Uint8Array, Uint8Array>();
   const stdout = new TransformStream<Uint8Array, Uint8Array>();
   const out = stdout.writable.getWriter();
@@ -104,7 +109,7 @@ function shimProcess(
     settle = resolve;
   });
   void previous
-    .then(() => run(io))
+    .then(() => (killed ? 137 : run(io)))
     .catch(() => 1)
     .then(async (code) => {
       await out.close().catch(() => undefined);
@@ -124,6 +129,7 @@ function shimProcess(
     exitCode,
     output: () => Promise.reject(new Error("not used")),
     kill: () => {
+      killed = true;
       void out.abort("killed").catch(() => undefined);
       void input.cancel("killed").catch(() => undefined);
       settle(137);

@@ -82,8 +82,11 @@ deploy_at() { # kind, at (ms): wait until then, deploy, record it
   status=${PIPESTATUS[0]}
   set -e
   end=$(now_ms)
-  printf '{"kind":"%s","build":"%s","start":%s,"end":%s,"status":%s}\n' \
-    "$kind" "$build" "$start" "$end" "$status" >>"$out/deploys.jsonl"
+  # The version this deploy made current, as Wrangler prints it: the analysis brackets the switch
+  # to exactly this version (never a later deployment's).
+  version=$(grep -oE 'Current Version ID: [0-9a-f-]+' "$out/deploys/$build.log" | tail -1 | awk '{print $4}')
+  printf '{"kind":"%s","build":"%s","start":%s,"end":%s,"status":%s,"version":"%s"}\n' \
+    "$kind" "$build" "$start" "$end" "$status" "$version" >>"$out/deploys.jsonl"
 }
 
 case "${1:-}" in

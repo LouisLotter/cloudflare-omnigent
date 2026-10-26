@@ -12,12 +12,14 @@
 // 100 s when the drop overlaps a capture pause), and, for a web Worker deploy, that no host
 // tunnel was reopened at all (no drop).
 //
-// A reset's time is the soak run's own record, taken just before it. A platform deploy's version
-// switch is never read from a host's own reconnect (Codex WP3.18 r1-3): the soak run logs a
-// heartbeat every 5 s around each platform deploy, and the switch lies between the last
-// heartbeat of the old version and the first of the new one. A reconnect is judged against both
-// ends: within the bound from the earlier one passes, beyond it from the later one fails, and
-// anything between is reported inconclusive, never passed.
+// A reset's time is the soak run's own record, taken just before it. A platform deploy's drop is
+// OmnigentServer's own version switch (every host tunnel runs through that object), never read
+// from a host's reconnect (Codex WP3.18 r1-3, r2-2): around each platform deploy the soak run
+// asks OmnigentServer every 5 s to log a heartbeat, in whichever version that object runs, and
+// the switch lies between its last heartbeat of another version and its first of the version the
+// deploy printed (r2-3: never a later deployment's). A reconnect is judged against both ends:
+// within the bound from the earlier one passes, beyond it from the later one fails, anything
+// between is inconclusive, and a deploy whose version or heartbeats are missing is inconclusive.
 
 export const MIN = 60_000;
 /** The soak's length (RC-26). */
@@ -119,6 +121,8 @@ export interface Disruption {
   readonly at: number;
   /** A deploy's upload ended here; its version switch is found in the logs. */
   readonly deployEndedAt?: number;
+  /** The version a platform deploy printed ("Current Version ID"); its switch is to this one. */
+  readonly version?: string;
   /** The drop overlapped a capture pause (RC-21's longer bound). */
   readonly duringPause?: boolean;
 }
@@ -150,28 +154,35 @@ export function tunnelOpens(lines: readonly LogLine[]): Map<string, number[]> {
   return new Map([...openLines(lines)].map(([id, list]) => [id, list.map((o) => o.at)]));
 }
 
-function isHeartbeat(line: LogLine): boolean {
+/** OmnigentServer's own heartbeat (soak.ts), with the version of the object that logged it. */
+function isServerHeartbeat(line: LogLine): boolean {
   const s = typeof line.source === "object" && line.source !== null ? line.source : null;
-  return s !== null && s.cfo === "soak" && s.event === "heartbeat" && line.version !== undefined;
+  return (
+    s !== null &&
+    s.cfo === "soak" &&
+    s.event === "heartbeat" &&
+    s.from === "server" &&
+    line.version !== undefined
+  );
 }
 
 /**
- * Where a deploy's version switch lies, from the soak run's heartbeats only: after the last one
- * of a version seen before the upload ended, and at or before the first one of a version not seen
- * before it. Null if the heartbeats do not bracket it.
+ * Where OmnigentServer switched to the deployed `version`: after its last heartbeat of another
+ * version, and at or before its first heartbeat of this one, from the deploy's start on. Null if
+ * the version is unknown or the heartbeats do not bracket the switch.
  */
 export function switchBracket(
   lines: readonly LogLine[],
-  deployEndedAt: number,
+  deploy: { readonly from: number; readonly version: string | undefined },
 ): { readonly lastOld: number; readonly firstNew: number; readonly version: string } | null {
-  const beats = lines.filter(isHeartbeat).sort((a, b) => a.timestamp - b.timestamp);
-  const before = new Set(beats.filter((l) => l.timestamp < deployEndedAt).map((l) => l.version));
-  if (before.size === 0) return null;
-  const first = beats.find((l) => l.timestamp >= deployEndedAt && !before.has(l.version));
-  if (first === undefined || first.version === undefined) return null;
-  const old = beats.filter((l) => l.timestamp < first.timestamp && before.has(l.version)).at(-1);
+  const version = deploy.version;
+  if (version === undefined) return null;
+  const beats = lines.filter(isServerHeartbeat).sort((a, b) => a.timestamp - b.timestamp);
+  const first = beats.find((l) => l.timestamp >= deploy.from && l.version === version);
+  if (first === undefined) return null;
+  const old = beats.filter((l) => l.timestamp < first.timestamp && l.version !== version).at(-1);
   if (old === undefined) return null;
-  return { lastOld: old.timestamp, firstNew: first.timestamp, version: first.version };
+  return { lastOld: old.timestamp, firstNew: first.timestamp, version };
 }
 
 export interface Reconnect {
@@ -202,7 +213,9 @@ export function reconnects(
   for (const d of disruptions) {
     if (d.kind === "end") continue;
     const bracket =
-      d.kind === "platform_deploy" ? switchBracket(lines, d.deployEndedAt ?? d.at) : null;
+      d.kind === "platform_deploy"
+        ? switchBracket(lines, { from: d.at, version: d.version })
+        : null;
     const at = d.kind === "platform_deploy" ? (bracket?.lastOld ?? null) : d.at;
     const boundMs = d.duringPause ? RC21_PAUSE_MS : RC21_MS;
     for (const [computerId, list] of opens) {
@@ -231,7 +244,7 @@ export function reconnects(
           gapMs: null,
           boundMs,
           ok: false,
-          note: "no version switch bracketed by the soak's heartbeats",
+          note: "inconclusive: no switch to the deployed version bracketed by the server's heartbeats",
         });
         continue;
       }

@@ -903,13 +903,26 @@ export class WorkspaceController {
     return true;
   }
 
-  /** The installation's size cap from ControlDO's `limits`, or null if it cannot be read. */
+  /**
+   * The installation's size cap from ControlDO's `limits`, or null if it cannot be read within a
+   * command's deadline (a reply that never comes must not hold the runner or a launcher call;
+   * a late one is ignored).
+   */
   async #confirmedCap(): Promise<InstanceSize | null> {
+    const deadline = this.#d.deadline(this.#t.commandTimeoutMs);
+    const expired = new Promise<"expired">((resolve) => {
+      if (deadline.signal.aborted) resolve("expired");
+      deadline.signal.addEventListener("abort", () => resolve("expired"), { once: true });
+    });
     try {
-      const limits = await this.#d.control.control({
-        method: "limits",
-        interfaceVersion: CONTROL_INTERFACE_VERSION,
-      });
+      const limits = await Promise.race([
+        this.#d.control.control({ method: "limits", interfaceVersion: CONTROL_INTERFACE_VERSION }),
+        expired,
+      ]);
+      if (limits === "expired") {
+        this.#log("limits_failed", { error: "no answer within the deadline" });
+        return null;
+      }
       if (limits.method === "limits") {
         const size = InstanceSize.safeParse(limits.maxInstanceSize);
         if (size.success) return size.data;
@@ -917,6 +930,8 @@ export class WorkspaceController {
       this.#log("limits_failed", { error: "an answer that is not the limits" });
     } catch (error) {
       this.#log("limits_failed", { error: describe(error) });
+    } finally {
+      deadline.clear();
     }
     return null;
   }
@@ -1963,7 +1978,9 @@ export class WorkspaceController {
       await this.#registerIntercepts(r, port);
       const instance = await this.#exclusive(() =>
         this.#write((d): InstanceSize | null => {
-          if (d.lifecycle.context.state !== "waking" || d.start?.startedAt !== null) return null;
+          if (d.lifecycle.context.state !== "waking" || d.lifecycle.generation !== generation)
+            return null;
+          if (d.start?.startedAt !== null) return null;
           if (d.reservation === null || !mayStart(d.reservation, generation)) return null;
           d.maxSize = confirmed;
           d.maxSizeGeneration = generation;

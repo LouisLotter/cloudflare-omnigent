@@ -11,7 +11,8 @@
 //     (ttyd, port 7681), forwarded natively, until the platform pages (WP3.5) provide it;
 //   - SoakRun: the schedule (plan.ts), started by the owner's Start click on /__soak, ticked by
 //     the production cron; its events go to Workers Logs and the results bucket. Around each
-//     platform deploy it also logs a heartbeat every 5 s, which brackets the version switch.
+//     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
+//     object's version switch.
 // soak-config.ts renders the configuration: the bootstrap's own, with this module as main, the
 // SOAK binding and the RESULTS bucket added.
 
@@ -46,6 +47,14 @@ export class OmnigentServer extends PlatformOmnigentServer {
   async stagingReset(reason: string): Promise<void> {
     logEvent("soak", "server_reset", { reason });
     this.ctx.abort(reason);
+  }
+
+  /**
+   * A heartbeat logged by this object, in the version it runs (staging only): it brackets this
+   * object's own version switch, which is what drops every host tunnel (plan.ts).
+   */
+  async stagingBeat(runId: string): Promise<void> {
+    logEvent("soak", "heartbeat", { runId, from: "server" });
   }
 
   /** Stops the server container once; the watchdog starts it with the current secrets. */
@@ -127,14 +136,17 @@ export class SoakRun extends DurableObject<SoakEnv> {
   }
 
   /**
-   * The heartbeat around each platform deploy: an event independent of any host, whose version
-   * in Workers Logs brackets the deploy's switch (the analysis never reads the switch from a
-   * host's own reconnect). It runs in whichever version holds this object, old or new.
+   * The heartbeat around each platform deploy: OmnigentServer logs it in the version it runs, so
+   * Workers Logs bracket that object's own switch, independently of any host (plan.ts).
    */
   override async alarm(): Promise<void> {
     const state = await this.#state();
     if (state === null || state.ended) return;
-    logEvent("soak", "heartbeat", { runId: state.runId });
+    await this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME)
+      .stagingBeat(state.runId)
+      .catch((error: unknown) =>
+        logEvent("soak", "heartbeat_failed", { error: String(error).slice(0, 120) }),
+      );
     await this.#armHeartbeat(state.t0, Date.now());
   }
 

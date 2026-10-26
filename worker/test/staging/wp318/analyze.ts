@@ -19,7 +19,13 @@ const deploys = readFileSync(join(dir, "deploys.jsonl"), "utf8")
   .filter(Boolean)
   .map(
     (line) =>
-      JSON.parse(line) as { kind: SoakEventKind; start: number; end: number; status: number },
+      JSON.parse(line) as {
+        kind: SoakEventKind;
+        start: number;
+        end: number;
+        status: number;
+        version: string;
+      },
   );
 const lines = readFileSync(join(dir, "logs.jsonl"), "utf8")
   .split("\n")
@@ -29,7 +35,12 @@ const disruptions: Disruption[] = [
   ...run.events.filter((e) => e.kind !== "end").map((e) => ({ kind: e.kind, at: e.at })),
   ...deploys
     .filter((d) => d.status === 0)
-    .map((d) => ({ kind: d.kind, at: d.start, deployEndedAt: d.end })),
+    .map((d) => ({
+      kind: d.kind,
+      at: d.start,
+      deployEndedAt: d.end,
+      ...(d.version ? { version: d.version } : {}),
+    })),
 ].sort((a, b) => a.at - b.at);
 const results = reconnects(disruptions, lines);
 for (const r of results) {

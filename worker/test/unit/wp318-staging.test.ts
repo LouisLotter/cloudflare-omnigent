@@ -24,8 +24,8 @@ const HOST = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const A = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3";
 const B = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4";
 
-function beat(at: number, version: string): LogLine {
-  return { timestamp: at, version, source: { cfo: "soak", event: "heartbeat", runId: "r" } };
+function beat(at: number, version: string, from = "server"): LogLine {
+  return { timestamp: at, version, source: { cfo: "soak", event: "heartbeat", runId: "r", from } };
 }
 
 /** Heartbeats every 5 s from `from` to `to`, switching to `v2` at `switchAt`. */
@@ -136,23 +136,40 @@ describe("the soak's analysis", () => {
     expect(tunnelOpens([{ timestamp: 1, source: "a text line" }]).size).toBe(0);
   });
 
-  it("brackets a deploy's switch with the soak's heartbeats only, never a host's reconnect", () => {
+  it("brackets OmnigentServer's own switch to the deployed version, never a host's reconnect", () => {
+    const start = T0 + 50 * MIN;
     const end = T0 + 52 * MIN;
     const lines = [
       ...beats(end - 20_000, end + 400_000, end + 300_002),
       open(end + 300_001, A, "v2"),
     ];
-    expect(switchBracket(lines, end)).toEqual({
+    const deploy = { from: start, version: "v2" };
+    expect(switchBracket(lines, deploy)).toEqual({
       lastOld: end + 300_000,
       firstNew: end + 305_000,
       version: "v2",
     });
-    // No heartbeat of the new version, or none before the upload ended: not bracketed.
+    // Codex WP3.18 r2-3: the deployed version may already run before the command exits; the
+    // bracket is still its own, never a later deployment's.
+    const early = [...beats(start - 20_000, start + 400_000, start + 30_002)];
+    expect(switchBracket(early, { from: start, version: "v2" })).toMatchObject({
+      lastOld: start + 30_000,
+      firstNew: start + 35_000,
+    });
+    expect(switchBracket(early, { from: start, version: "v3" })).toBeNull();
+    // Unknown version, no heartbeat of it, none before it, or only another object's: not bracketed.
+    expect(switchBracket(lines, { from: start, version: undefined })).toBeNull();
     expect(
-      switchBracket(beats(end - 20_000, end + 400_000, Number.POSITIVE_INFINITY), end),
+      switchBracket(beats(end - 20_000, end + 400_000, Number.POSITIVE_INFINITY), deploy),
     ).toBeNull();
-    expect(switchBracket(beats(end, end + 400_000, end + 100_000), end)).toBeNull();
-    expect(switchBracket([open(end + 1, A, "v2")], end)).toBeNull();
+    expect(switchBracket(beats(end, end + 400_000, end), deploy)).toBeNull();
+    expect(switchBracket([open(end + 1, A, "v2")], deploy)).toBeNull();
+    const soakRunOnly = lines.map((l) =>
+      typeof l.source === "object" && l.source?.event === "heartbeat"
+        ? beat(l.timestamp, l.version ?? "", "soak-run")
+        : l,
+    );
+    expect(switchBracket(soakRunOnly, deploy)).toBeNull();
   });
 
   it("schedules heartbeats around each platform deploy only", () => {
@@ -180,7 +197,7 @@ describe("the soak's analysis", () => {
       [
         { kind: "server_reset", at: reset },
         { kind: "web_deploy", at: web, deployEndedAt: web + 60_000 },
-        { kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd },
+        { kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd, version: "v2" },
         { kind: "end", at: T0 + SOAK_MS },
       ],
       lines,
@@ -202,7 +219,7 @@ describe("the soak's analysis", () => {
     // Codex WP3.18 r1-3: a reconnect is never its own evidence of the switch. With no new-version
     // heartbeat, a late reconnect under the new version is not bracketed, so it never passes.
     const unbracketed = reconnects(
-      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd }],
+      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd, version: "v2" }],
       [
         ...beats(deployEnd - 20_000, deployEnd + 400_000, Number.POSITIVE_INFINITY),
         open(T0, A, "v1"),
@@ -212,7 +229,7 @@ describe("the soak's analysis", () => {
     expect(unbracketed[0]).toMatchObject({ ok: false, gapMs: null });
     // Beyond the bound from the bracket's end: a definite failure, with no inconclusive note.
     const late = reconnects(
-      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd }],
+      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd, version: "v2" }],
       [
         ...beats(deployEnd - 20_000, deployEnd + 400_000, deployEnd + 302_000),
         open(T0, A, "v1"),
@@ -235,12 +252,13 @@ describe("the soak's analysis", () => {
     // No switch found, a computer that never came back, and one never connected before.
     const missing = reconnects(
       [
-        { kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd },
+        { kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd, version: "v2" },
         { kind: "server_reset", at: reset },
       ],
       [open(T0, A, "v1"), open(reset + 5 * MIN, B, "v1")],
     );
-    const notBracketed = "no version switch bracketed by the soak's heartbeats";
+    const notBracketed =
+      "inconclusive: no switch to the deployed version bracketed by the server's heartbeats";
     expect(missing).toEqual([
       expect.objectContaining({ computerId: A, ok: false, note: notBracketed }),
       expect.objectContaining({ computerId: B, ok: false, note: notBracketed }),
