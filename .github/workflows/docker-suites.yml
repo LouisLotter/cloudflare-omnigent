@@ -116,5 +116,11 @@ jobs:
             echo "::error::durability tests were skipped: a missing prerequisite is not a pass"
             exit 1
           fi
-          # The in-process suite reports its own count inside test_fence_suite.py.
-          grep -E '^[0-9]+ passed' "$RUNNER_TEMP/drill/drill0/logs/fence-suite.log"
+          # The in-process suite runs inside test_fence_suite.py and reports there: its summary
+          # must be passes only (warnings allowed), with no skip, error, failure or xfail.
+          summary="$(grep -E '^[0-9]+ (passed|failed|skipped|error)' "$RUNNER_TEMP/drill/drill0/logs/fence-suite.log" | tail -n 1)"
+          echo "fence suite: $summary"
+          if [[ ! "$summary" =~ ^[0-9]+\ passed(,\ [0-9]+\ warnings?)?\ in\  ]]; then
+            echo "::error::the in-process fence suite did not pass cleanly: $summary"
+            exit 1
+          fi
