@@ -63,6 +63,14 @@ describe("the state file", () => {
     const account = { stateVersion: 1 as const, installation: await accountPlan(), journal: {} };
     store.save(account);
     expect(store.load()).toEqual(account);
+    // The artifact bucket, with its own endpoint (G2-DUR-001).
+    const artifacts = {
+      url: "s3://cfo-canary-artifacts/x",
+      endpoint: "https://other.example.test",
+    };
+    const withEndpoint = { ...account, installation: { ...account.installation, artifacts } };
+    store.save(withEndpoint);
+    expect(store.load()).toEqual(withEndpoint);
   });
 
   it("writes atomically: no temporary file is left", () => {
@@ -107,6 +115,21 @@ describe("the state file", () => {
           installation: { ...good.installation, replica: { url: "s3://b/p", endpoint: 1 } },
         },
         /endpoint is not text/,
+      ],
+      [
+        { ...good, installation: { ...good.installation, artifacts: "s3://b" } },
+        /installation.artifacts is not an object/,
+      ],
+      [
+        { ...good, installation: { ...good.installation, artifacts: { endpoint: "https://x" } } },
+        /installation.artifacts.url is not text/,
+      ],
+      [
+        {
+          ...good,
+          installation: { ...good.installation, artifacts: { url: "s3://b", endpoint: 1 } },
+        },
+        /artifacts endpoint is not text/,
       ],
       [
         { ...good, journal: { ...good.journal, releasedAt: "yesterday" } },
