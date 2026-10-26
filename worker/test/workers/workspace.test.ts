@@ -315,7 +315,6 @@ describe("WorkspaceDO's production defaults", () => {
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,
       control: "function",
-      fence: { enforced: false, maxRequestMs: 15 * 60_000 },
     });
     expect((await stub.defaults()).clockSkewMs).toBeLessThan(5_000);
   });

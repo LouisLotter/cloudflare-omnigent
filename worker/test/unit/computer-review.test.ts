@@ -277,8 +277,8 @@ describe("Codex WP3.1 r2 and the lead's verification (r3)", () => {
     expect(sim.check()).toEqual([]);
   }, 30_000);
 
-  it("r3-1: retires a tombstone once the gateway's fence is enforced and its maximum request time has passed", async () => {
-    const sim = new ComputerSim({ writeFence: { enforced: true, maxRequestMs: 15 * 60_000 } });
+  it("r3-1, r4-5: keeps an abandoned key fenced at the gateway, and its tombstone for good", async () => {
+    const sim = new ComputerSim({ gateway: true });
     await sim.running();
     sim.bucket.failPuts = 1;
     live(sim).signIn("claude");
@@ -299,7 +299,7 @@ describe("Codex WP3.1 r2 and the lead's verification (r3)", () => {
         kind,
         objectKey,
       });
-    // A pending upload may be written; once abandoned (a new instance), it may not.
+    // A pending upload may be written; once abandoned (a new instance), never again.
     expect(await check(key)).toEqual({ allowed: true });
     await sim.restart();
     await sim.settle();
@@ -321,14 +321,16 @@ describe("Codex WP3.1 r2 and the lead's verification (r3)", () => {
         objectKey: key,
       }),
     ).toEqual({ allowed: false, reason: "unknown_computer" });
-    expect(sim.record().credentialSweeps).toHaveLength(1);
-    await sim.advance(14 * 60_000);
-    expect(sim.record().credentialSweeps).toHaveLength(1);
-    await sim.advance(2 * 60_000);
-    expect(sim.record().credentialSweeps).toHaveLength(0);
+    // Version 1 never retires a tombstone: its key is deleted again every 6 hours.
+    sim.sup?.write("work/a", "a");
     await sim.call(sim.client.terminateRequest());
-    expect(await check(key)).toEqual({ allowed: false, reason: "removed" });
-  });
+    await sim.advance(60_000);
+    const deletions = () => sim.bucket.deleted.filter((k) => k === key).length;
+    const before = deletions();
+    await sim.advance(13 * 3_600_000);
+    expect(deletions()).toBeGreaterThanOrEqual(before + 2);
+    expect(sim.record().credentialSweeps.map((x) => x.key)).toEqual([key]);
+  }, 30_000);
 
   it("r2-2: keeps a request made after the running capture's cut when the pending requests overflow", async () => {
     const sim = new ComputerSim();
@@ -483,5 +485,188 @@ describe("the lead's verification (r3)", () => {
       ]);
       expect(sim.check()).toEqual([]);
     }
+  });
+});
+
+describe("the lead's verification (r4)", () => {
+  it("r4-1: reads a record whose tombstones predate fencedAt, keeping their cleanup", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const key = `credentials/${sim.computer.computerId}/ckp_0000000000000000000000old0.json`;
+    const raw = sim.store.get("computer") as Record<string, unknown>;
+    sim.store.put("computer", { ...raw, credentialSweeps: [{ key, at: sim.now + 60_000 }] });
+    await sim.restart();
+    await sim.settle();
+    expect(sim.record().credentialSweeps).toEqual([
+      { key, fencedAt: null, at: expect.any(Number) },
+    ]);
+    await sim.advance(2 * 60_000);
+    expect(sim.bucket.deleted).toContain(key);
+    expect(sim.record().credentialSweeps).toHaveLength(1);
+  });
+
+  it("r4-2: publishes a credential bundle through a gateway that checks writeAllowed during the upload", async () => {
+    const sim = new ComputerSim({ gateway: true });
+    await sim.running();
+    live(sim).signIn("codex");
+    await sim.settle();
+    const r = sim.record();
+    expect(r.credential?.files[".codex/auth.json"].state).toBe("present");
+    expect(sim.gatewayChecks).toEqual([{ key: r.credential?.object.key, allowed: true }]);
+    expect(r.credentialUploads).toEqual([]);
+  });
+
+  it("r4-3: lets a removal's sign-out run publish its tombstones through the gateway, end to end", async () => {
+    const sim = new ComputerSim({ gateway: true });
+    await sim.running();
+    live(sim).signIn("claude");
+    live(sim).signIn("codex");
+    await sim.settle();
+    await sim.call(sim.client.terminateRequest());
+    await sim.advance(60_000);
+    expect(sim.record().lifecycle.context.state).toBe("removal_pending");
+    expect(
+      await sim.controller.pages({
+        interfaceVersion: 1,
+        action: "sign_out",
+        operationId: "op_00000000000000000000000001",
+      }),
+    ).toEqual({ action: "sign_out", outcome: "accepted" });
+    await sim.advance(3 * 60_000);
+    const r = sim.record();
+    expect(r.signOut.phase).toBe("verified");
+    expect(r.credential?.generation).toBe(2);
+    expect(sim.gatewayChecks.filter((c) => !c.allowed)).toEqual([]);
+    expect(
+      await sim.controller.pages({
+        interfaceVersion: 1,
+        action: "resolve_removal",
+        operationId: "op_00000000000000000000000002",
+      }),
+    ).toEqual({ action: "resolve_removal", outcome: "accepted" });
+    await sim.advance(10 * 60_000);
+    expect(sim.record().lifecycle.context.state).toBe("removed");
+    expect(
+      await sim.controller.writeAllowed({
+        interfaceVersion: 1,
+        computerId: sim.computer.computerId,
+        generation: 2,
+        kind: "credential",
+        objectKey: "x",
+      }),
+    ).toEqual({ allowed: false, reason: "removed" });
+  });
+
+  it("r4-4: backs a deferred wake off during a ControlDO outage, without destroying the stopped container", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    let open: () => void = () => undefined;
+    sim.computer.destroyGate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    live(sim).runnerProcesses = 0;
+    await sim.client.send(sim.client.suspendRequest());
+    await sim.until(() => sim.record().lifecycle.context.state === "stopping");
+    await sim.client.send(sim.client.resumeRequest());
+    sim.control.unavailable = true;
+    sim.computer.destroyGate = null;
+    open();
+    await sim.settle();
+    const controlCalls = sim.control.calls.length;
+    const destroys = sim.computer.ops.filter((op) => op === "destroy").length;
+    const waits = sim.logs.filter((l) => l.event === "queued_wake_waits").length;
+    // 200 polls, two seconds apart.
+    for (let i = 0; i < 200; i += 1) {
+      sim.now += sim.timing.pollMs;
+      await sim.controller.alarm();
+      await sim.settle();
+    }
+    expect(sim.record().lifecycle.context).toMatchObject({ state: "stopping", wakeQueued: true });
+    expect(sim.computer.ops.filter((op) => op === "destroy").length).toBe(destroys);
+    // FakeControl records only the calls it answers; count the attempts by the logs instead.
+    const attempts = sim.logs.filter((l) => l.event === "queued_wake_waits").length - waits;
+    expect(attempts).toBeLessThanOrEqual(20);
+    expect(attempts).toBeGreaterThanOrEqual(5);
+    expect(sim.control.calls.length).toBe(controlCalls);
+    sim.control.unavailable = false;
+    await sim.advance(2 * 60_000);
+    expect(sim.record().lifecycle.context.state).toBe("started_no_host");
+  }, 30_000);
+});
+
+describe("the lead's addendum (fence = no new admissions; late writes are cleaned up)", () => {
+  it("sweeps a removed computer's prefixes every 6 hours, deleting objects that land after the removal", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    await sim.call(sim.client.terminateRequest());
+    await sim.advance(60_000);
+    expect(
+      await sim.controller.pages({
+        interfaceVersion: 1,
+        action: "resolve_removal",
+        operationId: "op_00000000000000000000000001",
+      }),
+    ).toEqual({ action: "resolve_removal", outcome: "accepted" });
+    await sim.advance(10 * 60_000);
+    expect(sim.record()).toMatchObject({
+      deletion: null,
+      lifecycle: { context: { state: "removed" } },
+    });
+    const id = sim.computer.computerId;
+    const late = (key: string) => sim.bucket.objects.set(key, new TextEncoder().encode("late"));
+    // Late admitted writes land after the removal, under both prefixes.
+    late(`workspace/${id}/late-layer`);
+    late(`credentials/${id}/ckp_0000000000000000000000late.json`);
+    late("credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n4/other.json");
+    await sim.advance(6 * 3_600_000 + 60_000);
+    expect([...sim.bucket.objects.keys()]).toEqual([
+      "credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n4/other.json",
+    ]);
+    // And for the record's life.
+    late(`workspace/${id}/later`);
+    await sim.advance(6 * 3_600_000 + 60_000);
+    expect(sim.bucket.objects.has(`workspace/${id}/later`)).toBe(false);
+    expect(sim.alarmAt).not.toBeNull();
+  }, 30_000);
+
+  it("restores only what the record names: never a tombstoned key's object or an unreferenced backup", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).signIn("claude", "claude-login-canary-live");
+    live(sim).write("work/a.txt", "published");
+    await sim.call(sim.client.checkpointRequest());
+    await sim.settle();
+    // An upload abandoned by a reset, whose write then lands late at its tombstoned key.
+    sim.bucket.failPuts = 1;
+    live(sim).signIn("claude", "claude-login-canary-late");
+    const message = live(sim).outbox.pop();
+    await expect(sim.deliver(message as never)).rejects.toThrow(/unavailable/);
+    await sim.restart();
+    await sim.settle();
+    const tombstoned = sim.record().credentialSweeps[0]?.key ?? "";
+    expect(tombstoned).not.toBe("");
+    sim.bucket.objects.set(tombstoned, new TextEncoder().encode("{}"));
+    // And a late workspace backup no manifest references.
+    sim.computer.layers.set("00000000-0000-4000-8000-00000000dead", {
+      kind: "base",
+      files: new Map([["work/a.txt", "late"]]),
+      deleted: [],
+    });
+    live(sim).runnerProcesses = 0;
+    await sim.call(sim.client.suspendRequest());
+    await sim.advance(30_000);
+    const r = sim.record();
+    const named = r.workspace?.layers.map((l) => l.backup.id) ?? [];
+    const restoresBefore = sim.computer.restores.length;
+    const getsBefore = sim.bucket.gets.length;
+    sim.bucket.objects.set(tombstoned, new TextEncoder().encode("{}"));
+    await sim.client.wake({ hostId: HOST, token: sim.token(2) });
+    await sim.advance(10_000);
+    const restored = sim.computer.restores.slice(restoresBefore).map((x) => x.id);
+    expect(restored).toEqual(named);
+    // Credentials are read only by the pointer's key, never the tombstoned one.
+    expect(r.credential?.object.key).not.toBe(tombstoned);
+    expect(sim.bucket.gets.slice(getsBefore)).toEqual([r.credential?.object.key]);
+    expect(live(sim).tree.get("work/a.txt")).toBe("published");
   });
 });

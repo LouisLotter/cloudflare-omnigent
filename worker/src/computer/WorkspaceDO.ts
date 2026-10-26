@@ -40,8 +40,6 @@ import {
   type ControllerTiming,
   type InterceptTarget,
   WorkspaceController,
-  WRITE_FENCE,
-  type WriteFence,
 } from "./controller.ts";
 import { randomId } from "./ids.ts";
 import type { Store } from "./record.ts";
@@ -127,7 +125,6 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       },
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
-      writeFence: this.writeFence(),
       log: (event, fields) => logEvent("workspace", event, fields),
     });
     const controller = this.#controller;
@@ -154,11 +151,6 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   /** The intercepts registered before every start and in every new instance (WP3.3). */
   protected intercepts(_props: InterceptProps): readonly InterceptTarget[] {
     return [];
-  }
-
-  /** Whether every checkpoint write goes through WP3.3's fenced gateway; not until it is wired. */
-  protected writeFence(): WriteFence {
-    return WRITE_FENCE;
   }
 
   protected now(): number {

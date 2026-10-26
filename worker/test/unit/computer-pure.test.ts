@@ -617,11 +617,26 @@ describe("the R2 adapter for credential bundles", () => {
       delete: async (key) => {
         objects.delete(key);
       },
+      // Two pages, so the adapter follows the cursor.
+      list: async ({ prefix, cursor }) => {
+        const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+        const start = cursor === undefined ? 0 : Number(cursor);
+        const page = keys.slice(start, start + 1);
+        const next = start + 1 < keys.length ? String(start + 1) : undefined;
+        return {
+          objects: page.map((key) => ({ key })),
+          truncated: next !== undefined,
+          ...(next === undefined ? {} : { cursor: next }),
+        };
+      },
     });
     await bucket.put("credentials/a.json", new TextEncoder().encode("bundle"));
     expect(
       new TextDecoder().decode((await bucket.get("credentials/a.json")) ?? new Uint8Array()),
     ).toBe("bundle");
+    await bucket.put("credentials/b.json", new TextEncoder().encode("b"));
+    await bucket.put("workspace/x", new TextEncoder().encode("x"));
+    expect(await bucket.list("credentials/")).toEqual(["credentials/a.json", "credentials/b.json"]);
     await bucket.delete("credentials/a.json");
     expect(await bucket.get("credentials/a.json")).toBeNull();
   });

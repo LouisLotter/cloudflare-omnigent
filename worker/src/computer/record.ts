@@ -255,14 +255,24 @@ export const ComputerRecord = z.strictObject({
     .array(z.strictObject({ checkpointId: CheckpointId, generation: Count, order: Count }))
     .default([]),
   /**
-   * Tombstones of abandoned uploads (Codex WP3.1 r2-1, r3): a write already issued may still land
-   * after the key was deleted. `fencedAt`: when the key stopped being a pending upload, so the
-   * backup gateway refuses it from then on; `at`: the next deletion. A tombstone is retired only
-   * once the gateway's fence is enforced and its maximum request time has passed since
-   * `fencedAt`; until then it is deleted again on a slow sweep.
+   * Tombstones of abandoned uploads (Codex WP3.1 r2-1, r3, r4). A write already issued may land
+   * after its key was deleted, and nothing bounds when (R2 can commit an ambiguous in-flight PUT
+   * later). The fence means no new admissions; late writes are cleaned up by the re-delete and the
+   * sweep. So, for version 1, a tombstone is kept for the record's life and its key deleted again
+   * every `credentialSweepMs` (the lead's decision, 26 Oct). `fencedAt`: when the key stopped being
+   * a pending upload, after which the backup gateway admits no write to it; null in records from
+   * before it was kept (read as "not known to be fenced"). `at`: the next deletion.
    */
+  /** A removed computer's next sweep of its prefixes (null before removal). */
+  prefixSweepAt: Millis.nullable().default(null),
   credentialSweeps: z
-    .array(z.strictObject({ key: z.string().max(256), fencedAt: Millis, at: Millis }))
+    .array(
+      z.strictObject({
+        key: z.string().max(256),
+        fencedAt: Millis.nullable().default(null),
+        at: Millis,
+      }),
+    )
     .default([]),
   /** A credential checkpoint has held a login at some time. */
   everHeldLogin: z.boolean(),
@@ -377,6 +387,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     credentialDeletes: [],
     credentialUploads: [],
     credentialSweeps: [],
+    prefixSweepAt: null,
     everHeldLogin: false,
     signOut: { phase: "none", loginPossiblyLost: false, revocationRecorded: false, job: null },
     lastContactAt: null,

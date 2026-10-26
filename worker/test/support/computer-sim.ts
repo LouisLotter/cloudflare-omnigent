@@ -23,10 +23,10 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import {
+  type CheckpointBucket,
   CONTROLLER_TIMING,
   type ControllerTiming,
   WorkspaceController,
-  type WriteFence,
 } from "../../src/computer/controller.ts";
 import { ComputerRecord, RECORD_KEY, TOKEN_KEY } from "../../src/computer/record.ts";
 import type { ComputerContainerPort } from "../../src/shared/computer-port.ts";
@@ -55,8 +55,11 @@ export interface SimOptions {
   readonly timing?: Partial<ControllerTiming>;
   /** No checkpoint bucket is bound. */
   readonly noBucket?: boolean;
-  /** The backup gateway's write fence, as WP3.3 will enforce it. */
-  readonly writeFence?: WriteFence;
+  /**
+   * Credential writes go through a gateway that asks `writeAllowed` first, as WP3.3's backup
+   * gateway will, and refuses a write it is not allowed to make.
+   */
+  readonly gateway?: boolean;
   readonly start?: number;
 }
 
@@ -95,11 +98,13 @@ export class ComputerSim {
   #ids = 0;
 
   readonly #noBucket: boolean;
-  readonly #writeFence: WriteFence | undefined;
+  readonly #gateway: boolean;
+  /** The gateway's checks, in order. */
+  readonly gatewayChecks: { readonly key: string; readonly allowed: boolean }[] = [];
 
   constructor(options: SimOptions = {}) {
     this.#noBucket = options.noBucket ?? false;
-    this.#writeFence = options.writeFence;
+    this.#gateway = options.gateway ?? false;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, async (request) => {
@@ -188,7 +193,9 @@ export class ComputerSim {
       store: guardedStore,
       port: this.#guard(this.computer as ComputerContainerPort, life),
       control: this.#guard(this.control as ControlRpc, life),
-      bucket: this.#noBucket ? null : this.#guard(this.bucket, life),
+      bucket: this.#noBucket
+        ? null
+        : this.#guard(this.#gateway ? this.#gatewayBucket() : this.bucket, life),
       clock: () => this.now,
       alarm: {
         set: (at) => {
@@ -220,7 +227,6 @@ export class ComputerSim {
         { host: "omnigent.internal", target: { props } as unknown as Fetcher },
       ],
       timing: this.timing,
-      ...(this.#writeFence === undefined ? {} : { writeFence: this.#writeFence }),
       log: (event, fields) => {
         if (life.dead) return;
         const text = JSON.stringify(fields);
@@ -238,6 +244,32 @@ export class ComputerSim {
    */
   async #live(): Promise<void> {
     if (this.#dead.dead) await this.restart();
+  }
+
+  /**
+   * The bucket behind WP3.3's gateway: each write is checked with the live controller's
+   * `writeAllowed` first (the generation from the bundle), and refused if not allowed.
+   */
+  #gatewayBucket(): CheckpointBucket {
+    const bucket = this.bucket;
+    return {
+      put: async (key, body) => {
+        const bundle = JSON.parse(new TextDecoder().decode(body)) as { generation: number };
+        const decision = await this.controller.writeAllowed({
+          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+          computerId: CMP,
+          generation: bundle.generation,
+          kind: "credential",
+          objectKey: key,
+        });
+        this.gatewayChecks.push({ key, allowed: decision.allowed });
+        if (!decision.allowed) throw new Error(`gateway refused: ${decision.reason}`);
+        await bucket.put(key, body);
+      },
+      get: (key) => bucket.get(key),
+      delete: (key) => bucket.delete(key),
+      list: (prefix) => bucket.list(prefix),
+    };
   }
 
   /** A new instance from the same storage (a reset, a deploy's switch, an eviction). */

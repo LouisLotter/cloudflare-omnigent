@@ -30,7 +30,11 @@ export class FakeBucket implements CheckpointBucket {
     this.objects.set(key, new Uint8Array(body));
   }
 
+  /** Every key read, in order. */
+  readonly gets: string[] = [];
+
   async get(key: string): Promise<Uint8Array | null> {
+    this.gets.push(key);
     if (this.failGets > 0) {
       this.failGets -= 1;
       throw new Error("R2: we encountered an internal error");
@@ -42,6 +46,10 @@ export class FakeBucket implements CheckpointBucket {
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
     this.deleted.push(key);
+  }
+
+  async list(prefix: string): Promise<readonly string[]> {
+    return [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort();
   }
 
   /** Every stored byte, as text, for checks that a secret is or is not stored. */

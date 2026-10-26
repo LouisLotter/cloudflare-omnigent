@@ -66,7 +66,6 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
       clockSkewMs: Math.abs(super.now() - Date.now()),
       heartbeatMs: super.timing().heartbeatMs,
       control: typeof super.controlRpc().control,
-      fence: super.writeFence(),
     };
   }
 
