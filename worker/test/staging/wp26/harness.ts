@@ -21,7 +21,7 @@ import {
   OMNIGENT_SERVER_INTERFACE_VERSION,
   OMNIGENT_SERVER_OBJECT_NAME,
 } from "../../../src/shared/rpc.ts";
-import { objectPorts, StepRunner, type StepSummary } from "../g2/object.ts";
+import { log as gLog, objectPorts, StepRunner, type StepSummary } from "../g2/object.ts";
 import { recordKill } from "../g2/steps.ts";
 import { RunDriver, type RunPorts } from "./driver.ts";
 import { INITIAL_RUN, type RunState, type SeedResult } from "./plan.ts";
@@ -85,16 +85,25 @@ export class OmnigentServer extends PlatformOmnigentServer {
   async stagingDestroy(): Promise<{ wasRunning: boolean }> {
     const container = this.ctx.container;
     const wasRunning = container?.running ?? false;
-    if ((this.env as unknown as StagingEnv).G2_RESNAPSHOT === "true" && wasRunning) {
-      // Before the kill (persist before effect): the G2 probe's watch starts from it.
-      await recordKill(
-        objectPorts({
-          ctx: this.ctx,
-          env: this.env as unknown as Record<string, unknown>,
-          forward: (request) => this.fetch(request),
-        }),
-        "resnapshot",
-      );
+    if ((this.env as unknown as StagingEnv).G2_RESNAPSHOT === "true") {
+      const ports = objectPorts({
+        ctx: this.ctx,
+        env: this.env as unknown as Record<string, unknown>,
+        forward: (request) => this.fetch(request),
+      });
+      const killed = await ports.load("resnapshot");
+      if (killed !== undefined && killed.stage !== "pending") {
+        // A kill was sent already and the run asks again (its answer was lost): send it again
+        // only to the same boot, never to the watchdog's replacement (Codex G2 review, 2).
+        const bootId = (await ports.status())?.bootId ?? null;
+        if (!killed.bootIdBefore || bootId !== killed.bootIdBefore) {
+          gLog("destroy_repeat_skipped", { bootIdBefore: killed.bootIdBefore ?? null, bootId });
+          return { wasRunning: false };
+        }
+      } else if (wasRunning) {
+        // Before the kill (persist before effect): the G2 probe's watch starts from it.
+        await recordKill(ports, "resnapshot");
+      }
     }
     if (container && wasRunning) await container.destroy("wp26 staging: the replacement");
     return { wasRunning };

@@ -28,9 +28,14 @@ import {
 } from "./steps.ts";
 
 const CONTROL_PORT = 8001;
+/** `/status` waits on Litestream's sync inside the image; give it time to answer. */
+const STATUS_TIMEOUT_MS = 15_000;
+const POSITION_TIMEOUT_MS = 10_000;
+/** One request through the forward, its body included. */
+const REQUEST_TIMEOUT_MS = 60_000;
 /** The watchdog's record of the configuration a container was started with (OmnigentServer). */
 export const START_CONFIG_KEY = "start_config";
-const KEPT_KEY = "g2:kept";
+const KEPT_PREFIX = "g2:kept:";
 
 export function log(event: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ cfo: "g2_sitting", event, ...fields }));
@@ -84,16 +89,29 @@ export class StepRunner {
   }
 }
 
-async function control(ctx: DurableObjectState, path: string): Promise<Response | null> {
+async function control(
+  ctx: DurableObjectState,
+  path: string,
+  timeoutMs: number,
+): Promise<Response | null> {
   const container = ctx.container;
   if (!container?.running) return null;
   try {
     return await container
       .getTcpPort(CONTROL_PORT)
-      .fetch(`http://container${path}`, { signal: AbortSignal.timeout(5_000) });
+      .fetch(`http://container${path}`, { signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     return null;
   }
+}
+
+/** The promise's value, or a rejection after `ms`. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
@@ -108,7 +126,7 @@ export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
       if (container.running) await container.destroy("g2 sitting: the replacement");
     },
     status: async () => {
-      const response = await control(ctx, "/status");
+      const response = await control(ctx, "/status", STATUS_TIMEOUT_MS);
       if (response?.status !== 200) {
         await response?.body?.cancel();
         return null;
@@ -116,7 +134,7 @@ export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
       return (await response.json()) as EntrypointStatus;
     },
     position: async () => {
-      const response = await control(ctx, "/position");
+      const response = await control(ctx, "/position", POSITION_TIMEOUT_MS);
       if (response === null) return { status: 0, body: null };
       if (response.status !== 200) {
         await response.body?.cancel();
@@ -148,10 +166,10 @@ export function objectPorts({ ctx, env, forward }: ObjectParts): G2Ports {
     },
     load: (step) => ctx.storage.get<StepRecord>(`g2:step:${step}`),
     save: (record) => ctx.storage.put(`g2:step:${record.step}`, record),
-    keep: (session) => ctx.storage.put(KEPT_KEY, session),
-    kept: () => ctx.storage.get<KeptSession>(KEPT_KEY),
-    forget: async () => {
-      await ctx.storage.delete(KEPT_KEY);
+    keep: (name, session) => ctx.storage.put(`${KEPT_PREFIX}${name}`, session),
+    kept: (name) => ctx.storage.get<KeptSession>(`${KEPT_PREFIX}${name}`),
+    forget: async (name) => {
+      await ctx.storage.delete(`${KEPT_PREFIX}${name}`);
     },
     log,
   };
@@ -182,8 +200,19 @@ async function request(
     body = form;
   }
   const sent = Date.now();
-  const response = await forward(new Request(new URL(path, base), { method, headers, body }));
-  const text = await response.text();
+  let response: Response;
+  let text: string;
+  try {
+    // Bounded, body included: a stalled answer must not outlast the cron invocation.
+    [response, text] = await within(
+      forward(new Request(new URL(path, base), { method, headers, body })).then(
+        async (r) => [r, await r.text()] as const,
+      ),
+      REQUEST_TIMEOUT_MS,
+    );
+  } catch {
+    return { status: 0, headers: {}, cookies: [], json: null, ms: Date.now() - sent };
+  }
   let json: unknown = null;
   try {
     json = text === "" ? null : JSON.parse(text);

@@ -18,6 +18,7 @@ import {
   type StepContext,
   type StepName,
   type StepRecord,
+  verdictOf,
 } from "../staging/g2/steps.ts";
 
 const PASSWORD = "cfo-stg-synthetic-owner-password";
@@ -48,7 +49,9 @@ class FakeServer {
   bootsInto: "running" | "recovery" = "running";
   schedules: { id: string; name: string }[] = [];
   records = new Map<StepName, StepRecord>();
-  keptSession: KeptSession | undefined;
+  kept = new Map<string, KeptSession>();
+  /** When the current boot's app first answered (its `/status.app.readyAt`). */
+  readyAtMs = this.clock - 60_000;
   logs: { event: string; fields: Record<string, unknown> }[] = [];
   crashOnDestroy = false;
 
@@ -72,6 +75,7 @@ class FakeServer {
       if (this.bootsInto === "recovery" && this.phase === "initializing") this.phase = "recovery";
       if (this.phase === "running" || this.phase === "recovery") {
         this.restartPhase = -1;
+        this.readyAtMs = this.clock;
         this.unconfirmedLeft = this.unconfirmedAfterBoot;
       }
     }
@@ -81,6 +85,7 @@ class FakeServer {
       this.boot += 1;
       this.startedWith = this.configCurrent;
       this.phase = this.replicaUrl.includes("/g2-empty-") ? "recovery" : "running";
+      this.readyAtMs = this.clock;
     }
   }
 
@@ -170,6 +175,7 @@ class FakeServer {
               phase: this.phase,
               bootId: this.bootId(),
               installationInitializedExpected: this.initialized === "true",
+              app: { readyAt: new Date(this.readyAtMs).toISOString() },
               recovery: this.phase === "recovery" ? { reason: "replica_empty" } : null,
               replication: {
                 txid: this.txid,
@@ -197,12 +203,12 @@ class FakeServer {
       save: async (record) => {
         this.records.set(record.step, structuredClone(record));
       },
-      keep: async (session) => {
-        this.keptSession = session;
+      keep: async (name, session) => {
+        this.kept.set(name, session);
       },
-      kept: async () => this.keptSession,
-      forget: async () => {
-        this.keptSession = undefined;
+      kept: async (name) => this.kept.get(name),
+      forget: async (name) => {
+        this.kept.delete(name);
       },
       log: (event, fields) => this.logs.push({ event, fields }),
     };
@@ -237,7 +243,12 @@ describe("replace-1", () => {
     });
     expect(done.phasesS).toHaveProperty("running");
     expect(done.newBootId).toBe("boot-2");
-    expect(done.probe).toMatchObject({ unconfirmedWritesBefore: 2, interrupted: false });
+    expect(done.probe).toMatchObject({ unconfirmedWritesBefore: 2 });
+    expect(done).toMatchObject({ verdict: "pass", problems: [], originFrom: "app.readyAt" });
+    expect(done.after).toMatchObject({
+      sessionFromBeforeRestart: { cookie: 200, bearer: 200 },
+      keptForRotate: { cookie: 200, bearer: 200 },
+    });
     expect((done.probe as { writes: unknown[] }).writes).toHaveLength(3);
     expect(done.replica).toMatchObject({ newCommitDurableAfterS: expect.any(Number) });
     expect(done.after).toMatchObject({
@@ -251,7 +262,8 @@ describe("replace-1", () => {
     const files = (done.rc07 as { files: { filename: string; headers: object }[] }).files;
     expect(files.map((f) => f.filename)).toEqual(RC07_FILES.map((f) => f.filename));
     expect(files[0]?.headers).toMatchObject({ "x-content-type-options": "nosniff" });
-    expect(server.keptSession).toMatchObject({ fingerprint: "fp-released" });
+    expect(server.kept.get("rotate")).toMatchObject({ fingerprint: "fp-released" });
+    expect(server.kept.has("before")).toBe(false);
     // Nothing logged carries the password or a session.
     expect(JSON.stringify(server.logs)).not.toContain(PASSWORD);
     expect(JSON.stringify(server.logs)).not.toContain("token-k1");
@@ -325,10 +337,11 @@ describe("rotate", () => {
     expect(done).toMatchObject({
       stage: "done",
       appliedBy: "watchdog",
-      rotation: { oldCookie: 401, oldBearer: 401, newCookie: 200, pass: true },
+      verdict: "pass",
+      rotation: { oldCookie: 401, oldBearer: 401, newCookie: 200 },
     });
     expect(server.destroys).toBe(1); // only replace-1's
-    expect(server.keptSession).toBeUndefined();
+    expect(server.kept.size).toBe(0);
   });
 
   it("fails, naming G2-SEC-001, when the server keeps the old configuration", async () => {
@@ -414,7 +427,8 @@ describe("resnapshot (WP2.6's 1 GB run kills the server itself)", () => {
       stage: "done",
       bootIdBefore: "boot-1",
       newBootId: "boot-2",
-      probe: { unconfirmedWritesBefore: 2, interrupted: false },
+      verdict: "pass",
+      probe: { unconfirmedWritesBefore: 2 },
       replica: { newCommitDurableAfterS: expect.any(Number) },
     });
     expect(done.after).toBeUndefined();
@@ -429,5 +443,118 @@ describe("resnapshot (WP2.6's 1 GB run kills the server itself)", () => {
     server.clock += 60_000;
     await recordKill(ports, "resnapshot");
     expect(server.records.get("resnapshot")).toEqual(first);
+  });
+});
+
+describe("verdicts (Codex G2 review: completion is not acceptance)", () => {
+  async function replaced() {
+    const server = new FakeServer();
+    const done = await runStep(server.ports(), ctx("replace-1"));
+    expect(done.verdict).toBe("pass");
+    return done;
+  }
+
+  it("a measurement resumed after the answer is inconclusive, never re-measured late", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    await recordKill(ports, "resnapshot");
+    await ports.destroy();
+    const answered = {
+      ...(server.records.get("resnapshot") as StepRecord),
+      stage: "answered" as const,
+    };
+    // As if the invocation that saw the answer had died before measuring.
+    while (server.phase !== "running" || server.restartPhase !== -1) server.tick(1000);
+    answered.newBootId = server.bootId();
+    answered.answeredAt = server.clock;
+    answered.originFrom = "app.readyAt";
+    server.records.set("resnapshot", answered);
+    const done = await runStep(ports, ctx("resnapshot"));
+    expect(done).toMatchObject({ stage: "done", verdict: "inconclusive", answerResumed: true });
+    expect(done.problems).toContain("the measurement was interrupted");
+  });
+
+  it("a measured boot that is no longer running fails the step", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    server.records.set("resnapshot", {
+      step: "resnapshot",
+      stage: "answered",
+      createdAt: server.clock,
+      updatedAt: server.clock,
+      invocations: 1,
+      newBootId: "boot-0",
+      answeredAt: server.clock,
+    });
+    const done = await runStep(ports, ctx("resnapshot"));
+    expect(done).toMatchObject({ stage: "failed", verdict: "fail" });
+    expect(done.failure).toContain("restarted after the measured boot answered");
+  });
+
+  it("an old bearer still accepted fails the rotation", async () => {
+    const rotated: StepRecord = {
+      step: "rotate",
+      stage: "done",
+      createdAt: 0,
+      updatedAt: 0,
+      invocations: 1,
+      rotation: { config: { pass: true }, oldCookie: 401, oldBearer: 200, newCookie: 200 },
+    };
+    expect(verdictOf(rotated)).toEqual({
+      verdict: "fail",
+      problems: ["the old bearer was not refused"],
+    });
+  });
+
+  it("a probe error or a missing confirmation is inconclusive; a lost attachment header fails", async () => {
+    const done = await replaced();
+    expect(verdictOf({ ...done, probe: { error: "boom" } }).verdict).toBe("inconclusive");
+    expect(verdictOf({ ...done, originFrom: "observed" }).verdict).toBe("inconclusive");
+    expect(verdictOf({ ...done, observationLagS: 30 }).verdict).toBe("inconclusive");
+    const files = (done.rc07 as { files: Record<string, unknown>[] }).files;
+    const stripped = files.map((f) => ({ ...f, headers: { "content-type": "text/html" } }));
+    expect(verdictOf({ ...done, rc07: { files: stripped } })).toMatchObject({ verdict: "fail" });
+  });
+
+  it("recovery fails if setup is offered, recovery ends, or the server restarts", () => {
+    const base = {
+      step: "recovery" as const,
+      stage: "done" as const,
+      createdAt: 0,
+      updatedAt: 0,
+      invocations: 1,
+    };
+    const good = {
+      reason: "replica_empty",
+      answers: { "/": 503, "/v1/info": 503, "/health": 503 },
+      setupPost: 503,
+      stillRecovery: true,
+      sameBoot: true,
+    };
+    expect(verdictOf({ ...base, recovery: good }).verdict).toBe("pass");
+    for (const bad of [{ setupPost: 200 }, { stillRecovery: false }, { sameBoot: false }]) {
+      expect(verdictOf({ ...base, recovery: { ...good, ...bad } }).verdict).toBe("fail");
+    }
+  });
+
+  it("pauses at the invocation's request deadline, then resumes, its timing inconclusive", async () => {
+    const server = new FakeServer();
+    const ports = server.ports();
+    let calls = 0;
+    const slow: G2Ports = {
+      ...ports,
+      // The first request after the answer takes the whole budget.
+      http: async (method, path, init) => {
+        const answer = await ports.http(method, path, init);
+        if (path === "/health" && ++calls === 2) server.clock += LIMITS.invocationDeadlineMs;
+        return answer;
+      },
+    };
+    const paused = await runStep(slow, ctx("replace-2", null));
+    expect(paused.stage).toBe("answered");
+    expect(server.logs.some((l) => l.event === "step_paused")).toBe(true);
+    const done = await runStep(ports, ctx("replace-2", null));
+    expect(done).toMatchObject({ stage: "done", answerResumed: true, verdict: "inconclusive" });
+    expect(server.destroys).toBe(1);
   });
 });

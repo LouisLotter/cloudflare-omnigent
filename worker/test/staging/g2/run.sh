@@ -35,6 +35,9 @@
 # (account, zone, owner address) before it leaves the laptop. Push images one at a time: run no
 # other staging deploy while `token` (the bootstrap's image push) runs.
 set -euo pipefail
+# This script handles credentials (the owner's R2 token, the generated owner password, a new
+# cookie secret): never trace it, even when started with `bash -x` (Codex G2 review, 1).
+set +x
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../../.." && pwd)"
 out="${G2_DIR:-$HOME/.pt/g2-sitting}"
@@ -81,6 +84,65 @@ secret_change() { # JSON on stdin: one guarded secrets change on the platform Wo
   "${stg[@]}" secrets --suffix g2-sitting-platform --owner "$owner"
 }
 
+summarize() { # redacted Workers Logs lines on stdin: one compact line per harness event, with
+  # each finished step's verdict and the fields its acceptance needs; "full" prints whole lines
+  python3 -I -c '
+import json, sys
+from datetime import datetime, timezone
+full = sys.argv[1] == "full"
+keep = ("g2_sitting", "watchdog", "bootstrap", "wp26_staging", "wp26_seeder")
+def pick(value, *keys):
+    return {k: (value or {}).get(k) for k in keys}
+for line in sys.stdin:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    source = event.get("source")
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except ValueError:
+            continue
+    if not isinstance(source, dict) or source.get("cfo") not in keep:
+        continue
+    if full:
+        print(json.dumps(event))
+        continue
+    when = datetime.fromtimestamp((event.get("timestamp") or 0) / 1000, timezone.utc).strftime("%H:%M:%SZ")
+    name = source.get("event")
+    if name == "step_done":
+        r = source.get("record") or {}
+        after = r.get("after") or {}
+        compact = {
+            **pick(r, "step", "verdict", "problems", "answeredAfterKillS", "originFrom",
+                   "observationLagS", "appliedBy", "appliedAfterSwitchS"),
+            "probe": pick(r.get("probe"), "firstConfirmedWriteSentS",
+                          "firstConfirmedWriteAnsweredS", "unconfirmedWritesBefore", "error"),
+            "replica": r.get("replica"),
+            "after": {
+                **pick(after, "ownerLogin", "wrongPassword", "editMeKept", "health",
+                       "sessionFromBeforeRestart", "keptForRotate"),
+                "sharingManaged": (after.get("sharing") or {}).get("managed"),
+                "configPass": (after.get("config") or {}).get("pass"),
+            },
+            "rotation": r.get("rotation"),
+            "recovery": r.get("recovery"),
+            "rc07": [
+                {"file": f.get("filename"), "content": f.get("content"),
+                 "disposition": (f.get("headers") or {}).get("content-disposition"),
+                 "nosniff": (f.get("headers") or {}).get("x-content-type-options")}
+                for f in ((r.get("rc07") or {}).get("files") or [])
+            ],
+        }
+        compact = {k: v for k, v in compact.items() if v not in (None, {}, [])}
+        print(when, "step_done", json.dumps(compact))
+    else:
+        rest = {k: v for k, v in source.items() if k not in ("cfo", "event")}
+        print(when, source.get("cfo"), name, json.dumps(rest)[:300])
+' "${1:-short}"
+}
+
 case "${1:-}" in
   bucket)
     now >"$out/t0"
@@ -109,7 +171,8 @@ print(json.dumps({
   token)
     [ -f "$secrets" ] || { echo "run.sh bucket first"; exit 2; }
     echo "Paste the R2 token's values (they are not shown). Buckets: cfo-stg-g2-sitting-r2-db, $big_bucket"
-    read -rp "Access Key ID: " key_id
+    read -rsp "Access Key ID: " key_id
+    echo
     read -rsp "Secret Access Key: " key_secret
     echo
     now >"$out/token-at"
@@ -188,26 +251,37 @@ print(json.dumps({
     ;;
   status)
     from="$(cat "$out/harness-at" 2>/dev/null || cat "$out/t0")"
-    lines "$platform" "$from" |
-      grep -E '"cfo\\?":\\?"(g2_sitting|watchdog|bootstrap)' | cut -c1-600 | tail -${2:-30}
+    lines "$platform" "$from" | summarize "${2:-short}" | tail -n 40
     ;;
   rc07)
     z="$(zone)"
-    lines "$platform" "$(cat "$out/harness-at")" | python3 -I -c '
-import json, sys
+    # Read before the redaction, which would mask the session and file IDs (32 hex digits, like
+    # an account ID; Codex G2 review, 9). The URLs go to this terminal only, for the owner.
+    node "$here/logs.ts" "$platform" "$(cat "$out/harness-at")" "$(now)" | python3 -I -c '
+import json, re, sys
 host = sys.argv[1]
+path_shape = re.compile(r"^/v1/sessions/[0-9a-f]{32}/resources/files/[0-9a-f]{32}/content$")
+urls = {}
 for line in sys.stdin:
-    source = json.loads(line).get("source")
-    if isinstance(source, str):
-        try:
+    try:
+        source = json.loads(line).get("source")
+        if isinstance(source, str):
             source = json.loads(source)
-        except ValueError:
-            continue
+    except ValueError:
+        continue
     if not isinstance(source, dict) or source.get("event") != "step_done":
         continue
-    record = source.get("record", {})
-    for f in (record.get("rc07") or {}).get("files", []):
-        print(f.get("filename"), "https://" + host + f.get("path", ""), json.dumps(f.get("headers")))
+    record = source.get("record") or {}
+    if record.get("step") != "replace-1":
+        continue
+    for f in (record.get("rc07") or {}).get("files") or []:
+        path = f.get("path") or ""
+        if path_shape.match(path):
+            urls[f.get("filename")] = "https://" + host + path
+for name, url in sorted(urls.items()):
+    print(name, url)
+if len(urls) != 2:
+    sys.exit(f"expected the two attachment URLs from replace-1, found {len(urls)}")
 ' "$web.$z"
     ;;
   password)
@@ -238,8 +312,7 @@ for line in sys.stdin:
     echo "The 1 GB run starts within a minute and takes about 35 minutes; follow it with big-status."
     ;;
   big-status)
-    lines "$big" "$(cat "$out/big-at")" |
-      grep -E '"cfo\\?":\\?"(wp26_staging|wp26_seeder|g2_sitting|watchdog)' | cut -c1-600 | tail -${2:-30}
+    lines "$big" "$(cat "$out/big-at")" | summarize "${2:-short}" | tail -n 40
     ;;
   big-collect)
     dir="$out/big-collected-$(date -u +%Y%m%dT%H%M%SZ)"

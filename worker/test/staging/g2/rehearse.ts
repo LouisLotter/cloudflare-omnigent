@@ -142,7 +142,7 @@ async function control(path: string): Promise<Response | null> {
 }
 
 const records = new Map<StepName, StepRecord>();
-let kept: KeptSession | undefined;
+const kept = new Map<string, KeptSession>();
 const logs: string[] = [];
 
 const ports: G2Ports = {
@@ -224,12 +224,12 @@ const ports: G2Ports = {
   save: async (record) => {
     records.set(record.step, structuredClone(record));
   },
-  keep: async (session) => {
-    kept = session;
+  keep: async (name, session) => {
+    kept.set(name, session);
   },
-  kept: async () => kept,
-  forget: async () => {
-    kept = undefined;
+  kept: async (name) => kept.get(name),
+  forget: async (name) => {
+    kept.delete(name);
   },
   log: (event, fields) => {
     const line = JSON.stringify({ event, ...fields });
@@ -335,7 +335,13 @@ for (const secret of [ownerPassword, s3Password, config.OMNIGENT_ACCOUNTS_COOKIE
     throw new Error("a generated credential reached the results");
 }
 console.log(text);
-const failed = Object.values(results).some(
-  (r) => (r as { stage?: string } | null)?.stage === "failed",
+// Each step's verdict decides, not its completion (Codex G2 review, 5).
+const verdicts = Object.fromEntries(
+  Object.entries(results)
+    .filter(([, r]) => typeof (r as { verdict?: unknown } | null)?.verdict === "string")
+    .map(([name, r]) => [name, (r as StepRecord).verdict]),
 );
-if (failed) process.exitCode = 1;
+console.log(`verdicts: ${JSON.stringify(verdicts)}`);
+if (Object.keys(verdicts).length !== 5 || Object.values(verdicts).some((v) => v !== "pass")) {
+  process.exitCode = 1;
+}

@@ -33,7 +33,8 @@ const subdomain = process.argv[2] ?? process.env.CFO_WORKERS_DEV_SUBDOMAIN ?? ""
 let failures = 0;
 
 interface Outcome {
-  readonly status: number | "no answer";
+  /** "absent": the name does not resolve; "no answer": anything else that failed. */
+  readonly status: number | "absent" | "no answer";
   readonly location?: string;
   readonly contentType?: string;
   readonly head?: string;
@@ -58,7 +59,13 @@ async function request(url: string, method = "GET"): Promise<Outcome> {
       head: text,
     };
   } catch (error) {
-    return { status: "no answer", head: String(error).slice(0, 100) };
+    // Only a name that does not resolve proves absence; a timeout or a reset proves nothing
+    // (Codex G2 review, 8).
+    const code = String((error as { cause?: { code?: unknown } }).cause?.code ?? "");
+    return {
+      status: code === "ENOTFOUND" ? "absent" : "no answer",
+      head: `${code} ${String(error)}`.slice(0, 100),
+    };
   }
 }
 
@@ -71,7 +78,7 @@ function toAccess(o: Outcome): boolean {
 
 /** The Worker answered: JSON (both Workers answer in JSON), a 2xx, or a redirect elsewhere. */
 function workerAnswered(o: Outcome): boolean {
-  if (o.status === "no answer") return false;
+  if (typeof o.status !== "number") return false;
   if (o.status >= 200 && o.status < 300) return true;
   if (o.status >= 300 && o.status < 400) return !toAccess(o);
   return (o.contentType ?? "").includes("application/json");
@@ -117,7 +124,8 @@ for (const worker of WORKERS) {
       console.log(`FAIL      ${worker}: workers.dev or preview URLs enabled`);
     }
   } catch (error) {
-    console.log(`info      ${worker}: cf workers get failed: ${String(error).slice(0, 120)}`);
+    failures += 1;
+    console.log(`FAIL      ${worker}: cf workers get failed: ${String(error).slice(0, 120)}`);
   }
   try {
     const listed = cfJson(run, ["workers", "versions", "list", "--worker-id", worker]);
@@ -128,10 +136,17 @@ for (const worker of WORKERS) {
       .map((v) => (v as { id?: unknown }).id)
       .filter((id): id is string => typeof id === "string");
     versions.set(worker, ids);
-    console.log(`info      ${worker}: ${ids.length} versions`);
+    if (ids.length === 0) {
+      // Every deployed Worker has a version: an empty list means the discovery failed.
+      failures += 1;
+      console.log(`FAIL      ${worker}: no version listed, so no version URL can be probed`);
+    } else {
+      console.log(`info      ${worker}: ${ids.length} versions`);
+    }
   } catch (error) {
+    failures += 1;
     console.log(
-      `info      ${worker}: cf workers versions list failed: ${String(error).slice(0, 120)}`,
+      `FAIL      ${worker}: cf workers versions list failed: ${String(error).slice(0, 120)}`,
     );
   }
 }
@@ -154,8 +169,15 @@ if (subdomain === "") {
       for (const path of ["/", "/__health"]) {
         const o = await request(`https://${host}${path}`);
         const answered = workerAnswered(o);
-        if (answered) failures += 1;
-        const verdict = answered ? "FAIL" : o.status === "no answer" ? "absent" : "refused";
+        const unsure = o.status === "no answer";
+        if (answered || unsure) failures += 1;
+        const verdict = answered
+          ? "FAIL"
+          : unsure
+            ? "UNSURE"
+            : o.status === "absent"
+              ? "absent"
+              : "refused";
         show(`GET ${host}${path}`, o, verdict);
       }
     }
