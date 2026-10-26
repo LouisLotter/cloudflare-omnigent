@@ -277,6 +277,9 @@ export class TerminalBridge {
       ) {
         return refused("window_closed");
       }
+      // Re-asserted before every capability: if telling the controller failed when the window
+      // opened, a sleep must still be refused while a stream can connect.
+      await this.#d.setWindow(w.until);
       return this.#issue(w, call.owner);
     }
     // A new window: everything in the old one ends first.

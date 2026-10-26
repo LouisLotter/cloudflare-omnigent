@@ -213,13 +213,13 @@ describe("terminal windows and capabilities", () => {
     ).toMatchObject({ outcome: "accepted" });
   });
 
-  it("opens no second window for a repeated operation ID", async () => {
+  it("opens no second window for a repeated operation ID, and re-asserts the open one", async () => {
     const h = harness();
     const first = await h.open(OP(7));
     const repeat = await h.open(OP(7));
     expect(repeat.window).toBe(first.window);
     expect(repeat.capability).not.toBe(first.capability);
-    expect(h.windows).toHaveLength(1);
+    expect(h.windows).toEqual([Date.parse(first.until), Date.parse(first.until)]);
     await h.bridge.close("test");
     expect(await h.bridge.open({ operationId: OP(7), owner: OWNER, window: null })).toMatchObject({
       outcome: "refused",

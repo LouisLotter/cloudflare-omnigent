@@ -183,7 +183,7 @@
       const reason = json?.reason;
       say(
         reason === "not_running"
-          ? "The computer is not running. Start it from Omnigent, then reload this page."
+          ? "The computer is not running. Send it work in Omnigent to wake it, then reload this page."
           : reason === "busy"
             ? "The computer is stopping or signing out. Try again shortly."
             : answer.status === 403

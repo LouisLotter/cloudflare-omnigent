@@ -84,7 +84,7 @@ export async function setupPage(
   <span id="terminal-status" class="muted" role="status">${
     view.running
       ? "The terminal opens for 30 minutes. While it is open the computer does not go to sleep."
-      : "The computer is not running. Start a conversation on it in Omnigent, or start it from Omnigent's Settings → Computers, then reload this page."
+      : "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep."
   }</span>
 </div>
 <p class="muted" data-paste-hint>${escapeHtml(PASTE_HINT)}</p>
