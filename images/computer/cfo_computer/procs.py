@@ -102,7 +102,6 @@ def fd_target(pid: int, fd: int) -> str | None:
         return None
 
 
-
 def kind(p: Proc, procs: dict[int, Proc] | None = None) -> str:
     """A coarse label for the pause-scope evidence (AR-09): what kind of process this is.
 

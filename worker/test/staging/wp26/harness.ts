@@ -24,7 +24,7 @@ import {
 import { RunDriver, type RunPorts } from "./driver.ts";
 import { INITIAL_RUN, type RunState, type SeedResult } from "./plan.ts";
 
-export { PlatformInternal } from "../../../src/server/platform-internal.ts";
+export { PlatformInternal } from "../../../src/internal/entrypoints.ts";
 
 interface StagingEnv {
   readonly OMNIGENT: DurableObjectNamespace<OmnigentServer>;
