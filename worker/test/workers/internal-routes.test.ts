@@ -446,7 +446,7 @@ describe("egress/backups.ts: the fenced backup gateway (the write fence)", () =>
   it("puts a pending credential bundle for the current generation", async () => {
     const computerId = liveComputer();
     const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n3.json`;
-    internalFakes.pendingCredentialKeys.add(key);
+    internalFakes.pendingCredentialKeys.set(key, 3);
     await credentialWriter(gateways, { computerId, generation: 3 }).put(
       key,
       new TextEncoder().encode("{}"),
@@ -454,10 +454,10 @@ describe("egress/backups.ts: the fenced backup gateway (the write fence)", () =>
     expect(await (await bucket().get(key))?.text()).toBe("{}");
   });
 
-  it("refuses a removed computer, a stale generation, a key not pending, another computer's key, and an unreachable WorkspaceDO", async () => {
+  it("refuses a fully removed computer, a stale generation, a key not pending (or pending for another generation), another computer's key, and an unreachable WorkspaceDO", async () => {
     const computerId = liveComputer();
     const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n4.json`;
-    internalFakes.pendingCredentialKeys.add(key);
+    internalFakes.pendingCredentialKeys.set(key, 3);
     const body = new TextEncoder().encode("{}");
     const attempt = (generation: number, objectKey = key) =>
       credentialWriter(gateways, { computerId, generation }).put(objectKey, body);
@@ -468,12 +468,23 @@ describe("egress/backups.ts: the fenced backup gateway (the write fence)", () =>
     await expect(
       attempt(3, `credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n9/ckp_x.json`),
     ).rejects.toThrow(/foreign_key/);
+    const otherGeneration = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n7.json`;
+    internalFakes.pendingCredentialKeys.set(otherGeneration, 2);
+    await expect(attempt(3, otherGeneration)).rejects.toThrow(/not_pending/);
     internalFakes.loseWorkspaceCalls = 1;
     await expect(attempt(3)).rejects.toThrow(/workspace_unreachable/);
-    // A removal intent: every later write is refused.
-    internalFakes.workspace(computerId).fire("terminate");
-    await expect(attempt(3)).rejects.toThrow(/removed/);
     expect(await bucket().head(key)).toBeNull();
+    // A removal intent alone does not refuse: the removal's sign-out uploads its tombstones.
+    internalFakes.workspace(computerId).fire("terminate");
+    await attempt(3);
+    expect(await bucket().head(key)).not.toBeNull();
+    // A fully removed computer: every write is refused.
+    const fake = internalFakes.workspace(computerId);
+    fake.context = { ...fake.context, state: "removed" };
+    const later = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n8.json`;
+    internalFakes.pendingCredentialKeys.set(later, 3);
+    await expect(attempt(3, later)).rejects.toThrow(/removed/);
+    expect(await bucket().head(later)).toBeNull();
     // An unknown computer.
     await expect(
       credentialWriter(gateways, { computerId: newComputer(), generation: 0 }).put(
@@ -572,12 +583,102 @@ describe("egress/backups.ts: the fenced backup gateway (the write fence)", () =>
   it("is the class the platform Worker exports as DirectoryBackupGateway (through real RPC)", async () => {
     const computerId = liveComputer();
     const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n6.json`;
-    internalFakes.pendingCredentialKeys.add(key);
+    internalFakes.pendingCredentialKeys.set(key, 3);
     await credentialWriter(exports as unknown as GatewayExports, { computerId, generation: 3 }).put(
       key,
       new TextEncoder().encode("{}"),
     );
     expect(await bucket().head(key)).not.toBeNull();
+  });
+
+  // The lead's decision (26 Oct): the fence is admission control, not a drain. A write admitted
+  // just before WorkspaceDO moves on still lands; WP3.1 re-deletes tombstoned keys and sweeps a
+  // removed computer's prefixes, and reads only named objects. A late layer cannot overwrite a
+  // current one, because every backup has its own object key (the SDK's crypto.randomUUID()).
+  it("lets a write admitted just before the fence moves land late, under its own key (admission control, not a drain)", async () => {
+    const computerId = liveComputer();
+    const fake = internalFakes.workspace(computerId);
+    /** The real gateway, with a WorkspaceDO that answers "allowed" and moves on at once after. */
+    const racingGateway = (props: Record<string, unknown>) =>
+      new FencedBackupGateway(
+        {
+          props,
+          waitUntil: () => undefined,
+          passThroughOnException: () => undefined,
+        } as unknown as ExecutionContext,
+        {
+          ...(env as unknown as Record<string, unknown>),
+          WORKSPACE: {
+            getByName: () => ({
+              writeAllowed: async () => {
+                fake.generation += 1; // the move, after the answer and before the put
+                return { allowed: true };
+              },
+            }),
+          },
+        } as never,
+      );
+    // A credential bundle admitted at generation 3 lands although generation 4 now runs; it is
+    // left for WP3.1's re-delete of tombstoned keys and its sweep.
+    const lateKey = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1p0.json`;
+    await racingGateway({
+      protocolVersion: 1,
+      mode: "control",
+      binding: "CHECKPOINTS",
+      key: lateKey,
+      fence: { fenceVersion: 1, computerId, generation: 3, kind: "credential" },
+    }).putCredential(new TextEncoder().encode('{"late":true}'));
+    expect(await bucket().head(lateKey)).not.toBeNull();
+    await bucket().delete(lateKey); // WP3.1's re-delete or sweep
+    expect(await bucket().head(lateKey)).toBeNull();
+
+    // A current layer (generation 5) is published; a stale-generation layer admitted just before
+    // the move then lands under its own backup ID, and the current layer is untouched.
+    fake.generation = 5;
+    const currentKey = `workspace/${computerId}/00000000-0000-4000-8000-0000000000dd.tar.zst`;
+    const staleKey = `workspace/${computerId}/00000000-0000-4000-8000-0000000000ee.tar.zst`;
+    const publish = async (
+      key: string,
+      generation: number,
+      fill: number,
+      gateway: (
+        p: Record<string, unknown>,
+      ) => ReturnType<GatewayExports["DirectoryBackupGateway"]> | FencedBackupGateway,
+    ) => {
+      const base = {
+        protocolVersion: 1,
+        binding: "CHECKPOINTS",
+        key,
+        fence: { fenceVersion: 1, computerId, generation, kind: "workspace" },
+      };
+      const control = gateway({ ...base, mode: "control" });
+      const uploadId = await control.createUpload("layer");
+      const part = new Uint8Array(1024).fill(fill);
+      const uploaded = await gateway({ ...base, mode: "write", uploadId }).fetch(
+        new Request("http://backups.sandbox.internal/parts/1", {
+          method: "PUT",
+          headers: { "content-length": String(part.byteLength) },
+          body: part,
+        }),
+      );
+      const { etag } = (await uploaded.json()) as { etag: string };
+      return control.completeUpload(uploadId, [{ partNumber: 1, etag }]);
+    };
+    await publish(currentKey, 5, 1, (props) => gateways.DirectoryBackupGateway({ props }));
+    const before = await bucket().get(currentKey);
+    const beforeBytes = new Uint8Array(await (before as R2ObjectBody).arrayBuffer());
+    // The stale writer: each of its checks is answered "allowed" for generation 5 just before
+    // the generation moves on, as a racing WorkspaceDO would.
+    fake.generation = 5;
+    await publish(staleKey, 5, 2, (props) => {
+      fake.generation = 5;
+      return racingGateway(props);
+    });
+    expect(fake.generation).toBeGreaterThan(5); // WorkspaceDO moved on after each admission
+    const current = await bucket().get(currentKey);
+    expect(new Uint8Array(await (current as R2ObjectBody).arrayBuffer())).toEqual(beforeBytes);
+    expect(await bucket().head(staleKey)).not.toBeNull();
+    expect(currentKey).not.toBe(staleKey);
   });
 
   it("refuses a write grant that carries no fence", async () => {

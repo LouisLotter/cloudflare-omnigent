@@ -77,7 +77,11 @@ export class WorkspaceDO extends DurableObject implements WorkspaceRpc {
     return this.#fake().reservation(call);
   }
 
-  /** WP3.1's write fence, as its `[shared]` commit describes it, over the fake's state. */
+  /**
+   * WP3.1's write fence over the fake's state: the computer not fully removed (a removal intent
+   * alone does not refuse: the removal's sign-out uploads its tombstones), the current generation,
+   * and a credential key that is a pending upload of that generation.
+   */
   async writeAllowed(check: WriteCheck): Promise<WriteDecision> {
     const name = this.ctx.id.name ?? "unnamed";
     if (internalFakes.loseWorkspaceCalls > 0) {
@@ -86,11 +90,12 @@ export class WorkspaceDO extends DurableObject implements WorkspaceRpc {
     }
     if (!internalFakes.has(name)) return { allowed: false, reason: "unknown_computer" };
     const fake = internalFakes.workspace(name);
-    if (fake.context.removalIntent || fake.context.state === "removed") {
-      return { allowed: false, reason: "removed" };
-    }
+    if (fake.context.state === "removed") return { allowed: false, reason: "removed" };
     if (check.generation !== fake.generation) return { allowed: false, reason: "stale_generation" };
-    if (check.kind === "credential" && !internalFakes.pendingCredentialKeys.has(check.objectKey)) {
+    if (
+      check.kind === "credential" &&
+      internalFakes.pendingCredentialKeys.get(check.objectKey) !== check.generation
+    ) {
       return { allowed: false, reason: "not_pending" };
     }
     return { allowed: true };

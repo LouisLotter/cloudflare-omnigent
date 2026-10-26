@@ -7,10 +7,15 @@
 //   - `createUpload` and `completeUpload`, the Durable Object's control calls; `completeUpload` is
 //     the one that makes a layer's object exist;
 //   - `putCredential`, a credential bundle's single put.
-// Each asks the computer's WorkspaceDO (`writeAllowed`) just before the put, and refuses when the
-// computer is removed, the generation is not current, the key is not the computer's own or not a
-// pending upload, or WorkspaceDO does not answer. Reads (restores) and deletes are not fenced.
-// Every R2 call it makes is bounded by GATEWAY_PUT_TIMEOUT_MS.
+// Each asks the computer's WorkspaceDO (`writeAllowed`) just before the put, and refuses when
+// WorkspaceDO refuses (WP3.1's policy: fully removed, another generation, a credential key that is
+// not a pending upload), when the key is not the computer's own, or when WorkspaceDO does not
+// answer. Reads (restores) and deletes are not fenced.
+//
+// This is admission control, not a drain (`write-fence.ts`): a write admitted just before
+// WorkspaceDO moves on can still land afterwards, and WP3.1's re-deletes and sweeps, and its
+// reading only named objects, deal with it. The gateway waits at most GATEWAY_PUT_TIMEOUT_MS for
+// each R2 call; that bounds its waiting, not when the write may land.
 //
 // `DirectoryBackup` registers this gateway as the container's `backups.sandbox.internal`
 // intercept itself, with props that grant one operation on one object under the computer's own
