@@ -15,7 +15,10 @@
 //      deletes the password, a deliberate platform release (R-27), sent only while the
 //      accepted status is still fresh;
 //   6. checks, after the objects switch to the released version (about 300 s), that the
-//      OmnigentServer object runs it and no longer reports the password.
+//      OmnigentServer object runs it and no longer reports the password, and that the release
+//      is applied: the watchdog replaced the server (one controlled restart), and the server
+//      started with the released configuration reports a durable owner (G2-SEC-001). Until
+//      then the outcome is "released", not yet applied, and a later run checks again.
 //
 // Crash safety. The journal in the state file is written before each effect and after it.
 // A run re-reads the platform Worker's secret names first, so a step whose effect landed
@@ -218,6 +221,7 @@ function eventOf(seen: SeenStatus | undefined): StatusEvent | undefined {
         status: seen.status,
         reason: seen.reason,
         secretPresent: undefined,
+        configApplied: undefined,
       };
 }
 
@@ -450,7 +454,9 @@ async function verifyAfterRelease(
     });
     if (result.verified) {
       record({ verifiedAt: iso(ctx.now()) });
-      ctx.log("checked: the server's object runs the released version, without the password");
+      ctx.log(
+        "checked: the server's object runs the released version, and the server restarted with it, without the password",
+      );
       return { kind: "done" };
     }
     if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };

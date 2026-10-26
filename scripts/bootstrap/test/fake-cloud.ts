@@ -2,6 +2,9 @@
 // the platform objects' switch to a new version about 300 s after it is deployed, and the
 // watchdog's bootstrap status lines in Workers Logs, once a minute while the running version
 // holds the bootstrap password (WP2.2's OmnigentServer), as Workers Logs delivers them.
+// The server container keeps the configuration it was started with: a new version adopts it,
+// and its watchdog replaces it once (a restart of `REPLACE_MS`) when its configuration differs.
+// The server then logs its status for `NOTICE_MS` without the password (G2-SEC-001).
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
@@ -16,6 +19,10 @@ export const SWITCH_MS = 300_000;
 /** From the platform's first deploy to the server's first answer (the cron starts it). */
 export const START_MS = 90_000;
 export const CHECK_MS = 60_000;
+/** A replacement after a release: the stop, its final sync, a start and the restore. */
+export const REPLACE_MS = 90_000;
+/** How long a server started with a new configuration logs its status (APPLIED_NOTICE_MS). */
+export const NOTICE_MS = 15 * 60_000;
 
 export interface Version {
   readonly id: string;
@@ -68,6 +75,11 @@ export class FakeWorld {
   noVersions = false;
   /** Workers Logs loses this share of lines (0..1), deterministically by time. */
   lossEvery = 0;
+  /**
+   * Whether the platform's watchdog replaces a server whose configuration changed. False models
+   * a build without G2-SEC-001: a release never reaches the running server.
+   */
+  appliesReleases = true;
   readonly counts = new Map<string, number>();
   #nextVersion = 1;
 
@@ -205,7 +217,29 @@ export class FakeWorld {
     };
   }
 
-  /** What Workers Logs answers: the watchdog's alarms and, while it holds the password, its status. */
+  /**
+   * The server container at `t`: the version whose configuration it was started with, and since
+   * when it answers with it. Undefined before the first start.
+   */
+  containerAt(worker: string, t: number): { version: Version; since: number } | undefined {
+    const list = this.versions.get(worker) ?? [];
+    const first = list[0];
+    if (first === undefined || t < first.at + START_MS) return undefined;
+    let running = { version: first, since: first.at + START_MS };
+    for (const v of list.slice(1)) {
+      const switchAt = v.at + SWITCH_MS;
+      if (switchAt > t) break;
+      if (this.appliesReleases && !sameSecrets(v.secrets, running.version.secrets)) {
+        running = { version: v, since: Math.max(switchAt, running.since) + REPLACE_MS };
+      }
+    }
+    return running;
+  }
+
+  /**
+   * What Workers Logs answers: the watchdog's alarms and its status while the running version
+   * holds the password, or for a while after a server started with a new configuration answers.
+   */
   logEvents(worker: string, fromMs: number, toMs: number): unknown[] {
     const first = this.versions.get(worker)?.[0];
     if (first === undefined || worker !== this.plan.platformWorker) return [...this.foreign];
@@ -225,7 +259,16 @@ export class FakeWorld {
         entrypoint: "OmnigentServer",
       };
       events.push({ timestamp: t, $workers, source: { level: "info", message: "" } });
-      if (!version.secrets.has(PASSWORD_SECRET)) continue;
+      // The status comes only from a server that answers with this version's configuration:
+      // one being replaced, or one an older build never replaced, logs none.
+      const container = this.containerAt(worker, t);
+      const applied =
+        container !== undefined &&
+        t >= container.since &&
+        sameSecrets(container.version.secrets, version.secrets);
+      const secretPresent = version.secrets.has(PASSWORD_SECRET);
+      const announcing = container !== undefined && t - container.since < NOTICE_MS;
+      if (!applied || !(secretPresent || (announcing && this.appliesReleases))) continue;
       const truth = this.truth(t);
       events.push({
         timestamp: t,
@@ -241,7 +284,8 @@ export class FakeWorld {
             initialized: truth.initialized,
             checkedAt: new Date(t).toISOString(),
           },
-          secretPresent: true,
+          secretPresent,
+          ...(this.appliesReleases ? { configApplied: true } : {}),
         },
       });
     }
@@ -253,6 +297,10 @@ export class FakeWorld {
     const secrets = this.secretsOf(this.plan.platformWorker);
     return secrets?.get(INITIALIZED_SECRET) === "true" && !secrets.has(PASSWORD_SECRET);
   }
+}
+
+function sameSecrets(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
+  return a.size === b.size && [...a].every(([name, value]) => b.get(name) === value);
 }
 
 export class MemoryStore implements StateStore {

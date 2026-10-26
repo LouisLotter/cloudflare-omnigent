@@ -22,6 +22,7 @@ import {
   type CrashPoint,
   FakeWorld,
   MemoryStore,
+  REPLACE_MS,
   type ServerTruth,
   SWITCH_MS,
 } from "./fake-cloud.ts";
@@ -156,9 +157,10 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(last?.get(INITIALIZED_SECRET)).toBe("true");
     expect(last?.has(PASSWORD_SECRET)).toBe(false);
     expect(last?.get(COOKIE_SECRET)).toBe(first?.get(COOKIE_SECRET));
-    // The check after the release waited past the objects' switch.
+    // The check after the release waited past the objects' switch, and past the server's
+    // replacement with the released configuration (G2-SEC-001).
     expect(Date.parse(h.store.state.journal.verifiedAt ?? "")).toBeGreaterThanOrEqual(
-      releasedAt + SWITCH_MS,
+      releasedAt + SWITCH_MS + REPLACE_MS,
     );
     expect(h.store.state.journal.accepted?.status).toMatchObject({
       installationId: INSTALLATION,
@@ -313,6 +315,36 @@ describe("runBootstrap: the whole bootstrap", () => {
     const updates = h.world.secretChanges.length;
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.secretChanges).toHaveLength(updates);
+  });
+
+  it("reports released, not yet applied, while the running server keeps its old configuration (G2-SEC-001)", async () => {
+    const h = harness(await accountPlan());
+    // A platform build that never replaces the server: the release stays in the Worker.
+    h.world.appliesReleases = false;
+    const outcome = await h.run();
+    expect(outcome).toEqual({
+      kind: "released",
+      why: expect.stringMatching(/^released, not yet applied: /),
+    });
+    expect(h.world.released()).toBe(true);
+    expect(h.store.state.journal.verifiedAt).toBeUndefined();
+    expect(h.lines.some((l) => l.startsWith("checked:"))).toBe(false);
+    // Once the server is replaced with the released configuration, a later run completes,
+    // without another release.
+    h.world.appliesReleases = true;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretChanges).toHaveLength(1);
+  });
+
+  it("waits for the replacement within its existing deadline, and says so", async () => {
+    const h = harness(await accountPlan());
+    // The check after the switch stops after the released version ran, before the
+    // replacement it began could answer.
+    expect(await h.run({ verifyWaitMs: 0, switchMs: SWITCH_MS + CHECK_MS })).toEqual({
+      kind: "released",
+      why: expect.stringMatching(/^released, not yet applied: /),
+    });
+    expect(await h.run()).toEqual({ kind: "done" });
   });
 
   it("reports released but unchecked when no newer version has run yet", async () => {

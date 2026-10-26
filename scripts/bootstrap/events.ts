@@ -6,12 +6,17 @@
 //
 //   {"cfo":"bootstrap","event":"status","reason":"durable",
 //    "bootstrapStatus":{"protocolVersion":1,"installationId":"ins_…","initialized":true,
-//                       "checkedAt":"…"},"secretPresent":true}
+//                       "checkedAt":"…"},"secretPresent":true,"configApplied":true}
 //
 // `initialized` is true only when Omnigent's `/v1/info` shows `accounts_enabled: true` and
 // `needs_setup: false` and the replicated position covers the owner's commit (X0, G1BR-002).
 // The log is a notice, never the only record: the status itself is stored in the object, and a
 // lost line recurs a minute later.
+//
+// `configApplied` says the answering server was started with the configuration the logging
+// version holds. A container gets its environment only when it starts, so a release reaches the
+// running server only once the watchdog has replaced it (G2-SEC-001). For a while after that,
+// the watchdog logs the same line without the password: the proof that the release applied.
 //
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
@@ -28,6 +33,11 @@ export interface StatusEvent {
   readonly status: BootstrapStatus;
   readonly reason: string | undefined;
   readonly secretPresent: boolean | undefined;
+  /**
+   * The server that answered was started with the logging version's configuration. Undefined
+   * from a build that did not say: never proof that a release reached the server.
+   */
+  readonly configApplied: boolean | undefined;
 }
 
 /** Any invocation of the platform Worker, for the check after the release. */
@@ -117,6 +127,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
       status: status.data,
       reason: typeof line.reason === "string" ? line.reason : undefined,
       secretPresent: typeof line.secretPresent === "boolean" ? line.secretPresent : undefined,
+      configApplied: typeof line.configApplied === "boolean" ? line.configApplied : undefined,
     });
   }
   return { statuses, invocations, malformed };
@@ -244,6 +255,13 @@ export type Verification =
  * the password exists the watchdog reports it on every check, so a version whose checks run
  * without reporting it does not hold it. The secret listing already shows the release; this
  * checks that the running object follows it.
+ *
+ * And the release is applied, not only released (G2-SEC-001): the new version adopts the
+ * container that still runs with the password and `INITIALIZED=false`, until its watchdog
+ * replaces it. So the check also needs a status from the released version, logged after the
+ * release, from a server started with the released configuration (`configApplied`), without the
+ * password, showing this installation's owner initialized and durable. Until then the release is
+ * "released, not yet applied".
  */
 export function verifyRelease(
   logs: ParsedLogs,
@@ -283,6 +301,28 @@ export function verifyRelease(
   const firstRun = Math.min(...runs);
   if (reported.some((e) => e.loggedAt >= firstRun)) {
     return { verified: false, why: "the bootstrap password was reported after the switch" };
+  }
+  const applied = logs.statuses.filter(
+    (e) =>
+      e.status.installationId === rules.installationId &&
+      e.versionId === released &&
+      e.loggedAt >= rules.releasedAt &&
+      e.secretPresent === false &&
+      e.configApplied === true,
+  );
+  if (applied.length === 0) {
+    return {
+      verified: false,
+      why: "released, not yet applied: the server still runs with its configuration from before the release (the watchdog replaces it, a restart of a few minutes)",
+    };
+  }
+  const latest = newest(applied);
+  if (latest !== undefined && !(latest.status.initialized && latest.reason === "durable")) {
+    const why = REASONS[latest.reason ?? ""] ?? "the owner is not initialized and durable yet";
+    return {
+      verified: false,
+      why: `released and applied, but the restarted server does not show a durable owner yet: ${why}`,
+    };
   }
   return { verified: true };
 }
