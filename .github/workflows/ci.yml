@@ -20,7 +20,7 @@
 #           source, Python tests and docs. Any non-zero exit fails the step: 1 means a canary was
 #           found, 2 a usage error, and 3 an incomplete scan (undecodable data, an unreadable
 #           file, or a path with no files), which is never treated as clean.
-#   images  Build the existing server and test targets; run credential-free image tests.
+#   images  Build the server, test and fork-tests targets; run credential-free image tests.
 #
 # Still to come, as the work packages that need them land: deterministic simulation tests (M3)
 # and Stryker mutation thresholds (75%) for the state machines and the schedule cache.
@@ -194,3 +194,11 @@ jobs:
       # local file replicas work with --network none; no provider or Cloudflare account used.
       - name: Run the image's unit and in-process suite
         run: docker run --rm --network none -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:ci-test
+
+      # The fork's Stop delivery tests against the Omnigent this image installs: a source fix
+      # in fork integration counts for the image only once these pass on the pinned commit.
+      - name: Build the fork-tests target
+        run: docker build --platform linux/amd64 -f images/server/Dockerfile --target fork-tests -t cfo-server:ci-fork-tests .
+
+      - name: Run the fork's Stop tests against the image's Omnigent
+        run: docker run --rm --network none cfo-server:ci-fork-tests
