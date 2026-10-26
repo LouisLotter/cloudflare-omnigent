@@ -25,6 +25,7 @@ import {
   CONTROL_INTERFACE_VERSION,
   type ControlCall,
   type ControlResult,
+  ErrorBody,
   type ErrorCode,
   LAUNCHER_ERROR_CLASS,
   LAUNCHER_ERROR_STATUS,
@@ -44,7 +45,6 @@ import {
   TIMESTAMP_HEADER,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
-import { errorResponse } from "../server/responses.ts";
 import { errorCodeOf } from "../shared/errors.ts";
 
 /** Every launcher operation is `POST <this>/<operation>`. */
@@ -164,14 +164,15 @@ async function readBounded(
     for (;;) {
       const next = await Promise.race([reader.read(), expired]);
       if (next === SLOW) {
-        await reader.cancel().catch(() => undefined);
+        // Cancelled, never awaited: a cancel that does not settle cannot hold the answer (r2-2).
+        reader.cancel().catch(() => undefined);
         return SLOW;
       }
       const { done, value } = next;
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
-        await reader.cancel();
+        reader.cancel().catch(() => undefined);
         return null;
       }
       chunks.push(value);
@@ -188,13 +189,29 @@ async function readBounded(
   return body;
 }
 
+/**
+ * A launcher-API reply: JSON, framed by an explicit Content-Length. The Cloudflare launcher
+ * (WP3.6) refuses a body that ends with the connection instead, so the length is always known.
+ */
+export function launcherJson(body: unknown, status = 200): Response {
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
+  return new Response(bytes, {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "content-length": String(bytes.byteLength),
+      "cache-control": "no-store",
+    },
+  });
+}
+
 /** The launcher's error reply: the contract's status, and whether a repeat may help. */
 export function launcherError(code: ErrorCode, message: string): Response {
-  return errorResponse(
+  return launcherJson(
+    ErrorBody.parse({
+      error: { code, message, retryable: LAUNCHER_ERROR_CLASS[code] === "unknown_outcome" },
+    }),
     LAUNCHER_ERROR_STATUS[code],
-    code,
-    message,
-    LAUNCHER_ERROR_CLASS[code] === "unknown_outcome",
   );
 }
 
@@ -330,7 +347,7 @@ function codeOf(error: unknown): ErrorCode | undefined {
 /** Runs one checked request. Throws nothing: every failure is a launcher error reply. */
 async function dispatch(request: LauncherRequest, deps: LauncherDeps): Promise<Response> {
   if (request.operation === "prepare") {
-    return Response.json(
+    return launcherJson(
       LauncherResult.parse({
         operation: "prepare",
         supportedProtocolVersions: [...SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS],
@@ -373,7 +390,7 @@ async function dispatch(request: LauncherRequest, deps: LauncherDeps): Promise<R
   if (checked.data.operation === "provision" && checked.data.computerId !== computerId) {
     return launcherError("internal", "Unexpected answer.");
   }
-  return Response.json(checked.data);
+  return launcherJson(checked.data);
 }
 
 function failure(error: unknown, _operation: string): Response {

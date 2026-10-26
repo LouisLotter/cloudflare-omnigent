@@ -375,6 +375,28 @@ describe("observing a start without monitor()", () => {
     expect(outcome).toEqual({ kind: "not_running", afterMs: 20_000 });
   });
 
+  it("reads a probe that throws at once like one that rejects (r2-3)", async () => {
+    const t = clockFrom();
+    const refused = await observeStart({
+      ...t,
+      probe: () => {
+        throw new Error(NO_INSTANCE_MESSAGE);
+      },
+    });
+    expect(refused.kind).toBe("refused");
+    const t2 = clockFrom();
+    let calls = 0;
+    const ready = await observeStart({
+      ...t2,
+      probe: () => {
+        calls += 1;
+        if (calls === 1) throw new Error("The container is not listening");
+        return Promise.resolve(true);
+      },
+    });
+    expect(ready.kind).toBe("ready");
+  });
+
   it("works with the fake port's refused start (DC-37)", async () => {
     const fake = new FakeComputerContainer();
     fake.refuseStarts = 1;

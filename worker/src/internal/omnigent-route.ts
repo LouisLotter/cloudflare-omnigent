@@ -195,6 +195,33 @@ function underPrefix(path: string, prefix: string): boolean {
  * `_normalize_base_path` does: "" for none, else a leading slash and no trailing one. Null when
  * Omnigent would refuse it (then the server does not start; the route refuses everything).
  */
+/** First segments Omnigent refuses for a base path (`_WEB_UI_API_FALLBACK_PREFIXES` and
+ * `_WEB_UI_ROUTE_PREFIXES`, fork `184b5cf8b`), compared case-sensitively as Omnigent does. */
+const RESERVED_BASE_SEGMENTS: ReadonlySet<string> = new Set([
+  "api",
+  "assets",
+  "auth",
+  "docs",
+  "health",
+  "oauth",
+  "openapi.json",
+  "redoc",
+  "v1",
+  ".well-known",
+  "approve",
+  "c",
+  "canvas",
+  "extensions",
+  "inbox",
+  "login",
+  "members",
+  "policies",
+  "register",
+  "settings",
+  "tasks",
+  "usage",
+]);
+
 export function normalizeBasePath(value: string | undefined): string | null {
   const trimmed = (value ?? "").trim();
   if (trimmed === "" || trimmed === "/") return "";
@@ -204,18 +231,20 @@ export function normalizeBasePath(value: string | undefined): string | null {
   if (!/^[A-Za-z0-9\-._~/]+$/.test(path)) return null;
   const segments = path.split("/");
   if (segments.includes(".") || segments.includes("..")) return null;
+  if (RESERVED_BASE_SEGMENTS.has(segments[1] ?? "")) return null;
   return path;
 }
 
 /**
- * Removes a configured base path (Omnigent's `BasePathMiddleware` strips it when the path
- * carries it, and routes the path as it is otherwise), so both forms match the same rules.
+ * The path Omnigent routes: ASGI's path (percent-decoded once), with a configured base path
+ * removed when the decoded path starts with it literally and case-sensitively, as Omnigent's
+ * `BasePathMiddleware` does; otherwise routed as it is.
  */
-function withoutBasePath(path: string, basePath: string): string {
-  if (basePath === "" || basePath === "/") return path;
-  const base = canonicalPath(basePath).path;
-  if (path === base) return "/";
-  return path.startsWith(`${base}/`) ? path.slice(base.length) : path;
+export function serverRoutedPath(rawPath: string, basePath: string): string {
+  const decoded = percentDecodeOnce(rawPath);
+  if (basePath === "") return decoded;
+  if (decoded === basePath) return "/";
+  return decoded.startsWith(`${basePath}/`) ? decoded.slice(basePath.length) : decoded;
 }
 
 export type PolicyDecision =
@@ -282,24 +311,36 @@ export function policyDecision(
       return { allowed: false, reason: "method_override" };
     }
   }
-  const canonical = canonicalPath(url.pathname);
-  if (canonical.undecodable) return { allowed: false, reason: "undecodable_path" };
-  const path = withoutBasePath(canonical.path, basePath);
-  const managed = MANAGED_PREFIXES.some((prefix) => underPrefix(path, prefix));
-  if (managed && canonical.decodedDelimiter) return { allowed: false, reason: "encoded_delimiter" };
-  for (const { name, rule } of BLOCK_LIST) {
-    // A blocked path allows only GET and HEAD, and never an upgrade (the 19 Oct rule).
-    if (ruleMatches(rule, path) && (upgrade || methodBlocked(rule.methods, upper))) {
-      return { allowed: false, reason: name };
+  // Every rule applies to both forms: the request's own canonical path, and the canonical form of
+  // the path Omnigent will route once its base path is removed (Codex WP3.3 r2-1). A request is
+  // refused if either form is blocked, and a host tunnel in either form is bound.
+  const forms = [
+    canonicalPath(url.pathname),
+    canonicalPath(serverRoutedPath(url.pathname, basePath)),
+  ];
+  if (forms.some((form) => form.undecodable)) return { allowed: false, reason: "undecodable_path" };
+  let hostTunnel: string | null = null;
+  for (const form of forms) {
+    const path = form.path;
+    const managed = MANAGED_PREFIXES.some((prefix) => underPrefix(path, prefix));
+    if (managed && form.decodedDelimiter) return { allowed: false, reason: "encoded_delimiter" };
+    for (const { name, rule } of BLOCK_LIST) {
+      // A blocked path allows only GET and HEAD, and never an upgrade (the 19 Oct rule).
+      if (ruleMatches(rule, path) && (upgrade || methodBlocked(rule.methods, upper))) {
+        return { allowed: false, reason: name };
+      }
+    }
+    const tunnel = HOST_TUNNEL.exec(path);
+    if (tunnel) {
+      const hostId = normalizeHostId(tunnel[1] as string);
+      if (hostId === null) return { allowed: false, reason: "host_id_malformed" };
+      if (hostTunnel !== null && hostTunnel !== hostId) {
+        return { allowed: false, reason: "host_id_ambiguous" };
+      }
+      hostTunnel = hostId;
     }
   }
-  const tunnel = HOST_TUNNEL.exec(path);
-  if (tunnel) {
-    const hostId = normalizeHostId(tunnel[1] as string);
-    if (hostId === null) return { allowed: false, reason: "host_id_malformed" };
-    return { allowed: true, hostTunnel: hostId };
-  }
-  return { allowed: true, hostTunnel: null };
+  return { allowed: true, hostTunnel };
 }
 
 /**

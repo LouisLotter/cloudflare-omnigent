@@ -200,10 +200,14 @@ export async function observeStart(options: ObserveOptions): Promise<StartOutcom
     let answered: boolean | "refused" | "timeout";
     try {
       answered = await Promise.race([
-        options.probe(controller.signal).then(
-          (ok) => ok,
-          (error: unknown) => (isStartRefusedError(error) ? ("refused" as const) : false),
-        ),
+        // Called inside a promise, so a probe that throws at once is read like one that rejects
+        // (Codex WP3.3 r2-3).
+        Promise.resolve()
+          .then(() => options.probe(controller.signal))
+          .then(
+            (ok) => ok,
+            (error: unknown) => (isStartRefusedError(error) ? ("refused" as const) : false),
+          ),
         timer(Math.min(left, probeTimeout)).then(() => "timeout" as const),
       ]);
     } finally {

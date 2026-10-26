@@ -588,6 +588,62 @@ describe("the receiver's edges", () => {
       50,
     );
     expect(slow).toMatchObject({ ok: false, refused: "slow_body" });
+    // A body whose cancel never settles: the refusal still comes at the deadline (r2-2).
+    const stuck = new ReadableStream<Uint8Array>({
+      pull: () => new Promise(() => undefined),
+      cancel: () => new Promise(() => undefined),
+    });
+    const refusedInTime = await Promise.race([
+      checkLauncherRequest(
+        new Request("http://platform.internal/launcher/status", {
+          method: "POST",
+          headers,
+          body: stuck,
+          duplex: "half",
+        } as RequestInit),
+        keys,
+        () => NOW,
+        20,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("still pending"), 500)),
+    ]);
+    expect(refusedInTime).toMatchObject({ ok: false, refused: "slow_body" });
+  });
+
+  it("refuses a slow or oversized streamed body even when its cancel fails", async () => {
+    const headers = await signLauncherRequest({
+      key: encoder.encode(CURRENT),
+      keyId: "k-current",
+      operation: "status",
+      timestamp: NOW,
+      body: new Uint8Array(),
+    });
+    const failingCancel = () => {
+      throw new Error("cancel failed");
+    };
+    const slow = new ReadableStream<Uint8Array>({
+      pull: () => new Promise(() => undefined),
+      cancel: failingCancel,
+    });
+    const big = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel: failingCancel,
+    });
+    const request = (body: ReadableStream<Uint8Array>) =>
+      new Request("http://platform.internal/launcher/status", {
+        method: "POST",
+        headers,
+        body,
+        duplex: "half",
+      } as RequestInit);
+    expect(await checkLauncherRequest(request(slow), keys, () => NOW, 20)).toMatchObject({
+      refused: "slow_body",
+    });
+    expect(await checkLauncherRequest(request(big), keys, () => NOW)).toMatchObject({
+      refused: "too_large",
+    });
   });
 
   it("refuses a declared length over the limit before reading, and an empty body as not JSON", async () => {
@@ -640,5 +696,74 @@ describe("the receiver's edges", () => {
       h2.deps,
     );
     expect(otherComputer.status).toBe(500);
+  });
+});
+
+describe("replies the Cloudflare launcher (WP3.6) can read", () => {
+  it("frames every reply with an exact Content-Length, errors included", async () => {
+    const h = harness();
+    for (const request of [
+      await signed(call({ operation: "prepare" })),
+      await signed(call({ operation: "status", computerId: COMPUTER })),
+      new Request("http://platform.internal/launcher/status", { method: "POST", body: "{}" }),
+      new Request("http://platform.internal/nowhere", { method: "POST" }),
+    ]) {
+      const response = await handleLauncherRequest(request, h.deps);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      expect(response.headers.get("content-length"), request.url).toBe(String(bytes.byteLength));
+      expect(response.headers.get("content-type")).toBe("application/json");
+    }
+  });
+
+  it("answers gone (410) for each operation 3.6 names once a removal intent is recorded", async () => {
+    const h = harness();
+    const fake = new FakeWorkspace(COMPUTER);
+    h.workspaces.set(COMPUTER, fake);
+    fake.fire("resume");
+    fake.fire("container_running");
+    fake.fire("restore_confirmed");
+    const terminate = await handleLauncherRequest(
+      await signed(
+        JSON.stringify({
+          protocolVersion: 1,
+          operationId: "e".repeat(32),
+          operation: "terminate",
+          computerId: COMPUTER,
+        }),
+      ),
+      h.deps,
+    );
+    expect(terminate.status).toBe(200);
+    const ops: [string, Record<string, unknown>][] = [
+      ["resume", {}],
+      ["claim_start", {}],
+      [
+        "start_host",
+        {
+          startAttempt: 1,
+          hostId: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+          hostName: "laptop",
+          token: "cfo-canary-launch-token-0123456789abcdefghij",
+          hostConfig: {},
+        },
+      ],
+      ["checkpoint", { reason: "turn_completed" }],
+    ];
+    for (const [index, [operation, extra]] of ops.entries()) {
+      const response = await handleLauncherRequest(
+        await signed(
+          JSON.stringify({
+            protocolVersion: 1,
+            operationId: String(index + 1).padStart(32, "a"),
+            operation,
+            computerId: COMPUTER,
+            ...extra,
+          }),
+        ),
+        h.deps,
+      );
+      expect(response.status, operation).toBe(410);
+      expect(await response.json()).toMatchObject({ error: { code: "gone", retryable: false } });
+    }
   });
 });

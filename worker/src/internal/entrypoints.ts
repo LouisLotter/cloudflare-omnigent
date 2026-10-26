@@ -24,7 +24,7 @@ import {
 import type { PlatformEnv } from "../env.ts";
 import { RateLimiter } from "../ingress/limits.ts";
 import { isServerProps, type PlatformInternalProps } from "../server/platform-internal.ts";
-import { errorResponse, logEvent } from "../server/responses.ts";
+import { logEvent } from "../server/responses.ts";
 import {
   CONTROL_OBJECT_NAME,
   OMNIGENT_SERVER_OBJECT_NAME,
@@ -38,7 +38,7 @@ import {
   ROUTE_HTTP_LIMITS,
   ROUTE_UPGRADE_LIMITS,
 } from "./omnigent-route.ts";
-import { handleLauncherRequest, signingKeysFrom } from "./platform-api.ts";
+import { handleLauncherRequest, launcherError, signingKeysFrom } from "./platform-api.ts";
 import { serverUpgradeAnswer } from "./upgrade-answer.ts";
 
 /** WorkspaceDO as these entrypoints call it (`shared/rpc.ts` `WorkspaceRpc`). */
@@ -75,7 +75,7 @@ export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInte
         status: 503,
         refused: "props",
       });
-      return errorResponse(503, "unavailable", "This platform service is not available.", true);
+      return launcherError("unavailable", "This platform service is not available.");
     }
     const env = internalEnv(this.env);
     return handleLauncherRequest(request, {

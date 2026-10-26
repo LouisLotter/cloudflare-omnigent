@@ -313,6 +313,23 @@ describe("platform.internal: the launcher API", () => {
     expect(internalFakes.control.calls.map((c) => c.method)).toEqual(["register_computer"]);
   });
 
+  it("frames its replies with an exact Content-Length, through the real entrypoint (WP3.6)", async () => {
+    const computerId = newComputer();
+    for (const request of [
+      await signedCall({
+        protocolVersion: 1,
+        operationId: "5".repeat(32),
+        operation: "status",
+        computerId,
+      }),
+      new Request("http://platform.internal/launcher/status", { method: "POST", body: "{}" }),
+    ]) {
+      const response = await api().fetch(request);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      expect(response.headers.get("content-length")).toBe(String(bytes.byteLength));
+    }
+  });
+
   it("accepts the previous key during a rotation", async () => {
     const computerId = newComputer();
     const response = await api().fetch(

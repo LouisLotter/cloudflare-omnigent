@@ -16,6 +16,7 @@ import {
   ROUTE_HTTP_LIMITS,
   ROUTE_UPGRADE_LIMITS,
   type RouteDeps,
+  serverRoutedPath,
 } from "../../src/internal/omnigent-route.ts";
 import { FORWARD_VERSION_HEADER } from "../../src/shared/rpc.ts";
 
@@ -615,5 +616,73 @@ describe("base paths", () => {
   it("leaves a path without the base path as it is", () => {
     const url = new URL(`${BASE}/auth/setup`);
     expect(policyDecision("POST", url, new Headers(), "/omnigent").allowed).toBe(false);
+  });
+});
+
+describe("base paths Omnigent accepts but a canonical strip would misread (r2-1)", () => {
+  it("normalizes exactly as Omnigent: case-sensitive reserved first segments refused", () => {
+    expect(normalizeBasePath("/V1")).toBe("/V1");
+    expect(normalizeBasePath("/v1.")).toBe("/v1.");
+    expect(normalizeBasePath("/AUTH")).toBe("/AUTH");
+    for (const reserved of [
+      "/v1",
+      "/v1/x",
+      "/auth",
+      "/oauth",
+      "/api",
+      "/login",
+      "/c",
+      "/settings",
+      "/.well-known",
+    ]) {
+      expect(normalizeBasePath(reserved), reserved).toBeNull();
+    }
+  });
+
+  it("routes as Omnigent's middleware: decoded once, a literal case-sensitive prefix", () => {
+    expect(serverRoutedPath("/V1/v1/sharing", "/V1")).toBe("/v1/sharing");
+    expect(serverRoutedPath("/v1/sharing", "/V1")).toBe("/v1/sharing");
+    expect(serverRoutedPath("/V1", "/V1")).toBe("/");
+    expect(serverRoutedPath("/V1x/a", "/V1")).toBe("/V1x/a");
+    expect(serverRoutedPath("/omnigent%2Fv1/sharing", "/omnigent")).toBe("/v1/sharing");
+    expect(serverRoutedPath("/a", "")).toBe("/a");
+  });
+
+  it.each([
+    ["/V1", "PUT", "/v1/sharing"],
+    ["/v1.", "PUT", "/v1/sharing"],
+    ["/AUTH", "POST", "/auth/users"],
+    ["/V1", "PUT", "/V1/v1/sharing"],
+    ["/AUTH", "POST", "/AUTH/auth/users"],
+    ["/omnigent", "POST", "/omnigent/v1/sessions/s/elicitations/e/resolve"],
+  ])("with base %s, %s %s is refused", (base, method, path) => {
+    expect(policyDecision(method, new URL(`${BASE}${path}`), new Headers(), base).allowed).toBe(
+      false,
+    );
+  });
+
+  it("binds a host tunnel found in either form", () => {
+    for (const path of [`/v1/hosts/${HOST_B}/tunnel`, `/V1/v1/hosts/${HOST_B}/tunnel`]) {
+      expect(policyDecision("GET", new URL(`${BASE}${path}`), new Headers(), "/V1")).toEqual({
+        allowed: true,
+        hostTunnel: HOST_B,
+      });
+    }
+  });
+
+  it("refuses B's tunnel through the handler under base /V1, with or without a launch token", async () => {
+    for (const headers of [{ authorization: "Bearer owner" }, { [LAUNCH_TOKEN_HEADER]: TOKEN_A }]) {
+      const h = harness();
+      h.deps = { ...h.deps, basePath: "/V1" };
+      const response = await handleComputerRequest(
+        new Request(`${BASE}/v1/hosts/${HOST_B}/tunnel`, {
+          headers: { upgrade: "websocket", ...headers },
+        }),
+        props(),
+        h.deps,
+      );
+      expect(response.status).toBe(403);
+      expect(h.forwarded).toHaveLength(0);
+    }
   });
 });
