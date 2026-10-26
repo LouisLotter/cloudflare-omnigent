@@ -24,6 +24,9 @@ import { internalFakes } from "./internal-harness.ts";
 import { testServers } from "./server-harness.ts";
 
 export { DirectoryBackupGateway } from "../../src/egress/backups.ts";
+
+import type { WriteCheck, WriteDecision } from "../../src/egress/write-fence.ts";
+
 export { default } from "../../src/index.ts";
 export { ComputerApi, OmnigentRoute, PlatformInternal } from "../../src/internal/entrypoints.ts";
 
@@ -72,5 +75,24 @@ export class WorkspaceDO extends DurableObject implements WorkspaceRpc {
 
   async reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
     return this.#fake().reservation(call);
+  }
+
+  /** WP3.1's write fence, as its `[shared]` commit describes it, over the fake's state. */
+  async writeAllowed(check: WriteCheck): Promise<WriteDecision> {
+    const name = this.ctx.id.name ?? "unnamed";
+    if (internalFakes.loseWorkspaceCalls > 0) {
+      internalFakes.loseWorkspaceCalls -= 1;
+      throw new Error("Network connection lost.");
+    }
+    if (!internalFakes.has(name)) return { allowed: false, reason: "unknown_computer" };
+    const fake = internalFakes.workspace(name);
+    if (fake.context.removalIntent || fake.context.state === "removed") {
+      return { allowed: false, reason: "removed" };
+    }
+    if (check.generation !== fake.generation) return { allowed: false, reason: "stale_generation" };
+    if (check.kind === "credential" && !internalFakes.pendingCredentialKeys.has(check.objectKey)) {
+      return { allowed: false, reason: "not_pending" };
+    }
+    return { allowed: true };
   }
 }

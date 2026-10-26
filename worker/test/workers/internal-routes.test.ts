@@ -12,7 +12,12 @@ import {
   signLauncherRequest,
 } from "@cfo/contracts";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { directoryBackups } from "../../src/egress/backups.ts";
+import {
+  credentialWriter,
+  directoryBackups,
+  FencedBackupGateway,
+  type GatewayExports,
+} from "../../src/egress/backups.ts";
 import { LAUNCH_TOKEN_HEADER } from "../../src/internal/omnigent-route.ts";
 import { serverUpgradeAnswer } from "../../src/internal/upgrade-answer.ts";
 import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
@@ -402,35 +407,198 @@ describe("platform.internal's registration and the upgrade answer", () => {
   });
 });
 
-describe("egress/backups.ts: the Sandbox SDK's DirectoryBackup", () => {
-  it("deletes a layer's object under the computer's own prefix only, without a container", async () => {
-    const bucket = (env as unknown as { CHECKPOINTS: R2Bucket }).CHECKPOINTS;
-    const id = "00000000-0000-4000-8000-0000000000aa";
-    await bucket.put(`workspace/cmp_a/${id}.tar.zst`, "layer of a");
-    await bucket.put(`workspace/cmp_b/${id}.tar.zst`, "layer of b");
-    const noContainer = {
-      exec: () => {
-        throw new Error("no container in this test");
-      },
-      interceptOutboundHttp: () => {
-        throw new Error("no container in this test");
-      },
-    } as unknown as Container;
-    const backups = directoryBackups(
-      noContainer,
-      exports as unknown as Parameters<typeof directoryBackups>[1],
+describe("egress/backups.ts: the fenced backup gateway (the write fence)", () => {
+  const bucket = () => (env as unknown as { CHECKPOINTS: R2Bucket }).CHECKPOINTS;
+  // The real gateway class, constructed in this context with the test Worker's env, so that a
+  // refusal is an ordinary rejection here rather than one crossing RPC (which the vitest plugin
+  // reports as unhandled; WP2.2's upstream candidate 1).
+  const gateways: GatewayExports = {
+    DirectoryBackupGateway: ({ props }) =>
+      new FencedBackupGateway(
+        {
+          props,
+          waitUntil: () => undefined,
+          passThroughOnException: () => undefined,
+        } as unknown as ExecutionContext,
+        env as never,
+      ) as unknown as ReturnType<GatewayExports["DirectoryBackupGateway"]>,
+  };
+  const noContainer = {
+    exec: () => {
+      throw new Error("no container in this test");
+    },
+    interceptOutboundHttp: () => {
+      throw new Error("no container in this test");
+    },
+  } as unknown as Container;
+
+  /** A computer at generation 3, running, as the fence sees it. */
+  function liveComputer(): ComputerId {
+    const computerId = newComputer();
+    const fake = internalFakes.workspace(computerId);
+    fake.fire("resume");
+    fake.fire("container_running");
+    fake.fire("restore_confirmed");
+    fake.generation = 3;
+    return computerId;
+  }
+
+  it("puts a pending credential bundle for the current generation", async () => {
+    const computerId = liveComputer();
+    const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n3.json`;
+    internalFakes.pendingCredentialKeys.add(key);
+    await credentialWriter(gateways, { computerId, generation: 3 }).put(
+      key,
+      new TextEncoder().encode("{}"),
     );
+    expect(await (await bucket().get(key))?.text()).toBe("{}");
+  });
+
+  it("refuses a removed computer, a stale generation, a key not pending, another computer's key, and an unreachable WorkspaceDO", async () => {
+    const computerId = liveComputer();
+    const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n4.json`;
+    internalFakes.pendingCredentialKeys.add(key);
+    const body = new TextEncoder().encode("{}");
+    const attempt = (generation: number, objectKey = key) =>
+      credentialWriter(gateways, { computerId, generation }).put(objectKey, body);
+    await expect(attempt(2)).rejects.toThrow(/stale_generation/);
+    await expect(
+      attempt(3, `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n5.json`),
+    ).rejects.toThrow(/not_pending/);
+    await expect(
+      attempt(3, `credentials/cmp_01hzy3m8k6q4t2v9w7x5r0s1n9/ckp_x.json`),
+    ).rejects.toThrow(/foreign_key/);
+    internalFakes.loseWorkspaceCalls = 1;
+    await expect(attempt(3)).rejects.toThrow(/workspace_unreachable/);
+    // A removal intent: every later write is refused.
+    internalFakes.workspace(computerId).fire("terminate");
+    await expect(attempt(3)).rejects.toThrow(/removed/);
+    expect(await bucket().head(key)).toBeNull();
+    // An unknown computer.
+    await expect(
+      credentialWriter(gateways, { computerId: newComputer(), generation: 0 }).put(
+        `credentials/${computerId}/x.json`,
+        body,
+      ),
+    ).rejects.toThrow(/foreign_key|unknown_computer/);
+  });
+
+  it("fences a layer's upload: the create, each part from the container, and the publication", async () => {
+    const computerId = liveComputer();
+    const key = `workspace/${computerId}/00000000-0000-4000-8000-0000000000bb.tar.zst`;
+    const props = (generation: number, extra: Record<string, unknown>) => ({
+      protocolVersion: 1,
+      binding: "CHECKPOINTS",
+      key,
+      fence: { fenceVersion: 1, computerId, generation, kind: "workspace" },
+      ...extra,
+    });
+    const control = (generation: number) =>
+      gateways.DirectoryBackupGateway({ props: props(generation, { mode: "control" }) });
+    // Refused for a stale generation, before R2 is touched.
+    await expect(control(2).createUpload("layer")).rejects.toThrow(/stale_generation/);
+    const uploadId = await control(3).createUpload("layer");
+    const part = new Uint8Array(1024).fill(7);
+    const write = (generation: number) =>
+      gateways.DirectoryBackupGateway({ props: props(generation, { mode: "write", uploadId }) });
+    const stalePart = await write(2).fetch(
+      new Request("http://backups.sandbox.internal/parts/1", {
+        method: "PUT",
+        headers: { "content-length": String(part.byteLength) },
+        body: part,
+      }),
+    );
+    expect(stalePart.status).toBe(403);
+    await stalePart.arrayBuffer();
+    const goodPart = await write(3).fetch(
+      new Request("http://backups.sandbox.internal/parts/1", {
+        method: "PUT",
+        headers: { "content-length": String(part.byteLength) },
+        body: part,
+      }),
+    );
+    expect(goodPart.status).toBe(200);
+    const { etag } = (await goodPart.json()) as { etag: string };
+    // The generation moves on before publication: the object never appears.
+    internalFakes.workspace(computerId).generation = 4;
+    await expect(control(3).completeUpload(uploadId, [{ partNumber: 1, etag }])).rejects.toThrow(
+      /stale_generation/,
+    );
+    expect(await bucket().head(key)).toBeNull();
+    await control(4).abortUpload(uploadId);
+  });
+
+  it("publishes a layer for the current generation, and still deletes without asking", async () => {
+    const computerId = liveComputer();
+    const key = `workspace/${computerId}/00000000-0000-4000-8000-0000000000cc.tar.zst`;
+    const props = (extra: Record<string, unknown>) => ({
+      props: {
+        protocolVersion: 1,
+        binding: "CHECKPOINTS",
+        key,
+        fence: { fenceVersion: 1, computerId, generation: 3, kind: "workspace" },
+        ...extra,
+      },
+    });
+    const control = gateways.DirectoryBackupGateway(props({ mode: "control" }));
+    const uploadId = await control.createUpload("layer");
+    const part = new Uint8Array(2048).fill(9);
+    const uploaded = await gateways
+      .DirectoryBackupGateway(props({ mode: "write", uploadId }))
+      .fetch(
+        new Request("http://backups.sandbox.internal/parts/1", {
+          method: "PUT",
+          headers: { "content-length": String(part.byteLength) },
+          body: part,
+        }),
+      );
+    const { etag } = (await uploaded.json()) as { etag: string };
+    expect(await control.completeUpload(uploadId, [{ partNumber: 1, etag }])).toBe(2048);
+    expect((await bucket().head(key))?.size).toBe(2048);
+    // A removal does not stop deletes: the SDK's DirectoryBackup, through the factory, deletes it.
+    internalFakes.workspace(computerId).fire("terminate");
+    const backups = directoryBackups(noContainer, gateways, { computerId, generation: 3 });
     const record = {
-      id,
+      id: "00000000-0000-4000-8000-0000000000cc",
       dir: "/stage/layer",
-      size: 10,
+      size: 2048,
       sha256: "0".repeat(64),
       format: "tar+zstd/1",
     } as const;
-    await backups("workspace/cmp_a/").delete(record);
-    expect(await bucket.head(`workspace/cmp_a/${id}.tar.zst`)).toBeNull();
-    expect(await bucket.head(`workspace/cmp_b/${id}.tar.zst`)).not.toBeNull();
-    // Deleting a gone object succeeds.
-    await backups("workspace/cmp_a/").delete(record);
+    await backups(`workspace/${computerId}/`).delete(record);
+    expect(await bucket().head(key)).toBeNull();
+  });
+
+  it("is the class the platform Worker exports as DirectoryBackupGateway (through real RPC)", async () => {
+    const computerId = liveComputer();
+    const key = `credentials/${computerId}/ckp_01hzy3m8k6q4t2v9w7x5r0s1n6.json`;
+    internalFakes.pendingCredentialKeys.add(key);
+    await credentialWriter(exports as unknown as GatewayExports, { computerId, generation: 3 }).put(
+      key,
+      new TextEncoder().encode("{}"),
+    );
+    expect(await bucket().head(key)).not.toBeNull();
+  });
+
+  it("refuses a write grant that carries no fence", async () => {
+    const response = await gateways
+      .DirectoryBackupGateway({
+        props: {
+          protocolVersion: 1,
+          mode: "write",
+          binding: "CHECKPOINTS",
+          key: "workspace/x/y.tar.zst",
+          uploadId: "u",
+        },
+      })
+      .fetch(
+        new Request("http://backups.sandbox.internal/parts/1", {
+          method: "PUT",
+          headers: { "content-length": "1" },
+          body: "x",
+        }),
+      );
+    expect(response.status).toBe(403);
+    expect(await response.text()).toMatch(/unfenced/);
   });
 });

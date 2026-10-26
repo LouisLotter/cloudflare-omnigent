@@ -14,6 +14,8 @@ class InternalFakes {
   control = new FakeControl();
   /** Calls that fail with no answer before reaching the fake, as a reset or a lost connection. */
   loseWorkspaceCalls = 0;
+  /** Credential object keys WorkspaceDO holds as pending uploads (the write fence's rule). */
+  readonly pendingCredentialKeys = new Set<string>();
 
   workspace(computerId: string): FakeWorkspace {
     let fake = this.#workspaces.get(computerId);
@@ -32,6 +34,7 @@ class InternalFakes {
     this.#workspaces.clear();
     this.control = new FakeControl();
     this.loseWorkspaceCalls = 0;
+    this.pendingCredentialKeys.clear();
   }
 }
 
