@@ -5,9 +5,25 @@
 //
 // The RPC surface is `WorkspaceRpc` (`shared/rpc.ts`): `launcher` for `internal/platform-api.ts`,
 // `computer` for `internal/computer-api.ts`, `pages` for the web Worker's pages, `reservation` for
-// ControlDO. WP3.3 supplies the container port (`computer/container-port.ts`) and the intercept
-// targets (`computer/network.ts`) through `openPort` and `intercepts`; until then a deployed
-// WorkspaceDO has no container and answers only what needs none.
+// ControlDO, `writeAllowed` for the backup gateway's write fence, and `identity` for the
+// computer's route (`internal/omnigent-route.ts`). The pages reach the controller through the page
+// front (`computer/page-front.ts`, WP3.5: intent tokens, the setup terminal, removal), and `fetch`
+// takes the setup terminal's upgrade, which the terminal bridge (`computer/terminal.ts`) dials on
+// the same container port as everything else.
+//
+// The production wiring (WP3.18, the M3 assembly):
+//   - `openPort()`: the computer's container through WP3.3's adapter (`computer/container-port.ts`),
+//     with the Sandbox SDK's `DirectoryBackup` for layer uploads and restores. An upload's gateway
+//     carries the write fence for its capture's generation (`egress/backups.ts`); a restore's or a
+//     delete's carries none, so nothing can be written through it.
+//   - `intercepts(props)`: `omnigent.internal` and `computer.internal`, each bound to this
+//     generation's props (`computer/network.ts`). The backup host is never among them: each
+//     `DirectoryBackup` operation registers it with its own fenced grant.
+//   - `checkpointBucket()`: credential bundles read, listed and deleted on the `CHECKPOINTS` R2
+//     binding; every put goes through the fenced gateway (`credentialWriter`), so the write fence
+//     admits it only as a pending upload of the running generation.
+// Without a container (a class with none configured) or a `CHECKPOINTS` binding, the hooks return
+// null and WorkspaceDO answers only what needs neither.
 
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -16,11 +32,17 @@ import {
   type InterceptProps,
   type LauncherCall,
   type LauncherResult,
+  type PageFrontCall,
+  type PageFrontResult,
   type PagesCall,
   type PagesResult,
   type ReservationState,
   type SupervisorReply,
+  TERMINAL_PORT,
+  TERMINAL_SUBPROTOCOL,
+  TERMINAL_WS_PATH,
 } from "@cfo/contracts";
+import { credentialWriter, directoryBackups, type GatewayExports } from "../egress/backups.ts";
 import type { PlatformEnv } from "../env.ts";
 import { logEvent } from "../server/responses.ts";
 import type { ComputerContainerPort } from "../shared/computer-port.ts";
@@ -28,12 +50,14 @@ import { platformError } from "../shared/errors.ts";
 import {
   CONTROL_OBJECT_NAME,
   type ControlRpc,
+  type WorkspaceIdentity,
   type WorkspaceRpc,
   type WriteCheck,
   type WriteDecision,
 } from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
 import { r2Bucket } from "./bucket.ts";
+import { computerContainerOf, nativeComputerContainer } from "./container-port.ts";
 import {
   type CheckpointBucket,
   CONTROLLER_TIMING,
@@ -42,8 +66,11 @@ import {
   WorkspaceController,
 } from "./controller.ts";
 import { randomId } from "./ids.ts";
+import { type InterceptExports, interceptTargets } from "./network.ts";
+import { PageFront } from "./page-front.ts";
 import type { Store } from "./record.ts";
 import { WORKSPACE_MIGRATIONS } from "./schema.ts";
+import { type BridgeSocket, TerminalBridge, type TerminalTiming } from "./terminal.ts";
 
 /** The controller's store on the Durable Object's SQLite storage: one JSON value per key. */
 export class SqlStore implements Store {
@@ -93,20 +120,30 @@ export class SqlStore implements Store {
 
 export class WorkspaceDO extends DurableObject<PlatformEnv> implements WorkspaceRpc {
   readonly #controller: WorkspaceController | null;
+  /** This object's computer, from its name; null for an object not named by a computer ID. */
+  readonly #computerId: ComputerId | null;
+  readonly #front: PageFront | null;
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
     // One WorkspaceDO per computer, named by its computer ID (`workspaceObjectName`).
     const computerId = ComputerId.safeParse(ctx.id.name);
     if (!computerId.success) {
+      this.#computerId = null;
       this.#controller = null;
+      this.#front = null;
       return;
     }
+    this.#computerId = computerId.data;
     const store = new SqlStore(ctx.storage);
+    const port = this.openPort();
+    // The terminal bridge is built after the controller (it calls the controller); the controller
+    // reaches it through this reference, to end every stream before a credential-sensitive step.
+    let bridge: TerminalBridge | null = null;
     this.#controller = new WorkspaceController({
       computerId: computerId.data,
       store,
-      port: this.openPort(),
+      port,
       control: this.controlRpc(),
       bucket: this.checkpointBucket(),
       clock: () => this.now(),
@@ -126,31 +163,111 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
       log: (event, fields) => logEvent("workspace", event, fields),
+      terminal: { closeNow: (reason) => bridge?.closeNow(reason) },
     });
     const controller = this.#controller;
+    let front: PageFront | null = null;
+    const terminal = new TerminalBridge({
+      computerId: computerId.data,
+      store,
+      now: () => this.now(),
+      timing: this.terminalTiming(),
+      target: () => {
+        if (front === null) throw platformError("internal", "no page front");
+        return front.target();
+      },
+      dial: () => {
+        if (port === null) throw platformError("unavailable", "no container");
+        return port.fetch(
+          TERMINAL_PORT,
+          new Request(`http://computer${TERMINAL_WS_PATH}`, {
+            headers: { upgrade: "websocket", "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+          }),
+        );
+      },
+      setWindow: (until) =>
+        until === null ? controller.setTerminal(false) : controller.setTerminal(true, until),
+      pair: () => {
+        const pair = new WebSocketPair();
+        return [pair[0] as BridgeSocket, pair[1] as BridgeSocket];
+      },
+      upgradeResponse: (client) =>
+        new Response(null, {
+          status: 101,
+          webSocket: client as unknown as WebSocket,
+          headers: { "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+        }),
+      socketOf: (response) => (response.webSocket as BridgeSocket | null) ?? null,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      log: (event, fields) => logEvent("workspace", event, fields),
+    });
+    bridge = terminal;
+    front = new PageFront(computerId.data, {
+      store,
+      controller,
+      terminal,
+      log: (event, fields) => logEvent("workspace", event, fields),
+    });
+    this.#front = front;
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage, WORKSPACE_MIGRATIONS);
       await controller.boot();
     });
   }
 
-  /** The computer's container port: WP3.3's adapter; none until it is wired. */
+  // -------------------------------------------------------------------------------------------
+  // The production wiring. The Workers-runtime tests replace only `runtimeContainer()` (a
+  // simulated container), the clock and the timing; everything else here runs as deployed.
+
+  /** The runtime's container of this object, or null when its class has none configured. */
+  protected runtimeContainer(): Container | null {
+    return computerContainerOf(this.ctx);
+  }
+
+  /** `ctx.exports`: the platform Worker's own entrypoints, as loopback bindings. */
+  #exports(): GatewayExports & InterceptExports {
+    return this.ctx.exports as unknown as GatewayExports & InterceptExports;
+  }
+
+  /**
+   * The computer's container port (WP3.3's adapter), with `DirectoryBackup` behind the fenced
+   * gateway: an upload names its capture's generation, a restore or a delete none.
+   */
   protected openPort(): ComputerContainerPort | null {
-    return null;
+    const container = this.runtimeContainer();
+    const computerId = this.#computerId;
+    if (container === null || computerId === null) return null;
+    const exports = this.#exports();
+    return nativeComputerContainer(container, {
+      backups: (prefix, generation) =>
+        directoryBackups(
+          container,
+          exports,
+          generation === null ? null : { computerId, generation },
+        )(prefix),
+    });
   }
 
   protected controlRpc(): ControlRpc {
     return this.env.CONTROL.getByName(CONTROL_OBJECT_NAME) as unknown as ControlRpc;
   }
 
+  /** Credential bundles: reads, lists and deletes on R2; puts through the write fence. */
   protected checkpointBucket(): CheckpointBucket | null {
     const bucket = (this.env as { readonly CHECKPOINTS?: R2Bucket }).CHECKPOINTS;
-    return bucket === undefined ? null : r2Bucket(bucket);
+    const computerId = this.#computerId;
+    if (bucket === undefined || computerId === null) return null;
+    const exports = this.#exports();
+    return r2Bucket(bucket, (key, body, generation) =>
+      credentialWriter(exports, { computerId, generation }).put(key, body),
+    );
   }
 
   /** The intercepts registered before every start and in every new instance (WP3.3). */
-  protected intercepts(_props: InterceptProps): readonly InterceptTarget[] {
-    return [];
+  protected intercepts(props: InterceptProps): readonly InterceptTarget[] {
+    return interceptTargets(this.#exports(), props);
   }
 
   protected now(): number {
@@ -161,6 +278,11 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return CONTROLLER_TIMING;
   }
 
+  /** The setup terminal's timing (WP3.5); the production values unless a test overrides them. */
+  protected terminalTiming(): Partial<TerminalTiming> {
+    return {};
+  }
+
   protected get controller(): WorkspaceController {
     if (this.#controller === null) {
       throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
@@ -168,7 +290,16 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.#controller;
   }
 
-  launcher(call: LauncherCall): Promise<LauncherResult> {
+  protected get front(): PageFront {
+    if (this.#front === null) {
+      throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
+    }
+    return this.#front;
+  }
+
+  async launcher(call: LauncherCall): Promise<LauncherResult> {
+    // `terminate` closes the setup terminal first; a sleep finds an expired window closed.
+    await this.front.beforeLauncher(call);
     return this.controller.launcher(call);
   }
 
@@ -176,8 +307,15 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.controller.computer(call);
   }
 
-  pages(call: PagesCall): Promise<PagesResult> {
-    return this.controller.pages(call);
+  /** The pages, through the page front (WP3.5): intent tokens, the terminal, removal. */
+  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
+    return this.front.pages(call);
+  }
+
+  /** The setup terminal's upgrade from the web Worker (WP3.5). */
+  override async fetch(request: Request): Promise<Response> {
+    if (this.#front === null) return new Response(null, { status: 404 });
+    return this.#front.fetch(request);
   }
 
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
@@ -188,7 +326,12 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.controller.writeAllowed(call);
   }
 
+  identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null> {
+    return this.controller.identity(call);
+  }
+
   override async alarm(): Promise<void> {
+    if (this.#front !== null) await this.#front.beforeAlarm();
     if (this.#controller !== null) await this.#controller.alarm();
   }
 }

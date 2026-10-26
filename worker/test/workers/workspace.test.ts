@@ -18,11 +18,11 @@ import { workspaceObjectName } from "../../src/shared/rpc.ts";
 import { stepsWithEviction } from "../support/eviction.ts";
 import { FakeLauncherClient } from "../support/fake-launcher-client.ts";
 import type { SimulatedComputer } from "../support/fake-supervisor.ts";
-import type { WorkspaceDO } from "../support/platform-test-worker.ts";
+import type { WorkspaceUnderFakes as WorkspaceDO } from "../support/platform-test-worker.ts";
 import { testComputers } from "../support/workspace-harness.ts";
 
 type Stub = DurableObjectStub<WorkspaceDO>;
-/** The controller under test (wrangler.test.jsonc): WORKSPACE itself is the routes' stand-in. */
+/** The controller under fakes (wrangler.test.jsonc); WORKSPACE is the assembled class. */
 const workspaces = (env as unknown as { WORKSPACE_CONTROLLER: DurableObjectNamespace<WorkspaceDO> })
   .WORKSPACE_CONTROLLER;
 const HOST = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f";
@@ -247,12 +247,19 @@ describe("WorkspaceDO", () => {
     const { stub, computer, computerId, client } = fresh();
     expect(await stub.reservation(call)).toBeNull();
     await client.send(client.provisionRequest("managed-7f3c2a9e"));
-    const size = {
+    // A page change carries the admitted owner and the session's intent token (WP3.5's page
+    // front); without them it is refused before any effect.
+    const owner = { sub: "owner-sub-canary", sessionId: "5e".repeat(32) };
+    const unsigned = {
       ...call,
       action: "set_size" as const,
       operationId: "op_00000000000000000000000001",
       size: "standard-3" as const,
     };
+    const withIntent = PagesResult.parse(await stub.pages({ ...call, action: "state", owner }));
+    const intent = withIntent.action === "state" ? withIntent.intentToken : undefined;
+    expect(intent).toMatch(/^[0-9a-f]{64}$/);
+    const size = { ...unsigned, owner, intent };
     const [first, second, state] = await stepsWithEviction(stub, [
       () => stub.pages(size),
       () => stub.pages(size),
@@ -267,6 +274,10 @@ describe("WorkspaceDO", () => {
       status: "stopped",
     });
     expect(await code(stub.pages({ ...size, size: "standard-4" }))).toBe("conflict");
+    // Checked after the evictions: with @cloudflare/vitest-plugin 1.4.0, evicting an object after
+    // one of its RPC methods threw never resolves.
+    expect(await code(stub.pages(unsigned))).toBe("forbidden");
+    expect(await code(stub.pages({ ...size, intent: "0".repeat(64) }))).toBe("forbidden");
     await client.send(client.resumeRequest());
     await settle(stub, computer);
     expect(computer.starts[0]?.instance).toBe("standard-3");
@@ -309,14 +320,14 @@ describe("WorkspaceDO", () => {
 });
 
 describe("WorkspaceDO's production defaults", () => {
-  // The bucket is R2 wherever CHECKPOINTS is bound: the test configuration binds it for WP3.3's
-  // gateway; the platform Worker's configuration does not yet.
-  it("has no container or intercepts until they are wired, R2 where CHECKPOINTS is bound, and the real clock", async () => {
+  // The production hooks as this configuration wires them: it declares no container, so there is
+  // no port; R2 behind the fence where CHECKPOINTS is bound; both computer intercepts.
+  it("has no port without a container, R2 where CHECKPOINTS is bound, both intercepts, and the real clock", async () => {
     const { stub } = fresh();
     expect(await stub.defaults()).toEqual({
       port: null,
       bucket: "r2",
-      intercepts: [],
+      intercepts: ["omnigent.internal", "computer.internal"],
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,
       control: "function",

@@ -42,7 +42,7 @@ For targeted feedback:
 | --- | --- |
 | `pnpm --filter @cfo/contracts test` | Actual registered TypeScript schemas, valid/invalid/refined fixtures and contract helpers. |
 | `pnpm --filter @cfo/worker test:unit` | Node unit/fake/pure-logic suites. |
-| `pnpm --filter @cfo/worker test:workers` | Local workerd/DO storage and eviction tests under the test configuration. Containers service behavior remains separate. |
+| `pnpm --filter @cfo/worker test:workers` | Local workerd/DO storage and eviction tests under the test configuration. The routes, the backup gateway and ControlDO run against the real WorkspaceDO, with only its container (a simulated supervisor and `sandbox-shim`'s backup protocol) and the clocks simulated; WorkspaceDO's own controller tests use port-level fakes on a second binding. Containers service behavior remains separate. |
 | `pnpm test:scripts` | Canary, staging, bootstrap and restore-drill staging tests. The restore-drill staging suite already runs in Node with mocked platform resources. |
 | `pnpm coverage` | Existing configured per-file thresholds, not whole-product or image/Python coverage and not mutation testing. |
 

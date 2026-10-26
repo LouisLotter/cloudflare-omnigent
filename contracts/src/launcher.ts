@@ -412,6 +412,8 @@ export const CheckpointResult = z.discriminatedUnion("outcome", [
  * `stopped`: confirmed stopped. `in_progress`: the sleep runs (it can take about 12 minutes);
  * the launcher repeats the same operation ID until it ends, and reports Omnigent's `unknown` if
  * its own deadline passes first. A lost or failed reply is `unknown` too. Never `unknown` here.
+ * A computer with a removal intent answers a new `suspend` with the `gone` error (410), as every
+ * launcher call but `terminate`; a repeat of an earlier operation still gets its recorded outcome.
  */
 export const SuspendRefused = z.strictObject({
   operation: z.literal("suspend"),

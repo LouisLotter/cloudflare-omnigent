@@ -42,8 +42,12 @@ export interface DirectoryBackups {
   delete(record: DirectoryBackupRecord, options?: { signal?: AbortSignal }): Promise<void>;
 }
 
-/** Makes the `DirectoryBackup` for a key prefix (`egress/backups.ts`). */
-export type DirectoryBackupsFor = (prefix: string) => DirectoryBackups;
+/**
+ * Makes the `DirectoryBackup` for a key prefix (`egress/backups.ts`): for an upload, fenced to the
+ * generation whose capture it is; for a restore or a delete (`null`), with no fence, so nothing
+ * can be written through it.
+ */
+export type DirectoryBackupsFor = (prefix: string, generation: number | null) => DirectoryBackups;
 
 /** The runtime's container, as far as this adapter uses it. */
 export type RuntimeContainer = Pick<
@@ -79,6 +83,14 @@ export function runtimeStartOptions(
     instance: options.instance as Exclude<InstanceSize, "basic">,
   };
   return (image === undefined ? start : { ...start, image }) as ContainerStartupOptions;
+}
+
+/**
+ * This Durable Object's container: the runtime's `ctx.container`, or null when its class has no
+ * container configured (a deployment without the computer image).
+ */
+export function computerContainerOf(ctx: { readonly container?: Container }): Container | null {
+  return ctx.container ?? null;
 }
 
 export function nativeComputerContainer(
@@ -119,20 +131,20 @@ export function nativeComputerContainer(
       return container.setInactivityTimeout(ms);
     },
     backup(backup: BackupOptions) {
-      return options.backups(backup.prefix).backup({
+      return options.backups(backup.prefix, backup.generation).backup({
         dir: backup.dir,
         name: backup.name,
         ...(backup.signal ? { signal: backup.signal } : {}),
       });
     },
     restore(record, restore: RestoreOptions) {
-      return options.backups(restore.prefix).restore(record, {
+      return options.backups(restore.prefix, null).restore(record, {
         dir: restore.dir,
         ...(restore.signal ? { signal: restore.signal } : {}),
       });
     },
     deleteBackup(record, { prefix }) {
-      return options.backups(prefix).delete(record);
+      return options.backups(prefix, null).delete(record);
     },
   };
 }

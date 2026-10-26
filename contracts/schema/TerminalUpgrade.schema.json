@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": {},
+  "properties": {
+    "capability": {
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    },
+    "computerId": {
+      "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+      "type": "string"
+    },
+    "interfaceVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "owner": {
+      "additionalProperties": {},
+      "properties": {
+        "sessionId": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "sub": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "sub",
+        "sessionId"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "interfaceVersion",
+    "computerId",
+    "owner",
+    "capability"
+  ],
+  "title": "TerminalUpgrade",
+  "type": "object"
+}

@@ -4,6 +4,7 @@
  * test clock a day ahead of real time, so an alarm WorkspaceDO schedules never fires by itself:
  * tests run it with `runDurableObjectAlarm`. Register a computer before the object's first call.
  */
+import type { TerminalTiming } from "../../src/computer/terminal.ts";
 import { CMP } from "./computer-sim.ts";
 import { FakeBucket } from "./fake-bucket.ts";
 import { FakeControl } from "./fake-control.ts";
@@ -15,6 +16,8 @@ class TestComputers {
   #now = Date.now() + DAY_MS;
   readonly control = new FakeControl();
   readonly bucket = new FakeBucket();
+  /** The setup terminal's timing in the tests' WorkspaceDO (WP3.5): real-time checks every 25 ms. */
+  readonly terminalTiming: Partial<TerminalTiming> = { checkMs: 25, dialRetryMs: [5, 10] };
   readonly #computers = new Map<string, SimulatedComputer>();
 
   constructor() {

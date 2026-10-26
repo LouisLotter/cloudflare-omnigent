@@ -28,6 +28,7 @@ import { logEvent } from "../server/responses.ts";
 import {
   CONTROL_OBJECT_NAME,
   OMNIGENT_SERVER_OBJECT_NAME,
+  WorkspaceIdentity,
   workspaceObjectName,
 } from "../shared/rpc.ts";
 import { COMPUTER_API_LIMITS, handleSupervisorMessage, INBOUND_RETRY } from "./computer-api.ts";
@@ -46,9 +47,42 @@ interface WorkspaceStub {
   launcher(call: LauncherCall): Promise<LauncherResult>;
   computer(call: ComputerCall): Promise<SupervisorReply>;
   pages(call: PagesCall): Promise<PagesResult>;
+  identity(call: { readonly interfaceVersion: number }): Promise<unknown>;
 }
 
-/** The bindings these entrypoints use. `WORKSPACE` arrives with WP3.1's WorkspaceDO. */
+/** The runtime's answer when a stub's object has no such RPC method (an older version). */
+function isMissingMethod(error: unknown): boolean {
+  return /does not implement|not a function/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+/**
+ * The computer's identity for its route: WorkspaceDO's narrow `identity` read (WP3.18). During a
+ * deploy, new Worker code can meet a WorkspaceDO still on the version before `identity` existed
+ * (about 300 s, R-26): only then the page state is read instead.
+ */
+async function readIdentity(env: InternalEnv, computerId: ComputerId): Promise<ComputerIdentity> {
+  const stub = workspace(env, computerId);
+  let answer: unknown;
+  try {
+    answer = await stub.identity({ interfaceVersion: WORKSPACE_INTERFACE_VERSION });
+  } catch (error) {
+    if (!isMissingMethod(error)) throw error;
+    const state = await stub.pages({
+      action: "state",
+      interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+    });
+    if (state.action !== "state") throw new Error("unexpected answer");
+    answer = ComputerPageState.parse(state.computer);
+  }
+  if (answer === null) throw new Error("no such computer");
+  const identity = WorkspaceIdentity.parse(answer);
+  if (identity.computerId !== computerId) throw new Error("another computer's identity");
+  return { generation: identity.generation, hostId: identity.hostId };
+}
+
+/** The bindings these entrypoints use. */
 export interface InternalEnv {
   readonly OMNIGENT?: { getByName(name: string): { fetch(request: Request): Promise<Response> } };
   readonly WORKSPACE?: { getByName(name: string): WorkspaceStub };
@@ -98,7 +132,7 @@ const messageLimiter = new RateLimiter(() => Date.now(), COMPUTER_API_LIMITS);
 
 /**
  * `omnigent.internal`, with the computer's `InterceptProps`. The computer's identity is read
- * from WorkspaceDO's page state for every request: its generation and, for a host tunnel, the
+ * from WorkspaceDO's `identity` for every request: its generation and, for a host tunnel, the
  * host ID bound at the first `start_host`.
  */
 export class OmnigentRoute extends WorkerEntrypoint<PlatformEnv> {
@@ -113,16 +147,7 @@ export class OmnigentRoute extends WorkerEntrypoint<PlatformEnv> {
       ),
       httpLimiter,
       upgradeLimiter,
-      readIdentity: async (computerId): Promise<ComputerIdentity> => {
-        const state = await workspace(env, computerId).pages({
-          action: "state",
-          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
-        });
-        if (state.action !== "state") throw new Error("unexpected answer");
-        const computer = ComputerPageState.parse(state.computer);
-        if (computer.computerId !== computerId) throw new Error("another computer's state");
-        return { generation: computer.generation, hostId: computer.hostId };
-      },
+      readIdentity: (computerId) => readIdentity(env, computerId),
       forward: (forwarded) => {
         if (!env.OMNIGENT) throw new Error("no OMNIGENT binding");
         return env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).fetch(forwarded);

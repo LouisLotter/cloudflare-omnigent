@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "184b5cf8b32815b48c7859973a00a139e8aa50f0"
+COMMIT = "3228d4de38ef05f69ecc80a4539d7c02727ce314"
 
 
 def _write(path: Path, **fields: object) -> Path:
@@ -65,8 +65,9 @@ def _dockerfile_commit() -> str:
 
 
 def test_the_dockerfile_pins_the_fork_commit_with_the_stop_fix() -> None:
-    # cfo/integration 184b5cf8b: the Stop fix (AIR2-007), core changes 20 and 21, WP3.16's notices
-    # and AIR2-008's resume refusal. A later fork merge bumps it; this test then names the new commit.
+    # cfo/integration 3228d4de3: the Stop fix (AIR2-007), core changes 20 and 21, WP3.16's notices,
+    # AIR2-008's resume refusal and WP3.8b's provision by the whole host ID. A later fork merge
+    # bumps it; this test then names the new commit.
     assert _dockerfile_commit() == COMMIT
 
 

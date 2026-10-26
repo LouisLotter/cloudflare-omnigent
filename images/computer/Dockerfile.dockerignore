@@ -5,6 +5,8 @@
 !contracts/fixtures/
 !contracts/vectors/
 !python/tests/computer/
+# The test target's corpus of WorkspaceDO's commands (python/tests/computer/test_workspace_commands.py).
+!worker/test/fixtures/workspace-commands.json
 **/__pycache__/
 **/*.pyc
 **/.hypothesis/

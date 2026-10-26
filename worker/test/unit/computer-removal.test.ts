@@ -57,10 +57,11 @@ describe("removal", () => {
     expect(await sim.client.refusal(sim.client.statusRequest())).toBe("gone");
     expect(await sim.client.refusal(sim.client.admissionRequest())).toBe("gone");
     expect(await sim.client.refusal(sim.client.checkpointRequest())).toBe("gone");
-    expect(await sim.call(sim.client.suspendRequest())).toEqual({
-      operation: "suspend",
-      outcome: "stopped",
-    });
+    // A sleep too (3.C, as the launcher expects): `gone`, not `stopped`, and a repeat of the same
+    // operation gets the same recorded answer.
+    const sleep = sim.client.suspendRequest();
+    expect(await sim.client.refusal(sleep)).toBe("gone");
+    expect(await sim.client.refusal(sleep)).toBe("gone");
     expect(sim.computer.starts).toHaveLength(1);
     expect(await state(sim)).toMatchObject({
       removal: { state: "pending", signOut: "none" },
@@ -207,6 +208,49 @@ describe("removal", () => {
     expect(sim.computer.running).toBe(false);
     expect(sim.control.slots.size).toBe(0);
     expect(sim.computer.starts).toHaveLength(1);
+  });
+});
+
+describe("a sleep's outcome across a removal (Codex WP3.18 r1-2)", () => {
+  it("keeps an earlier suspend's recorded outcome after the removal is resolved and wiped", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).runnerProcesses = 0;
+    const sleep = sim.client.suspendRequest();
+    await sim.call(sleep);
+    await sim.advance(30_000);
+    expect(await sim.call(sleep)).toEqual({ operation: "suspend", outcome: "stopped" });
+    // Another sleep, asked for while asleep: recorded `stopped` at once.
+    const asleep = sim.client.suspendRequest();
+    expect(await sim.call(asleep)).toEqual({ operation: "suspend", outcome: "stopped" });
+    // The first one's record left in progress (as a reset before its settlement would leave it).
+    const key = `op:launcher:${sleep.operationId}`;
+    sim.store.put(key, { ...(sim.store.get(key) as object), outcome: null });
+    expect(await sim.call(sleep)).toEqual({ operation: "suspend", outcome: "in_progress" });
+    const stuck = sim.client.suspendRequest();
+    const terminate = await sim.call(sim.client.terminateRequest());
+    expect(terminate).toEqual({ operation: "terminate", removal: "pending" });
+    expect(await sim.client.refusal(stuck)).toBe("gone");
+    // Never held a login: the removal resolves at once, and the records are wiped.
+    expect(await pageCall(sim, "resolve_removal", 1)).toEqual({
+      action: "resolve_removal",
+      outcome: "accepted",
+    });
+    await sim.advance(5 * 60_000);
+    expect(sim.record().lifecycle.context.state).toBe("removed");
+    expect(sim.record().deletion).toBeNull();
+    // Only the sleeps' records survive the wipe (with their time entries, so they still expire).
+    expect(sim.store.keys("op:")).toHaveLength(2);
+    expect(sim.store.keys("opt:")).toHaveLength(2);
+    // The same operations still learn their outcome (the one left in progress ended with the
+    // confirmed stop); a new one, and the gone one, are gone.
+    expect(await sim.call(sleep)).toEqual({ operation: "suspend", outcome: "stopped" });
+    expect(await sim.call(asleep)).toEqual({ operation: "suspend", outcome: "stopped" });
+    expect(await sim.client.refusal(stuck)).toBe("gone");
+    expect(await sim.client.refusal(sim.client.suspendRequest())).toBe("gone");
+    await sim.advance(8 * 24 * 3_600_000);
+    expect(await sim.client.refusal(sleep)).toBe("gone");
+    sim.check();
   });
 });
 

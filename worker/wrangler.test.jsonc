@@ -1,8 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // For the Workers-runtime tests only (vitest.workers.config.ts): the platform Worker's classes
-  // with no containers, from a test entry that gives OmnigentServer a fake container port and a
-  // test clock. Keep the bindings and migrations in step with wrangler.jsonc.
+  // with no containers, from a test entry that simulates the containers and the clocks
+  // (test/support/platform-test-worker.ts). Keep the bindings and migrations in step with
+  // wrangler.jsonc.
   "name": "cloudflare-omnigent-test",
   "main": "test/support/platform-test-worker.ts",
   "compatibility_date": "2026-10-01",
@@ -13,14 +14,24 @@
     "bindings": [
       { "name": "CONTROL", "class_name": "ControlDO" },
       { "name": "OMNIGENT", "class_name": "OmnigentServer" },
-      // WORKSPACE is the binding the routes and the backup gateway use (WP3.3). Their tests
-      // program it through a stand-in answered by test/support/internal-harness.ts; the
-      // controller itself (WP3.1) is tested on WORKSPACE_CONTROLLER.
-      { "name": "WORKSPACE", "class_name": "WorkspaceStandIn" },
-      { "name": "WORKSPACE_CONTROLLER", "class_name": "WorkspaceDO" }
+      // WORKSPACE is the assembled WorkspaceDO (WP3.18), which the routes, the backup gateway
+      // and ControlDO reach: only its runtime container and clock are simulated
+      // (test/support/assembly-harness.ts). WP3.1's controller under fakes is tested on
+      // WORKSPACE_CONTROLLER (test/support/workspace-harness.ts).
+      { "name": "WORKSPACE", "class_name": "WorkspaceDO" },
+      { "name": "WORKSPACE_CONTROLLER", "class_name": "WorkspaceUnderFakes" }
     ]
   },
-  // The computers' checkpoint bucket, for the Sandbox SDK's gateway (WP3.3, egress/backups.ts).
+  // The platform pages' assets as text modules, as wrangler.web.jsonc bundles them (WP3.5).
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/xterm.js", "**/xterm.css", "**/addon-fit.js", "**/setup-client.js"],
+      "fallthrough": false
+    }
+  ],
+  // The computers' checkpoint bucket (local R2): WorkspaceDO's reads and deletes, and the fenced
+  // backup gateway's writes (egress/backups.ts).
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cfo-test-checkpoints" }],
   // Synthetic values only (canaries), as an installation would set them.
   "vars": {
@@ -38,6 +49,6 @@
     { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
     { "tag": "v2", "new_sqlite_classes": ["OmnigentServer"] },
     { "tag": "v3", "new_sqlite_classes": ["WorkspaceDO"] },
-    { "tag": "v4", "new_sqlite_classes": ["WorkspaceStandIn"] }
+    { "tag": "v4", "new_sqlite_classes": ["WorkspaceUnderFakes"] }
   ]
 }

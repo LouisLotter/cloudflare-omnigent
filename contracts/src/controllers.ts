@@ -3,6 +3,7 @@ import { InterceptProps, SupervisorMessage } from "./computer-protocol.ts";
 import { ComputerId, Generation, HostId, InstanceSize, OperationId, Timestamp } from "./ids.ts";
 import { AdmissionReason, HostSandboxStatus, LauncherRequest, ProvisionName } from "./launcher.ts";
 import { LifecycleState, type PageRefusal } from "./lifecycle.ts";
+import { IntentToken, PageOwner, TerminalWindow } from "./pages.ts";
 import { SetupCard } from "./setup-cards.ts";
 
 // The payloads of WorkspaceDO's and ControlDO's RPC (the TypeScript interfaces are in
@@ -80,7 +81,17 @@ export const ControlResult = z.discriminatedUnion("method", [
     computers: z.array(z.looseObject({ computerId: ComputerId, name: ProvisionName })).max(1000),
   }),
   z.discriminatedUnion("granted", [
-    z.looseObject({ method: z.literal("reserve"), granted: z.literal(true) }),
+    z.looseObject({
+      method: z.literal("reserve"),
+      granted: z.literal(true),
+      /**
+       * The installation's largest instance size, read when this answer is given (a replay gets
+       * the current value), so a start never needs a second call that could be lost (WP3.2 r1-1).
+       * Optional only for an older ControlDO during a deploy: a caller that gets no size must
+       * not start above a cap it cannot confirm.
+       */
+      maxInstanceSize: InstanceSize.optional(),
+    }),
     z.looseObject({
       method: z.literal("reserve"),
       granted: z.literal(false),
@@ -166,15 +177,37 @@ export const ComputerPageState = z.looseObject({
     signOut: z.enum(["none", "requested", "tombstoned", "verified"]),
     loginPossiblyLost: z.boolean(),
     revocationRecorded: z.boolean(),
+    /** Whether a removal may resolve now (`signOutSettled`), as the controller decides it. Additive
+     * (WP3.5); absent from an older WorkspaceDO, where the pages treat it as false. */
+    settled: z.boolean().optional(),
+    /** A sign-out job runs now (its logouts, tombstones, publication or verification), whatever its
+     * persisted phase. Additive (WP3.5); absent from an older WorkspaceDO, where the pages read
+     * `signOut === "requested"` instead. */
+    signOutRunning: z.boolean().optional(),
   }),
+  // Additive (WP3.5): the page's notices, as the controller derives them, and the setup terminal's
+  // window, from WorkspaceDO's page front. Optional, so an older WorkspaceDO still parses.
+  /** No launcher call for the "no contact" time (60 min): "not connected to Omnigent" (FH-31). */
+  noContact: z.boolean().optional(),
+  /** The declared roots are above the 1.5 GB size budget. */
+  sizeWarning: z.boolean().optional(),
+  /** Three sleeps in a row were refused: "Stop without saving the latest changes" (FH-35). */
+  stopWithoutSavingOffered: z.boolean().optional(),
+  terminal: TerminalWindow.optional(),
 });
 export type ComputerPageState = z.infer<typeof ComputerPageState>;
 
+/**
+ * Every mutating page call that reaches WorkspaceDO's RPC also carries `owner` and `intent`
+ * (WP3.5, `PageFrontCall`'s fields): WorkspaceDO's page front checks the intent token for that
+ * session before any effect, and removes both before the controller sees the call.
+ */
 const mutating = { ...rpc, operationId: OperationId };
 
 /** The web Worker's narrow interface into WorkspaceDO: never the launcher's operations. */
 export const PagesCall = z.discriminatedUnion("action", [
-  z.looseObject({ action: z.literal("state"), ...rpc }),
+  /** With `owner` (WP3.5), the answer carries that session's request-intent token. */
+  z.looseObject({ action: z.literal("state"), ...rpc, owner: PageOwner.optional() }),
   z.looseObject({ action: z.literal("set_size"), ...mutating, size: InstanceSize }),
   /** Stops the computer; Omnigent's next wake starts it afresh. Warns that it ends work. */
   z.looseObject({ action: z.literal("restart"), ...mutating }),
@@ -206,7 +239,13 @@ const pageOutcome = (action: string) =>
   ]);
 
 export const PagesResult = z.discriminatedUnion("action", [
-  z.looseObject({ action: z.literal("state"), computer: ComputerPageState }),
+  z.looseObject({
+    action: z.literal("state"),
+    computer: ComputerPageState,
+    /** The page's request-intent token for the caller's session, when the call named its owner
+     * (WP3.5): forms carry it back, and WorkspaceDO's page front checks it before any effect. */
+    intentToken: IntentToken.optional(),
+  }),
   z.looseObject({ action: z.literal("set_size"), appliesAt: z.literal("next_start") }),
   pageOutcome("restart"),
   pageOutcome("stop_without_saving"),

@@ -572,9 +572,16 @@ describe("the lifecycle table", () => {
     }
   });
 
-  it("refuses every wake and start once a removal intent exists (FH-29)", () => {
+  it("refuses every wake, start and sleep once a removal intent exists (FH-29)", () => {
+    // `suspend` too: the launcher (3.6) expects `gone` (410) for a removed computer, not `stopped`.
     for (const context of contexts.filter((c) => c.removalIntent)) {
-      for (const event of ["resume", "claim_start", "start_host", "checkpoint"] as const) {
+      for (const event of [
+        "resume",
+        "claim_start",
+        "start_host",
+        "checkpoint",
+        "suspend",
+      ] as const) {
         for (const inputs of subsets(GUARD_INPUTS)) {
           expect(step(context, event, inputs).reply, `${context.state} × ${event}`).toEqual({
             kind: "error",
@@ -589,7 +596,8 @@ describe("the lifecycle table", () => {
     for (const context of contexts.filter(
       (c) =>
         ["started_no_host", "start_claimed", "host_running", "host_refused"].includes(c.state) &&
-        c.stopPrep === null,
+        c.stopPrep === null &&
+        !c.removalIntent,
     )) {
       const capturing = step(context, "capture_started").context;
       expect(step(capturing, "suspend").reply).toEqual({
@@ -742,6 +750,10 @@ describe("the lifecycle table", () => {
       kind: "terminate",
       removal: "resolved",
     });
+    // A sleep asked for after the removal is `gone`, pending or resolved, never `stopped`.
+    for (const context of [pending.context, resolved.context]) {
+      expect(step(context, "suspend").reply).toEqual({ kind: "error", code: "gone" });
+    }
   });
 
   it("keeps its invariants under random event sequences (property)", () => {

@@ -6,17 +6,26 @@
 
 import type { WebEnv } from "./env.ts";
 import { type Admitted, withIngress } from "./ingress/index.ts";
+import { isPlatformPath, routePlatform } from "./pages/router.ts";
 import { proxyToOmnigent } from "./server/proxy.ts";
 
+/** The pages' scripts and styles, bundled as text modules: loaded on first use. */
+async function loadPageAssets() {
+  return (await import("./pages/assets.ts")).ASSETS;
+}
+
 /**
- * Routes an admitted request. The platform pages (WP3.5) will add their paths here; everything
- * else is Omnigent's, through the forwarding path.
+ * Routes an admitted request. `/platform/` is the platform pages' (WP3.5) and never reaches
+ * Omnigent; everything else is Omnigent's, through the forwarding path.
  */
 export function routeAdmitted(
   admitted: Admitted,
   env: WebEnv,
   _ctx: ExecutionContext,
 ): Promise<Response> {
+  if (isPlatformPath(new URL(admitted.request.url).pathname)) {
+    return routePlatform(admitted, env, { assets: loadPageAssets });
+  }
   return proxyToOmnigent(admitted, env);
 }
 

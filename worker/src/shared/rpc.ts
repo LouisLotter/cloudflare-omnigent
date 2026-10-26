@@ -9,11 +9,15 @@ import {
   type ControlCall,
   type ControlResult,
   Generation,
+  HostId,
   type LauncherCall,
   type LauncherResult,
   type OutageRecord,
+  type PageFrontCall,
+  type PageFrontResult,
   type PagesCall,
   type PagesResult,
+  type ReplicationHealth,
   type ReservationState,
   type SupervisorReply,
   type Timestamp,
@@ -76,6 +80,12 @@ export interface OmnigentServerRpc {
    */
   bootstrapStatus(call: OmnigentServerCall): Promise<BootstrapStatus | null>;
   /**
+   * The replication warning for the cloud-computers page (FH-15's G3 part, WP3.5): the
+   * entrypoint's `GET :8001/status`, judged on demand as `ReplicationHealth` describes. Never
+   * starts or restarts anything; `unknown` while the status cannot be read.
+   */
+  replication(call: OmnigentServerCall): Promise<ReplicationHealth>;
+  /**
    * The always-on backstop, from the platform Worker's cron trigger: arms the watchdog's alarm
    * if none is set, and lets the watchdog start a stopped server now. Nothing else: no health
    * check, and no restart of a server that runs. The watchdog's rules hold, so a server in
@@ -104,22 +114,42 @@ export function workspaceObjectName(computerId: ComputerId): string {
 export const CONTROL_OBJECT_NAME = "control";
 
 /**
- * WorkspaceDO. Four callers, four narrow methods:
+ * WorkspaceDO. Each caller has its own narrow method (`writeAllowed` is documented below):
  * - `launcher`: `internal/platform-api.ts`, after the HMAC and the request's schema are checked
  *   (WP3.3). A repeated operation ID returns the recorded outcome (LAUNCHER_OPERATIONS).
  * - `computer`: `internal/computer-api.ts`, with the intercept's trusted props (WP3.3).
- * - `pages`: the web Worker's pages (WP3.5), never the launcher's operations.
+ * - `pages`: the web Worker's pages (WP3.5), never the launcher's operations. WorkspaceDO's page
+ *   front (`computer/page-front.ts`) answers `PageFrontCall` itself (the setup terminal's window
+ *   and capability, a page-started removal), and checks every mutating `PagesCall`'s `owner` and
+ *   request-intent token before the controller sees it.
  * - `reservation`: ControlDO's reconciliation (WP3.2).
- * The setup terminal's stream goes through `fetch` (WP3.5).
+ * - `identity`: the computer's route (`internal/omnigent-route.ts`, WP3.3), on every request.
+ * The setup terminal's stream goes through `fetch` (WP3.5): the web Worker's upgrade, carrying
+ * `TerminalUpgrade` in `TERMINAL_UPGRADE_HEADER`, answered with a bridged 101.
  */
 export interface WorkspaceRpc {
   launcher(call: LauncherCall): Promise<LauncherResult>;
   computer(call: ComputerCall): Promise<SupervisorReply>;
-  pages(call: PagesCall): Promise<PagesResult>;
+  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult>;
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null>;
   /** The backup gateway's fence (WP3.3), asked before every write into the checkpoint bucket. */
   writeAllowed(call: WriteCheck): Promise<WriteDecision>;
+  /**
+   * The computer's current generation and bound host ID, or null if it has no record (WP3.18).
+   * A lock-free read of committed state, so a busy computer's runner traffic never waits behind
+   * a long effect, and nothing else of the page state is read.
+   */
+  identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null>;
 }
+
+/** What the computer's route checks each request against (`identity`). */
+export const WorkspaceIdentity = z.looseObject({
+  computerId: ComputerId,
+  generation: Generation,
+  /** The host ID bound at the first `start_host`; null before it. */
+  hostId: HostId.nullable(),
+});
+export type WorkspaceIdentity = z.infer<typeof WorkspaceIdentity>;
 
 /**
  * The write fence (the lead's decision, 26 Oct). Every credential and workspace write reaches R2
@@ -172,5 +202,20 @@ export interface WriteDecision {
  * to stop, start or wake.
  */
 export interface ControlRpc {
+  control(call: ControlCall): Promise<ControlResult>;
+}
+
+/**
+ * What the web Worker's pages may call on WorkspaceDO (WP3.5): the narrow pages interface and the
+ * terminal's upgrade, never the launcher's or the computer's operations. `env.WORKSPACE` is typed
+ * this way in the web Worker, so the compiler keeps the pages to it.
+ */
+export interface WorkspacePagesStub {
+  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult>;
+  fetch(request: Request): Promise<Response>;
+}
+
+/** What the cloud-computers page may call on ControlDO: `list_computers` and `limits` only. */
+export interface ControlPagesStub {
   control(call: ControlCall): Promise<ControlResult>;
 }

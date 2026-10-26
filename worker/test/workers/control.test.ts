@@ -75,7 +75,7 @@ function forget(computerId: ComputerId, operationId = newOperationId()) {
   return { method: "forget_computer", ...V, operationId, computerId } as const;
 }
 
-const GRANTED = { method: "reserve", granted: true };
+const GRANTED = { method: "reserve", granted: true, maxInstanceSize: "standard-4" };
 
 function refused(awake: number, limit: number) {
   return { method: "reserve", granted: false, reason: "at_capacity", awake, limit };
@@ -378,6 +378,25 @@ describe("limits", () => {
       maxAwakeComputers: 5,
       maxInstanceSize: "standard-2",
     });
+  });
+
+  it("carries the size cap as it is now in every grant, a replay's too (WP3.2 r1-1)", async () => {
+    const stub = control({ CFO_MAX_INSTANCE_SIZE: "standard-2" });
+    const computerId = newComputerId();
+    const operationId = newOperationId();
+    expect(await call(stub, reserve(computerId, 1, operationId))).toEqual({
+      ...GRANTED,
+      maxInstanceSize: "standard-2",
+    });
+    // The owner lowers the cap: a repeat of the same grant (a lost reply) carries the new one.
+    testControl.setSettings(stub.id.name as string, { CFO_MAX_INSTANCE_SIZE: "standard-1" });
+    expect(await call(stub, reserve(computerId, 1, operationId))).toEqual({
+      ...GRANTED,
+      maxInstanceSize: "standard-1",
+    });
+    // An invalid cap fails the replay visibly, rather than grant with no cap.
+    testControl.setSettings(stub.id.name as string, { CFO_MAX_INSTANCE_SIZE: "huge" });
+    expect(await codeOf(stub.control(reserve(computerId, 1, operationId)))).toBe("internal");
   });
 
   it("fails visibly on an invalid setting, without touching held slots or releases", async () => {

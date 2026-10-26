@@ -217,6 +217,9 @@ describe("runBootstrap: the whole bootstrap", () => {
       durable_objects: {
         bindings: [
           { name: "OMNIGENT", class_name: "OmnigentServer", script_name: "cloudflare-omnigent" },
+          // The platform pages' bindings (WP3.5), to the same platform Worker.
+          { name: "WORKSPACE", class_name: "WorkspaceDO", script_name: "cloudflare-omnigent" },
+          { name: "CONTROL", class_name: "ControlDO", script_name: "cloudflare-omnigent" },
         ],
       },
       vars: {

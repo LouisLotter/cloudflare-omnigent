@@ -186,7 +186,13 @@ export class ControlDO extends DurableObject<PlatformEnv> implements ControlRpc 
     // A held slot keeps the reconciliation alarm set (persisted with the slot, then armed).
     if (call.method === "reserve") await this.#ensureAlarm(now);
     if ("refused" in outcome) throw platformError(outcome.refused, outcome.message);
-    return outcome.result;
+    const result = outcome.result;
+    // A grant carries the size cap as it is now, a replay's too (not the journal's), so the
+    // caller never starts above it after a lost `limits` reply (WP3.2 r1-1).
+    if (result.method === "reserve" && result.granted) {
+      return { ...result, maxInstanceSize: this.#limits().maxInstanceSize };
+    }
+    return result;
   }
 
   #answer(call: ControlCall, now: number): Outcome {

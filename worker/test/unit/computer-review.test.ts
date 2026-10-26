@@ -2,8 +2,9 @@
 // on the code before its fix.
 import { describe, expect, it } from "vitest";
 import { MAX_PENDING_RELEASES } from "../../src/computer/controller.ts";
-import { TOKEN_KEY } from "../../src/computer/record.ts";
+import { RECORD_KEY, TOKEN_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, Crash, HOST, live } from "../support/computer-sim.ts";
+import { FakeControl } from "../support/fake-control.ts";
 import { digestOf } from "../support/fake-supervisor.ts";
 
 describe("Codex WP3.1 r1", () => {
@@ -684,5 +685,204 @@ describe("the lead's addendum (fence = no new admissions; late writes are cleane
     expect(r.credential?.object.key).not.toBe(tombstoned);
     expect(sim.bucket.gets.slice(getsBefore)).toEqual([r.credential?.object.key]);
     expect(live(sim).tree.get("work/a.txt")).toBe("published");
+  });
+});
+
+describe("WP3.2 r1-1 (WP3.18): never above the size cap after a lost limits reply", () => {
+  /** ControlDO's `limits` replies are lost while the returned flag says so. */
+  function loseLimits(sim: ComputerSim): { lost: boolean } {
+    const switch_ = { lost: true };
+    const control = sim.control.control.bind(sim.control);
+    sim.control.control = async (call) => {
+      if (call.method === "limits" && switch_.lost) throw new Error("Network connection lost.");
+      return control(call);
+    };
+    return switch_;
+  }
+
+  it("confirms the cap before a start recorded by the version before grants carried it (Codex WP3.18 r1-1)", async () => {
+    const sim = new ComputerSim();
+    sim.control.maxInstanceSize = "standard-1";
+    await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+    // What the previous version persisted after a grant whose limits reply was lost: waking, a
+    // reserved slot, its default size, and no cap (nor the field that says whose grant it was).
+    const base = sim.record();
+    const generation = base.lifecycle.generation + 1;
+    await sim.control.control({
+      method: "reserve",
+      interfaceVersion: 1,
+      operationId: "op_01hzy3m8k6q4t2v9w7x5r0s9z9" as never,
+      computerId: base.computerId,
+      generation,
+    });
+    for (const [label, maxSize] of [
+      ["no cap", null],
+      ["a stale cap", "standard-4"],
+    ] as const) {
+      const legacy: Record<string, unknown> = {
+        ...base,
+        lifecycle: {
+          ...base.lifecycle,
+          generation,
+          context: { ...base.lifecycle.context, state: "waking" },
+        },
+        lastReserved: generation,
+        reservation: { generation, phase: "reserved", fenced: false },
+        start: { generation, refusals: 0, nextAt: sim.now, startedAt: null },
+        noHostSince: sim.now,
+        size: "standard-2",
+        maxSize,
+      };
+      delete legacy.maxSizeGeneration;
+      sim.store.put(RECORD_KEY, legacy);
+      const limits = loseLimits(sim);
+      await sim.restart();
+      await sim.advance(30_000);
+      // The cap cannot be confirmed: nothing starts, the start waits.
+      expect(sim.computer.starts, label).toHaveLength(0);
+      expect(sim.logs.map((l) => l.event)).toContain("size_cap_unconfirmed");
+      limits.lost = false;
+      await sim.advance(10_000);
+      expect(
+        sim.computer.starts.map((s) => s.instance),
+        label,
+      ).toEqual(["standard-1"]);
+      expect(sim.record()).toMatchObject({ maxSize: "standard-1", maxSizeGeneration: generation });
+      // Back to the legacy record for the next case.
+      await sim.computer.destroy("test");
+      sim.computer.starts.length = 0;
+      sim.control.control = FakeControl.prototype.control.bind(sim.control);
+    }
+  });
+
+  it("never holds the runner or a wake on a limits reply that does not come (Codex WP3.18 r2-1)", async () => {
+    const sim = new ComputerSim();
+    sim.control.grantsCarrySize = false; // an older ControlDO: the cap needs a limits read
+    sim.control.maxInstanceSize = "standard-1";
+    const control = sim.control.control.bind(sim.control);
+    let hang = true;
+    sim.control.control = (call) =>
+      call.method === "limits" && hang ? new Promise(() => undefined) : control(call);
+    await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+    // The wake waits for the limits only until the command deadline, then answers.
+    const resume = sim.client.refusal(sim.client.resumeRequest());
+    await Promise.resolve();
+    for (let i = 0; i < 10 && sim.deadlines.length === 0; i += 1) await Promise.resolve();
+    sim.expire(sim.timing.commandTimeoutMs);
+    expect(await resume).toBe("unavailable");
+    expect(sim.computer.starts).toHaveLength(0);
+    // Once ControlDO answers, the next wake starts within the cap: nothing was left stuck.
+    hang = false;
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(1);
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1"]);
+    sim.check();
+  });
+
+  it("frees the runner from a start's limits read that does not come, and fences that start at its deadline (Codex WP3.18 r2-1)", async () => {
+    const sim = new ComputerSim();
+    sim.control.maxInstanceSize = "standard-1";
+    await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+    const base = sim.record();
+    const generation = base.lifecycle.generation + 1;
+    await sim.control.control({
+      method: "reserve",
+      interfaceVersion: 1,
+      operationId: "op_01hzy3m8k6q4t2v9w7x5r0s9z8" as never,
+      computerId: base.computerId,
+      generation,
+    });
+    // A start recorded by the version before grants carried the cap.
+    sim.store.put(RECORD_KEY, {
+      ...base,
+      lifecycle: {
+        ...base.lifecycle,
+        generation,
+        context: { ...base.lifecycle.context, state: "waking" },
+      },
+      lastReserved: generation,
+      reservation: { generation, phase: "reserved", fenced: false },
+      start: { generation, refusals: 0, nextAt: sim.now, startedAt: null },
+      noHostSince: sim.now,
+      size: "standard-2",
+      maxSize: null,
+    });
+    // The first limits read never answers; later ones are lost.
+    const control = sim.control.control.bind(sim.control);
+    let reads = 0;
+    let answering = false;
+    sim.control.control = (call) => {
+      if (call.method !== "limits" || answering) return control(call);
+      reads += 1;
+      return reads === 1 ? new Promise(() => undefined) : Promise.reject(new Error("lost"));
+    };
+    const booting = sim.restart();
+    for (let i = 0; i < 20 && reads === 0; i += 1) await Promise.resolve();
+    await booting;
+    for (let i = 0; i < 20 && sim.deadlines.length === 0; i += 1) await Promise.resolve();
+    sim.expire(sim.timing.commandTimeoutMs);
+    await sim.advance(sim.timing.startDeadlineMs + 60_000);
+    expect(sim.computer.starts).toHaveLength(0);
+    expect(sim.record().lifecycle.context.state).toBe("failed");
+    // The runner is free: the next wake starts, within the cap.
+    answering = true;
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(1);
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1"]);
+    sim.check();
+  });
+
+  it("starts at the cap the grant carries, with no limits call that could be lost", async () => {
+    const sim = new ComputerSim();
+    sim.control.maxInstanceSize = "standard-1"; // below the default size, standard-2
+    loseLimits(sim);
+    await sim.running();
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1"]);
+    expect(sim.control.calls.map((c) => c.method)).not.toContain("limits");
+    // A size chosen on the page above the cap still starts at the cap.
+    await sim.controller.pages({
+      interfaceVersion: 1,
+      action: "set_size",
+      operationId: "op_01hzy3m8k6q4t2v9w7x5r0s1n3",
+      size: "standard-4",
+    });
+    live(sim).runnerProcesses = 0;
+    expect(await sim.call(sim.client.suspendRequest())).toMatchObject({ operation: "suspend" });
+    await sim.advance(30_000);
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(1);
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1", "standard-1"]);
+    sim.check();
+  });
+
+  it("asks for the limits when an older ControlDO's grant carries no cap, and starts within them", async () => {
+    const sim = new ComputerSim();
+    sim.control.grantsCarrySize = false;
+    sim.control.maxInstanceSize = "standard-1";
+    await sim.running();
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1"]);
+    expect(sim.control.calls.map((c) => c.method)).toContain("limits");
+    sim.check();
+  });
+
+  it("gives the slot back and starts nothing when no cap can be confirmed", async () => {
+    const sim = new ComputerSim();
+    sim.control.grantsCarrySize = false;
+    loseLimits(sim);
+    await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+    expect(await sim.client.refusal(sim.client.resumeRequest())).toBe("unavailable");
+    await sim.advance(60_000);
+    expect(sim.computer.starts).toHaveLength(0);
+    expect(sim.record().lifecycle.context.state).toBe("provisioned");
+    // The slot granted to the abandoned generation is given back.
+    expect(sim.control.slots.size).toBe(0);
+    expect(sim.logs.map((l) => l.event)).toContain("size_cap_unconfirmed");
+    // Once ControlDO answers again, the wake goes ahead within the cap.
+    sim.control.grantsCarrySize = true;
+    sim.control.maxInstanceSize = "standard-1";
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(1);
+    expect(sim.computer.starts.map((s) => s.instance)).toEqual(["standard-1"]);
+    sim.check();
   });
 });

@@ -1,26 +1,32 @@
 /**
  * The platform Worker as the Workers-runtime tests run it (wrangler.test.jsonc): the production
- * classes, except that OmnigentServer gets its container port, clock, timing and any release a
- * test made from `server-harness.ts`; WorkspaceDO (WP3.1's controller, bound as WORKSPACE_CONTROLLER) gets its
- * computer, ControlDO, bucket and clock from `workspace-harness.ts`; ControlDO (WP3.2) gets its
- * computers' WorkspaceDOs, clock, timing and limit settings from `control-harness.ts`, except that
- * the production-named object the routes call (WP3.3) answers from the fake in `internal-harness.ts`;
- * and the WORKSPACE binding the routes and the backup gateway use is a stand-in over the same fakes.
+ * classes, with these seams:
+ *   - OmnigentServer gets its container port, clock, timing and any release a test made from
+ *     `server-harness.ts`;
+ *   - WorkspaceDO, bound as WORKSPACE (the binding the routes, the backup gateway and ControlDO
+ *     use), is the assembled production class (WP3.18): only its runtime container, its clock and
+ *     a lost-connection seam come from `assembly-harness.ts`; its container port, intercepts,
+ *     checkpoint bucket and ControlDO are the production wiring;
+ *   - WorkspaceUnderFakes, bound as WORKSPACE_CONTROLLER, is WP3.1's controller with every
+ *     dependency faked from `workspace-harness.ts`: a port-level simulated computer, a fake
+ *     ControlDO and an in-memory bucket, for the controller's own Workers-runtime tests;
+ *   - ControlDO gets its clock, timing and limit settings per object name from
+ *     `control-harness.ts`; objects other than the production-named one reach their computers
+ *     through that harness's fakes, while the production-named one (the routes', the launcher
+ *     API's and WorkspaceDO's) reaches the real WorkspaceDOs through WORKSPACE.
  * workerd runs this module in the tests' own isolate, so a test and the Durable Objects share
  * those registries.
  */
-import { DurableObject } from "cloudflare:workers";
 import type {
   ComputerCall,
   ComputerId,
-  ControlCall,
-  ControlResult,
   InterceptProps,
   LauncherCall,
   LauncherResult,
+  PageFrontCall,
+  PageFrontResult,
   PagesCall,
   PagesResult,
-  ReservationState,
   SupervisorReply,
 } from "@cfo/contracts";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
@@ -30,12 +36,12 @@ import { OmnigentServer as PlatformOmnigentServer } from "../../src/server/Omnig
 import {
   CONTROL_OBJECT_NAME,
   type ControlRpc,
-  type WorkspaceRpc,
+  type WorkspaceIdentity,
   type WriteCheck,
   type WriteDecision,
 } from "../../src/shared/rpc.ts";
+import { assembly } from "./assembly-harness.ts";
 import { testControl } from "./control-harness.ts";
-import { internalFakes } from "./internal-harness.ts";
 import { testServers } from "./server-harness.ts";
 import { testComputers } from "./workspace-harness.ts";
 
@@ -63,7 +69,64 @@ export class OmnigentServer extends PlatformOmnigentServer {
   }
 }
 
+/**
+ * The assembled WorkspaceDO (WP3.18): the production class, with a simulated runtime container,
+ * the test clock and a lost-connection seam. Nothing else is replaced.
+ */
 export class WorkspaceDO extends PlatformWorkspaceDO {
+  protected override runtimeContainer() {
+    const name = this.ctx.id.name;
+    return name === undefined
+      ? null
+      : (assembly.container(name as ComputerId) as unknown as Container);
+  }
+
+  protected override now() {
+    return assembly.now();
+  }
+
+  /** Records the props the intercepts are built with (observation only), then builds them. */
+  protected override intercepts(props: InterceptProps) {
+    const name = this.ctx.id.name;
+    if (name !== undefined) assembly.container(name as ComputerId).props.push(props);
+    return super.intercepts(props);
+  }
+
+  override launcher(call: LauncherCall): Promise<LauncherResult> {
+    assembly.maybeLose();
+    return super.launcher(call);
+  }
+
+  override computer(call: ComputerCall): Promise<SupervisorReply> {
+    assembly.maybeLose();
+    return super.computer(call);
+  }
+
+  override pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
+    assembly.maybeLose();
+    return super.pages(call);
+  }
+
+  override writeAllowed(call: WriteCheck): Promise<WriteDecision> {
+    assembly.maybeLose();
+    return super.writeAllowed(call);
+  }
+
+  override identity(call: {
+    readonly interfaceVersion: number;
+  }): Promise<WorkspaceIdentity | null> {
+    assembly.maybeLose();
+    return super.identity(call);
+  }
+
+  /** Waits until the controller's runner has nothing left to do now (tests only). */
+  async settle(): Promise<void> {
+    await this.controller.idle();
+  }
+}
+
+/** WP3.1's controller under fakes (WORKSPACE_CONTROLLER): every dependency from the harness. */
+export class WorkspaceUnderFakes extends PlatformWorkspaceDO {
   protected override openPort() {
     return testComputers.computer(this.ctx.id.toString());
   }
@@ -84,18 +147,26 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     return testComputers.now();
   }
 
-  /** The production defaults the overrides above replace: no container or intercepts until they
-   * are wired, R2 where CHECKPOINTS is bound, the real clock and timing. */
+  /** The setup terminal's checks run every few milliseconds, so a test need not wait (WP3.5). */
+  protected override terminalTiming() {
+    return testComputers.terminalTiming;
+  }
+
+  /** The production hooks the overrides above replace, as this test configuration wires them:
+   * no container (the test configuration has none), R2 behind the fence where CHECKPOINTS is
+   * bound, the two computer intercepts, the real clock and timing, and ControlDO's binding. */
   defaults() {
     return {
       port: super.openPort(),
       bucket: super.checkpointBucket() === null ? null : "r2",
-      intercepts: super.intercepts({
-        propsVersion: 1,
-        computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
-        generation: 1,
-        hostId: null,
-      }),
+      intercepts: super
+        .intercepts({
+          propsVersion: 1,
+          computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+          generation: 1,
+          hostId: null,
+        })
+        .map((t) => t.host),
       clockSkewMs: Math.abs(super.now() - Date.now()),
       heartbeatMs: super.timing().heartbeatMs,
       control: typeof super.controlRpc().control,
@@ -109,15 +180,9 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
 }
 
 export class ControlDO extends PlatformControlDO {
-  /** The production-named object is the one the routes call (WP3.3): its answers come from the fake. */
-  override async control(call: ControlCall): Promise<ControlResult> {
-    return this.ctx.id.name === CONTROL_OBJECT_NAME
-      ? internalFakes.control.control(call)
-      : super.control(call);
-  }
-
+  /** The production-named object reaches the real WorkspaceDOs; the others, the harness's fakes. */
   protected override workspace(computerId: ComputerId) {
-    return testControl.productionWorkspace
+    return testControl.productionWorkspace || this.ctx.id.name === CONTROL_OBJECT_NAME
       ? super.workspace(computerId)
       : testControl.workspace(computerId);
   }
@@ -141,59 +206,5 @@ export class ControlDO extends PlatformControlDO {
       timing: super.timing(),
       clockSkewMs: Math.abs(super.now() - Date.now()),
     };
-  }
-}
-
-/**
- * The WORKSPACE binding as the routes' and the gateway's tests program it: WorkspaceDO's RPC
- * surface, answered by one FakeWorkspace each.
- */
-export class WorkspaceStandIn extends DurableObject implements WorkspaceRpc {
-  #fake() {
-    if (internalFakes.loseWorkspaceCalls > 0) {
-      internalFakes.loseWorkspaceCalls -= 1;
-      throw new Error("Network connection lost.");
-    }
-    return internalFakes.workspace(this.ctx.id.name ?? "unnamed");
-  }
-
-  async launcher(call: LauncherCall): Promise<LauncherResult> {
-    return this.#fake().launcher(call);
-  }
-
-  async computer(call: ComputerCall): Promise<SupervisorReply> {
-    return this.#fake().computer(call);
-  }
-
-  async pages(call: PagesCall): Promise<PagesResult> {
-    return this.#fake().pages(call);
-  }
-
-  async reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null> {
-    return this.#fake().reservation(call);
-  }
-
-  /**
-   * WP3.1's write fence over the fake's state: the computer not fully removed (a removal intent
-   * alone does not refuse: the removal's sign-out uploads its tombstones), the current generation,
-   * and a credential key that is a pending upload of that generation.
-   */
-  async writeAllowed(check: WriteCheck): Promise<WriteDecision> {
-    const name = this.ctx.id.name ?? "unnamed";
-    if (internalFakes.loseWorkspaceCalls > 0) {
-      internalFakes.loseWorkspaceCalls -= 1;
-      throw new Error("Network connection lost.");
-    }
-    if (!internalFakes.has(name)) return { allowed: false, reason: "unknown_computer" };
-    const fake = internalFakes.workspace(name);
-    if (fake.context.state === "removed") return { allowed: false, reason: "removed" };
-    if (check.generation !== fake.generation) return { allowed: false, reason: "stale_generation" };
-    if (
-      check.kind === "credential" &&
-      internalFakes.pendingCredentialKeys.get(check.objectKey) !== check.generation
-    ) {
-      return { allowed: false, reason: "not_pending" };
-    }
-    return { allowed: true };
   }
 }

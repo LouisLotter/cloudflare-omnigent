@@ -225,7 +225,9 @@ async def test_add_wake_save_sleep_wake_and_delete_a_computer(world: World) -> N
     # Add: preflight, the computer recorded by Omnigent's stable name, then the first start.
     ops = world.operations()
     assert ops[:2] == ["prepare", "provision"]
-    assert world.requests("provision")[0].body["name"] == f"managed-{host_id[:8]}"
+    # Fork 3228d4de3 (WP3.8b) provisions by the whole host ID, so two hosts sharing the first
+    # 8 hex digits never share a computer.
+    assert world.requests("provision")[0].body["name"] == f"managed-{host_id}"
     for step in ("resume", "claim_start", "start_host"):
         assert step in ops
     assert ops.index("resume") < ops.index("claim_start") < ops.index("start_host")

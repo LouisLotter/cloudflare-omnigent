@@ -465,6 +465,41 @@ describe("Wrangler configuration check", () => {
       });
     });
 
+    it("names a bucket named after the configuration's own Worker for the deployment (WP3.18)", () => {
+      const checkedIn = {
+        name: "cloudflare-omnigent",
+        r2_buckets: [
+          { binding: "CHECKPOINTS", bucket_name: "cloudflare-omnigent-checkpoints" },
+          { binding: "OTHER", bucket_name: "someone-elses-data" },
+        ],
+      };
+      const staged = withStagingNames(checkedIn, NAME);
+      expect(staged).toEqual({
+        name: "cloudflare-omnigent",
+        r2_buckets: [
+          { binding: "CHECKPOINTS", bucket_name: "cfo-stg-a-checkpoints" },
+          { binding: "OTHER", bucket_name: "someone-elses-data" },
+        ],
+      });
+      expect(withStagingNames(staged, NAME)).toEqual(staged); // idempotent
+      // The other bucket keeps its name, and is refused as not the deployment's.
+      expect(() => validateDeployConfig(raw(checkedIn), ACCOUNT, NAME)).toThrow(
+        "r2_buckets[1] needs",
+      );
+      expect(() =>
+        validateDeployConfig(
+          raw({ ...checkedIn, r2_buckets: [checkedIn.r2_buckets[0]] }),
+          ACCOUNT,
+          NAME,
+        ),
+      ).not.toThrow();
+      // A bucket named exactly like the Worker, or a configuration without a name, is untouched.
+      const bare = { name: "x", r2_buckets: [{ binding: "D", bucket_name: "x" }] };
+      expect(withStagingNames(bare, NAME)).toBe(bare);
+      const unnamedConfig = { r2_buckets: [{ binding: "D", bucket_name: "x-data" }] };
+      expect(withStagingNames(unnamedConfig, NAME)).toBe(unnamedConfig);
+    });
+
     it("leaves named containers, other entries and configurations without containers as they are", () => {
       const named = { containers: [unnamed({ name: "production-server" }), null, "x"] };
       expect(withStagingNames(named, NAME)).toBe(named);

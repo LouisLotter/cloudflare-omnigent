@@ -196,7 +196,8 @@ function underPrefix(path: string, prefix: string): boolean {
  * Omnigent would refuse it (then the server does not start; the route refuses everything).
  */
 /** First segments Omnigent refuses for a base path (`_WEB_UI_API_FALLBACK_PREFIXES` and
- * `_WEB_UI_ROUTE_PREFIXES`, fork `184b5cf8b`), compared case-sensitively as Omnigent does. */
+ * `_WEB_UI_ROUTE_PREFIXES`, fork `184b5cf8b`, unchanged at `3228d4de3`), compared case-sensitively
+ * as Omnigent does. */
 const RESERVED_BASE_SEGMENTS: ReadonlySet<string> = new Set([
   "api",
   "assets",

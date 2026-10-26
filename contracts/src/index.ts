@@ -26,7 +26,8 @@ import {
   WorkspaceManifest,
 } from "./manifests.ts";
 import { OutageRecord } from "./outage.ts";
-import { ReplicationPosition } from "./replication.ts";
+import { PageFrontCall, PageFrontResult, TerminalUpgrade } from "./pages.ts";
+import { ReplicationHealth, ReplicationPosition } from "./replication.ts";
 
 export * from "./access.ts";
 export * from "./bootstrap.ts";
@@ -40,6 +41,7 @@ export * from "./launcher.ts";
 export * from "./lifecycle.ts";
 export * from "./manifests.ts";
 export * from "./outage.ts";
+export * from "./pages.ts";
 export * from "./replication.ts";
 export * from "./setup-cards.ts";
 
@@ -66,10 +68,14 @@ export const wireSchemas = {
   OutageRecord,
   PagesCall,
   PagesResult,
+  PageFrontCall,
+  PageFrontResult,
+  ReplicationHealth,
   ReplicationPosition,
   ReservationState,
   SupervisorMessage,
   SupervisorReply,
+  TerminalUpgrade,
   WorkspaceCommand,
   WorkspaceCommandReply,
   WorkspaceManifest,

@@ -95,6 +95,13 @@ export interface SupervisorOptions {
  * One container's supervisor. A new instance per container start: the tree, snapshot and staged
  * layers live on the container's disk and are lost when it stops.
  */
+const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
+
+/** `n` in Crockford base32, the operation IDs' alphabet: `toString(32)` would use i, l, o and u. */
+function crockford(n: number): string {
+  return [...n.toString(32)].map((digit) => CROCKFORD[Number.parseInt(digit, 32)]).join("");
+}
+
 export class FakeSupervisor {
   readonly computerId: ComputerId;
   readonly generation: number;
@@ -157,7 +164,7 @@ export class FakeSupervisor {
       protocolVersion: 1,
       computerId: this.computerId,
       generation: this.generation,
-      operationId: `op_${(++this.#seq).toString(32).padStart(26, "0")}`,
+      operationId: `op_${crockford(++this.#seq).padStart(26, "0")}`,
     };
   }
 
