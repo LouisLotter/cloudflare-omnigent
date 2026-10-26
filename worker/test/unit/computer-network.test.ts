@@ -187,16 +187,16 @@ describe("the computer's container port", () => {
     format: "tar+zstd/1",
   };
   const backupsCalls: unknown[][] = [];
-  const backups = (prefix: string) => ({
+  const backups = (prefix: string, generation: number | null) => ({
     backup: async (options: unknown) => {
-      backupsCalls.push(["backup", prefix, options]);
+      backupsCalls.push(["backup", prefix, options, generation]);
       return record;
     },
     restore: async (r: DirectoryBackupRecord, options: unknown) => {
-      backupsCalls.push(["restore", prefix, r.id, options]);
+      backupsCalls.push(["restore", prefix, r.id, options, generation]);
     },
     delete: async (r: DirectoryBackupRecord) => {
-      backupsCalls.push(["delete", prefix, r.id]);
+      backupsCalls.push(["delete", prefix, r.id, generation]);
     },
   });
 
@@ -270,7 +270,13 @@ describe("the computer's container port", () => {
     await port.setInactivityTimeout(2_700_000);
     const signal = AbortSignal.timeout(600_000);
     expect(
-      await port.backup({ dir: "/stage/layer", name: "lyr_1", prefix: "workspace/cmp_x/", signal }),
+      await port.backup({
+        dir: "/stage/layer",
+        name: "lyr_1",
+        prefix: "workspace/cmp_x/",
+        generation: 7,
+        signal,
+      }),
     ).toBe(record);
     await port.restore(record, { dir: "/restore/0", prefix: "workspace/cmp_x/" });
     await port.deleteBackup(record, { prefix: "workspace/cmp_x/" });
@@ -284,6 +290,8 @@ describe("the computer's container port", () => {
       ["delete", "workspace/cmp_x/"],
     ]);
     expect(backupsCalls[0]?.[2]).toEqual({ dir: "/stage/layer", name: "lyr_1", signal });
+    // An upload is fenced to its capture's generation; a restore or a delete carries no fence.
+    expect(backupsCalls.map((c) => c.at(-1))).toEqual([7, null, null]);
   });
 });
 
@@ -443,7 +451,7 @@ describe("the container port's defaults", () => {
     const stopping = port.destroy("stop"); // real 100 ms waits until the stop shows
     setTimeout(() => rt.setRunning(false), 150);
     await stopping;
-    const record = await port.backup({ dir: "/d", name: "n", prefix: "p/" });
+    const record = await port.backup({ dir: "/d", name: "n", prefix: "p/", generation: 1 });
     await port.restore(record, { dir: "/r", prefix: "p/", signal: AbortSignal.timeout(1_000) });
   });
 

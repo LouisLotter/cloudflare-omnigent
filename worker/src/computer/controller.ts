@@ -36,6 +36,7 @@ import {
   deriveSetupCard,
   ErrorBody,
   type ErrorCode,
+  InstanceSize,
   type InterceptProps,
   LAUNCHER_OPERATIONS,
   LauncherCall,
@@ -71,7 +72,12 @@ import {
   isStartRefusedError,
 } from "../shared/computer-port.ts";
 import { errorCodeOf, platformError } from "../shared/errors.ts";
-import { type ControlRpc, WriteCheck, type WriteDecision } from "../shared/rpc.ts";
+import {
+  type ControlRpc,
+  type WorkspaceIdentity,
+  WriteCheck,
+  type WriteDecision,
+} from "../shared/rpc.ts";
 import {
   bundleObject,
   credentialManifestOf,
@@ -138,9 +144,13 @@ import { chooseSize, sizeForStart, workspaceSizeWarning } from "./sizing.ts";
 // ---------------------------------------------------------------------------------------------
 // Dependencies.
 
-/** The checkpoint bucket's credential bundles (R2 in production). */
+/**
+ * The checkpoint bucket's credential bundles (R2 in production). Reads, lists and deletes go to R2
+ * directly; every put goes through the backup gateway's write fence (`egress/backups.ts`), named
+ * by the generation whose upload it is, so the fence admits only this generation's pending keys.
+ */
 export interface CheckpointBucket {
-  put(key: string, body: Uint8Array): Promise<void>;
+  put(key: string, body: Uint8Array, writer: { readonly generation: number }): Promise<void>;
   /** The object's bytes, or null if it does not exist. */
   get(key: string): Promise<Uint8Array | null>;
   /** Deleting a missing object succeeds. */
@@ -811,10 +821,32 @@ export class WorkspaceController {
       return this.#write((d) => apply(d, { ...facts, atCapacity: true }, extra).reply);
     }
     const granted = result.method === "reserve" && result.granted;
-    if (granted) await this.#refreshLimits();
+    // The size cap comes with the grant, so no second call can be lost before the start
+    // (WP3.2 r1-1). An older ControlDO's grant has none: ask for the limits, and if they cannot
+    // be confirmed, give the slot back rather than start above a cap nobody confirmed.
+    let cap: InstanceSize | null =
+      result.method === "reserve" && result.granted ? (result.maxInstanceSize ?? null) : null;
+    if (granted && cap === null) cap = await this.#confirmedCap();
+    if (granted && cap === null) {
+      this.#write((d) => {
+        d.reserving = null;
+        d.releases.push({ generation, operationId: this.#d.newId("op") });
+      });
+      this.#log("size_cap_unconfirmed", { generation });
+      if (unavailable === "defer") return "deferred";
+      if (unavailable === "throw") {
+        throw platformError(
+          "unavailable",
+          "the installation's size limit could not be checked; try again",
+        );
+      }
+      return this.#write((d) => apply(d, { ...facts, atCapacity: true }, extra).reply);
+    }
     return this.#write((d) => {
       d.reserving = null;
       if (!granted) return apply(d, { ...facts, atCapacity: true }, extra).reply;
+      // Persisted with the transition, before `start_container` sizes the start.
+      d.maxSize = cap;
       const t = apply(d, facts, { ...extra, reservedGeneration: generation });
       if (!t.effects.includes("reserve")) {
         d.releases.push({ generation, operationId: this.#d.newId("op") });
@@ -845,20 +877,22 @@ export class WorkspaceController {
     return true;
   }
 
-  async #refreshLimits(): Promise<void> {
+  /** The installation's size cap from ControlDO's `limits`, or null if it cannot be read. */
+  async #confirmedCap(): Promise<InstanceSize | null> {
     try {
       const limits = await this.#d.control.control({
         method: "limits",
         interfaceVersion: CONTROL_INTERFACE_VERSION,
       });
       if (limits.method === "limits") {
-        this.#write((d) => {
-          d.maxSize = limits.maxInstanceSize;
-        });
+        const size = InstanceSize.safeParse(limits.maxInstanceSize);
+        if (size.success) return size.data;
       }
+      this.#log("limits_failed", { error: "an answer that is not the limits" });
     } catch (error) {
       this.#log("limits_failed", { error: describe(error) });
     }
+    return null;
   }
 
   #require(): ComputerRecord {
@@ -1168,6 +1202,7 @@ export class WorkspaceController {
    * with a live runner process (checked through the supervisor now, falling back to its last
    * report; unknown counts as live), else the sleep is prepared and reported in progress. A
    * repeat with the same operation ID returns the recorded outcome, or `in_progress` meanwhile.
+   * With a removal intent a new `suspend` is `gone` (410), never `stopped` (3.C, as 3.6 expects).
    */
   async #suspend(operationId: string, fingerprint: string): Promise<LauncherResult> {
     const r = this.#require();
@@ -1178,17 +1213,28 @@ export class WorkspaceController {
     // answer, a cached positive count still refuses, but a cached zero proves nothing: unknown.
     const cached = this.#currentReport(r)?.runnerProcesses ?? null;
     let runners: number | null = cached !== null && cached > 0 ? cached : null;
-    if (restored(ctx.state) && ctx.stopPrep === null && !ctx.capturing && !terminalOpen) {
+    if (
+      restored(ctx.state) &&
+      ctx.stopPrep === null &&
+      !ctx.capturing &&
+      !terminalOpen &&
+      !ctx.removalIntent
+    ) {
       const fresh = await this.#freshReport(r);
       if (fresh !== null) runners = fresh.runnerProcesses;
     }
     const inputs = sleepInputs({ terminalOpen, runnerProcesses: runners });
-    return this.#write((d) => {
+    const answer = this.#write((d): LauncherResult | "gone" => {
       const reply = this.#step(d, "suspend", {
         terminalOpen: inputs.includes("terminal_open"),
         runnerProcesses: inputs.includes("runner_processes"),
       }).reply;
       let result: LauncherResult;
+      if (reply?.kind === "error") {
+        // A removal intent: `gone` (410), recorded so a repeat gets the same answer (3.C, 3.6).
+        this.#opPut("launcher", operationId, fingerprint, { error: reply.code });
+        return "gone";
+      }
       if (reply?.kind === "suspend_refused") {
         result = { operation: "suspend", outcome: "refused", reason: reply.reason };
       } else if (reply?.kind === "suspend" && reply.outcome === "in_progress") {
@@ -1201,6 +1247,8 @@ export class WorkspaceController {
       this.#opPut("launcher", operationId, fingerprint, { result });
       return result;
     });
+    if (answer === "gone") throw this.#replyError("gone");
+    return answer;
   }
 
   #currentReport(r: ComputerRecord): NonNullable<ComputerRecord["report"]> | null {
@@ -1389,7 +1437,7 @@ export class WorkspaceController {
     const object = bundleObject(bundle);
     const manifest = await credentialManifestOf({ bundle, checkpointId, object, now: this.#now() });
     try {
-      await bucket.put(manifest.object.key, object);
+      await bucket.put(manifest.object.key, object, { generation: bundle.generation });
     } catch (error) {
       this.#log("credential_store_failed", { error: describe(error) });
       throw platformError("unavailable", "the credential checkpoint could not be stored; retry");
@@ -1609,6 +1657,17 @@ export class WorkspaceController {
         credentialObjectKey(this.#d.computerId, u.checkpointId) === call.objectKey,
     );
     return pending ? { allowed: true } : { allowed: false, reason: "not_pending" };
+  }
+
+  /**
+   * The computer's route (`identity`): the current generation and bound host ID. Lock-free, as
+   * `writeAllowed`: a read of committed state, never waiting behind the runner.
+   */
+  async identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null> {
+    checkInterface(call.interfaceVersion);
+    const r = this.#load();
+    if (r === null) return null;
+    return { computerId: r.computerId, generation: r.lifecycle.generation, hostId: r.hostId };
   }
 
   // -------------------------------------------------------------------------------------------
@@ -2227,6 +2286,7 @@ export class WorkspaceController {
               dir: staged.layerDir,
               name: c.layerId,
               prefix: workspaceBackupPrefix(this.#d.computerId),
+              generation: c.generation,
               signal: deadline.signal,
             });
           } catch (error) {

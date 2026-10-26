@@ -5,9 +5,22 @@
 //
 // The RPC surface is `WorkspaceRpc` (`shared/rpc.ts`): `launcher` for `internal/platform-api.ts`,
 // `computer` for `internal/computer-api.ts`, `pages` for the web Worker's pages, `reservation` for
-// ControlDO. WP3.3 supplies the container port (`computer/container-port.ts`) and the intercept
-// targets (`computer/network.ts`) through `openPort` and `intercepts`; until then a deployed
-// WorkspaceDO has no container and answers only what needs none.
+// ControlDO, `writeAllowed` for the backup gateway's write fence, and `identity` for the
+// computer's route (`internal/omnigent-route.ts`).
+//
+// The production wiring (WP3.18, the M3 assembly):
+//   - `openPort()`: the computer's container through WP3.3's adapter (`computer/container-port.ts`),
+//     with the Sandbox SDK's `DirectoryBackup` for layer uploads and restores. An upload's gateway
+//     carries the write fence for its capture's generation (`egress/backups.ts`); a restore's or a
+//     delete's carries none, so nothing can be written through it.
+//   - `intercepts(props)`: `omnigent.internal` and `computer.internal`, each bound to this
+//     generation's props (`computer/network.ts`). The backup host is never among them: each
+//     `DirectoryBackup` operation registers it with its own fenced grant.
+//   - `checkpointBucket()`: credential bundles read, listed and deleted on the `CHECKPOINTS` R2
+//     binding; every put goes through the fenced gateway (`credentialWriter`), so the write fence
+//     admits it only as a pending upload of the running generation.
+// Without a container (a class with none configured) or a `CHECKPOINTS` binding, the hooks return
+// null and WorkspaceDO answers only what needs neither.
 
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -21,6 +34,7 @@ import {
   type ReservationState,
   type SupervisorReply,
 } from "@cfo/contracts";
+import { credentialWriter, directoryBackups, type GatewayExports } from "../egress/backups.ts";
 import type { PlatformEnv } from "../env.ts";
 import { logEvent } from "../server/responses.ts";
 import type { ComputerContainerPort } from "../shared/computer-port.ts";
@@ -28,12 +42,14 @@ import { platformError } from "../shared/errors.ts";
 import {
   CONTROL_OBJECT_NAME,
   type ControlRpc,
+  type WorkspaceIdentity,
   type WorkspaceRpc,
   type WriteCheck,
   type WriteDecision,
 } from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
 import { r2Bucket } from "./bucket.ts";
+import { computerContainerOf, nativeComputerContainer } from "./container-port.ts";
 import {
   type CheckpointBucket,
   CONTROLLER_TIMING,
@@ -42,6 +58,7 @@ import {
   WorkspaceController,
 } from "./controller.ts";
 import { randomId } from "./ids.ts";
+import { type InterceptExports, interceptTargets } from "./network.ts";
 import type { Store } from "./record.ts";
 import { WORKSPACE_MIGRATIONS } from "./schema.ts";
 
@@ -93,15 +110,19 @@ export class SqlStore implements Store {
 
 export class WorkspaceDO extends DurableObject<PlatformEnv> implements WorkspaceRpc {
   readonly #controller: WorkspaceController | null;
+  /** This object's computer, from its name; null for an object not named by a computer ID. */
+  readonly #computerId: ComputerId | null;
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
     // One WorkspaceDO per computer, named by its computer ID (`workspaceObjectName`).
     const computerId = ComputerId.safeParse(ctx.id.name);
     if (!computerId.success) {
+      this.#computerId = null;
       this.#controller = null;
       return;
     }
+    this.#computerId = computerId.data;
     const store = new SqlStore(ctx.storage);
     this.#controller = new WorkspaceController({
       computerId: computerId.data,
@@ -134,23 +155,57 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     });
   }
 
-  /** The computer's container port: WP3.3's adapter; none until it is wired. */
+  // -------------------------------------------------------------------------------------------
+  // The production wiring. The Workers-runtime tests replace only `runtimeContainer()` (a
+  // simulated container), the clock and the timing; everything else here runs as deployed.
+
+  /** The runtime's container of this object, or null when its class has none configured. */
+  protected runtimeContainer(): Container | null {
+    return computerContainerOf(this.ctx);
+  }
+
+  /** `ctx.exports`: the platform Worker's own entrypoints, as loopback bindings. */
+  #exports(): GatewayExports & InterceptExports {
+    return this.ctx.exports as unknown as GatewayExports & InterceptExports;
+  }
+
+  /**
+   * The computer's container port (WP3.3's adapter), with `DirectoryBackup` behind the fenced
+   * gateway: an upload names its capture's generation, a restore or a delete none.
+   */
   protected openPort(): ComputerContainerPort | null {
-    return null;
+    const container = this.runtimeContainer();
+    const computerId = this.#computerId;
+    if (container === null || computerId === null) return null;
+    const exports = this.#exports();
+    return nativeComputerContainer(container, {
+      backups: (prefix, generation) =>
+        directoryBackups(
+          container,
+          exports,
+          generation === null ? null : { computerId, generation },
+        )(prefix),
+    });
   }
 
   protected controlRpc(): ControlRpc {
     return this.env.CONTROL.getByName(CONTROL_OBJECT_NAME) as unknown as ControlRpc;
   }
 
+  /** Credential bundles: reads, lists and deletes on R2; puts through the write fence. */
   protected checkpointBucket(): CheckpointBucket | null {
     const bucket = (this.env as { readonly CHECKPOINTS?: R2Bucket }).CHECKPOINTS;
-    return bucket === undefined ? null : r2Bucket(bucket);
+    const computerId = this.#computerId;
+    if (bucket === undefined || computerId === null) return null;
+    const exports = this.#exports();
+    return r2Bucket(bucket, (key, body, generation) =>
+      credentialWriter(exports, { computerId, generation }).put(key, body),
+    );
   }
 
   /** The intercepts registered before every start and in every new instance (WP3.3). */
-  protected intercepts(_props: InterceptProps): readonly InterceptTarget[] {
-    return [];
+  protected intercepts(props: InterceptProps): readonly InterceptTarget[] {
+    return interceptTargets(this.#exports(), props);
   }
 
   protected now(): number {
@@ -186,6 +241,10 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
 
   writeAllowed(call: WriteCheck): Promise<WriteDecision> {
     return this.controller.writeAllowed(call);
+  }
+
+  identity(call: { readonly interfaceVersion: number }): Promise<WorkspaceIdentity | null> {
+    return this.controller.identity(call);
   }
 
   override async alarm(): Promise<void> {

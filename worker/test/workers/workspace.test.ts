@@ -18,11 +18,11 @@ import { workspaceObjectName } from "../../src/shared/rpc.ts";
 import { stepsWithEviction } from "../support/eviction.ts";
 import { FakeLauncherClient } from "../support/fake-launcher-client.ts";
 import type { SimulatedComputer } from "../support/fake-supervisor.ts";
-import type { WorkspaceDO } from "../support/platform-test-worker.ts";
+import type { WorkspaceUnderFakes as WorkspaceDO } from "../support/platform-test-worker.ts";
 import { testComputers } from "../support/workspace-harness.ts";
 
 type Stub = DurableObjectStub<WorkspaceDO>;
-/** The controller under test (wrangler.test.jsonc): WORKSPACE itself is the routes' stand-in. */
+/** The controller under fakes (wrangler.test.jsonc); WORKSPACE is the assembled class. */
 const workspaces = (env as unknown as { WORKSPACE_CONTROLLER: DurableObjectNamespace<WorkspaceDO> })
   .WORKSPACE_CONTROLLER;
 const HOST = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f";
@@ -309,14 +309,14 @@ describe("WorkspaceDO", () => {
 });
 
 describe("WorkspaceDO's production defaults", () => {
-  // The bucket is R2 wherever CHECKPOINTS is bound: the test configuration binds it for WP3.3's
-  // gateway; the platform Worker's configuration does not yet.
-  it("has no container or intercepts until they are wired, R2 where CHECKPOINTS is bound, and the real clock", async () => {
+  // The production hooks as this configuration wires them: it declares no container, so there is
+  // no port; R2 behind the fence where CHECKPOINTS is bound; both computer intercepts.
+  it("has no port without a container, R2 where CHECKPOINTS is bound, both intercepts, and the real clock", async () => {
     const { stub } = fresh();
     expect(await stub.defaults()).toEqual({
       port: null,
       bucket: "r2",
-      intercepts: [],
+      intercepts: ["omnigent.internal", "computer.internal"],
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,
       control: "function",

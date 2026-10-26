@@ -57,10 +57,11 @@ describe("removal", () => {
     expect(await sim.client.refusal(sim.client.statusRequest())).toBe("gone");
     expect(await sim.client.refusal(sim.client.admissionRequest())).toBe("gone");
     expect(await sim.client.refusal(sim.client.checkpointRequest())).toBe("gone");
-    expect(await sim.call(sim.client.suspendRequest())).toEqual({
-      operation: "suspend",
-      outcome: "stopped",
-    });
+    // A sleep too (3.C, as the launcher expects): `gone`, not `stopped`, and a repeat of the same
+    // operation gets the same recorded answer.
+    const sleep = sim.client.suspendRequest();
+    expect(await sim.client.refusal(sleep)).toBe("gone");
+    expect(await sim.client.refusal(sleep)).toBe("gone");
     expect(sim.computer.starts).toHaveLength(1);
     expect(await state(sim)).toMatchObject({
       removal: { state: "pending", signOut: "none" },

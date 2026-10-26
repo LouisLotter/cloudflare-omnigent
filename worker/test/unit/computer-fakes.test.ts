@@ -137,18 +137,25 @@ describe("FakeComputerContainer", () => {
       dir: "/stage/a",
       name: "lyr_a",
       prefix: `workspace/${CMP}/`,
+      generation: 1,
     });
     await port.restore(record, { dir: "/restore/a", prefix: `workspace/${CMP}/` });
     await expect(port.restore(record, { dir: "/r", prefix: "workspace/other/" })).rejects.toThrow(
       "BACKUP_NOT_FOUND",
     );
     port.failBackups = 1;
-    await expect(port.backup({ dir: "/d", name: "n", prefix: "p/" })).rejects.toThrow(
-      "BACKUP_TRANSFER",
-    );
+    await expect(
+      port.backup({ dir: "/d", name: "n", prefix: "p/", generation: 1 }),
+    ).rejects.toThrow("BACKUP_TRANSFER");
     port.holdBackups = true;
     const controller = new AbortController();
-    const held = port.backup({ dir: "/d", name: "n", prefix: "p/", signal: controller.signal });
+    const held = port.backup({
+      dir: "/d",
+      name: "n",
+      prefix: "p/",
+      generation: 1,
+      signal: controller.signal,
+    });
     controller.abort(new Error("upload deadline"));
     await expect(held).rejects.toThrow("upload deadline");
     await port.deleteBackup(record, { prefix: `workspace/${CMP}/` });
@@ -161,9 +168,9 @@ describe("FakeComputerContainer", () => {
       `restore:${record.id}`,
     ]);
     await port.destroy("x");
-    await expect(port.backup({ dir: "/d", name: "n", prefix: "p/" })).rejects.toThrow(
-      "not running",
-    );
+    await expect(
+      port.backup({ dir: "/d", name: "n", prefix: "p/", generation: 1 }),
+    ).rejects.toThrow("not running");
   });
 });
 
@@ -211,8 +218,16 @@ describe("FakeControl", () => {
     control.maxAwakeComputers = 1;
     const reserve = (computerId: string, generation: number) =>
       control.control({ method: "reserve", ...rpc, operationId: fresh(), computerId, generation });
-    expect(await reserve(CMP, 1)).toEqual({ method: "reserve", granted: true });
-    expect(await reserve(CMP, 1)).toEqual({ method: "reserve", granted: true });
+    expect(await reserve(CMP, 1)).toEqual({
+      method: "reserve",
+      granted: true,
+      maxInstanceSize: "standard-4",
+    });
+    expect(await reserve(CMP, 1)).toEqual({
+      method: "reserve",
+      granted: true,
+      maxInstanceSize: "standard-4",
+    });
     expect(await reserve("cmp_01hzy3m8k6q4t2v9w7x5r0s1n4", 1)).toEqual({
       method: "reserve",
       granted: false,
@@ -316,9 +331,17 @@ describe("FakeControl", () => {
     const release = (computerId: string, generation: number) =>
       control.control({ method: "release", ...rpc, operationId: fresh(), computerId, generation });
     const granted = fresh();
-    expect(await reserve(CMP, 1, granted)).toEqual({ method: "reserve", granted: true });
+    expect(await reserve(CMP, 1, granted)).toEqual({
+      method: "reserve",
+      granted: true,
+      maxInstanceSize: "standard-4",
+    });
     // The computer's next generation replaces its older slot instead of competing with it.
-    expect(await reserve(CMP, 2)).toEqual({ method: "reserve", granted: true });
+    expect(await reserve(CMP, 2)).toEqual({
+      method: "reserve",
+      granted: true,
+      maxInstanceSize: "standard-4",
+    });
     expect([...control.slots]).toEqual([`${CMP}/2`]);
     expect(await reserve(other, 1)).toMatchObject({ granted: false, awake: 1, limit: 1 });
     // An older generation, or a replay of its grant, takes no slot.
@@ -353,7 +376,7 @@ describe("FakeControl", () => {
         computerId: CMP,
         generation: 1,
       }),
-    ).toEqual({ method: "reserve", granted: true });
+    ).toEqual({ method: "reserve", granted: true, maxInstanceSize: "standard-4" });
     // The same request with a field added later is the same request.
     expect(
       await control.control({
@@ -364,7 +387,7 @@ describe("FakeControl", () => {
         generation: 1,
         addedLater: true,
       } as never),
-    ).toEqual({ method: "reserve", granted: true });
+    ).toEqual({ method: "reserve", granted: true, maxInstanceSize: "standard-4" });
     control.maxAwakeComputers = 0;
     expect(
       await control.control({
