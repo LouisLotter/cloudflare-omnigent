@@ -139,7 +139,7 @@ import {
   running,
   starting,
 } from "./reservations.ts";
-import { chooseSize, sizeForStart, workspaceSizeWarning } from "./sizing.ts";
+import { chooseSize, clampSize, sizeForStart, workspaceSizeWarning } from "./sizing.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Dependencies.
@@ -498,6 +498,30 @@ export class WorkspaceController {
     if (entry.outcome === null) this.#opPut(kind, id, entry.fingerprint, outcome);
   }
 
+  /**
+   * The launcher journal's `suspend` records, for the wipe to keep (in its transaction). A sleep
+   * still recorded in progress can only have ended with the stop the removal confirmed: it is
+   * settled as `stopped`.
+   */
+  #keepSleepOutcomes(): Set<string> {
+    const kept = new Set<string>();
+    for (const key of this.#d.store.keys(this.#opKey("launcher", ""))) {
+      const entry = OperationRecord.safeParse(this.#d.store.get(key));
+      if (!entry.success) continue;
+      const outcome = entry.data.outcome as { result?: { operation?: unknown } } | null;
+      if (outcome === null) {
+        this.#d.store.put(key, {
+          ...entry.data,
+          outcome: { result: { operation: "suspend", outcome: "stopped" } },
+        });
+        kept.add(key);
+      } else if (outcome.result?.operation === "suspend") {
+        kept.add(key);
+      }
+    }
+    return kept;
+  }
+
   /** Forgets operations older than the retention, a bounded batch at a time. */
   #pruneOperations(): void {
     const cutoff = this.#now() - this.#t.operationRecordMs;
@@ -824,8 +848,9 @@ export class WorkspaceController {
     // The size cap comes with the grant, so no second call can be lost before the start
     // (WP3.2 r1-1). An older ControlDO's grant has none: ask for the limits, and if they cannot
     // be confirmed, give the slot back rather than start above a cap nobody confirmed.
-    let cap: InstanceSize | null =
-      result.method === "reserve" && result.granted ? (result.maxInstanceSize ?? null) : null;
+    // Checked: a size the contract does not know counts as no cap.
+    const carried = result.method === "reserve" && result.granted ? result.maxInstanceSize : null;
+    let cap: InstanceSize | null = InstanceSize.safeParse(carried).data ?? null;
     if (granted && cap === null) cap = await this.#confirmedCap();
     if (granted && cap === null) {
       this.#write((d) => {
@@ -847,6 +872,7 @@ export class WorkspaceController {
       if (!granted) return apply(d, { ...facts, atCapacity: true }, extra).reply;
       // Persisted with the transition, before `start_container` sizes the start.
       d.maxSize = cap;
+      d.maxSizeGeneration = generation;
       const t = apply(d, facts, { ...extra, reservedGeneration: generation });
       if (!t.effects.includes("reserve")) {
         d.releases.push({ generation, operationId: this.#d.newId("op") });
@@ -1922,20 +1948,35 @@ export class WorkspaceController {
     const now = this.#now();
     if (start.startedAt === null) {
       if (now < start.nextAt) return false;
+      // Never above the installation's cap. Only this generation's grant is trusted for it; a
+      // start recorded otherwise (before grants carried the cap) confirms it with ControlDO
+      // first, and waits while it cannot: the start deadline fences a start that never gets one.
+      let cap = r.maxSizeGeneration === generation ? r.maxSize : null;
+      if (cap === null) {
+        cap = await this.#confirmedCap();
+        if (cap === null) {
+          this.#log("size_cap_unconfirmed", { generation });
+          return false;
+        }
+      }
+      const confirmed = cap;
       await this.#registerIntercepts(r, port);
-      const go = await this.#exclusive(() =>
-        this.#write((d) => {
-          if (d.lifecycle.context.state !== "waking" || d.start?.startedAt !== null) return false;
-          if (d.reservation === null || !mayStart(d.reservation, generation)) return false;
+      const instance = await this.#exclusive(() =>
+        this.#write((d): InstanceSize | null => {
+          if (d.lifecycle.context.state !== "waking" || d.start?.startedAt !== null) return null;
+          if (d.reservation === null || !mayStart(d.reservation, generation)) return null;
+          d.maxSize = confirmed;
+          d.maxSizeGeneration = generation;
+          d.size = clampSize(d.size, confirmed);
           d.start = { ...d.start, startedAt: now };
           d.reservation = starting(d.reservation);
-          return true;
+          return d.size;
         }),
       );
-      if (!go) return true;
+      if (instance === null) return true;
       try {
         port.start({
-          instance: r.size,
+          instance,
           env: {
             [COMPUTER_START_ENV.computerId]: this.#d.computerId,
             [COMPUTER_START_ENV.generation]: String(generation),
@@ -2691,9 +2732,17 @@ export class WorkspaceController {
           await this.#exclusive(() =>
             this.#d.store.transaction(() => {
               const d = this.#require();
-              for (const key of this.#d.store.keys(OPERATION_PREFIX)) this.#d.store.delete(key);
-              for (const key of this.#d.store.keys(OPERATION_TIME_PREFIX))
-                this.#d.store.delete(key);
+              // Sleeps keep their recorded outcome until the journal's retention ends, as every
+              // repeat is promised (Codex WP3.18 r1-2): a removal must not turn an earlier
+              // `suspend`'s `stopped` into `gone`. Every other record goes now.
+              const kept = this.#keepSleepOutcomes();
+              for (const key of this.#d.store.keys(OPERATION_PREFIX)) {
+                if (!kept.has(key)) this.#d.store.delete(key);
+              }
+              for (const key of this.#d.store.keys(OPERATION_TIME_PREFIX)) {
+                const target = this.#d.store.get(key);
+                if (typeof target !== "string" || !kept.has(target)) this.#d.store.delete(key);
+              }
               this.#dropToken();
               const fresh = newRecord(this.#d.computerId, d.createdAt);
               this.#d.store.put(RECORD_KEY, {

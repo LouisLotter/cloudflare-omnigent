@@ -11,6 +11,13 @@
 // live connection, how long each computer's host took to open its tunnel again (RC-21: 60 s,
 // 100 s when the drop overlaps a capture pause), and, for a web Worker deploy, that no host
 // tunnel was reopened at all (no drop).
+//
+// A reset's time is the soak run's own record, taken just before it. A platform deploy's version
+// switch is never read from a host's own reconnect (Codex WP3.18 r1-3): the soak run logs a
+// heartbeat every 5 s around each platform deploy, and the switch lies between the last
+// heartbeat of the old version and the first of the new one. A reconnect is judged against both
+// ends: within the bound from the earlier one passes, beyond it from the later one fails, and
+// anything between is reported inconclusive, never passed.
 
 export const MIN = 60_000;
 /** The soak's length (RC-26). */
@@ -60,6 +67,28 @@ export function dueEvents(
   );
 }
 
+/** The soak run's heartbeat around each platform deploy, which brackets its version switch. */
+export const HEARTBEAT_MS = 5_000;
+/** How long the heartbeats run after a platform deploy's time (the switch took about 5 min). */
+export const HEARTBEAT_WINDOW_MS = 15 * MIN;
+
+/** When the soak run's next heartbeat is due, or null once no platform deploy is left. */
+export function nextHeartbeat(
+  t0: number,
+  now: number,
+  schedule: readonly SoakEvent[] = SOAK_SCHEDULE,
+): number | null {
+  let next: number | null = null;
+  for (const event of schedule) {
+    if (event.kind !== "platform_deploy") continue;
+    const start = t0 + event.at;
+    const end = start + HEARTBEAT_WINDOW_MS;
+    if (now >= start && now < end) return now + HEARTBEAT_MS;
+    if (now < start && (next === null || start < next)) next = start;
+  }
+  return next;
+}
+
 /** The laptop's next event at or after `now`, or null. */
 export function nextLaptopEvent(
   t0: number,
@@ -96,45 +125,64 @@ export interface Disruption {
 
 const HOST_TUNNEL = /^\/v1\/hosts\/[0-9a-f]{32}\/tunnel$/;
 
-/** Each computer's successful host-tunnel opens (101), in time order. */
-export function tunnelOpens(lines: readonly LogLine[]): Map<string, number[]> {
-  const opens = new Map<string, number[]>();
+interface Open {
+  readonly at: number;
+  readonly version: string | undefined;
+}
+
+function openLines(lines: readonly LogLine[]): Map<string, Open[]> {
+  const opens = new Map<string, Open[]>();
   for (const line of lines) {
     const s = typeof line.source === "object" && line.source !== null ? line.source : null;
     if (s === null || s.cfo !== "computer_route" || s.event !== "request") continue;
     if (s.status !== 101 || typeof s.path !== "string" || !HOST_TUNNEL.test(s.path)) continue;
     if (typeof s.computerId !== "string") continue;
     const list = opens.get(s.computerId) ?? [];
-    list.push(line.timestamp);
+    list.push({ at: line.timestamp, version: line.version });
     opens.set(s.computerId, list);
   }
-  for (const list of opens.values()) list.sort((a, b) => a - b);
+  for (const list of opens.values()) list.sort((a, b) => a.at - b.at);
   return opens;
 }
 
+/** Each computer's successful host-tunnel opens (101), in time order. */
+export function tunnelOpens(lines: readonly LogLine[]): Map<string, number[]> {
+  return new Map([...openLines(lines)].map(([id, list]) => [id, list.map((o) => o.at)]));
+}
+
+function isHeartbeat(line: LogLine): boolean {
+  const s = typeof line.source === "object" && line.source !== null ? line.source : null;
+  return s !== null && s.cfo === "soak" && s.event === "heartbeat" && line.version !== undefined;
+}
+
 /**
- * When a deploy took effect: the first event after its upload ended that carries a version not
- * seen before it. Null if no such event (the switch was missed, or the logs end first).
+ * Where a deploy's version switch lies, from the soak run's heartbeats only: after the last one
+ * of a version seen before the upload ended, and at or before the first one of a version not seen
+ * before it. Null if the heartbeats do not bracket it.
  */
-export function versionSwitch(lines: readonly LogLine[], deployEndedAt: number): number | null {
-  const sorted = [...lines].sort((a, b) => a.timestamp - b.timestamp);
-  const before = new Set(
-    sorted.filter((l) => l.timestamp < deployEndedAt && l.version).map((l) => l.version),
-  );
+export function switchBracket(
+  lines: readonly LogLine[],
+  deployEndedAt: number,
+): { readonly lastOld: number; readonly firstNew: number; readonly version: string } | null {
+  const beats = lines.filter(isHeartbeat).sort((a, b) => a.timestamp - b.timestamp);
+  const before = new Set(beats.filter((l) => l.timestamp < deployEndedAt).map((l) => l.version));
   if (before.size === 0) return null;
-  const first = sorted.find(
-    (l) => l.timestamp >= deployEndedAt && l.version !== undefined && !before.has(l.version),
-  );
-  return first?.timestamp ?? null;
+  const first = beats.find((l) => l.timestamp >= deployEndedAt && !before.has(l.version));
+  if (first === undefined || first.version === undefined) return null;
+  const old = beats.filter((l) => l.timestamp < first.timestamp && before.has(l.version)).at(-1);
+  if (old === undefined) return null;
+  return { lastOld: old.timestamp, firstNew: first.timestamp, version: first.version };
 }
 
 export interface Reconnect {
   readonly kind: SoakEventKind;
-  /** When the drop happened (a deploy's version switch, or the reset). */
+  /** When the drop happened at the earliest (the reset, or the switch's bracket start). */
   readonly at: number | null;
   readonly computerId: string;
-  /** Until the host's tunnel opened again; null if it never did. */
+  /** Until the host's tunnel opened again, at most; null if it never did. */
   readonly gapMs: number | null;
+  /** For a version switch: the gap from the bracket's end, at least. */
+  readonly lowerMs?: number;
   readonly boundMs: number;
   readonly ok: boolean;
   readonly note?: string;
@@ -149,13 +197,16 @@ export function reconnects(
   disruptions: readonly Disruption[],
   lines: readonly LogLine[],
 ): Reconnect[] {
-  const opens = tunnelOpens(lines);
+  const opens = openLines(lines);
   const results: Reconnect[] = [];
   for (const d of disruptions) {
     if (d.kind === "end") continue;
-    const at = d.kind === "platform_deploy" ? versionSwitch(lines, d.deployEndedAt ?? d.at) : d.at;
+    const bracket =
+      d.kind === "platform_deploy" ? switchBracket(lines, d.deployEndedAt ?? d.at) : null;
+    const at = d.kind === "platform_deploy" ? (bracket?.lastOld ?? null) : d.at;
     const boundMs = d.duringPause ? RC21_PAUSE_MS : RC21_MS;
-    for (const [computerId, times] of opens) {
+    for (const [computerId, list] of opens) {
+      const times = list.map((o) => o.at);
       // Only a computer whose host was connected before the disruption can be dropped by it.
       if (!times.some((t) => t < d.at)) continue;
       if (d.kind === "web_deploy") {
@@ -180,7 +231,30 @@ export function reconnects(
           gapMs: null,
           boundMs,
           ok: false,
-          note: "no version switch found",
+          note: "no version switch bracketed by the soak's heartbeats",
+        });
+        continue;
+      }
+      if (bracket !== null) {
+        // The reconnect to the new version, judged against both ends of the switch's bracket.
+        const next = list.find((o) => o.at >= bracket.lastOld && o.version === bracket.version);
+        const upper = next === undefined ? null : next.at - bracket.lastOld;
+        const lower = next === undefined ? undefined : Math.max(0, next.at - bracket.firstNew);
+        const passed = upper !== null && upper <= boundMs;
+        const failed = upper === null || (lower ?? 0) > boundMs;
+        results.push({
+          kind: d.kind,
+          at,
+          computerId,
+          gapMs: upper,
+          ...(lower === undefined ? {} : { lowerMs: lower }),
+          boundMs,
+          ok: passed,
+          ...(passed || failed
+            ? {}
+            : {
+                note: `inconclusive: the switch is known only within ${bracket.firstNew - bracket.lastOld} ms`,
+              }),
         });
         continue;
       }

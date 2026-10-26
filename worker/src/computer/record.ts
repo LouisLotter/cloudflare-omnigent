@@ -142,6 +142,12 @@ export const ComputerRecord = z.strictObject({
   nextSize: InstanceSize.nullable(),
   /** The installation's largest size, as ControlDO last said. */
   maxSize: InstanceSize.nullable(),
+  /**
+   * The generation whose reservation grant carried `maxSize` (WP3.18). A start only trusts a cap
+   * from its own generation's grant; any other (a record from before grants carried it) is
+   * confirmed with ControlDO first. Records written before this field read as null.
+   */
+  maxSizeGeneration: Count.nullable().default(null),
 
   reservation: z
     .strictObject({ generation: Count, phase: ReservationPhase, fenced: z.boolean() })
@@ -362,6 +368,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     size: "standard-2",
     nextSize: null,
     maxSize: null,
+    maxSizeGeneration: null,
     reservation: null,
     releases: [],
     start: null,

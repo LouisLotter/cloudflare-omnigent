@@ -10,7 +10,8 @@
 //   - `WorkspaceDO.fetch` under /__soak/terminal/<computer>/: the computer's setup terminal
 //     (ttyd, port 7681), forwarded natively, until the platform pages (WP3.5) provide it;
 //   - SoakRun: the schedule (plan.ts), started by the owner's Start click on /__soak, ticked by
-//     the production cron; its events go to Workers Logs and the results bucket.
+//     the production cron; its events go to Workers Logs and the results bucket. Around each
+//     platform deploy it also logs a heartbeat every 5 s, which brackets the version switch.
 // soak-config.ts renders the configuration: the bootstrap's own, with this module as main, the
 // SOAK binding and the RESULTS bucket added.
 
@@ -22,7 +23,7 @@ import { serverContainerOf } from "../../../src/server/container-port.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../../src/server/OmnigentServer.ts";
 import { logEvent } from "../../../src/server/responses.ts";
 import { CONTROL_OBJECT_NAME, OMNIGENT_SERVER_OBJECT_NAME } from "../../../src/shared/rpc.ts";
-import { dueEvents, SOAK_SCHEDULE, type SoakEventKind } from "./plan.ts";
+import { dueEvents, nextHeartbeat, SOAK_SCHEDULE, type SoakEventKind } from "./plan.ts";
 
 export { ControlDO } from "../../../src/control/ControlDO.ts";
 export { DirectoryBackupGateway } from "../../../src/egress/backups.ts";
@@ -115,7 +116,26 @@ export class SoakRun extends DurableObject<SoakEnv> {
     };
     logEvent("soak", "start", { runId: state.runId, t0 });
     await this.#save(state);
+    await this.#armHeartbeat(t0, t0);
     return state;
+  }
+
+  /** The next heartbeat's alarm, if any is left (plan.ts, nextHeartbeat). */
+  async #armHeartbeat(t0: number, now: number): Promise<void> {
+    const at = nextHeartbeat(t0, now);
+    if (at !== null) await this.ctx.storage.setAlarm(at);
+  }
+
+  /**
+   * The heartbeat around each platform deploy: an event independent of any host, whose version
+   * in Workers Logs brackets the deploy's switch (the analysis never reads the switch from a
+   * host's own reconnect). It runs in whichever version holds this object, old or new.
+   */
+  override async alarm(): Promise<void> {
+    const state = await this.#state();
+    if (state === null || state.ended) return;
+    logEvent("soak", "heartbeat", { runId: state.runId });
+    await this.#armHeartbeat(state.t0, Date.now());
   }
 
   /** Each cron minute: the worker's events now due. */
@@ -123,6 +143,8 @@ export class SoakRun extends DurableObject<SoakEnv> {
     const state = await this.#state();
     if (state === null || state.ended) return;
     const now = Date.now();
+    // A heartbeat alarm lost to a reset is set again within a minute.
+    if ((await this.ctx.storage.getAlarm()) === null) await this.#armHeartbeat(state.t0, now);
     const due = dueEvents(state.t0, new Set(state.done), now);
     if (due.length === 0) return;
     const done = [...state.done];

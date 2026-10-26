@@ -66,8 +66,21 @@ interface ShimIo {
   ack(): Promise<number | null>;
 }
 
-/** One `exec` of the shim, with piped stdin and stdout. */
-function shimProcess(run: (io: ShimIo) => Promise<number>): ExecProcess {
+/**
+ * One `exec` of the shim, with piped stdin and stdout. The container's backup lock: the shim
+ * reports `locked` only once the previous shim released it, and holds it until its stdin closes
+ * (or it is killed), as the SDK requires, so a later operation's grant can never be replaced by
+ * an earlier one's deny.
+ */
+function shimProcess(
+  lock: { held: Promise<void> },
+  run: (io: ShimIo) => Promise<number>,
+): ExecProcess {
+  const previous = lock.held;
+  let release: () => void = () => undefined;
+  lock.held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const stdin = new TransformStream<Uint8Array, Uint8Array>();
   const stdout = new TransformStream<Uint8Array, Uint8Array>();
   const out = stdout.writable.getWriter();
@@ -90,11 +103,17 @@ function shimProcess(run: (io: ShimIo) => Promise<number>): ExecProcess {
   const exitCode = new Promise<number>((resolve) => {
     settle = resolve;
   });
-  void run(io)
+  void previous
+    .then(() => run(io))
     .catch(() => 1)
     .then(async (code) => {
       await out.close().catch(() => undefined);
       settle(code);
+      // The lock is held until stdin closes: the caller's deny comes first, then the close.
+      while ((await io.ack().catch(() => null)) !== null) {
+        // Bytes after the last acknowledgement are ignored.
+      }
+      release();
     });
   return {
     stdin: stdin.writable,
@@ -106,7 +125,9 @@ function shimProcess(run: (io: ShimIo) => Promise<number>): ExecProcess {
     output: () => Promise.reject(new Error("not used")),
     kill: () => {
       void out.abort("killed").catch(() => undefined);
+      void input.cancel("killed").catch(() => undefined);
       settle(137);
+      release();
     },
     resize: () => undefined,
   } as unknown as ExecProcess;
@@ -137,6 +158,8 @@ export class FakeRuntimeContainer {
   };
   /** The next shim uploads fail as a part upload would. */
   failUploads = 0;
+  /** `sandbox-shim`'s backup lock, one per container. */
+  readonly #lock = { held: Promise.resolve() };
   /** The props WorkspaceDO built its intercepts with, in order (observed, not replaced). */
   readonly props: InterceptProps[] = [];
 
@@ -207,9 +230,9 @@ export class FakeRuntimeContainer {
       sha256?: string;
     };
     this.shimRuns.push(`${command}:${request.dir}`);
-    if (command === "backup") return shimProcess((io) => this.#backup(io, request.dir));
+    if (command === "backup") return shimProcess(this.#lock, (io) => this.#backup(io, request.dir));
     if (command === "restore") {
-      return shimProcess((io) =>
+      return shimProcess(this.#lock, (io) =>
         this.#restore(io, request.dir, request.size ?? 0, request.sha256 ?? ""),
       );
     }

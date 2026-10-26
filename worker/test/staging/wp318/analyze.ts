@@ -34,7 +34,12 @@ const disruptions: Disruption[] = [
 const results = reconnects(disruptions, lines);
 for (const r of results) {
   const at = r.at === null ? "?" : `T0+${((r.at - run.t0) / 60_000).toFixed(1)}m`;
-  const gap = r.gapMs === null ? "-" : `${(r.gapMs / 1000).toFixed(1)} s`;
+  const gap =
+    r.gapMs === null
+      ? "-"
+      : r.lowerMs === undefined
+        ? `${(r.gapMs / 1000).toFixed(1)} s`
+        : `${(r.lowerMs / 1000).toFixed(1)}–${(r.gapMs / 1000).toFixed(1)} s`;
   console.log(
     `${r.ok ? "ok  " : "FAIL"} ${r.kind.padEnd(16)} ${at.padEnd(10)} ${r.computerId} ${gap} ${r.note ?? ""}`,
   );
@@ -44,6 +49,7 @@ const verdict = {
   disruptions: disruptions.length,
   checks: results.length,
   failed: results.filter((r) => !r.ok).length,
+  inconclusive: results.filter((r) => r.note?.startsWith("inconclusive")).length,
   failedDeploys: deploys.filter((d) => d.status !== 0).length,
   results,
 };

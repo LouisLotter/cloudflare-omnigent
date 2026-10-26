@@ -3,16 +3,19 @@
 import { describe, expect, it } from "vitest";
 import {
   dueEvents,
+  HEARTBEAT_MS,
+  HEARTBEAT_WINDOW_MS,
   type LogLine,
   MIN,
   NO_DROP_WINDOW_MS,
+  nextHeartbeat,
   nextLaptopEvent,
   RC21_MS,
   reconnects,
   SOAK_MS,
   SOAK_SCHEDULE,
+  switchBracket,
   tunnelOpens,
-  versionSwitch,
 } from "../staging/wp318/plan.ts";
 import { soakPlatformConfig } from "../staging/wp318/soak-config.ts";
 
@@ -20,6 +23,17 @@ const T0 = 1_800_000_000_000;
 const HOST = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const A = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3";
 const B = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4";
+
+function beat(at: number, version: string): LogLine {
+  return { timestamp: at, version, source: { cfo: "soak", event: "heartbeat", runId: "r" } };
+}
+
+/** Heartbeats every 5 s from `from` to `to`, switching to `v2` at `switchAt`. */
+function beats(from: number, to: number, switchAt: number): LogLine[] {
+  const out: LogLine[] = [];
+  for (let t = from; t < to; t += HEARTBEAT_MS) out.push(beat(t, t < switchAt ? "v1" : "v2"));
+  return out;
+}
 
 function open(at: number, computerId = A, version = "v1"): LogLine {
   return {
@@ -122,11 +136,30 @@ describe("the soak's analysis", () => {
     expect(tunnelOpens([{ timestamp: 1, source: "a text line" }]).size).toBe(0);
   });
 
-  it("finds a deploy's version switch: the first new version after its upload", () => {
-    const lines = [open(T0, A, "v1"), open(T0 + 100_000, A, "v1"), open(T0 + 400_000, A, "v2")];
-    expect(versionSwitch(lines, T0 + 50_000)).toBe(T0 + 400_000);
-    expect(versionSwitch(lines, T0 + 500_000)).toBeNull();
-    expect(versionSwitch([], T0)).toBeNull();
+  it("brackets a deploy's switch with the soak's heartbeats only, never a host's reconnect", () => {
+    const end = T0 + 52 * MIN;
+    const lines = [
+      ...beats(end - 20_000, end + 400_000, end + 300_002),
+      open(end + 300_001, A, "v2"),
+    ];
+    expect(switchBracket(lines, end)).toEqual({
+      lastOld: end + 300_000,
+      firstNew: end + 305_000,
+      version: "v2",
+    });
+    // No heartbeat of the new version, or none before the upload ended: not bracketed.
+    expect(
+      switchBracket(beats(end - 20_000, end + 400_000, Number.POSITIVE_INFINITY), end),
+    ).toBeNull();
+    expect(switchBracket(beats(end, end + 400_000, end + 100_000), end)).toBeNull();
+    expect(switchBracket([open(end + 1, A, "v2")], end)).toBeNull();
+  });
+
+  it("schedules heartbeats around each platform deploy only", () => {
+    expect(nextHeartbeat(T0, T0)).toBe(T0 + 50 * MIN);
+    expect(nextHeartbeat(T0, T0 + 50 * MIN)).toBe(T0 + 50 * MIN + HEARTBEAT_MS);
+    expect(nextHeartbeat(T0, T0 + 50 * MIN + HEARTBEAT_WINDOW_MS)).toBe(T0 + 120 * MIN);
+    expect(nextHeartbeat(T0, T0 + 120 * MIN + HEARTBEAT_WINDOW_MS)).toBeNull();
   });
 
   it("judges every connected computer's reconnect against RC-21, and a web deploy by no drop", () => {
@@ -138,8 +171,10 @@ describe("the soak's analysis", () => {
       open(T0 + MIN, B, "v1"),
       open(reset + 20_000, A, "v1"), // A back in 20 s
       open(reset + 90_000, B, "v1"), // B back in 90 s: too late
-      open(deployEnd + 300_000, A, "v2"), // the switch, and A's reconnect at once
-      open(deployEnd + 330_000, B, "v2"),
+      // The switch between the heartbeats at +300 s (old) and +305 s (new).
+      ...beats(deployEnd - 20_000, deployEnd + 400_000, deployEnd + 302_000),
+      open(deployEnd + 310_000, A, "v2"), // back 10 to 5 s after the switch: passes
+      open(deployEnd + 362_000, B, "v2"), // 62 to 57 s: inconclusive, never passed
     ];
     const results = reconnects(
       [
@@ -155,10 +190,37 @@ describe("the soak's analysis", () => {
       ["server_reset", B, 90_000, false],
       ["web_deploy", A, null, true],
       ["web_deploy", B, null, true],
-      ["platform_deploy", A, 0, true],
-      ["platform_deploy", B, 30_000, true],
+      ["platform_deploy", A, 10_000, true],
+      ["platform_deploy", B, 62_000, false],
     ]);
     expect(results[0]?.boundMs).toBe(RC21_MS);
+    expect(results[4]).toMatchObject({ lowerMs: 5_000 });
+    expect(results[5]).toMatchObject({
+      lowerMs: 57_000,
+      note: "inconclusive: the switch is known only within 5000 ms",
+    });
+    // Codex WP3.18 r1-3: a reconnect is never its own evidence of the switch. With no new-version
+    // heartbeat, a late reconnect under the new version is not bracketed, so it never passes.
+    const unbracketed = reconnects(
+      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd }],
+      [
+        ...beats(deployEnd - 20_000, deployEnd + 400_000, Number.POSITIVE_INFINITY),
+        open(T0, A, "v1"),
+        open(deployEnd + 300_000, A, "v2"),
+      ],
+    );
+    expect(unbracketed[0]).toMatchObject({ ok: false, gapMs: null });
+    // Beyond the bound from the bracket's end: a definite failure, with no inconclusive note.
+    const late = reconnects(
+      [{ kind: "platform_deploy", at: T0 + 50 * MIN, deployEndedAt: deployEnd }],
+      [
+        ...beats(deployEnd - 20_000, deployEnd + 400_000, deployEnd + 302_000),
+        open(T0, A, "v1"),
+        open(deployEnd + 380_000, A, "v2"),
+      ],
+    );
+    expect(late[0]).toMatchObject({ ok: false, gapMs: 80_000, lowerMs: 75_000 });
+    expect(late[0]?.note).toBeUndefined();
     // A drop during the overlap window, or a reconnect overlapping a pause.
     const dropped = reconnects(
       [{ kind: "web_deploy", at: web, deployEndedAt: web + 60_000 }],
@@ -178,9 +240,10 @@ describe("the soak's analysis", () => {
       ],
       [open(T0, A, "v1"), open(reset + 5 * MIN, B, "v1")],
     );
+    const notBracketed = "no version switch bracketed by the soak's heartbeats";
     expect(missing).toEqual([
-      expect.objectContaining({ computerId: A, ok: false, note: "no version switch found" }),
-      expect.objectContaining({ computerId: B, ok: false, note: "no version switch found" }),
+      expect.objectContaining({ computerId: A, ok: false, note: notBracketed }),
+      expect.objectContaining({ computerId: B, ok: false, note: notBracketed }),
       // B first connected after the reset: only A is judged by it.
       expect.objectContaining({ kind: "server_reset", computerId: A, gapMs: null, ok: false }),
     ]);
