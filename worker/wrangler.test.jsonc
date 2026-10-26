@@ -20,6 +20,14 @@
       { "name": "WORKSPACE_CONTROLLER", "class_name": "WorkspaceDO" }
     ]
   },
+  // The platform pages' assets as text modules, as wrangler.web.jsonc bundles them (WP3.5).
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/xterm.js", "**/xterm.css", "**/addon-fit.js", "**/setup-client.js"],
+      "fallthrough": false
+    }
+  ],
   // The computers' checkpoint bucket, for the Sandbox SDK's gateway (WP3.3, egress/backups.ts).
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cfo-test-checkpoints" }],
   // Synthetic values only (canaries), as an installation would set them.
