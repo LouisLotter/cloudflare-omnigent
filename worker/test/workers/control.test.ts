@@ -720,14 +720,16 @@ describe("reconciliation", () => {
     expect(await slots(stub)).toEqual([]);
   });
 
-  it("keeps every slot while no WorkspaceDO can be reached (no binding on this branch)", async () => {
+  it("reads reports through the WORKSPACE binding, and keeps every slot while it has none", async () => {
     const stub = control();
     const computerId = newComputerId();
     await call(stub, reserve(computerId, 1));
-    reports(computerId, 1, null, { containerRunning: false });
     testControl.productionWorkspace = true;
     await reconcile(stub);
-    expect(await slots(stub)).toEqual([`${computerId}/1`]);
+    // Before WorkspaceDO is bound (WP3.1), no report can be read and the slot is kept. Once it is,
+    // the actual WorkspaceDO answers that it holds no record of this computer: the slot goes.
+    const bound = (env as { readonly WORKSPACE?: unknown }).WORKSPACE !== undefined;
+    expect(await slots(stub)).toEqual(bound ? [] : [`${computerId}/1`]);
   });
 
   it("never brings back a slot released while its report was being read", async () => {
