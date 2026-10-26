@@ -215,8 +215,15 @@ try {
   const expected = a
     .sh(LISTING)
     .split("\n")
-    // The policy keeps logins and ~/.claude/backups (H22a; the CLI's status check writes it) out.
-    .filter((l) => l && !l.includes(".claude/.credentials.json") && !l.includes(".claude/backups"));
+    // The policy keeps logins, ~/.claude/backups (H22a) and Codex's per-run ~/.codex/tmp out;
+    // the supervisor's own login-status checks write both.
+    .filter(
+      (l) =>
+        l &&
+        !l.includes(".claude/.credentials.json") &&
+        !l.includes(".claude/backups") &&
+        !l.includes(".codex/tmp"),
+    );
 
   // Computer B: every layer restored with DirectoryBackup, then restore_workspace.
   const dirs = [];
