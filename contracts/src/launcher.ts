@@ -174,7 +174,10 @@ export type SuspendRefusal = z.infer<typeof SuspendRefusal>;
 export const CheckpointRefusal = z.enum(["not_running", "restoring", "stopping"]);
 export type CheckpointRefusal = z.infer<typeof CheckpointRefusal>;
 
-/** `provision`'s name: Omnigent passes the stable `managed_host_name(host_id)`, `managed-<8 hex>`. */
+/**
+ * `provision`'s name: Omnigent (fork `cfo/integration` from `3228d4de3`) passes `managed-<the whole
+ * host ID>`, 40 characters; computers first provisioned before that keep `managed-<8 hex>`.
+ */
 export const ProvisionName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 
 /** A host display name, chosen by the person in Omnigent. Rendered as text only. */
@@ -232,8 +235,9 @@ export const ClaimStartRequest = z.strictObject({
  * checks its registration says so. `host_config=None` is sent as `{}`.
  *
  * WorkspaceDO records the host ID at the first accepted start and answers `conflict` to a start
- * for any other host ID: `provision` names a computer only by `managed-<first 8 hex digits of the
- * host ID>`, so two hosts sharing those digits would otherwise share a computer and its logins.
+ * for any other host ID. New computers are named by the whole host ID (`ProvisionName`), but
+ * computers named before that by `managed-<first 8 hex digits of the host ID>` keep that name, so
+ * two hosts sharing those digits would otherwise share a computer and its logins.
  */
 export const StartHostRequest = z.strictObject({
   operation: z.literal("start_host"),
