@@ -124,10 +124,11 @@ export interface WorkspaceRpc {
 /**
  * The write fence (the lead's decision, 26 Oct). Every credential and workspace write reaches R2
  * through the platform's own backup gateway (`egress/backups.ts`, WP3.3), which asks the
- * computer's WorkspaceDO before each `put`. A write is allowed only for a computer that exists,
- * has no removal intent, and runs the named generation; a credential bundle only while its object
- * key is a pending upload. So once WorkspaceDO abandons an upload, the only writes that can still
- * land are the gateway's own in-flight puts, bounded by its maximum request time.
+ * computer's WorkspaceDO before each `put`. A write is allowed only for a computer that exists and
+ * is not fully removed, runs the named generation, and, for a credential bundle, whose key is a
+ * pending upload of that generation (a removal's sign-out run included). The fence means no new
+ * admissions: a write admitted before it may still land, and is cleaned up by WorkspaceDO's
+ * re-delete of abandoned keys and its sweep of a removed computer's prefixes.
  */
 export const WriteCheck = z.looseObject({
   interfaceVersion: z.number().int().min(1),
