@@ -13,6 +13,7 @@ import {
   type InterceptExports,
   interceptHostAllowed,
   interceptProps,
+  interceptTargets,
   refreshIntercepts,
   registerIntercepts,
   startWithIntercepts,
@@ -39,6 +40,24 @@ function exportsRecorder() {
 }
 
 describe("computer intercepts", () => {
+  it("builds WorkspaceDO's targets: each computer host bound to the checked props (WP3.18)", () => {
+    const { exports, made } = exportsRecorder();
+    const props = interceptProps(COMPUTER, 4, HOST);
+    const targets = interceptTargets(exports, props);
+    expect(targets.map((t) => t.host)).toEqual(["omnigent.internal", "computer.internal"]);
+    expect(made).toEqual([
+      { entrypoint: "OmnigentRoute", props },
+      { entrypoint: "ComputerApi", props },
+    ]);
+    expect(targets.map((t) => (t.target as unknown as { entrypoint: string }).entrypoint)).toEqual([
+      "OmnigentRoute",
+      "ComputerApi",
+    ]);
+    // Props the contract refuses never reach an entrypoint.
+    expect(() => interceptTargets(exports, { ...props, generation: -1 })).toThrow();
+    expect(made).toHaveLength(2);
+  });
+
   it("registers exactly omnigent.internal and computer.internal: no catch-all, no other host", () => {
     expect(COMPUTER_INTERCEPTS.map((i) => i.host)).toEqual([
       "omnigent.internal",

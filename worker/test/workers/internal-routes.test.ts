@@ -26,6 +26,7 @@ import {
   FencedBackupGateway,
   type GatewayExports,
 } from "../../src/egress/backups.ts";
+import { OmnigentRoute } from "../../src/internal/entrypoints.ts";
 import { LAUNCH_TOKEN_HEADER } from "../../src/internal/omnigent-route.ts";
 import { serverUpgradeAnswer } from "../../src/internal/upgrade-answer.ts";
 import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
@@ -275,6 +276,33 @@ describe("omnigent.internal: the live connection (A′)", () => {
       await response.arrayBuffer();
     }
     expect(fake.requests.length).toBe(before);
+  });
+
+  it("reads the page state only from a WorkspaceDO that has no `identity` yet (a deploy's window)", async () => {
+    const c = await awake();
+    const real = env.WORKSPACE.getByName(c.computerId);
+    /** An older WorkspaceDO: `identity` is not a method it implements; otherwise the real one. */
+    const routeWith = (identity: () => Promise<unknown>) =>
+      new OmnigentRoute(
+        { props: currentProps(c), waitUntil: () => undefined } as unknown as ExecutionContext,
+        {
+          ...(env as unknown as Record<string, unknown>),
+          WORKSPACE: { getByName: () => ({ identity, pages: (call: never) => real.pages(call) }) },
+        } as never,
+      );
+    const older = routeWith(async () => {
+      throw new TypeError('The RPC receiver does not implement the method "identity".');
+    });
+    const response = await older.fetch(new Request("http://omnigent.internal/v1/info"));
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+    // Any other failure is not read as an older version: the route fails closed.
+    const failing = routeWith(async () => {
+      throw new Error("Network connection lost.");
+    });
+    const refused = await failing.fetch(new Request("http://omnigent.internal/v1/info"));
+    expect(refused.status).toBe(503);
+    await refused.arrayBuffer();
   });
 
   it("reads the identity WorkspaceDO's `identity` answers: generation and the bound host", async () => {
