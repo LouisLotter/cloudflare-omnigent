@@ -1,0 +1,9 @@
+{
+  "action": "open_terminal",
+  "outcome": "accepted",
+  "capability": "Q2Fwz9-TerminalCapabilityCanary_00000000000",
+  "window": 0,
+  "generation": 7,
+  "until": "2026-10-22T09:44:58.000Z",
+  "presentBy": "2026-10-22T09:15:58.000Z"
+}

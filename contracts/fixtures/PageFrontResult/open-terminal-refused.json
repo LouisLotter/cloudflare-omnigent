@@ -1,0 +1,5 @@
+{
+  "action": "open_terminal",
+  "outcome": "refused",
+  "reason": "window_closed"
+}

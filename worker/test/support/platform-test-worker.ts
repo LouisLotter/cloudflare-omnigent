@@ -23,6 +23,8 @@ import type {
   InterceptProps,
   LauncherCall,
   LauncherResult,
+  PageFrontCall,
+  PageFrontResult,
   PagesCall,
   PagesResult,
   SupervisorReply,
@@ -100,7 +102,7 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     return super.computer(call);
   }
 
-  override pages(call: PagesCall): Promise<PagesResult> {
+  override pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
     assembly.maybeLose();
     return super.pages(call);
   }
@@ -143,6 +145,11 @@ export class WorkspaceUnderFakes extends PlatformWorkspaceDO {
 
   protected override now() {
     return testComputers.now();
+  }
+
+  /** The setup terminal's checks run every few milliseconds, so a test need not wait (WP3.5). */
+  protected override terminalTiming() {
+    return testComputers.terminalTiming;
   }
 
   /** The production hooks the overrides above replace, as this test configuration wires them:

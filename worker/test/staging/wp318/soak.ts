@@ -7,17 +7,17 @@
 //   - `OmnigentServer.stagingRestartContainer`: stops the server container once, so the watchdog
 //     starts it again with the Worker's current secrets (the launcher's signing key, set after
 //     the bootstrap, reaches the server only at its next start);
-//   - `WorkspaceDO.fetch` under /__soak/terminal/<computer>/: the computer's setup terminal
-//     (ttyd, port 7681), forwarded natively, until the platform pages (WP3.5) provide it;
 //   - SoakRun: the schedule (plan.ts), started by the owner's Start click on /__soak, ticked by
 //     the production cron; its events go to Workers Logs and the results bucket. Around each
 //     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
 //     object's version switch.
 // soak-config.ts renders the configuration: the bootstrap's own, with this module as main, the
-// SOAK binding and the RESULTS bucket added.
+// SOAK binding and the RESULTS bucket added. The setup terminal is the platform pages' own (WP3.5:
+// the web Worker's /platform/computers/<computer>, bridged in WorkspaceDO); this module never
+// overrides WorkspaceDO's `fetch`, so the soak runs the production bridge.
 
 import { DurableObject } from "cloudflare:workers";
-import { ComputerId, WORKSPACE_INTERFACE_VERSION } from "@cfo/contracts";
+import { WORKSPACE_INTERFACE_VERSION } from "@cfo/contracts";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../../src/computer/WorkspaceDO.ts";
 import production from "../../../src/index.ts";
 import { serverContainerOf } from "../../../src/server/container-port.ts";
@@ -30,16 +30,14 @@ export { ControlDO } from "../../../src/control/ControlDO.ts";
 export { DirectoryBackupGateway } from "../../../src/egress/backups.ts";
 export { ComputerApi, OmnigentRoute, PlatformInternal } from "../../../src/internal/entrypoints.ts";
 
-/** The setup terminal's port (the supervisor's ttyd, WP3.4). */
-const TERMINAL_PORT = 7681;
-const TERMINAL_PREFIX = "/__soak/terminal/";
-
 interface SoakEnv {
   readonly OMNIGENT: DurableObjectNamespace<OmnigentServer>;
   readonly WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
   readonly CONTROL: DurableObjectNamespace;
   readonly SOAK: DurableObjectNamespace<SoakRun>;
   readonly RESULTS: R2Bucket;
+  /** Omnigent's public URL (the web Worker's hostname), set by the bootstrap. */
+  readonly SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL?: string;
 }
 
 export class OmnigentServer extends PlatformOmnigentServer {
@@ -72,18 +70,6 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
   async stagingReset(reason: string): Promise<void> {
     logEvent("soak", "workspace_reset", { reason });
     this.ctx.abort(reason);
-  }
-
-  /** The setup terminal, forwarded natively to the container's ttyd (staging only). */
-  override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const rest = url.pathname.split("/").slice(4).join("/");
-    const container = this.runtimeContainer();
-    if (container === null || !container.running) {
-      return new Response("The computer is not running.", { status: 503 });
-    }
-    const target = new URL(`http://computer/${rest}${url.search}`);
-    return container.getTcpPort(TERMINAL_PORT).fetch(new Request(target, request));
   }
 }
 
@@ -219,12 +205,14 @@ async function computers(env: SoakEnv): Promise<unknown[]> {
   );
 }
 
-function page(status: unknown, list: unknown[]): Response {
+function page(status: unknown, list: unknown[], web: string | null): Response {
+  // The setup page is the platform pages' own, on the web Worker's hostname (WP3.5).
+  const setup = (id: string) =>
+    web === null ? "" : ` <a href="${web}/platform/computers/${id}">set up this computer</a>`;
   const rows = (list as { computerId: string; name: string }[])
     .map(
       (c) =>
-        `<li><code>${c.computerId}</code> ${c.name.replace(/[<>&"]/g, "")} ` +
-        `<a href="${TERMINAL_PREFIX}${c.computerId}/">setup terminal</a></li>`,
+        `<li><code>${c.computerId}</code> ${c.name.replace(/[<>&"]/g, "")}${setup(c.computerId)}</li>`,
     )
     .join("");
   const html = `<!doctype html><meta charset="utf-8"><title>WP3.18 soak</title>
@@ -236,13 +224,14 @@ function page(status: unknown, list: unknown[]): Response {
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+/** The web Worker's origin, from the bootstrap's setting; null if it is not a plain https origin. */
+function webOrigin(env: SoakEnv): string | null {
+  const base = env.SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL;
+  return base !== undefined && /^https:\/\/[a-z0-9.-]+$/.test(base) ? base : null;
+}
+
 async function soakRoute(request: Request, env: SoakEnv): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname.startsWith(TERMINAL_PREFIX)) {
-    const computerId = ComputerId.safeParse(url.pathname.split("/")[3]);
-    if (!computerId.success) return new Response("Not found.", { status: 404 });
-    return env.WORKSPACE.getByName(computerId.data).fetch(request);
-  }
   const run = env.SOAK.getByName("soak");
   if (request.method === "POST") {
     // Same-origin form posts only (the hostname is behind owner-only Access as well).
@@ -257,7 +246,7 @@ async function soakRoute(request: Request, env: SoakEnv): Promise<Response> {
   }
   const status = await run.status();
   if (url.pathname === "/__soak/status") return Response.json(status);
-  if (url.pathname === "/__soak") return page(status, await computers(env));
+  if (url.pathname === "/__soak") return page(status, await computers(env), webOrigin(env));
   return new Response("Not found.", { status: 404 });
 }
 

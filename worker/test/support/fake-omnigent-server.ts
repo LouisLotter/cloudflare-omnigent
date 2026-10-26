@@ -21,6 +21,7 @@ import {
   durabilityBodyShape,
   OutageRecord,
   outageOverlaps,
+  type ReplicationHealth,
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
 import {
@@ -42,6 +43,12 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
   private readonly records: OutageRecord[] = [];
   /** What `bootstrapStatus` answers. */
   bootstrap: BootstrapStatus | null = null;
+  /** What `replication` answers (WP3.5). */
+  replicationHealth: ReplicationHealth = {
+    state: "replicating",
+    lastSyncAt: null,
+    checkedAt: "2026-10-22T09:15:00.000Z",
+  };
 
   /** The response for the next forwarded request. */
   respondWith(response: Response): void {
@@ -69,6 +76,11 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
   async bootstrapStatus(call: OmnigentServerCall): Promise<BootstrapStatus | null> {
     checkVersion(call);
     return this.bootstrap;
+  }
+
+  async replication(call: OmnigentServerCall): Promise<ReplicationHealth> {
+    checkVersion(call);
+    return this.replicationHealth;
   }
 
   /** How many times `ensureStarted` was called. */

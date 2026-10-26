@@ -240,6 +240,13 @@ export interface ControllerDeps {
   readonly intercepts: (props: InterceptProps) => readonly InterceptTarget[];
   readonly timing?: ControllerTiming;
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  /**
+   * The setup terminal (WP3.5): ends every stream at once, synchronously, when a transition starts
+   * a credential-sensitive step (a stop's checkpoints, "Stop without saving", a sign-out run), so
+   * none of the step's commands runs while a stream is open. It must not call back into the
+   * controller.
+   */
+  readonly terminal?: { closeNow(reason: string): void };
 }
 
 /** The soonest the alarm is ever set after now. */
@@ -627,6 +634,7 @@ export class WorkspaceController {
           this.#log("host_refused", { generation, attempt: d.lifecycle.attempt });
           break;
         case "prepare_stop":
+          this.#closeTerminal(d, "the computer is stopping");
           d.stopJob = {
             generation,
             reason: after.stopPrep ?? "sleep",
@@ -638,6 +646,7 @@ export class WorkspaceController {
           };
           break;
         case "prepare_credential_stop":
+          this.#closeTerminal(d, "the computer is stopping without saving");
           d.stopJob = {
             generation,
             reason: after.stopPrep ?? "without_saving",
@@ -721,6 +730,7 @@ export class WorkspaceController {
         case "publish_credentials":
           break;
         case "run_sign_out":
+          this.#closeTerminal(d, "a sign-out started");
           d.signOut = {
             ...d.signOut,
             phase: SIGN_OUT_TABLE[d.signOut.phase].requested,
@@ -746,6 +756,12 @@ export class WorkspaceController {
       else if (before.state === "host_running" && withoutHost(after.state)) d.noHostSince = now;
     }
     return t;
+  }
+
+  /** The setup terminal closes before a credential-sensitive step (WP3.5). */
+  #closeTerminal(d: ComputerRecord, reason: string): void {
+    d.terminalOpenUntil = null;
+    this.#d.terminal?.closeNow(reason);
   }
 
   /** The container stopped, or a new generation starts: everything bound to the old one ends. */
@@ -1649,6 +1665,15 @@ export class WorkspaceController {
         signOut: r.signOut.phase,
         loginPossiblyLost: r.signOut.loginPossiblyLost,
         revocationRecorded: r.signOut.revocationRecorded,
+        // Additive (WP3.5): the rule `resolve_removal` applies, so the page offers it exactly then.
+        settled: signOutSettled({
+          phase: r.signOut.phase,
+          neverHeldLogin: !r.everHeldLogin,
+          loginPossiblyLost: r.signOut.loginPossiblyLost,
+          revocationRecorded: r.signOut.revocationRecorded,
+        }),
+        // Additive (WP3.5): a sign-out job runs now, whatever its persisted phase.
+        signOutRunning: r.signOut.job !== null,
       },
       // Additive fields (the schema is loose): the page's notices.
       noContact: !ctx.removalIntent && noContact(r.lastContactAt, now, this.#t.noContactMs),

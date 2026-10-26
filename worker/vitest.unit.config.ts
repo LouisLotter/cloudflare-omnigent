@@ -18,6 +18,8 @@ export const runtimeModules = [
   "src/internal/entrypoints.ts",
   "src/internal/upgrade-answer.ts",
   "src/egress/backups.ts",
+  // The pages' assets, bundled as text modules by Wrangler's rules (WP3.5): not loadable in Node.
+  "src/pages/assets.ts",
 ];
 
 // Pure modules only: nothing here may import from "cloudflare:workers".

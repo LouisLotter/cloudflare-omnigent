@@ -1,5 +1,7 @@
 // The Env types of the two deployments (AR-17), layered on the generated platform types.
 
+import type { WorkspaceDO } from "./computer/WorkspaceDO.ts";
+import type { ControlDO } from "./control/ControlDO.ts";
 import type { IngressEnv } from "./ingress/index.ts";
 import type { OmnigentServer } from "./server/OmnigentServer.ts";
 
@@ -27,11 +29,14 @@ export interface PlatformVars {
 export type PlatformEnv = Env & PlatformVars;
 
 /**
- * The web Worker (`wrangler.web.jsonc`): ingress, the forwarding path and, later, the platform
- * pages. It holds no Durable Object class and reaches the platform Worker's only through
- * cross-script bindings. Written by hand, and checked against `wrangler.web.jsonc` by a test,
- * because `wrangler types` generates one Worker's types per program.
+ * The web Worker (`wrangler.web.jsonc`): ingress, the forwarding path and the platform pages. It
+ * holds no Durable Object class and reaches the platform Worker's only through cross-script
+ * bindings. Written by hand, and checked against `wrangler.web.jsonc` by a test, because
+ * `wrangler types` generates one Worker's types per program. The pages call WORKSPACE and CONTROL
+ * only through `WorkspacePagesStub` and `ControlPagesStub` (`shared/rpc.ts`, WP3.5).
  */
 export interface WebEnv extends IngressEnv {
   readonly OMNIGENT: DurableObjectNamespace<OmnigentServer>;
+  readonly WORKSPACE: DurableObjectNamespace<WorkspaceDO>;
+  readonly CONTROL: DurableObjectNamespace<ControlDO>;
 }

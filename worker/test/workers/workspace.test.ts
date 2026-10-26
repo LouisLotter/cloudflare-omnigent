@@ -247,12 +247,19 @@ describe("WorkspaceDO", () => {
     const { stub, computer, computerId, client } = fresh();
     expect(await stub.reservation(call)).toBeNull();
     await client.send(client.provisionRequest("managed-7f3c2a9e"));
-    const size = {
+    // A page change carries the admitted owner and the session's intent token (WP3.5's page
+    // front); without them it is refused before any effect.
+    const owner = { sub: "owner-sub-canary", sessionId: "5e".repeat(32) };
+    const unsigned = {
       ...call,
       action: "set_size" as const,
       operationId: "op_00000000000000000000000001",
       size: "standard-3" as const,
     };
+    const withIntent = PagesResult.parse(await stub.pages({ ...call, action: "state", owner }));
+    const intent = withIntent.action === "state" ? withIntent.intentToken : undefined;
+    expect(intent).toMatch(/^[0-9a-f]{64}$/);
+    const size = { ...unsigned, owner, intent };
     const [first, second, state] = await stepsWithEviction(stub, [
       () => stub.pages(size),
       () => stub.pages(size),
@@ -267,6 +274,10 @@ describe("WorkspaceDO", () => {
       status: "stopped",
     });
     expect(await code(stub.pages({ ...size, size: "standard-4" }))).toBe("conflict");
+    // Checked after the evictions: with @cloudflare/vitest-plugin 1.4.0, evicting an object after
+    // one of its RPC methods threw never resolves.
+    expect(await code(stub.pages(unsigned))).toBe("forbidden");
+    expect(await code(stub.pages({ ...size, intent: "0".repeat(64) }))).toBe("forbidden");
     await client.send(client.resumeRequest());
     await settle(stub, computer);
     expect(computer.starts[0]?.instance).toBe("standard-3");

@@ -15,6 +15,7 @@ import {
   type Computer,
   currentProps,
   hostId,
+  pageChange,
   provision,
   roomyControl,
   settle,
@@ -103,7 +104,7 @@ describe("a computer through the assembled chain", () => {
     roomyControl("standard-1");
     const c = await provision();
     // A size chosen on the page above the cap applies at the next start, capped.
-    await c.stub.pages({
+    await pageChange(c, {
       action: "set_size",
       interfaceVersion: WORKSPACE_INTERFACE_VERSION,
       operationId: "op_01hzy3m8k6q4t2v9w7x5r0s1n3",

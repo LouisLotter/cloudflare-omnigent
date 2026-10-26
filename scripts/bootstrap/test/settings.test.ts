@@ -421,6 +421,9 @@ describe("rendering the configurations", () => {
     expect(rendered.durable_objects).toEqual({
       bindings: [
         { name: "OMNIGENT", class_name: "OmnigentServer", script_name: staging.platformWorker },
+        // The platform pages' bindings (WP3.5): every one goes to this installation's platform.
+        { name: "WORKSPACE", class_name: "WorkspaceDO", script_name: staging.platformWorker },
+        { name: "CONTROL", class_name: "ControlDO", script_name: staging.platformWorker },
       ],
     });
   });

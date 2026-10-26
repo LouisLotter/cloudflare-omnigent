@@ -22,6 +22,14 @@
       { "name": "WORKSPACE_CONTROLLER", "class_name": "WorkspaceUnderFakes" }
     ]
   },
+  // The platform pages' assets as text modules, as wrangler.web.jsonc bundles them (WP3.5).
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/xterm.js", "**/xterm.css", "**/addon-fit.js", "**/setup-client.js"],
+      "fallthrough": false
+    }
+  ],
   // The computers' checkpoint bucket (local R2): WorkspaceDO's reads and deletes, and the fenced
   // backup gateway's writes (egress/backups.ts).
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cfo-test-checkpoints" }],

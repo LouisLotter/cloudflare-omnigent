@@ -37,6 +37,7 @@ import {
   entry,
   hostId,
   identityOf,
+  pageChange,
   provision,
   roomyControl,
   sleep,
@@ -647,7 +648,7 @@ describe("egress/backups.ts: the fenced backup gateway (the write fence)", () =>
     const r = await provision();
     await r.client.send(r.client.terminateRequest());
     expect(
-      await r.stub.pages({
+      await pageChange(r, {
         action: "resolve_removal",
         interfaceVersion: WORKSPACE_INTERFACE_VERSION,
         operationId: "op_01hzy3m8k6q4t2v9w7x5r0s1n3",

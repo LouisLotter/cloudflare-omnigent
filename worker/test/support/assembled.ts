@@ -12,6 +12,8 @@ import {
   type ComputerId,
   type InterceptProps,
   type LauncherResult,
+  type PagesCall,
+  type PagesResult,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { CONTROL_OBJECT_NAME, workspaceObjectName } from "../../src/shared/rpc.ts";
@@ -156,4 +158,26 @@ export function currentProps(c: Computer): InterceptProps {
 /** The computer's identity as its route reads it. */
 export function identityOf(c: Computer) {
   return c.stub.identity({ interfaceVersion: WORKSPACE_INTERFACE_VERSION });
+}
+
+/** The admitted owner the tests' page changes come from (synthetic). */
+export const PAGE_OWNER = { sub: "owner-sub-canary", sessionId: "ab".repeat(32) } as const;
+
+/**
+ * A page change as the web Worker's pages send it (WP3.5's page front): the owner's session's
+ * request-intent token, read from the page state, with the owner. Without them WorkspaceDO
+ * refuses the change before any effect.
+ */
+export async function pageChange(
+  c: Pick<Computer, "stub">,
+  change: Exclude<PagesCall, { action: "state" }>,
+): Promise<PagesResult> {
+  const state = (await c.stub.pages({
+    action: "state",
+    interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+    owner: PAGE_OWNER,
+  })) as PagesResult;
+  const intent = state.action === "state" ? state.intentToken : undefined;
+  if (intent === undefined) throw new Error("no intent token in the page state");
+  return (await c.stub.pages({ ...change, owner: PAGE_OWNER, intent })) as PagesResult;
 }

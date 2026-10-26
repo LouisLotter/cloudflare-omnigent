@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Timestamp } from "./ids.ts";
 
 /** Versions of the replication position this contract package understands. */
 export const SUPPORTED_REPLICATION_POSITION_VERSIONS = [1] as const;
@@ -36,3 +37,23 @@ export const ReplicationPosition = z.strictObject({
   replicatedTxid: Txid,
 });
 export type ReplicationPosition = z.infer<typeof ReplicationPosition>;
+
+/**
+ * The replication warning on the cloud-computers page (FH-15's G3 part, WP3.5), as OmnigentServer
+ * judges it from the entrypoint's `GET :8001/status` (its `replication` member: Litestream's
+ * `txid`, `replicatedTxid` and last sync). Read on demand, never cached:
+ * - `replicating`: the replica holds every commit, or the last sync is recent;
+ * - `lagging`: commits are not yet in the replica and the last sync is older than the threshold;
+ * - `failing`: Litestream answered with an error;
+ * - `unknown`: the status could not be read (the server is starting, stopped or unreachable).
+ */
+export const ReplicationHealth = z.looseObject({
+  state: z.enum(["replicating", "lagging", "failing", "unknown"]),
+  /** Litestream's last sync to the replica, if it said. */
+  lastSyncAt: Timestamp.nullable(),
+  checkedAt: Timestamp,
+});
+export type ReplicationHealth = z.infer<typeof ReplicationHealth>;
+
+/** How old the last sync may be, with commits still unreplicated, before the page warns. */
+export const REPLICATION_LAG_WARNING_MS = 60_000;
