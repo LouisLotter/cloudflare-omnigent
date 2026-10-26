@@ -41,7 +41,10 @@ describe("bindingsBackend", () => {
     const computers = [{ computerId: PAGE_CMP, name: "managed-1" }];
     const seen: unknown[] = [];
     const { backend } = bindings({
-      control: (c) => (seen.push(c), { method: "list_computers", computers }),
+      control: (c) => {
+        seen.push(c);
+        return { method: "list_computers", computers };
+      },
     });
     expect(await backend.computers()).toEqual(computers);
     expect(seen).toEqual([{ method: "list_computers", interfaceVersion: 1 }]);
@@ -53,7 +56,12 @@ describe("bindingsBackend", () => {
   it("reads a computer's state with the owner, by its object name", async () => {
     const seen: unknown[] = [];
     const result = { action: "state", computer: pageState(), intentToken: "c3".repeat(32) };
-    const { backend, names } = bindings({ pages: (c) => (seen.push(c), result) });
+    const { backend, names } = bindings({
+      pages: (c) => {
+        seen.push(c);
+        return result;
+      },
+    });
     expect(await backend.state(PAGE_CMP, OWNER)).toEqual(result);
     expect(names).toEqual([PAGE_CMP]);
     expect(seen).toEqual([{ action: "state", interfaceVersion: 1, owner: OWNER }]);
