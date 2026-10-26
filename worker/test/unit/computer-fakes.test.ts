@@ -15,6 +15,7 @@ import {
 } from "../../src/shared/computer-port.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
 import { CONTROL_OBJECT_NAME, workspaceObjectName } from "../../src/shared/rpc.ts";
+import { newOperationId } from "../support/control-ids.ts";
 import { FakeComputerContainer } from "../support/fake-computer-container.ts";
 import { FakeControl } from "../support/fake-control.ts";
 import { FAKE_WORKSPACE_PATH, FakeWorkspace } from "../support/fake-workspace.ts";
@@ -326,7 +327,9 @@ describe("FakeControl", () => {
     // A release finishes its generation: a late request for it is refused.
     expect(await release(CMP, 3)).toEqual({ method: "release", released: false });
     expect(await codeOf(reserve(CMP, 3))).toBe("stale_generation");
-    expect(await reserve(CMP, 2)).toEqual({ method: "reserve", granted: true });
+    // Generation 2 is finished too, though its slot is still held until it is given back.
+    expect(await codeOf(reserve(CMP, 2))).toBe("stale_generation");
+    expect([...control.slots]).toEqual([`${CMP}/2`]);
     // A forgotten computer takes no slot again.
     await control.control({
       method: "forget_computer",
@@ -336,6 +339,81 @@ describe("FakeControl", () => {
     });
     expect(control.slots.size).toBe(0);
     expect(await codeOf(reserve(CMP, 99))).toBe("stale_generation");
+  });
+
+  it("refuses a finished generation while its slot is held, binds IDs to the fields acted on, and caps the registry", async () => {
+    const control = new FakeControl();
+    control.maxAwakeComputers = 1;
+    const granted = fresh();
+    expect(
+      await control.control({
+        method: "reserve",
+        ...rpc,
+        operationId: granted,
+        computerId: CMP,
+        generation: 1,
+      }),
+    ).toEqual({ method: "reserve", granted: true });
+    // The same request with a field added later is the same request.
+    expect(
+      await control.control({
+        method: "reserve",
+        ...rpc,
+        operationId: granted,
+        computerId: CMP,
+        generation: 1,
+        addedLater: true,
+      } as never),
+    ).toEqual({ method: "reserve", granted: true });
+    control.maxAwakeComputers = 0;
+    expect(
+      await control.control({
+        method: "reserve",
+        ...rpc,
+        operationId: fresh(),
+        computerId: CMP,
+        generation: 2,
+      }),
+    ).toMatchObject({ granted: false });
+    expect(
+      await codeOf(
+        control.control({
+          method: "reserve",
+          ...rpc,
+          operationId: granted,
+          computerId: CMP,
+          generation: 1,
+        }),
+      ),
+    ).toBe("stale_generation");
+    expect([...control.slots]).toEqual([`${CMP}/1`]);
+    // A newer version is refused before parsing, even for a method this version lacks.
+    expect(
+      await codeOf(
+        control.control({
+          method: "drain_all",
+          interfaceVersion: CONTROL_INTERFACE_VERSION + 1,
+        } as never),
+      ),
+    ).toBe("unsupported_version");
+    for (let i = 0; i < 1000; i += 1) {
+      await control.control({
+        method: "register_computer",
+        ...rpc,
+        operationId: newOperationId(),
+        name: `managed-${i.toString(16).padStart(8, "0")}`,
+      });
+    }
+    expect(
+      await codeOf(
+        control.control({
+          method: "register_computer",
+          ...rpc,
+          operationId: fresh(),
+          name: "managed-fffffffe",
+        }),
+      ),
+    ).toBe("conflict");
   });
 
   it("refuses a newer interface version, a malformed call, and fails when unavailable", async () => {
