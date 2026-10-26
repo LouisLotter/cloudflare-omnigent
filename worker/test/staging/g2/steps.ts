@@ -225,6 +225,8 @@ export const LIMITS = {
   recoveryHoldMs: 3 * 60_000,
   /** How long to wait for the watchdog to close a config_changed outage after the answer. */
   outageEndMs: 120_000,
+  /** How far back recovery looks for its config_changed outage (the last change before it). */
+  recoveryLookbackMs: 30 * 60_000,
   /** How far back to look for the release's config_changed outage. */
   releaseLookbackMs: 3 * 3_600_000,
   /** A kept session must have at least this long left when it is checked. */
@@ -774,7 +776,7 @@ async function afterAnswer(
       }
       return;
     case "rotate":
-      record.rotation = await rotationRefusesOldSession(ports, ctx, record);
+      record.rotation = await rotationRefusesOldSession(ports, ctx);
       return;
     case "replace-2":
       record.replica = record.answerResumed
@@ -791,7 +793,7 @@ async function afterAnswer(
         ...record.recovery,
         ...(await recoveryHolds(ports, record, record.answeredAt ?? ports.now())),
         // A server in recovery mode does not answer, so this outage stays open.
-        outage: await configChangedOutage(ports, record.switchSeenAt ?? ports.now(), false),
+        outage: await configChangedOutage(ports, ports.now() - LIMITS.recoveryLookbackMs, false),
       };
       return;
     case "resnapshot":
@@ -967,7 +969,7 @@ async function rc07(ports: G2Ports, ctx: StepContext) {
 }
 
 /** After the cookie key changed: the kept session is refused, cookie and bearer alike. */
-async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext, record: StepRecord) {
+async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext) {
   const kept = await ports.kept("rotate");
   if (kept === undefined) throw new Error("no session kept by replace-1");
   const checkedAt = ports.now();
@@ -985,7 +987,9 @@ async function rotationRefusesOldSession(ports: G2Ports, ctx: StepContext, recor
     // A refusal proves the key change only while the session was still valid (run 2, 7).
     beforeExpiry: kept.expiresAt !== null && checkedAt + LIMITS.sessionMarginMs < kept.expiresAt,
     cookieNames: kept.cookie.split("; ").map((pair) => pair.split("=")[0]),
-    outage: await configChangedOutage(ports, record.switchSeenAt ?? checkedAt, true),
+    // The watchdog may decide before this step first runs: count from the kept session, taken
+    // before the rotation (no other configuration change comes between them).
+    outage: await configChangedOutage(ports, kept.keptAt, true),
   };
 }
 

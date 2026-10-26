@@ -351,6 +351,7 @@ describe("rotate", () => {
     server.cookieKey = "k2";
     server.configCurrent = "fp-rotated";
     server.tick(1000); // the watchdog's controlled restart
+    server.clock += 30_000; // which came before the step's first tick on the new version
     const done = await runStep(server.ports(), ctx("rotate"));
     expect(done).toMatchObject({
       stage: "done",
