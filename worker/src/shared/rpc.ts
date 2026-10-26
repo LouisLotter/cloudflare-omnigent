@@ -114,7 +114,7 @@ export function workspaceObjectName(computerId: ComputerId): string {
 export const CONTROL_OBJECT_NAME = "control";
 
 /**
- * WorkspaceDO. Four callers, four narrow methods:
+ * WorkspaceDO. Each caller has its own narrow method (`writeAllowed` is documented below):
  * - `launcher`: `internal/platform-api.ts`, after the HMAC and the request's schema are checked
  *   (WP3.3). A repeated operation ID returns the recorded outcome (LAUNCHER_OPERATIONS).
  * - `computer`: `internal/computer-api.ts`, with the intercept's trusted props (WP3.3).
