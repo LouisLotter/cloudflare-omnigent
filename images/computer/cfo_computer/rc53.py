@@ -1,12 +1,14 @@
 """RC-53's scan: no live token in any published workspace layer.
 
-    python3 -I -m cfo_computer.rc53 --values <file> [--controls <file>] PATH...
+    python3 -I -m cfo_computer.rc53 [--values <file>] [--controls <file>] PATH...
     (from a checkout: python3 -I images/computer/tools/rc53_scan.py ...)
 
 Each PATH is a staged layer directory, a restored tree, or a layer archive as DirectoryBackup
 stores it (``tar+zstd``; also plain tar and tar.gz). Archives are decompressed and walked
-member by member. ``--values`` names a file with one secret per line (the launch token, runner
-binding tokens, every generation of delegated owner tokens, any GitHub token, the logins);
+member by member. ``--values`` names a file with one value per line, for synthetic values only:
+inside a computer the live values (the launch token, runner binding tokens, every generation of
+delegated owner tokens, any GitHub token, the logins) never touch disk, and the supervisor hands
+them to ``run`` in memory (``rc53_collect``);
 ``--controls`` names the canaries planted in every layer, each of which must be found in
 every PATH, so a clean result means something.
 
@@ -224,11 +226,11 @@ def run(paths: list[Path], values: list[str], controls: list[str]) -> tuple[int,
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--values", required=True, type=Path)
+    ap.add_argument("--values", type=Path, help="value file; omit to check controls only")
     ap.add_argument("--controls", type=Path)
     ap.add_argument("paths", nargs="+", type=Path)
     args = ap.parse_args(argv)
-    values = args.values.read_text().splitlines()
+    values = args.values.read_text().splitlines() if args.values else []
     controls = args.controls.read_text().splitlines() if args.controls else []
     code, report = run(args.paths, values, controls)
     print(json.dumps({"status": code, **report}, indent=1))

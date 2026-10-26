@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -166,22 +167,40 @@ def test_no_planted_token_in_any_archived_layer(tmp_path: Path) -> None:
         rig.close()
 
 
-def test_the_opt_in_staging_check_scans_each_staged_layer(tmp_path: Path) -> None:
-    """With ``<state>/rc53/enabled``, the supervisor collects the live values from the
-    workload's processes, the bridge files and the logins before each capture, and the worker
-    scans the staged layer with them; only counts are recorded."""
-    import os
+def _disk_holds(top: Path, values: list[str]) -> list[str]:
+    hits = []
+    for dirpath, _dirs, files in os.walk(top):
+        for name in files:
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                continue
+            data = full.read_bytes()
+            if any(v.encode() in data for v in values):
+                hits.append(str(full.relative_to(top)))
+    return hits
 
-    token = canary("hosttoken")
+
+def _rc53_rig(tmp_path: Path, token: str):
     holder = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         env={**os.environ, "OMNIGENT_HOST_TOKEN": token},
     )
     rig = Rig(tmp_path / "a", scope_pids=[holder.pid])
+    rig.boot()
+    (rig.layout.state / "rc53").mkdir()
+    (rig.layout.state / "rc53" / "enabled").write_text("")
+    rig.sup.rc53_tmp_roots = [tmp_path / "no-tmp"]
+    return holder, rig
+
+
+def test_the_opt_in_staging_check_keeps_values_in_memory(tmp_path: Path) -> None:
+    """With ``<state>/rc53/enabled``, the supervisor collects the live values (the workload's
+    environments, the bridges, the logins) before each capture and hands them to the worker
+    on an anonymous memory descriptor; the worker scans the staged layer. No value is written
+    to disk, a spec, a result or a log (Codex r2, finding 1)."""
+    token = canary("hosttoken")
+    holder, rig = _rc53_rig(tmp_path, token)
     try:
-        rig.boot()
-        (rig.layout.state / "rc53").mkdir()
-        (rig.layout.state / "rc53" / "enabled").write_text("")
         bridge = rig.home / ".omnigent" / "codex-native" / "b1"
         bridge.mkdir(parents=True)
         delegated = canary("delegated")
@@ -190,19 +209,143 @@ def test_the_opt_in_staging_check_scans_each_staged_layer(tmp_path: Path) -> Non
         )
         (rig.home / "work" / "notes.txt").write_text("no token here")
         op, job = rig.capture()
-        assert job["state"] == "staged"
+        assert job["state"] == "staged", job
         result = rig.result(op)["rc53"]
-        assert result["status"] == 0 and result["findings"] == 0 and result["values"] >= 2
-        values = (rig.layout.state / "rc53" / "values").read_text().splitlines()
-        assert token in values and delegated in values
-        assert oct((rig.layout.state / "rc53" / "values").stat().st_mode & 0o777) == "0o600"
-        # A token copied into a saved file is found, and the report never names it.
-        (rig.home / "work" / "leak.txt").write_text(f"export T={token}")
-        op, job = rig.capture()
-        result = rig.result(op)["rc53"]
-        assert result["status"] == 1 and result["findings"] >= 1
-        assert token not in json.dumps(rig.result(op))
-        assert any("RC-53" in a for a in rig.sup.alerts)
+        assert result == {**result, "status": 0, "findings": 0, "incomplete": 0}
+        assert result["values"] >= 2
+        assert token in rig.sup._rc53_values and delegated in rig.sup._rc53_values
+        assert not (rig.layout.state / "rc53" / "values").exists()
+        # Only the home holds a value (the bridge file, as Omnigent wrote it).
+        assert _disk_holds(rig.root, [token, delegated]) == [
+            "home/.omnigent/codex-native/b1/policy_hook.json"
+        ]
     finally:
         holder.kill()
         rig.close()
+
+
+def test_a_detected_token_is_never_offered_for_upload(tmp_path: Path) -> None:
+    """A finding fails the capture before it is reported staged (Codex r2, finding 4): the job
+    WorkspaceDO reads says failed, no layer is left to upload, and the published parent stays."""
+    token = canary("hosttoken")
+    holder, rig = _rc53_rig(tmp_path, token)
+    try:
+        op, first = rig.capture()
+        assert first["state"] == "staged"
+        rig.finish(op)
+        (rig.home / "work" / "leak.txt").write_text(f"export T={token}")
+        op, job = rig.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": first["treeDigest"]}
+        )
+        assert job == {
+            "kind": "capture",
+            "jobOperationId": op,
+            "state": "failed",
+            "reason": "policy_violation",
+            "pausedMs": job["pausedMs"],
+        }
+        assert list(rig.layout.staged.iterdir()) == []
+        assert not list(rig.layout.data.glob("pending-*.json"))
+        assert rig.result(op)["rc53"]["findings"] >= 1
+        assert token not in json.dumps(rig.result(op)) and token not in json.dumps(job)
+        assert rig.sup.published_digest == first["treeDigest"]
+        # The supervisor's own view of the job matches what WorkspaceDO reads.
+        assert rig.sup._capture_job_view(op, rig.result(op))["state"] == "failed"
+        # Remove the leak: the next capture is clean again.
+        (rig.home / "work" / "leak.txt").unlink()
+        _op, job = rig.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": first["treeDigest"]}
+        )
+        assert job["state"] == "unchanged"
+    finally:
+        holder.kill()
+        rig.close()
+
+
+def test_a_failed_collection_fails_the_capture(tmp_path: Path, monkeypatch) -> None:
+    from cfo_computer import rc53_collect
+
+    holder, rig = _rc53_rig(tmp_path, canary("t"))
+    try:
+
+        def broken(*a, **k):
+            raise OSError("collection failed")
+
+        monkeypatch.setattr(rc53_collect, "collect", broken)
+        _op, job = rig.capture()
+        assert job["state"] == "failed" and job["reason"] == "policy_violation", job
+        assert list(rig.layout.staged.iterdir()) == []
+    finally:
+        holder.kill()
+        rig.close()
+
+
+def test_rc53_verdict() -> None:
+    from cfo_computer.capture import rc53_verdict
+
+    assert rc53_verdict(0) is None
+    assert "live token" in rc53_verdict(1)
+    assert "completely" in rc53_verdict(3)
+
+
+def test_the_collector_asks_the_host_broker_for_the_github_token(tmp_path: Path) -> None:
+    """Production collection with a synthetic broker answer (Codex r2, finding 6): the
+    collector speaks git's credential format to every broker socket under its root, and the
+    supervisor's own collection before a capture finds the token in a staged layer."""
+    import socket
+    import tempfile
+    import threading
+
+    from cfo_computer import rc53_collect
+
+    github = "ghu_" + canary("github")
+    root = Path(tempfile.mkdtemp(prefix="cfo34-"))  # AF_UNIX paths must stay short
+    server = socket.socket(socket.AF_UNIX)
+    asked: list[str] = []
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                request = b""
+                while chunk := conn.recv(4096):
+                    request += chunk
+                asked.append(request.decode())
+                conn.sendall(
+                    "protocol=https\nhost=github.com\nusername=x-access-token\n"
+                    f"password={github}\n".encode()
+                )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    holder = rig = None
+    try:
+        (root / "omnigent-1000").mkdir()
+        server.bind(str(root / "omnigent-1000" / "credentials-0123456789abcdef.sock"))
+        server.listen(4)
+        thread.start()
+        home = root / "home"
+        home.mkdir()
+        values = rc53_collect.collect(home, tmp_roots=[], process_scope=set(), broker_root=root)
+        assert github in values
+        assert asked and "host=github.com" in asked[0] and "protocol=https" in asked[0]
+        # Without a broker root, no broker is asked.
+        assert github not in rc53_collect.collect(home, tmp_roots=[], process_scope=set())
+        assert len(asked) == 1
+        # The supervisor's collection, as in production: a layer holding the token fails.
+        holder, rig = _rc53_rig(tmp_path, canary("hosttoken"))
+        rig.sup.rc53_broker_root = root
+        (rig.home / "work" / "remote.txt").write_text(f"https://x-access-token:{github}@github.com")
+        op, job = rig.capture()
+        assert job["state"] == "failed" and job["reason"] == "policy_violation", job
+        assert len(asked) == 2 and github in rig.sup._rc53_values
+        assert github not in json.dumps(rig.result(op))
+    finally:
+        server.close()
+        if holder is not None:
+            holder.kill()
+        if rig is not None:
+            rig.close()
+        shutil.rmtree(root, ignore_errors=True)

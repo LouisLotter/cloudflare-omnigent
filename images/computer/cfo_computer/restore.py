@@ -137,30 +137,34 @@ def _source(layer_dir: Path, rel: str) -> str:
     return os.path.join(layer_dir, rel)
 
 
-def _forbidden_aliases(layer_dir: Path, policy: Policy) -> set[str]:
-    """Saved paths in a layer that are hard links to a file the policy does not save.
+def _forbidden_aliases(layer_dirs: list[Path], policy: Policy) -> list[set[str]]:
+    """Per layer, the saved paths that are hard links to a file the policy does not save.
 
     A layer from an older or a foreign capture could hold ``.codex/auth.json`` and a saved
     ``work/alias`` sharing its inode: stripping the first by name would leave its bytes in the
-    second. Every file in the layer directory is looked at, indexed or not. Never follows a
-    link."""
+    second. The forbidden inodes are gathered across ALL the restored layer directories before
+    any file is placed, so an alias in one layer of a credential in another is found too
+    (Codex r2, finding 2). Every file is looked at, indexed or not. Never follows a link."""
     forbidden: set[tuple[int, int]] = set()
-    saved: dict[tuple[int, int], list[str]] = {}
-    for dirpath, dirnames, filenames in os.walk(layer_dir):
-        rel_dir = os.path.relpath(dirpath, layer_dir)
-        if rel_dir == ".":
-            dirnames[:] = [d for d in dirnames if d != LAYER_METADATA_DIR]
-        for name in filenames:
-            rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-            st = os.lstat(os.path.join(dirpath, name))
-            if not stat.S_ISREG(st.st_mode):
-                continue
-            key = (st.st_dev, st.st_ino)
-            if policy.classify(rel).saved:
-                saved.setdefault(key, []).append(rel)
-            else:
-                forbidden.add(key)
-    return {rel for key in forbidden for rel in saved.get(key, ())}
+    saved: list[dict[tuple[int, int], list[str]]] = []
+    for layer_dir in layer_dirs:
+        by_inode: dict[tuple[int, int], list[str]] = {}
+        saved.append(by_inode)
+        for dirpath, dirnames, filenames in os.walk(layer_dir):
+            rel_dir = os.path.relpath(dirpath, layer_dir)
+            if rel_dir == ".":
+                dirnames[:] = [d for d in dirnames if d != LAYER_METADATA_DIR]
+            for name in filenames:
+                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+                st = os.lstat(os.path.join(dirpath, name))
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                key = (st.st_dev, st.st_ino)
+                if policy.classify(rel).saved:
+                    by_inode.setdefault(key, []).append(rel)
+                else:
+                    forbidden.add(key)
+    return [{rel for key in forbidden for rel in by_inode.get(key, ())} for by_inode in saved]
 
 
 def _place(layer_dir: Path, merge: str, entry: dict[str, Any]) -> None:
@@ -248,7 +252,10 @@ def restore_workspace(
         index: dict[str, dict[str, Any]] = {}
         aliases: set[str] = set()
         previous = None
-        for meta, layer_dir in zip(manifest["layers"], dirs, strict=True):
+        aliases_by_layer = _forbidden_aliases(dirs, policy)
+        for (meta, layer_dir), layer_aliases in zip(
+            zip(manifest["layers"], dirs, strict=True), aliases_by_layer, strict=True
+        ):
             layer = _read_layer_index(layer_dir, meta["indexSha256"], contract)
             if (
                 layer["layerId"] != meta["layerId"]
@@ -273,7 +280,6 @@ def restore_workspace(
                 aliases.difference_update(
                     a for a in list(aliases) if a == gone or a.startswith(gone + "/")
                 )
-            layer_aliases = _forbidden_aliases(layer_dir, policy)
             for entry in sorted(layer["entries"], key=lambda e: e["path"].encode("utf-8")):
                 if entry["path"] in layer_aliases:
                     aliases.add(entry["path"])  # never placed, stripped below

@@ -42,7 +42,7 @@ from . import (
 from . import logins as L
 from . import runners as R
 from .api import ComputerApi, Refused, Unanswered
-from .capture import resume_journal
+from .capture import journal_deadline, resume_journal
 from .contract import Contract, ContractError, error_body
 from .credentials import (
     CredentialAlert,
@@ -64,6 +64,14 @@ REPORT_INTERVAL_S = 30.0
 REPEAT_WAIT_S = 120.0
 #: How long a capture waits for a workload command (a CLI check, a sign-out) to finish.
 GATE_WAIT_S = 150.0
+#: The supervisor's own recovery runs this long after a pause's deadline (the guard's is first).
+PAUSE_RECOVERY_MARGIN_S = 1.0
+
+
+class _CaptureRefused(Exception):
+    """A capture refused before its worker started (its result is already set)."""
+
+
 LOGIN_INTERVAL_S = 300.0
 #: The capture worker is given this long after its lease before it is killed as wedged.
 CAPTURE_WORKER_GRACE_S = 900.0
@@ -154,7 +162,10 @@ class Supervisor:
         self.capture_margin_bytes = 64 << 20
         self.capture_grace_s = CAPTURE_WORKER_GRACE_S
         self.capture_fault = ""
+        # RC-53's live values, kept in this process's memory only (Codex r2, finding 1).
+        self._rc53_values: set[str] = set()
         self.rc53_tmp_roots: list[Path] | None = None  # where bridges under $TMPDIR live
+        self.rc53_broker_root: Path | None = None  # the broker sockets' root outside a container
         #: Variables added to every workload environment (the image's test variant points the
         #: fake CLIs at their fake provider; production adds nothing).
         self.extra_env: dict[str, str] = {}
@@ -571,7 +582,7 @@ class Supervisor:
                 "fault": self.capture_fault,
                 "record_kinds": True,
                 "stop_journal": str(self.layout.log / f"capture-{op}.stops"),
-                "rc53_values": self._rc53_values(),
+                "rc53": self._rc53_enabled(),
             }
             threading.Thread(target=self._capture_job, args=(op, spec), daemon=True).start()
         except BaseException:
@@ -585,21 +596,32 @@ class Supervisor:
         self.changed()
         return {"type": "capture", "job": self._job_view(op)}
 
-    def _rc53_values(self) -> str | None:
-        """RC-53's opt-in staging check: when ``<state>/rc53/enabled`` exists, refresh the live
-        token values before the capture, so its worker scans the staged layer with them."""
-        marker = self.layout.state / "rc53" / "enabled"
-        if not marker.exists():
-            return None
-        out = self.layout.state / "rc53" / "values"
+    def _rc53_enabled(self) -> bool:
+        """RC-53's opt-in staging check: on while ``<state>/rc53/enabled`` exists."""
+        return (self.layout.state / "rc53" / "enabled").exists()
+
+    def _rc53_descriptor(self) -> int:
+        """Collect the live token values now, add them to those kept in memory, and hand all
+        of them over on an anonymous memory descriptor: no value ever touches disk, argv or a
+        log (Codex r2, finding 1). Raises on a collection failure, which fails the capture."""
+        whole = self.whole_container
+        found = rc53_collect.collect(
+            self.account.home,
+            tmp_roots=self.rc53_tmp_roots,
+            process_scope=None if whole else set(self.scope_pids or ()) | self._live_workload(),
+            broker_root=Path("/tmp") if whole else self.rc53_broker_root,
+        )
+        self._rc53_values |= found
+        fd = os.memfd_create("cfo-rc53", os.MFD_CLOEXEC)
         try:
-            roots = (
-                None if self.whole_container else set(self.scope_pids or ()) | self._live_workload()
-            )
-            rc53_collect.refresh(out, self.account.home, self.rc53_tmp_roots, roots)
-        except Exception:  # noqa: BLE001 - the check reports, it never stops a save
-            self._alert("RC-53 values could not be collected")
-        return str(out) if out.exists() else None
+            data = memoryview("\0".join(sorted(self._rc53_values)).encode())
+            while data:
+                data = data[os.write(fd, data) :]
+            os.lseek(fd, 0, os.SEEK_SET)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
 
     def _failed_capture(self, op: str, reason: str, *, record: bool = True) -> dict[str, Any]:
         job = {
@@ -657,7 +679,17 @@ class Supervisor:
         spec_path = self.layout.log / f"capture-{op}.spec.json"
         result_path = self.layout.log / f"capture-{op}.result.json"
         result: dict[str, Any] = {"state": "failed", "reason": "copy_failed", "pausedMs": 0}
+        journal = Path(spec["stop_journal"])
+        values_fd: int | None = None
         try:
+            if spec.pop("rc53", False):
+                try:
+                    values_fd = self._rc53_descriptor()
+                except Exception:  # noqa: BLE001 - never staged with unknown values
+                    self._alert("RC-53: the live values could not be collected")
+                    result = {"state": "failed", "reason": "policy_violation", "pausedMs": 0}
+                    raise _CaptureRefused from None
+                spec["rc53_fd"] = values_fd
             spec_path.write_text(json.dumps(spec))
             with contextlib.suppress(FileNotFoundError):
                 result_path.unlink()
@@ -665,7 +697,15 @@ class Supervisor:
                 module_argv("cfo_computer.capture", str(spec_path), str(result_path)),
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
+                pass_fds=(values_fd,) if values_fd is not None else (),
             )
+            if values_fd is not None:
+                os.close(values_fd)
+                values_fd = None
+            watchdog = threading.Thread(
+                target=self._pause_watchdog, args=(worker, journal), daemon=True
+            )
+            watchdog.start()
             limit = spec["lease"]["hardMs"] / 1000.0 + self.capture_grace_s
             try:
                 worker.wait(timeout=limit)
@@ -673,11 +713,15 @@ class Supervisor:
                 worker.kill()
                 worker.wait()
             result = json.loads(result_path.read_text())
+        except _CaptureRefused:
+            pass
         except Exception:  # noqa: BLE001 - a setup failure or a dead worker: a failed capture
             self._alert("a capture failed before it produced a result")
         finally:
+            if values_fd is not None:
+                os.close(values_fd)
             try:
-                resumed = resume_journal(Path(spec["stop_journal"]))
+                resumed = resume_journal(journal)
                 if resumed:
                     self._alert(f"resumed {resumed} processes a capture left stopped")
             except Exception:  # noqa: BLE001
@@ -701,6 +745,32 @@ class Supervisor:
             self._alert("RC-53: a staged layer holds a live token value or could not be scanned")
         if result.get("skipped"):
             self._alert("the capture left paths out: " + ", ".join(sorted(result["skipped"])))
+
+    def _pause_watchdog(self, worker: subprocess.Popen[bytes], journal: Path) -> None:
+        """Independent recovery within the pause's own bound (Codex r2, finding 3): once the
+        lease is armed, if the worker is still running a moment after the lease's deadline,
+        resume whatever the capture asked to stop and has not seen released, whatever the
+        worker and its guard are doing."""
+        deadline = None
+        while worker.poll() is None and deadline is None:
+            deadline = journal_deadline(journal)
+            if deadline is None:
+                time.sleep(0.1)
+        if deadline is None:
+            return
+        wait = deadline + PAUSE_RECOVERY_MARGIN_S - time.monotonic()
+        try:
+            worker.wait(timeout=max(0.0, wait))
+            return  # the worker ended in time; the job's own replay follows
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            resumed = resume_journal(journal)
+        except Exception:  # noqa: BLE001
+            self._alert("the capture's stop journal could not be replayed at its deadline")
+            return
+        if resumed:
+            self._alert(f"resumed {resumed} processes at the pause deadline")
 
     def _capture_job_view(self, op: str, result: dict[str, Any]) -> dict[str, Any]:
         base = {"kind": "capture", "jobOperationId": op}

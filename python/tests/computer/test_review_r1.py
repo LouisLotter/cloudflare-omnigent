@@ -304,10 +304,9 @@ def test_a_guard_dying_after_a_stop_leaves_nothing_stopped(tmp_path: Path, fault
         assert job["state"] == "failed", job
         time.sleep(0.1)
         assert _state(proc.pid) not in ("T", "t"), "a stopped process was left behind"
-        assert proc.pid in [
-            int(x.split()[0])
-            for x in (rig.layout.log / f"capture-{op}.stops").read_text().splitlines()
-        ]
+        lines = (rig.layout.log / f"capture-{op}.stops").read_text().splitlines()
+        assert any(x.split()[:2] == ["req", str(proc.pid)] for x in lines), lines
+        assert lines[-1] == "released", "the replay retired what it resumed"
         # And the next capture works.
         rig.sup.capture_fault = ""
         assert rig.capture()[1]["state"] == "staged"

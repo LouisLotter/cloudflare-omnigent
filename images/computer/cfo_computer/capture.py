@@ -180,11 +180,22 @@ def _guard_dies_after_stop(guard: Guard, pid: int, start: int, fault: str) -> st
     guard.proc.wait()
     if fault.endswith("worker_too"):
         os._exit(9)
+    if fault.endswith("worker_hangs"):
+        while True:
+            time.sleep(3600)
     raise F.FreezeError("lease guard is gone")
 
 
 class StopJournal:
-    """The pause's own record of every stop and freeze it asked for, one line each."""
+    """The pause's own record of what it asked the guard to stop, and what came of it.
+
+    One line each: ``deadline <monotonic s>`` when the lease is armed; ``req <pid> <start>`` or
+    ``req cgroup <dir>`` BEFORE the guard is asked; then ``ok ...`` when the guard stopped it,
+    or ``refused ...`` when it did not (a process already stopped by someone else, a frozen
+    cgroup, a reused PID, an ended lease); and ``released`` once the guard has conclusively
+    resumed everything, or a replay has. Only requested-and-not-retired effects are ever
+    resumed (Codex r2, findings 3 and 5).
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -196,14 +207,66 @@ class StopJournal:
             fh.flush()
 
 
-def resume_journal(path: Path) -> int:
-    """Resume what a capture asked to pause and may have left paused.
+def read_rc53_values(spec: dict[str, Any]) -> list[str] | None:
+    """The live token values the supervisor handed over on an anonymous memory descriptor,
+    or None when the RC-53 check is off. They are never written to disk, argv or a log."""
+    fd = spec.get("rc53_fd")
+    if fd is None:
+        return None
+    chunks = []
+    with os.fdopen(int(fd), "rb") as fh:
+        while block := fh.read(1 << 20):
+            chunks.append(block)
+    data = b"".join(chunks)
+    return [v for v in data.decode("utf-8", "replace").split("\0") if v]
 
-    Run by the worker when its guard is gone, and by the supervisor whenever a worker has
-    exited, however: the last, independent recovery if both the guard and the worker died
-    during a pause. A process is resumed only if it is still stopped and still has the start
-    time the capture saw (never a reused PID); a process that was already stopped before the
-    capture is never in the journal (the freezer leaves it alone). A frozen cgroup is thawed.
+
+def rc53_verdict(code: int) -> str | None:
+    """Why a staged layer may not be offered for upload, or None when it may."""
+    if code == 0:
+        return None
+    if code == 1:
+        return "RC-53: the staged layer holds a live token value"
+    return "RC-53: the staged layer could not be scanned completely"
+
+
+def unresolved(lines: list[str]) -> list[tuple[str, ...]]:
+    """The effects a capture asked for and has not seen refused or released."""
+    pending: dict[tuple[str, ...], bool] = {}
+    for line in lines:
+        parts = tuple(line.split())
+        if not parts:
+            continue
+        if parts == ("released",):
+            pending.clear()
+        elif parts[0] in ("req", "ok") and len(parts) == 3:
+            pending[parts[1:]] = True
+        elif parts[0] == "refused" and len(parts) == 3:
+            pending.pop(parts[1:], None)
+    return list(pending)
+
+
+def journal_deadline(path: Path) -> float | None:
+    """The armed lease's deadline (CLOCK_MONOTONIC, the same in every process), if any."""
+    try:
+        for line in path.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == "deadline":
+                return float(parts[1])
+    except (FileNotFoundError, ValueError):
+        pass
+    return None
+
+
+def resume_journal(path: Path) -> int:
+    """Resume what a capture asked to pause and has not seen released; then retire it.
+
+    Run by the worker when its guard is gone, by the supervisor at the lease's deadline if the
+    worker has not finished by then, and by the supervisor whenever a worker has exited. Every
+    unresolved process gets SIGCONT whatever its state, if it still has the start time the
+    capture recorded (never a reused PID): a SIGCONT also cancels a SIGSTOP still pending on a
+    process in uninterruptible sleep. Every unresolved cgroup is thawed. A process the guard
+    refused, or one stopped again after a conclusive release, is never touched.
     Returns how many processes and cgroups it resumed.
     """
     try:
@@ -211,22 +274,17 @@ def resume_journal(path: Path) -> int:
     except FileNotFoundError:
         return 0
     resumed = 0
-    for line in lines:
-        parts = line.split()
-        if len(parts) == 2 and parts[0] == "cgroup":
+    for ident in unresolved(lines):
+        if ident[0] == "cgroup":
             try:
-                with open(os.path.join(parts[1], "cgroup.freeze")) as fh:
-                    frozen = fh.read().strip() == "1"
-                if frozen:
-                    F.thaw_cgroup(parts[1])
-                    resumed += 1
+                F.thaw_cgroup(ident[1])
+                resumed += 1
             except OSError:
                 continue
-        elif len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            pid, start = int(parts[0]), int(parts[1])
-            st = P.read_stat(pid)
-            if st is not None and st[0] in ("T", "t") and st[3] == start:
-                resumed += F.thaw_pids([(pid, start)])
+        elif ident[0].isdigit() and ident[1].isdigit():
+            resumed += F.thaw_pids([(int(ident[0]), int(ident[1]))])
+    with open(path, "a") as fh:
+        fh.write("released\n")
     return resumed
 
 
@@ -246,6 +304,7 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     fault = spec.get("fault", "")
     paused_ms = 0
     result["layerId"] = layer_id
+    rc53_values = read_rc53_values(spec)
 
     snapshot.mkdir(parents=True, exist_ok=True)
     clean_temporaries(snapshot)
@@ -272,8 +331,11 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
 
     # 3. The guard, armed only once ready, so its start-up never eats the lease.
     guard = Guard(hard_s, log_dir / f"lease-{layer_id}.json", layer_id)
+    journal = StopJournal(Path(spec["stop_journal"])) if spec.get("stop_journal") else None
     try:
         guard.wait_ready()
+        if journal is not None:
+            journal.add(f"deadline {time.monotonic() + hard_s:.3f}")
         guard.send("arm")
         deadline = time.monotonic() + hard_s - RELEASE_MARGIN_S
 
@@ -288,21 +350,26 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         workload = {int(p) for p in spec.get("workload_pids", [])}
         scope_pids = spec.get("scope_pids")
         cgroup_dir = spec.get("cgroup_dir")
-        journal = StopJournal(Path(spec["stop_journal"])) if spec.get("stop_journal") else None
+
+        def note(kind: str, ident: str) -> None:
+            if journal is not None:
+                journal.add(f"{kind} {ident}")
 
         def request_stop(pid: int, start: int) -> str:
             # Written down before the guard is asked: a guard that stops the process and dies
             # before answering leaves it recoverable from the journal (Codex r1, finding 8).
-            if journal is not None:
-                journal.add(f"{pid} {start}")
+            note("req", f"{pid} {start}")
             if fault.startswith("guard_dies_after_stop"):
                 return _guard_dies_after_stop(guard, pid, start, fault)
-            return guard.ask(f"stop {pid} {start}", f"stop {pid}")
+            answer = guard.ask(f"stop {pid} {start}", f"stop {pid}")
+            note("ok" if answer == "ok" else "refused", f"{pid} {start}")
+            return answer
 
         def request_freeze(cg: str) -> str:
-            if journal is not None:
-                journal.add(f"cgroup {cg}")
-            return guard.ask(f"freeze {cg}", "freeze")
+            note("req", f"cgroup {cg}")
+            answer = guard.ask(f"freeze {cg}", "freeze")
+            note("ok" if answer == "ok" else "refused", f"cgroup {cg}")
+            return answer
 
         if cgroup_dir:
             fz: F.SignalFreezer | F.CgroupFreezer = F.CgroupFreezer(
@@ -361,7 +428,10 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         finally:
             # 6. Release. The guard resumes; if it is gone, resume what it confirmed ourselves.
             answer = guard.release()
-            if answer == "gone":
+            if answer in ("released", "expired"):
+                if journal is not None:
+                    journal.add("released")  # the guard resumed everything it stopped
+            elif answer == "gone":
                 fz.thaw()
                 if journal is not None:
                     resume_journal(journal.path)  # also what was asked for but not answered
@@ -428,20 +498,24 @@ def run_capture(spec: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     except (OSError, StageError, ValueError) as exc:
         shutil.rmtree(layer_dir, ignore_errors=True)
         raise CaptureFailed("stage_failed", type(exc).__name__) from exc
-    rc53_values = spec.get("rc53_values")
-    if rc53_values:
+    if rc53_values is not None:
         # The opt-in staging check (RC-53): the staged layer holds none of the live tokens.
+        # A finding or an incomplete scan fails the capture: the layer is never offered for
+        # upload (Codex r2, finding 4). Only counts are recorded, never a value.
         from . import rc53
 
-        values = [v for v in Path(rc53_values).read_text().splitlines() if v]
-        code, report = rc53.run([layer_dir], values, [])
+        code, report = rc53.run([layer_dir], rc53_values, [])
         result["rc53"] = {
             "status": code,
-            "values": len(values),
+            "values": len(rc53_values),
             "files": report["files"],
             "findings": len(report["findings"]),
             "incomplete": len(report["incomplete"]),
         }
+        verdict = rc53_verdict(code)
+        if verdict is not None:
+            shutil.rmtree(layer_dir, ignore_errors=True)
+            raise CaptureFailed("policy_violation", verdict)
     _write_json(data_dir / f"pending-{layer_id}.json", entries)
     result.update(
         state="staged",
@@ -464,11 +538,13 @@ def main() -> int:
     except CaptureFailed as exc:
         result.update(state="failed", reason=exc.reason, detail=str(exc)[:300])
     except Exception as exc:  # noqa: BLE001 - any failure fails the capture, reported
+        # Where it failed, never the exception's text, which could quote a value.
+        frames = traceback.extract_tb(exc.__traceback__)[-5:]
         result.update(
             state="failed",
             reason="copy_failed",
             detail=type(exc).__name__,
-            trace=traceback.format_exc(limit=5)[-1500:],
+            trace=[f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in frames],
         )
     result.setdefault("pausedMs", 0)
     _write_json(result_path, result)
