@@ -185,9 +185,65 @@ def side_servers() -> None:
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
+def launcher_checks() -> None:
+    """The final run's deployed check of the launcher API on platform.internal (WP3.3): an unsigned
+    call, a call signed with the key the platform Worker forwards, and one signed with another
+    key. Each records its status and how the reply was framed (WP3.6 needs a known length)."""
+    import hashlib
+    import hmac
+    import http.client
+
+    key = os.environ.get("CFO_LAUNCHER_SIGNING_KEY")
+    key_id = os.environ.get("CFO_LAUNCHER_SIGNING_KEY_ID")
+    if not key or not key_id:
+        LOG.write("launcher_check", name="configured", ok=False)
+        return
+    time.sleep(5)
+
+    def call(name: str, signing_key: str | None, expected: int) -> None:
+        body = json.dumps(
+            {"operation": "prepare", "operationId": secrets.token_hex(16), "protocolVersion": 1},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        headers = {"content-type": "application/json"}
+        if signing_key is not None:
+            ts = str(int(time.time()))
+            digest = hashlib.sha256(body).hexdigest()
+            message = "\n".join(["cfo-launcher-v1", "prepare", key_id, ts, digest]).encode()
+            headers.update({
+                "X-Omnigent-Signing-Key-Id": key_id,
+                "X-Omnigent-Timestamp": ts,
+                "X-Omnigent-Signature": hmac.new(signing_key.encode(), message, hashlib.sha256).hexdigest(),
+            })
+        try:
+            conn = http.client.HTTPConnection("platform.internal", 80, timeout=15)
+            conn.request("POST", "/launcher/prepare", body=body, headers=headers)
+            response = conn.getresponse()
+            data = response.read()
+            LOG.write(
+                "launcher_check",
+                name=name,
+                status=response.status,
+                ok=response.status == expected,
+                contentLength=response.getheader("content-length"),
+                lengthMatches=response.getheader("content-length") == str(len(data)),
+                chunked=(response.getheader("transfer-encoding") or "").lower() == "chunked",
+                body=data[:200].decode("utf-8", "replace") if response.status == 200 else None,
+            )
+            conn.close()
+        except Exception as error:  # noqa: BLE001
+            LOG.write("launcher_check", name=name, ok=False, error=type(error).__name__)
+
+    call("unsigned", None, 401)
+    call("signed", key, 200)
+    call("other_key", "cfo-canary-some-other-key-0000000000000000", 401)
+
+
 async def main() -> None:
     LOG.write("boot", pid=os.getpid())
     side_servers()
+    threading.Thread(target=launcher_checks, daemon=True).start()
     async with serve(
         handler, "0.0.0.0", 8000 + PORT_OFFSET, process_request=process_request, ping_interval=30,
         max_size=128 * 1024 * 1024,

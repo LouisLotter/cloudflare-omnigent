@@ -204,6 +204,8 @@ def analyse(out: Path, deploys_path: Path | None) -> dict:
         "missingSwitches": missing,
         "checks": [{k: r.get(k) for k in ("variant", "name", "status", "ok", "wall")}
                    for r in probe if r.get("ev") == "check"],
+        "launcherChecks": [{k: r.get(k) for k in ("name", "status", "ok", "contentLength", "lengthMatches", "chunked", "body", "error")}
+                           for r in server if r.get("ev") == "launcher_check"],
         "unexplainedEnds": unexplained,
         "binaryEchoes": binary,
         "ladder": ladder,

@@ -70,6 +70,8 @@
   "vars": {
     "CFO_INSTALLATION_ID": "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
     "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner-canary",
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-staging",
+    "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY": "cfo-canary-launcher-key-staging-000000000",
     "WP33_MODE": "final",
     "WP33_RUN_TAG": "final-1"
   }
