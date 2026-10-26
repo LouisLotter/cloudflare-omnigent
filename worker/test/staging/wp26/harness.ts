@@ -32,6 +32,8 @@ interface StagingEnv {
   readonly RUN: DurableObjectNamespace<RestoreRun>;
   readonly RESULTS: R2Bucket;
   readonly SEED_MB?: string;
+  /** The run's object: a new name starts a new run on a redeploy (a finished one stays done). */
+  readonly RUN_NAME?: string;
 }
 
 const SEEDER_PORT = 8080;
@@ -197,14 +199,14 @@ export class RestoreRun extends DurableObject<StagingEnv> {
 
 export default {
   async scheduled(_controller, env): Promise<void> {
-    await env.RUN.getByName("run").tick();
+    await env.RUN.getByName(env.RUN_NAME ?? "run").tick();
   },
   async fetch(request, env): Promise<Response> {
     // Behind the staging tool's owner-only Access application; read-only.
     if (new URL(request.url).pathname !== "/" || request.method !== "GET") {
       return new Response("not found", { status: 404 });
     }
-    return Response.json(await env.RUN.getByName("run").status(), {
+    return Response.json(await env.RUN.getByName(env.RUN_NAME ?? "run").status(), {
       headers: { "cache-control": "no-store" },
     });
   },
