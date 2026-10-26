@@ -12,7 +12,7 @@ import os
 import subprocess
 
 from conftest import requires_docker
-from harness_stack import BUCKET, HERE, NETWORK, Stack, docker
+from harness_stack import BUCKET, HERE, NETWORK, PROJECT, Stack, docker
 
 pytestmark = requires_docker
 
@@ -45,7 +45,7 @@ def test_launcher_fence_in_process(stack: Stack) -> None:
                 "run",
                 "--rm",
                 "--name",
-                "cfo-wp25-server-fence",
+                f"{PROJECT}-server-fence",
                 "--network",
                 NETWORK,
                 "--env-file",

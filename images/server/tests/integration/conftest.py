@@ -30,7 +30,8 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 IMAGE = os.environ.get("CFO_IT_IMAGE", "cfo-wp23-server:dev")
-PROJECT = "cfo-wp23"
+#: The Compose project, which also names the server containers; a gate rerun may set its own.
+PROJECT = os.environ.get("CFO_IT_PROJECT", "cfo-wp23")
 NETWORK = f"{PROJECT}_default"
 BUCKET = "cfo-wp23-replica"
 OWNER = "owner"
