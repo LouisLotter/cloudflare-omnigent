@@ -401,7 +401,7 @@ export class FakeWorkspace implements WorkspaceRpc {
     };
   }
 
-  /** The backup gateway's fence: this computer, no removal intent, the running generation, and
+  /** The backup gateway's fence: this computer, not fully removed, the running generation, and
    * for a credential bundle a key under this computer's prefix (the fake keeps no upload list). */
   async writeAllowed(raw: WriteCheck): Promise<WriteDecision> {
     const parsed = WriteCheck.safeParse(raw);
@@ -409,7 +409,9 @@ export class FakeWorkspace implements WorkspaceRpc {
     checkVersion(parsed.data.interfaceVersion);
     const call = parsed.data;
     if (call.computerId !== this.computerId) return { allowed: false, reason: "unknown_computer" };
-    if (this.context.removalIntent) return { allowed: false, reason: "removed" };
+    // The lead's refined policy: only a fully removed computer is refused as removed, so a
+    // removal's sign-out run can publish its tombstones.
+    if (this.context.state === "removed") return { allowed: false, reason: "removed" };
     const live = containerMayRun(this.context.state) && this.context.state !== "waking";
     if (!live || call.generation !== this.generation) {
       return { allowed: false, reason: "stale_generation" };
