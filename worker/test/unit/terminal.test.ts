@@ -201,6 +201,18 @@ describe("terminal windows and capabilities", () => {
     ).toMatchObject({ outcome: "refused", reason: "window_closed" });
   });
 
+  it("reconnects only the Access session that opened the window", async () => {
+    const h = harness();
+    const one = await h.open(OP(1));
+    const other = { ...OWNER, sessionId: "cd".repeat(32) };
+    expect(
+      await h.bridge.open({ operationId: OP(2), owner: other, window: one.window }),
+    ).toMatchObject({ outcome: "refused", reason: "window_closed" });
+    expect(
+      await h.bridge.open({ operationId: OP(3), owner: OWNER, window: one.window }),
+    ).toMatchObject({ outcome: "accepted" });
+  });
+
   it("opens no second window for a repeated operation ID", async () => {
     const h = harness();
     const first = await h.open(OP(7));

@@ -123,6 +123,8 @@ const WindowRecord = z.strictObject({
   open: z.boolean(),
   generation: z.number().int().min(0).nullable(),
   until: Millis.nullable(),
+  /** The Access session that opened the window: only it may reconnect to the window. */
+  sessionId: z.string().max(128).nullable().default(null),
 });
 type WindowRecord = z.infer<typeof WindowRecord>;
 
@@ -141,7 +143,13 @@ type CapabilityRecord = z.infer<typeof CapabilityRecord>;
 
 const OpRecord = z.strictObject({ window: z.number().int().min(1), at: Millis });
 
-const CLOSED_WINDOW: WindowRecord = { window: 0, open: false, generation: null, until: null };
+const CLOSED_WINDOW: WindowRecord = {
+  window: 0,
+  open: false,
+  generation: null,
+  until: null,
+  sessionId: null,
+};
 
 /** Why an upgrade was refused; logged, never sent to the browser. */
 export type UpgradeRefusal =
@@ -261,7 +269,12 @@ export class TerminalBridge {
     let wanted = call.window;
     if (wanted === null && prior.success) wanted = prior.data.window;
     if (wanted !== null) {
-      if (wanted !== w.window || !this.#isOpen(w) || w.generation !== target.generation) {
+      if (
+        wanted !== w.window ||
+        !this.#isOpen(w) ||
+        w.generation !== target.generation ||
+        w.sessionId !== call.owner.sessionId
+      ) {
         return refused("window_closed");
       }
       return this.#issue(w, call.owner);
@@ -274,6 +287,7 @@ export class TerminalBridge {
       open: true,
       generation: target.generation,
       until: now + this.#t.windowMs,
+      sessionId: call.owner.sessionId,
     };
     this.#d.store.transaction(() => {
       this.#dropCapabilities();
@@ -331,7 +345,13 @@ export class TerminalBridge {
     if (wasOpen || this.#d.store.keys(CAP_PREFIX, 1).length > 0) {
       this.#d.store.transaction(() => {
         this.#dropCapabilities();
-        this.#d.store.put(WINDOW_KEY, { ...w, open: false, until: null, generation: null });
+        this.#d.store.put(WINDOW_KEY, {
+          ...w,
+          open: false,
+          until: null,
+          generation: null,
+          sessionId: null,
+        });
       });
     }
     if (wasOpen) {
