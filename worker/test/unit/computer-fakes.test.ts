@@ -306,6 +306,38 @@ describe("FakeControl", () => {
     expect(control.slots.size).toBe(0);
   });
 
+  it("finishes generations in order, as ControlDO does", async () => {
+    const control = new FakeControl();
+    control.maxAwakeComputers = 1;
+    const other = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4";
+    const reserve = (computerId: string, generation: number, operationId = fresh()) =>
+      control.control({ method: "reserve", ...rpc, operationId, computerId, generation });
+    const release = (computerId: string, generation: number) =>
+      control.control({ method: "release", ...rpc, operationId: fresh(), computerId, generation });
+    const granted = fresh();
+    expect(await reserve(CMP, 1, granted)).toEqual({ method: "reserve", granted: true });
+    // The computer's next generation replaces its older slot instead of competing with it.
+    expect(await reserve(CMP, 2)).toEqual({ method: "reserve", granted: true });
+    expect([...control.slots]).toEqual([`${CMP}/2`]);
+    expect(await reserve(other, 1)).toMatchObject({ granted: false, awake: 1, limit: 1 });
+    // An older generation, or a replay of its grant, takes no slot.
+    expect(await codeOf(reserve(CMP, 1))).toBe("stale_generation");
+    expect(await codeOf(reserve(CMP, 1, granted))).toBe("stale_generation");
+    // A release finishes its generation: a late request for it is refused.
+    expect(await release(CMP, 3)).toEqual({ method: "release", released: false });
+    expect(await codeOf(reserve(CMP, 3))).toBe("stale_generation");
+    expect(await reserve(CMP, 2)).toEqual({ method: "reserve", granted: true });
+    // A forgotten computer takes no slot again.
+    await control.control({
+      method: "forget_computer",
+      ...rpc,
+      operationId: fresh(),
+      computerId: CMP,
+    });
+    expect(control.slots.size).toBe(0);
+    expect(await codeOf(reserve(CMP, 99))).toBe("stale_generation");
+  });
+
   it("refuses a newer interface version, a malformed call, and fails when unavailable", async () => {
     const control = new FakeControl();
     expect(
