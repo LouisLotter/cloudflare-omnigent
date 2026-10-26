@@ -470,15 +470,42 @@ function isPolicyContainer(entry: unknown): boolean {
  * name and the class. So the checked-in production configuration, which leaves its container
  * names to Wrangler, deploys to staging under the deployment's names, as its Worker does under
  * `--name`. A container that names itself keeps its name, which must then be the deployment's
- * (resourceProblems), so nothing is deployed under another or a production name. Idempotent.
+ * (resourceProblems), so nothing is deployed under another or a production name. Likewise an R2
+ * bucket named after the configuration's own Worker, `<config name>-<suffix>` (the checked-in
+ * configuration's `cloudflare-omnigent-checkpoints`), becomes `<deployment>-<suffix>`; any other
+ * bucket name is kept, and refused unless it is the deployment's. Idempotent.
  */
 export function withStagingNames(
   raw: Readonly<Record<string, unknown>>,
   name: string,
 ): Readonly<Record<string, unknown>> {
-  if (!Array.isArray(raw.containers)) return raw;
+  const buckets = stagingBuckets(raw, name);
+  const withBuckets = buckets === null ? raw : { ...raw, r2_buckets: buckets };
+  if (!Array.isArray(withBuckets.containers)) return withBuckets;
+  const containers = stagingContainers(withBuckets.containers, name);
+  return containers === null ? withBuckets : { ...withBuckets, containers };
+}
+
+/** The configuration's buckets named after its own Worker, renamed for `name`; null if none. */
+function stagingBuckets(raw: Readonly<Record<string, unknown>>, name: string): unknown[] | null {
+  const own = typeof raw.name === "string" && raw.name !== name ? `${raw.name}-` : null;
+  if (own === null || !Array.isArray(raw.r2_buckets)) return null;
   let changed = false;
-  const containers = raw.containers.map((entry: unknown) => {
+  const buckets = raw.r2_buckets.map((entry: unknown) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const b = entry as Record<string, unknown>;
+    if (typeof b.bucket_name !== "string" || !b.bucket_name.startsWith(own)) return b;
+    const suffix = b.bucket_name.slice(own.length);
+    if (suffix === "") return b;
+    changed = true;
+    return { ...b, bucket_name: `${name}-${suffix}` };
+  });
+  return changed ? buckets : null;
+}
+
+function stagingContainers(entries: readonly unknown[], name: string): unknown[] | null {
+  let changed = false;
+  const containers = entries.map((entry: unknown) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
     const c = entry as Record<string, unknown>;
     if (c.name !== undefined || typeof c.class_name !== "string") return c;
@@ -491,7 +518,7 @@ export function withStagingNames(
     changed = true;
     return { ...c, name: `${name}-${slug}` };
   });
-  return changed ? { ...raw, containers } : raw;
+  return changed ? containers : null;
 }
 
 /** True when a staging deploy uploads this configuration with names it did not carry. */

@@ -350,12 +350,23 @@ type Raw = Readonly<Record<string, unknown>>;
 /**
  * The platform Worker's configuration for this installation: the checked-in one
  * (worker/wrangler.jsonc) with its name, account and variables. Containers keep the names
- * Wrangler derives from the Worker's name.
+ * Wrangler derives from the Worker's name; R2 buckets named after the checked-in Worker
+ * (`<its name>-<suffix>`, the computers' `…-checkpoints`) are named after this one (WP3.18).
  */
 export function renderPlatformConfig(base: Raw, plan: Installation): Record<string, unknown> {
   if ("vars" in base) throw new Error("the platform configuration already has variables");
+  const own = typeof base.name === "string" ? `${base.name}-` : null;
+  const buckets = Array.isArray(base.r2_buckets)
+    ? base.r2_buckets.map((entry: unknown) => {
+        const b = entry as Record<string, unknown>;
+        return own !== null && typeof b.bucket_name === "string" && b.bucket_name.startsWith(own)
+          ? { ...b, bucket_name: `${plan.platformWorker}-${b.bucket_name.slice(own.length)}` }
+          : b;
+      })
+    : undefined;
   return {
     ...base,
+    ...(buckets === undefined ? {} : { r2_buckets: buckets }),
     name: plan.platformWorker,
     account_id: plan.accountId,
     workers_dev: false,
