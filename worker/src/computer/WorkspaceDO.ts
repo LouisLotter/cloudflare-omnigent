@@ -113,6 +113,9 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     }
     const store = new SqlStore(ctx.storage);
     const port = this.openPort();
+    // The terminal bridge is built after the controller (it calls the controller); the controller
+    // reaches it through this reference, to end every stream before a credential-sensitive step.
+    let bridge: TerminalBridge | null = null;
     this.#controller = new WorkspaceController({
       computerId: computerId.data,
       store,
@@ -136,6 +139,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
       log: (event, fields) => logEvent("workspace", event, fields),
+      terminal: { closeNow: (reason) => bridge?.closeNow(reason) },
     });
     const controller = this.#controller;
     let front: PageFront | null = null;
@@ -175,6 +179,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
       log: (event, fields) => logEvent("workspace", event, fields),
     });
+    bridge = terminal;
     front = new PageFront(computerId.data, {
       store,
       controller,
