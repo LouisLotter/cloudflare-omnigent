@@ -848,6 +848,196 @@ describe("watchdog: leaving recovery mode (AIR2-009)", () => {
   });
 });
 
+describe("watchdog: a release reaches the running server (G2-SEC-001)", () => {
+  /** Answering, started with configuration `ranWith`. */
+  const answeringWith = (ranWith: string | null): Observation => ({ kind: "answering", ranWith });
+  const stopEffect = (s: Step) =>
+    s.effects.find((e): e is Extract<Effect, { type: "stop" }> => e.type === "stop");
+
+  it("replaces an answering server started with another configuration once, gracefully", () => {
+    // config-a ran; the Worker now holds config-b (a release, adopted by a new version).
+    const decided = step(
+      answered(T0),
+      answeringWith("config-a"),
+      T0 + 60_000,
+      T,
+      nextId,
+      "config-b",
+    );
+    expect(events(decided)).toEqual(["outage_started", "config_changed"]);
+    expect(stopEffect(decided)).toEqual({
+      type: "stop",
+      reason: "the configuration changed",
+      onSilence: false,
+    });
+    expect(types(decided)).not.toContain("destroy");
+    expect(types(decided)).not.toContain("start");
+    expect(outages(decided)[0]).toMatchObject({
+      cause: "config_changed",
+      startedAt: new Date(T0 + 60_000).toISOString(),
+      detectedAt: new Date(T0 + 60_000).toISOString(),
+      endedAt: null,
+      restarts: 0,
+    });
+    expect(decided.state).toMatchObject({ phase: "stopping", signalledAt: null, failedStarts: 0 });
+    expect(decided.nextCheckAt).toBe(T0 + 60_000 + T.pollMs);
+
+    // The usual graceful path: SIGTERM delivered, the final sync, stopped, then one start.
+    const sent = signalled(decided.state, T0 + 60_000);
+    const syncing = step(sent, SILENT, T0 + 65_000, T, nextId, "config-b");
+    expect(types(syncing)).toEqual([]);
+    const stopped = step(syncing.state, exited(0), T0 + 70_000, T, nextId, "config-b");
+    expect(events(stopped)).toEqual(["stop_done"]);
+    const started = step(stopped.state, STOPPED, stopped.nextCheckAt, T, nextId, "config-b");
+    expect(types(started).filter((t) => t === "start")).toHaveLength(1);
+    const restoring = step(
+      started.state,
+      entrypoint("restoring"),
+      started.nextCheckAt,
+      T,
+      nextId,
+      "config-b",
+    );
+    expect(actions(restoring)).toEqual([]);
+    // The replacement answers with the current configuration: the outage ends, nothing more.
+    const at = restoring.nextCheckAt + 30_000;
+    const ready = step(restoring.state, answeringWith("config-b"), at, T, nextId, "config-b");
+    expect(events(ready)).toEqual(["server_ready", "outage_ended"]);
+    expect(outages(ready)[0]).toMatchObject({
+      cause: "config_changed",
+      endedAt: new Date(at).toISOString(),
+      restarts: 1,
+      exitCode: 0,
+    });
+    expect(OutageRecord.safeParse(outages(ready)[0]).success).toBe(true);
+    const later = step(
+      ready.state,
+      answeringWith("config-b"),
+      at + T.intervalMs,
+      T,
+      nextId,
+      "config-b",
+    );
+    expect(later.effects).toEqual([]);
+  });
+
+  it("replaces nothing when a deploy changes nothing", () => {
+    for (const offset of [1, 60_000, 10_000_000]) {
+      const s = step(answered(T0), answeringWith("config-a"), T0 + offset, T, nextId, "config-a");
+      expect(s.effects).toEqual([]);
+      expect(s.state.phase).toBe("idle");
+    }
+  });
+
+  it("counts a server with no recorded start configuration as outdated, and replaces it once", () => {
+    const s = step(answered(T0), answeringWith(null), T0 + 1_000, T, nextId, "config-a");
+    expect(stopEffect(s)?.onSilence).toBe(false);
+    expect(s.state.outage?.cause).toBe("config_changed");
+  });
+
+  it("never stops a start still restoring or initializing, nor recovery mode, for its configuration", () => {
+    // A start with the old configuration was under way when the release came.
+    const starting: WatchdogState = {
+      ...answered(T0),
+      phase: "starting",
+      phaseSince: T0,
+      startsSince: T0,
+    };
+    for (const phase of ["starting", "restoring", "initializing", "running"] as const) {
+      const s = step(starting, entrypoint(phase), T0 + 30_000, T, nextId, "config-b");
+      expect(actions(s)).toEqual([]);
+    }
+    const recovery = run(
+      answered(T0),
+      [
+        [T0 + 60_000, entrypoint("recovery", false)],
+        [T0 + 3_600_000, entrypoint("recovery", false)],
+        [T0 + 3_700_000, SILENT],
+      ],
+      "config-b",
+    );
+    for (const s of recovery) {
+      expect(types(s).some((t) => ["stop", "destroy", "start"].includes(t))).toBe(false);
+    }
+    // Once the old start answers, it ends its outage and is replaced, with a new outage.
+    const outdated = step(
+      {
+        ...starting,
+        outage: {
+          outageId: "out_00000000000000000000000009",
+          cause: "container_stopped",
+          startedAt: T0 - 10_000,
+          detectedAt: T0,
+          restarts: 1,
+          exitCode: 0,
+          recovery: null,
+        },
+      },
+      answeringWith("config-a"),
+      T0 + 40_000,
+      T,
+      nextId,
+      "config-b",
+    );
+    expect(events(outdated)).toEqual([
+      "server_ready",
+      "outage_ended",
+      "outage_started",
+      "config_changed",
+    ]);
+    const [endedRecord, replacement] = outages(outdated);
+    expect(endedRecord).toMatchObject({
+      cause: "container_stopped",
+      endedAt: new Date(T0 + 40_000).toISOString(),
+    });
+    expect(replacement).toMatchObject({ cause: "config_changed", endedAt: null });
+    expect(stopEffect(outdated)?.onSilence).toBe(false);
+  });
+
+  it("keeps one outage when the configuration changes again before the replacement answers", () => {
+    const first = step(answered(T0), answeringWith("config-a"), T0, T, nextId, "config-b");
+    const sent = signalled(first.state, T0);
+    const stopped = step(sent, exited(0), T0 + 5_000, T, nextId, "config-b");
+    const started = step(stopped.state, STOPPED, stopped.nextCheckAt, T, nextId, "config-b");
+    // config-c arrives while config-b's replacement starts; it answers as config-b.
+    const again = step(
+      started.state,
+      answeringWith("config-b"),
+      started.nextCheckAt + 20_000,
+      T,
+      nextId,
+      "config-c",
+    );
+    expect(events(again)).toEqual(["config_changed"]);
+    expect(stopEffect(again)?.onSilence).toBe(false);
+    expect(outages(again)).toHaveLength(1);
+    expect(outages(again)[0]?.outageId).toBe(first.state.outage?.outageId);
+    expect(outages(again)[0]?.endedAt).toBeNull();
+  });
+
+  it("sends an undelivered replacement stop again, though the server answers; never kills it", () => {
+    const decided = step(answered(T0), answeringWith("config-a"), T0, T, nextId, "config-b");
+    // SIGTERM was not delivered (signalledAt stays null); the server keeps answering.
+    const later = T0 + T.stopGraceMs * 3;
+    const resent = step(decided.state, answeringWith("config-a"), later, T, nextId, "config-b");
+    expect(types(resent)).toEqual(["stop"]);
+    expect(stopEffect(resent)?.onSilence).toBe(false);
+    expect(resent.state.phase).toBe("stopping");
+    // A stop that is no longer needed (the configuration went back) is called off as before.
+    const back = step(decided.state, answeringWith("config-a"), later, T, nextId, "config-a");
+    expect(events(back)).toEqual(["stop_cancelled", "server_ready", "outage_ended"]);
+    expect(back.state.phase).toBe("idle");
+  });
+
+  it("marks only stops decided on silence as called off by an answer", () => {
+    const silentStop = run(answered(T0), [
+      [T0 + 60_000, SILENT],
+      [T0 + T.hungAfterMs, SILENT],
+    ]);
+    expect(stopEffect(defined(silentStop[1]))?.onSilence).toBe(true);
+  });
+});
+
 describe("randomOutageId", () => {
   it("makes valid, distinct outage IDs", () => {
     const made = Array.from({ length: 200 }, randomOutageId);
@@ -858,8 +1048,9 @@ describe("randomOutageId", () => {
 
 // ---------------------------------------------------------------------------------------------
 // Simulation (the plan's "simulation" layer for this package): a simulated server under random
-// platform stops, refused starts, slow boots, restores, recovery mode, hangs and slow stops,
-// driven by the watchdog at the times it asks for. Invariants hold for every run.
+// platform stops, refused starts, slow boots, restores, recovery mode, hangs, slow stops and
+// releases (new Worker versions, with or without a new configuration: G2-SEC-001), driven by the
+// watchdog at the times it asks for. Invariants hold for every run.
 
 interface SimServer {
   running: boolean;
@@ -875,6 +1066,8 @@ interface SimServer {
   /** When a SIGTERM stop completes, while stopping. */
   stopsAt: number | null;
   lastExit: number | null;
+  /** The configuration the running container was started with. */
+  ranWith: string | null;
 }
 
 const faultArb = fc.oneof(
@@ -893,6 +1086,13 @@ const faultArb = fc.oneof(
     hangAfter: fc.boolean(),
   }),
   fc.record({ kind: fc.constant("none" as const), at: fc.integer({ min: 0, max: 3_600_000 }) }),
+  // A new Worker version: a secret or setting release (a new configuration), or a code deploy
+  // that changes nothing the container gets. The running container is adopted either way.
+  fc.record({
+    kind: fc.constant("release" as const),
+    at: fc.integer({ min: 0, max: 3_600_000 }),
+    changes: fc.boolean(),
+  }),
 );
 
 describe("watchdog simulation", () => {
@@ -905,6 +1105,8 @@ describe("watchdog simulation", () => {
       stops: 0,
       hungAfterRecovery: 0,
       liveness: 0,
+      releases: 0,
+      replacements: 0,
     };
     fc.assert(
       fc.property(
@@ -926,7 +1128,12 @@ describe("watchdog simulation", () => {
             recovery: false,
             stopsAt: null,
             lastExit: null,
+            ranWith: null,
           };
+          let config = "config-0";
+          let configChanges = 0;
+          let replacements = 0;
+          let replacedWhileNotAnswering = 0;
           let recoveryEndsAt = 0;
           let hangAfterRecovery = false;
           let lastDisturbance = T0;
@@ -965,6 +1172,13 @@ describe("watchdog simulation", () => {
                 recoveryEndsAt = now + f.lastsMs;
                 hangAfterRecovery = f.hangAfter;
                 seen.recoveries += 1;
+              } else if (f.kind === "release" && f.changes) {
+                configChanges += 1;
+                config = `config-${configChanges}`;
+                seen.releases += 1;
+              } else if (f.kind === "release") {
+                fault += 1;
+                continue; // a deploy that changes nothing disturbs nothing
               }
               fault += 1;
               lastDisturbance = now;
@@ -993,7 +1207,7 @@ describe("watchdog simulation", () => {
             }
             let obs: Observation;
             if (!server.running) obs = { kind: "stopped", exitCode: server.lastExit };
-            else if (isUp) obs = ANSWERING;
+            else if (isUp) obs = { kind: "answering", ranWith: server.ranWith };
             else {
               const phase: EntrypointPhase = server.recovery
                 ? "recovery"
@@ -1008,7 +1222,7 @@ describe("watchdog simulation", () => {
             }
             // Recovery as the watchdog sees it, before a stop of its own began.
             const inRecovery = server.recovery && state.phase !== "stopping";
-            const s = step(state, obs, now, T, nextId, "config-a");
+            const s = step(state, obs, now, T, nextId, config);
             if (obs.kind === "stopped") server.lastExit = null;
             for (const effect of s.effects) {
               if (effect.type === "outage") records.set(effect.record.outageId, effect.record);
@@ -1025,7 +1239,13 @@ describe("watchdog simulation", () => {
                   server.recovery = false;
                   server.restoringUntil = now + restoreMs;
                   server.answersAt = now + restoreMs + bootMs;
+                  server.ranWith = config;
                 }
+              }
+              if (effect.type === "stop" && !effect.onSilence) {
+                replacements += 1;
+                seen.replacements += 1;
+                if (obs.kind !== "answering") replacedWhileNotAnswering += 1;
               }
               if (effect.type === "stop") {
                 seen.stops += 1;
@@ -1060,7 +1280,14 @@ describe("watchdog simulation", () => {
           if (fits && end - lastDisturbance >= 3_600_000 && !server.recovery) {
             seen.liveness += 1;
             expect(answering(now)).toBe(true);
+            // ...and runs the configuration the Worker holds: every release reached it.
+            expect(server.ranWith).toBe(config);
           }
+          // A replacement only of a server that answers, never of a start or recovery mode,
+          // and at most one per new configuration: a release that changes nothing replaces
+          // nothing.
+          expect(replacedWhileNotAnswering).toBe(0);
+          expect(replacements).toBeLessThanOrEqual(configChanges);
           expect(startsWhileRunning).toBe(0);
           expect(stoppedInRecovery).toBe(0);
           // Every record satisfies the contract, and at most one is ongoing.
@@ -1089,6 +1316,8 @@ describe("watchdog simulation", () => {
     expect(seen.stops).toBeGreaterThan(20);
     expect(seen.hungAfterRecovery).toBeGreaterThan(10);
     expect(seen.liveness).toBeGreaterThan(30);
+    expect(seen.releases).toBeGreaterThan(50);
+    expect(seen.replacements).toBeGreaterThan(10);
     // 300 simulated hours take a few seconds; CI runners are slower than the default 5 s allows.
   }, 60_000);
 });
@@ -1131,6 +1360,9 @@ describe("watchdog: any stored state", () => {
   });
   const observationArb: fc.Arbitrary<Observation> = fc.oneof(
     fc.constant(ANSWERING),
+    fc
+      .constantFrom("config-a", "config-b", null)
+      .map((ranWith): Observation => ({ kind: "answering", ranWith })),
     fc.record({
       kind: fc.constant("stopped" as const),
       exitCode: maybe(fc.constantFrom(0, 70, 71, 75, 78)),
@@ -1150,7 +1382,7 @@ describe("watchdog: any stored state", () => {
   );
   const configArb = fc.constantFrom("config-a", "config-b");
 
-  it("never starts a running container, never stops one in recovery or that answers, and always looks again", () => {
+  it("never starts a running container, never stops one in recovery or that answers with the current configuration, and always looks again", () => {
     fc.assert(
       fc.property(stateArb, observationArb, time, configArb, (state, observation, now, config) => {
         const s = step(state, observation, now, T, nextId, config);
@@ -1162,7 +1394,26 @@ describe("watchdog: any stored state", () => {
         if (recovery && !ownStop && types(s).some((t) => t === "stop" || t === "destroy")) {
           return false;
         }
-        if (observation.kind === "answering" && types(s).includes("stop")) return false;
+        // An answering server is stopped only to replace it, when it runs another
+        // configuration (G2-SEC-001), and never in a way an answer calls off.
+        const outdated =
+          observation.kind === "answering" &&
+          observation.ranWith !== undefined &&
+          observation.ranWith !== config;
+        if (observation.kind === "answering" && types(s).includes("stop") && !outdated) {
+          return false;
+        }
+        if (
+          outdated &&
+          s.effects.some((e) => e.type === "stop" && e.onSilence) &&
+          state.phase !== "stopping"
+        ) {
+          return false;
+        }
+        // An answering server with the current configuration never gets a new stop.
+        if (observation.kind === "answering" && !outdated && types(s).includes("stop")) {
+          return false;
+        }
         if (
           observation.kind === "stopped" &&
           types(s).some((t) => t === "stop" || t === "destroy")
@@ -1208,8 +1459,10 @@ describe("watchdog: any stored state", () => {
           if (state.outage !== null && record.outageId === state.outage.outageId) {
             return true; // an older record: its times were the earlier step's
           }
-          // A new outage starts no later than the last answer, nor than now.
-          const bound = Math.min(state.lastAnsweredAt ?? now, now);
+          // A new outage starts no later than the last answer, nor than now. An answer seen now
+          // is the last one: a replacement for a changed configuration starts from it.
+          const lastAnswer = observation.kind === "answering" ? now : state.lastAnsweredAt;
+          const bound = Math.min(lastAnswer ?? now, now);
           return Date.parse(record.startedAt) <= bound;
         });
       }),

@@ -21,6 +21,12 @@
 //     and kills it only after the stop's grace (about twice the final-sync timeout);
 //   - an exit with code 78 (a setting missing or malformed) is not restarted until the
 //     configuration changes;
+//   - a server that answers but was started with another configuration than the Worker now
+//     holds is replaced once, through the same graceful restart (G2-SEC-001): a container gets
+//     its environment only at its start, so a secret or setting release (the bootstrap's, a key
+//     rotation) reaches a running server no other way. Only an answering server is replaced: a
+//     start still restoring or initializing finishes first, and recovery mode is never stopped.
+//     The interval is an outage with the cause `config_changed`;
 //   - an outage record starts when the server was last known to answer, never later, so a notice
 //     never understates the interval, and ends when it answers again; it carries the last exit
 //     code seen;
@@ -191,7 +197,15 @@ export interface EntrypointReport {
  * retry, with what the entrypoint reports about itself, when it could be read.
  */
 export type Observation =
-  | { readonly kind: "answering" }
+  | {
+      readonly kind: "answering";
+      /**
+       * The configuration fingerprint the answering container was started with: null when the
+       * Durable Object has none recorded (it counts as another configuration). Absent: the
+       * caller does not compare configurations, and an answering server is never replaced.
+       */
+      readonly ranWith?: string | null;
+    }
   | {
       readonly kind: "stopped";
       readonly exitCode: number | null;
@@ -228,8 +242,12 @@ export type EventFields = Readonly<Record<string, number | string | boolean | nu
 
 export type Effect =
   | { readonly type: "start" }
-  /** SIGTERM: the entrypoint stops the app, confirms a final sync, then exits. */
-  | { readonly type: "stop"; readonly reason: string }
+  /**
+   * SIGTERM: the entrypoint stops the app, confirms a final sync, then exits. `onSilence`: the
+   * stop was decided because the server did not answer, so an answer seen before it is sent
+   * calls it off. A replacement for a changed configuration is not called off by an answer.
+   */
+  | { readonly type: "stop"; readonly reason: string; readonly onSilence: boolean }
   /** Kill, after a stop's grace ran out. */
   | { readonly type: "destroy"; readonly reason: string }
   /** Insert or replace this outage record. */
@@ -331,7 +349,8 @@ class Builder {
 /**
  * One watchdog decision. Pure: the same state, observation, time, IDs and configuration give
  * the same step. `newOutageId` is called only when an outage opens. `config` is a fingerprint of
- * the server container's configuration, compared only while `held`.
+ * the configuration the Worker would start the server container with now: compared while
+ * `held`, and with an answering container's own (`ranWith`), when the observation carries it.
  */
 export function step(
   state: WatchdogState,
@@ -349,10 +368,19 @@ export function step(
     state.recoverySince !== null && observation.kind !== "silent"
       ? { ...state, recoverySince: null }
       : state;
-  if (current.phase === "stopping") return stopping(current, observation, now, timing, b, config);
+  // A server that answers with another configuration than the Worker's (G2-SEC-001).
+  const outdated =
+    observation.kind === "answering" &&
+    observation.ranWith !== undefined &&
+    observation.ranWith !== config;
+  if (current.phase === "stopping") {
+    return stopping(current, observation, now, timing, b, config, outdated);
+  }
   switch (observation.kind) {
     case "answering":
-      return answering(current, now, timing, b);
+      return outdated
+        ? replaceOutdated(current, now, timing, b)
+        : answering(current, now, timing, b);
     case "silent":
       return silent(current, observation.entrypoint, now, timing, b);
     case "stopped":
@@ -361,6 +389,12 @@ export function step(
 }
 
 function answering(state: WatchdogState, now: number, timing: WatchdogTiming, b: Builder): Step {
+  ended(state, now, b);
+  return b.done(INITIAL_WATCHDOG_STATE, now + timing.intervalMs, { lastAnsweredAt: now });
+}
+
+/** The server answers: a start's breakdown, and the end of the outage it was in, if any. */
+function ended(state: WatchdogState, now: number, b: Builder): void {
   if (state.phase !== "idle" || state.outage !== null) {
     // The breakdown of a replacement's time (DC-47): detection, refused starts, the last start.
     const firstStart = state.startsSince;
@@ -385,7 +419,38 @@ function answering(state: WatchdogState, now: number, timing: WatchdogTiming, b:
     });
   }
   b.outage = null;
-  return b.done(INITIAL_WATCHDOG_STATE, now + timing.intervalMs, { lastAnsweredAt: now });
+}
+
+/**
+ * The server answers, but was started with another configuration than the Worker now holds: a
+ * release since its start (the bootstrap's, a key rotation) has not reached it, as a container
+ * gets its environment only when it starts (G2-SEC-001). It is replaced once, through the
+ * graceful restart: SIGTERM, the entrypoint's final sync, then a start with the current
+ * configuration, which restores the database. The start records the configuration it used, so
+ * the replacement answers as current and is never replaced again; a deploy that changes nothing
+ * replaces nothing. Never decided for a start still restoring or initializing (it is silent:
+ * replaced only once it answers) or for recovery mode (silent too, and never stopped).
+ * The outage runs from this answer to the replacement's first answer, with the cause
+ * `config_changed`. One already open for an earlier replacement continues: the configuration
+ * changed again before that replacement answered.
+ */
+function replaceOutdated(
+  state: WatchdogState,
+  now: number,
+  timing: WatchdogTiming,
+  b: Builder,
+): Step {
+  if (state.outage?.cause !== "config_changed") {
+    ended(state, now, b);
+    b.open("config_changed", now);
+  }
+  b.event("config_changed", { action: "replace", phase: state.phase });
+  const answered: WatchdogState = {
+    ...INITIAL_WATCHDOG_STATE,
+    lastAnsweredAt: now,
+    startsSince: state.outage?.cause === "config_changed" ? state.startsSince : null,
+  };
+  return stopForRestart(answered, now, timing, b, "the configuration changed", 0, false);
 }
 
 /**
@@ -403,6 +468,7 @@ function stopping(
   timing: WatchdogTiming,
   b: Builder,
   config: string,
+  outdated: boolean,
 ): Step {
   const since = state.phaseSince ?? now;
   if (observation.kind === "stopped") {
@@ -430,7 +496,12 @@ function stopping(
     killedAt: null,
   };
   if (state.signalledAt === null) {
-    if (observation.kind === "answering" || observation.entrypoint?.phase === "recovery") {
+    // An answering server that still runs another configuration still needs its replacement:
+    // the stop is sent again, and an answer does not call it off (G2-SEC-001).
+    if (
+      !outdated &&
+      (observation.kind === "answering" || observation.entrypoint?.phase === "recovery")
+    ) {
       // The stop never reached it, and it no longer needs one.
       b.event("stop_cancelled", { intendedMs: now - since });
       const resumed = { ...state, ...cleared };
@@ -438,7 +509,7 @@ function stopping(
         ? answering(resumed, now, timing, b)
         : silent(resumed, observation.entrypoint, now, timing, b);
     }
-    b.effects.push({ type: "stop", reason: "the stop was not delivered" });
+    b.effects.push({ type: "stop", reason: "the stop was not delivered", onSilence: !outdated });
     return b.done(state, now + timing.pollMs);
   }
   const delivered = state.signalledAt;
@@ -457,9 +528,10 @@ function stopForRestart(
   b: Builder,
   reason: string,
   failedStarts: number,
+  onSilence = true,
 ): Step {
   b.recordOutage();
-  b.effects.push({ type: "stop", reason });
+  b.effects.push({ type: "stop", reason, onSilence });
   // Delivery is recorded by the caller once the signal is sent (`signalled`).
   return b.done(state, now + timing.pollMs, {
     phase: "stopping",

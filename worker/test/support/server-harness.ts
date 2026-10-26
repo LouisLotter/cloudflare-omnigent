@@ -43,6 +43,30 @@ class TestServers {
   readonly clock = new TestClock();
   timing: ServerTiming = TEST_TIMING;
   readonly #containers = new Map<string, FakeServerContainer>();
+  readonly #releases = new Map<string, Readonly<Record<string, string | null>>>();
+
+  /**
+   * A release for the object with this ID: every instance created from now on gets the Worker's
+   * environment with these changes (a value sets a variable or secret, null deletes it), as the
+   * objects of a new Worker version do once they switch to it. Evict the object to switch.
+   * Changes accumulate, as successive releases do.
+   */
+  release(id: DurableObjectId | string, changes: Readonly<Record<string, string | null>>): void {
+    const key = id.toString();
+    this.#releases.set(key, { ...(this.#releases.get(key) ?? {}), ...changes });
+  }
+
+  /** The environment an instance of the object with this ID is created with. */
+  envFor<Env extends object>(id: DurableObjectId | string, env: Env): Env {
+    const changes = this.#releases.get(id.toString());
+    if (changes === undefined) return env;
+    const released: Record<string, unknown> = { ...(env as Record<string, unknown>) };
+    for (const [name, value] of Object.entries(changes)) {
+      if (value === null) delete released[name];
+      else released[name] = value;
+    }
+    return released as Env;
+  }
 
   /** A fake container for the object with this ID. */
   create(id: DurableObjectId | string): FakeServerContainer {
