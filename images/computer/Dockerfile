@@ -22,7 +22,7 @@
 #     policy version 1.
 #   - Certificate trust kept current (images/trust): the build fails if Debian's bundle or
 #     certifi's still trusts a root through which forged certificates chain (the eMudhra key
-#     compromise of October 2026).
+#     compromise of October 2026), and every TLS client is at a release that refuses them.
 #
 # The person's account is `omnigent` (uid 1000, home /home/omnigent, workspace ~/work), with
 # passwordless sudo: agents are not restricted on their own computer (security calibration).
@@ -115,10 +115,15 @@ COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# Claude Code and Codex exactly as published, at the versions the fork's native-harness work
-# was tested with (X4b, AIR2-007, core change 20). Nothing of the build's home is kept.
-ARG CLAUDE_CODE_VERSION=2.1.302
-ARG CODEX_VERSION=0.163.0
+# Claude Code and Codex exactly as published. Raised from the versions the fork's native-harness
+# work was tested with (2.1.302 and 0.163.0) for the eMudhra key compromise: Claude Code
+# 2.1.302 accepts a certificate forged through emSign ECC Root CA - G3, and Codex 0.164.0 is the
+# first with rustls-webpki 0.103.16 (it refuses the compromised keys) and webpki-roots 1.0.10.
+# Sign-in commands, status output, login-file paths and write patterns are as before; Codex
+# 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
+# Nothing of the build's home is kept.
+ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CODEX_VERSION=0.164.0
 RUN npm install -g --no-audit --no-fund --registry=https://registry.npmjs.org/ \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
@@ -126,9 +131,10 @@ RUN npm install -g --no-audit --no-fund --registry=https://registry.npmjs.org/ \
  && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
  && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*
 
-# gh at the fork's pin (deploy/docker/Dockerfile), checked.
-ARG GH_VERSION=2.100.0
-ARG GH_SHA256_AMD64=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
+# gh, checked: raised from the fork's pin (2.100.0, Go 1.26.8) to a release built with Go
+# 1.27.3, whose crypto/x509 refuses chains through the compromised eMudhra keys.
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 RUN set -eu; \
     curl -fsSL -o /tmp/gh.tar.gz \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
@@ -189,8 +195,9 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
       cloudflare-omnigent.omnigent-commit="3228d4de38ef05f69ecc80a4539d7c02727ce314" \
-      cloudflare-omnigent.claude-code="2.1.302" \
-      cloudflare-omnigent.codex="0.163.0"
+      cloudflare-omnigent.claude-code="2.1.311" \
+      cloudflare-omnigent.codex="0.164.0" \
+      cloudflare-omnigent.gh="2.103.3"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through
 # the container port by the computer's WorkspaceDO.
 EXPOSE 8090 7681
