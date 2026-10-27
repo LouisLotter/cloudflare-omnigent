@@ -119,6 +119,8 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # work was tested with (2.1.302 and 0.163.0) for the eMudhra key compromise: Claude Code
 # 2.1.302 accepts a certificate forged through emSign ECC Root CA - G3, and Codex 0.164.0 is the
 # first with rustls-webpki 0.103.16 (it refuses the compromised keys) and webpki-roots 1.0.10.
+# Codex's default client verifies with its vendored OpenSSL against the system bundle, so the
+# rustls denylist applies only when it is given a CA bundle of its own.
 # Sign-in commands, status output, login-file paths and write patterns are as before; Codex
 # 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
 # Nothing of the build's home is kept.

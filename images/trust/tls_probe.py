@@ -17,8 +17,8 @@ through the client's own CA-override variable. A client without a key denylist t
 which shows that the probe reaches the client's real TLS path and that its refusal comes from
 trust, not the network. A client that still refuses carries its own denylist. Where a client
 does not print why it failed (Codex prints only "error sending request"), a refusal counts only
-when that control connects or the client's own log shows the TCP connection was made before
-TLS failed. Litestream prints its cause only after ten attempts, about two minutes.
+when that control connects or the client's own log shows the TCP connection was made and no
+HTTP answer came back. Litestream prints its cause only after ten attempts, about two minutes.
 
 No credentials are used. Clients that will not start without one get an obviously synthetic
 placeholder, which a server could only see after the TLS handshake succeeded.
@@ -168,11 +168,16 @@ def _origin(url: str) -> str:
 
 
 def _codex_tls_failure(out: str, home: Path) -> bool:
-    """The TCP connection was made and rustls received the server's chain, then it failed."""
-    return (
-        "error sending request" in out
-        and bool(re.search(r"connected to [0-9a-f.:\[\]]+:443", out))
-        and "Server cert is" in out
+    """The TCP connection was made, then the request failed before any HTTP answer.
+
+    Codex's default client verifies with its vendored OpenSSL against the system bundle and
+    logs nothing about TLS; with a CA override (CODEX_CA_CERTIFICATE, SSL_CERT_FILE) it builds a
+    rustls client instead, whose trace shows the server's chain arriving. Either way, a chain
+    Codex accepted gets the server's HTTP answer ("device code request failed with status
+    405" from the forged hosts), which the acceptance pattern catches first.
+    """
+    return "error sending request" in out and bool(
+        re.search(r"connected to [0-9a-f.:\[\]]+:443", out)
     )
 
 
@@ -415,7 +420,8 @@ def classify(client: Client, out: str, home: Path, timed_out: bool) -> tuple[str
         if hit:
             return ACCEPTED, hit.strip()[:240]
     if client.tls_failure and client.tls_failure(out, home):
-        return REFUSED_TLS, "TCP connected, server chain received, then refused (no cause printed)"
+        chain = "; rustls received the chain" if "Server cert is" in out else ""
+        return REFUSED_TLS, f"TCP connected{chain}, then no HTTP answer (no cause printed)"
     tail = (lines[-1] if lines else "").strip()[:240]
     return ERROR, ("timeout; " if timed_out else "") + tail
 

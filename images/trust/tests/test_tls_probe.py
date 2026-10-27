@@ -99,11 +99,14 @@ def test_codex_counts_a_tls_failure_only_after_a_tcp_connection() -> None:
         "TRACE rustls::client::tls13: Server cert is …\n"
         "Error logging in with device code: error sending request for url (https://x/)"
     )
-    before_the_chain = after_connect.replace("Server cert is", "sent ClientHello")
+    openssl_path = after_connect.replace("TRACE rustls::client::tls13: Server cert is …\n", "")
     no_connect = "Error logging in with device code: error sending request for url (https://x/)"
     assert tls_probe.classify(codex, after_connect, HOME, False)[0] == tls_probe.REFUSED_TLS
     assert tls_probe.classify(codex, no_connect, HOME, False)[0] == tls_probe.ERROR
-    assert tls_probe.classify(codex, before_the_chain, HOME, False)[0] == tls_probe.ERROR
+    # The default client (vendored OpenSSL) logs no TLS detail: the TCP connection is enough.
+    outcome, detail = tls_probe.classify(codex, openssl_path, HOME, False)
+    assert outcome == tls_probe.REFUSED_TLS and "rustls" not in detail
+    assert "rustls received the chain" in tls_probe.classify(codex, after_connect, HOME, False)[1]
     answered = "Error logging in with device code: device code login is not enabled for this server"
     assert tls_probe.classify(codex, answered, HOME, False)[0] == tls_probe.ACCEPTED
 
