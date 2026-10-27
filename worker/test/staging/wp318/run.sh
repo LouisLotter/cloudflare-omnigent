@@ -110,23 +110,28 @@ except (ValueError, KeyError):
 }
 
 deploy_at() { # kind, at (ms)[, record file]: wait until then, deploy, record it
-  local kind="$1" at="$2" record="${3:-$out/deploys.jsonl}" start end status build
+  local kind="$1" at="$2" record="${3:-$out/deploys.jsonl}" start end status build raw version
   local left=$(( (at - $(now_ms)) / 1000 ))
   if [ "$left" -gt 0 ]; then sleep "$left"; fi
   build="wp318-$(date -u +%Y%m%dT%H%M%SZ)-$kind"
+  # Wrangler's own output, unredacted (mode 600), kept only until the version is read from it.
+  raw="$(mktemp "$out/deploys/.raw.XXXXXX")"
   start=$(now_ms)
   set +e
   if [ "$kind" = web_deploy ]; then
-    node "$here/soak-config.ts" web 2>&1 | "${redact[@]}" | tee "$out/deploys/$build.log"
+    node "$here/soak-config.ts" web 2>&1 | tee "$raw" | "${redact[@]}" | tee "$out/deploys/$build.log"
   else
-    node "$here/soak-config.ts" platform "$build" 2>&1 | "${redact[@]}" | tee "$out/deploys/$build.log"
+    node "$here/soak-config.ts" platform "$build" 2>&1 | tee "$raw" | "${redact[@]}" |
+      tee "$out/deploys/$build.log"
   fi
   status=${PIPESTATUS[0]}
   set -e
   end=$(now_ms)
-  # The version this deploy made current, as Wrangler prints it: the analysis brackets the switch
-  # to exactly this version (never a later deployment's).
-  version=$(grep -oE 'Current Version ID: [0-9a-f-]+' "$out/deploys/$build.log" | tail -1 | awk '{print $4}')
+  # The version this deploy made current, as Wrangler prints it, cut as logs.ts cuts it
+  # (shortVersion: the redacted log has only "<uuid>"): the analysis brackets the switch to exactly
+  # this version (never a later deployment's). A deploy without one is still recorded.
+  version=$(grep -oE 'Current Version ID: [0-9a-f-]+' "$raw" | tail -1 | awk '{print substr($4, 1, 13)}' || true)
+  rm -f "$raw"
   printf '{"kind":"%s","build":"%s","start":%s,"end":%s,"status":%s,"version":"%s"}\n' \
     "$kind" "$build" "$start" "$end" "$status" "$version" >>"$record"
 }

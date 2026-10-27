@@ -1,5 +1,8 @@
 // WP3.18's staging soak (RC-26): the schedule, the rendered configuration and the reconnect
 // analysis, in Node (worker/test/staging/wp318).
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { withRenderedConfig } from "../../../scripts/bootstrap/cloud.ts";
@@ -31,6 +34,7 @@ import {
   restartTimes,
   SOAK_MS,
   SOAK_SCHEDULE,
+  shortVersion,
   switchBracket,
   tunnelOpens,
 } from "../staging/wp318/plan.ts";
@@ -40,6 +44,7 @@ const T0 = 1_800_000_000_000;
 const HOST = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const A = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3";
 const B = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4";
+const REDACT = resolve(import.meta.dirname, "..", "..", "..", "spikes/x1/scripts/redact.py");
 
 function beat(at: number, version: string, from = "server"): LogLine {
   return { timestamp: at, version, source: { cfo: "soak", event: "heartbeat", runId: "r", from } };
@@ -151,6 +156,26 @@ describe("the soak's analysis", () => {
     expect(opens.get(A)).toEqual([T0 + 1, T0 + 2]);
     expect(opens.get(B)).toEqual([T0 + 5]);
     expect(tunnelOpens([{ timestamp: 1, source: "a text line" }]).size).toBe(0);
+  });
+
+  it("keeps versions through redaction, so a deploy's record and the logs still match", () => {
+    // The M3 sitting's web deploy: redact.py turned every full version ID into "<uuid>".
+    const v1 = "3f2a9c1e-7b4d-4e8f-a1c2-5d6e7f809a1b";
+    const v2 = "3f2a9c1e-7b4e-4e8f-a1c2-5d6e7f809a1b";
+    const dir = mkdtempSync(join(tmpdir(), "wp318-redact-"));
+    const config = join(dir, "config.json");
+    writeFileSync(config, JSON.stringify({ accountId: "0".repeat(32), zone: "example.test" }));
+    const text = [v1, v2].map((v) => `${JSON.stringify({ version: shortVersion(v) })}\n`).join("");
+    const run = spawnSync("python3", ["-I", REDACT, config, "-"], {
+      input: text,
+      encoding: "utf8",
+    });
+    rmSync(dir, { recursive: true });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(text);
+    expect(shortVersion(v1)).not.toBe(shortVersion(v2));
+    expect(shortVersion(undefined)).toBeUndefined();
+    expect(shortVersion("")).toBeUndefined();
   });
 
   it("brackets OmnigentServer's own switch to the deployed version, never a host's reconnect", () => {

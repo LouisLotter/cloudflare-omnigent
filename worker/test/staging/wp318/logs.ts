@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { queryWorkerLogs } from "../../../../scripts/bootstrap/cloud.ts";
 import { spawnRunner } from "../../../../scripts/staging/cloud.ts";
+import { shortVersion } from "./plan.ts";
 
 const state =
   process.env.CFO_STAGING_DIR ??
@@ -36,7 +37,7 @@ for (let start = from; start < to; start += SLICE) {
     console.log(
       JSON.stringify({
         timestamp: event.timestamp,
-        version: event.$workers?.scriptVersion?.id,
+        version: shortVersion(event.$workers?.scriptVersion?.id),
         eventType: event.$workers?.eventType,
         source: event.source,
       }),

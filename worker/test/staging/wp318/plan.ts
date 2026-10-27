@@ -108,6 +108,15 @@ export function nextLaptopEvent(
 // ---------------------------------------------------------------------------------------------
 // The analysis.
 
+/**
+ * A Workers version ID as the soak's records keep it: its first 13 characters (`8-4` hex).
+ * redact.py replaces whole UUIDs, so a full ID would reach the analysis as "<uuid>" for every
+ * version. A deploy's record (run.sh) and the logs (`logs.ts`) cut it the same way.
+ */
+export function shortVersion(id: unknown): string | undefined {
+  return typeof id === "string" && id !== "" ? id.slice(0, 13) : undefined;
+}
+
 /** One Workers Logs event, as `logs.ts` writes it: the time, the version, the parsed log line. */
 export interface LogLine {
   readonly timestamp: number;
