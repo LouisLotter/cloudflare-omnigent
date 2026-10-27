@@ -16,7 +16,9 @@
 #                        names, deploys both Workers with the server and computer images, waits
 #                        for the durable owner, releases, and verifies that the watchdog's
 #                        controlled restart (`config_changed`) applied the release; a push the
-#                        registry times out on is retried with the same values (3 attempts)
+#                        registry times out on, or a deploy whose version went live before its
+#                        `durable_object` container application was applied (Wrangler says to
+#                        deploy again), is retried with the same values (3 attempts)
 #   run.sh follow        wait for the bootstrap to end
 #   run.sh resume        run the bootstrap again (no secret needed once its first deploy is done)
 #   run.sh launcher-key  generate the launcher's signing key, set it on the platform Worker, then
@@ -25,6 +27,16 @@
 #                        wait (25 minutes at most) for a `config_changed` restart after <since>
 #   run.sh soak-deploy   deploy the platform Worker with the soak module (soak.ts): the
 #                        production code plus the staging-only soak page and resets
+#   run.sh replace       [lead, before the owner's part A] the forced server replacement (WP3.19):
+#                        sets the Worker secret M3_STEP=replace (not the server's: no restart of
+#                        its own), and the soak module's cron runs G2's replace-2 on the server
+#                        (the container destroyed, the watchdog's start under the durable_object
+#                        policy, timed; then the configuration, /health, /v1/info, the replica);
+#                        waits (40 minutes at most) and writes replace.json. Never once the soak
+#                        has started
+#   run.sh restarts      the `config_changed` restarts since `bucket`, each with the watchdog's
+#                        start-to-ready times (restarts.json): #1 the bootstrap's release, #2 the
+#                        launcher's key
 #   run.sh web-deploy    deploy the web Worker once, now (WP3.5's FH-38 check before the soak)
 #   run.sh password      [owner] print the owner's generated Omnigent password
 #   run.sh hostile <computer ID>
@@ -192,9 +204,10 @@ print(json.dumps({
           sed -E -e "s#[a-z0-9-]+\.cloudflareaccess\.com#<team>#g" -e "s#hmac-sha256:[A-Za-z0-9_:-]+#<owner-pin>#g" >>"$3"
         status=${PIPESTATUS[1]}
         if [ "$status" -eq 1 ] && [ "$attempt" -lt 3 ] &&
-          tail -n +"$((from + 1))" "$3" | grep -q "timeout awaiting response headers"; then
+          tail -n +"$((from + 1))" "$3" | grep -q -e "timeout awaiting response headers" \
+            -e "could not finish applying its Durable Object-managed Container application"; then
           attempt=$((attempt + 1))
-          echo "run.sh: the registry timed out on a push; attempt $attempt of 3 in 30 s" >>"$3"
+          echo "run.sh: a push timed out, or a container application was not applied; attempt $attempt of 3 in 30 s" >>"$3"
           sleep 30
           continue
         fi
@@ -249,6 +262,33 @@ print(json.dumps({
     ;;
   soak-deploy)
     logged soak-deploy node "$here/soak-config.ts" platform "wp318-$(date -u +%Y%m%dT%H%M%SZ)-soak"
+    ;;
+  replace)
+    since=$(now_ms)
+    echo "$since" >"$out/replace-at"
+    echo '{"M3_STEP": "replace"}' | logged replace node "$root/scripts/staging/stg.ts" secrets \
+      --suffix wp318-platform --owner "$owner"
+    # The version switch (5 to 7 minutes), the next cron tick, the kill and the watch (G2's limit:
+    # 20 minutes), then the checks after it.
+    deadline=$(( $(now_ms) + 2400000 ))
+    while true; do
+      set +e
+      node "$here/logs.ts" "$platform" "$since" "$(now_ms)" |
+        node "$here/server-checks.ts" replaced >"$out/replace.json"
+      status=${PIPESTATUS[1]}
+      set -e
+      if [ "$status" -eq 0 ]; then
+        echo "the replacement ended: $(cat "$out/replace.json")"
+        break
+      fi
+      [ "$(now_ms)" -lt "$deadline" ] || { echo "run.sh: the replacement did not end within 40 minutes" >&2; exit 1; }
+      sleep 30
+    done
+    ;;
+  restarts)
+    from="$(cat "$out/t0")"
+    node "$here/logs.ts" "$platform" "$from" "$(now_ms)" |
+      node "$here/server-checks.ts" restarts "$from" | tee "$out/restarts.json"
     ;;
   web-deploy)
     deploy_at web_deploy "$(now_ms)" "$out/sitting-deploys.jsonl"

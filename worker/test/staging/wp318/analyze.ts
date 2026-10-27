@@ -4,7 +4,7 @@
 // the results bucket), deploys.jsonl (the laptop's deploys) and logs.jsonl (the platform
 // Worker's Workers Logs). Prints the table and writes verdict.json next to them. A controlled
 // restart (`config_changed`, G2-SEC-001) during the soak fails it: no soak deploy changes the
-// server's configuration, so one would be a restart nobody planned.
+// server's configuration or its image (WP3.19), so one would be a restart nobody planned.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {

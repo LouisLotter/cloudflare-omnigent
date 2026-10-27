@@ -288,9 +288,11 @@ export function reconnects(
 
 // ---------------------------------------------------------------------------------------------
 // The watchdog's controlled restarts (G2-SEC-001). A release that changes the server's
-// configuration (the bootstrap's release, the launcher's key) is applied by one restart, logged
-// as a `config_changed` outage. The sitting waits for each before it goes on; during the soak no
-// deploy changes the server's configuration, so any such restart there is a finding.
+// configuration (the bootstrap's release, the launcher's key) or its image (WP3.19) is applied by
+// one restart, logged as a `config_changed` outage. The sitting waits for each before it goes on;
+// during the soak no deploy changes the server's configuration, and none its image (the staging
+// tool builds every deploy of a deployment with one SOURCE_DATE_EPOCH, so the same sources give
+// the same digest), so any such restart there is a finding.
 
 /** One `config_changed` outage the watchdog logged: when it started and, once logged, ended. */
 export interface ConfigRestart {
@@ -347,4 +349,99 @@ export function configRestarts(
   return [...byId.values()].sort(
     (a, b) => (a.startedAt ?? a.endedAt ?? 0) - (b.startedAt ?? b.endedAt ?? 0),
   );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The server's measured restarts (WP3.19): the times of each `config_changed` restart, and the
+// forced replacement's result. Both are the lead's records; neither needs the owner.
+
+/** A controlled restart, with the watchdog's `server_ready` breakdown logged at its end. */
+export interface RestartTimes extends ConfigRestart {
+  /** From the replacement's last `start()` to its first answer: the start itself. */
+  readonly lastStartToReadyMs: number | null;
+  /** From its first `start()` (refused starts retried included) to its first answer. */
+  readonly firstStartToReadyMs: number | null;
+  /** Starts that failed before it answered (DC-37's refusals right after a stop). */
+  readonly failedStarts: number | null;
+}
+
+/** The `server_ready` line logged with an outage's end: the same check, so seconds apart. */
+const READY_WITH_END_MS = 10_000;
+
+const numberOr = (value: unknown): number | null => (typeof value === "number" ? value : null);
+
+/** Each `config_changed` restart in [from, to), with its timings when its end was logged. */
+export function restartTimes(lines: readonly LogLine[], from: number, to: number): RestartTimes[] {
+  const ready = lines
+    .map((line) => ({ at: line.timestamp, s: sourceOf(line) }))
+    .filter(({ s }) => s?.cfo === "watchdog" && s.event === "server_ready")
+    .sort((a, b) => a.at - b.at);
+  return configRestarts(lines, from, to).map((restart) => {
+    const end = restart.endedAt;
+    const match =
+      end === null
+        ? undefined
+        : ready.filter(({ at }) => at <= end && end - at <= READY_WITH_END_MS).at(-1);
+    return {
+      ...restart,
+      lastStartToReadyMs: numberOr(match?.s?.lastStartToReadyMs),
+      firstStartToReadyMs: numberOr(match?.s?.firstStartToReadyMs),
+      failedStarts: numberOr(match?.s?.failedStarts),
+    };
+  });
+}
+
+/** The forced replacement (G2's `replace-2`, run by soak.ts), as its step lines report it. */
+export interface ReplaceResult {
+  readonly stage: "done" | "failed";
+  readonly verdict: string | null;
+  readonly problems: readonly string[];
+  /** From the kill to the new boot's readiness (the app's own time when it reported one). */
+  readonly answeredAfterKillS: number | null;
+  /** Each entrypoint phase's first sight, seconds after the kill. */
+  readonly phasesS: Readonly<Record<string, unknown>> | null;
+  readonly replicaCaughtUpAfterS: number | null;
+  /** The replacement runs this version's configuration, image and size, released. */
+  readonly configPass: boolean | null;
+  readonly failure: string | null;
+}
+
+const objectOr = (value: unknown): Readonly<Record<string, unknown>> | null =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+
+/** The forced replacement's last outcome in the lines, or null while it has none. */
+export function replaceResult(lines: readonly LogLine[]): ReplaceResult | null {
+  const ended = [...lines]
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map(sourceOf)
+    .filter(
+      (s) =>
+        s?.cfo === "g2_sitting" &&
+        s.step === "replace-2" &&
+        (s.event === "step_done" || s.event === "step_failed"),
+    )
+    .at(-1);
+  if (ended === undefined || ended === null) return null;
+  const record = objectOr(ended.record);
+  const problems = Array.isArray(ended.problems)
+    ? ended.problems.filter((p): p is string => typeof p === "string")
+    : [];
+  return {
+    stage: ended.event === "step_done" ? "done" : "failed",
+    verdict:
+      typeof ended.verdict === "string"
+        ? ended.verdict
+        : ended.event === "step_failed"
+          ? "fail"
+          : null,
+    problems,
+    answeredAfterKillS: numberOr(record?.answeredAfterKillS),
+    phasesS: objectOr(record?.phasesS),
+    replicaCaughtUpAfterS: numberOr(objectOr(record?.replica)?.caughtUpAfterS),
+    configPass: (() => {
+      const pass = objectOr(objectOr(record?.after)?.config)?.pass;
+      return typeof pass === "boolean" ? pass : null;
+    })(),
+    failure: typeof ended.failure === "string" ? ended.failure : null,
+  };
 }
