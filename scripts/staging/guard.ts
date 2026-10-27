@@ -448,11 +448,15 @@ export function secretNameProblems(names: readonly string[]): string[] {
     : [];
 }
 
-/** Wrangler's repository for a `durable_object`-policy image: `<worker>-<class>-<image>`, sanitised. */
+/**
+ * Wrangler's repository for a `durable_object`-policy image: `<worker>-<class>-<image>`,
+ * lowercased, each run of other characters one `-` (Wrangler 4.149.0's
+ * `buildDurableObjectImageTag`), so teardown deletes the repository Wrangler pushed to.
+ */
 export function policyRepository(worker: string, className: string, image: string): string {
   return `${worker}-${className}-${image}`
     .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
 

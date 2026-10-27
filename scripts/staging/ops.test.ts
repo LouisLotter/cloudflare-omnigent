@@ -78,6 +78,8 @@ type DeployFault =
   | "none"
   | "before-upload"
   | "after-upload"
+  /** Wrangler 4.149.0: the version is live, then its `durable_object` application fails. */
+  | "before-policy-applications"
   | "crash-after-access"
   | "crash-after-upload"
   | "lost-response"
@@ -362,20 +364,31 @@ class FakeCloud implements Cloud {
     this.epochs.push(buildEpoch);
     this.duringUpload?.();
     if (this.deployFault === "before-upload") throw new Error("wrangler deploy exited with 1");
-    // Wrangler binds the declared buckets, creating any that is missing, and creates the
-    // container applications and images, before the upload's outcome is known.
-    const declared = declaredResources(views[configPath]?.raw ?? {}, name);
+    // Wrangler binds the declared buckets, creating any that is missing, and pushes the images
+    // and creates default-policy container applications before the upload's outcome is known;
+    // a `durable_object` application only after the upload (Wrangler 4.149.0).
+    const raw = views[configPath]?.raw ?? {};
+    const declared = declaredResources(raw, name);
+    const policyApps = new Set(
+      (Array.isArray(raw.containers) ? raw.containers : [])
+        .filter((c: { scheduling_policy?: unknown }) => c?.scheduling_policy === "durable_object")
+        .map((c: { name?: unknown }) => c.name),
+    );
+    const createApps = (policy: boolean) => {
+      for (const container of declared.containers) {
+        if (policyApps.has(container) !== policy) continue;
+        if (![...this.containerApps_.values()].includes(container)) {
+          this.containerApps_.set(`ca-${this.nextAppId++}`, container);
+        }
+      }
+    };
     for (const bucket of declared.buckets) {
       if (!this.buckets.has(bucket)) {
         this.violations.push(`Wrangler had to provision ${bucket}`);
         this.buckets.add(bucket);
       }
     }
-    for (const container of declared.containers) {
-      if (![...this.containerApps_.values()].includes(container)) {
-        this.containerApps_.set(`ca-${this.nextAppId++}`, container);
-      }
-    }
+    createApps(false);
     for (const repository of declared.repositories) {
       // The same sources built with the same epoch give the same digest. Wrangler skips pushing
       // a digest the registry answers for, which it still does after the image was deleted;
@@ -402,6 +415,12 @@ class FakeCloud implements Cloud {
     // Like Wrangler's --secrets-file: added to the secrets the Worker had.
     this.secrets.set(name, { ...this.secrets.get(name), ...secrets });
     this.check();
+    if (this.deployFault === "before-policy-applications") {
+      throw new Error(
+        "wrangler deploy exited with 1: The Worker version was deployed, but Wrangler could not finish applying its Durable Object-managed Container application settings.",
+      );
+    }
+    createApps(true);
     if (this.deployFault === "after-upload") throw new Error("wrangler deploy exited with 1");
     if (this.deployFault === "crash-after-upload") this.die();
   }
@@ -1361,6 +1380,56 @@ describe("containers and buckets", () => {
     ).toHaveLength(2);
     teardown(ctx, "cfo-stg-a");
     expect(leftovers()).toBe(0);
+  });
+
+  it("finishes a deploy whose version went live before its durable_object applications existed, and tears it all down (WP3.19)", () => {
+    const path = "/w/policy-both.jsonc";
+    const policy = (container: string, className: string, image: string) => ({
+      name: container,
+      class_name: className,
+      scheduling_policy: "durable_object",
+      images: { [image]: { dockerfile: `./${image}/Dockerfile` } },
+    });
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: {
+          bindings: [
+            { name: "OMNIGENT", class_name: "OmnigentServer" },
+            { name: "WORKSPACE", class_name: "WorkspaceDO" },
+          ],
+        },
+        containers: [
+          policy("cfo-stg-a-omnigentserver", "OmnigentServer", "server"),
+          policy("cfo-stg-a-workspacedo", "WorkspaceDO", "computer"),
+        ],
+      },
+    };
+    const repositories = ["cfo-stg-a-omnigentserver-server", "cfo-stg-a-workspacedo-computer"];
+    cloud.deployFault = "before-policy-applications";
+    expect(() => deploy(ctx, request("a", 7, path))).toThrow("could not finish applying");
+    // Live and pushed, no application yet: recorded, so a retry or a teardown finds it all.
+    expect(cloud.workers.has("cfo-stg-a")).toBe(true);
+    expect(cloud.containerApps_.size).toBe(0);
+    expect(record()).toMatchObject({
+      state: "pending",
+      containers: ["cfo-stg-a-omnigentserver", "cfo-stg-a-workspacedo"],
+      repositories,
+    });
+    restart();
+    cloud.deployFault = "none";
+    clock += HOUR;
+    deploy(ctx, request("a", 7, path)); // the same deploy again, as Wrangler says
+    expect(record()?.state).toBe("deployed");
+    expect([...cloud.containerApps_.values()].sort()).toEqual([
+      "cfo-stg-a-omnigentserver",
+      "cfo-stg-a-workspacedo",
+    ]);
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
+    expect(cloud.violations).toEqual([]);
   });
 
   it("refuses a repository that already has images this deployment did not push", () => {

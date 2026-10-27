@@ -46,7 +46,14 @@ import {
   wranglerCli,
   writePrivateFile,
 } from "./cloud.ts";
-import { type Deployment, type LateCreate, tunnelRoute, validateDeployConfig } from "./guard.ts";
+import {
+  type Deployment,
+  declaredResources,
+  type LateCreate,
+  tunnelRoute,
+  validateDeployConfig,
+  withStagingNames,
+} from "./guard.ts";
 import { acquireLock, heldLockFds } from "./lock.ts";
 
 const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
@@ -1230,6 +1237,24 @@ describe("Wrangler's own reading of a configuration", () => {
 
   it("accepts the checked-in Worker configuration", () => {
     expect(() => check(join(WORKER, "wrangler.jsonc"))).not.toThrow();
+  });
+
+  it("reads both checked-in containers under the durable_object policy, with their repositories for teardown (WP3.19)", () => {
+    const { raw } = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER);
+    const containers = raw.containers as Record<string, unknown>[];
+    expect(containers.map((c) => [c.class_name, c.scheduling_policy, Object.keys(c)])).toEqual([
+      ["OmnigentServer", "durable_object", ["class_name", "scheduling_policy", "images"]],
+      ["WorkspaceDO", "durable_object", ["class_name", "scheduling_policy", "images"]],
+    ]);
+    expect(containers[0]?.images).toEqual({
+      server: { dockerfile: "../images/server/Dockerfile", build_context: ".." },
+    });
+    // Recorded at deploy, so teardown deletes every repository Wrangler pushes to.
+    expect(declaredResources(withStagingNames(raw, "cfo-stg-x"), "cfo-stg-x")).toEqual({
+      containers: ["cfo-stg-x-omnigentserver", "cfo-stg-x-workspacedo"],
+      buckets: ["cfo-stg-x-checkpoints"],
+      repositories: ["cfo-stg-x-omnigentserver-server", "cfo-stg-x-workspacedo-computer"],
+    });
   });
 
   it.each([

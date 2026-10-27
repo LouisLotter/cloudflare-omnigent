@@ -64,6 +64,11 @@ export class FakeWorld {
     aud: "a".repeat(64),
   });
   crash: CrashPoint | undefined;
+  /**
+   * A call that takes effect and then fails with this message, as `wrangler deploy` does when the
+   * new version is live but its `durable_object` container application could not be applied.
+   */
+  failAfter: { call: string; nth: number; message: string } | undefined;
   /** Time a call takes, once: the clock moves on while it runs (a slow query, a suspended laptop). */
   slow: { call: string; nth: number; ms: number } | undefined;
   /** Something that happens just before a call, once: another hand acting meanwhile. */
@@ -118,6 +123,11 @@ export class FakeWorld {
     if (this.crash?.call === call && this.crash.nth === n && this.crash.when === "after") {
       this.crash = undefined;
       throw new Crash(`crash after ${call}`);
+    }
+    if (this.failAfter?.call === call && this.failAfter.nth === n) {
+      const { message } = this.failAfter;
+      this.failAfter = undefined;
+      throw new Error(message);
     }
   }
 

@@ -356,6 +356,11 @@ describe("Wrangler configuration check", () => {
         "cfo-stg-s1-dop-s1computer-computer",
       );
       expect(policyRepository("cfo-stg-a", "Host", "-My Img!-")).toBe("cfo-stg-a-host--my-img");
+      // A run of other characters is one dash, as Wrangler names it.
+      expect(policyRepository("cfo-stg-a", "Host", "My  Img!!")).toBe("cfo-stg-a-host-my-img");
+      expect(policyRepository("cfo-stg-a", "OmnigentServer", "server")).toBe(
+        "cfo-stg-a-omnigentserver-server",
+      );
     });
 
     it("refuses what the staging tool cannot keep inside the deployment", () => {
@@ -442,12 +447,12 @@ describe("Wrangler configuration check", () => {
   });
 
   describe("the checked-in production configuration (staging names)", () => {
+    // The server's entry as worker/wrangler.jsonc has it (WP3.19): the `durable_object` policy,
+    // one named image, no size or count in the configuration.
     const unnamed = (extra: Record<string, unknown> = {}) => ({
       class_name: "OmnigentServer",
-      image: "../images/server/Dockerfile",
-      image_build_context: "..",
-      instance_type: "basic",
-      max_instances: 1,
+      scheduling_policy: "durable_object",
+      images: { server: { dockerfile: "../images/server/Dockerfile", build_context: ".." } },
       ...extra,
     });
 
@@ -547,7 +552,16 @@ describe("Wrangler configuration check", () => {
     it("declares the staged names for the record and the teardown", () => {
       const declared = declaredResources(withStagingNames({ containers: [unnamed()] }, NAME), NAME);
       expect(declared.containers).toEqual(["cfo-stg-a-omnigentserver"]);
-      expect(declared.repositories).toEqual(["cfo-stg-a-omnigentserver"]);
+      // The repository Wrangler pushes a `durable_object` image to: <worker>-<class>-<image>.
+      expect(declared.repositories).toEqual(["cfo-stg-a-omnigentserver-server"]);
+    });
+
+    it("still refuses a size or a count on the server, which the policy rejects too", () => {
+      for (const extra of [{ max_instances: 1 }, { instance_type: "basic" }]) {
+        expect(() =>
+          validateDeployConfig(raw({ containers: [unnamed(extra)] }), ACCOUNT, NAME),
+        ).toThrow(Object.keys(extra)[0]);
+      }
     });
   });
 

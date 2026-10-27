@@ -600,6 +600,29 @@ describe("runBootstrap: Codex review r1", () => {
 });
 
 describe("runBootstrap: Cloudflare misbehaving", () => {
+  it("deploys the platform again when its version went live but its container application failed (WP3.19)", async () => {
+    // Wrangler 4.149.0 makes the new version live before it creates or updates a
+    // `durable_object` container application; if that step fails, it says to deploy again.
+    const h = harness(await accountPlan());
+    h.world.failAfter = {
+      call: "deployPlatform",
+      nth: 1,
+      message:
+        "wrangler deploy exited with 1: The Worker version was deployed, but Wrangler could not finish applying its Durable Object-managed Container application settings.",
+    };
+    await expect(h.run()).rejects.toThrow("could not finish applying");
+    // Live, with the installer's secrets, but not counted as deployed.
+    expect(h.world.secretsOf(h.world.plan.platformWorker)?.has(PASSWORD_SECRET)).toBe(true);
+    expect(h.store.state.journal.platformDeployedAt).toBeUndefined();
+    expect(await h.run()).toEqual({ kind: "done" });
+    // The same deploy again, without asking the installer a second time.
+    const configs = h.world.configs.get(h.world.plan.platformWorker) ?? [];
+    expect(configs).toHaveLength(2);
+    expect(configs[1]).toEqual(configs[0]);
+    expect(h.asked).toBe(1);
+    expect(h.world.released()).toBe(true);
+  });
+
   it("stops when a deploy did not leave every secret, and the next run deploys again", async () => {
     const h = harness(await accountPlan());
     h.world.dropOnDeploy = [COOKIE_SECRET];
