@@ -1,0 +1,25 @@
+# The repository root is the build context of the server image, the computer image and the
+# restore drill's image. A local `docker build -f images/<name>/Dockerfile .` reads that
+# Dockerfile's own `Dockerfile.dockerignore` instead of this file. Wrangler passes the Dockerfile
+# on stdin (`docker build -f -`), so BuildKit cannot find those and reads this file: it is their
+# union, plus the drill's sources, with the same exclusions. Without it, a local `__pycache__`
+# would reach the server image, and a checkout's state would change the image's digest, which
+# the server's watchdog restarts the server for (scripts/test/dockerignore.test.ts).
+*
+# The server image (images/server/Dockerfile.dockerignore).
+!images/server/cfo_server/
+!python/cloudflare_omnigent/
+!images/server/tests/
+!images/server/Dockerfile
+!contracts/schema/
+# The computer image (images/computer/Dockerfile.dockerignore).
+!images/computer/
+!contracts/fixtures/
+!contracts/vectors/
+!python/tests/computer/
+!worker/test/fixtures/workspace-commands.json
+# The restore drill (scripts/restore-drill/staging/Dockerfile, which has no file of its own).
+!scripts/restore-drill/cfo_drill/
+**/__pycache__/
+**/*.pyc
+**/.hypothesis/
