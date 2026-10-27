@@ -27,6 +27,10 @@ Omnigent's host from the pinned fork commit (a mirror of the fork's `host` targe
 | [computer/integration/](computer/integration/) | Built-image tests with Docker: the supervisor as the main process, an assembled capture through the command port, and a DirectoryBackup round trip with the real SDK (needs `npm ci` in `directory-backup/`) |
 | [computer/tools/rc53_scan.py](computer/tools/rc53_scan.py) | RC-53's layer scan for staged layers, restored trees and `tar+zstd` layer archives |
 
+## Certificate trust
+
+[trust/](trust/) holds the trust check both Dockerfiles run while building (it fails on a stale `ca-certificates` or on any shipped bundle that still trusts a distrusted root) and an opt-in network probe of every TLS client in a built image. See [testing](../docs/testing.md#certificate-trust-checks) and, for responding to a distrusted authority, [credential incidents](../docs/operations/security.md#distrusted-certificate-authorities).
+
 ## Identity and custody
 
 The default server fork pin is fork integration `3228d4de38ef05f69ecc80a4539d7c02727ce314`; the computer image pins the same commit. [Compatibility](../docs/compatibility.md) maps which fixes earlier pins lacked. Record actual build arguments and immutable artifact identities before claiming a fix; source/base pins do not alone make rebuilt image bytes identical.

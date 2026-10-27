@@ -1,0 +1,12 @@
+# Tool settings for the images' shared trust tools (trust_check.py, tls_probe.py and their
+# tests), matching python/pyproject.toml. Nothing is installed from here: the Dockerfiles
+# bind-mount trust_check.py for the build and copy this directory into their test targets.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["trust_check", "tls_probe"]

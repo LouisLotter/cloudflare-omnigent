@@ -23,10 +23,10 @@ def _run(*argv: str) -> str:
 
 def test_pinned_versions() -> None:
     # The real CLIs (the test variant puts its fakes first on PATH).
-    assert _run("/usr/local/bin/claude", "--version").split()[0] == "2.1.302"
-    assert _run("/usr/local/bin/codex", "--version").strip().splitlines()[-1] == "codex-cli 0.163.0"
+    assert _run("/usr/local/bin/claude", "--version").split()[0] == "2.1.311"
+    assert _run("/usr/local/bin/codex", "--version").strip().splitlines()[-1] == "codex-cli 0.164.0"
     assert "0.19.0.dev0" in _run("/opt/venv/bin/omnigent", "--version")
-    assert _run("/usr/local/bin/gh", "--version").split()[2] == "2.100.0"
+    assert _run("/usr/local/bin/gh", "--version").split()[2] == "2.103.3"
     assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith("1.7.7")
     assert Path("/usr/local/bin/sandbox-shim").exists()
     assert Path("/usr/bin/tini").exists()

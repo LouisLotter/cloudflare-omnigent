@@ -1,0 +1,360 @@
+"""The network probe's verdicts (images/trust/tls_probe.py), offline.
+
+The outputs are what each client printed against the forged and good hosts in the images
+(October 2026). A refusal counts only as a certificate refusal: a network error, a reset or a
+timeout fails the probe, and so does a forged host that answered.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+TRUST = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TRUST))
+
+import tls_probe  # noqa: E402
+
+HOME = Path("/nonexistent")
+
+
+def _client(name: str = "any", accept: str = r"^HTTP \d{3}", tls_failure=None) -> tls_probe.Client:
+    return tls_probe.Client(
+        name, lambda url, home: [], re.compile(accept, re.M), tls_failure=tls_failure
+    )
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        "curl: (60) SSL certificate problem: unable to get local issuer certificate\nHTTP 000",
+        "ERROR CERT_REVOKED certificate revoked",
+        'Get "https://x/api/v3/meta": tls: failed to verify certificate: x509: certificate'
+        " signed by unknown authority",
+        "fatal: unable to access 'https://x/': server verification failed: certificate signer"
+        " not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)",
+        "ERROR ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed",
+        "API Error: Unable to connect to API: SSL certificate verification failed"
+        " (UNABLE_TO_GET_ISSUER_CERT_LOCALLY).",
+        # Claude Code 2.1.311, also with the forged roots trusted: its own filter.
+        "[ERROR] Connection error details: code=CERT_REJECTED (SSL error), message=certificate"
+        " rejected",
+        "Error: operation error S3: ListObjectsV2, exceeded maximum number of attempts, 10, https"
+        " response error StatusCode: 0, RequestID: , HostID: , request send failed, Get"
+        ' "https://x/b": tls: failed to verify certificate: x509: certificate signed by unknown'
+        " authority",
+    ],
+)
+def test_certificate_refusals(out: str) -> None:
+    assert (
+        tls_probe.classify(_client(accept=r"StatusCode: [1-5]\d\d|^HTTP [1-5]"), out, HOME, False)[
+            0
+        ]
+        == tls_probe.REFUSED_CERT
+    )
+
+
+def test_a_network_error_is_not_a_refusal() -> None:
+    out = "curl: (6) Could not resolve host: dv-g3b-emudhra.we-have-a-problem.com"
+    assert tls_probe.classify(_client(), out, HOME, False)[0] == tls_probe.ERROR
+    # Even when certificate words appear alongside it.
+    out = "NewConnectionError: Failed to establish a new connection (certificate verify failed?)"
+    assert tls_probe.classify(_client(), out, HOME, False)[0] == tls_probe.ERROR
+
+
+@pytest.mark.parametrize(
+    ("accept", "out"),
+    [
+        (r"^HTTP \d{3}", "HTTP 200"),  # httpx with certifi 2026.5.20 on the emSign host
+        (r"API Error: \d{3}", "API Error: 405 only GET, HEAD and OPTIONS"),  # Claude 2.1.302
+        (
+            tls_probe.PIP_ACCEPT.pattern,
+            "WARNING: Skipping page https://x/simple/p/ because the GET request got Content-Type:"
+            " text/plain",
+        ),  # pip 25.0.1
+        (tls_probe.PIP_ACCEPT.pattern, 'https://github.com:443 "GET /simple/p/ HTTP/1.1" 404 None'),
+        (r"HTTP \d{3}", "Your client successfully connected to the site. That's bad!"),  # gh body
+    ],
+)
+def test_an_answer_from_the_server_means_the_chain_was_accepted(accept: str, out: str) -> None:
+    assert tls_probe.classify(_client(accept=accept), out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        # The forged page's text with certificate words around it (a body, a retry log).
+        "Your client successfully connected to the site. That's bad!\ncertificate revoked",
+        "HTTP 200\n[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed (first attempt)",
+    ],
+)
+def test_an_answer_wins_over_certificate_text(out: str) -> None:
+    assert tls_probe.classify(_client(), out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        "Could not fetch URL https://x/simple/p/: connection error: Failed to resolve IP address"
+        " for 'x' ([Errno -2] Name or service not known) - skipping\nERROR: Could not find a"
+        " version that satisfies the requirement p (from versions: none)",
+        "Could not fetch URL https://x/simple/p/: connection error: ('Connection aborted.',"
+        " ConnectionResetError(104, 'Connection reset by peer')) - skipping\nERROR: Could not"
+        " find a version that satisfies the requirement p (from versions: none)",
+        "ERROR: Could not find a version that satisfies the requirement p (from versions: none)",
+    ],
+)
+def test_pips_no_version_message_is_not_an_answer(out: str) -> None:
+    pip = _client("pip-venv", accept=tls_probe.PIP_ACCEPT.pattern)
+    assert tls_probe.classify(pip, out, HOME, False)[0] == tls_probe.ERROR
+
+
+def test_a_reset_or_a_timeout_is_an_error() -> None:
+    reset = (
+        "[ERROR] Connection error details: code=ECONNRESET, message=ECONNRESET: The socket"
+        " connection was closed unexpectedly."
+    )
+    assert tls_probe.classify(_client(), reset, HOME, False)[0] == tls_probe.ERROR
+    outcome, detail = tls_probe.classify(_client(), "s3 request ...", HOME, True)
+    assert outcome == tls_probe.ERROR and detail.startswith("timeout")
+
+
+def test_codex_counts_a_tls_failure_only_after_a_tcp_connection() -> None:
+    codex = _client("codex", accept="not enabled", tls_failure=tls_probe._codex_tls_failure)
+    after_connect = (
+        "DEBUG hyper_util::client::legacy::connect::http: connected to 54.39.60.141:443\n"
+        "TRACE rustls::client::tls13: Server cert is …\n"
+        "Error logging in with device code: error sending request for url (https://x/)"
+    )
+    openssl_path = after_connect.replace("TRACE rustls::client::tls13: Server cert is …\n", "")
+    no_connect = "Error logging in with device code: error sending request for url (https://x/)"
+    assert tls_probe.classify(codex, after_connect, HOME, False)[0] == tls_probe.REFUSED_TLS
+    assert tls_probe.classify(codex, no_connect, HOME, False)[0] == tls_probe.ERROR
+    # The default client (vendored OpenSSL) logs no TLS detail: the TCP connection is enough.
+    outcome, detail = tls_probe.classify(codex, openssl_path, HOME, False)
+    assert outcome == tls_probe.REFUSED_TLS and "rustls" not in detail
+    assert "rustls received the chain" in tls_probe.classify(codex, after_connect, HOME, False)[1]
+    answered = "Error logging in with device code: device code login is not enabled for this server"
+    assert tls_probe.classify(codex, answered, HOME, False)[0] == tls_probe.ACCEPTED
+    # A reset, a network error or a timeout after the connection is never a refusal.
+    for dropped in ("connection reset by peer", "Connection refused", "unexpected EOF"):
+        assert tls_probe.classify(codex, f"{openssl_path}\n{dropped}", HOME, False)[0] == (
+            tls_probe.ERROR
+        )
+    assert tls_probe.classify(codex, openssl_path, HOME, True)[0] == tls_probe.ERROR
+
+
+def _r(client: str, host: str, outcome: str, mode: str = "default") -> tls_probe.Result:
+    return tls_probe.Result(client, host, mode, outcome, "")
+
+
+def test_evaluate_fails_an_accepted_forged_host_and_an_unverified_good_host() -> None:
+    results = [
+        _r("httpx", "forged-emsign-g3", tls_probe.ACCEPTED),
+        _r("httpx", "forged-aaa", tls_probe.REFUSED_CERT),
+        _r("httpx", "github.com", tls_probe.REFUSED_CERT),
+        _r("httpx", "api.openai.com", tls_probe.ACCEPTED),
+    ]
+    failures = tls_probe.evaluate(results)
+    assert [f.split(":")[0] for f in failures] == ["httpx forged-emsign-g3", "httpx github.com"]
+
+
+def test_a_refusal_without_a_cause_is_inferred_only_when_reproduced_and_controlled() -> None:
+    def run(control_outcome: str | None, reproduced: bool = True, strict: bool = False):
+        refusal = _r("codex", "forged-aaa", tls_probe.REFUSED_TLS)
+        if reproduced:
+            refusal.extra["reproduced"] = True
+        results = [refusal]
+        if control_outcome:
+            results.append(_r("codex", "forged-aaa", control_outcome, mode="control"))
+        return tls_probe.evaluate(results, strict=strict), refusal
+
+    failures, refusal = run(tls_probe.ACCEPTED)
+    assert failures == [] and refusal.extra["refusal"].startswith("inferred, not shown")
+    (failure,), _ = run(tls_probe.ACCEPTED, strict=True)
+    assert "--strict" in failure
+    (failure,), _ = run(tls_probe.ACCEPTED, reproduced=False)
+    assert "inconclusive" in failure
+    for control_outcome in (None, tls_probe.REFUSED_TLS, tls_probe.ERROR):
+        (failure,), _ = run(control_outcome)
+        assert "inconclusive" in failure
+
+
+def test_an_error_fails_even_when_the_control_connected() -> None:
+    """A network error, a reset or a timeout is never a refusal, whatever the control did."""
+    results = [
+        _r("litestream", "forged-aaa", tls_probe.ERROR),
+        _r("litestream", "forged-aaa", tls_probe.ACCEPTED, mode="control"),
+    ]
+    assert len(tls_probe.evaluate(results)) == 1
+
+
+def test_a_good_host_given_by_name_is_redacted_everywhere() -> None:
+    host = "0123abcd.r2.example.com"
+    r = _r("git", "r2-s3-api", tls_probe.ACCEPTED)
+    r.detail = f"fatal: unable to access 'https://{host}/x.git/': error: 400"
+    r.extra["first_attempt"] = f"Could not resolve host: {host}"
+    tls_probe.redact([r], {"r2-s3-api": f"https://{host}/"})
+    assert "0123abcd" not in r.detail + str(r.extra)
+    assert "<r2-s3-api>" in r.detail and "<r2-s3-api>" in r.extra["first_attempt"]
+
+
+def test_redaction_covers_an_overridden_default_and_runs_before_the_cut() -> None:
+    host = "0123abcd.r2.example.com"
+    r = _r("curl", "r2.dev", tls_probe.ACCEPTED)
+    # The host straddles the display limit: a cut first would leave "0123abcd" behind.
+    r.detail = "x" * (tls_probe.DETAIL_LIMIT - 4) + f"https://{host}/ HTTP 401"
+    tls_probe.redact([r], {"r2.dev": f"https://{host}/"})
+    assert "0123" not in r.detail and len(r.detail) <= tls_probe.DETAIL_LIMIT
+
+
+def test_the_control_trust_holds_the_forged_roots(tmp_path: Path) -> None:
+    if not tls_probe.SYSTEM_BUNDLE.exists():
+        pytest.skip("needs the system bundle")
+    trust = tls_probe.control_trust(tmp_path)
+    text = trust["bundle"].read_text()
+    for root in tls_probe.FORGED_ROOTS:
+        assert root.read_text().strip() in text
+        assert (trust["dir"] / tls_probe.FORGED_ROOT_HASHES[root.name]).read_text() == (
+            root.read_text()
+        )
+
+
+def test_the_probe_uses_no_credential() -> None:
+    assert "synthetic-not-a-credential" in tls_probe.SYNTHETIC
+    for url in [*tls_probe.FORGED.values(), *tls_probe.GOOD.values()]:
+        assert url.startswith("https://") and "@" not in url
+
+
+def test_codex_reads_its_trace_from_its_log_directory(tmp_path: Path) -> None:
+    log = tmp_path / ".codex" / "log"
+    log.mkdir(parents=True)
+    (log / "codex-login.log").write_text(
+        "TRACE checkout waiting\nDEBUG hyper_util::client::legacy::connect::http: connected to"
+        " 54.39.60.141:443\nTRACE rustls::client::tls13: Server cert is CertificateChain([0x30])\n"
+        "TRACE reqwest::retry: shouldn't retry!\n"
+    )
+    logs = tls_probe._codex_logs(tmp_path)
+    assert "connected to 54.39.60.141:443" in logs
+    assert "Server cert is …" in logs and "0x30" not in logs
+    assert tls_probe._codex_logs(tmp_path / "missing") == ""
+
+
+def test_an_empty_litestream_listing_is_an_answer() -> None:
+    litestream = _client(accept=r"StatusCode: [1-5]\d\d|api error|^level\s+min_txid")
+    litestream.accept = re.compile(litestream.accept.pattern, re.I | re.M)
+    out = "level  min_txid  max_txid  size  created"
+    assert tls_probe.classify(litestream, out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+# ── The orchestration, with fake clients (no network) ────────────────────────────────────
+
+
+def _sh(name: str, script: str, **kwargs) -> tls_probe.Client:
+    return tls_probe.Client(
+        name,
+        lambda url, home: ["sh", "-c", script, "sh", url],
+        re.compile(r"^HTTP \d{3}", re.M),
+        **kwargs,
+    )
+
+
+def test_discover_builds_a_command_and_environment_for_each_client(tmp_path: Path) -> None:
+    for client in tls_probe.discover():
+        argv = client.argv("https://example.invalid/", tmp_path)
+        env = client.env("https://example.invalid/", tmp_path)
+        assert argv and all(isinstance(a, str) for a in argv), client.name
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+        assert _synthetic_only(env), client.name
+
+
+def _synthetic_only(env: dict[str, str]) -> bool:
+    """Any credential-looking variable carries the synthetic placeholder only."""
+    keys = [k for k in env if any(w in k for w in ("TOKEN", "KEY", "SECRET"))]
+    return all(env[k] == tls_probe.SYNTHETIC for k in keys)
+
+
+def test_run_once_classifies_answers_errors_and_timeouts() -> None:
+    answered = tls_probe.run_one(_sh("fake", "echo HTTP 204"), "h", "https://h/", None)
+    assert answered.outcome == tls_probe.ACCEPTED and answered.mode == "default"
+    failed = tls_probe.run_one(_sh("fake", "echo boom; exit 3"), "h", "https://h/", None)
+    assert failed.outcome == tls_probe.ERROR and failed.extra["first_attempt"] == "boom"
+    slow = tls_probe.run_one(_sh("fake", "sleep 5", timeout=0.3), "h", "https://h/", None)
+    assert slow.outcome == tls_probe.ERROR and slow.detail.startswith("timeout")
+
+
+def test_run_once_passes_the_control_trust_through_the_clients_own_variable(
+    tmp_path: Path,
+) -> None:
+    trust = {"bundle": tmp_path / "bundle.pem", "dir": tmp_path / "dir"}
+    by_file = _sh("f", 'echo "HTTP 200 $CURL_CA_BUNDLE"', ca_env=("CURL_CA_BUNDLE",))
+    by_dir = _sh("d", 'echo "HTTP 200 $SSL_CERT_DIR"', ca_env=("SSL_CERT_DIR",), ca_dir=True)
+    r1 = tls_probe.run_one(by_file, "h", "https://h/", trust)
+    r2 = tls_probe.run_one(by_dir, "h", "https://h/", trust)
+    assert r1.mode == "control" and r1.detail.endswith("bundle.pem")
+    assert r2.detail.endswith("/dir")
+
+
+def _fake_world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, script: str) -> None:
+    bundle = tmp_path / "system.pem"
+    bundle.write_text("system roots\n")
+    monkeypatch.setattr(tls_probe, "SYSTEM_BUNDLE", bundle)
+    monkeypatch.setattr(tls_probe, "discover", lambda: [_sh("fake", script)])
+    monkeypatch.setattr(tls_probe, "versions", lambda: {"fake": "1"})
+
+
+def test_main_passes_when_forged_hosts_are_refused_and_good_hosts_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = (
+        'case "$1" in *we-have-a-problem*) echo "certificate verify failed: unable to get local'
+        ' issuer certificate"; exit 1;; *) echo "HTTP 401 from $1";; esac'
+    )
+    _fake_world(monkeypatch, tmp_path, script)
+    report = tmp_path / "report.json"
+    argv = ["--control", "--json", str(report), "--good", "acct=https://0123abcd.r2.example/"]
+    assert tls_probe.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "0123abcd" not in out + report.read_text()
+    assert "<acct>" in out and "refused both forged chains" in out
+    import json
+
+    data = json.loads(report.read_text())
+    assert data["failures"] == [] and data["versions"] == {"fake": "1"}
+    assert {r["mode"] for r in data["results"]} == {"default", "control"}
+
+
+def test_run_one_keeps_a_refusal_without_a_cause_only_if_it_reproduces(tmp_path: Path) -> None:
+    signature = 'echo "connected to 192.0.2.1:443"; echo "error sending request for url ($1)"'
+    steady = _sh("codex", signature, tls_failure=tls_probe._codex_tls_failure)
+    result = tls_probe.run_one(steady, "forged-aaa", "https://h/", None)
+    assert result.outcome == tls_probe.REFUSED_TLS and result.extra["reproduced"] is True
+    flag = tmp_path / "answered-once"
+    flaky = _sh(
+        "codex",
+        f'if [ -e {flag} ]; then echo "HTTP 405"; else touch {flag}; {signature}; fi',
+        tls_failure=tls_probe._codex_tls_failure,
+    )
+    result = tls_probe.run_one(flaky, "forged-aaa", "https://h/", None)
+    assert result.outcome == tls_probe.ACCEPTED and "first_attempt" in result.extra
+
+
+def test_main_fails_when_a_forged_host_answers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_world(monkeypatch, tmp_path, 'echo "HTTP 200"')
+    assert tls_probe.main([]) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_main_refuses_a_good_host_that_is_not_https() -> None:
+    with pytest.raises(SystemExit):
+        tls_probe.main(["--good", "x=http://plain.example/"])
+
+
+def test_versions_reports_only_what_runs() -> None:
+    found = tls_probe.versions()
+    assert all(isinstance(v, str) for v in found.values())
