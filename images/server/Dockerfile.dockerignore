@@ -3,6 +3,7 @@
 !images/server/cfo_server/
 !python/cloudflare_omnigent/
 !images/server/tests/
+!images/trust/
 !images/server/Dockerfile
 !contracts/schema/
 **/__pycache__/

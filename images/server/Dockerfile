@@ -35,6 +35,9 @@ ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
 ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+# Trust pins over the fork's lock, hash-checked (see the builder stage).
+ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -87,6 +90,15 @@ RUN uv export --frozen --no-dev --extra s3 --no-emit-project --no-emit-workspace
       -o /tmp/requirements.txt \
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps -e .
+# Trust pins over the lock, hash-checked, until the fork's uv.lock carries them: the lock's
+# certifi (2026.5.20), which httpx, requests and botocore use, still trusts emSign ECC Root CA
+# - G3, and pip 25.0.1 vendors a certifi with both roots of the eMudhra key compromise
+# (October 2026). Drop the override once the lock has certifi >= 2026.10.19; the runtime
+# stage's trust check fails the build either way.
+ARG CERTIFI_PIN
+ARG PIP_PIN
+RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
+ && uv pip install --no-cache-dir --no-deps --require-hashes -r /tmp/trust-pins.txt
 COPY --from=web-builder /web/omnigent/server/static/web-ui ./omnigent/server/static/web-ui
 RUN test -f ./omnigent/server/static/web-ui/index.html
 
@@ -109,10 +121,28 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:${PATH}"
 # curl and CA certificates as in Omnigent's image; the sqlite3 shell for the restore drill.
+# Keep ca-certificates: Litestream 0.5.17 (built with Go 1.25, no key denylist) verifies R2
+# against this bundle, and falls back to the roots compiled into it only if none is found.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates sqlite3 \
  && rm -rf /var/lib/apt/lists/*
+ARG PIP_PIN
+RUN printf '%s\n' "${PIP_PIN}" > /tmp/pip-pin.txt \
+ && /usr/local/bin/python3 -I -m pip install --no-cache-dir --disable-pip-version-check \
+      --require-hashes -r /tmp/pip-pin.txt \
+ && rm /tmp/pip-pin.txt
 COPY --from=builder /opt/venv /opt/venv
+# Certificate trust (images/trust/trust_check.py): fail the build unless Debian's
+# ca-certificates has dropped both roots of the eMudhra key compromise and no bundle still
+# trusts them, and unless botocore verifies with certifi's bundle: its own fallback still holds
+# AAA Certificate Services. A stale cached layer fails here too.
+RUN --mount=type=bind,source=images/trust/trust_check.py,target=/tmp/trust_check.py \
+    /usr/local/bin/python3 -I /tmp/trust_check.py --debian-ca-certificates \
+      --bundle /etc/ssl/certs/ca-certificates.crt \
+      --bundle "$(/opt/venv/bin/python -I -c 'import certifi; print(certifi.where())')" \
+      --scan /opt/venv --scan /usr/local/lib/python3.12 \
+      --except /opt/venv/lib/python3.12/site-packages/botocore/cacert.pem \
+ && /opt/venv/bin/python -I -c 'import botocore.httpsession as h, certifi; assert h.where() == certifi.where(), h.where()'
 COPY --from=builder /build /build
 COPY --from=omnigent-src /deploy/docker/entrypoint.py /app/entrypoint.py
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
@@ -157,12 +187,13 @@ RUN find /opt/venv /build/omnigent /opt/cfo/cfo_server /opt/cfo/cloudflare_omnig
 RUN /opt/venv/bin/python -m pip install --no-cache-dir \
       pytest==9.1.1 hypothesis==6.169.0 jsonschema==4.26.0
 COPY images/server/tests/ /opt/cfo/tests/
+COPY images/trust/ /opt/cfo/trust/
 COPY images/server/Dockerfile /opt/cfo/Dockerfile
 COPY contracts/schema/ /opt/cfo/contracts/schema/
 ENV CFO_TEST_LITESTREAM_BIN=/usr/local/bin/litestream \
     CFO_REPO_ROOT=/opt/cfo
 WORKDIR /opt/cfo
-CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "--ignore=tests/integration"]
+CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "trust/tests", "--ignore=tests/integration"]
 
 # ── The fork's Stop tests, against the Omnigent installed in this image (AIR2-007) ──────────
 # The fork's `test` dependency group, pinned by its uv.lock like the runtime's packages (so pip

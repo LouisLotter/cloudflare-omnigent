@@ -20,6 +20,9 @@
 #   - The supervisor (cfo_computer, standard library only) as the container's main process
 #     under tini, and the contract assets it reads: the exported JSON Schemas and checkpoint
 #     policy version 1.
+#   - Certificate trust kept current (images/trust): the build fails if Debian's bundle or
+#     certifi's still trusts a root through which forged certificates chain (the eMudhra key
+#     compromise of October 2026).
 #
 # The person's account is `omnigent` (uid 1000, home /home/omnigent, workspace ~/work), with
 # passwordless sudo: agents are not restricted on their own computer (security calibration).
@@ -32,6 +35,9 @@ ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
+# Trust pins over the fork's lock, hash-checked (see the builder stage).
+ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -74,6 +80,15 @@ RUN uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-edita
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps . ./sdks/python-client ./sdks/ui \
  && ! grep -R --include='*.pth' --include='*.egg-link' -nE '/build(/|$)' /opt/venv/lib/python*/site-packages
+# Trust pins over the lock, hash-checked, until the fork's uv.lock carries them: the lock's
+# certifi (2026.5.20) still trusts emSign ECC Root CA - G3, and the venv's pip (25.0.1) trusts
+# both roots of the eMudhra key compromise (October 2026) through the certifi it vendors. pip
+# 26.2.2 and certifi 2026.10.19 are the first fixed releases. Drop the override once the lock
+# has certifi >= 2026.10.19; the runtime stage's trust check fails the build either way.
+ARG CERTIFI_PIN
+ARG PIP_PIN
+RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
+ && uv pip install --no-cache-dir --no-deps --require-hashes -r /tmp/trust-pins.txt
 
 # ── The computer's runtime ───────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS runtime
@@ -89,6 +104,12 @@ RUN apt-get update \
       git tmux procps lsof bubblewrap curl ca-certificates unzip \
       tini iproute2 sudo util-linux \
  && rm -rf /var/lib/apt/lists/*
+# The image's own pip (agents run it too) at the fixed release, as in the builder stage.
+ARG PIP_PIN
+RUN printf '%s\n' "${PIP_PIN}" > /tmp/pip-pin.txt \
+ && /usr/local/bin/python3 -I -m pip install --no-cache-dir --disable-pip-version-check \
+      --require-hashes -r /tmp/pip-pin.txt \
+ && rm /tmp/pip-pin.txt
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -127,6 +148,16 @@ RUN curl -fsSL -o /usr/local/bin/ttyd \
 
 COPY --from=sandbox /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 COPY --from=builder /opt/venv /opt/venv
+
+# Certificate trust (images/trust/trust_check.py): fail the build unless Debian's
+# ca-certificates has dropped both roots of the eMudhra key compromise and no bundle still
+# trusts them: the system's (curl, git, gh, Claude Code, Codex, Python's ssl), certifi's
+# (httpx, requests) and pip's vendored copies. A stale cached layer fails here too.
+RUN --mount=type=bind,source=images/trust/trust_check.py,target=/tmp/trust_check.py \
+    /usr/local/bin/python3 -I /tmp/trust_check.py --debian-ca-certificates \
+      --bundle /etc/ssl/certs/ca-certificates.crt \
+      --bundle "$(/opt/venv/bin/python -I -c 'import certifi; print(certifi.where())')" \
+      --scan /opt/venv --scan /usr/local/lib/python3.12
 
 # Login shells keep the venv first (Debian's /etc/profile resets PATH), as the fork's host does.
 RUN echo 'export PATH="/opt/venv/bin:${PATH}"' > /etc/profile.d/omnigent-venv.sh
@@ -172,6 +203,7 @@ FROM runtime AS test
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir pytest==9.1.1 hypothesis==6.169.0
 COPY contracts/ /opt/cfo/repo/contracts/
 COPY images/computer/ /opt/cfo/repo/images/computer/
+COPY images/trust/ /opt/cfo/repo/images/trust/
 COPY python/tests/computer/ /opt/cfo/repo/python/tests/computer/
 # The commands WorkspaceDO sends, recorded from the controller, which the supervisor's parser
 # must accept (python/tests/computer/test_workspace_commands.py).
@@ -181,7 +213,7 @@ ENV PATH="/opt/cfo/repo/images/computer/fakes/bin:${PATH}"
 RUN mkdir -p /var/lib/cfo-fake-provider && chown omnigent:omnigent /var/lib/cfo-fake-provider
 WORKDIR /opt/cfo/repo
 ENTRYPOINT []
-CMD ["/usr/local/bin/python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "python/tests/computer", "images/computer/tests"]
+CMD ["/usr/local/bin/python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "python/tests/computer", "images/computer/tests", "images/trust/tests"]
 
 # ── The computer (the default target: the last stage) ────────────────────────────────────
 FROM runtime AS computer
