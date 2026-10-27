@@ -224,3 +224,98 @@ def test_an_empty_litestream_listing_is_an_answer() -> None:
     litestream.accept = re.compile(litestream.accept.pattern, re.I | re.M)
     out = "level  min_txid  max_txid  size  created"
     assert tls_probe.classify(litestream, out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+# ── The orchestration, with fake clients (no network) ────────────────────────────────────
+
+
+def _sh(name: str, script: str, **kwargs) -> tls_probe.Client:
+    return tls_probe.Client(
+        name,
+        lambda url, home: ["sh", "-c", script, "sh", url],
+        re.compile(r"^HTTP \d{3}", re.M),
+        **kwargs,
+    )
+
+
+def test_discover_builds_a_command_and_environment_for_each_client(tmp_path: Path) -> None:
+    for client in tls_probe.discover():
+        argv = client.argv("https://example.invalid/", tmp_path)
+        env = client.env("https://example.invalid/", tmp_path)
+        assert argv and all(isinstance(a, str) for a in argv), client.name
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+        assert _synthetic_only(env), client.name
+
+
+def _synthetic_only(env: dict[str, str]) -> bool:
+    """Any credential-looking variable carries the synthetic placeholder only."""
+    keys = [k for k in env if any(w in k for w in ("TOKEN", "KEY", "SECRET"))]
+    return all(env[k] == tls_probe.SYNTHETIC for k in keys)
+
+
+def test_run_once_classifies_answers_errors_and_timeouts() -> None:
+    answered = tls_probe.run_one(_sh("fake", "echo HTTP 204"), "h", "https://h/", None)
+    assert answered.outcome == tls_probe.ACCEPTED and answered.mode == "default"
+    failed = tls_probe.run_one(_sh("fake", "echo boom; exit 3"), "h", "https://h/", None)
+    assert failed.outcome == tls_probe.ERROR and failed.extra["first_attempt"] == "boom"
+    slow = tls_probe.run_one(_sh("fake", "sleep 5", timeout=0.3), "h", "https://h/", None)
+    assert slow.outcome == tls_probe.ERROR and slow.detail.startswith("timeout")
+
+
+def test_run_once_passes_the_control_trust_through_the_clients_own_variable(
+    tmp_path: Path,
+) -> None:
+    trust = {"bundle": tmp_path / "bundle.pem", "dir": tmp_path / "dir"}
+    by_file = _sh("f", 'echo "HTTP 200 $CURL_CA_BUNDLE"', ca_env=("CURL_CA_BUNDLE",))
+    by_dir = _sh("d", 'echo "HTTP 200 $SSL_CERT_DIR"', ca_env=("SSL_CERT_DIR",), ca_dir=True)
+    r1 = tls_probe.run_one(by_file, "h", "https://h/", trust)
+    r2 = tls_probe.run_one(by_dir, "h", "https://h/", trust)
+    assert r1.mode == "control" and r1.detail.endswith("bundle.pem")
+    assert r2.detail.endswith("/dir")
+
+
+def _fake_world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, script: str) -> None:
+    bundle = tmp_path / "system.pem"
+    bundle.write_text("system roots\n")
+    monkeypatch.setattr(tls_probe, "SYSTEM_BUNDLE", bundle)
+    monkeypatch.setattr(tls_probe, "discover", lambda: [_sh("fake", script)])
+    monkeypatch.setattr(tls_probe, "versions", lambda: {"fake": "1"})
+
+
+def test_main_passes_when_forged_hosts_are_refused_and_good_hosts_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = (
+        'case "$1" in *we-have-a-problem*) echo "certificate verify failed: unable to get local'
+        ' issuer certificate"; exit 1;; *) echo "HTTP 401 from $1";; esac'
+    )
+    _fake_world(monkeypatch, tmp_path, script)
+    report = tmp_path / "report.json"
+    argv = ["--control", "--json", str(report), "--good", "acct=https://0123abcd.r2.example/"]
+    assert tls_probe.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "0123abcd" not in out + report.read_text()
+    assert "<acct>" in out and "refused both forged chains" in out
+    import json
+
+    data = json.loads(report.read_text())
+    assert data["failures"] == [] and data["versions"] == {"fake": "1"}
+    assert {r["mode"] for r in data["results"]} == {"default", "control"}
+
+
+def test_main_fails_when_a_forged_host_answers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _fake_world(monkeypatch, tmp_path, 'echo "HTTP 200"')
+    assert tls_probe.main([]) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_main_refuses_a_good_host_that_is_not_https() -> None:
+    with pytest.raises(SystemExit):
+        tls_probe.main(["--good", "x=http://plain.example/"])
+
+
+def test_versions_reports_only_what_runs() -> None:
+    found = tls_probe.versions()
+    assert all(isinstance(v, str) for v in found.values())
