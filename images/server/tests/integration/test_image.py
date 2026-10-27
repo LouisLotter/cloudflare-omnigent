@@ -94,6 +94,11 @@ def _validate(payload: object, schema: str) -> None:
 def test_entrypoint_order_and_owner_durable_across_replacement(link: Stack, prefix: str) -> None:
     server = link.server(prefix, initialized=False).start()
     server.wait_healthy()
+    # Under Cloudflare's `durable_object` hostname (64 characters, longer than a DNS label) the
+    # control port and the app still start (UC-93: a stock `http.server` cannot bind there).
+    if server.hostname is not None:
+        assert server.exec("hostname").stdout.strip() == server.hostname
+        assert len(server.hostname) == 64
     order = [
         e["event"]
         for line in server.logs().splitlines()

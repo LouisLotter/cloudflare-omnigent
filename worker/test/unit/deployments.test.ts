@@ -93,12 +93,31 @@ describe("the platform Worker (wrangler.jsonc)", () => {
       images: {
         [COMPUTER_IMAGE_KEY]: { dockerfile: "../images/computer/Dockerfile", build_context: ".." },
       },
+      // Set on the entry (a `durable_object` container does not inherit the Worker's): a
+      // computer's container output stays out of Workers Logs (WP3.19).
+      observability: { logs: { enabled: false } },
     });
     const buckets = (platform as unknown as { r2_buckets?: { binding: string }[] }).r2_buckets;
     expect(buckets?.map((b) => b.binding)).toEqual(["CHECKPOINTS"]);
     expect((test as unknown as { r2_buckets?: { binding: string }[] }).r2_buckets).toEqual([
       { binding: "CHECKPOINTS", bucket_name: "cfo-test-checkpoints" },
     ]);
+  });
+
+  it("runs the server's container under OmnigentServer on the durable_object policy, with the image key its port names (WP3.19)", async () => {
+    const { SERVER_IMAGE_KEY } = await import("../../src/server/container-port.ts");
+    const containers = (platform.containers ?? []) as Record<string, unknown>[];
+    // One named object runs one container; its size is a start option (SERVER_INSTANCE), so
+    // the configuration names no instance type or count. Its output is logged, as it was when
+    // it inherited the Worker's setting under the default policy.
+    expect(containers.find((c) => c.class_name === "OmnigentServer")).toEqual({
+      class_name: "OmnigentServer",
+      scheduling_policy: "durable_object",
+      images: {
+        [SERVER_IMAGE_KEY]: { dockerfile: "../images/server/Dockerfile", build_context: ".." },
+      },
+      observability: { logs: { enabled: true } },
+    });
   });
 
   it("hosts OmnigentServer as a SQLite Durable Object class", () => {

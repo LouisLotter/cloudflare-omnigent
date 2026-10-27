@@ -8,6 +8,12 @@
 //     the production cron; its events go to Workers Logs and the results bucket. Around each
 //     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
 //     object's version switch.
+//   - `OmnigentServer.m3Replace`: the M3 sitting's forced server replacement (WP3.19, lead only),
+//     G2's `replace-2` step (../g2/steps.ts) on the production object: the container destroyed,
+//     the production watchdog's start under the `durable_object` policy, timed to the new boot's
+//     readiness, then the configuration (environment, image, size), /health, /v1/info and the
+//     replica. The cron runs it while the Worker secret M3_STEP is `replace` (`run.sh replace`
+//     sets it), and never once a soak run exists. Its lines are G2's (`"cfo":"g2_sitting"`).
 // The launcher's signing key, set after the bootstrap, reaches the server through the watchdog's
 // controlled restart (G2-SEC-001's `config_changed`); run.sh waits for it, so this module needs no
 // restart of its own.
@@ -23,6 +29,7 @@ import production from "../../../src/index.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../../src/server/OmnigentServer.ts";
 import { logEvent } from "../../../src/server/responses.ts";
 import { CONTROL_OBJECT_NAME, OMNIGENT_SERVER_OBJECT_NAME } from "../../../src/shared/rpc.ts";
+import { StepRunner, type StepSummary, log as stepLog } from "../g2/object.ts";
 import { dueEvents, nextHeartbeat, SOAK_SCHEDULE, type SoakEventKind } from "./plan.ts";
 
 export { ControlDO } from "../../../src/control/ControlDO.ts";
@@ -37,9 +44,28 @@ interface SoakEnv {
   readonly RESULTS: R2Bucket;
   /** Omnigent's public URL (the web Worker's hostname), set by the bootstrap. */
   readonly SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL?: string;
+  /** `replace`: the forced server replacement before the soak (a secret, never the server's). */
+  readonly M3_STEP?: string;
 }
 
 export class OmnigentServer extends PlatformOmnigentServer {
+  readonly #steps = new StepRunner(() => ({
+    ctx: this.ctx,
+    env: this.env as unknown as Record<string, unknown>,
+    forward: (request) => this.fetch(request),
+    outages: (query) => this.outages(query),
+  }));
+
+  /** Runs (or resumes) the forced replacement, G2's `replace-2` (staging only). */
+  async m3Replace(): Promise<StepSummary> {
+    const env = this.env as unknown as Record<string, unknown>;
+    return this.#steps.run(
+      "replace-2",
+      undefined,
+      env.SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME,
+    );
+  }
+
   /** A forced reset of this object (staging only). */
   async stagingReset(reason: string): Promise<void> {
     logEvent("soak", "server_reset", { reason });
@@ -237,6 +263,21 @@ async function soakRoute(request: Request, env: SoakEnv): Promise<Response> {
   return new Response("Not found.", { status: 404 });
 }
 
+/**
+ * The forced replacement, once a minute until it is done: never once a soak run exists, where a
+ * kill would be a disruption RC-26 does not schedule. A finished step logs nothing more.
+ */
+async function replaceBeforeTheSoak(env: SoakEnv): Promise<void> {
+  try {
+    if ((await env.SOAK.getByName("soak").status()) !== null) return;
+    const result = await env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).m3Replace();
+    if (result.stage !== "done" && result.stage !== "failed") stepLog("tick", { result });
+  } catch (error) {
+    // Before the object runs this build (a version switch pending), m3Replace is unknown.
+    stepLog("tick_error", { step: "replace-2", error: String(error).slice(0, 200) });
+  }
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
@@ -254,6 +295,8 @@ export default {
 
   async scheduled(controller, env, ctx): Promise<void> {
     await production.scheduled?.(controller, env, ctx);
-    ctx.waitUntil((env as unknown as SoakEnv).SOAK.getByName("soak").tick());
+    const soak = env as unknown as SoakEnv;
+    ctx.waitUntil(soak.SOAK.getByName("soak").tick());
+    if (soak.M3_STEP === "replace") ctx.waitUntil(replaceBeforeTheSoak(soak));
   },
 } satisfies ExportedHandler<Env>;

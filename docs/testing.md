@@ -92,6 +92,8 @@ docker run --rm --network none -e OMNIGENT_DISABLE_CATALOG_LOOKUP=1 cfo-server:l
 
 CI uses these commands with its own local image tags and a 45-minute job limit. Builds require network access; the prerequisite and test containers run with `--network none`, which preserves loopback for local test servers. No host directories, credentials or Docker socket are mounted into the test containers.
 
+On Cloudflare the server's container has a 64-character hostname, its Durable Object's ID, as every `durable_object` container does; a stock Python `http.server` cannot bind under it, because `socket.getfqdn()` raises. Run the in-image suite under such a hostname as well, with `--hostname "$(openssl rand -hex 32)"` added to the last command. The integration suite below runs every server container under one (`CFO_IT_HOSTNAME=docker` keeps Docker's own).
+
 The last command uses the existing image CMD: unit/in-process tests excluding `tests/integration`. Prerequisite checks prevent an absent app/Litestream from looking like passing skipped coverage. Inspect results and skips; do not count a skipped image test as evidence. Building the final `server` target and testing the derived `test` target do not replace a production-container smoke test or immutable artifact qualification.
 
 The heavier [server integration suite](../images/server/tests/integration/conftest.py) uses actual containers, MinIO/Toxiproxy, generated credentials, local ports and kill/replace cleanup. Its conftest documents the required image tag and separate uv invocation. The [restore-drill Python suite](../scripts/restore-drill/tests/conftest.py) needs its own dependencies/drill image and local services; the root Python lock alone is insufficient. Its in-process fence launcher is a recording stub, not the production Cloudflare adapter. Read those suite-specific prerequisites and ownership/cleanup behavior before running; do not point them at real installation storage.
@@ -122,6 +124,21 @@ CFO_IT_IMAGE=cfo-computer:dev uv run --no-project --with pytest==9.1.1 pytest -p
 
 `--privileged` is only for the local cgroup case; never mount host directories or credentials. The container tests create and remove their own `cfo-wp34-it-*`/`cfo-wp34-rt-*` containers and networks. Every computer container there runs under a 64-character hostname, as a Cloudflare `durable_object` container does (its Durable Object ID); a stock Python `http.server` cannot bind under it, because `socket.getfqdn()` raises. These are local qualifications of the source and the built image, not of Cloudflare: the real container disk, cgroupfs and capabilities, R2 through the platform's gateway, WorkspaceDO and real sign-ins remain staging work. [`images/computer/tools/rc53_scan.py`](../images/computer/tools/rc53_scan.py) scans staged layers, restored trees or `tar+zstd` layer archives for planted tokens in every encoded form, with per-layer controls; use it on layers downloaded from a staging bucket.
 
+## Certificate trust checks
+
+Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.
+
+The network probe is opt-in. It needs outbound HTTPS, uses no credentials, and runs every TLS client found in a built image against hosts serving the forged chains of the October 2026 eMudhra compromise and against GitHub, Anthropic, OpenAI and R2:
+
+```bash
+docker run --rm -v "$PWD/images/trust:/opt/trust:ro" --entrypoint /usr/local/bin/python3 \
+  cfo-computer:dev -I /opt/trust/tls_probe.py --control
+docker run --rm -v "$PWD/images/trust:/opt/trust:ro" --entrypoint /usr/local/bin/python3 \
+  cfo-server:local-runtime -I /opt/trust/tls_probe.py --control
+```
+
+Any answer from the server counts as acceptance, whatever else the client printed. A forged host passes only when the client refuses it with a certificate error: a network error, a reset or a timeout fails. A client that prints no cause (Codex) cannot show a certificate error, so its refusal is reported as inferred. It passes only if its log shows the TCP connection was made, no reset, network error or timeout appears, a second attempt fails the same way, and the same command, with the two roots added to the trust its own TLS stack reads, gets an HTTP answer. That control always runs for such a client. `--strict` fails inferred refusals too. `--control` reruns every client against the forged hosts with the two roots added through its own CA variable. Clients without a key denylist then connect, which shows the probe reached their real TLS path. `--good NAME=URL` adds another endpoint, such as an account's R2 S3 endpoint; the results show it, in every message, as `<NAME>`. Litestream reports its refusal after ten attempts, about two minutes.
+
 ## Existing CI and remaining qualification
 
 Current [CI](../.github/workflows/ci.yml) runs Node checks/coverage/schema drift, the root Python project, selected source canary scans, both Worker bundles and their canary scans, plus the existing server/test image builds and isolated image unit/in-process suite. It uses ordinary pull requests, read-only repository permissions and pinned actions, with no registry push or deployment. The 45-minute image-job cap is an initial budget; a cached local run does not establish hosted cold-build duration.
@@ -130,4 +147,4 @@ Server S3/fault integration, Python restore-drill, candidate-only fork/artifact 
 
 Before qualification, record actual platform/fork revisions, Worker versions, final server/computer image digests and architecture, CLI/SDK/Litestream identities, packaged contract/policy assets, commands/results/skips and accepted limits. Then test actual receivers and the selected runtime assembly: version/generation refusal, replication-before-response/ack/effect, lost replies, sleep/start fencing, pause expiry, publication/unchanged freshness, credential families/tombstones, native continuation and real browser behavior. Generic reference fixtures and source ancestry do not replace those checks.
 
-Real R2 startup on `basic` through the production watchdog remains pending for the server candidate. Local quota-constrained Docker is useful evidence, not that qualification. Keep Cloudflare/provider runs manual, use reviewed revisions, preserve exact failure cases and verify cleanup/sign-out. Existing gates and findings are not closed by a green subset or a documentation change.
+Real R2 startup through the production watchdog on the server's instance remains pending: it was measured on `basic`, the earlier size, and the custom instance the server now starts on is not yet measured. Local quota-constrained Docker is useful evidence, not that qualification. Keep Cloudflare/provider runs manual, use reviewed revisions, preserve exact failure cases and verify cleanup/sign-out. Existing gates and findings are not closed by a green subset or a documentation change.

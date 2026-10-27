@@ -12,6 +12,12 @@ import { FakeServerContainer } from "./fake-server-container.ts";
 
 const DAY_MS = 86_400_000;
 
+/**
+ * The server image every object's Worker version maps until a test releases another: a
+ * digest-pinned reference, as Wrangler deploys one (synthetic).
+ */
+export const TEST_SERVER_IMAGE = `registry.example.test/cfo-test/omnigentserver-server@sha256:${"1".repeat(64)}`;
+
 class TestClock {
   #now = Date.now() + DAY_MS;
 
@@ -44,6 +50,7 @@ class TestServers {
   timing: ServerTiming = TEST_TIMING;
   readonly #containers = new Map<string, FakeServerContainer>();
   readonly #releases = new Map<string, Readonly<Record<string, string | null>>>();
+  readonly #images = new Map<string, string | null>();
 
   /**
    * A release for the object with this ID: every instance created from now on gets the Worker's
@@ -68,9 +75,25 @@ class TestServers {
     return released as Env;
   }
 
+  /**
+   * A release of another server image for the object with this ID (null: the version maps none):
+   * every instance created from now on starts the server with it, as a new Worker version's
+   * `images` map does. The running container keeps its own. Evict the object to switch.
+   */
+  releaseImage(id: DurableObjectId | string, image: string | null): void {
+    this.#images.set(id.toString(), image);
+  }
+
+  /** The server image an instance of the object with this ID maps. */
+  imageFor(id: DurableObjectId | string): string | null {
+    const key = id.toString();
+    return this.#images.has(key) ? (this.#images.get(key) ?? null) : TEST_SERVER_IMAGE;
+  }
+
   /** A fake container for the object with this ID. */
   create(id: DurableObjectId | string): FakeServerContainer {
     const fake = new FakeServerContainer();
+    fake.clock = () => this.clock.now();
     this.#containers.set(id.toString(), fake);
     return fake;
   }

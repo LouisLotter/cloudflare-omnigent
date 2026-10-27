@@ -5,11 +5,8 @@
 // and the records live in the object's own storage. Nothing here logs a credential.
 
 import type { OutageRecord } from "@cfo/contracts";
-import {
-  bootstrapSecretPresent,
-  configFingerprint,
-  serverContainerEnv,
-} from "../../../src/server/server-env.ts";
+import { serverImageOf } from "../../../src/server/container-port.ts";
+import { bootstrapSecretPresent, startFingerprint } from "../../../src/server/server-env.ts";
 import {
   FORWARD_VERSION_HEADER,
   OMNIGENT_SERVER_INTERFACE_VERSION,
@@ -162,7 +159,8 @@ export function objectPorts({ ctx, env, forward, outages }: ObjectParts): G2Port
       const replicaUrl = env.SERVER_ENV_CFO_REPLICA_URL;
       return {
         startedWith,
-        current: await configFingerprint(serverContainerEnv(env).vars),
+        // As the production watchdog computes it: environment, this version's image, size.
+        current: await startFingerprint(env, serverImageOf(ctx)),
         initialized: typeof initialized === "string" ? initialized : null,
         bootstrapPassword: bootstrapSecretPresent(env),
         replicaUrl: typeof replicaUrl === "string" ? replicaUrl : null,

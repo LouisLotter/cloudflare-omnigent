@@ -2,7 +2,7 @@
  * The platform Worker as the Workers-runtime tests run it (wrangler.test.jsonc): the production
  * classes, with these seams:
  *   - OmnigentServer gets its container port, clock, timing and any release a test made from
- *     `server-harness.ts`;
+ *     `server-harness.ts`, of its environment or of its image;
  *   - WorkspaceDO, bound as WORKSPACE (the binding the routes, the backup gateway and ControlDO
  *     use), is the assembled production class (WP3.18): only its runtime container, its clock and
  *     a lost-connection seam come from `assembly-harness.ts`; its container port, intercepts,
@@ -58,6 +58,12 @@ export class OmnigentServer extends PlatformOmnigentServer {
 
   protected override openContainer() {
     return testServers.container(this.ctx.id.toString());
+  }
+
+  // A release of another image (`testServers.releaseImage`) reaches every new instance, as a new
+  // Worker version's `images` map does.
+  protected override serverImage() {
+    return testServers.imageFor(this.ctx.id);
   }
 
   protected override now() {

@@ -332,7 +332,9 @@ export function sharingManaged(answer: HttpAnswer): { managed: boolean; editable
  * Whether the running container was started with the released configuration: the watchdog's
  * record of its start equals what this object would start now, the object holds no bootstrap
  * password and `INITIALIZED=true`, and the entrypoint itself says it expects an initialized
- * installation. Fingerprints only; no value of any secret.
+ * installation. The comparison only: the fingerprints are digests over the container's
+ * environment, secrets included, which the platform stores and never logs (WP3.19, Codex r1),
+ * and this result goes into the logged step record.
  */
 export async function configCheck(ports: G2Ports) {
   const config = await ports.config();
@@ -340,8 +342,6 @@ export async function configCheck(ports: G2Ports) {
   const startedWithCurrent = config.startedWith !== null && config.startedWith === config.current;
   const released = !config.bootstrapPassword && config.initialized === "true";
   return {
-    startedWith: config.startedWith,
-    current: config.current,
     startedWithCurrent,
     released,
     entrypointExpectsInitialized: status?.installationInitializedExpected ?? null,
@@ -390,11 +390,33 @@ function bounded(ports: G2Ports, started: number): G2Ports {
   };
 }
 
+/**
+ * A stored record without the configuration fingerprints an older build put in its checks
+ * (`before.config`, `after.config`): the record is logged whole (`step_done`), and those are
+ * digests over the container's environment, secrets included (Codex WP3.19 r2-2).
+ */
+export function withoutFingerprints(record: StepRecord): StepRecord {
+  const strip = (part: Record<string, unknown> | undefined) => {
+    const config = part?.config;
+    if (part === undefined || config === null || typeof config !== "object") return part;
+    const { startedWith: _s, current: _c, ...kept } = config as Record<string, unknown>;
+    return { ...part, config: kept };
+  };
+  const before = strip(record.before);
+  const after = strip(record.after);
+  return {
+    ...record,
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+  };
+}
+
 /** Runs one step as far as it can in this invocation. Never throws; the record says why. */
 export async function runStep(base: G2Ports, ctx: StepContext): Promise<StepRecord> {
   const started = base.now();
   const ports = bounded(base, started);
-  const loaded = await ports.load(ctx.step);
+  const stored = await ports.load(ctx.step);
+  const loaded = stored === undefined ? undefined : withoutFingerprints(stored);
   let record: StepRecord = loaded ?? {
     step: ctx.step,
     stage: "pending",

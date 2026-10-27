@@ -20,6 +20,9 @@
 #   - The supervisor (cfo_computer, standard library only) as the container's main process
 #     under tini, and the contract assets it reads: the exported JSON Schemas and checkpoint
 #     policy version 1.
+#   - Certificate trust kept current (images/trust): the build fails if Debian's bundle or
+#     certifi's still trusts a root through which forged certificates chain (the eMudhra key
+#     compromise of October 2026), and every TLS client is at a release that refuses them.
 #
 # The person's account is `omnigent` (uid 1000, home /home/omnigent, workspace ~/work), with
 # passwordless sudo: agents are not restricted on their own computer (security calibration).
@@ -32,6 +35,11 @@ ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
+# Trust pins over the fork's lock, hash-checked (see the builder stage).
+ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+# uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
+ARG UV_PIN="uv==0.12.10 --hash=sha256:f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c --hash=sha256:a34e1be296e6e30fdbfee9b84a45d082ce7df4dd4e588ebcfc44249505c10f02"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -52,7 +60,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir uv==0.12.10
+ARG UV_PIN
+RUN printf '%s\n' "${UV_PIN}" > /tmp/uv-pin.txt \
+ && pip install --no-cache-dir --no-deps --require-hashes -r /tmp/uv-pin.txt
 WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's images are built: review these stages against its `host` target, then update it.
@@ -74,6 +84,15 @@ RUN uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-edita
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps . ./sdks/python-client ./sdks/ui \
  && ! grep -R --include='*.pth' --include='*.egg-link' -nE '/build(/|$)' /opt/venv/lib/python*/site-packages
+# Trust pins over the lock, hash-checked, until the fork's uv.lock carries them: the lock's
+# certifi (2026.5.20) still trusts emSign ECC Root CA - G3, and the venv's pip (25.0.1) trusts
+# both roots of the eMudhra key compromise (October 2026) through the certifi it vendors. pip
+# 26.2.2 and certifi 2026.10.19 are the first fixed releases. Drop the override once the lock
+# has certifi >= 2026.10.19; the runtime stage's trust check fails the build either way.
+ARG CERTIFI_PIN
+ARG PIP_PIN
+RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
+ && uv pip install --no-cache-dir --no-deps --require-hashes -r /tmp/trust-pins.txt
 
 # ── The computer's runtime ───────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS runtime
@@ -89,25 +108,58 @@ RUN apt-get update \
       git tmux procps lsof bubblewrap curl ca-certificates unzip \
       tini iproute2 sudo util-linux \
  && rm -rf /var/lib/apt/lists/*
+# The image's own pip (agents run it too) at the fixed release, as in the builder stage, and
+# the wheel ensurepip seeds into every new virtual environment (images/trust/pin_pip.sh).
+ARG PIP_PIN
+RUN --mount=type=bind,source=images/trust/pin_pip.sh,target=/tmp/pin_pip.sh \
+    sh /tmp/pin_pip.sh "${PIP_PIN}"
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# Claude Code and Codex exactly as published, at the versions the fork's native-harness work
-# was tested with (X4b, AIR2-007, core change 20). Nothing of the build's home is kept.
-ARG CLAUDE_CODE_VERSION=2.1.302
-ARG CODEX_VERSION=0.163.0
-RUN npm install -g --no-audit --no-fund --registry=https://registry.npmjs.org/ \
+# Claude Code and Codex exactly as published. Raised from the versions the fork's native-harness
+# work was tested with (2.1.302 and 0.163.0) for the eMudhra key compromise: Claude Code
+# 2.1.302 accepts a certificate forged through emSign ECC Root CA - G3, and Codex 0.164.0 is the
+# first with rustls-webpki 0.103.16 (it refuses the compromised keys) and webpki-roots 1.0.10.
+# Codex's default client verifies with its vendored OpenSSL against the system bundle, so the
+# rustls denylist applies only when it is given a CA bundle of its own.
+# Sign-in commands, status output, login-file paths and write patterns are as before; Codex
+# 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
+# Nothing of the build's home is kept.
+# No unverified code runs: npm extracts both packages without running scripts, the extracted
+# trees must match the digests below (every file's path and SHA-256, every symbolic link's
+# target), and only then does Claude Code's own postinstall (install.cjs, which links its native
+# binary over bin/claude.exe) run, after which the tree is checked again. Codex has no scripts.
+# The digests were recorded identically from independent installs; after a version bump, take
+# the new values from the failing build's message.
+ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CODEX_VERSION=0.164.0
+ARG CLAUDE_CODE_TREE_SHA256=b3530205566c212f20930da7fbffde8a2d4637534ca8464c7493193b58bef659
+ARG CLAUDE_CODE_INSTALLED_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
+ARG CODEX_TREE_SHA256=6aa96e445074fc22662979ee4db20c58c71f63b7c56e12f02c2d11cb11b09170
+RUN npm install -g --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
+ && tree() ( cd /usr/local/lib/node_modules \
+      && { find "$1" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; \
+           find "$1" -type l -printf '%p -> %l\n' | LC_ALL=C sort; } | sha256sum | cut -d' ' -f1 ) \
+ && check() { got=$(tree "$1") && [ "${got}" = "$2" ] \
+      || { echo "$1: installed tree ${got}, expected $2" >&2; return 1; }; } \
+ && check @anthropic-ai/claude-code "${CLAUDE_CODE_TREE_SHA256}" \
+ && check @openai/codex "${CODEX_TREE_SHA256}" \
+ && (cd /usr/local/lib/node_modules/@anthropic-ai/claude-code && node install.cjs) \
+ && check @anthropic-ai/claude-code "${CLAUDE_CODE_INSTALLED_SHA256}" \
+ && test "$(readlink /usr/local/bin/claude)" = "../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe" \
+ && test "$(readlink /usr/local/bin/codex)" = "../lib/node_modules/@openai/codex/bin/codex.js" \
  && test "$(claude --version | cut -d' ' -f1)" = "${CLAUDE_CODE_VERSION}" \
  && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
  && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*
 
-# gh at the fork's pin (deploy/docker/Dockerfile), checked.
-ARG GH_VERSION=2.100.0
-ARG GH_SHA256_AMD64=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
+# gh, checked: raised from the fork's pin (2.100.0, Go 1.26.8) to a release built with Go
+# 1.27.3, whose crypto/x509 refuses chains through the compromised eMudhra keys.
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 RUN set -eu; \
     curl -fsSL -o /tmp/gh.tar.gz \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
@@ -127,6 +179,16 @@ RUN curl -fsSL -o /usr/local/bin/ttyd \
 
 COPY --from=sandbox /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 COPY --from=builder /opt/venv /opt/venv
+
+# Certificate trust (images/trust/trust_check.py): fail the build unless Debian's
+# ca-certificates has dropped both roots of the eMudhra key compromise and no bundle still
+# trusts them: the system's (curl, git, gh, Claude Code, Codex, Python's ssl), certifi's
+# (httpx, requests) and pip's vendored copies. A stale cached layer fails here too.
+RUN --mount=type=bind,source=images/trust/trust_check.py,target=/tmp/trust_check.py \
+    /usr/local/bin/python3 -I /tmp/trust_check.py --debian-ca-certificates \
+      --bundle /etc/ssl/certs/ca-certificates.crt \
+      --bundle "$(/opt/venv/bin/python -I -c 'import certifi; print(certifi.where())')" \
+      --scan /opt/venv --scan /usr/local/lib/python3.12
 
 # Login shells keep the venv first (Debian's /etc/profile resets PATH), as the fork's host does.
 RUN echo 'export PATH="/opt/venv/bin:${PATH}"' > /etc/profile.d/omnigent-venv.sh
@@ -158,8 +220,9 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
       cloudflare-omnigent.omnigent-commit="3228d4de38ef05f69ecc80a4539d7c02727ce314" \
-      cloudflare-omnigent.claude-code="2.1.302" \
-      cloudflare-omnigent.codex="0.163.0"
+      cloudflare-omnigent.claude-code="2.1.311" \
+      cloudflare-omnigent.codex="0.164.0" \
+      cloudflare-omnigent.gh="2.103.3"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through
 # the container port by the computer's WorkspaceDO.
 EXPOSE 8090 7681
@@ -172,6 +235,7 @@ FROM runtime AS test
 RUN /usr/local/bin/python3 -m pip install --no-cache-dir pytest==9.1.1 hypothesis==6.169.0
 COPY contracts/ /opt/cfo/repo/contracts/
 COPY images/computer/ /opt/cfo/repo/images/computer/
+COPY images/trust/ /opt/cfo/repo/images/trust/
 COPY python/tests/computer/ /opt/cfo/repo/python/tests/computer/
 # The commands WorkspaceDO sends, recorded from the controller, which the supervisor's parser
 # must accept (python/tests/computer/test_workspace_commands.py).
@@ -181,7 +245,7 @@ ENV PATH="/opt/cfo/repo/images/computer/fakes/bin:${PATH}"
 RUN mkdir -p /var/lib/cfo-fake-provider && chown omnigent:omnigent /var/lib/cfo-fake-provider
 WORKDIR /opt/cfo/repo
 ENTRYPOINT []
-CMD ["/usr/local/bin/python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "python/tests/computer", "images/computer/tests"]
+CMD ["/usr/local/bin/python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "python/tests/computer", "images/computer/tests", "images/trust/tests"]
 
 # ── The computer (the default target: the last stage) ────────────────────────────────────
 FROM runtime AS computer

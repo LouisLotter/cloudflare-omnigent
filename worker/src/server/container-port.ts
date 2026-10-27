@@ -2,9 +2,21 @@
 // (code-structure plan, "Beta APIs only behind adapters"). It uses the Durable Object Container
 // API directly, as X1's native forwarding did, never the containers library: its default fetch
 // accepts both sockets and returns the container's handshake headers (R-24).
+//
+// The server's container runs under the `durable_object` scheduling policy (WP3.19): the image
+// and the size are start options, not configuration. Each start names the image this Worker
+// version maps under `SERVER_IMAGE_KEY` and the size `SERVER_INSTANCE` (server-env.ts). A running container
+// keeps the image and size it started with: a deploy changes neither, so the watchdog's
+// fingerprint covers both (server-env.ts) and a release that changes one replaces the server
+// once. There is no `max_instances`: one named OmnigentServer object runs one container.
+
+import { SERVER_INSTANCE } from "./server-env.ts";
 
 /** The port the Omnigent server listens on inside its container. */
 export const OMNIGENT_PORT = 8000;
+
+/** The server's image key under `containers[].images` in the platform Worker's configuration. */
+export const SERVER_IMAGE_KEY = "server";
 
 /** Why `monitor()` settled: a clean exit, or the error it rejected with. */
 export interface ContainerExit {
@@ -14,8 +26,11 @@ export interface ContainerExit {
 /** The parts of a container the server controller uses. */
 export interface ServerContainer {
   readonly running: boolean;
-  /** Starts the container with this environment and internet access. Throws if it runs. */
-  start(env: Readonly<Record<string, string>>): void;
+  /**
+   * Starts the container with this environment, internet access, `SERVER_INSTANCE`'s size and
+   * this image (null: none named, as for a class without an image map). Throws if it runs.
+   */
+  start(env: Readonly<Record<string, string>>, image: string | null): void;
   /** Calls `onExit` once the container started last stops, or its start fails. */
   watch(onExit: (exit: ContainerExit) => void): void;
   /** HTTP to a container port, over `http://` (an `https://` URL throws on Cloudflare). */
@@ -32,14 +47,44 @@ export function serverContainerOf(ctx: DurableObjectState): ServerContainer | nu
   return ctx.container ? nativeServerContainer(ctx.container) : null;
 }
 
+/**
+ * The image this Worker version would start the server with: its `SERVER_IMAGE_KEY` entry under
+ * `ctx.container.images`, a reference Wrangler pins by digest when it deploys
+ * (`registry.cloudflare.com/<account>/<repository>@sha256:<digest>`). The map ships with the
+ * version, so a new version may name another image while the running container keeps its own.
+ * Null without a container, an images map or that key.
+ */
+export function serverImageOf(ctx: { readonly container?: Container }): string | null {
+  try {
+    const image = ctx.container?.images[SERVER_IMAGE_KEY];
+    return typeof image === "string" && image !== "" ? image : null;
+  } catch {
+    // A class under the default policy has no images map.
+    return null;
+  }
+}
+
+/**
+ * The start options the runtime gets: internet on (required with any options), the environment,
+ * the size, the image. Typed as the runtime's options, so `SERVER_INSTANCE` must be a size the
+ * runtime's types accept.
+ */
+export function serverStartOptions(
+  env: Readonly<Record<string, string>>,
+  image: string | null,
+): ContainerStartupOptions {
+  const start = { enableInternet: true, env: { ...env }, instance: SERVER_INSTANCE };
+  return image === null ? start : { ...start, image };
+}
+
 /** The adapter over the runtime's container. */
 export function nativeServerContainer(container: Container): ServerContainer {
   return {
     get running() {
       return container.running;
     },
-    start(env) {
-      container.start({ enableInternet: true, env: { ...env } });
+    start(env, image) {
+      container.start(serverStartOptions(env, image));
     },
     watch(onExit) {
       container.monitor().then(

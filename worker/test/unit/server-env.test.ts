@@ -5,8 +5,11 @@ import {
   bootstrapSecretPresent,
   configFingerprint,
   DATABASE_CHECK_ALLOWANCE_S,
+  imageIdentity,
+  SERVER_INSTANCE,
   serverContainerEnv,
   serverDeadlines,
+  startFingerprint,
   UNKNOWN_DEADLINES,
 } from "../../src/server/server-env.ts";
 import { WATCHDOG_TIMING } from "../../src/server/watchdog.ts";
@@ -153,12 +156,57 @@ describe("the deadlines of a container whose settings are unknown (Codex G2-SEC-
 });
 
 describe("configFingerprint", () => {
+  const digest = (c: string) => `sha256:${c.repeat(64)}`;
+  const pinned = (repo: string, c: string) => `registry.example.test/acct/${repo}@${digest(c)}`;
+  const start = { image: pinned("x-omnigentserver-server", "a"), instance: SERVER_INSTANCE };
+
   it("changes with any setting, not with their order, and shows no value", async () => {
-    const a = await configFingerprint({ A: "1", B: "secret-canary" });
-    expect(await configFingerprint({ B: "secret-canary", A: "1" })).toBe(a);
-    expect(await configFingerprint({ A: "1", B: "secret-canary2" })).not.toBe(a);
-    expect(await configFingerprint({ A: "1" })).not.toBe(a);
+    const a = await configFingerprint({ A: "1", B: "secret-canary" }, start);
+    expect(await configFingerprint({ B: "secret-canary", A: "1" }, start)).toBe(a);
+    expect(await configFingerprint({ A: "1", B: "secret-canary2" }, start)).not.toBe(a);
+    expect(await configFingerprint({ A: "1" }, start)).not.toBe(a);
     expect(a).toMatch(/^[0-9a-f]{32}$/);
     expect(a).not.toContain("secret");
+  });
+
+  it("changes with the image's digest and the size, never with the repository's name (WP3.19)", async () => {
+    const vars = { A: "1" };
+    const a = await configFingerprint(vars, start);
+    // The same image: the same digest, whatever repository a deploy names it under.
+    expect(await configFingerprint(vars, { ...start })).toBe(a);
+    expect(
+      await configFingerprint(vars, { ...start, image: pinned("y-omnigentserver-server", "a") }),
+    ).toBe(a);
+    // Another image, no image, another size: another fingerprint.
+    const others = await Promise.all([
+      configFingerprint(vars, { ...start, image: pinned("x-omnigentserver-server", "b") }),
+      configFingerprint(vars, { ...start, image: null }),
+      configFingerprint(vars, { ...start, instance: "standard-1" }),
+      configFingerprint(vars, { ...start, instance: { vcpu: 1, memoryMib: 4096, diskMb: 8000 } }),
+    ]);
+    expect(new Set([a, ...others]).size).toBe(5);
+    expect(a).not.toContain("a".repeat(16));
+  });
+
+  it("identifies a pinned image by its digest, and any other reference by itself", () => {
+    expect(imageIdentity(pinned("r", "c"))).toBe(digest("c"));
+    expect(imageIdentity("cfo-server:local")).toBe("cfo-server:local");
+    // Not a whole digest at the end: the reference itself.
+    expect(imageIdentity(`r@sha256:${"c".repeat(63)}`)).toBe(`r@sha256:${"c".repeat(63)}`);
+    expect(imageIdentity(`r@sha256:${"C".repeat(64)}`)).toBe(`r@sha256:${"C".repeat(64)}`);
+    expect(imageIdentity(null)).toBeNull();
+  });
+
+  it("fingerprints what this version would start: its container environment, image and size", async () => {
+    const env = { SERVER_ENV_A: "1", ACCESS_AUD: "not the server's", SERVER_ENV_B: "2" };
+    const image = pinned("x-omnigentserver-server", "a");
+    const expected = await configFingerprint(
+      { A: "1", B: "2" },
+      { image, instance: SERVER_INSTANCE },
+    );
+    expect(await startFingerprint(env, image)).toBe(expected);
+    // A setting the container never gets changes nothing.
+    expect(await startFingerprint({ ...env, ACCESS_AUD: "changed" }, image)).toBe(expected);
+    expect(await startFingerprint(env, pinned("x-omnigentserver-server", "b"))).not.toBe(expected);
   });
 });

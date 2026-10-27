@@ -10,7 +10,11 @@ import {
 } from "../../../scripts/bootstrap/settings.ts";
 import { ownerPin } from "../../../scripts/bootstrap/test/fixtures.ts";
 import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
-import { validateDeployConfig } from "../../../scripts/staging/guard.ts";
+import {
+  declaredResources,
+  validateDeployConfig,
+  withStagingNames,
+} from "../../../scripts/staging/guard.ts";
 import {
   configRestarts,
   dueEvents,
@@ -23,6 +27,8 @@ import {
   nextLaptopEvent,
   RC21_MS,
   reconnects,
+  replaceResult,
+  restartTimes,
   SOAK_MS,
   SOAK_SCHEDULE,
   switchBracket,
@@ -339,6 +345,13 @@ describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR
     withRenderedConfig(WORKER, config, (path) =>
       expect(() => guard(path, "cfo-stg-wp318-platform")).not.toThrow(),
     );
+    // Both containers under the `durable_object` policy (WP3.19): the staging tool records the
+    // repositories Wrangler pushes to, so teardown deletes them.
+    const name = "cfo-stg-wp318-platform";
+    expect(declaredResources(withStagingNames(config, name), name).repositories).toEqual([
+      `${name}-omnigentserver-server`,
+      `${name}-workspacedo-computer`,
+    ]);
   });
 
   it("holds the replica's and the artifacts' buckets under the holder's own name", () => {
@@ -394,5 +407,134 @@ describe("the watchdog's controlled restarts (G2-SEC-001's config_changed)", () 
       { outageId: "out_e", startedAt: T0 + 1, endedAt: null, durationMs: null },
     ]);
     expect(configRestarts(lines, T0 + SOAK_MS, T0 + 2 * SOAK_MS)).toEqual([]);
+  });
+});
+
+describe("the server's measured restarts and the forced replacement (WP3.19)", () => {
+  const at = (timestamp: number, source: Record<string, unknown> | string): LogLine => ({
+    timestamp,
+    version: "v1",
+    source,
+  });
+  const watchdog = (event: string, fields: Record<string, unknown>) => ({
+    cfo: "watchdog",
+    event,
+    ...fields,
+  });
+  const ready = (fields: Record<string, unknown>) =>
+    watchdog("server_ready", { failedStarts: 0, ...fields });
+
+  it("times each config_changed restart from the watchdog's breakdown at its end", () => {
+    const lines = [
+      at(T0 + 1_000, watchdog("outage_started", { outageId: "out_a", cause: "config_changed" })),
+      // Restart #1: a refused start retried, then ready.
+      at(
+        T0 + 40_000,
+        ready({ failedStarts: 1, lastStartToReadyMs: 21_000, firstStartToReadyMs: 33_000 }),
+      ),
+      at(
+        T0 + 40_001,
+        watchdog("outage_ended", {
+          outageId: "out_a",
+          cause: "config_changed",
+          durationMs: 39_000,
+        }),
+      ),
+      // Another cause's breakdown, long before #2's end: never #2's.
+      at(T0 + 100_000, ready({ lastStartToReadyMs: 99_000 })),
+      at(T0 + 200_000, watchdog("outage_started", { outageId: "out_b", cause: "config_changed" })),
+      at(
+        T0 + 230_000,
+        JSON.stringify(ready({ lastStartToReadyMs: 18_000, firstStartToReadyMs: 18_000 })),
+      ),
+      at(
+        T0 + 230_000,
+        watchdog("outage_ended", {
+          outageId: "out_b",
+          cause: "config_changed",
+          durationMs: 30_000,
+        }),
+      ),
+      // Still restarting: no end, no times.
+      at(T0 + 300_000, watchdog("outage_started", { outageId: "out_c", cause: "config_changed" })),
+    ];
+    expect(restartTimes(lines, T0, T0 + SOAK_MS)).toEqual([
+      expect.objectContaining({
+        outageId: "out_a",
+        durationMs: 39_000,
+        lastStartToReadyMs: 21_000,
+        firstStartToReadyMs: 33_000,
+        failedStarts: 1,
+      }),
+      expect.objectContaining({
+        outageId: "out_b",
+        durationMs: 30_000,
+        lastStartToReadyMs: 18_000,
+        failedStarts: 0,
+      }),
+      expect.objectContaining({
+        outageId: "out_c",
+        endedAt: null,
+        lastStartToReadyMs: null,
+        failedStarts: null,
+      }),
+    ]);
+    // An end without its breakdown nearby keeps its duration, with no times invented.
+    const lone = [
+      at(T0, watchdog("outage_started", { outageId: "out_d", cause: "config_changed" })),
+      at(
+        T0 + 50_000,
+        watchdog("outage_ended", {
+          outageId: "out_d",
+          cause: "config_changed",
+          durationMs: 50_000,
+        }),
+      ),
+    ];
+    expect(restartTimes(lone, T0, T0 + SOAK_MS)).toEqual([
+      expect.objectContaining({ durationMs: 50_000, lastStartToReadyMs: null }),
+    ]);
+  });
+
+  it("reads the forced replacement's outcome from G2's step lines, and nothing before it ends", () => {
+    const step = (event: string, fields: Record<string, unknown>) => ({
+      cfo: "g2_sitting",
+      event,
+      step: "replace-2",
+      ...fields,
+    });
+    const running = [
+      at(T0, step("kill_sent", { bootIdBefore: "a".repeat(32) })),
+      at(T0 + 1, { cfo: "g2_sitting", event: "step_done", step: "replace-1", verdict: "pass" }),
+    ];
+    expect(replaceResult(running)).toBeNull();
+    const done = step("step_done", {
+      verdict: "pass",
+      problems: [],
+      record: {
+        answeredAfterKillS: 41.2,
+        phasesS: { starting: 6.1, restoring: 7.0, running: 39.9 },
+        replica: { caughtUpAfterS: 3.4 },
+        after: { config: { pass: true }, health: 200 },
+      },
+    });
+    expect(replaceResult([...running, at(T0 + 60_000, JSON.stringify(done))])).toEqual({
+      stage: "done",
+      verdict: "pass",
+      problems: [],
+      answeredAfterKillS: 41.2,
+      phasesS: { starting: 6.1, restoring: 7.0, running: 39.9 },
+      replicaCaughtUpAfterS: 3.4,
+      configPass: true,
+      failure: null,
+    });
+    const failed = step("step_failed", { failure: "the replacement entered recovery mode" });
+    expect(replaceResult([at(T0, failed)])).toMatchObject({
+      stage: "failed",
+      verdict: "fail",
+      failure: "the replacement entered recovery mode",
+      answeredAfterKillS: null,
+      configPass: null,
+    });
   });
 });

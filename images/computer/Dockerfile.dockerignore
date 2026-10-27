@@ -1,6 +1,7 @@
 # The build context is the repository root; the image needs only these paths.
 *
 !images/computer/
+!images/trust/
 !contracts/schema/
 !contracts/fixtures/
 !contracts/vectors/

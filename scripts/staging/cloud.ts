@@ -633,6 +633,10 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
     // Wrangler 4.149.0 reads the path with readFileSync and parses JSON first, whatever the
     // name. Node marks a descriptor it inherits close-on-exec, and Wrangler's `docker` spawn
     // passes only 0 to 2, so no process Wrangler starts receives it.
+    // `--name` names the Worker and its `durable_object` images' repositories (Wrangler 4.149.0),
+    // which the guard records under the same name. It never names a container application
+    // (workers-sdk #15827): every container entry the tool deploys names itself
+    // (withStagingNames), so no application takes the configuration's own name.
     deployWorker: (name, hostname, configPath, buildEpoch, secrets) => {
       const args = ["deploy", "--config", configPath, "--name", name, "--domain", hostname];
       const env = { SOURCE_DATE_EPOCH: String(buildEpoch) };

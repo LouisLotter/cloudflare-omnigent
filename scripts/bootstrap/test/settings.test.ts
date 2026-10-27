@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { InstallationId } from "../../../contracts/src/index.ts";
+import { declaredResources, withStagingNames } from "../../staging/guard.ts";
 import {
   ARTIFACTS_KEY_ID_SECRET,
   ARTIFACTS_SECRET_KEY_SECRET,
@@ -406,6 +407,32 @@ describe("rendering the configurations", () => {
     expect(() => renderPlatformConfig({ ...BASE.platform, vars: {} }, plan)).toThrow(
       /already has variables/,
     );
+  });
+
+  it("keeps the server and the computers under the durable_object policy, their repositories declared (WP3.19)", async () => {
+    const staging = await stagingPlan();
+    const rendered = renderPlatformConfig(BASE.platform, staging);
+    const containers = rendered.containers as Record<string, unknown>[];
+    expect(containers.map((c) => [c.class_name, c.scheduling_policy])).toEqual([
+      ["OmnigentServer", "durable_object"],
+      ["WorkspaceDO", "durable_object"],
+    ]);
+    // The server's container output is logged; a computer's is not (WP3.19).
+    expect(containers.map((c) => c.observability)).toEqual([
+      { logs: { enabled: true } },
+      { logs: { enabled: false } },
+    ]);
+    // No size or count in the configuration: the server's size is a start option.
+    for (const c of containers) {
+      expect(c).not.toHaveProperty("instance_type");
+      expect(c).not.toHaveProperty("max_instances");
+    }
+    // What the staging tool records for teardown: Wrangler's <worker>-<class>-<image>.
+    const name = staging.platformWorker;
+    expect(declaredResources(withStagingNames(rendered, name), name).repositories).toEqual([
+      `${name}-omnigentserver-server`,
+      `${name}-workspacedo-computer`,
+    ]);
   });
 
   it("binds the web Worker to this platform Worker, with a custom domain only in an account", async () => {

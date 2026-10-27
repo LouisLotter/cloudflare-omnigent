@@ -56,7 +56,9 @@ export interface WatchdogTiming {
   /**
    * How long the app may take to answer from the first sight of the entrypoint reporting it
    * `initializing`: Python's imports, Omnigent's migrations, `create_app` and the owner check.
-   * Qualified for a 1 GB database on `basic` (WP2.6); finite, so a hung start is restarted.
+   * Measured with a 1 GB database on `basic`, the server's size under the default scheduling
+   * policy (WP2.6). The server now starts on a custom 1 vCPU instance, not yet measured; more CPU
+   * should only shorten a start, so the budget stays. Finite, so a hung start is restarted.
    */
   readonly appStartWaitMs: number;
   /** How long a running server may stay silent before it is restarted. */

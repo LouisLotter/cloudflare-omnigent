@@ -10,6 +10,6 @@ These records describe accepted engineering choices. Acceptance does not mean im
 | [0004 — Identity and credential authority](0004-identity-credential-authority.md) | Accepted | Fork controls available; key service, GitHub wiring and computer-route qualification pending. |
 | [0005 — Checkpoint publication and continuation](0005-checkpoint-publication-continuation.md) | Accepted | Contracts present in main, capture/credential experiments reported; production assembly draft. |
 | [0006 — Honest uncertain outcomes](0006-honest-uncertain-outcomes.md) | Accepted | Fork implementation available; image inclusion differs by pin. |
-| [0007 — Compatible releases and recovery](0007-compatible-releases-recovery.md) | Accepted | Pins, initial contracts and server recovery safeguards exist; full mixed-version and recovery procedures remain to qualify. |
+| [0007 — Compatible releases and recovery](0007-compatible-releases-recovery.md) | Accepted; amended 27 Oct 2026 (the server's scheduling policy) | Pins, initial contracts and server recovery safeguards exist; full mixed-version and recovery procedures remain to qualify. |
 
 Change a decision by adding a focused record that explains the new constraint and marks the earlier record superseded. Keep current product behavior and compatibility obligations here; private review conversations, approvals, account runs and work tracking remain outside this repository. Do not turn these records into a second task tracker.

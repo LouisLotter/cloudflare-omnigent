@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import socketserver
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -156,6 +157,18 @@ def _json(
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self) -> None:
+        """Bind without ``HTTPServer.server_bind``'s ``socket.getfqdn()``: the server's container
+        runs under Cloudflare's ``durable_object`` scheduling policy, whose hostname is the
+        Durable Object's 64-character ID, longer than a DNS label, and resolving it raises
+        ``UnicodeError: label too long`` (bound to ``0.0.0.0``, ``getfqdn`` resolves the
+        hostname). The name is only ever used for CGI's ``SERVER_NAME``; nothing here depends on
+        the hostname. The computer image's command port does the same."""
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def start_control_server(board: StatusBoard, port: int, host: str = "0.0.0.0") -> _Server:
