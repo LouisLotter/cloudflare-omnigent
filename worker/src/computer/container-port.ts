@@ -149,36 +149,6 @@ export function nativeComputerContainer(
   };
 }
 
-/**
- * Whether an upload failed in a way worth repeating the whole upload for (WP3.22). Sandbox SDK
- * 1.0.0 retries nothing: its shim uploads each part once, and the gateway answers 502 with R2's
- * message when a part's put fails, so one lost connection fails the layer (the 27 Oct 2026 sitting:
- * "gateway rejected the part upload with HTTP 502: Network connection lost."). Transient:
- *   - the SDK's `SandboxBackupError` `BACKUP_TRANSFER` with a gateway answer of 502, 503 or 504
- *     (504 is also the platform gateway's own part timeout, `egress/backups.ts`), or a lost,
- *     reset or refused connection;
- *   - "Network connection lost." between WorkspaceDO and the container (S3).
- * Never: the write fence's refusal (403) or any other answer, `BACKUP_INTEGRITY` (R2 stored a
- * different size), a file error in the staged directory, an abort or timeout (the deadline), or a
- * stopped container. A failed attempt leaves no object: the SDK aborts its multipart upload, and
- * only `completeUpload`, which these failures precede, makes the object exist.
- */
-export function isTransientUploadError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error.name === "AbortError" || error.name === "TimeoutError") return false;
-  const message = error.message.toLowerCase();
-  if (error.name === "SandboxBackupError") {
-    if ((error as { readonly code?: unknown }).code !== "BACKUP_TRANSFER") return false;
-    return (
-      /\bhttp (?:502|503|504)\b/.test(message) ||
-      /network connection lost|connection (?:reset|refused|closed)|econnreset|broken pipe/.test(
-        message,
-      )
-    );
-  }
-  return message.includes("network connection lost");
-}
-
 function imagesOf(container: RuntimeContainer): Readonly<Record<string, string>> {
   try {
     return container.images ?? {};

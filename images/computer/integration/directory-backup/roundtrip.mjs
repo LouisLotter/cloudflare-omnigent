@@ -14,11 +14,13 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { zstdDecompressSync } from "node:zlib";
 import { DirectoryBackup, DirectoryBackupGateway } from "@cloudflare/sandbox";
+// WorkspaceDO's own classifier (Node strips its types), run on the real shim's error (WP3.22).
+import { isTransientUploadError } from "../../../../worker/src/computer/upload-errors.ts";
 import { fileBucket } from "./fake-r2.mjs";
 
 const IMAGE = process.env.RT_IMAGE;
@@ -198,6 +200,54 @@ try {
       binding: "CKPT",
       prefix: `workspace/${computerId}/`,
     });
+    if (round === 0) {
+      // WP3.22: a part fails as R2's lost connection did on staging, before and after its bytes
+      // arrived. Each real shim error is one WorkspaceDO repeats, and each failed attempt leaves
+      // no object and no open upload.
+      result.partFailures = [];
+      for (const when of ["early", "late"]) {
+        writeFileSync(join(R2_ROOT, "fail-parts"), `${when}\n`);
+        let failure = null;
+        try {
+          await backups.backup({ dir: job.layerDir, name: layerId });
+        } catch (error) {
+          failure = error;
+        }
+        const { name, code, message } = failure ?? {};
+        const seen = {
+          when,
+          name,
+          code,
+          message: String(message).replace(/lyr_[0-9a-z]+/, "lyr_*"),
+        };
+        result.partFailures.push(seen);
+        const expected =
+          when === "late"
+            ? /gateway rejected the part upload with HTTP 502: Network connection lost\.$/
+            : /gateway (?:connection failed|rejected the part upload)/;
+        check(
+          `a part failing ${when} fails the backup with the shim's BACKUP_TRANSFER`,
+          name === "SandboxBackupError" && code === "BACKUP_TRANSFER" && expected.test(message),
+          seen,
+        );
+        check(`WorkspaceDO repeats a part failing ${when}`, isTransientUploadError(failure), seen);
+        const left = (await bucket.list({ prefix: `workspace/${computerId}/` })).objects;
+        let open = [];
+        try {
+          open = readdirSync(join(R2_ROOT, "uploads"));
+        } catch {
+          // No upload directory yet.
+        }
+        check(
+          `a part failing ${when} left no object and no open upload`,
+          !left.length && !open.length,
+          {
+            objects: left.length,
+            open: open.length,
+          },
+        );
+      }
+    }
     const record = await backups.backup({ dir: job.layerDir, name: layerId });
     records.push(record);
     layers.push({

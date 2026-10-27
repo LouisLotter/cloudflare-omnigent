@@ -28,6 +28,8 @@ class Assembly {
   failParts = 0;
   /** Part uploads the gateway received, failed or not. */
   partsSeen = 0;
+  /** completeUpload calls whose reply is lost after R2 completed the object. */
+  loseCompletions = 0;
   /** WorkspaceDO's upload retry delays: production's, shortened for the tests' real timers. */
   readonly uploadRetryDelaysMs: readonly number[] = [5, 10];
 

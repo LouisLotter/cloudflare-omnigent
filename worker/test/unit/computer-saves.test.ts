@@ -244,6 +244,8 @@ describe("workspace checkpoints", () => {
         "gateway rejected the part upload with HTTP 403: the write fence refused this part",
       ),
       new Error("BACKUP_TRANSFER: a part upload failed"),
+      // A lost reply from completeUpload: R2 may already hold the object (Codex WP3.22 r1-3).
+      new Error("Network connection lost."),
     ]) {
       const sim = new ComputerSim();
       await sim.running();

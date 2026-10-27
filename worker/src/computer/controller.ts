@@ -97,7 +97,6 @@ import {
   uncovered,
   unreferenced,
 } from "./checkpoints.ts";
-import { isTransientUploadError } from "./container-port.ts";
 import {
   admissionOf,
   backstopDue,
@@ -141,6 +140,7 @@ import {
   starting,
 } from "./reservations.ts";
 import { chooseSize, clampSize, sizeForStart, workspaceSizeWarning } from "./sizing.ts";
+import { isTransientUploadError } from "./upload-errors.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Dependencies.

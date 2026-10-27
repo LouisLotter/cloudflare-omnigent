@@ -10,7 +10,7 @@ import { env } from "cloudflare:workers";
 import { WORKSPACE_INTERFACE_VERSION } from "@cfo/contracts";
 import { SandboxBackupError } from "@cloudflare/sandbox";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { isTransientUploadError } from "../../src/computer/container-port.ts";
+import { isTransientUploadError } from "../../src/computer/upload-errors.ts";
 import { CONTROL_OBJECT_NAME } from "../../src/shared/rpc.ts";
 import {
   alarm,
@@ -166,6 +166,7 @@ function events(spy: { readonly mock: { readonly calls: unknown[][] } }, event: 
 describe("a transient part failure during a save (WP3.22)", () => {
   afterEach(() => {
     assembly.failParts = 0;
+    assembly.loseCompletions = 0;
     vi.restoreAllMocks();
   });
 
@@ -243,5 +244,39 @@ describe("a transient part failure during a save (WP3.22)", () => {
     ]);
     expect(events(log, "workspace_published")).toHaveLength(1);
     expect(await keys(`workspace/${c.computerId}/`)).toHaveLength(1);
+  });
+
+  it("never repeats an upload whose completion reply was lost: no second object for one save (Codex r1-3)", async () => {
+    const c = await provision();
+    await wake(c, { hostId: hostId(), token: TOKEN });
+    c.container.sim.sup?.write("work/notes.md", "v1");
+    const log = vi.spyOn(console, "log");
+    assembly.loseCompletions = 1;
+    const runs = c.container.shimRuns.filter((r) => r.startsWith("backup:")).length;
+    const [, , after] = await stepsWithEviction(
+      c.stub,
+      [
+        () => c.client.send(c.client.checkpointRequest()),
+        () => settle(c),
+        async () => ({
+          objects: await keys(`workspace/${c.computerId}/`),
+          status: await c.client.send(c.client.statusRequest()),
+        }),
+        () => alarm(c, 61_000),
+        () => c.client.send(c.client.statusRequest()),
+      ],
+      { evictAfterLast: true },
+    );
+    // One attempt for the failed save: the object R2 completed is the only one it wrote. It is
+    // not referenced (a pre-existing leak: the record died with the reply), never published.
+    expect(after.objects).toHaveLength(1);
+    expect(events(log, "upload_retry")).toEqual([]);
+    expect(events(log, "save_failed")).toEqual([
+      expect.objectContaining({ reason: "upload", generation: 1 }),
+    ]);
+    // The failed saves' schedule: the next save publishes its own object.
+    expect(c.container.shimRuns.filter((r) => r.startsWith("backup:")).length - runs).toBe(2);
+    expect(events(log, "workspace_published")).toHaveLength(1);
+    expect(await keys(`workspace/${c.computerId}/`)).toHaveLength(2);
   });
 });

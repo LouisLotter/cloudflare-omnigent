@@ -310,6 +310,8 @@ def test_layers_round_trip_through_directory_backup(tmp_path: Path) -> None:
     result = json.loads(out.read_text())
     assert proc.returncode == 0 and result["ok"], [c for c in result["checks"] if not c["ok"]]
     assert result["record0"]["format"] == "tar+zstd/1" and result["objects"] == 2
+    # WP3.22: the real shim's failed parts, which WorkspaceDO repeats, left nothing behind.
+    assert [f["code"] for f in result["partFailures"]] == ["BACKUP_TRANSFER"] * 2
 
 
 def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed() -> None:

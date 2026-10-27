@@ -47,9 +47,11 @@ import { testServers } from "./server-harness.ts";
 import { testComputers } from "./workspace-harness.ts";
 
 /**
- * The production fenced gateway, with the part fault seam (`assembly.failParts`): a part fails as
- * R2's lost connection did on staging, answered as the SDK's gateway answers an R2 failure (502
- * and R2's message). Every other request, and every part once the seam is spent, is production's.
+ * The production fenced gateway, with two fault seams: a part fails as R2's lost connection did
+ * on staging, answered as the SDK's gateway answers an R2 failure (502 and R2's message)
+ * (`assembly.failParts`); a completion's reply is lost after R2 completed the object
+ * (`assembly.loseCompletions`). Everything else, and everything once the seams are spent, is
+ * production's.
  */
 export class DirectoryBackupGateway extends FencedBackupGateway {
   override async fetch(request: Request): Promise<Response> {
@@ -60,6 +62,17 @@ export class DirectoryBackupGateway extends FencedBackupGateway {
     assembly.failParts -= 1;
     await request.body?.cancel().catch(() => undefined);
     return new Response("Network connection lost.", { status: 502 });
+  }
+
+  /** The completion seam (`assembly.loseCompletions`): R2 completes the object, the reply is lost. */
+  override async completeUpload(
+    uploadId: string,
+    parts: readonly { readonly partNumber: number; readonly etag: string }[],
+  ): Promise<number> {
+    const size = await super.completeUpload(uploadId, parts);
+    if (assembly.loseCompletions === 0) return size;
+    assembly.loseCompletions -= 1;
+    throw new Error("Network connection lost.");
   }
 }
 export { default } from "../../src/index.ts";

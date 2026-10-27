@@ -2,7 +2,6 @@ import type { ComputerId, DirectoryBackupRecord } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   COMPUTER_IMAGE_KEY,
-  isTransientUploadError,
   nativeComputerContainer,
   observeStart,
   type RuntimeContainer,
@@ -19,6 +18,7 @@ import {
   registerIntercepts,
   startWithIntercepts,
 } from "../../src/computer/network.ts";
+import { isTransientUploadError } from "../../src/computer/upload-errors.ts";
 import { NO_INSTANCE_MESSAGE } from "../../src/shared/computer-port.ts";
 import { SITTING_PART_FAILURE, sdkBackupError } from "../support/backup-errors.ts";
 import { defined } from "../support/defined.ts";
@@ -490,7 +490,7 @@ describe("the container port's defaults", () => {
 });
 
 describe("which upload failures are repeated (WP3.22)", () => {
-  it("repeats a part upload the gateway answered with 502, 503 or 504, or a lost connection", () => {
+  it("repeats the shim's part upload the gateway answered with 502, 503 or 504, or a lost connection", () => {
     expect(isTransientUploadError(SITTING_PART_FAILURE())).toBe(true);
     for (const detail of [
       "gateway rejected the part upload with HTTP 503: Service Unavailable",
@@ -501,7 +501,6 @@ describe("which upload failures are repeated (WP3.22)", () => {
     ]) {
       expect(isTransientUploadError(sdkBackupError("BACKUP_TRANSFER", detail)), detail).toBe(true);
     }
-    expect(isTransientUploadError(new Error("Network connection lost."))).toBe(true);
   });
 
   it("never repeats a refusal, an integrity failure, a file error, an abort or a stopped container", () => {
@@ -518,6 +517,8 @@ describe("which upload failures are repeated (WP3.22)", () => {
       new DOMException("deadline passed", "TimeoutError"),
       new DOMException("aborted", "AbortError"),
       new Error("Container is not running."),
+      // completeUpload's lost reply: R2 may hold the object already (Codex WP3.22 r1-3).
+      new Error("Network connection lost."),
       new Error("[forbidden] the write fence refused this upload: generation"),
       "Network connection lost.",
       null,
