@@ -18,7 +18,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import platform from "../../src/index.ts";
 import { APPLIED_NOTICE_MS, type OmnigentServer } from "../../src/server/OmnigentServer.ts";
-import { UNKNOWN_DEADLINES } from "../../src/server/server-env.ts";
+import {
+  configFingerprint,
+  SERVER_INSTANCE,
+  UNKNOWN_DEADLINES,
+} from "../../src/server/server-env.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
 import {
   FORWARD_VERSION_HEADER,
@@ -28,8 +32,11 @@ import {
 import { defined, gaps } from "../support/defined.ts";
 import { stepsWithEviction } from "../support/eviction.ts";
 import { unconfirmedResponse } from "../support/fake-omnigent-server.ts";
-import { FakeServerContainer } from "../support/fake-server-container.ts";
-import { TEST_TIMING, testServers } from "../support/server-harness.ts";
+import {
+  FakeServerContainer,
+  MAX_INACTIVITY_TIMEOUT_MS,
+} from "../support/fake-server-container.ts";
+import { TEST_SERVER_IMAGE, TEST_TIMING, testServers } from "../support/server-harness.ts";
 
 const INSTALLATION = "ins_01hs3f9q2m8z4w7k6t5r1n0ybc";
 const ORIGIN = "https://omnigent.example.test";
@@ -106,6 +113,22 @@ async function buffered(response: Response): Promise<Response> {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/**
+ * Every container start was prepared for that container: `platform.internal` intercepted before
+ * it and the inactivity timeout set after it, before the next start. Both last only for one
+ * container (Cloudflare's Durable Object Container API).
+ */
+function expectEveryStartPrepared(ops: readonly string[]): void {
+  const starts = ops.flatMap((op, i) => (op === "start" ? [i] : []));
+  expect(starts.length).toBeGreaterThan(0);
+  starts.forEach((at, n) => {
+    const before = ops.slice(n === 0 ? 0 : (starts[n - 1] ?? 0) + 1, at);
+    const after = ops.slice(at + 1, starts[n + 1] ?? ops.length);
+    expect(before, `start ${n + 1}`).toContain("intercept:platform.internal");
+    expect(after, `start ${n + 1}`).toContain("timeout");
+  });
+}
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -152,6 +175,8 @@ describe("OmnigentServer: always on", () => {
     const { stub, fake } = await freshServer();
     await check(stub);
     expect(fake.ops.slice(0, 3)).toEqual(["intercept:platform.internal", "start", "timeout"]);
+    // The image this version maps (the `durable_object` policy names it at each start, WP3.19).
+    expect(fake.starts[0]?.image).toBe(TEST_SERVER_IMAGE);
     expect(fake.starts[0]?.env).toEqual({
       OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner-canary",
       OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: "cfo-canary-bootstrap-password",
@@ -181,6 +206,34 @@ describe("OmnigentServer: always on", () => {
     expect(fake.inactivityTimeouts.length).toBeGreaterThanOrEqual(4);
     expect(await stub.outages(everything)).toEqual([]);
   });
+
+  it("keeps the container past 6 hours: a timeout under the cap, renewed far more often than it runs (WP3.19)", async () => {
+    // Under the `durable_object` policy Cloudflare stops a container shortly after its object is
+    // inactive, unless a timeout of at most 6 hours is set; each object instance sets its own.
+    const { stub, fake } = await runningServer();
+    const hours = 7;
+    for (let hour = 0; hour < hours; hour += 1) {
+      for (let i = 0; i < 3_600_000 / T.intervalMs; i += 1) await nextCheck(stub);
+      // An eviction every hour (a deploy's switch, a reset): the new instance sets its own.
+      await evictDurableObject(stub);
+      await stub.bootstrapStatus(call);
+    }
+    expect(fake.starts).toHaveLength(1);
+    expect(fake.signals).toEqual([]);
+    expect(fake.destroys).toEqual([]);
+    expect(await stub.outages(everything)).toEqual([]);
+    const renewals = fake.timeoutRenewals;
+    expect(renewals.at(-1)?.at ?? 0).toBeGreaterThanOrEqual(
+      (renewals[0]?.at ?? 0) + hours * 3_600_000,
+    );
+    // The same timeout every time, under the runtime's cap, and never close to running out.
+    expect(new Set(renewals.map((r) => r.ms))).toEqual(new Set([T.inactivityTimeoutMs]));
+    expect(T.inactivityTimeoutMs).toBeLessThanOrEqual(MAX_INACTIVITY_TIMEOUT_MS);
+    const longest = Math.max(...gaps(renewals.map((r) => r.at)));
+    expect(longest).toBeLessThanOrEqual(T.intervalMs);
+    expect(longest * 10).toBeLessThan(T.inactivityTimeoutMs);
+    expect(events("watchdog").some((e) => e.event === "inactivity_timeout_error")).toBe(false);
+  }, 60_000);
 
   it("re-registers the intercept and renews the timeout in every new instance", async () => {
     const { stub, fake } = await runningServer();
@@ -1491,6 +1544,106 @@ describe("OmnigentServer: a release reaches the running server (G2-SEC-001)", ()
     expect(await stub.outages(everything)).toEqual([
       expect.objectContaining({ cause: "config_changed", restarts: 1 }),
     ]);
+  });
+});
+
+describe("OmnigentServer: a new server image reaches the running server (WP3.19)", () => {
+  /** Another build of the server image: another digest, as Wrangler pins it. */
+  const NEW_IMAGE = `registry.example.test/cfo-test/omnigentserver-server@sha256:${"2".repeat(64)}`;
+
+  const startConfig = (stub: Stub) =>
+    runInDurableObject(stub, (_i: OmnigentServer, state) =>
+      state.storage.sql
+        .exec<{ value: string }>("SELECT value FROM server_state WHERE key = 'start_config'")
+        .one(),
+    ).then((row) => JSON.parse(row.value) as string);
+
+  it("replaces an answering server once, gracefully, when a release maps another image", async () => {
+    const { stub, fake } = await runningServer();
+    const before = await startConfig(stub);
+    // A deploy that rebuilt the server image: its objects adopt the running container, which
+    // keeps the image it started with (the policy rolls nothing out).
+    testServers.releaseImage(stub.id, NEW_IMAGE);
+    await evictDurableObject(stub);
+    await stub.bootstrapStatus(call);
+    expect(fake.running).toBe(true);
+    expect(fake.signals).toEqual([]);
+    await stepsWithEviction(
+      stub,
+      Array.from({ length: 7 }, () => () => nextCheck(stub)),
+      { evictAfterLast: true },
+    );
+    expect(fake.signals).toEqual([15]); // the graceful stop, never a kill
+    expect(fake.destroys).toEqual([]);
+    expect(fake.starts.map((s) => s.image)).toEqual([TEST_SERVER_IMAGE, NEW_IMAGE]);
+    // The same environment: only the image moved.
+    expect(fake.starts[1]?.env).toEqual(fake.starts[0]?.env);
+    expect(fake.ops.filter((op) => op === "signal:15" || op === "start")).toEqual([
+      "start",
+      "signal:15",
+      "start",
+    ]);
+    // The new container got its own intercept and inactivity timeout.
+    expectEveryStartPrepared(fake.ops);
+    const records = await stub.outages(everything);
+    expect(records).toEqual([
+      expect.objectContaining({ cause: "config_changed", restarts: 1, exitCode: 0 }),
+    ]);
+    expect(records[0]?.endedAt).not.toBeNull();
+    expect(events("watchdog").filter((e) => e.event === "config_changed")).toHaveLength(1);
+    // The replacement's start recorded the new image's fingerprint, which is the current one.
+    const after = await startConfig(stub);
+    expect(after).not.toBe(before);
+    expect(after).toBe(
+      await configFingerprint(fake.starts[1]?.env ?? {}, {
+        image: NEW_IMAGE,
+        instance: SERVER_INSTANCE,
+      }),
+    );
+    // Answering under the new image: never replaced again.
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
+    expect(fake.starts).toHaveLength(2);
+    expect(fake.signals).toEqual([15]);
+    expect(logs.join("\n")).not.toContain(after);
+  });
+
+  it("restarts nothing when a release maps the same image, under any repository name", async () => {
+    const { stub, fake } = await runningServer();
+    // The same digest under another repository name, and a setting the server never gets.
+    const sameImage = TEST_SERVER_IMAGE.replace("cfo-test/", "cfo-other/");
+    expect(sameImage).not.toBe(TEST_SERVER_IMAGE);
+    testServers.releaseImage(stub.id, sameImage);
+    testServers.release(stub.id, { ACCESS_AUD: "cfo-canary-access-aud-3" });
+    await evictDurableObject(stub);
+    await stepsWithEviction(
+      stub,
+      Array.from({ length: 4 }, () => () => nextCheck(stub)),
+    );
+    expect(fake.signals).toEqual([]);
+    expect(fake.starts).toHaveLength(1);
+    expect(await stub.outages(everything)).toEqual([]);
+    expect(events("watchdog").some((e) => e.event === "config_changed")).toBe(false);
+  });
+
+  it("starts a server held after exit 78 again once a release maps another image", async () => {
+    const { stub, fake } = await runningServer();
+    await platformStop(stub, fake, 78);
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
+    expect(fake.starts).toHaveLength(1);
+    expect((await stub.outages(everything)).at(-1)).toMatchObject({ exitCode: 78, endedAt: null });
+    testServers.releaseImage(stub.id, NEW_IMAGE);
+    await evictDurableObject(stub);
+    await nextCheck(stub);
+    expect(fake.starts.map((s) => s.image)).toEqual([TEST_SERVER_IMAGE, NEW_IMAGE]);
+  });
+
+  it("starts without an image when this version maps none, and says so at each start", async () => {
+    const { stub, fake } = await freshServer();
+    testServers.releaseImage(stub.id, null);
+    await evictDurableObject(stub);
+    await check(stub);
+    expect(fake.starts).toEqual([expect.objectContaining({ image: null })]);
+    expect(events("watchdog").filter((e) => e.event === "no_image")).toHaveLength(1);
   });
 });
 

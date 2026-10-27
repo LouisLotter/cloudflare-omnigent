@@ -5,10 +5,11 @@
 //     stopped, follows the entrypoint's phases after each start (a restore allowance, then an
 //     app-start budget, AIR2-010), retries a refused start (DC-37), and restarts a server that
 //     stopped answering. Its decisions are the pure `watchdog.ts`.
-//   - Releases are applied. A container gets its environment only at its start, and a new
-//     version adopts the running one. The configuration fingerprint each start used is stored,
-//     and an answering server started with another one than this version would use is replaced
-//     once, gracefully (G2-SEC-001).
+//   - Releases are applied. A container gets its environment, image and size only at its start
+//     (the `durable_object` policy: a deploy never moves a running container to a new image), and
+//     a new version adopts the running one. The fingerprint of each start (environment, image and
+//     size) is stored, and an answering server started with another one than this version would
+//     use is replaced once, gracefully (G2-SEC-001, WP3.19).
 //   - Outage records. Every interval in which the server did not answer is stored as an
 //     `OutageRecord`, from the last time it answered to the first time it answered again.
 //   - Bootstrap status. While the server answers, the watchdog reads `/v1/info` and the
@@ -56,6 +57,7 @@ import {
   OMNIGENT_PORT,
   type ServerContainer,
   serverContainerOf,
+  serverImageOf,
 } from "./container-port.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
 import {
@@ -69,8 +71,10 @@ import { SERVER_MIGRATIONS } from "./schema.ts";
 import {
   bootstrapSecretPresent,
   configFingerprint,
+  SERVER_INSTANCE,
   serverContainerEnv,
   serverDeadlines,
+  startFingerprint,
   UNKNOWN_DEADLINES,
 } from "./server-env.ts";
 import {
@@ -196,9 +200,9 @@ const STATE_KEY = "watchdog";
  */
 const LAST_EXIT_KEY = "last_exit";
 /**
- * The configuration fingerprint the running container was started with (Codex WP2.2 r4-2): the
- * watchdog replaces an answering server whose fingerprint is not the current one (G2-SEC-001).
- * A digest, kept in storage and never logged or returned.
+ * The fingerprint the running container was started with (Codex WP2.2 r4-2): its environment,
+ * image and size (server-env.ts). The watchdog replaces an answering server whose fingerprint is
+ * not the current one (G2-SEC-001). A digest, kept in storage and never logged or returned.
  */
 const START_CONFIG_KEY = "start_config";
 /**
@@ -242,6 +246,11 @@ function checkVersion(value: unknown): VersionCheck {
 
 export class OmnigentServer extends DurableObject<PlatformEnv> implements OmnigentServerRpc {
   readonly #container: ServerContainer | null;
+  /**
+   * The image this version starts the server with (its `images` map ships with the version, as
+   * its environment does): fixed for the instance, like `env`.
+   */
+  readonly #image: string | null;
   /** The last health check or forwarded request reached the server. In memory only. */
   #ready = false;
   /** When a health check or a forwarded request last reached the server. In memory only. */
@@ -260,6 +269,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
     this.#container = this.openContainer();
+    this.#image = this.serverImage();
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage, SERVER_MIGRATIONS);
       const container = this.#container;
@@ -282,6 +292,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   /** The container port, or null when this class has no container configured. */
   protected openContainer(): ServerContainer | null {
     return serverContainerOf(this.ctx);
+  }
+
+  /** The image this version's `images` map names for the server, or null. */
+  protected serverImage(): string | null {
+    return serverImageOf(this.ctx);
   }
 
   protected now(): number {
@@ -446,14 +461,16 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         nextCheckAt = this.now() + current.intervalMs;
         return;
       }
-      const config = await configFingerprint(
-        serverContainerEnv(this.env as unknown as Record<string, unknown>).vars,
+      const config = await startFingerprint(
+        this.env as unknown as Record<string, unknown>,
+        this.#image,
       );
       const timing = this.#containerTiming(current, config);
       const observedFrom = Date.now();
       const seen = await this.#observe(container);
-      // The configuration the running container was started with: an answering server started
-      // with another one than this version's is replaced (G2-SEC-001).
+      // The configuration (environment, image, size) the running container was started with:
+      // an answering server started with another one than this version's is replaced
+      // (G2-SEC-001; a new image, WP3.19).
       const ranWith = this.#startConfig();
       const answering: Observation = { kind: "answering", ranWith };
       // The exit is read here, with no await before the decision is persisted and the record
@@ -674,9 +691,14 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#interceptPending = false;
     const { vars, skipped } = serverContainerEnv(this.env as unknown as Record<string, unknown>);
     for (const { name, reason } of skipped) logEvent("watchdog", "env_skipped", { name, reason });
-    // An exit left from an earlier container is not this one's; this one runs with `vars`, and
-    // with the deadlines its settings give it, whatever a later release sets.
-    const fingerprint = await configFingerprint(vars);
+    // Without a mapped image the runtime chooses (a class under the default policy); under the
+    // `durable_object` policy that is a configuration error, so it is logged at each start.
+    if (this.#image === null) logEvent("watchdog", "no_image");
+    // An exit left from an earlier container is not this one's; this one runs with `vars`, this
+    // version's image and size, and the deadlines its settings give it, whatever a later
+    // release sets.
+    const image = this.#image;
+    const fingerprint = await configFingerprint(vars, { image, instance: SERVER_INSTANCE });
     const { stopGraceMs, restoreWaitMs } = this.timing();
     this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
@@ -693,7 +715,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       );
     });
     try {
-      container.start(vars);
+      container.start(vars, image);
     } catch (error) {
       logEvent("watchdog", "start_error", { error: describeError(error) });
       return;

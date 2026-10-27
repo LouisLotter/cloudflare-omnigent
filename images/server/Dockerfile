@@ -2,7 +2,7 @@
 #
 # The Omnigent server image for Omnigent on Cloudflare (WP2.3).
 #
-# Build context: the repository root (Wrangler's `image_build_context`), for example
+# Build context: the repository root (the `build_context` of Wrangler's `server` image), for example
 #   docker build -f images/server/Dockerfile -t cfo-server:dev .              (the server)
 #   docker build -f images/server/Dockerfile --target test -t cfo-server:test .
 # The last stage is the server, so a build without --target (Wrangler's) gets the server.

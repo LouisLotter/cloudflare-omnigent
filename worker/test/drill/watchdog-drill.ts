@@ -1,13 +1,16 @@
 // The watchdog drill (WP2.6, AIR2-010 and AIR2-009): the production watchdog's decisions
 // (`step` in src/server/watchdog.ts, with the timing and settings OmnigentServer gives it) drive
-// the real server image in Docker, against an S3 stand-in behind Toxiproxy, at `basic`'s quarter
-// CPU and 1 GiB. Laptop only, test tooling; never shipped. Every credential is generated for the
-// stack and kept in its directory (mode 600); no log or result holds one (canary scan at the end).
+// the real server image in Docker, against an S3 stand-in behind Toxiproxy, by default at
+// `basic`'s quarter CPU and 1 GiB: the server's size under the default scheduling policy, on which
+// the budgets were measured (`--cpus 1 --memory 3g` approximates the custom size it now starts
+// on). Laptop only, test tooling; never shipped. Every credential is generated for the stack and
+// kept in its directory (mode 600); no log or result holds one (canary scan at the end).
 //
 //   node worker/test/drill/watchdog-drill.ts up                  the stack (MinIO, Toxiproxy, bucket)
 //   node worker/test/drill/watchdog-drill.ts seed <prefix> <MB>  a replica of that size, written by
 //                                                                 the image itself (a fresh install)
 //   node worker/test/drill/watchdog-drill.ts run <scenario> [--prefix p] [--image i] [--cpus c]
+//                                                                 [--memory m]
 //   node worker/test/drill/watchdog-drill.ts down                remove the containers and the stack
 //
 // Scenarios (each starts from a stopped server, as after a loss, and records every check):
@@ -34,6 +37,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   configFingerprint,
+  SERVER_INSTANCE,
   serverContainerEnv,
   serverDeadlines,
 } from "../../src/server/server-env.ts";
@@ -578,7 +582,8 @@ async function runScenario(name: string, options: Record<string, string | boolea
 
     const env = workerEnv(stack, sc.prefix, extra);
     const vars = serverContainerEnv(env).vars;
-    const config = await configFingerprint(vars);
+    // The drill's image never changes during a run: only the environment moves the fingerprint.
+    const config = await configFingerprint(vars, { image: spec.image, instance: SERVER_INSTANCE });
     const timing = timingFor(env);
     const observation = await server.observe();
     const at = Date.now();

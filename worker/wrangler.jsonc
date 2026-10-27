@@ -6,8 +6,14 @@
   // the cfo-stg- prefix for staging.
   //
   // OmnigentServer's container: the server image (WP2.3), built from the repository root with
-  // BuildKit (its Dockerfile uses `ADD <git>`, `ADD --checksum` and a `# syntax` line, and reads
-  // images/server/Dockerfile.dockerignore). The default scheduling policy, one `basic` instance.
+  // BuildKit (its Dockerfile uses `ADD <git>`, `ADD --checksum` and a `# syntax` line). Wrangler
+  // passes a Dockerfile on stdin, so its builds read the root .dockerignore, not
+  // images/server/Dockerfile.dockerignore (which a local `docker build -f` reads). Under the
+  // `durable_object` policy (WP3.19): its key, `server`, is the one `server/container-port.ts`
+  // names at each start, with the server's size (`SERVER_INSTANCE`, a custom 1 vCPU, 3 GiB,
+  // 8 GB instance). No `max_instances`: one named OmnigentServer object runs one container. A
+  // deploy never moves the running container to a new image: the watchdog's fingerprint
+  // includes the image, so a release that changes it replaces the server once (`config_changed`).
   //
   // WorkspaceDO's container: the computer image (WP3.4), one per computer under the
   // `durable_object` policy, built from the repository root. Its key, `computer`, is the one
@@ -28,10 +34,10 @@
   "containers": [
     {
       "class_name": "OmnigentServer",
-      "image": "../images/server/Dockerfile",
-      "image_build_context": "..",
-      "instance_type": "basic",
-      "max_instances": 1
+      "scheduling_policy": "durable_object",
+      "images": {
+        "server": { "dockerfile": "../images/server/Dockerfile", "build_context": ".." }
+      }
     },
     {
       "class_name": "WorkspaceDO",

@@ -17,6 +17,9 @@ import type { ReplicationPosition } from "@cfo/contracts";
 import type { ContainerExit, ServerContainer } from "../../src/server/container-port.ts";
 import type { EntrypointPhase } from "../../src/server/watchdog.ts";
 
+/** The runtime's cap on `setInactivityTimeout` (Cloudflare's Durable Object Container API). */
+export const MAX_INACTIVITY_TIMEOUT_MS = 6 * 60 * 60_000;
+
 export const NO_INSTANCE_MESSAGE =
   "There is no container instance that can be provided to this Durable Object, try again later";
 
@@ -37,9 +40,16 @@ export class FakeServerContainer implements ServerContainer {
   /** How many of the next starts Cloudflare refuses (DC-37). */
   refuseStarts = 0;
   refuseForever = false;
-  readonly starts: { readonly env: Readonly<Record<string, string>> }[] = [];
+  /** Each start's environment and image, in order. */
+  readonly starts: {
+    readonly env: Readonly<Record<string, string>>;
+    readonly image: string | null;
+  }[] = [];
   readonly destroys: string[] = [];
   readonly inactivityTimeouts: number[] = [];
+  /** Each inactivity timeout set, with the time on `clock` (the test clock, from the harness). */
+  readonly timeoutRenewals: { readonly at: number; readonly ms: number }[] = [];
+  clock: () => number = Date.now;
   readonly intercepts: { readonly host: string; readonly target: Fetcher }[] = [];
   readonly requests: RecordedRequest[] = [];
   /** Starts, stops, intercepts and timeouts, in the order they happened. */
@@ -77,9 +87,9 @@ export class FakeServerContainer implements ServerContainer {
   #onExit: ((exit: ContainerExit) => void) | null = null;
   #positionReads = 0;
 
-  start(env: Readonly<Record<string, string>>): void {
+  start(env: Readonly<Record<string, string>>, image: string | null): void {
     if (this.running) throw new Error("start() called while the container is running");
-    this.starts.push({ env: { ...env } });
+    this.starts.push({ env: { ...env }, image });
     this.ops.push("start");
     if (this.refuseForever || this.refuseStarts > 0) {
       if (this.refuseStarts > 0) this.refuseStarts -= 1;
@@ -133,8 +143,13 @@ export class FakeServerContainer implements ServerContainer {
     else setTimeout(stop, this.stopMs);
   }
 
+  /** As the runtime: more than 0 and at most 6 hours, or the promise rejects. */
   async setInactivityTimeout(ms: number): Promise<void> {
+    if (!(ms > 0 && ms <= MAX_INACTIVITY_TIMEOUT_MS)) {
+      throw new RangeError("the inactivity timeout must be more than 0 and at most 6 hours");
+    }
     this.inactivityTimeouts.push(ms);
+    this.timeoutRenewals.push({ at: this.clock(), ms });
     this.ops.push("timeout");
   }
 
