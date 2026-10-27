@@ -34,17 +34,20 @@ A string of 16 characters or more is collected when:
    ``privateKeyPkcs8B64`` are credentials; ``account_id``, ``login_owner_id``,
    ``X-Omnigent-Installation-Id``, ``bridge_id``, ``ap_server_url``, ``rateLimitTier``,
    ``refreshTokenExpiresAt``, ``token_type``, ``OMNIGENT_RUNNER_SLICE_KEY``, ``GPG_KEY``,
-   ``SSH_AUTH_SOCK`` and ``PWD`` are not. A credential-named value that is only a path or a plain
-   URL is not taken (it names where a credential is, not the credential).
+   ``SSH_AUTH_SOCK`` and ``PWD`` are not. A credential-named value that is a plain URL, or a
+   path that exists, is not taken: it says where a credential is. Any other value is, whatever
+   it starts with (a base64 token may start with ``/``).
 2. **It follows ``Bearer``** in any string (a header value, a curl command), as an RFC 6750
    token; a shell variable such as ``$OMNIGENT_RELAY_TOKEN`` is not a value.
 3. **It is assigned to a credential name** inside a string (``NAME=value`` in a command, an env
-   file or a URL query), or is the password of a URL (``https://user:<password>@host``).
+   file or a URL query; ``NAME='$literal'`` too, but not ``NAME=$VAR``), or is the password of a
+   URL (``https://user:<password>@host``).
 4. **It has a credential's own format** anywhere in a string: ``sk-ant-...``, ``sk-...``,
    ``ghp_``/``gho_``/``ghu_``/``ghs_``/``ghr_...``, ``github_pat_...``, or a JWT.
 5. **It is the literal argument of a credential helper's command**: ``printf``/``echo`` in
-   ``apiKeyHelper`` (Omnigent writes ``printf %s '<key>'`` for a static provider key) or in an
-   environment variable such as ``OMNIGENT_CLAUDE_API_KEY_HELPER``.
+   ``apiKeyHelper`` (Omnigent writes ``printf %s <shlex-quoted key>`` for a static provider key)
+   or in an environment variable such as ``OMNIGENT_CLAUDE_API_KEY_HELPER``, however the key
+   starts or whatever it holds once quoted; a word that expands a variable is not a literal.
 6. **It is the whole of a file named as a credential** (``provider_key``).
 7. **Git's credential broker hands it out** for github.com (core change 17).
 
@@ -89,7 +92,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import socket
 from collections.abc import Iterable
 from pathlib import Path
@@ -204,7 +206,6 @@ _FORMATS = re.compile(
     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
     r")"
 )
-_NOT_A_VALUE = re.compile(r"^(?:/|~/|\$|[a-z][a-z0-9+.-]*://[^@\s]*$)", re.I)
 
 
 def words(name: str) -> list[str]:
@@ -238,40 +239,119 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _helper_literals(command: str) -> list[str]:
-    """Rule 5: the literal arguments ``printf``/``echo`` print in a credential helper."""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return []
-    out: list[str] = []
-    segment: list[str] = []
-    for token in [*tokens, ";"]:
-        if token and set(token) <= set(";|&()"):
-            while segment and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
-                segment.pop(0)
-            if segment and os.path.basename(segment[0]) in ("printf", "echo"):
-                out += [a for a in segment[1:] if not a.startswith(("-", "$")) and "%" not in a]
-            segment = []
+def shell_words(command: str) -> list[tuple[str, bool]]:
+    """A shell command's words as ``(literal, expands)``, with ``;``, ``|``, ``&``, ``(`` and
+    ``)`` as their own words. ``expands`` is set when an unquoted or double-quoted ``$`` makes
+    part of the word a variable's value rather than a literal. Enough of POSIX quoting for the
+    one-line commands credential helpers are (``printf %s '<key>'``); never raises."""
+    words: list[tuple[str, bool]] = []
+    word: list[str] = []
+    expands = started = False
+    quote = ""
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+            else:
+                word.append(ch)
+        elif quote == '"':
+            if ch == '"':
+                quote = ""
+            elif ch == "\\" and i + 1 < len(command) and command[i + 1] in '"\\$`':
+                i += 1
+                word.append(command[i])
+            else:
+                expands |= ch in "$`"
+                word.append(ch)
+        elif ch in "'\"":
+            quote, started = ch, True
+        elif ch == "\\" and i + 1 < len(command):
+            i += 1
+            word.append(command[i])
+            started = True
+        elif ch.isspace() or ch in ";|&()":
+            if started or word:
+                words.append(("".join(word), expands))
+            word, expands, started = [], False, False
+            if not ch.isspace():
+                words.append((ch, False))
         else:
-            segment.append(token)
+            expands |= ch in "$`"
+            word.append(ch)
+            started = True
+        i += 1
+    if started or word:
+        words.append(("".join(word), expands))
+    return words
+
+
+def _helper_literals(command: str) -> list[str]:
+    """Rule 5: what ``printf``/``echo`` print literally in a credential helper. ``printf``'s data
+    arguments are taken whatever they hold (a key may start with ``-`` or ``$`` or hold ``%``
+    once quoted, as Omnigent's ``printf %s <shlex-quoted key>`` writes it), and its format too
+    when it has no conversion; ``echo``'s arguments after its options. A word that expands a
+    variable is not a literal."""
+    out: list[str] = []
+    segments: list[list[tuple[str, bool]]] = [[]]
+    for literal, expands in shell_words(command):
+        if not expands and literal in (";", "|", "&", "(", ")"):
+            segments.append([])
+        else:
+            segments[-1].append((literal, expands))
+    for segment in segments:
+        while segment and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", segment[0][0]):
+            segment = segment[1:]  # leading VAR=value assignments
+        if not segment:
+            continue
+        command_name, args = os.path.basename(segment[0][0]), segment[1:]
+        if command_name == "printf":
+            if args and args[0][0] == "--":
+                args = args[1:]
+            if args and args[0][0] == "-v":
+                args = args[2:]
+            if args and "%" not in args[0][0] and not args[0][1]:
+                out.append(args[0][0])  # a format without conversions prints as it is
+            args = args[1:]
+        elif command_name == "echo":
+            while args and re.fullmatch(r"-[neE]+", args[0][0]):
+                args = args[1:]
+        else:
+            continue
+        out += [literal for literal, expands in args if not expands]
     return out
+
+
+def _is_reference(value: str) -> bool:
+    """A credential-named value that only says where a credential is: a URL without a password,
+    or a path that exists (``GOOGLE_APPLICATION_CREDENTIALS``). Anything else, a value starting
+    with ``/`` included (base64 tokens can), is taken as the credential."""
+    if re.fullmatch(r"[a-z][a-z0-9+.-]*://[^@\s]*", value, re.I):
+        return True
+    if value.startswith(("/", "~/")) and not any(c.isspace() for c in value):
+        try:
+            return os.path.lexists(os.path.expanduser(value))
+        except (OSError, ValueError):
+            return False
+    return False
 
 
 def from_string(name: str, value: str) -> set[str]:
     """The credentials in one string value named ``name`` (rules 1 to 5)."""
     out: set[str] = set()
     text = value.strip()
-    if credential_name(name) and not _NOT_A_VALUE.match(text):
+    if credential_name(name) and not _is_reference(text):
         out.add(text)
     if helper_name(name):
         out.update(_helper_literals(text))
     out.update(_BEARER.findall(value))
     for assigned, raw in _ASSIGNMENT.findall(value):
+        # A shell assignment: "$X" and $X expand; '$X' is literal.
+        if raw.startswith(("$", '"$', "`", '"`')) or not credential_name(assigned):
+            continue
         literal = _unquote(raw)
-        if credential_name(assigned) and not _NOT_A_VALUE.match(literal):
+        if not _is_reference(literal):
             out.add(literal)
     out.update(_URL_PASSWORD.findall(value))
     out.update(m.group(0) for m in _FORMATS.finditer(value))

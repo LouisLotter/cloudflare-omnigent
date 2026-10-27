@@ -369,6 +369,8 @@ def _credential_value(label: str, shape: str) -> str:
         "ort": f"sk-ant-ort01-{value}",
         "sk": f"sk-proj-{value}",
         "jwt": f"eyJhbGciOiJSUzI1NiIsImtpZCI6InIifQ.eyJzdWIiOiJyYzUzIn0.{value}",
+        "opaque": f"-{value}%s$x",
+        "slash": f"/{value}+==",
     }.get(shape, value)
 
 
@@ -507,11 +509,46 @@ def test_bearers_assignments_formats_and_helpers() -> None:
     assert (
         C.from_string("apiKeyHelper", "databricks auth token --host https://example.test") == set()
     )
-    assert (
-        C.from_string("GOOGLE_APPLICATION_CREDENTIALS", "/home/omnigent/.config/gcloud/k.json")
-        == set()
-    )
+    # Only a path that exists is a reference (see the opaque test); this one is a value.
+    missing = "/home/omnigent/.config/gcloud/k.json"
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", missing) == {missing}
     assert C.from_string("token", "https://omnigent.example.test/v1/token") == set()
+
+
+def test_opaque_credentials_are_collected_whatever_they_start_with(tmp_path: Path) -> None:
+    """Codex WP3.22 r1, findings 1 and 2: a credential is taken by where it is, not by its
+    look. A helper's key may start with "-" or "$" or hold "%" or a quote once quoted; a token
+    may start with "/". Only an expansion, a plain URL or an existing path is not a value. Each
+    is then found in a layer by the actual scanner."""
+    import shlex
+
+    from cfo_computer import rc53_collect as C
+
+    tok = canary("opaque")
+    keys = ["-" + tok, "$" + tok, tok[:8] + "%s%d" + tok[8:], tok + "'s", "/" + tok + "+=="]
+    for key in keys:
+        assert C.from_string("apiKeyHelper", f"printf %s {shlex.quote(key)}") == {key}, key
+        assert C.from_string("apiKeyHelper", f"printf -- '%s' {shlex.quote(key)}") == {key}, key
+        assert C.from_string("OMNIGENT_CLAUDE_API_KEY_HELPER", f"echo -n {shlex.quote(key)}") == {
+            key
+        }
+    assert C.from_string("apiKeyHelper", f"printf {shlex.quote(tok)}") == {tok}
+    for expansion in ('printf %s "$ANTHROPIC_API_KEY"', "printf %s $ANTHROPIC_API_KEY_LONG"):
+        assert C.from_string("apiKeyHelper", expansion) == set()
+    slash = "/" + tok + "+=="
+    assert C.from_string("accessToken", slash) == {slash}
+    assert C.from_environ(f"AWS_SECRET_ACCESS_KEY={slash}".encode()) == {slash}
+    assert C.from_string("", f"OMNIGENT_RELAY_TOKEN='${tok}'") == {"$" + tok}
+    assert C.from_string("", 'OMNIGENT_RELAY_TOKEN="$SOME_VARIABLE_NAME_HERE"') == set()
+    existing = tmp_path / "service-account.json"
+    existing.write_text("{}")
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", str(existing)) == set()
+    # End to end: a leaked key alone in a saved file is found.
+    (tmp_path / "layer").mkdir()
+    for i, key in enumerate(keys):
+        (tmp_path / "layer" / f"{i}.txt").write_text(f"leaked {key} here")
+    code, report = rc53_scan.run([tmp_path / "layer"], sorted(set(keys)), [])
+    assert code == 1 and len({f["file"] for f in report["findings"]}) == len(keys), report
 
 
 def test_the_collector_takes_every_credential_and_no_identifier(tmp_path: Path) -> None:

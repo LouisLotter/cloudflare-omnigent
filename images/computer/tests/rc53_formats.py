@@ -45,7 +45,8 @@ def canary(label: str) -> str:
 
 
 def credential(label: str, shape: str = "plain") -> str:
-    """A synthetic credential in its real format: Anthropic, OpenAI, a JWT, or plain."""
+    """A synthetic credential in its real format (Anthropic, OpenAI, a JWT), or plain, or shaped to
+    defeat a collector that judges by the value (opaque, slash-prefixed)."""
     value = canary(label)
     if shape == "oat":
         return f"sk-ant-oat01-{value}"
@@ -55,6 +56,10 @@ def credential(label: str, shape: str = "plain") -> str:
         return f"sk-proj-{value}"
     if shape == "jwt":
         return f"eyJhbGciOiJSUzI1NiIsImtpZCI6InIifQ.eyJzdWIiOiJyYzUzIn0.{value}"
+    if shape == "opaque":  # no known format; starts with "-", holds "%" and "$" (quoted)
+        return f"-{value}%s$x"
+    if shape == "slash":  # base64 tokens may start with "/"
+        return f"/{value}+=="
     return value
 
 
@@ -113,7 +118,7 @@ def write() -> dict:
         handle._httpd.server_close()
 
     asyncio.run(relay())
-    provider_key = cred("anthropic_provider_key", "sk")
+    provider_key = cred("anthropic_provider_key", "opaque")
     subagent_routing.write_advertisement(
         bridge, url="http://127.0.0.1:41999", token=cred("turn_router"), filename="turn_router.json"
     )
@@ -187,7 +192,7 @@ def write() -> dict:
                         "serverUrl": "https://mcp.example.test/sse",
                         "clientId": "mcp-client-0199c3a47b2e7c1d",
                         "clientSecret": cred("claude_mcp_client_secret"),
-                        "accessToken": cred("claude_mcp_access"),
+                        "accessToken": cred("claude_mcp_access", "slash"),
                         "refreshToken": cred("claude_mcp_refresh"),
                         "expiresAt": 1793120000000,
                         "scope": "read write",
@@ -261,6 +266,7 @@ def write() -> dict:
         interactive_shells=["/bin/bash"],
     )
     runner_env["OMNIGENT_HOST_TOKEN"] = creds["launch"]
+    runner_env["AWS_SECRET_ACCESS_KEY"] = cred("aws_secret", "slash")
     runner_env["GPG_KEY"] = "7169605F62C751356D054A26A821E680E5FA6305"
     runner_env["SSH_AUTH_SOCK"] = "/tmp/ssh-XXXXq1w2e3/agent.4242"
     runner_env["PWD"] = str(workspace)
@@ -345,7 +351,7 @@ def templates(out: Path) -> None:
 
 
 def credential_shape(value: str) -> str:
-    for shape in ("oat", "ort", "sk", "jwt"):
+    for shape in ("oat", "ort", "sk", "jwt", "opaque", "slash"):
         probe = credential("x", shape)
         if value.startswith(probe[: probe.index(CANARY)]) and CANARY in value:
             return shape
