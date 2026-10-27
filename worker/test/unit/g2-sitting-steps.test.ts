@@ -317,9 +317,12 @@ describe("replace-1", () => {
     expect(JSON.stringify(server.logs)).not.toContain("SCRIPT RAN");
     expect(server.kept.get("rotate")).toMatchObject({ fingerprint: "fp-released" });
     expect(server.kept.has("before")).toBe(false);
-    // Nothing logged carries the password or a session.
+    // Nothing logged carries the password, a session or a configuration's fingerprint (a digest
+    // over the container's environment, secrets included).
     expect(JSON.stringify(server.logs)).not.toContain(PASSWORD);
     expect(JSON.stringify(server.logs)).not.toContain("token-k1");
+    expect(JSON.stringify(server.logs)).not.toContain("fp-released");
+    expect(JSON.stringify(done)).not.toContain("fp-released");
   });
 
   it("records a container that still runs the bootstrap's configuration", async () => {

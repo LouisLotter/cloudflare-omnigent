@@ -332,7 +332,9 @@ export function sharingManaged(answer: HttpAnswer): { managed: boolean; editable
  * Whether the running container was started with the released configuration: the watchdog's
  * record of its start equals what this object would start now, the object holds no bootstrap
  * password and `INITIALIZED=true`, and the entrypoint itself says it expects an initialized
- * installation. Fingerprints only; no value of any secret.
+ * installation. The comparison only: the fingerprints are digests over the container's
+ * environment, secrets included, which the platform stores and never logs (WP3.19, Codex r1),
+ * and this result goes into the logged step record.
  */
 export async function configCheck(ports: G2Ports) {
   const config = await ports.config();
@@ -340,8 +342,6 @@ export async function configCheck(ports: G2Ports) {
   const startedWithCurrent = config.startedWith !== null && config.startedWith === config.current;
   const released = !config.bootstrapPassword && config.initialized === "true";
   return {
-    startedWith: config.startedWith,
-    current: config.current,
     startedWithCurrent,
     released,
     entrypointExpectsInitialized: status?.installationInitializedExpected ?? null,
