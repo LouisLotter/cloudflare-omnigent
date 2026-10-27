@@ -16,10 +16,19 @@ function patterns(path: string): string[] {
     .filter((line) => line !== "" && !line.startsWith("#"));
 }
 
-/** The context paths a Dockerfile copies: `COPY <src>... <dest>` without `--from`. */
+/**
+ * The context paths a Dockerfile reads: `COPY <src>... <dest>` without `--from`, and each
+ * `RUN --mount=type=bind,source=<src>` without `from=` (the trust scripts, WP3.20).
+ */
 function copied(dockerfile: string): string[] {
   const sources: string[] = [];
   for (const line of readFileSync(join(ROOT, dockerfile), "utf8").split("\n")) {
+    for (const mount of line.matchAll(/--mount=(\S+)/g)) {
+      const options = mount[1]?.split(",") ?? [];
+      if (!options.includes("type=bind") || options.some((o) => o.startsWith("from="))) continue;
+      const source = options.find((o) => o.startsWith("source="));
+      if (source) sources.push(source.slice("source=".length));
+    }
     const match = /^COPY\s+(?!--from)(.+)$/.exec(line.trim());
     if (!match?.[1]) continue;
     const parts = match[1].split(/\s+/).filter((part) => !part.startsWith("--"));
@@ -62,7 +71,7 @@ describe("the root .dockerignore (Wrangler's stdin builds)", () => {
     expect(allowed).toContain("scripts/restore-drill/cfo_drill/");
   });
 
-  it("lets in every path a root-context Dockerfile copies", () => {
+  it("lets in every path a root-context Dockerfile copies or bind-mounts", () => {
     for (const dockerfile of [
       "images/server/Dockerfile",
       "images/computer/Dockerfile",

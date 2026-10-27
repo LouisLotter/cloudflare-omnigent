@@ -18,6 +18,8 @@
 !contracts/vectors/
 !python/tests/computer/
 !worker/test/fixtures/workspace-commands.json
+# Both images: the trust check and pip pin they bind-mount, and the computer's test stage.
+!images/trust/
 # The restore drill (scripts/restore-drill/staging/Dockerfile, which has no file of its own).
 !scripts/restore-drill/cfo_drill/
 **/__pycache__/
