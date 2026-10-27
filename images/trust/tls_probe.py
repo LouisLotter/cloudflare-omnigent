@@ -12,13 +12,17 @@ Certificate Services cross-sign). Every client must refuse both with a certifica
 network error or a timeout proves nothing, so it fails the probe. Good hosts must complete a
 handshake: any HTTP answer (a 4xx included) passes.
 
-``--control`` also runs every client against the forged hosts with the two forged roots added
-through the client's own CA-override variable. A client without a key denylist then connects,
-which shows that the probe reaches the client's real TLS path and that its refusal comes from
-trust, not the network. A client that still refuses carries its own denylist. Where a client
-does not print why it failed (Codex prints only "error sending request"), a refusal counts only
-when that control connects or the client's own log shows the TCP connection was made and no
-HTTP answer came back. Litestream prints its cause only after ten attempts, about two minutes.
+An answer from the server always counts as acceptance, whatever else the output says; only
+then is a certificate error looked for. A client that prints no cause (Codex says only "error
+sending request") passes only by a same-path differential: its log must show the TCP connection
+was made, and the same command, with the two forged roots added to the trust its own TLS stack
+reads, must get an HTTP answer. That control runs for such clients always.
+
+``--control`` runs every client against the forged hosts with the forged roots added through
+its own CA-override variable. A client without a key denylist then connects, which shows that
+the probe reaches the client's real TLS path and that its refusal comes from trust; a client
+that still refuses carries its own denylist. Litestream prints its cause only after ten
+attempts, about two minutes.
 
 No credentials are used. Clients that will not start without one get an obviously synthetic
 placeholder, which a server could only see after the TLS handshake succeeded.
@@ -45,6 +49,12 @@ FORGED_ROOTS = [
     HERE / "fixtures" / "emsign-ecc-root-ca-g3.pem",
     HERE / "fixtures" / "aaa-certificate-services.pem",
 ]
+# OpenSSL's subject hashes of the forged roots (`openssl x509 -subject_hash`), for a CA
+# directory: the control of a client whose CA override is a directory (SSL_CERT_DIR).
+FORGED_ROOT_HASHES = {
+    "emsign-ecc-root-ca-g3.pem": "14bc7599.0",
+    "aaa-certificate-services.pem": "ee64a828.0",
+}
 SYSTEM_BUNDLE = Path("/etc/ssl/certs/ca-certificates.crt")
 
 FORGED = {
@@ -142,7 +152,10 @@ class Client:
     env: Callable[[str, Path], dict[str, str]] = lambda url, home: {}
     ca_env: tuple[str, ...] = ("SSL_CERT_FILE",)
     timeout: float = 45.0
+    # Its control gets a CA directory (the forged roots by subject hash) instead of a bundle.
+    ca_dir: bool = False
     # (output, home) -> whether a failure was a TLS failure after a TCP connection was made.
+    # Such a refusal passes only when the same client's control got an HTTP answer.
     tls_failure: Callable[[str, Path], bool] | None = None
     read_logs: Callable[[Path], str] = lambda home: ""
 
@@ -171,10 +184,9 @@ def _codex_tls_failure(out: str, home: Path) -> bool:
     """The TCP connection was made, then the request failed before any HTTP answer.
 
     Codex's default client verifies with its vendored OpenSSL against the system bundle and
-    logs nothing about TLS; with a CA override (CODEX_CA_CERTIFICATE, SSL_CERT_FILE) it builds a
-    rustls client instead, whose trace shows the server's chain arriving. Either way, a chain
-    Codex accepted gets the server's HTTP answer ("device code request failed with status
-    405" from the forged hosts), which the acceptance pattern catches first.
+    logs nothing about TLS. Its control adds the forged roots through SSL_CERT_DIR, which that
+    OpenSSL reads, so the control stays on the same TLS path (SSL_CERT_FILE or
+    CODEX_CA_CERTIFICATE would switch Codex to a rustls client instead).
     """
     return "error sending request" in out and bool(
         re.search(r"connected to [0-9a-f.:\[\]]+:443", out)
@@ -206,6 +218,41 @@ def _claude_logs(home: Path) -> str:
         return ""
     keep = ("Connection error details", "API error")
     return "\n".join(line for line in lines if any(k in line for k in keep))
+
+
+PIP_ARGS = [
+    "download",
+    "--no-deps",
+    "--no-cache-dir",
+    "--disable-pip-version-check",
+    "--no-input",
+    "-vvv",  # urllib3's status lines: the only evidence of an answer pip prints
+    "--retries",
+    "0",
+    "--timeout",
+    "15",
+]
+# An HTTP status line from urllib3, or the forged page skipped for its content type. pip's own
+# "Could not find a version" ends DNS, connection and certificate failures alike.
+PIP_ACCEPT = re.compile(
+    r'"(GET|HEAD) [^"]* HTTP/1\.[01]" [1-5]\d\d|Skipping page \S+ because the GET request got'
+)
+# sh -c NEW_VENV_PIP sh <python> <venv> <pip arguments...>
+NEW_VENV_PIP = (
+    'py=$1 venv=$2; shift 2; "$py" -I -m venv "$venv" && exec "$venv/bin/python" -I -m pip "$@"'
+)
+
+
+def _pip_argv(pip: list[str], url: str, home: Path) -> list[str]:
+    return [
+        *pip,
+        *PIP_ARGS,
+        "-d",
+        str(home / "dl"),
+        "--index-url",
+        _origin(url) + "/simple/",
+        "cfo-tls-probe",
+    ]
 
 
 def _litestream_argv(url: str, home: Path) -> list[str]:
@@ -263,30 +310,23 @@ def discover() -> list[Client]:
                 ca_env=ca_vars.get(name, ("SSL_CERT_FILE",)),
             )
         )
-    for label, pip in (("pip-venv", "/opt/venv/bin/pip"), ("pip-system", "/usr/local/bin/pip")):
-        if Path(pip).exists():
+    pips = {
+        "pip-venv": ["/opt/venv/bin/pip"],
+        "pip-system": ["/usr/local/bin/pip"],
+        # A virtual environment made now: its pip comes from ensurepip's bundled wheel.
+        "pip-new-venv": ["/bin/sh", "-c", NEW_VENV_PIP, "sh", system_python, "{venv}"],
+    }
+    for label, pip in pips.items():
+        if Path(pip[0]).exists():
             clients.append(
                 Client(
                     label,
-                    lambda url, home, p=pip: [
-                        p,
-                        "download",
-                        "--no-deps",
-                        "--no-cache-dir",
-                        "--disable-pip-version-check",
-                        "--no-input",
-                        "--retries",
-                        "0",
-                        "--timeout",
-                        "15",
-                        "-d",
-                        str(home / "dl"),
-                        "--index-url",
-                        _origin(url) + "/simple/",
-                        "cfo-tls-probe",
-                    ],
-                    re.compile(r"Could not find a version|Skipping page|40[13] Error"),
+                    lambda url, home, p=pip: _pip_argv(
+                        [a.replace("{venv}", str(home / "venv")) for a in p], url, home
+                    ),
+                    PIP_ACCEPT,
                     ca_env=("PIP_CERT",),
+                    timeout=60.0,
                 )
             )
     if shutil.which("node"):
@@ -313,7 +353,7 @@ def discover() -> list[Client]:
                 ],
                 re.compile(
                     r"not found|could not read Username|returned error: \d{3}|HTTP \d{3}"
-                    r"|Authentication failed|unexpected http|RPC failed"
+                    r"|Authentication failed|unexpected http"
                     r"|not valid: is this a git repository",
                     re.I,
                 ),
@@ -360,8 +400,10 @@ def discover() -> list[Client]:
                 ),
                 env=lambda url, home: {
                     "CODEX_HOME": str(home / ".codex"),
-                    "RUST_LOG": "warn,hyper_util=debug,reqwest=debug,rustls=trace",
+                    "RUST_LOG": "warn,hyper_util=debug,reqwest=debug",
                 },
+                ca_env=("SSL_CERT_DIR",),
+                ca_dir=True,
                 tls_failure=_codex_tls_failure,
                 read_logs=_codex_logs,
                 timeout=40.0,
@@ -380,7 +422,7 @@ def discover() -> list[Client]:
                     "--debug",
                 ],
                 re.compile(
-                    r"API Error: \d{3}|Invalid API key|API Error: .*status"
+                    r"API Error: \d{3}|Invalid API key"
                     r"|API error \(attempt \d+/\d+\): [1-5]\d\d",
                     re.I,
                 ),
@@ -411,14 +453,15 @@ def discover() -> list[Client]:
 
 
 def classify(client: Client, out: str, home: Path, timed_out: bool) -> tuple[str, str]:
+    """An answer from the server first: it proves the handshake, whatever else was printed."""
     lines = [line for line in out.splitlines() if line.strip()]
-    if CERT_RE.search(out) and not NETWORK_RE.search(out):
-        hit = next((line for line in lines if CERT_RE.search(line)), "")
-        return REFUSED_CERT, hit.strip()[:240]
     for pattern in (CONNECTED_RE, client.accept):
         hit = next((line for line in lines if pattern.search(line)), "")
         if hit:
             return ACCEPTED, hit.strip()[:240]
+    if CERT_RE.search(out) and not NETWORK_RE.search(out):
+        hit = next((line for line in lines if CERT_RE.search(line)), "")
+        return REFUSED_CERT, hit.strip()[:240]
     if client.tls_failure and client.tls_failure(out, home):
         chain = "; rustls received the chain" if "Server cert is" in out else ""
         return REFUSED_TLS, f"TCP connected{chain}, then no HTTP answer (no cause printed)"
@@ -426,17 +469,17 @@ def classify(client: Client, out: str, home: Path, timed_out: bool) -> tuple[str
     return ERROR, ("timeout; " if timed_out else "") + tail
 
 
-def run_one(client: Client, host: str, url: str, ca_bundle: Path | None) -> Result:
+def run_one(client: Client, host: str, url: str, trust: dict[str, Path] | None) -> Result:
     """One run, and one more when the first ends in an unclassified error (a reset, say)."""
-    result = _run_once(client, host, url, ca_bundle)
+    result = _run_once(client, host, url, trust)
     if result.outcome == ERROR:
         first = result.detail
-        result = _run_once(client, host, url, ca_bundle)
+        result = _run_once(client, host, url, trust)
         result.extra["first_attempt"] = first
     return result
 
 
-def _run_once(client: Client, host: str, url: str, ca_bundle: Path | None) -> Result:
+def _run_once(client: Client, host: str, url: str, trust: dict[str, Path] | None) -> Result:
     with tempfile.TemporaryDirectory(prefix="tls-probe-") as tmp:
         home = Path(tmp)
         env = {
@@ -446,8 +489,9 @@ def _run_once(client: Client, host: str, url: str, ca_bundle: Path | None) -> Re
             "NO_COLOR": "1",
         }
         env.update(client.env(url, home))
-        if ca_bundle is not None:
-            env.update({name: str(ca_bundle) for name in client.ca_env})
+        if trust is not None:
+            source = trust["dir" if client.ca_dir else "bundle"]
+            env.update({name: str(source) for name in client.ca_env})
         try:
             proc = subprocess.run(
                 client.argv(url, home),
@@ -469,14 +513,20 @@ def _run_once(client: Client, host: str, url: str, ca_bundle: Path | None) -> Re
             timed_out = True
         out += "\n" + client.read_logs(home)
         outcome, detail = classify(client, out, home, timed_out)
-        return Result(client.name, host, "control" if ca_bundle else "default", outcome, detail)
+        return Result(client.name, host, "control" if trust else "default", outcome, detail)
 
 
-def control_bundle(directory: Path) -> Path:
-    path = directory / "with-forged-roots.pem"
+def control_trust(directory: Path) -> dict[str, Path]:
+    """The system bundle plus the forged roots, as a file; the forged roots alone, as a CA
+    directory (OpenSSL reads it besides the default bundle)."""
+    bundle = directory / "with-forged-roots.pem"
     parts = [SYSTEM_BUNDLE.read_text()] + [p.read_text() for p in FORGED_ROOTS]
-    path.write_text("\n".join(parts))
-    return path
+    bundle.write_text("\n".join(parts))
+    hashed = directory / "forged-roots"
+    hashed.mkdir()
+    for root in FORGED_ROOTS:
+        (hashed / FORGED_ROOT_HASHES[root.name]).write_text(root.read_text())
+    return {"bundle": bundle, "dir": hashed}
 
 
 def versions() -> dict[str, str]:
@@ -516,7 +566,12 @@ def versions() -> dict[str, str]:
 
 
 def evaluate(results: list[Result]) -> list[str]:
-    """Failures: a forged host not refused for trust, or a good host without a handshake."""
+    """Failures: a forged host not refused for trust, or a good host without a handshake.
+
+    A certificate error passes. A TLS failure with no cause printed passes only when the same
+    client's control (the forged roots trusted, same TLS path) got an HTTP answer; anything
+    else, a network error or a timeout included, fails.
+    """
     control = {(r.client, r.host): r for r in results if r.mode == "control"}
     failures = []
     for r in results:
@@ -526,15 +581,33 @@ def evaluate(results: list[Result]) -> list[str]:
             if r.outcome == REFUSED_CERT:
                 continue
             ctl = control.get((r.client, r.host))
-            if r.outcome == REFUSED_TLS:
+            if r.outcome == REFUSED_TLS and ctl is not None and ctl.outcome == ACCEPTED:
+                r.extra["refusal"] = "same-path differential: answered once the roots were trusted"
                 continue
-            if r.outcome == ERROR and ctl is not None and ctl.outcome == ACCEPTED:
-                r.extra["refusal"] = "by differential: the control connected"
+            if r.outcome == REFUSED_TLS:
+                failures.append(
+                    f"{r.client} {r.host}: inconclusive, no certificate evidence "
+                    f"({r.detail}; control: {ctl.outcome if ctl else 'not run'})"
+                )
                 continue
             failures.append(f"{r.client} {r.host}: {r.outcome} ({r.detail})")
         elif r.outcome != ACCEPTED:
             failures.append(f"{r.client} {r.host}: {r.outcome} ({r.detail})")
     return failures
+
+
+def redact(results: list[Result], extra_good: dict[str, str]) -> None:
+    """A host given with --good appears in the results by its NAME only."""
+    hosts = {urlsplit(url).hostname: name for name, url in extra_good.items()}
+    for r in results:
+        for host, name in hosts.items():
+            if not host:
+                continue
+            r.detail = r.detail.replace(host, f"<{name}>")
+            r.extra = {
+                k: v.replace(host, f"<{name}>") if isinstance(v, str) else v
+                for k, v in r.extra.items()
+            }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -562,12 +635,18 @@ def main(argv: list[str] | None = None) -> int:
         good[name] = url
     clients = [c for c in discover() if not args.only or c.name in args.only]
     with tempfile.TemporaryDirectory(prefix="tls-probe-ca-") as tmp:
-        bundle = control_bundle(Path(tmp)) if args.control else None
+        trust = control_trust(Path(tmp))
         jobs = [(c, h, u, None) for c in clients for h, u in {**FORGED, **good}.items()]
-        if bundle is not None:
-            jobs += [(c, h, u, bundle) for c in clients for h, u in FORGED.items()]
+        # The control: for every client with --control, always for one that prints no cause.
+        jobs += [
+            (c, h, u, trust)
+            for c in clients
+            if args.control or c.tls_failure is not None
+            for h, u in FORGED.items()
+        ]
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda job: run_one(*job), jobs))
+    redact(results, {n: u for n, u in good.items() if n not in GOOD})
     failures = evaluate(results)
     order = {h: i for i, h in enumerate([*FORGED, *good])}
     results.sort(key=lambda r: (r.mode != "default", r.client, order.get(r.host, 99)))

@@ -38,6 +38,8 @@ ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
 ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+# uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
+ARG UV_PIN="uv==0.12.10 --hash=sha256:f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c --hash=sha256:a34e1be296e6e30fdbfee9b84a45d082ce7df4dd4e588ebcfc44249505c10f02"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -58,7 +60,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir uv==0.12.10
+ARG UV_PIN
+RUN printf '%s\n' "${UV_PIN}" > /tmp/uv-pin.txt \
+ && pip install --no-cache-dir --no-deps --require-hashes -r /tmp/uv-pin.txt
 WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's images are built: review these stages against its `host` target, then update it.
@@ -104,12 +108,11 @@ RUN apt-get update \
       git tmux procps lsof bubblewrap curl ca-certificates unzip \
       tini iproute2 sudo util-linux \
  && rm -rf /var/lib/apt/lists/*
-# The image's own pip (agents run it too) at the fixed release, as in the builder stage.
+# The image's own pip (agents run it too) at the fixed release, as in the builder stage, and
+# the wheel ensurepip seeds into every new virtual environment (images/trust/pin_pip.sh).
 ARG PIP_PIN
-RUN printf '%s\n' "${PIP_PIN}" > /tmp/pip-pin.txt \
- && /usr/local/bin/python3 -I -m pip install --no-cache-dir --disable-pip-version-check \
-      --require-hashes -r /tmp/pip-pin.txt \
- && rm /tmp/pip-pin.txt
+RUN --mount=type=bind,source=images/trust/pin_pip.sh,target=/tmp/pin_pip.sh \
+    sh /tmp/pin_pip.sh "${PIP_PIN}"
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -124,11 +127,22 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # Sign-in commands, status output, login-file paths and write patterns are as before; Codex
 # 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
 # Nothing of the build's home is kept.
+# The installed trees are checked against digests recorded from two independent fresh builds
+# (every file's path and SHA-256, the native binaries included), so a different artifact fails
+# the build. After a version bump, take the new values from the failing build's message.
 ARG CLAUDE_CODE_VERSION=2.1.311
 ARG CODEX_VERSION=0.164.0
+ARG CLAUDE_CODE_TREE_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
+ARG CODEX_TREE_SHA256=6aa96e445074fc22662979ee4db20c58c71f63b7c56e12f02c2d11cb11b09170
 RUN npm install -g --no-audit --no-fund --registry=https://registry.npmjs.org/ \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
+ && cd /usr/local/lib/node_modules \
+ && for pkg in "@anthropic-ai/claude-code=${CLAUDE_CODE_TREE_SHA256}" "@openai/codex=${CODEX_TREE_SHA256}"; do \
+      tree=$(find "${pkg%%=*}" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); \
+      [ "${tree}" = "${pkg#*=}" ] || { echo "${pkg%%=*}: installed tree ${tree}, expected ${pkg#*=}" >&2; exit 1; }; \
+    done \
+ && cd / \
  && test "$(claude --version | cut -d' ' -f1)" = "${CLAUDE_CODE_VERSION}" \
  && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
  && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*

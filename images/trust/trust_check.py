@@ -22,7 +22,8 @@ the bundle they are given is their whole defence.
         --scan /opt/venv --scan /usr/local/lib/python3.12 [--except <a bundle proven unused>]
 
 ``--scan`` checks every ``cacert.pem`` below a directory: the bundles Python packages vendor
-(certifi's, and pip's own copy of certifi, which pip adds to the system store).
+(certifi's, and pip's own copy of certifi, which pip adds to the system store), including those
+inside wheels (``ensurepip`` seeds every new virtual environment from its bundled pip wheel).
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import hashlib
 import re
 import subprocess
 import sys
+import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,9 +128,22 @@ def parse_cert(der: bytes) -> Cert:
     )
 
 
-def bundle_certs(path: Path) -> list[Cert]:
+# A bundle: a file, or a member of a wheel (zip) as "<wheel>!<member>".
+WHEEL_SEP = "!"
+
+
+def _read(spec: Path | str) -> bytes:
+    text = str(spec)
+    if text.endswith(".pem") and WHEEL_SEP in text and ".whl" + WHEEL_SEP in text:
+        wheel, _, member = text.partition(".whl" + WHEEL_SEP)
+        with zipfile.ZipFile(wheel + ".whl") as zf:
+            return zf.read(member)
+    return Path(spec).read_bytes()
+
+
+def bundle_certs(path: Path | str) -> list[Cert]:
     """Every certificate in a PEM bundle. A bundle with none is an error, not a pass."""
-    blocks = _PEM.findall(path.read_bytes())
+    blocks = _PEM.findall(_read(path))
     if not blocks:
         raise TrustCheckError(f"{path}: no certificates found")
     return [parse_cert(base64.b64decode(b"".join(block.split()))) for block in blocks]
@@ -147,7 +162,7 @@ def forbidden_in(certs: list[Cert]) -> list[str]:
     return found
 
 
-def check_bundle(path: Path) -> int:
+def check_bundle(path: Path | str) -> int:
     certs = bundle_certs(path)
     found = forbidden_in(certs)
     if found:
@@ -184,8 +199,9 @@ def check_ca_certificates(
     return version
 
 
-def scanned_bundles(roots: list[Path], skip: list[Path]) -> list[Path]:
-    """Every cacert.pem below the roots, except the named ones (each must exist)."""
+def scanned_bundles(roots: list[Path], skip: list[Path]) -> list[Path | str]:
+    """Every cacert.pem below the roots, also inside wheels, except the named files (each must
+    exist)."""
     skipped = set()
     for path in skip:
         if not path.is_file():
@@ -200,6 +216,15 @@ def scanned_bundles(roots: list[Path], skip: list[Path]) -> list[Path]:
             for p in sorted(root.rglob("cacert.pem"))
             if p.is_file() and p.resolve() not in skipped
         ]
+        for wheel in sorted(root.rglob("*.whl")):
+            if not wheel.is_file() or wheel.resolve() in skipped:
+                continue
+            try:
+                with zipfile.ZipFile(wheel) as zf:
+                    members = [n for n in zf.namelist() if n.rsplit("/", 1)[-1] == "cacert.pem"]
+            except zipfile.BadZipFile as exc:
+                raise TrustCheckError(f"{wheel}: not a readable wheel ({exc})") from exc
+            found += [f"{wheel}{WHEEL_SEP}{member}" for member in members]
     return found
 
 

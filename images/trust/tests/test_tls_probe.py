@@ -71,15 +71,45 @@ def test_a_network_error_is_not_a_refusal() -> None:
         (r"^HTTP \d{3}", "HTTP 200"),  # httpx with certifi 2026.5.20 on the emSign host
         (r"API Error: \d{3}", "API Error: 405 only GET, HEAD and OPTIONS"),  # Claude 2.1.302
         (
-            r"Could not find a version|Skipping page",
+            tls_probe.PIP_ACCEPT.pattern,
             "WARNING: Skipping page https://x/simple/p/ because the GET request got Content-Type:"
             " text/plain",
         ),  # pip 25.0.1
+        (tls_probe.PIP_ACCEPT.pattern, 'https://github.com:443 "GET /simple/p/ HTTP/1.1" 404 None'),
         (r"HTTP \d{3}", "Your client successfully connected to the site. That's bad!"),  # gh body
     ],
 )
 def test_an_answer_from_the_server_means_the_chain_was_accepted(accept: str, out: str) -> None:
     assert tls_probe.classify(_client(accept=accept), out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        # The forged page's text with certificate words around it (a body, a retry log).
+        "Your client successfully connected to the site. That's bad!\ncertificate revoked",
+        "HTTP 200\n[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed (first attempt)",
+    ],
+)
+def test_an_answer_wins_over_certificate_text(out: str) -> None:
+    assert tls_probe.classify(_client(), out, HOME, False)[0] == tls_probe.ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        "Could not fetch URL https://x/simple/p/: connection error: Failed to resolve IP address"
+        " for 'x' ([Errno -2] Name or service not known) - skipping\nERROR: Could not find a"
+        " version that satisfies the requirement p (from versions: none)",
+        "Could not fetch URL https://x/simple/p/: connection error: ('Connection aborted.',"
+        " ConnectionResetError(104, 'Connection reset by peer')) - skipping\nERROR: Could not"
+        " find a version that satisfies the requirement p (from versions: none)",
+        "ERROR: Could not find a version that satisfies the requirement p (from versions: none)",
+    ],
+)
+def test_pips_no_version_message_is_not_an_answer(out: str) -> None:
+    pip = _client("pip-venv", accept=tls_probe.PIP_ACCEPT.pattern)
+    assert tls_probe.classify(pip, out, HOME, False)[0] == tls_probe.ERROR
 
 
 def test_a_reset_or_a_timeout_is_an_error() -> None:
@@ -126,17 +156,47 @@ def test_evaluate_fails_an_accepted_forged_host_and_an_unverified_good_host() ->
     assert [f.split(":")[0] for f in failures] == ["httpx forged-emsign-g3", "httpx github.com"]
 
 
-def test_evaluate_accepts_an_unexplained_refusal_only_when_the_control_connected() -> None:
-    unexplained = _r("litestream", "forged-aaa", tls_probe.ERROR)
-    control = _r("litestream", "forged-aaa", tls_probe.ACCEPTED, mode="control")
-    assert tls_probe.evaluate([unexplained, control]) == []
-    assert unexplained.extra["refusal"].startswith("by differential")
-    still_refused = _r("litestream", "forged-aaa", tls_probe.REFUSED_CERT, mode="control")
-    assert (
-        len(tls_probe.evaluate([_r("litestream", "forged-aaa", tls_probe.ERROR), still_refused]))
-        == 1
-    )
-    assert tls_probe.evaluate([_r("codex", "forged-aaa", tls_probe.REFUSED_TLS)]) == []
+def test_a_refusal_without_a_cause_passes_only_by_the_same_path_control() -> None:
+    def run(control_outcome: str | None) -> list[str]:
+        results = [_r("codex", "forged-aaa", tls_probe.REFUSED_TLS)]
+        if control_outcome:
+            results.append(_r("codex", "forged-aaa", control_outcome, mode="control"))
+        return tls_probe.evaluate(results)
+
+    assert run(tls_probe.ACCEPTED) == []
+    for control_outcome in (None, tls_probe.REFUSED_TLS, tls_probe.ERROR):
+        (failure,) = run(control_outcome)
+        assert "inconclusive" in failure
+
+
+def test_an_error_fails_even_when_the_control_connected() -> None:
+    """A network error, a reset or a timeout is never a refusal, whatever the control did."""
+    results = [
+        _r("litestream", "forged-aaa", tls_probe.ERROR),
+        _r("litestream", "forged-aaa", tls_probe.ACCEPTED, mode="control"),
+    ]
+    assert len(tls_probe.evaluate(results)) == 1
+
+
+def test_a_good_host_given_by_name_is_redacted_everywhere() -> None:
+    r = _r("git", "r2-s3-api", tls_probe.ACCEPTED)
+    r.detail = "fatal: unable to access 'https://0123abcd.r2.example.com/x.git/': error: 400"
+    r.extra["first_attempt"] = "Could not resolve host: 0123abcd.r2.example.com"
+    tls_probe.redact([r], {"r2-s3-api": "https://0123abcd.r2.example.com/"})
+    assert "0123abcd" not in r.detail + str(r.extra)
+    assert "<r2-s3-api>" in r.detail and "<r2-s3-api>" in r.extra["first_attempt"]
+
+
+def test_the_control_trust_holds_the_forged_roots(tmp_path: Path) -> None:
+    if not tls_probe.SYSTEM_BUNDLE.exists():
+        pytest.skip("needs the system bundle")
+    trust = tls_probe.control_trust(tmp_path)
+    text = trust["bundle"].read_text()
+    for root in tls_probe.FORGED_ROOTS:
+        assert root.read_text().strip() in text
+        assert (trust["dir"] / tls_probe.FORGED_ROOT_HASHES[root.name]).read_text() == (
+            root.read_text()
+        )
 
 
 def test_the_probe_uses_no_credential() -> None:

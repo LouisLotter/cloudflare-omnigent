@@ -90,6 +90,26 @@ def test_scan_checks_every_vendored_bundle_except_the_named_one(tmp_path: Path) 
     assert trust_check.main(["--scan", root, "--except", str(fallback)]) == 1
 
 
+def test_scan_reads_bundles_inside_wheels(tmp_path: Path) -> None:
+    """ensurepip seeds every new virtual environment from a bundled pip wheel."""
+    import zipfile
+
+    bundled = tmp_path / "ensurepip" / "_bundled"
+    bundled.mkdir(parents=True)
+    wheel = bundled / "pip-25.0.1-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("pip/_vendor/certifi/cacert.pem", G3.read_text() + CLEAN.read_text())
+        zf.writestr("pip/__init__.py", "")
+    found = trust_check.scanned_bundles([tmp_path], [])
+    assert found == [f"{wheel}!pip/_vendor/certifi/cacert.pem"]
+    assert trust_check.main(["--scan", str(tmp_path)]) == 1
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("pip/_vendor/certifi/cacert.pem", CLEAN.read_text())
+    assert trust_check.main(["--scan", str(tmp_path)]) == 0
+    (bundled / "broken.whl").write_text("not a zip")
+    assert trust_check.main(["--scan", str(tmp_path)]) == 1
+
+
 def test_an_exception_must_name_a_real_bundle(tmp_path: Path) -> None:
     assert trust_check.main(["--scan", str(tmp_path), "--except", str(tmp_path / "gone.pem")]) == 1
     assert trust_check.main(["--scan", str(tmp_path / "not-a-dir")]) == 1
@@ -174,13 +194,20 @@ def test_this_images_bundles_pass() -> None:
     assert trust_check.main(argv) == 0
 
 
+def _pip_version(*argv: str) -> tuple[int, ...]:
+    out = subprocess.run([*argv, "--version"], capture_output=True, text=True, check=True)
+    return tuple(int(x) for x in out.stdout.split()[1].split(".")[:3])
+
+
 @pytest.mark.skipif(not IN_IMAGE, reason="runs inside a server or computer image")
-def test_this_images_pips_are_fixed() -> None:
-    """pip before 26.2.2 vendors a certifi that trusts both roots."""
-    for pip in ("/opt/venv/bin/pip", "/usr/local/bin/pip"):
-        out = subprocess.run([pip, "--version"], capture_output=True, text=True, check=True)
-        major, minor, patch = (int(x) for x in out.stdout.split()[1].split(".")[:3])
-        assert (major, minor, patch) >= (26, 2, 2), out.stdout
+def test_this_images_pips_are_fixed(tmp_path: Path) -> None:
+    """pip before 26.2.2 vendors a certifi that trusts both roots: the venv's, the system
+    Python's, and the one ensurepip seeds into every new virtual environment."""
+    assert _pip_version("/opt/venv/bin/pip") >= (26, 2, 2)
+    assert _pip_version("/usr/local/bin/pip") >= (26, 2, 2)
+    venv = tmp_path / "venv"
+    subprocess.run(["/usr/local/bin/python3", "-I", "-m", "venv", str(venv)], check=True)
+    assert _pip_version(str(venv / "bin" / "python"), "-I", "-m", "pip") >= (26, 2, 2)
 
 
 @pytest.mark.skipif(not IN_IMAGE, reason="runs inside a server or computer image")

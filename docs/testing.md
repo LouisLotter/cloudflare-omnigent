@@ -135,7 +135,7 @@ docker run --rm -v "$PWD/images/trust:/opt/trust:ro" --entrypoint /usr/local/bin
   cfo-server:local-runtime -I /opt/trust/tls_probe.py --control
 ```
 
-A forged host passes only when the client refuses it with a certificate error: a network error, a reset or a timeout fails. `--control` reruns the forged hosts with the two roots added through each client's own CA variable. Clients without a key denylist then connect, which shows the probe reached their real TLS path. `--good NAME=URL` adds another endpoint, such as an account's R2 S3 endpoint, which the results name by `NAME` only. Litestream reports its refusal after ten attempts, about two minutes.
+Any answer from the server counts as acceptance, whatever else the client printed. A forged host passes only when the client refuses it with a certificate error: a network error, a reset or a timeout fails. A client that prints no cause (Codex) passes only by a same-path differential: its log shows the TCP connection was made, and the same command, with the two roots added to the trust its own TLS stack reads, gets an HTTP answer. That control always runs for such a client. `--control` reruns every client against the forged hosts with the two roots added through its own CA variable. Clients without a key denylist then connect, which shows the probe reached their real TLS path. `--good NAME=URL` adds another endpoint, such as an account's R2 S3 endpoint; the results show it, in every message, as `<NAME>`. Litestream reports its refusal after ten attempts, about two minutes.
 
 ## Existing CI and remaining qualification
 

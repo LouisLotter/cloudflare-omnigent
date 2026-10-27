@@ -38,6 +38,8 @@ ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10feca
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
 ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+# uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
+ARG UV_PIN="uv==0.12.10 --hash=sha256:f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c --hash=sha256:a34e1be296e6e30fdbfee9b84a45d082ce7df4dd4e588ebcfc44249505c10f02"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -68,7 +70,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir uv==0.12.10
+ARG UV_PIN
+RUN printf '%s\n' "${UV_PIN}" > /tmp/uv-pin.txt \
+ && pip install --no-cache-dir --no-deps --require-hashes -r /tmp/uv-pin.txt
 WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's image is built: review these stages against it, then update the digest.
@@ -126,11 +130,10 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates sqlite3 \
  && rm -rf /var/lib/apt/lists/*
+# The image's own pip at the fixed release, and ensurepip's wheel (images/trust/pin_pip.sh).
 ARG PIP_PIN
-RUN printf '%s\n' "${PIP_PIN}" > /tmp/pip-pin.txt \
- && /usr/local/bin/python3 -I -m pip install --no-cache-dir --disable-pip-version-check \
-      --require-hashes -r /tmp/pip-pin.txt \
- && rm /tmp/pip-pin.txt
+RUN --mount=type=bind,source=images/trust/pin_pip.sh,target=/tmp/pin_pip.sh \
+    sh /tmp/pin_pip.sh "${PIP_PIN}"
 COPY --from=builder /opt/venv /opt/venv
 # Certificate trust (images/trust/trust_check.py): fail the build unless Debian's
 # ca-certificates has dropped both roots of the eMudhra key compromise and no bundle still
@@ -202,8 +205,10 @@ CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "trust/t
 FROM builder AS fork-test-requirements
 # The test group, plus asgiref at its locked version (the Stop-over-tunnel test drives the app
 # with its ApplicationCommunicator; the fork's own environment has it through OpenTelemetry).
+# certifi stays at the runtime's trust pin: the lock's (2026.5.20) would replace it here.
 RUN uv export --frozen --only-group test --no-emit-project --no-emit-workspace --no-hashes \
       -o /tmp/fork-test-requirements.txt \
+ && sed -i '/^certifi==/d' /tmp/fork-test-requirements.txt \
  && python -c 'import tomllib; lock = tomllib.load(open("uv.lock", "rb")); print(*(f"{p["name"]}=={p["version"]}" for p in lock["package"] if p["name"] == "asgiref"))' \
       | grep -E '^asgiref==' >> /tmp/fork-test-requirements.txt
 
