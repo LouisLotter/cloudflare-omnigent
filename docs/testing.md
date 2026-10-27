@@ -122,6 +122,21 @@ CFO_IT_IMAGE=cfo-computer:dev uv run --no-project --with pytest==9.1.1 pytest -p
 
 `--privileged` is only for the local cgroup case; never mount host directories or credentials. The container tests create and remove their own `cfo-wp34-it-*`/`cfo-wp34-rt-*` containers and networks. Every computer container there runs under a 64-character hostname, as a Cloudflare `durable_object` container does (its Durable Object ID); a stock Python `http.server` cannot bind under it, because `socket.getfqdn()` raises. These are local qualifications of the source and the built image, not of Cloudflare: the real container disk, cgroupfs and capabilities, R2 through the platform's gateway, WorkspaceDO and real sign-ins remain staging work. [`images/computer/tools/rc53_scan.py`](../images/computer/tools/rc53_scan.py) scans staged layers, restored trees or `tar+zstd` layer archives for planted tokens in every encoded form, with per-layer controls; use it on layers downloaded from a staging bucket.
 
+## Certificate trust checks
+
+Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.
+
+The network probe is opt-in. It needs outbound HTTPS, uses no credentials, and runs every TLS client found in a built image against hosts serving the forged chains of the October 2026 eMudhra compromise and against GitHub, Anthropic, OpenAI and R2:
+
+```bash
+docker run --rm -v "$PWD/images/trust:/opt/trust:ro" --entrypoint /usr/local/bin/python3 \
+  cfo-computer:dev -I /opt/trust/tls_probe.py --control
+docker run --rm -v "$PWD/images/trust:/opt/trust:ro" --entrypoint /usr/local/bin/python3 \
+  cfo-server:local-runtime -I /opt/trust/tls_probe.py --control
+```
+
+A forged host passes only when the client refuses it with a certificate error: a network error, a reset or a timeout fails. `--control` reruns the forged hosts with the two roots added through each client's own CA variable. Clients without a key denylist then connect, which shows the probe reached their real TLS path. `--good NAME=URL` adds another endpoint, such as an account's R2 S3 endpoint, which the results name by `NAME` only. Litestream reports its refusal after ten attempts, about two minutes.
+
 ## Existing CI and remaining qualification
 
 Current [CI](../.github/workflows/ci.yml) runs Node checks/coverage/schema drift, the root Python project, selected source canary scans, both Worker bundles and their canary scans, plus the existing server/test image builds and isolated image unit/in-process suite. It uses ordinary pull requests, read-only repository permissions and pinned actions, with no registry push or deployment. The 45-minute image-job cap is an initial budget; a cached local run does not establish hosted cold-build duration.

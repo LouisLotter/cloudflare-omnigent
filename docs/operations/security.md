@@ -32,6 +32,16 @@ The following is the accepted response sequence, not an implemented one-command 
 
 Do not restore potentially compromised instructions/configuration blindly. Restore and account cleanup have different purposes. The full account-generation/recovery workflow is still an integration obligation; do not invent routes or bypass private controls when a required operator action is unavailable.
 
+## Distrusted certificate authorities
+
+A client that still trusts a compromised certificate authority can be shown a forged certificate for any host, including the provider, GitHub and storage endpoints that carry login and storage credentials. The images keep trust current this way:
+
+1. **Know each trust store.** Debian's `ca-certificates` comes from the base image digest and the image's own install. certifi comes from the fork's lock, under the image's hash-pinned override, and pip vendors its own certifi. Node, Claude Code and Codex carry bundled roots or key denylists. Go programs (gh, Litestream) use the system bundle and get a denylist only from a newer Go toolchain.
+2. **Fail the build on a stale store.** Add the distrusted root (subject name and public-key hash) and the first fixed `ca-certificates` release to [the trust check](../../images/trust/trust_check.py). A cached or stale layer then fails the build rather than shipping.
+3. **Move the pins.** Update the base digest or rely on the image's `ca-certificates` install, then the certifi and pip pins and the CLIs. Build with fresh bases and no cache, run the image suites and, where test hosts exist, [the network probe](../testing.md#certificate-trust-checks).
+4. **Replace running containers.** A running container keeps the image it started with, so stop running servers and computers and let them start on the refreshed image. Anything installed in a workspace, such as a project's own virtual environment with its own certifi, is outside the image and travels with checkpoints. Tell the person.
+5. **Assess exposure.** If credentials may have crossed a forged connection, follow the compromise response above.
+
 ## Preserve approval and identity controls
 
 The implemented fork delegation checks refuse approval answers, policy edits/deletes, default-policy creation, replacement of a session's agent and account/credential administration. The accepted platform design additionally requires the private computer route to restrict sharing mutations, protected administrative/approval paths and another computer's identity; that production route is not yet implemented. A recorded human verdict binds a permitted runner MCP retry to its exact call and is consumed once.
