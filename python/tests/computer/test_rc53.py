@@ -551,6 +551,61 @@ def test_opaque_credentials_are_collected_whatever_they_start_with(tmp_path: Pat
     assert code == 1 and len({f["file"] for f in report["findings"]}) == len(keys), report
 
 
+HELPERS = [
+    "printf %s {q}",
+    "printf -- '%s' {q}",
+    'printf %s "{k}$"',
+    "printf '{k}%%tail'",
+    "printf '{k}\\141'",
+    "printf '%s\\n' {q}",
+    "printf '%s%s' {q} tail",
+    "printf '%s-%s' {q}",
+    "printf %b '{k}\\x41'",
+    "echo {q}",
+    "echo -n {q}",
+    'echo "{k}$"',
+    "K=1 printf %s {q}",
+]
+
+
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_helper_is_collected_as_sh_prints_it(helper: str) -> None:
+    """Codex WP3.22 r2, findings 1 and 2: what a credential helper prints, judged against
+    ``/bin/sh`` itself: a literal ``$``, ``%%`` and escapes in a format, ``%b``, a reused
+    format, echo. The output (without its final newline) is collected, so the scanner finds the
+    credential however it was written."""
+    import shlex
+
+    from cfo_computer import rc53_collect as C
+
+    k = canary("helper")
+    for key in (k, "-" + k + "%s$x", k + "'s"):
+        command = helper.format(q=shlex.quote(key), k=k)
+        printed = subprocess.run(
+            ["/bin/sh", "-c", command], capture_output=True, text=True, check=True
+        ).stdout
+        got = C.from_string("apiKeyHelper", command)
+        assert printed in got or printed.removesuffix("\n") in got, (command, printed, got)
+
+
+def test_expansions_and_references_are_not_values(tmp_path: Path) -> None:
+    from cfo_computer import rc53_collect as C
+
+    for helper in (
+        'printf %s "$ANTHROPIC_API_KEY"',
+        "printf %s ${ANTHROPIC_API_KEY}",
+        "printf %s $(cat /run/secrets/key)",
+        "printf %s `cat /run/secrets/key`",
+        "databricks auth token --host https://example.test --profile default",
+    ):
+        assert C.from_string("apiKeyHelper", helper) == set(), helper
+    spaced = tmp_path / "My Project" / "service-account.json"
+    spaced.parent.mkdir()
+    spaced.write_text("{}")
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", str(spaced)) == set()
+    assert C.from_environ(f"GOOGLE_APPLICATION_CREDENTIALS={spaced}".encode()) == set()
+
+
 def test_the_collector_takes_every_credential_and_no_identifier(tmp_path: Path) -> None:
     from cfo_computer import rc53_collect
 

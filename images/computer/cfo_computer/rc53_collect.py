@@ -239,10 +239,23 @@ def _unquote(value: str) -> str:
     return value
 
 
+def _expansion_at(command: str, i: int) -> bool:
+    """Whether the shell expands at ``command[i]``: a backquote, or ``$`` followed by a name, a
+    digit, a special parameter, ``{`` or ``(``. Any other ``$`` (a trailing one, ``$%``) is a
+    literal dollar sign."""
+    if command[i] == "`":
+        return True
+    following = command[i + 1 : i + 2]
+    return (
+        command[i] == "$" and bool(following) and (following.isalnum() or following in "_{(@*#?$!-")
+    )
+
+
 def shell_words(command: str) -> list[tuple[str, bool]]:
     """A shell command's words as ``(literal, expands)``, with ``;``, ``|``, ``&``, ``(`` and
-    ``)`` as their own words. ``expands`` is set when an unquoted or double-quoted ``$`` makes
-    part of the word a variable's value rather than a literal. Enough of POSIX quoting for the
+    ``)`` as their own words. ``expands`` is set when an unquoted or double-quoted expansion
+    (``$NAME``, ``${...}``, ``$(...)``, a backquote) makes part of the word something other than
+    its literal text. Enough of POSIX quoting for the
     one-line commands credential helpers are (``printf %s '<key>'``); never raises."""
     words: list[tuple[str, bool]] = []
     word: list[str] = []
@@ -263,7 +276,7 @@ def shell_words(command: str) -> list[tuple[str, bool]]:
                 i += 1
                 word.append(command[i])
             else:
-                expands |= ch in "$`"
+                expands |= _expansion_at(command, i)
                 word.append(ch)
         elif ch in "'\"":
             quote, started = ch, True
@@ -278,7 +291,7 @@ def shell_words(command: str) -> list[tuple[str, bool]]:
             if not ch.isspace():
                 words.append((ch, False))
         else:
-            expands |= ch in "$`"
+            expands |= _expansion_at(command, i)
             word.append(ch)
             started = True
         i += 1
@@ -287,12 +300,84 @@ def shell_words(command: str) -> list[tuple[str, bool]]:
     return words
 
 
+_ESCAPES = {
+    "\\": "\\",
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    '"': '"',
+    "'": "'",
+}
+
+
+def _unescape(text: str) -> str:
+    """Backslash escapes as ``printf``'s format, ``printf %b`` and ``sh``'s ``echo`` decode them:
+    ``\\n``-style letters, ``\\NNN`` and ``\\0NNN`` octal, ``\\xHH``; ``\\c`` ends the output."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch != "\\" or i + 1 == len(text):
+            out.append(ch)
+            i += 1
+            continue
+        nxt = text[i + 1]
+        if nxt == "c":
+            break
+        octal = re.match(r"0?([0-7]{1,3})", text[i + 1 : i + 5])
+        hexa = re.match(r"x([0-9A-Fa-f]{1,2})", text[i + 1 : i + 4])
+        if nxt in _ESCAPES:
+            out.append(_ESCAPES[nxt])
+            i += 2
+        elif octal:
+            out.append(chr(int(octal.group(1), 8) & 0xFF))
+            i += 1 + octal.end()
+        elif hexa:
+            out.append(chr(int(hexa.group(1), 16)))
+            i += 1 + hexa.end()
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _printf_output(fmt: str, args: list[str]) -> str | None:
+    """What ``printf FMT ARGS...`` prints, for formats of literal text, escapes, ``%%``, ``%s``
+    and ``%b`` (the format reused while arguments remain, as printf does); None for any other
+    conversion, whose output this does not model."""
+    parts = re.split(r"(%.?)", fmt)
+    out: list[str] = []
+    rest = list(args)
+    while True:
+        used = False
+        for part in parts:
+            if not part.startswith("%"):
+                out.append(_unescape(part))
+            elif part == "%%":
+                out.append("%")
+            elif part in ("%s", "%b"):
+                used = True
+                arg = rest.pop(0) if rest else ""
+                out.append(arg if part == "%s" else _unescape(arg))
+            else:
+                return None
+        if not rest or not used:
+            return "".join(out)
+
+
 def _helper_literals(command: str) -> list[str]:
-    """Rule 5: what ``printf``/``echo`` print literally in a credential helper. ``printf``'s data
-    arguments are taken whatever they hold (a key may start with ``-`` or ``$`` or hold ``%``
-    once quoted, as Omnigent's ``printf %s <shlex-quoted key>`` writes it), and its format too
-    when it has no conversion; ``echo``'s arguments after its options. A word that expands a
-    variable is not a literal."""
+    """Rule 5: what ``printf``/``echo`` print in a credential helper, without running it. Each
+    literal argument is taken whatever it holds (a key may start with ``-`` or ``$`` or hold
+    ``%`` once quoted, as Omnigent's ``printf %s <shlex-quoted key>`` writes it), and so is the
+    whole output when it can be worked out: ``printf``'s format rendered with its arguments
+    (``%%``, escapes, ``%s``, ``%b``), and ``echo``'s words, also escape-decoded, as ``sh``'s echo
+    prints them. A word that expands a variable is not a literal, and an output that would hold
+    one is not worked out."""
     out: list[str] = []
     segments: list[list[tuple[str, bool]]] = [[]]
     for literal, expands in shell_words(command):
@@ -306,20 +391,28 @@ def _helper_literals(command: str) -> list[str]:
         if not segment:
             continue
         command_name, args = os.path.basename(segment[0][0]), segment[1:]
+        literal = not any(expands for _, expands in args)
         if command_name == "printf":
             if args and args[0][0] == "--":
                 args = args[1:]
             if args and args[0][0] == "-v":
                 args = args[2:]
-            if args and "%" not in args[0][0] and not args[0][1]:
-                out.append(args[0][0])  # a format without conversions prints as it is
-            args = args[1:]
+            if not args:
+                continue
+            fmt, data = args[0], args[1:]
+            out += [word for word, expands in data if not expands]
+            if literal:
+                rendered = _printf_output(fmt[0], [word for word, _ in data])
+                if rendered is not None:
+                    out.append(rendered)
         elif command_name == "echo":
             while args and re.fullmatch(r"-[neE]+", args[0][0]):
                 args = args[1:]
-        else:
-            continue
-        out += [literal for literal, expands in args if not expands]
+            words = [word for word, expands in args if not expands]
+            out += words + [_unescape(word) for word in words]
+            if literal and args:
+                printed = " ".join(word for word, _ in args)
+                out += [printed, _unescape(printed)]
     return out
 
 
@@ -329,7 +422,7 @@ def _is_reference(value: str) -> bool:
     with ``/`` included (base64 tokens can), is taken as the credential."""
     if re.fullmatch(r"[a-z][a-z0-9+.-]*://[^@\s]*", value, re.I):
         return True
-    if value.startswith(("/", "~/")) and not any(c.isspace() for c in value):
+    if value.startswith(("/", "~/")):
         try:
             return os.path.lexists(os.path.expanduser(value))
         except (OSError, ValueError):
