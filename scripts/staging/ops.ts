@@ -1333,6 +1333,12 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         ctx.log(
           `${name}: the Worker is live without container application ${missing.join(", ")}; deploying again, as Wrangler asks`,
         );
+        // The first attempt's outcome is not known (its response may have been lost, and it
+        // may still land): recorded as interrupted before the repeat, as the next command would
+        // record it, so the repeat's success never clears it and teardown still waits (IR-001;
+        // Codex WP3.19 r2-1).
+        const now = ctx.now();
+        record = put(ctx, { ...markInterrupted(record, now), uploadStartedAt: now.toISOString() });
         upload();
       }
     } finally {

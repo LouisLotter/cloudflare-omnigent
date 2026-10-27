@@ -1153,6 +1153,48 @@ describe("IR-001: overlapping commands and interrupted uploads", () => {
     expect(cloud.violations).toEqual([]);
   });
 
+  it("keeps the first attempt's interruption when the tool repeats a partial durable_object deploy (Codex WP3.19 r2-1)", () => {
+    // A live Worker; then a deploy that adds a `durable_object` container loses its response,
+    // the tool's own repeat succeeds, and the first attempt lands late.
+    deploy(ctx, request());
+    const path = "/w/policy-late.jsonc";
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "OMNIGENT", class_name: "OmnigentServer" }] },
+        containers: [
+          {
+            name: "cfo-stg-a-omnigentserver",
+            class_name: "OmnigentServer",
+            scheduling_policy: "durable_object",
+            images: { server: { dockerfile: "./server/Dockerfile" } },
+          },
+        ],
+      },
+    };
+    let uploads = 0;
+    cloud.duringUpload = () => {
+      uploads += 1;
+      if (uploads === 2) cloud.deployFault = "none";
+    };
+    cloud.deployFault = "lost-response";
+    cloud.lateDelay = 3_000;
+    deploy(ctx, request("a", 7, path));
+    expect(uploads).toBe(2);
+    expect(record()?.state).toBe("deployed");
+    expect(record()?.uploadInterruptedAt).toBeDefined();
+
+    expect(() => teardown(ctx, "cfo-stg-a")).toThrow("appeared after an interrupted upload");
+    expect(cloud.violations).toEqual([]);
+    teardown(ctx, "cfo-stg-a");
+    elapse(SETTLE);
+    cloud.tick();
+    expect(cloud.workers.size + cloud.apps.size).toBe(0);
+    expect(cloud.violations).toEqual([]);
+  });
+
   // IR-001: a version 2 record from the tool of d1988ea, written after upload A lost its client
   // and retry B succeeded. Its settleUntil has elapsed by the wall clock, yet A may still land.
   it("waits for a legacy record's interrupted upload before removing Access", () => {
