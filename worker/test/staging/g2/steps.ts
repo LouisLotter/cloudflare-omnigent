@@ -390,11 +390,33 @@ function bounded(ports: G2Ports, started: number): G2Ports {
   };
 }
 
+/**
+ * A stored record without the configuration fingerprints an older build put in its checks
+ * (`before.config`, `after.config`): the record is logged whole (`step_done`), and those are
+ * digests over the container's environment, secrets included (Codex WP3.19 r2-2).
+ */
+export function withoutFingerprints(record: StepRecord): StepRecord {
+  const strip = (part: Record<string, unknown> | undefined) => {
+    const config = part?.config;
+    if (part === undefined || config === null || typeof config !== "object") return part;
+    const { startedWith: _s, current: _c, ...kept } = config as Record<string, unknown>;
+    return { ...part, config: kept };
+  };
+  const before = strip(record.before);
+  const after = strip(record.after);
+  return {
+    ...record,
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+  };
+}
+
 /** Runs one step as far as it can in this invocation. Never throws; the record says why. */
 export async function runStep(base: G2Ports, ctx: StepContext): Promise<StepRecord> {
   const started = base.now();
   const ports = bounded(base, started);
-  const loaded = await ports.load(ctx.step);
+  const stored = await ports.load(ctx.step);
+  const loaded = stored === undefined ? undefined : withoutFingerprints(stored);
   let record: StepRecord = loaded ?? {
     step: ctx.step,
     stage: "pending",

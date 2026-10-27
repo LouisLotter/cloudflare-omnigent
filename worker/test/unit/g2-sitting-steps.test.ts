@@ -325,6 +325,26 @@ describe("replace-1", () => {
     expect(JSON.stringify(done)).not.toContain("fp-released");
   });
 
+  it("logs no fingerprint from a record an older build stored, when a step resumes it (Codex WP3.19 r2-2)", async () => {
+    const server = new FakeServer();
+    const first = await runStep(server.ports(), ctx("replace-2"));
+    expect(first.stage).toBe("done");
+    // As an older build stored it: mid-step, with the fingerprints in its configuration check.
+    const { verdict: _v, problems: _p, ...unfinished } = first;
+    const legacy: StepRecord = {
+      ...unfinished,
+      stage: "killed",
+      before: { config: { startedWith: "fp-legacy-start", current: "fp-legacy-now", pass: true } },
+    };
+    server.records.set("replace-2", structuredClone(legacy));
+    server.logs.length = 0;
+    const resumed = await runStep(server.ports(), ctx("replace-2"));
+    expect(resumed.stage).toBe("done");
+    expect(JSON.stringify(server.logs)).not.toContain("fp-legacy");
+    expect(JSON.stringify(resumed)).not.toContain("fp-legacy");
+    expect(resumed.before).toMatchObject({ config: { pass: true } });
+  });
+
   it("records a container that still runs the bootstrap's configuration", async () => {
     const server = new FakeServer();
     server.appliesConfig = false;
