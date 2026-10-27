@@ -218,3 +218,80 @@ def test_botocore_verifies_with_certifi_not_its_fallback() -> None:
         "import botocore.httpsession as h, certifi; print(h.where()); print(certifi.where())"
     ).splitlines()
     assert where == certifi_where
+
+
+# ── Malformed input and the command line ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("der", "message"),
+    [
+        (bytes.fromhex("3080"), "unsupported DER length"),  # indefinite length
+        (bytes.fromhex("3085" + "01" * 5), "unsupported DER length"),  # a 5-byte length
+        (bytes.fromhex("3005" + "0000"), "truncated DER element"),
+        (bytes.fromhex("0400"), "not a certificate"),  # an OCTET STRING
+        (bytes.fromhex("30020400"), "no tbsCertificate"),
+        (bytes.fromhex("3004" + "3002" + "0200"), "short tbsCertificate"),  # serial only
+    ],
+)
+def test_malformed_certificates_are_errors(der: bytes, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        trust_check.parse_cert(der)
+
+
+def test_a_bundle_with_a_malformed_certificate_fails(tmp_path: Path) -> None:
+    import base64
+
+    bad = tmp_path / "bad.pem"
+    body = base64.b64encode(bytes.fromhex("30020400")).decode()
+    bad.write_text(f"-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n")
+    assert trust_check.main(["--bundle", str(bad)]) == 1
+
+
+def test_a_certificate_without_a_version_field_parses() -> None:
+    """Version 1 certificates omit the [0] version: the subject is then the fifth field."""
+    (cert,) = trust_check.bundle_certs(CLEAN)
+    der = _der(CLEAN)
+    # Rebuild ISRG Root X1's tbsCertificate without its [0] version element.
+    _tag, start, end, _ = trust_check._tlv(der, 0)
+    _t, tbs_pos, tbs_start, tbs_end = next(trust_check._children(der, start, end))
+    fields = list(trust_check._children(der, tbs_start, tbs_end))
+    assert fields[0][0] == 0xA0
+    first_kept = fields[1][1]
+    body = der[first_kept:tbs_end]
+    tbs = bytes([0x30]) + _length(len(body)) + body
+    v1 = bytes([0x30]) + _length(len(tbs)) + tbs
+    parsed = trust_check.parse_cert(v1)
+    assert parsed.common_names == cert.common_names
+    assert parsed.spki_sha256 == cert.spki_sha256
+
+
+def _der(path: Path) -> bytes:
+    import base64
+
+    text = path.read_text()
+    body = text.split("-----BEGIN CERTIFICATE-----")[1].split("-----END CERTIFICATE-----")[0]
+    return base64.b64decode("".join(body.split()))
+
+
+def _length(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def test_the_command_line_needs_something_to_check() -> None:
+    with pytest.raises(SystemExit):
+        trust_check.main([])
+
+
+def test_the_command_line_checks_the_installed_ca_certificates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    release = tmp_path / "os-release"
+    release.write_text("VERSION_CODENAME=forky\n")
+    real = trust_check.os_codename
+    monkeypatch.setattr(trust_check, "os_codename", lambda: real(release))
+    assert trust_check.main(["--debian-ca-certificates"]) == 1
+    assert "no known fixed ca-certificates for Debian 'forky'" in capsys.readouterr().err

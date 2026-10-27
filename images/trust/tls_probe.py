@@ -14,9 +14,13 @@ handshake: any HTTP answer (a 4xx included) passes.
 
 An answer from the server always counts as acceptance, whatever else the output says; only
 then is a certificate error looked for. A client that prints no cause (Codex says only "error
-sending request") passes only by a same-path differential: its log must show the TCP connection
-was made, and the same command, with the two forged roots added to the trust its own TLS stack
-reads, must get an HTTP answer. That control runs for such clients always.
+sending request") cannot show a certificate error. Its refusal is reported as *inferred*, not
+shown, and passes only when: its log shows the TCP connection was made; no reset, network error
+or timeout was seen; a second, independent attempt fails the same way; and the same command,
+with the two forged roots added to the trust its own TLS stack reads, gets an HTTP answer (that
+control runs for such clients always). ``--strict`` fails inferred refusals too. Locally, a
+server we controlled saw Codex's default client answer an untrusted chain with OpenSSL's
+"unknown ca" alert while Codex printed exactly this signature.
 
 ``--control`` runs every client against the forged hosts with the forged roots added through
 its own CA-override variable. A client without a key denylist then connects, which shows that
@@ -81,6 +85,12 @@ CERT_RE = re.compile(
     r"|SSL certificate verification failed|CERT_REJECTED|certificate rejected",
     re.I,
 )
+# A dropped connection: never a refusal, even when the client prints nothing else.
+RESET_RE = re.compile(
+    r"reset by peer|ECONNRESET|connection reset|broken pipe|EPIPE|unexpected eof"
+    r"|connection closed before|socket hang up",
+    re.I,
+)
 NETWORK_RE = re.compile(
     r"Could not resolve|Name or service not known|Temporary failure in name resolution"
     r"|ENOTFOUND|EAI_AGAIN|Connection refused|ECONNREFUSED|Network is unreachable"
@@ -90,6 +100,8 @@ NETWORK_RE = re.compile(
 
 # The forged hosts' page, for clients that print a body (gh does): the handshake succeeded.
 CONNECTED_RE = re.compile(r"successfully connected to the site", re.I)
+
+DETAIL_LIMIT = 240
 
 ACCEPTED, REFUSED_CERT, REFUSED_TLS, ERROR = (
     "accepted",
@@ -458,24 +470,36 @@ def classify(client: Client, out: str, home: Path, timed_out: bool) -> tuple[str
     for pattern in (CONNECTED_RE, client.accept):
         hit = next((line for line in lines if pattern.search(line)), "")
         if hit:
-            return ACCEPTED, hit.strip()[:240]
+            return ACCEPTED, hit.strip()
     if CERT_RE.search(out) and not NETWORK_RE.search(out):
         hit = next((line for line in lines if CERT_RE.search(line)), "")
-        return REFUSED_CERT, hit.strip()[:240]
-    if client.tls_failure and client.tls_failure(out, home):
+        return REFUSED_CERT, hit.strip()
+    dropped = timed_out or RESET_RE.search(out) or NETWORK_RE.search(out)
+    if client.tls_failure and not dropped and client.tls_failure(out, home):
         chain = "; rustls received the chain" if "Server cert is" in out else ""
         return REFUSED_TLS, f"TCP connected{chain}, then no HTTP answer (no cause printed)"
-    tail = (lines[-1] if lines else "").strip()[:240]
+    tail = (lines[-1] if lines else "").strip()
     return ERROR, ("timeout; " if timed_out else "") + tail
 
 
 def run_one(client: Client, host: str, url: str, trust: dict[str, Path] | None) -> Result:
-    """One run, and one more when the first ends in an unclassified error (a reset, say)."""
+    """One run, and one more when the first ends in an unclassified error (a reset, say).
+
+    A refusal with no cause is always run twice, and stays one only if the second, independent
+    attempt fails the same way.
+    """
     result = _run_once(client, host, url, trust)
     if result.outcome == ERROR:
         first = result.detail
         result = _run_once(client, host, url, trust)
         result.extra["first_attempt"] = first
+    elif result.outcome == REFUSED_TLS:
+        again = _run_once(client, host, url, trust)
+        if again.outcome == REFUSED_TLS:
+            result.extra["reproduced"] = True
+        else:
+            again.extra["first_attempt"] = result.detail
+            result = again
     return result
 
 
@@ -565,12 +589,13 @@ def versions() -> dict[str, str]:
     return found
 
 
-def evaluate(results: list[Result]) -> list[str]:
+def evaluate(results: list[Result], strict: bool = False) -> list[str]:
     """Failures: a forged host not refused for trust, or a good host without a handshake.
 
-    A certificate error passes. A TLS failure with no cause printed passes only when the same
-    client's control (the forged roots trusted, same TLS path) got an HTTP answer; anything
-    else, a network error or a timeout included, fails.
+    A certificate error passes. A TLS failure with no cause printed is an inferred refusal: it
+    passes (unless strict) only when it reproduced and the same client's control (the forged
+    roots trusted, same TLS path) got an HTTP answer. Anything else, a network error, a reset
+    or a timeout included, fails.
     """
     control = {(r.client, r.host): r for r in results if r.mode == "control"}
     failures = []
@@ -581,13 +606,24 @@ def evaluate(results: list[Result]) -> list[str]:
             if r.outcome == REFUSED_CERT:
                 continue
             ctl = control.get((r.client, r.host))
-            if r.outcome == REFUSED_TLS and ctl is not None and ctl.outcome == ACCEPTED:
-                r.extra["refusal"] = "same-path differential: answered once the roots were trusted"
+            inferred = (
+                r.outcome == REFUSED_TLS
+                and r.extra.get("reproduced")
+                and ctl is not None
+                and ctl.outcome == ACCEPTED
+            )
+            if inferred:
+                r.extra["refusal"] = (
+                    "inferred, not shown: reproduced, and answered once the roots were trusted"
+                )
+                if strict:
+                    failures.append(f"{r.client} {r.host}: refusal inferred, not shown (--strict)")
                 continue
             if r.outcome == REFUSED_TLS:
                 failures.append(
                     f"{r.client} {r.host}: inconclusive, no certificate evidence "
-                    f"({r.detail}; control: {ctl.outcome if ctl else 'not run'})"
+                    f"({r.detail}; reproduced: {bool(r.extra.get('reproduced'))}; "
+                    f"control: {ctl.outcome if ctl else 'not run'})"
                 )
                 continue
             failures.append(f"{r.client} {r.host}: {r.outcome} ({r.detail})")
@@ -596,18 +632,20 @@ def evaluate(results: list[Result]) -> list[str]:
     return failures
 
 
-def redact(results: list[Result], extra_good: dict[str, str]) -> None:
-    """A host given with --good appears in the results by its NAME only."""
-    hosts = {urlsplit(url).hostname: name for name, url in extra_good.items()}
-    for r in results:
+def redact(results: list[Result], given: dict[str, str]) -> None:
+    """A host given with --good appears in the results by its NAME only; then every message is
+    cut to its display length (after redaction, so no part of a host survives a cut)."""
+    hosts = {urlsplit(url).hostname: name for name, url in given.items()}
+
+    def clean(text: str) -> str:
         for host, name in hosts.items():
-            if not host:
-                continue
-            r.detail = r.detail.replace(host, f"<{name}>")
-            r.extra = {
-                k: v.replace(host, f"<{name}>") if isinstance(v, str) else v
-                for k, v in r.extra.items()
-            }
+            if host:
+                text = text.replace(host, f"<{name}>")
+        return text[:DETAIL_LIMIT]
+
+    for r in results:
+        r.detail = clean(r.detail)
+        r.extra = {k: clean(v) if isinstance(v, str) else v for k, v in r.extra.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -625,14 +663,18 @@ def main(argv: list[str] | None = None) -> int:
         help="another host that must verify; reported by NAME only",
     )
     parser.add_argument("--only", action="append", default=[], help="limit to these clients")
+    parser.add_argument(
+        "--strict", action="store_true", help="fail refusals that are inferred, not shown"
+    )
     parser.add_argument("--json", type=Path, help="write the results here")
     args = parser.parse_args(argv)
     good = dict(GOOD)
+    given = {}
     for item in args.good:
         name, _, url = item.partition("=")
         if not name or not url.startswith("https://"):
             parser.error(f"--good wants NAME=https://...: {item!r}")
-        good[name] = url
+        good[name] = given[name] = url
     clients = [c for c in discover() if not args.only or c.name in args.only]
     with tempfile.TemporaryDirectory(prefix="tls-probe-ca-") as tmp:
         trust = control_trust(Path(tmp))
@@ -646,8 +688,8 @@ def main(argv: list[str] | None = None) -> int:
         ]
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda job: run_one(*job), jobs))
-    redact(results, {n: u for n, u in good.items() if n not in GOOD})
-    failures = evaluate(results)
+    redact(results, given)
+    failures = evaluate(results, strict=args.strict)
     order = {h: i for i, h in enumerate([*FORGED, *good])}
     results.sort(key=lambda r: (r.mode != "default", r.client, order.get(r.host, 99)))
     for r in results:
@@ -664,9 +706,13 @@ def main(argv: list[str] | None = None) -> int:
     if failures:
         print("FAILED:\n  " + "\n  ".join(failures))
         return 1
+    inferred = sorted(
+        {r.client for r in results if r.extra.get("refusal", "").startswith("inferred")}
+    )
+    note = f"; refusals inferred, not shown, for: {', '.join(inferred)}" if inferred else ""
     print(
         f"tls probe: {len(clients)} clients refused both forged chains and verified "
-        f"{len(good)} good hosts"
+        f"{len(good)} good hosts{note}"
     )
     return 0
 

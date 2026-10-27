@@ -139,6 +139,12 @@ def test_codex_counts_a_tls_failure_only_after_a_tcp_connection() -> None:
     assert "rustls received the chain" in tls_probe.classify(codex, after_connect, HOME, False)[1]
     answered = "Error logging in with device code: device code login is not enabled for this server"
     assert tls_probe.classify(codex, answered, HOME, False)[0] == tls_probe.ACCEPTED
+    # A reset, a network error or a timeout after the connection is never a refusal.
+    for dropped in ("connection reset by peer", "Connection refused", "unexpected EOF"):
+        assert tls_probe.classify(codex, f"{openssl_path}\n{dropped}", HOME, False)[0] == (
+            tls_probe.ERROR
+        )
+    assert tls_probe.classify(codex, openssl_path, HOME, True)[0] == tls_probe.ERROR
 
 
 def _r(client: str, host: str, outcome: str, mode: str = "default") -> tls_probe.Result:
@@ -156,16 +162,24 @@ def test_evaluate_fails_an_accepted_forged_host_and_an_unverified_good_host() ->
     assert [f.split(":")[0] for f in failures] == ["httpx forged-emsign-g3", "httpx github.com"]
 
 
-def test_a_refusal_without_a_cause_passes_only_by_the_same_path_control() -> None:
-    def run(control_outcome: str | None) -> list[str]:
-        results = [_r("codex", "forged-aaa", tls_probe.REFUSED_TLS)]
+def test_a_refusal_without_a_cause_is_inferred_only_when_reproduced_and_controlled() -> None:
+    def run(control_outcome: str | None, reproduced: bool = True, strict: bool = False):
+        refusal = _r("codex", "forged-aaa", tls_probe.REFUSED_TLS)
+        if reproduced:
+            refusal.extra["reproduced"] = True
+        results = [refusal]
         if control_outcome:
             results.append(_r("codex", "forged-aaa", control_outcome, mode="control"))
-        return tls_probe.evaluate(results)
+        return tls_probe.evaluate(results, strict=strict), refusal
 
-    assert run(tls_probe.ACCEPTED) == []
+    failures, refusal = run(tls_probe.ACCEPTED)
+    assert failures == [] and refusal.extra["refusal"].startswith("inferred, not shown")
+    (failure,), _ = run(tls_probe.ACCEPTED, strict=True)
+    assert "--strict" in failure
+    (failure,), _ = run(tls_probe.ACCEPTED, reproduced=False)
+    assert "inconclusive" in failure
     for control_outcome in (None, tls_probe.REFUSED_TLS, tls_probe.ERROR):
-        (failure,) = run(control_outcome)
+        (failure,), _ = run(control_outcome)
         assert "inconclusive" in failure
 
 
@@ -179,12 +193,22 @@ def test_an_error_fails_even_when_the_control_connected() -> None:
 
 
 def test_a_good_host_given_by_name_is_redacted_everywhere() -> None:
+    host = "0123abcd.r2.example.com"
     r = _r("git", "r2-s3-api", tls_probe.ACCEPTED)
-    r.detail = "fatal: unable to access 'https://0123abcd.r2.example.com/x.git/': error: 400"
-    r.extra["first_attempt"] = "Could not resolve host: 0123abcd.r2.example.com"
-    tls_probe.redact([r], {"r2-s3-api": "https://0123abcd.r2.example.com/"})
+    r.detail = f"fatal: unable to access 'https://{host}/x.git/': error: 400"
+    r.extra["first_attempt"] = f"Could not resolve host: {host}"
+    tls_probe.redact([r], {"r2-s3-api": f"https://{host}/"})
     assert "0123abcd" not in r.detail + str(r.extra)
     assert "<r2-s3-api>" in r.detail and "<r2-s3-api>" in r.extra["first_attempt"]
+
+
+def test_redaction_covers_an_overridden_default_and_runs_before_the_cut() -> None:
+    host = "0123abcd.r2.example.com"
+    r = _r("curl", "r2.dev", tls_probe.ACCEPTED)
+    # The host straddles the display limit: a cut first would leave "0123abcd" behind.
+    r.detail = "x" * (tls_probe.DETAIL_LIMIT - 4) + f"https://{host}/ HTTP 401"
+    tls_probe.redact([r], {"r2.dev": f"https://{host}/"})
+    assert "0123" not in r.detail and len(r.detail) <= tls_probe.DETAIL_LIMIT
 
 
 def test_the_control_trust_holds_the_forged_roots(tmp_path: Path) -> None:
@@ -301,6 +325,21 @@ def test_main_passes_when_forged_hosts_are_refused_and_good_hosts_answer(
     data = json.loads(report.read_text())
     assert data["failures"] == [] and data["versions"] == {"fake": "1"}
     assert {r["mode"] for r in data["results"]} == {"default", "control"}
+
+
+def test_run_one_keeps_a_refusal_without_a_cause_only_if_it_reproduces(tmp_path: Path) -> None:
+    signature = 'echo "connected to 192.0.2.1:443"; echo "error sending request for url ($1)"'
+    steady = _sh("codex", signature, tls_failure=tls_probe._codex_tls_failure)
+    result = tls_probe.run_one(steady, "forged-aaa", "https://h/", None)
+    assert result.outcome == tls_probe.REFUSED_TLS and result.extra["reproduced"] is True
+    flag = tmp_path / "answered-once"
+    flaky = _sh(
+        "codex",
+        f'if [ -e {flag} ]; then echo "HTTP 405"; else touch {flag}; {signature}; fi',
+        tls_failure=tls_probe._codex_tls_failure,
+    )
+    result = tls_probe.run_one(flaky, "forged-aaa", "https://h/", None)
+    assert result.outcome == tls_probe.ACCEPTED and "first_attempt" in result.extra
 
 
 def test_main_fails_when_a_forged_host_answers(

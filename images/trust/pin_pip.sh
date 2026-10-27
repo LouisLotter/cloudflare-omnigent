@@ -9,7 +9,7 @@
 # eMudhra key compromise, and adds it to the system store, so a fixed system bundle does not
 # protect it. Python 3.12's ensurepip bundles pip 25.0.1. The download is hash-checked, so it is
 # safe even with the old pip doing it.
-set -eu
+set -eu  # each check on its own line: set -e ignores a failure inside an && list
 PIN=$1
 PY=/usr/local/bin/python3
 WORK=$(mktemp -d)
@@ -17,14 +17,16 @@ printf '%s\n' "$PIN" > "$WORK/pin.txt"
 "$PY" -I -m pip download --no-cache-dir --disable-pip-version-check --no-deps \
   --require-hashes -r "$WORK/pin.txt" -d "$WORK/wheel"
 set -- "$WORK"/wheel/pip-*-py3-none-any.whl
-test "$#" -eq 1 && test -f "$1"
+test "$#" -eq 1
+test -f "$1"
 WHEEL=$1
 NEW=$(basename "$WHEEL" | cut -d- -f2)
 "$PY" -I -m pip install --no-cache-dir --disable-pip-version-check --root-user-action=ignore \
   --no-index --no-deps "$WHEEL"
 ENSUREPIP=$("$PY" -I -c 'import ensurepip, os; print(os.path.dirname(ensurepip.__file__))')
 OLD=$(sed -n 's/^_PIP_VERSION = "\(.*\)"$/\1/p' "$ENSUREPIP/__init__.py")
-test -n "$OLD" && test -f "$ENSUREPIP/_bundled/pip-$OLD-py3-none-any.whl"
+test -n "$OLD"
+test -f "$ENSUREPIP/_bundled/pip-$OLD-py3-none-any.whl"
 rm "$ENSUREPIP/_bundled/pip-$OLD-py3-none-any.whl"
 cp "$WHEEL" "$ENSUREPIP/_bundled/"
 sed -i "s/^_PIP_VERSION = \"$OLD\"$/_PIP_VERSION = \"$NEW\"/" "$ENSUREPIP/__init__.py"

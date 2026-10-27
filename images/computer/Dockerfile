@@ -127,22 +127,31 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # Sign-in commands, status output, login-file paths and write patterns are as before; Codex
 # 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
 # Nothing of the build's home is kept.
-# The installed trees are checked against digests recorded from two independent fresh builds
-# (every file's path and SHA-256, the native binaries included), so a different artifact fails
-# the build. After a version bump, take the new values from the failing build's message.
+# No unverified code runs: npm extracts both packages without running scripts, the extracted
+# trees must match the digests below (every file's path and SHA-256, every symbolic link's
+# target), and only then does Claude Code's own postinstall (install.cjs, which links its native
+# binary over bin/claude.exe) run, after which the tree is checked again. Codex has no scripts.
+# The digests were recorded identically from independent installs; after a version bump, take
+# the new values from the failing build's message.
 ARG CLAUDE_CODE_VERSION=2.1.311
 ARG CODEX_VERSION=0.164.0
-ARG CLAUDE_CODE_TREE_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
+ARG CLAUDE_CODE_TREE_SHA256=b3530205566c212f20930da7fbffde8a2d4637534ca8464c7493193b58bef659
+ARG CLAUDE_CODE_INSTALLED_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
 ARG CODEX_TREE_SHA256=6aa96e445074fc22662979ee4db20c58c71f63b7c56e12f02c2d11cb11b09170
-RUN npm install -g --no-audit --no-fund --registry=https://registry.npmjs.org/ \
+RUN npm install -g --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && npm cache clean --force \
- && cd /usr/local/lib/node_modules \
- && for pkg in "@anthropic-ai/claude-code=${CLAUDE_CODE_TREE_SHA256}" "@openai/codex=${CODEX_TREE_SHA256}"; do \
-      tree=$(find "${pkg%%=*}" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); \
-      [ "${tree}" = "${pkg#*=}" ] || { echo "${pkg%%=*}: installed tree ${tree}, expected ${pkg#*=}" >&2; exit 1; }; \
-    done \
- && cd / \
+ && tree() ( cd /usr/local/lib/node_modules \
+      && { find "$1" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; \
+           find "$1" -type l -printf '%p -> %l\n' | LC_ALL=C sort; } | sha256sum | cut -d' ' -f1 ) \
+ && check() { got=$(tree "$1") && [ "${got}" = "$2" ] \
+      || { echo "$1: installed tree ${got}, expected $2" >&2; return 1; }; } \
+ && check @anthropic-ai/claude-code "${CLAUDE_CODE_TREE_SHA256}" \
+ && check @openai/codex "${CODEX_TREE_SHA256}" \
+ && (cd /usr/local/lib/node_modules/@anthropic-ai/claude-code && node install.cjs) \
+ && check @anthropic-ai/claude-code "${CLAUDE_CODE_INSTALLED_SHA256}" \
+ && test "$(readlink /usr/local/bin/claude)" = "../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe" \
+ && test "$(readlink /usr/local/bin/codex)" = "../lib/node_modules/@openai/codex/bin/codex.js" \
  && test "$(claude --version | cut -d' ' -f1)" = "${CLAUDE_CODE_VERSION}" \
  && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
  && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*
