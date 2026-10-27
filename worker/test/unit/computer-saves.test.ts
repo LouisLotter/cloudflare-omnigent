@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { RECORD_KEY } from "../../src/computer/record.ts";
+import { SITTING_PART_FAILURE, sdkBackupError } from "../support/backup-errors.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
 const page = (sim: ComputerSim) => sim.page();
@@ -175,6 +176,105 @@ describe("workspace checkpoints", () => {
     expect(sim.record().workspace?.layers).toHaveLength(2);
     expect(sim.record().orphans).toEqual([]);
     expect(sim.check()).toEqual([]);
+  });
+
+  it("repeats an upload after a transient part failure within the save, publishing one layer (WP3.22)", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).write("work/a.txt", "1");
+    await sim.call(sim.client.checkpointRequest());
+    const before = sim.record().workspace;
+    live(sim).write("work/a.txt", "2");
+    sim.computer.backupErrors = [SITTING_PART_FAILURE()];
+    const attempts = sim.computer.backupAttempts.length;
+    await sim.call(sim.client.checkpointRequest());
+    await sim.settle();
+    const r = sim.record();
+    // The same capture's layer, uploaded twice, published once: no save failed.
+    const tried = sim.computer.backupAttempts.slice(attempts);
+    expect(tried).toHaveLength(2);
+    expect(new Set(tried).size).toBe(1);
+    expect(r.workspace?.layers).toHaveLength((before?.layers.length ?? 0) + 1);
+    expect(r.workspace?.layers.at(-1)?.layerId).toBe(tried[0]);
+    expect(r.saveRequests).toEqual([]);
+    expect(r.captureFailures).toBe(0);
+    expect(r.orphans).toEqual([]);
+    expect(sim.sleeps).toEqual([5_000]);
+    expect(sim.logs.filter((l) => l.event === "upload_retry")).toEqual([
+      {
+        event: "upload_retry",
+        fields: expect.objectContaining({ attempt: 1, delayMs: 5_000, generation: 1 }),
+      },
+    ]);
+    expect(sim.logs.some((l) => l.event === "save_failed")).toBe(false);
+    expect(sim.check()).toEqual([]);
+  });
+
+  it("gives an upload up after its last retry, keeping the pointer, and saves on the next request (WP3.22)", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).write("work/a.txt", "1");
+    await sim.call(sim.client.checkpointRequest());
+    const before = sim.record().workspace;
+    live(sim).write("work/a.txt", "2");
+    sim.computer.backupErrors = [1, 2, 3].map(() => SITTING_PART_FAILURE());
+    const attempts = sim.computer.backupAttempts.length;
+    await sim.call(sim.client.checkpointRequest());
+    await sim.settle();
+    expect(sim.computer.backupAttempts.length - attempts).toBe(3);
+    expect(sim.sleeps).toEqual([5_000, 15_000]);
+    expect(sim.record().workspace).toEqual(before);
+    expect(sim.record().saveRequests).toHaveLength(1);
+    expect(sim.logs.filter((l) => l.event === "save_failed").at(-1)?.fields).toMatchObject({
+      reason: "upload",
+    });
+    // The failed saves' schedule takes over, as before.
+    await sim.advance(2 * 60_000);
+    expect(sim.record().saveRequests).toEqual([]);
+    expect(sim.record().workspace?.layers).toHaveLength((before?.layers.length ?? 0) + 1);
+    expect(sim.record().orphans).toEqual([]);
+    expect(sim.check()).toEqual([]);
+  });
+
+  it("never repeats a permanent upload failure (WP3.22)", async () => {
+    for (const error of [
+      sdkBackupError("BACKUP_INTEGRITY", "R2 stored 10 bytes, but the container uploaded 12"),
+      sdkBackupError(
+        "BACKUP_TRANSFER",
+        "gateway rejected the part upload with HTTP 403: the write fence refused this part",
+      ),
+      new Error("BACKUP_TRANSFER: a part upload failed"),
+    ]) {
+      const sim = new ComputerSim();
+      await sim.running();
+      live(sim).write("work/a.txt", "1");
+      sim.computer.backupErrors = [error];
+      await sim.call(sim.client.checkpointRequest());
+      await sim.settle();
+      expect(sim.computer.backupAttempts, error.message).toHaveLength(1);
+      expect(sim.sleeps).toEqual([]);
+      expect(sim.record().workspace).toBeNull();
+      expect(sim.logs.some((l) => l.event === "upload_retry")).toBe(false);
+    }
+  });
+
+  it("stops repeating an upload at its deadline (WP3.22)", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).write("work/a.txt", "1");
+    sim.computer.backupErrors = [SITTING_PART_FAILURE()];
+    sim.computer.holdBackups = true;
+    await sim.client.send(sim.client.checkpointRequest());
+    await sim.until(() => sim.record().capture?.phase === "upload");
+    sim.computer.holdBackups = false;
+    sim.expire(600_000);
+    await sim.settle();
+    // The held attempt ended with the deadline: no retry after it.
+    expect(sim.sleeps).toEqual([]);
+    expect(sim.record().workspace).toBeNull();
+    expect(sim.logs.filter((l) => l.event === "save_failed").at(-1)?.fields).toMatchObject({
+      reason: "upload",
+    });
   });
 
   it("keeps an accepted request across a crash at every step of its capture (R-18)", async () => {
