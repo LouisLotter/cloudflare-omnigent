@@ -182,3 +182,20 @@ def test_token_refused_parks_the_host_and_only_a_newer_attempt_starts_it(rig: Ri
         "startAttempt": 2,
         "restarts": 0,
     }
+
+
+def test_the_host_forwards_the_cli_settings_to_its_runners(tmp_path: Path) -> None:
+    """WP3.22: Omnigent's host gives a runner only an allowlist of its environment, without
+    the CLIs' settings (telemetry, error reporting and updates off); the fork's passthrough
+    names them, keeping any names already there, once each."""
+    from cfo_computer.host import PASSTHROUGH, StartParams, host_env
+    from cfo_computer.procutil import CLI_ENV, workload_env
+
+    params = StartParams(1, "h" * 32, "computer", canary("token"), {})
+    env = host_env(workload_env(tmp_path, "omnigent"), params)
+    assert env[PASSTHROUGH].split(",") == list(CLI_ENV)
+    assert all(env[name] == "1" for name in CLI_ENV)
+    base = workload_env(tmp_path, "omnigent", {PASSTHROUGH: "MY_VAR, DISABLE_UPDATES"})
+    names = host_env(base, params)[PASSTHROUGH].split(",")
+    assert names[:2] == ["MY_VAR", "DISABLE_UPDATES"]
+    assert sorted(names) == sorted({"MY_VAR", *CLI_ENV})

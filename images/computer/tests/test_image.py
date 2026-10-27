@@ -67,6 +67,32 @@ def test_claude_code_managed_settings() -> None:
     }
 
 
+def test_runners_get_the_cli_settings_from_omnigents_own_host_env_builder(tmp_path: Path) -> None:
+    """WP3.22: the environment the supervisor gives ``omnigent host``, through the host's own
+    ``_build_runner_env`` (the fork's allowlist), still holds the CLIs' settings."""
+    from cfo_computer.host import StartParams, host_env
+    from cfo_computer.procutil import CLI_ENV, workload_env
+
+    env = host_env(workload_env(tmp_path, "omnigent"), StartParams(1, "h" * 32, "c", "t", {}))
+    script = (
+        "import json, sys\n"
+        "from omnigent.host.connect import _build_runner_env\n"
+        "base = json.load(sys.stdin)\n"
+        "print(json.dumps(_build_runner_env(base, server_url='http://omnigent.internal', "
+        "runner_id='runner_1', binding_token='b', workspace=base['HOME'], parent_pid=1)))\n"
+    )
+    out = subprocess.run(
+        ["/opt/venv/bin/python", "-I", "-c", script],
+        input=json.dumps(env),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**env, "HOME": str(tmp_path)},
+    ).stdout
+    runner = json.loads(out.strip().splitlines()[-1])
+    assert {k: runner.get(k) for k in CLI_ENV} == CLI_ENV
+
+
 def test_environment_and_account() -> None:
     env = os.environ
     assert env["IS_SANDBOX"] == "1"
