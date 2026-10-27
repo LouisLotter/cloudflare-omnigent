@@ -80,6 +80,8 @@ type DeployFault =
   | "after-upload"
   /** Wrangler 4.149.0: the version is live, then its `durable_object` application fails. */
   | "before-policy-applications"
+  /** The same, on the first deploy only: the repeat Wrangler asks for succeeds. */
+  | "before-policy-applications-once"
   | "crash-after-access"
   | "crash-after-upload"
   | "lost-response"
@@ -378,7 +380,9 @@ class FakeCloud implements Cloud {
       for (const container of declared.containers) {
         if (policyApps.has(container) !== policy) continue;
         if (![...this.containerApps_.values()].includes(container)) {
-          this.containerApps_.set(`ca-${this.nextAppId++}`, container);
+          // A `durable_object` application's ID is its namespace's: 32 hex characters.
+          const n = this.nextAppId++;
+          this.containerApps_.set(policy ? n.toString(16).padStart(32, "0") : `ca-${n}`, container);
         }
       }
     };
@@ -415,7 +419,11 @@ class FakeCloud implements Cloud {
     // Like Wrangler's --secrets-file: added to the secrets the Worker had.
     this.secrets.set(name, { ...this.secrets.get(name), ...secrets });
     this.check();
-    if (this.deployFault === "before-policy-applications") {
+    if (
+      this.deployFault === "before-policy-applications" ||
+      this.deployFault === "before-policy-applications-once"
+    ) {
+      if (this.deployFault === "before-policy-applications-once") this.deployFault = "none";
       throw new Error(
         "wrangler deploy exited with 1: The Worker version was deployed, but Wrangler could not finish applying its Durable Object-managed Container application settings.",
       );
@@ -473,9 +481,11 @@ class FakeCloud implements Cloud {
     this.calls.push("container.list");
     return [...this.containerApps_].filter(([, n]) => n === name).map(([id]) => id);
   }
+  readonly deletedAppIds: string[] = [];
   deleteContainerApp(id: string): void {
     this.tick();
     this.calls.push(`container.delete ${this.containerApps_.get(id)}`);
+    this.deletedAppIds.push(id);
     if (!this.containerDeleteKeeps) this.containerApps_.delete(id);
   }
   containerImages(repository: string): string[] {
@@ -1408,8 +1418,10 @@ describe("containers and buckets", () => {
       },
     };
     const repositories = ["cfo-stg-a-omnigentserver-server", "cfo-stg-a-workspacedo-computer"];
+    // Failing again on the tool's own repeat: reported, and recorded for a retry or a teardown.
     cloud.deployFault = "before-policy-applications";
     expect(() => deploy(ctx, request("a", 7, path))).toThrow("could not finish applying");
+    expect(cloud.calls.filter((c) => c.startsWith("worker.deploy"))).toHaveLength(2);
     // Live and pushed, no application yet: recorded, so a retry or a teardown finds it all.
     expect(cloud.workers.has("cfo-stg-a")).toBe(true);
     expect(cloud.containerApps_.size).toBe(0);
@@ -1429,7 +1441,43 @@ describe("containers and buckets", () => {
     ]);
     teardown(ctx, "cfo-stg-a");
     expect(leftovers()).toBe(0);
+    // Deleted by their 32-hex IDs, as listed by name: neither `wrangler delete` nor removing the
+    // configuration's entry deletes a `durable_object` application.
+    expect(cloud.deletedAppIds).toHaveLength(2);
+    for (const id of cloud.deletedAppIds) expect(id).toMatch(/^[0-9a-f]{32}$/);
     expect(cloud.violations).toEqual([]);
+  });
+
+  it("repeats a deploy once, in the same command, when its version went live before its durable_object application", () => {
+    const path = "/w/policy-once.jsonc";
+    views[path] = {
+      ...GOOD,
+      path,
+      raw: {
+        ...GOOD.raw,
+        durable_objects: { bindings: [{ name: "OMNIGENT", class_name: "OmnigentServer" }] },
+        containers: [
+          {
+            name: "cfo-stg-a-omnigentserver",
+            class_name: "OmnigentServer",
+            scheduling_policy: "durable_object",
+            images: { server: { dockerfile: "./server/Dockerfile" } },
+          },
+        ],
+      },
+    };
+    cloud.deployFault = "before-policy-applications-once";
+    deploy(ctx, request("a", 7, path));
+    expect(record()?.state).toBe("deployed");
+    expect(cloud.calls.filter((c) => c.startsWith("worker.deploy"))).toHaveLength(2);
+    expect(logs.some((line) => line.includes("deploying again, as Wrangler asks"))).toBe(true);
+    expect([...cloud.containerApps_.values()]).toEqual(["cfo-stg-a-omnigentserver"]);
+    // Any other failed upload is not repeated.
+    cloud.deployFault = "after-upload";
+    expect(() => deploy(ctx, request("a", 7))).toThrow("wrangler deploy exited with 1");
+    expect(cloud.calls.filter((c) => c.startsWith("worker.deploy"))).toHaveLength(3);
+    teardown(ctx, "cfo-stg-a");
+    expect(leftovers()).toBe(0);
   });
 
   it("refuses a repository that already has images this deployment did not push", () => {

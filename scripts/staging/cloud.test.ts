@@ -1242,9 +1242,16 @@ describe("Wrangler's own reading of a configuration", () => {
   it("reads both checked-in containers under the durable_object policy, with their repositories for teardown (WP3.19)", () => {
     const { raw } = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER);
     const containers = raw.containers as Record<string, unknown>[];
+    const keys = ["class_name", "scheduling_policy", "images", "observability"];
     expect(containers.map((c) => [c.class_name, c.scheduling_policy, Object.keys(c)])).toEqual([
-      ["OmnigentServer", "durable_object", ["class_name", "scheduling_policy", "images"]],
-      ["WorkspaceDO", "durable_object", ["class_name", "scheduling_policy", "images"]],
+      ["OmnigentServer", "durable_object", keys],
+      ["WorkspaceDO", "durable_object", keys],
+    ]);
+    // Set on each entry: a `durable_object` container does not inherit the Worker's setting.
+    // The server's output is logged, as it was under the default policy; a computer's is not.
+    expect(containers.map((c) => c.observability)).toEqual([
+      { logs: { enabled: true } },
+      { logs: { enabled: false } },
     ]);
     expect(containers[0]?.images).toEqual({
       server: { dockerfile: "../images/server/Dockerfile", build_context: ".." },

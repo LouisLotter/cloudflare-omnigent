@@ -237,13 +237,25 @@ describe("OmnigentServer: always on", () => {
 
   it("re-registers the intercept and renews the timeout in every new instance", async () => {
     const { stub, fake } = await runningServer();
-    const before = { intercepts: fake.intercepts.length, timeouts: fake.inactivityTimeouts.length };
+    const before = {
+      intercepts: fake.intercepts.length,
+      timeouts: fake.inactivityTimeouts.length,
+      watches: fake.watches,
+    };
     await evictDurableObject(stub);
     await stub.bootstrapStatus(call);
     expect(fake.intercepts.length).toBe(before.intercepts + 1);
     expect(fake.intercepts.at(-1)?.host).toBe("platform.internal");
     expect(fake.inactivityTimeouts.length).toBe(before.timeouts + 1);
+    // `monitor()` does not survive a restart of the object: the new instance attaches its own.
+    expect(fake.watches).toBe(before.watches + 1);
+    // It adopts the running container and never starts a second one.
+    for (let i = 0; i < 3; i += 1) await nextCheck(stub);
     expect(fake.starts).toHaveLength(1);
+    // The container's end reaches the new instance through its own monitor.
+    await platformStop(stub, fake, 75);
+    await nextCheck(stub);
+    expect((await stub.outages(everything)).at(-1)).toMatchObject({ exitCode: 75 });
   });
 
   it("restarts a server found stopped and records the outage from its last answer", async () => {

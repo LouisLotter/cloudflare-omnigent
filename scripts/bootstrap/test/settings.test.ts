@@ -417,6 +417,11 @@ describe("rendering the configurations", () => {
       ["OmnigentServer", "durable_object"],
       ["WorkspaceDO", "durable_object"],
     ]);
+    // The server's container output is logged; a computer's is not (WP3.19).
+    expect(containers.map((c) => c.observability)).toEqual([
+      { logs: { enabled: true } },
+      { logs: { enabled: false } },
+    ]);
     // No size or count in the configuration: the server's size is a start option.
     for (const c of containers) {
       expect(c).not.toHaveProperty("instance_type");

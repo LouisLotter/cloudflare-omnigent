@@ -1046,6 +1046,15 @@ function ensureVpcServices(
   return record;
 }
 
+/** The names of a configuration's `durable_object`-policy containers (named, as staged). */
+function policyContainers(raw: Readonly<Record<string, unknown>>): string[] {
+  const containers = Array.isArray(raw.containers) ? raw.containers : [];
+  return containers
+    .map((entry) => (entry ?? {}) as Record<string, unknown>)
+    .filter((c) => c.scheduling_policy === "durable_object" && typeof c.name === "string")
+    .map((c) => c.name as string);
+}
+
 export function deploy(ctx: Context, request: DeployRequest): Deployment {
   const name = resourceName(request.suffix);
   const hostname = hostnameFor(name, ctx.config.zone);
@@ -1302,13 +1311,30 @@ export function deploy(ctx: Context, request: DeployRequest): Deployment {
         uploadStartedAt: startedAt,
         workerSince: record.workerSince ?? startedAt,
       });
-      ctx.cloud.deployWorker(
-        name,
-        hostname,
-        rendered ?? request.configPath,
-        buildEpoch,
-        Object.keys(secrets).length > 0 ? secrets : undefined,
-      );
+      const upload = () =>
+        ctx.cloud.deployWorker(
+          name,
+          hostname,
+          rendered ?? request.configPath,
+          buildEpoch,
+          Object.keys(secrets).length > 0 ? secrets : undefined,
+        );
+      try {
+        upload();
+      } catch (error) {
+        // Wrangler 4.149.0 makes the new version live before it creates a `durable_object`
+        // container application, and asks for the same deploy again when that step fails: the
+        // Worker exists and an application does not. Repeated once here, the same deploy; a
+        // second failure is reported as any failed upload (the record keeps uploadStartedAt).
+        const missing = ctx.cloud.workerExists(name)
+          ? policyContainers(staged).filter((c) => ctx.cloud.containerApps(c).length === 0)
+          : [];
+        if (missing.length === 0) throw error;
+        ctx.log(
+          `${name}: the Worker is live without container application ${missing.join(", ")}; deploying again, as Wrangler asks`,
+        );
+        upload();
+      }
     } finally {
       if (rendered !== undefined) ctx.removeFile(rendered);
     }

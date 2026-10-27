@@ -14,12 +14,17 @@
   // 8 GB instance). No `max_instances`: one named OmnigentServer object runs one container. A
   // deploy never moves the running container to a new image: the watchdog's fingerprint
   // includes the image, so a release that changes it replaces the server once (`config_changed`).
+  // Its output (the entrypoint's and Omnigent's logs, which the image keeps free of credential
+  // values) goes to Workers Logs: a `durable_object` container does not inherit the Worker's
+  // `observability`, so it is set on the entry, as under the default policy it was inherited.
   //
   // WorkspaceDO's container: the computer image (WP3.4), one per computer under the
   // `durable_object` policy, built from the repository root. Its key, `computer`, is the one
   // `computer/container-port.ts` names at each start. Its size is not set here: WorkspaceDO
   // passes it at every start, capped by CFO_MAX_INSTANCE_SIZE (ControlDO). How many run at once
-  // is CFO_MAX_AWAKE_COMPUTERS. Both are per-installation variables, never in this file.
+  // is CFO_MAX_AWAKE_COMPUTERS. Both are per-installation variables, never in this file. Its
+  // output stays out of Workers Logs (explicitly: a computer holds login material, and what its
+  // container prints has not been checked for it).
   //
   // CHECKPOINTS: the computers' checkpoint bucket (workspace layers and credential bundles).
   // WorkspaceDO reads and deletes there directly; every write goes through the Sandbox SDK's
@@ -37,14 +42,16 @@
       "scheduling_policy": "durable_object",
       "images": {
         "server": { "dockerfile": "../images/server/Dockerfile", "build_context": ".." }
-      }
+      },
+      "observability": { "logs": { "enabled": true } }
     },
     {
       "class_name": "WorkspaceDO",
       "scheduling_policy": "durable_object",
       "images": {
         "computer": { "dockerfile": "../images/computer/Dockerfile", "build_context": ".." }
-      }
+      },
+      "observability": { "logs": { "enabled": false } }
     }
   ],
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cloudflare-omnigent-checkpoints" }],

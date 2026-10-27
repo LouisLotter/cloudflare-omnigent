@@ -99,7 +99,11 @@ export class FakeServerContainer implements ServerContainer {
     this.running = true;
   }
 
+  /** How many times an object instance attached its `monitor()` (`watch`). */
+  watches = 0;
+
   watch(onExit: (exit: ContainerExit) => void): void {
+    this.watches += 1;
     this.#onExit = onExit;
   }
 
