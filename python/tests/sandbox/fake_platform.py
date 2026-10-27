@@ -244,9 +244,18 @@ class FakeLauncherApi:
 
     # ── HTTP ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _send_status(handler: BaseHTTPRequestHandler, status: int) -> None:
+        # Recorded before the reply is written: the client can return, and its test read
+        # `requests`, before this thread gets back to `_handle`.
+        record = getattr(handler, "cfo_record", None)
+        if record is not None:
+            record.status = status
+        handler.send_response(status)
+
     def _reply(self, handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:
         data = json.dumps(payload).encode()
-        handler.send_response(status)
+        self._send_status(handler, status)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Content-Length", str(len(data)))
         handler.end_headers()
@@ -280,6 +289,7 @@ class FakeLauncherApi:
         record = Recorded(operation=None, status=0, body=None, key_id=key_id)
         with self.lock:
             self.requests.append(record)
+        handler.cfo_record = record  # type: ignore[attr-defined]
         record.status = self._check_and_serve(handler, raw, record)
 
     def _check_and_serve(
@@ -329,7 +339,7 @@ class FakeLauncherApi:
             return self._error(handler, fault.code, fault.message, fault.status)
         if fault is not None and fault.kind == "html502":
             page = b"<html><body>502 Bad Gateway</body></html>"
-            handler.send_response(502)
+            self._send_status(handler, 502)
             handler.send_header("Content-Type", "text/html")
             handler.send_header("Content-Length", str(len(page)))
             handler.end_headers()
@@ -349,7 +359,7 @@ class FakeLauncherApi:
             time.sleep(fault.delay_s)
         if fault is not None and fault.kind == "garbage":
             data = b"{not json"
-            handler.send_response(200)
+            self._send_status(handler, 200)
             handler.send_header("Content-Length", str(len(data)))
             handler.end_headers()
             handler.wfile.write(data)

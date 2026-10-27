@@ -130,7 +130,8 @@ describe("suspend", () => {
     expect(sim.computer.running).toBe(true);
     expect(sim.computer.plannedStops()).toHaveLength(0);
     expect(r.refusedSleeps).toBe(1);
-  });
+    // Five minutes of a blocked bucket's retries: about 1 s alone, over 5 s on a busy CI runner.
+  }, 30_000);
 
   it("runs a resume that arrives while stopping once the stop is confirmed, and starts once", async () => {
     const sim = new ComputerSim();
