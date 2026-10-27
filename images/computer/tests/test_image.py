@@ -52,6 +52,21 @@ def test_codex_managed_settings() -> None:
         assert line in text
 
 
+def test_claude_code_managed_settings() -> None:
+    """WP3.22: the renderer is named, so 2.1.311's fullscreen upsell never blocks a driven
+    terminal; root's and read-only to everyone else, so no settings file overrides it."""
+    path = Path("/etc/claude-code/managed-settings.json")
+    st = path.stat()
+    assert (st.st_uid, st.st_gid, st.st_mode & 0o7777) == (0, 0, 0o644)
+    assert (Path("/etc/claude-code").stat().st_mode & 0o7777) == 0o755
+    assert json.loads(path.read_text()) == {"tui": "default"}
+    # The person's account, which Claude Code runs as, can read it.
+    read = ["runuser", "-u", "omnigent", "--", "cat", str(path)]
+    assert json.loads(subprocess.run(read, capture_output=True, check=True).stdout) == {
+        "tui": "default"
+    }
+
+
 def test_environment_and_account() -> None:
     env = os.environ
     assert env["IS_SANDBOX"] == "1"
