@@ -9,6 +9,10 @@ Run from the repository root, after building the image:
 Each server runs in its own container, with no volume: replacing it means SIGKILL, remove,
 and a fresh container that restores from the replica, as on Cloudflare Containers. Every
 credential is generated for the run; results never contain them.
+
+Each server container runs under a 64-character hostname, as the server's container does on
+Cloudflare under the ``durable_object`` scheduling policy (its Durable Object's ID, longer than a
+DNS label). ``CFO_IT_HOSTNAME=docker`` keeps Docker's own short hostname instead.
 """
 
 from __future__ import annotations
@@ -38,6 +42,11 @@ BUCKET = "cfo-wp23-replica"
 #: directly, not through the faulty "R2" link, whose tests are about the replica.
 ARTIFACT_BUCKET = "cfo-wp23-artifacts"
 OWNER = "owner"
+#: "durable_object" (the default): every server container gets a 64-character hostname, as on
+#: Cloudflare; "docker": Docker's own.
+HOSTNAME_MODE = os.environ.get("CFO_IT_HOSTNAME", "durable_object")
+if HOSTNAME_MODE not in ("durable_object", "docker"):
+    raise ValueError("CFO_IT_HOSTNAME must be durable_object or docker")
 
 
 def _docker_ok() -> bool:
@@ -156,6 +165,8 @@ class Server:
         self.stack = stack
         self.env = env
         self.name = f"{PROJECT}-server-{uuid.uuid4().hex[:8]}"
+        #: Cloudflare's hostname for a `durable_object` container: its Durable Object's ID.
+        self.hostname = secrets.token_hex(32) if HOSTNAME_MODE == "durable_object" else None
         self.app_port = 0
         self.status_port = 0
         self._logs = ""
@@ -169,6 +180,7 @@ class Server:
             "-d",
             "--name",
             self.name,
+            *(["--hostname", self.hostname] if self.hostname else []),
             "--network",
             NETWORK,
             "-p",

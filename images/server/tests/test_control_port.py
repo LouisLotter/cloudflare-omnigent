@@ -93,3 +93,35 @@ def test_status_reports_phase_boot_and_lag(control) -> None:  # noqa: ANN001
 def test_unknown_paths_are_404(control, tmp_path: Path) -> None:  # noqa: ANN001
     _, url, _ = control
     assert httpx.get(f"{url}/v1/info").status_code == 404
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1"])
+def test_both_servers_bind_whatever_the_hostname(host: str, monkeypatch) -> None:  # noqa: ANN001
+    """Under the ``durable_object`` policy the container's hostname is its Durable Object's
+    64-character ID, and ``socket.getfqdn()`` raises on it (UC-93), which stops a stock
+    ``http.server`` from binding. The control port and the recovery responder never resolve the
+    hostname; the image's own suites also run under such a hostname (docs/testing.md)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from cfo_server.httpd import start_recovery_responder
+
+    def label_too_long(name: str = "") -> str:
+        raise UnicodeError("encoding with 'idna' codec failed (UnicodeError: label too long)")
+
+    monkeypatch.setattr(socket, "getfqdn", label_too_long)
+    with pytest.raises(UnicodeError):
+        ThreadingHTTPServer((host, 0), BaseHTTPRequestHandler).server_close()
+    board = StatusBoard(initialized_expected=True, installation_id=None)
+    for server in (
+        start_control_server(board, _free_port(), host),
+        start_recovery_responder("restore_failed", _free_port(), host),
+    ):
+        try:
+            assert server.server_name == host
+            port = server.server_address[1]
+            assert server.server_port == port
+            answer = httpx.get(f"http://127.0.0.1:{port}/status")
+            assert answer.status_code in (200, 503)
+        finally:
+            server.shutdown()
+            server.server_close()
