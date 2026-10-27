@@ -15,7 +15,8 @@
 #                        which sets them for the replica and for the artifacts under their own
 #                        names, deploys both Workers with the server and computer images, waits
 #                        for the durable owner, releases, and verifies that the watchdog's
-#                        controlled restart (`config_changed`) applied the release
+#                        controlled restart (`config_changed`) applied the release; a push the
+#                        registry times out on is retried with the same values (3 attempts)
 #   run.sh follow        wait for the bootstrap to end
 #   run.sh resume        run the bootstrap again (no secret needed once its first deploy is done)
 #   run.sh launcher-key  generate the launcher's signing key, set it on the platform Worker, then
@@ -178,10 +179,29 @@ print(json.dumps({
     "replicaAccessKeyId": key_id,
     "replicaSecretAccessKey": key_secret,
 }))' "$secrets" | setsid nohup bash -c '
-      node "$1/scripts/bootstrap/bootstrap.ts" run --staging wp318 --secrets-stdin --wait-minutes 45 2>&1 |
-        python3 -I "$1/spikes/x1/scripts/redact.py" "$2" - |
-        sed -E -e "s#[a-z0-9-]+\.cloudflareaccess\.com#<team>#g" -e "s#hmac-sha256:[A-Za-z0-9_:-]+#<owner-pin>#g" >"$3"
-      echo "exit ${PIPESTATUS[0]}" >>"$3"' _ "$root" "$state_dir/config.json" "$out/bootstrap.log" \
+      # The values stay in this unexported variable, so that a push the registry times out on
+      # ("timeout awaiting response headers") is retried without the owner: at most 3 attempts.
+      given="$(cat)"
+      : >"$3"
+      attempt=1
+      while true; do
+        from=$(wc -l <"$3")
+        printf "%s" "$given" |
+          node "$1/scripts/bootstrap/bootstrap.ts" run --staging wp318 --secrets-stdin --wait-minutes 45 2>&1 |
+          python3 -I "$1/spikes/x1/scripts/redact.py" "$2" - |
+          sed -E -e "s#[a-z0-9-]+\.cloudflareaccess\.com#<team>#g" -e "s#hmac-sha256:[A-Za-z0-9_:-]+#<owner-pin>#g" >>"$3"
+        status=${PIPESTATUS[1]}
+        if [ "$status" -eq 1 ] && [ "$attempt" -lt 3 ] &&
+          tail -n +"$((from + 1))" "$3" | grep -q "timeout awaiting response headers"; then
+          attempt=$((attempt + 1))
+          echo "run.sh: the registry timed out on a push; attempt $attempt of 3 in 30 s" >>"$3"
+          sleep 30
+          continue
+        fi
+        break
+      done
+      unset given
+      echo "exit $status" >>"$3"' _ "$root" "$state_dir/config.json" "$out/bootstrap.log" \
       >/dev/null 2>&1 &
     echo "$!" >"$out/bootstrap.pid"
     unset key_id key_secret
