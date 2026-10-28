@@ -325,6 +325,45 @@ def test_end_all_kills_a_server_that_does_not_answer(tmp_path: Path) -> None:
             os.kill(pid, 9)
 
 
+@needs_tmux
+def test_end_all_kills_a_sessions_process_that_ignores_its_hang_up(tmp_path: Path) -> None:
+    sock = tmp_path / "s"
+    sessions = T.TerminalSessions(uid=os.getuid(), socket=sock, tmux=shutil.which("tmux") or "tmux")
+    marker = f"cfo-wp328-hup-{os.getpid()}"
+    subprocess.run(
+        [
+            "tmux",
+            "-S",
+            str(sock),
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "w1",
+            f"bash -c 'trap \"\" HUP; exec -a {marker} sleep 600'",
+        ],
+        check=True,
+        timeout=10,
+        env={k: v for k, v in os.environ.items() if not k.startswith("TMUX")},
+    )
+
+    def stubborn() -> list[int]:
+        return [p.pid for p in P.scan().values() if p.cmdline[:1] == [marker] and p.state != "Z"]
+
+    try:
+        end = time.monotonic() + 5
+        while not stubborn() and time.monotonic() < end:
+            time.sleep(0.05)
+        assert len(stubborn()) == 1
+        sessions.end_all()
+        assert stubborn() == [] and sessions.server_pids() == []
+    finally:
+        for pid in stubborn():
+            os.kill(pid, 9)
+        subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True, check=False)
+
+
 # ---------------------------------------------------------------------------------------------
 # The supervisor: `terminal_end`, the backstops, the reaper and the status.
 
@@ -475,12 +514,89 @@ def test_the_reaper_runs_beside_the_supervisor_and_skips_a_capture(rig, monkeypa
     thread.join(5)
 
 
-def test_a_failure_to_end_sessions_never_blocks_the_step_it_guards(rig) -> None:
+def test_a_failure_to_end_sessions_refuses_the_step_it_guards(rig) -> None:
+    """Unconfirmed, the backstop holds the step back (retryable), before any effect (Codex r1-3)."""
     r, rec = rig
 
     def broken() -> None:
-        raise RuntimeError("tmux exploded")
+        raise T.NotEnded
 
     rec.end_all = broken  # type: ignore[method-assign]
+    order = r.sup.creds.order
+    status, reply = r.send("credential_snapshot")
+    assert status == 503 and reply["error"]["code"] == "unavailable" and reply["error"]["retryable"]
+    assert r.sup.creds.order == order  # no snapshot taken
+    cancels: list[str] = []
+    original = r.sup.signins.cancel_all
+    r.sup.signins.cancel_all = lambda: (cancels.append("x"), original())[1]  # type: ignore[method-assign]
+    status, reply = r.send("sign_out")
+    assert status == 503 and reply["error"]["retryable"] and cancels == []
+    capture = {
+        "layerId": "lyr_01hzy5b2c3d4e5f6g7h8j9k0m0",
+        "kind": "base",
+        "parent": None,
+        "policyVersion": 1,
+        "lease": {"targetMs": 20000, "hardMs": 40000},
+        "endTerminals": True,
+    }
+    command = r.command("capture", **capture)
+    status, reply = r.post(command)
+    assert status == 503 and reply["error"]["retryable"]
+    assert not r.sup.capture_running
+    assert r.sup._capture_gate.acquire(blocking=False)  # given back
+    r.sup._capture_gate.release()
+    assert r.sup.alert_counts.get("other", 0) >= 3
+    # Once the sessions can be ended, the same operations run.
+    rec.end_all = lambda: rec.events.append("end_all")  # type: ignore[method-assign]
+    status, reply = r.post(command)
+    assert status == 200, reply
+    assert r.wait_job(reply["job"]["jobOperationId"])["state"] == "staged"
     assert r.ok("credential_snapshot")["type"] == "credential_snapshot"
-    assert r.sup.alert_counts.get("other", 0) >= 1
+
+
+def test_a_page_sign_in_fails_to_start_when_the_sessions_cannot_be_ended(rig) -> None:
+    r, rec = rig
+
+    def broken() -> None:
+        raise T.NotEnded
+
+    rec.end_all = broken  # type: ignore[method-assign]
+    import cfo_computer.supervisor as SV
+
+    spawned: list[str] = []
+    original = SV.spawn_login
+    SV.spawn_login = lambda *a, **k: spawned.append("x")  # type: ignore[assignment]
+    try:
+        r.ok("sign_in_start", service="codex", attempt=1)
+        deadline = time.monotonic() + 10
+        view: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            view = r.ok("sign_in_status", service="codex", attempt=1)["view"]
+            if view["state"] == "failed":
+                break
+            time.sleep(0.05)
+        assert view == {
+            "service": "codex",
+            "attempt": 1,
+            "state": "failed",
+            "reason": "start_failed",
+        }
+        assert spawned == []
+    finally:
+        SV.spawn_login = original
+
+
+def test_end_all_confirms_every_process_gone_or_says_so(fake, monkeypatch) -> None:
+    sessions, tmux, _ = fake
+    sessions.end_all()  # nothing on the socket: confirmed at once
+
+    # A tmux client that cannot even start (no descriptors left) still leaves the signals.
+    def no_client(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        raise OSError(24, "Too many open files")
+
+    sessions._run = no_client  # type: ignore[assignment]
+    sessions.end_all()
+    # A server on the socket that survives every signal: not confirmed.
+    monkeypatch.setattr(sessions, "server_pids", lambda: [999_999])
+    with pytest.raises(T.NotEnded):
+        sessions.end_all()

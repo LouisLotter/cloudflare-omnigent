@@ -1000,11 +1000,16 @@ class Supervisor:
         return {"type": "terminal_end", "remaining": remaining}
 
     def _end_terminals(self) -> None:
-        """Every setup-terminal session ends now, answering or not (``end_all``)."""
+        """Every setup-terminal session, and every process in one, ends now, answering or not,
+        and is confirmed gone (``end_all``). Otherwise the credential-sensitive step it guards
+        does not run: a retryable refusal, before any effect (Codex WP3.28 r1-3)."""
         try:
             self.terminals.end_all()
-        except Exception:  # noqa: BLE001 - never blocks the step it guards
+        except Exception:  # noqa: BLE001 - never the exception's text
             self._alert("the terminal sessions could not be ended")
+            raise CommandError(
+                "unavailable", "the terminal sessions could not be ended", retryable=True
+            ) from None
 
     def _terminal_loop(self) -> None:
         """The reaper: a session with no stream for 45 s, or older than 30 minutes, ends."""
@@ -1230,4 +1235,5 @@ class Supervisor:
         self.host.stop()
         if self.terminal is not None and self.terminal.poll() is None:
             self.terminal.terminate()
-        self._end_terminals()
+        with contextlib.suppress(CommandError):
+            self._end_terminals()

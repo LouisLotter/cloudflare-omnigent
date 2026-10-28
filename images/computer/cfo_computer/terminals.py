@@ -7,7 +7,8 @@ Every way a stream may stop for good must therefore end the session here, on the
 
 - WorkspaceDO's ``terminal_end``: the sessions of every window up to the one it names;
 - the credential-sensitive steps, first: a sign-out, a stop's final capture or its credential
-  barrier, and a sign-in from the page (``end_all``);
+  barrier, and a sign-in from the page (``end_all``, which must confirm every session's process
+  gone, or the step does not run);
 - the reaper, which holds even if WorkspaceDO never comes back: a session with no stream
   attached for ``idle_s`` (45 s: the bridge's 30-second grace plus a margin), and any session
   older than ``max_age_s`` (30 minutes, the window's deadline).
@@ -16,8 +17,9 @@ The supervisor runs as root, but its tmux commands run as the person's account, 
 owner: the socket's directory belongs to that account, and tmux's protocol lets a server have its
 client run a command (``detach-client -E``), so a root client is never pointed at it. It never
 reads what a session holds; it lists names, times and attached client counts, and kills.
-``end_all`` does not depend on the server answering: whatever tmux server on this socket is still
-alive after ``kill-server`` is killed by signal (as root).
+``end_all`` does not depend on the server answering: whatever tmux server on this socket, or
+process that was in a session, is still alive after ``kill-server`` is killed by signal (as
+root).
 """
 
 from __future__ import annotations
@@ -44,12 +46,20 @@ MAX_AGE_S = 30 * 60.0
 REAP_INTERVAL_S = 5.0
 #: How long one tmux command may take before the server counts as not answering.
 TMUX_TIMEOUT_S = 5.0
+#: How long a session's processes get after their hang-up before ``end_all`` kills them.
+HANGUP_GRACE_S = 1.0
+#: How long ``end_all`` waits for what it killed to be gone before it says it could not.
+KILL_WAIT_S = 3.0
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class NotAnswering(Exception):
     """The tmux server did not answer in time (a capture may have paused it)."""
+
+
+class NotEnded(Exception):
+    """A setup-terminal process outlived every attempt to end it."""
 
 
 @dataclass(frozen=True)
@@ -158,24 +168,41 @@ class TerminalSessions:
             return len(self.sessions())
 
     def end_all(self) -> None:
-        """Ends every session, whether or not the server answers: ``kill-server`` (each shell
-        gets its hang-up), then SIGKILL for any server process on this socket still alive (one
-        paused by a capture, or wedged)."""
+        """Ends every session and every process in one, whether or not the server answers, and
+        confirms it: raises NotEnded (or the error that stopped it) otherwise, so the step it
+        guards does not run (Codex WP3.28 r1-3).
+
+        ``kill-server`` first (each shell gets its hang-up), then SIGKILL for any server process
+        on this socket still alive (one paused by a capture, or wedged), and, after a short
+        grace, for any process that was in a session when this began (one that ignores its
+        hang-up, or that a killed server left behind)."""
         with self._lock:
+            self._unattached.clear()
+            procs = P.scan()
+            servers = self._server_pids(procs)
+            members = {procs[pid].key for pid in P.descendants(procs, set(servers))}
             if os.path.exists(self.socket):
-                with contextlib.suppress(NotAnswering):
+                # Even a client that cannot start (no descriptors left) leaves the signals.
+                with contextlib.suppress(NotAnswering, OSError):
                     self._tmux("kill-server")
             for pid in self.server_pids():
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGKILL)
-            self._unattached.clear()
+                _kill(pid, None)
+            left = _wait_gone(members, HANGUP_GRACE_S)
+            for pid, start in left:
+                _kill(pid, start)
+            if _wait_gone(members, KILL_WAIT_S) or self.server_pids():
+                raise NotEnded
 
     def server_pids(self) -> list[int]:
-        """The tmux server processes of this socket, owned by the person's account. A pane's
-        process between its fork and its exec looks the same; only the outermost one counts."""
+        """The tmux server processes of this socket, owned by the person's account."""
+        return self._server_pids(P.scan())
+
+    def _server_pids(self, procs: dict[int, P.Proc]) -> list[int]:
+        """A pane's process between its fork and its exec looks the same as its server; only
+        the outermost one counts."""
         found = {
             proc.pid: proc
-            for proc in P.scan().values()
+            for proc in procs.values()
             if proc.uid == self.uid
             and proc.comm.startswith("tmux")
             and "server" in proc.comm
@@ -207,6 +234,36 @@ class TerminalSessions:
                     self._unattached.pop(key, None)
                     ended.append(s.name)
         return ended
+
+
+def _alive(keys: set[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Which of these processes (pid, start time) still run; a zombie has ended."""
+    out: set[tuple[int, int]] = set()
+    for pid, start in keys:
+        proc = P.read_proc(pid, with_cmdline=False)
+        if proc is not None and proc.starttime == start and proc.state != "Z":
+            out.add((pid, start))
+    return out
+
+
+def _wait_gone(keys: set[tuple[int, int]], timeout_s: float) -> set[tuple[int, int]]:
+    """Waits up to ``timeout_s`` for these processes to end; returns those still running."""
+    deadline = time.monotonic() + timeout_s
+    left = _alive(keys)
+    while left and time.monotonic() < deadline:
+        time.sleep(0.05)
+        left = _alive(left)
+    return left
+
+
+def _kill(pid: int, start: int | None) -> None:
+    """SIGKILL, to this very process when its start time is given (never a recycled ID)."""
+    if start is not None:
+        proc = P.read_proc(pid, with_cmdline=False)
+        if proc is None or proc.starttime != start:
+            return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def _names_socket(argv: list[str], socket: Path) -> bool:
