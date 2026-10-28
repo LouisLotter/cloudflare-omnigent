@@ -109,10 +109,16 @@ def test_the_tmux_configuration_leaves_the_person_nothing_to_get_stuck_in() -> N
 
 def test_the_socket_is_the_persons_own() -> None:
     assert TS.socket_path(1000) == Path("/tmp/tmux-1000/cfo-terminal")
-    assert T._names_socket(["tmux", "-L", "cfo-terminal", "new-session"], TS.socket_path(1000))
-    assert T._names_socket(["tmux", "-S", "/x/y", "ls"], Path("/x/y"))
-    assert not T._names_socket(["tmux", "-L", "default", "ls"], TS.socket_path(1000))
-    assert not T._names_socket(["tmux", "new-session"], TS.socket_path(1000))
+    sock = TS.socket_path(1000)
+    assert T._names_socket(["tmux", "-L", "cfo-terminal", "new-session"], sock, 1000)
+    assert T._names_socket(["tmux", "-S", "/x/y", "ls"], Path("/x/y"), 1000)
+    assert not T._names_socket(["tmux", "-L", "default", "ls"], sock, 1000)
+    assert not T._names_socket(["tmux", "new-session"], sock, 1000)
+    # Another account's, or another socket of the same name (a test's): never this one.
+    assert not T._names_socket(["tmux", "-L", "cfo-terminal", "ls"], sock, 1001)
+    assert not T._names_socket(
+        ["tmux", "-L", "cfo-terminal", "ls"], Path("/x/tmux/cfo-terminal"), 1000
+    )
 
 
 def test_tmux_processes_have_their_own_kind() -> None:

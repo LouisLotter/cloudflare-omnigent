@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import procs as P
-from .terminal_shell import SESSION, SOCKET_NAME, socket_path
+from .terminal_shell import SESSION, socket_path
 
 TMUX = "/usr/bin/tmux"
 #: A session with no stream attached is ended after this (the bridge's grace is 30 s).
@@ -236,7 +236,7 @@ class TerminalSessions:
             if proc.uid == self.uid
             and proc.comm.startswith("tmux")
             and "server" in proc.comm
-            and _names_socket(proc.cmdline, self.socket)
+            and _names_socket(proc.cmdline, self.socket, proc.uid)
         }
         return sorted(pid for pid, proc in found.items() if proc.ppid not in found)
 
@@ -305,12 +305,14 @@ def _kill(pid: int, start: int) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-def _names_socket(argv: list[str], socket: Path) -> bool:
-    """Whether a tmux command line uses ``socket``: ``-L cfo-terminal`` (with the default
-    directory) or ``-S <socket>``."""
+def _names_socket(argv: list[str], socket: Path, uid: int) -> bool:
+    """Whether a tmux command line, run as ``uid``, uses ``socket``: ``-L <name>`` (the default
+    directory of that account, ``TMUX_TMPDIR`` unset, as the wrapper runs it) or ``-S <socket>``.
+    The whole path counts, never the name alone: another socket called ``cfo-terminal`` (a test's)
+    is not this one."""
     for i, arg in enumerate(argv[:-1]):
-        if arg == "-L" and argv[i + 1] == SOCKET_NAME:
-            return socket.name == SOCKET_NAME
-        if arg == "-S" and argv[i + 1] == str(socket):
-            return True
+        if arg == "-L":
+            return Path(f"/tmp/tmux-{uid}/{argv[i + 1]}") == socket
+        if arg == "-S":
+            return Path(argv[i + 1]) == socket
     return False
