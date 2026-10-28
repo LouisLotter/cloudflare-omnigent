@@ -19,10 +19,11 @@ import {
   installationProblems,
   renderPlatformConfig,
 } from "../../../scripts/bootstrap/settings.ts";
-import { ownerPin } from "../../../scripts/bootstrap/test/fixtures.ts";
+import { ownerPin, stagingPlan } from "../../../scripts/bootstrap/test/fixtures.ts";
 import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
 import {
   declaredResources,
+  serializeRegistry,
   validateDeployConfig,
   withStagingNames,
 } from "../../../scripts/staging/guard.ts";
@@ -640,8 +641,9 @@ describe("the server's measured restarts and the forced replacement (WP3.19)", (
 describe("isolated staging selection", () => {
   it("retains the legacy default but rejects unsafe or overlong bases", () => {
     expect(soakBase({})).toBe("wp318");
+    expect(soakBase({ CFO_SOAK_BASE: "a".repeat(31) })).toHaveLength(31);
     expect(soakBase({ CFO_SOAK_BASE: "upgrade020-20261028" })).toBe("upgrade020-20261028");
-    for (const base of ["", "../wp318", "-x", "x-", "x--y", "UPGRADE", "a".repeat(34), "a\nb"]) {
+    for (const base of ["", "../wp318", "-x", "x-", "x--y", "UPGRADE", "a".repeat(32), "a\nb"]) {
       expect(() => soakBase({ CFO_SOAK_BASE: base })).toThrow("invalid soak staging base");
     }
   });
@@ -677,17 +679,22 @@ function campaignHarness() {
     JSON.stringify({ accountId: "1".repeat(32), zone: "example.test" }),
   );
   const fake = `#!/usr/bin/env python3
-import json, os, pathlib, sys, time
+import json, os, pathlib, subprocess, sys, time
 args = sys.argv[1:]
 name = pathlib.Path(sys.argv[0]).name
 with open(os.environ["SOAK_TEST_CALLS"], "a") as f:
     f.write(json.dumps({"name": name, "args": args, "base": os.environ.get("CFO_SOAK_BASE"), "staging": os.environ.get("CFO_STAGING_DIR")}) + "\\n")
+failure = pathlib.Path(os.environ["SOAK_TEST_FAILURE"])
+if failure.exists() and failure.read_text() in args: sys.exit(1)
+if name == "node" and len(args) > 1 and args[0].endswith("soak-config.ts") and args[1] == "preflight":
+    sys.exit(subprocess.call([os.environ["SOAK_TEST_NODE"], *args]))
 if name == "cf":
     if "permission-groups" in args: print(json.dumps([{"id":"synthetic-permission", "name":"Workers R2 Storage Bucket Item Write"}]))
     elif "create" in args: print(json.dumps({"id":"synthetic-token", "value":"synthetic-test-value"}))
     elif "list" in args: print("[]")
     elif "get" in args: print(json.dumps({"t0": int(os.environ["SOAK_TEST_T0"])}))
 elif name == "node":
+    sys.stdin.read()
     if args and args[0].endswith("logs.ts"): print("{}")
     elif args and args[0].endswith(("restart.ts", "server-checks.ts")): print("{}")
     elif args and args[0].endswith("soak-config.ts"): print("Current Version ID: 12345678-1234-1234-1234-123456789abc")
@@ -703,6 +710,8 @@ elif name == "node":
     CFO_STAGING_DIR: staging,
     CFO_INSTALL_DIR: installs,
     SOAK_TEST_CALLS: calls,
+    SOAK_TEST_NODE: process.execPath,
+    SOAK_TEST_FAILURE: join(dir, "fail"),
     SOAK_TEST_T0: String(Date.now() - 4 * 3600000),
     CFO_SOAK_BASE: "wp318",
     CFO_SOAK_OWNER: "",
@@ -731,7 +740,23 @@ elif name == "node":
             (s) => JSON.parse(s) as { name: string; args: string[]; base: string; staging: string },
           )
       : [];
-  return { dir, home, out, calls, installs, staging, run, selected, recorded };
+  return { dir, home, out, calls, installs, staging, env, run, selected, recorded };
+}
+
+async function writeCampaignInstallation(
+  h: ReturnType<typeof campaignHarness>,
+  owner = "Upgrade-Test",
+) {
+  const original = await stagingPlan();
+  const plan = JSON.parse(
+    JSON.stringify(original).replaceAll("wp24", "upgrade020"),
+  ) as Installation;
+  if (plan.target.kind !== "staging") throw new Error("expected staging fixture");
+  const installation = { ...plan, target: { ...plan.target, owner } };
+  writeFileSync(
+    join(h.installs, "cfo-stg-upgrade020-platform.json"),
+    JSON.stringify({ stateVersion: 1, installation, journal: {} }),
+  );
 }
 
 describe("the shell campaign's resource isolation", () => {
@@ -742,7 +767,7 @@ describe("the shell campaign's resource isolation", () => {
         ["--upgrade", "bucket"],
         ["--upgrade", "--staging", "upgrade020", "bucket"],
         ["--upgrade", "--staging", "wp318", "--output", h.out, "teardown"],
-        ...["../wp318", "x--y", "-x", "X", "x".repeat(34)].map((base) => [
+        ...["../wp318", "x--y", "-x", "X", "x".repeat(32)].map((base) => [
           "--staging",
           base,
           "bucket",
@@ -764,6 +789,112 @@ describe("the shell campaign's resource isolation", () => {
       writeFileSync(join(h.out, "existing-secret"), "synthetic");
       expect(h.selected("bucket").status).not.toBe(0);
       expect(h.recorded()).toEqual([]);
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it("requires an explicit upgrade owner and refuses a custom legacy output path", () => {
+    const h = campaignHarness();
+    try {
+      h.env.CFO_SOAK_OWNER = "Upgrade-Test";
+      expect(
+        h.run("--upgrade", "--staging", "upgrade020", "--output", h.out, "bucket").status,
+      ).not.toBe(0);
+      h.env.WP318_DIR = h.out;
+      expect(h.selected("teardown").status).not.toBe(0);
+      expect(h.recorded()).toEqual([]);
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it.each(["web", "platform", "r2"])(
+    "rejects a foreign %s record before any campaign effect",
+    (kind) => {
+      const h = campaignHarness();
+      try {
+        writeFileSync(
+          join(h.staging, "resources.json"),
+          serializeRegistry([
+            {
+              name: `cfo-stg-upgrade020-${kind}`,
+              hostname: `cfo-stg-upgrade020-${kind}.example.test`,
+              owner: "Another-Team",
+              state: "deployed",
+              createdAt: "2026-01-01T00:00:00Z",
+              expiresAt: "2026-01-02T00:00:00Z",
+            },
+          ]),
+        );
+        for (const command of ["bucket", "resume", "teardown"]) {
+          const result = h.selected(command);
+          expect(result.status).not.toBe(0);
+          expect(result.stderr).toContain("belongs to Another-Team");
+        }
+        expect(h.recorded().every((c) => c.name === "node" && c.args[1] === "preflight")).toBe(
+          true,
+        );
+      } finally {
+        rmSync(h.dir, { recursive: true });
+      }
+    },
+  );
+
+  it("rejects another installation owner before resume or deletion", async () => {
+    const h = campaignHarness();
+    try {
+      await writeCampaignInstallation(h, "Another-Team");
+      for (const command of ["resume", "teardown"]) {
+        const result = h.selected(command);
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("does not match");
+      }
+      expect(h.recorded().every((c) => c.name === "node" && c.args[1] === "preflight")).toBe(true);
+      expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(true);
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it.each(["teardown", "delete"])(
+    "keeps upgrade recovery records after a failed %s and permits retry",
+    async (failure) => {
+      const h = campaignHarness();
+      try {
+        await writeCampaignInstallation(h);
+        expect(h.selected("bucket").status).toBe(0);
+        writeFileSync(join(h.out, "launcher-secrets.json"), "synthetic-launcher");
+        writeFileSync(join(h.out, "r2-token-id"), "synthetic-token");
+        writeFileSync(join(h.dir, "fail"), failure);
+        const result = h.selected("teardown");
+        expect(result.status).not.toBe(0);
+        for (const file of ["owner-secrets.json", "launcher-secrets.json", "r2-token-id"])
+          expect(existsSync(join(h.out, file))).toBe(true);
+        expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(true);
+        if (failure === "teardown")
+          expect(h.recorded().some((c) => c.name === "cf" && c.args.includes("delete"))).toBe(
+            false,
+          );
+        rmSync(join(h.dir, "fail"));
+        expect(h.selected("teardown").status).toBe(0);
+        expect(existsSync(join(h.out, "owner-secrets.json"))).toBe(false);
+        expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(false);
+      } finally {
+        rmSync(h.dir, { recursive: true });
+      }
+    },
+  );
+
+  it("accepts the longest base before creating any staging resources", () => {
+    const h = campaignHarness();
+    try {
+      const base = "a".repeat(31);
+      const result = h.run("--staging", base, "--output", h.out, "bucket");
+      expect(result.status, result.stderr).toBe(0);
+      expect(h.recorded().map((c) => c.args)).toEqual(
+        expect.arrayContaining([expect.arrayContaining(["--suffix", `${base}-r2`])]),
+      );
     } finally {
       rmSync(h.dir, { recursive: true });
     }
@@ -792,6 +923,7 @@ describe("the shell campaign's resource isolation", () => {
       mkdirSync(join(legacy, "layers"), { recursive: true });
       writeFileSync(join(legacy, "layers/keep"), "legacy-evidence");
       writeFileSync(join(h.installs, "cfo-stg-wp318-platform.json"), "legacy-state");
+      await writeCampaignInstallation(h);
       for (const command of ["bucket", "resume"]) {
         const result = h.selected(command);
         expect(result.status, result.stderr).toBe(0);
@@ -818,10 +950,16 @@ describe("the shell campaign's resource isolation", () => {
       ]) {
         const result = h.selected(...args);
         expect(result.status, `${args}: ${result.stderr}`).toBe(0);
+        if (args[0] === "campaign") {
+          // Check the recursive collect before a direct collect can mask a lost output argument.
+          expect(existsSync(join(h.out, `run-${h.env.SOAK_TEST_T0}`, "events.json"))).toBe(true);
+          expect(existsSync(join(h.home, ".pt/upgrade020"))).toBe(false);
+        }
       }
       const key = JSON.parse(readFileSync(join(h.out, "launcher-secrets.json"), "utf8"));
       expect(key.SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID).toMatch(/^k-upgrade020-/);
-      writeFileSync(join(h.installs, "cfo-stg-upgrade020-platform.json"), "selected-state");
+      expect(existsSync(join(h.out, "applied.json"))).toBe(true);
+      expect(existsSync(join(h.home, ".pt/upgrade020"))).toBe(false);
       expect(h.selected("teardown").status).toBe(0);
       expect(existsSync(join(h.out, "owner-secrets.json"))).toBe(false);
       expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(false);
@@ -832,15 +970,32 @@ describe("the shell campaign's resource isolation", () => {
       const calls = h.recorded();
       expect(calls.every((c) => c.base === "upgrade020" && c.staging === h.staging)).toBe(true);
       // Source paths retain wp318; resource arguments must never do so.
-      const resourceArgs = calls.flatMap((c) => c.args).filter((a) => !a.includes("/"));
+      const repo = resolve(import.meta.dirname, "../../..");
+      const resourceArgs = calls.flatMap((c) => c.args).filter((a) => !a.startsWith(`${repo}/`));
       expect(resourceArgs.some((a) => a.includes("wp318"))).toBe(false);
       expect(calls.map((c) => c.args)).toEqual(
         expect.arrayContaining([
           expect.arrayContaining(["run", "--staging", "upgrade020", "--secrets-stdin"]),
+          expect.arrayContaining([
+            "plan",
+            "--replica-url",
+            "s3://cfo-stg-upgrade020-r2-db/omnigent",
+            "--artifacts-url",
+            "s3://cfo-stg-upgrade020-r2-artifacts",
+            "--replica-endpoint",
+            `https://${"1".repeat(32)}.r2.cloudflarestorage.com`,
+          ]),
           expect.arrayContaining(["--suffix", "upgrade020-r2"]),
           expect.arrayContaining(["--suffix", "upgrade020-platform", "--owner", "Upgrade-Test"]),
           ...["web", "platform", "r2"].map((kind) =>
-            expect.arrayContaining(["teardown", "--suffix", `upgrade020-${kind}`]),
+            expect.arrayContaining([
+              "teardown",
+              "--suffix",
+              `upgrade020-${kind}`,
+              "--owner",
+              "Upgrade-Test",
+              "--if-present",
+            ]),
           ),
           expect.arrayContaining(["--bucket-name", "cfo-stg-upgrade020-platform-results"]),
           expect.arrayContaining(["--bucket-name", "cfo-stg-upgrade020-platform-checkpoints"]),
@@ -854,5 +1009,5 @@ describe("the shell campaign's resource isolation", () => {
     } finally {
       rmSync(h.dir, { recursive: true });
     }
-  });
+  }, 30_000);
 });

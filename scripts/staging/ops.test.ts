@@ -3328,6 +3328,30 @@ describe("Access applications the tool cannot vouch for", () => {
     expect(deployedWorker()).toBe(false);
   });
 
+  it("checks teardown owner under the deployment lock before any cloud call", () => {
+    deploy(ctx, request());
+    cloud.calls.length = 0;
+    const lock = ctx.lock;
+    ctx = {
+      ...ctx,
+      lock: (name) => {
+        const release = lock(name);
+        store.update((records) =>
+          records.map((d) => (d.name === name ? { ...d, owner: "wp9.9" } : d)),
+        );
+        return release;
+      },
+    };
+    expect(() => teardown(ctx, "cfo-stg-a", { owner: "wp0.4" })).toThrow("belongs to wp9.9");
+    expect(cloud.calls).toEqual([]);
+    expect(record()?.state).toBe("deployed");
+    expect(() =>
+      teardown(ctx, "cfo-stg-missing", { owner: "wp0.4", ifPresent: true }),
+    ).not.toThrow();
+    teardown(ctx, "cfo-stg-a", { owner: "wp9.9" });
+    expect(record()).toBeUndefined();
+  });
+
   it("refuses another owner's deployment", () => {
     deploy(ctx, request());
     expect(() => deploy(ctx, { ...request(), owner: "wp9.9" })).toThrow("belongs to wp0.4");

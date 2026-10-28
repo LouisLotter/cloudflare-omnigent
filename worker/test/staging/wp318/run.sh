@@ -63,6 +63,9 @@
 #                        remove the local secrets and the installation's state file
 #
 # Upgrade invocation: run.sh --upgrade --staging <unique-base> --owner <label> --output <private-dir> <command>
+# Upgrade teardown keeps local recovery records on any failure; rerun it to finish.
+# Collect and scan before teardown: log reads require installation state.
+# Default output gains a private selection marker; default cleanup remains best-effort.
 # All recursive calls retain the selection. Staging registry and locks remain shared.
 # Output goes to $WP318_DIR (default $HOME/.pt/wp318/staging), outside the repository, redacted
 # with spikes/x1/scripts/redact.py (account, zone, owner address) before it leaves the laptop.
@@ -77,24 +80,26 @@ root="$(cd "$here/../../../.." && pwd)"
 # a distinct namespace and private output directory: no output-only isolation.
 base="${CFO_SOAK_BASE:-wp318}"
 owner="${CFO_SOAK_OWNER:-}"
-out="${WP318_DIR:-}"
+legacy_out="${WP318_DIR:-}"
+out="$legacy_out"
 upgrade=0
 base_given=0
 out_given=0
+owner_given=0
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --staging) base="${2:?--staging needs a base}"; base_given=1; shift 2 ;;
-    --owner) owner="${2:?--owner needs a label}"; shift 2 ;;
+    --owner) owner="${2:?--owner needs a label}"; owner_given=1; shift 2 ;;
     --output) out="${2:?--output needs a directory}"; out_given=1; shift 2 ;;
     --upgrade) upgrade=1; shift ;;
     *) echo "run.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
-[[ "$base" =~ ^[a-z0-9]([a-z0-9-]{0,31}[a-z0-9])?$ && "$base" != *--* ]] || {
-  echo "run.sh: staging base must be 1-33 lowercase letters/digits/hyphens, no edge or doubled hyphens" >&2; exit 2;
+[[ "$base" =~ ^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$ && "$base" != *--* ]] || {
+  echo "run.sh: staging base must be 1-31 lowercase letters/digits/hyphens, no edge or doubled hyphens" >&2; exit 2;
 }
-if [ "$upgrade" -eq 1 ] && { [ "$base_given" -ne 1 ] || [ "$out_given" -ne 1 ] || [ "$base" = wp318 ]; }; then
-  echo "run.sh: --upgrade requires --staging <unique-base> and --output <isolated-directory>" >&2; exit 2
+if [ "$upgrade" -eq 1 ] && { [ "$base_given" -ne 1 ] || [ "$out_given" -ne 1 ] || [ "$owner_given" -ne 1 ] || [ "$base" = wp318 ]; }; then
+  echo "run.sh: --upgrade requires --staging <unique-base> --owner <label> and --output <isolated-directory>" >&2; exit 2
 fi
 owner="${owner:-$([ "$base" = wp318 ] && echo WP3.18 || echo "soak-$base")}"
 [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
@@ -107,10 +112,12 @@ out="${out:-$HOME/.pt/$base/staging}"
 out=$(python3 -I -c '
 import json, os, pathlib, sys
 out, legacy, repo = (pathlib.Path(p).resolve() for p in sys.argv[1:4])
-base, owner = sys.argv[4:]
+base, owner, custom_legacy = sys.argv[4:]
 def overlaps(a, b): return a == b or a in b.parents or b in a.parents
 if base != "wp318" and (overlaps(out, legacy) or overlaps(out, repo)):
     sys.exit("run.sh: isolated output overlaps the legacy output or repository")
+if base != "wp318" and custom_legacy and overlaps(out, pathlib.Path(custom_legacy).resolve()):
+    sys.exit("run.sh: isolated output overlaps WP318_DIR")
 marker = out / ".soak-selection.json"
 expected = {"base": base, "owner": owner}
 if marker.exists():
@@ -130,7 +137,7 @@ else:
 os.chmod(out, 0o700)
 os.chmod(marker, 0o600)
 print(out)
-' "$out" "$HOME/.pt/wp318/staging" "$root" "$base" "$owner")
+' "$out" "$HOME/.pt/wp318/staging" "$root" "$base" "$owner" "$legacy_out")
 export CFO_SOAK_BASE="$base" CFO_SOAK_OWNER="$owner"
 self=("$0" --staging "$base" --owner "$owner" --output "$out")
 if [ "$upgrade" -eq 1 ]; then self+=(--upgrade); fi
@@ -147,6 +154,9 @@ launcher="$out/launcher-secrets.json"
 bootstrap=(node "$root/scripts/bootstrap/bootstrap.ts")
 mkdir -p "$out/deploys"
 chmod 700 "$out"
+# Validate the whole selected campaign first; teardown repeats its owner check
+# under each deployment lock. Missing records are permitted for initial setup.
+node "$here/soak-config.ts" preflight "${1:-}"
 
 now_ms() { date +%s%3N; }
 
@@ -495,13 +505,25 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     ls -l "$dir"
     ;;
   teardown)
-    logged teardown-web node "$root/scripts/staging/stg.ts" teardown --suffix "$base-web" || true
-    logged teardown-platform node "$root/scripts/staging/stg.ts" teardown --suffix "$base-platform" || true
-    logged teardown-bucket node "$root/scripts/staging/stg.ts" teardown --suffix "$base-r2" || true
+    teardown_args=(--owner "$owner")
+    if [ "$upgrade" -eq 1 ]; then teardown_args+=(--if-present); fi
+    for kind in web platform r2; do
+      if ! logged "teardown-$kind" node "$root/scripts/staging/stg.ts" teardown \
+        --suffix "$base-$kind" "${teardown_args[@]}"; then
+        if [ "$upgrade" -eq 1 ]; then
+          echo "run.sh: teardown failed; keeping local secrets, token and installation state for recovery" >&2
+          exit 1
+        fi
+      fi
+    done
     # The R2 token `run.sh token --create` made: deleted, not left to expire.
     if [ -s "$out/r2-token-id" ]; then
-      logged teardown-token cf user tokens delete "$(cat "$out/r2-token-id")" --force &&
-        rm -f "$out/r2-token-id" || true
+      if logged teardown-token cf user tokens delete "$(cat "$out/r2-token-id")" --force; then
+        rm -f "$out/r2-token-id"
+      elif [ "$upgrade" -eq 1 ]; then
+        echo "run.sh: token teardown failed; keeping local recovery records" >&2
+        exit 1
+      fi
     fi
     logged teardown-list node "$root/scripts/staging/stg.ts" list
     logged sweep node "$root/scripts/staging/stg.ts" sweep

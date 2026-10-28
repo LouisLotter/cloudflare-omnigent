@@ -11,7 +11,7 @@
 //                                                                    (changes as JSON on stdin)
 //   node scripts/staging/stg.ts secret-names --suffix <s>
 //   node scripts/staging/stg.ts list
-//   node scripts/staging/stg.ts teardown --suffix <s>
+//   node scripts/staging/stg.ts teardown --suffix <s> [--owner <wp>] [--if-present]
 //   node scripts/staging/stg.ts sweep [--yes]
 //
 // deploy --secrets-stdin uploads the secrets in a JSON object on stdin, {"NAME": "value", …},
@@ -175,6 +175,7 @@ function main(): void {
       idp: { type: "string" },
       suffix: { type: "string" },
       owner: { type: "string" },
+      "if-present": { type: "boolean" },
       config: { type: "string", default: join(WORKER, "wrangler.jsonc") },
       days: { type: "string", default: "7" },
       yes: { type: "boolean", default: false },
@@ -253,7 +254,10 @@ function main(): void {
     }
     case "teardown": {
       if (!values.suffix) throw new Error("teardown needs --suffix");
-      teardown(context(loadConfig(), command), resourceName(values.suffix));
+      teardown(context(loadConfig(), command), resourceName(values.suffix), {
+        ...(values.owner === undefined ? {} : { owner: values.owner }),
+        ifPresent: values["if-present"] ?? false,
+      });
       return;
     }
     case "sweep": {

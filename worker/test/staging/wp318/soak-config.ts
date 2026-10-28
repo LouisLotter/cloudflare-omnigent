@@ -14,7 +14,8 @@
 // resolve, under the bootstrap's ignored name (.cfo-bootstrap.*.jsonc), and are removed after use.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAccess, withRenderedConfig } from "../../../../scripts/bootstrap/cloud.ts";
@@ -24,14 +25,16 @@ import {
   renderWebConfig,
 } from "../../../../scripts/bootstrap/settings.ts";
 import { parseState, statePathFor } from "../../../../scripts/bootstrap/state.ts";
-import { readWranglerConfig, spawnRunner } from "../../../../scripts/staging/cloud.ts";
+import { fileStore, readWranglerConfig, spawnRunner } from "../../../../scripts/staging/cloud.ts";
+
+import { acquireLock } from "../../../../scripts/staging/lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const WORKER = join(ROOT, "worker");
 /** The namespace selected by run.sh; direct tooling retains the legacy default. */
 export function soakBase(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.CFO_SOAK_BASE ?? "wp318";
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,31}[a-z0-9])?$/.test(base) || base.includes("--")) {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?$/.test(base) || base.includes("--")) {
     throw new Error("invalid soak staging base");
   }
   return base;
@@ -56,6 +59,35 @@ export function soakInstallation() {
   const base = soakBase();
   const state = parseState(readFileSync(statePathFor(`cfo-stg-${base}-platform`), "utf8"));
   return selectedInstallation(state.installation, base);
+}
+
+/** Check every existing campaign identity before any selected cloud effect. */
+export function preflightSoak(requireInstallation = false): void {
+  const base = soakBase();
+  const owner = process.env.CFO_SOAK_OWNER;
+  if (!owner) throw new Error("soak preflight requires an owner");
+  const state =
+    process.env.CFO_STAGING_DIR ??
+    join(
+      process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
+      "cloudflare-omnigent",
+      "staging",
+    );
+  const names = ["platform", "web", "r2"].map((kind) => `cfo-stg-${base}-${kind}`).sort();
+  const release: (() => void)[] = [];
+  try {
+    for (const name of names)
+      release.push(acquireLock(join(state, "locks", `${name}.lock`), 0, "soak preflight"));
+    for (const record of fileStore(join(state, "resources.json"), "soak preflight").load()) {
+      if (names.includes(record.name) && record.owner !== owner) {
+        throw new Error(`${record.name} belongs to ${record.owner}, not ${owner}`);
+      }
+    }
+    const path = statePathFor(`cfo-stg-${base}-platform`);
+    if (requireInstallation || existsSync(path)) soakInstallation();
+  } finally {
+    for (const unlock of release.reverse()) unlock();
+  }
 }
 
 type Raw = Record<string, unknown>;
@@ -104,6 +136,10 @@ function masked(config: Raw): string {
 
 async function main(): Promise<void> {
   const [command, build] = process.argv.slice(2);
+  if (command === "preflight") {
+    preflightSoak(build === "resume");
+    return;
+  }
   const { installation, target } = soakInstallation();
   const base = (file: string) => readWranglerConfig(join(WORKER, file), WORKER).raw;
   if (command === "platform" || command === "check") {

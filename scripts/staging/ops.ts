@@ -1504,7 +1504,11 @@ function removeServiceToken(
 export function teardown(
   ctx: Context,
   name: string,
-  options: { readonly ifPresent?: boolean; readonly ifExpiredAt?: Date } = {},
+  options: {
+    readonly ifPresent?: boolean;
+    readonly ifExpiredAt?: Date;
+    readonly owner?: string;
+  } = {},
 ): void {
   assertManaged(name);
   locked(ctx, name, () => {
@@ -1512,6 +1516,9 @@ export function teardown(
     if (!found) {
       if (options.ifPresent) return;
       throw new Error(`no recorded deployment named ${name}`);
+    }
+    if (options.owner !== undefined && found.owner !== options.owner) {
+      throw new Error(`${name} belongs to ${found.owner}, not ${options.owner}`);
     }
     if (options.ifExpiredAt && expired([found], options.ifExpiredAt).length === 0) return;
     const dependents = ctx.store
