@@ -243,6 +243,29 @@ def test_no_server_means_no_sessions(fake, tmp_path: Path) -> None:
     assert len(tmux.calls) == before  # no socket: tmux is never asked
 
 
+def test_tmux_runs_as_the_account_with_a_bare_environment(tmp_path: Path, monkeypatch) -> None:
+    """As root, never a root client of the account's server; never the supervisor's variables."""
+    sock = tmp_path / "s"
+    sock.touch()
+    seen: list[dict[str, Any]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("CFO_SYNTHETIC_SUPERVISOR_ONLY", "x")
+    sessions = T.TerminalSessions(uid=1000, gid=1001, socket=sock, run=run)
+    monkeypatch.setattr(T.os, "geteuid", lambda: 0)
+    sessions.sessions()
+    assert seen[-1]["user"] == 1000 and seen[-1]["group"] == 1001
+    assert seen[-1]["extra_groups"] == []
+    assert seen[-1]["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+    monkeypatch.setattr(T.os, "geteuid", lambda: 1000)
+    sessions.sessions()
+    assert "user" not in seen[-1] and "CFO_SYNTHETIC_SUPERVISOR_ONLY" not in seen[-1]["env"]
+    assert T.TerminalSessions(uid=7).gid == 7
+
+
 # ---------------------------------------------------------------------------------------------
 # A real tmux server on the test's own socket, where tmux is installed.
 

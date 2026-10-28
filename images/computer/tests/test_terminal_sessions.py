@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import os
 import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -200,6 +201,27 @@ def test_new_for_the_next_window_ends_the_previous_ones(computer: Computer) -> N
     assert new != old
     assert computer.names() == ["w2"]
     two.close()
+
+
+def test_the_supervisors_tmux_commands_run_as_the_account(computer: Computer) -> None:
+    """Root (the supervisor) never speaks tmux's protocol to the account's server."""
+    _with_session(computer)
+    seen: list[int] = []
+    real = computer.sessions._run
+
+    def run(argv, **kwargs):
+        done = real(["/bin/sh", "-c", 'id -u; exec "$@"', "sh", *argv], **{**kwargs, "text": True})
+        seen.append(int(done.stdout.split("\n", 1)[0]))
+        rest = done.stdout.split("\n", 1)[1] if "\n" in done.stdout else ""
+        return subprocess.CompletedProcess(argv, done.returncode, rest, done.stderr)
+
+    computer.sessions._run = run
+    try:
+        assert computer.names() == ["w1"]
+        assert computer.rig.ok("terminal_end", window=1)["remaining"] == 0
+    finally:
+        computer.sessions._run = real
+    assert seen and set(seen) == {UID}
 
 
 # ---------------------------------------------------------------------------------------------

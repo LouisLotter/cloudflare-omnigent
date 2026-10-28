@@ -210,7 +210,7 @@ class Supervisor:
         self._outbox_message: dict[str, Any] | None = None
         self.terminal: subprocess.Popen[bytes] | None = None
         #: The setup terminal's sessions (WP3.28); tests point it at a socket of their own.
-        self.terminals = TerminalSessions(uid=account.uid, socket=terminal_socket)
+        self.terminals = TerminalSessions(uid=account.uid, gid=account.gid, socket=terminal_socket)
         self.sigterm = False
         layout.ensure()
         self.creds = Credentials(

@@ -12,10 +12,12 @@ Every way a stream may stop for good must therefore end the session here, on the
   attached for ``idle_s`` (45 s: the bridge's 30-second grace plus a margin), and any session
   older than ``max_age_s`` (30 minutes, the window's deadline).
 
-The supervisor runs as root and reaches the person's tmux server through its socket (tmux lets
-its owner and root in). It never reads what a session holds; it lists names, times and attached
-client counts, and kills. ``end_all`` does not depend on the server answering: whatever tmux
-server on this socket is still alive after ``kill-server`` is killed by signal.
+The supervisor runs as root, but its tmux commands run as the person's account, the server's
+owner: the socket's directory belongs to that account, and tmux's protocol lets a server have its
+client run a command (``detach-client -E``), so a root client is never pointed at it. It never
+reads what a session holds; it lists names, times and attached client counts, and kills.
+``end_all`` does not depend on the server answering: whatever tmux server on this socket is still
+alive after ``kill-server`` is killed by signal (as root).
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ class TerminalSessions:
         self,
         *,
         uid: int,
+        gid: int | None = None,
         socket: Path | None = None,
         tmux: str = TMUX,
         run: Runner = subprocess.run,
@@ -78,6 +81,7 @@ class TerminalSessions:
         timeout_s: float = TMUX_TIMEOUT_S,
     ) -> None:
         self.uid = uid
+        self.gid = uid if gid is None else gid
         self.socket = socket if socket is not None else socket_path(uid)
         self.tmux = tmux
         self._run = run
@@ -92,6 +96,12 @@ class TerminalSessions:
 
     # -- tmux --------------------------------------------------------------------------------
 
+    def _as_account(self) -> dict[str, object]:
+        """As root, tmux runs as the account (never a root client of the account's server)."""
+        if os.geteuid() != 0 or self.uid == 0:
+            return {}
+        return {"user": self.uid, "group": self.gid, "extra_groups": []}
+
     def _tmux(self, *args: str) -> subprocess.CompletedProcess[str]:
         try:
             return self._run(
@@ -101,6 +111,8 @@ class TerminalSessions:
                 timeout=self.timeout_s,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                **self._as_account(),
             )
         except subprocess.TimeoutExpired as exc:
             raise NotAnswering(args[0]) from exc
