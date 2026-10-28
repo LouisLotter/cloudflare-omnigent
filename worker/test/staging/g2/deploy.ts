@@ -27,6 +27,7 @@ import { withRenderedConfig } from "../../../../scripts/bootstrap/cloud.ts";
 import {
   type Installation,
   newInstallationId,
+  planInstallation,
   renderPlatformConfig,
   renderWebConfig,
 } from "../../../../scripts/bootstrap/settings.ts";
@@ -103,28 +104,30 @@ function deploy(emptyReplica: boolean): number {
 
 async function dryRun(outdir: string): Promise<number> {
   const accountId = "0".repeat(32);
-  const plan: Installation = {
-    installationId: newInstallationId((n) => new Uint8Array(randomBytes(n))),
-    accountId,
-    platformWorker: PLATFORM,
-    webWorker: `cfo-stg-${BASE}-web`,
-    hostname: `cfo-stg-${BASE}-web.example.com`,
-    ownerPin: await makeOwnerPin("owner@example.com", new Uint8Array(randomBytes(32))),
-    ownerUsername: "owner",
-    replica: {
-      url: `s3://${BUCKET}/omnigent`,
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+  // As `bootstrap.ts plan` makes it, with today's derived names (the bucket tag, D33).
+  const plan = planInstallation(
+    {
+      installationId: newInstallationId((n) => new Uint8Array(randomBytes(n))),
+      accountId,
+      platformWorker: PLATFORM,
+      webWorker: `cfo-stg-${BASE}-web`,
+      hostname: `cfo-stg-${BASE}-web.example.com`,
+      ownerPin: await makeOwnerPin("owner@example.com", new Uint8Array(randomBytes(32))),
+      ownerUsername: "owner",
+      replicaUrl: `s3://${BUCKET}/omnigent`,
+      replicaEndpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      artifactsUrl: `s3://${ARTIFACT_BUCKET}`,
+      target: {
+        kind: "staging",
+        owner: OWNER,
+        platformSuffix: PLATFORM_SUFFIX,
+        webSuffix: `${BASE}-web`,
+        days: 1,
+      },
+      plannedAt: new Date().toISOString(),
     },
-    artifacts: { url: `s3://${ARTIFACT_BUCKET}` },
-    target: {
-      kind: "staging",
-      owner: OWNER,
-      platformSuffix: PLATFORM_SUFFIX,
-      webSuffix: `${BASE}-web`,
-      days: 1,
-    },
-    plannedAt: new Date().toISOString(),
-  };
+    base("wrangler.jsonc"),
+  );
   const access = { teamDomain: "example.cloudflareaccess.com", aud: "a".repeat(64) };
   const configs: [string, string, Raw, boolean][] = [
     ["holder", HOLDER, base("test/staging/g2/bucket/wrangler.jsonc"), true],
