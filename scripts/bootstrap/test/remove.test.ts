@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock } from "../../staging/lock.ts";
 import type { BootstrapState } from "../machine.ts";
-import { type ApiToken, r2TokenName, r2TokenResources, TOKEN_SETTLE_MS } from "../r2-token.ts";
+import { type ApiToken, r2TokenName, r2TokenResources } from "../r2-token.ts";
 import {
+  installationStateFiles,
   removeInstallationToken,
   removeStagingTokens,
   stagingTokenDeployment,
@@ -17,6 +18,7 @@ import { FakeWorld, MemoryStore, R2_GROUP_ID } from "./fake-cloud.ts";
 import { accountPlan, INSTALLATION, stagingPlan } from "./fixtures.ts";
 
 const ACCOUNT = "1".repeat(32);
+const AT = Date.UTC(2026, 9, 28, 12, 0, 0);
 let dir: string;
 let saved: string | undefined;
 beforeEach(() => {
@@ -31,9 +33,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function tokenFor(plan: Installation): Omit<ApiToken, "id" | "ipLimited"> {
+function tokenFor(plan: Installation, at = AT): Omit<ApiToken, "id" | "ipLimited"> {
   return {
-    name: r2TokenName(plan),
+    name: r2TokenName(plan, at),
     status: "active",
     policies: [
       { effect: "allow", permissionGroups: [R2_GROUP_ID], resources: r2TokenResources(plan) },
@@ -41,19 +43,22 @@ function tokenFor(plan: Installation): Omit<ApiToken, "id" | "ipLimited"> {
   };
 }
 
-/** A world holding the installation's token, and a state that records it. */
-function withToken(plan: Installation) {
+/** A world holding the installation's token and an older one, and a state recording both. */
+function withTokens(plan: Installation, oauth: boolean) {
   const world = new FakeWorld(plan);
+  world.oauthLogin = oauth;
+  const old = world.addToken(tokenFor(plan, AT - 60_000));
   const id = world.addToken(tokenFor(plan));
   const state: BootstrapState = {
     stateVersion: 1,
     installation: plan,
     journal: {
       platformDeployedAt: "2026-10-28T12:00:00.000Z",
-      r2Token: { name: r2TokenName(plan), id, createdAt: "2026-10-28T11:59:00.000Z" },
+      r2Token: { name: r2TokenName(plan, AT), id, createdAt: "2026-10-28T12:00:00.000Z" },
+      r2TokensToDelete: [{ name: r2TokenName(plan, AT - 60_000), id: old }],
     },
   };
-  return { world, id, state };
+  return { world, id, old, state };
 }
 
 const stagingS3 = (overrides: Partial<Installation> = {}) =>
@@ -63,72 +68,85 @@ const stagingS3 = (overrides: Partial<Installation> = {}) =>
     ...overrides,
   });
 
+const DELETE_STEP =
+  /^Cloudflare does not let this cf login delete API tokens, so delete .* by hand: open https:\/\/dash\.cloudflare\.com\/profile\/api-tokens, open the three-dot menu next to (it|each), and choose Delete\.$/;
+
 describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
-  function options(store: MemoryStore, world: FakeWorld, lines: string[], slept: number[] = []) {
+  function options(store: MemoryStore, world: FakeWorld, lines: string[]) {
     return {
       store,
       api: world.tokenApi(),
       workerExists: () => true,
       force: false,
-      sleep: (ms: number) => {
-        slept.push(ms);
-      },
       log: (line: string) => lines.push(line),
     };
   }
 
-  it("refuses while a Worker of that name exists, unless told to go ahead", async () => {
-    const { world, id, state } = withToken(await accountPlan());
+  it("refuses while a Worker of that name exists, unless told to go ahead; deletes both where allowed", async () => {
+    const { world, state } = withTokens(await accountPlan(), false);
     const store = new MemoryStore(state);
     const lines: string[] = [];
     const base = options(store, world, lines);
     expect(() => removeInstallationToken(base)).toThrow(
       /a Worker named cloudflare-omnigent still exists, .* or pass --yes to cut it off now/,
     );
-    expect(world.tokens.has(id)).toBe(true);
-    expect(removeInstallationToken({ ...base, force: true })).toBe(1);
+    expect(world.tokens.size).toBe(2);
+    expect(removeInstallationToken({ ...base, force: true })).toEqual({ deleted: 2, left: [] });
     expect(world.tokens.size).toBe(0);
     expect(store.state.journal.r2Token).toBeUndefined();
-    // The rest of the journal stays.
+    expect(store.state.journal.r2TokensToDelete).toBeUndefined();
     expect(store.state.journal.platformDeployedAt).toBe("2026-10-28T12:00:00.000Z");
-    expect(lines).toEqual([`deleted the R2 token ${r2TokenName(state.installation)}`]);
-    // Again: nothing recorded, nothing to do.
-    expect(removeInstallationToken({ ...base, force: true })).toBe(0);
+    expect(removeInstallationToken({ ...base, force: true })).toEqual({ deleted: 0, left: [] });
     expect(lines.at(-1)).toBe("no R2 token recorded for this installation: nothing to delete");
   });
 
-  it("waits for a create left in flight, then deletes by name what landed (Codex r1-1)", async () => {
+  it("an OAuth login (403 on delete): names each token, keeps them recorded, and reports them left", async () => {
     const plan = await accountPlan();
-    const { world, state } = withToken(plan);
-    const store = new MemoryStore({
-      ...state,
-      journal: { r2Token: { name: r2TokenName(plan), createStartedAt: "2026-10-28T11:00:00Z" } },
-    });
+    const { world, id, old, state } = withTokens(plan, true);
+    const store = new MemoryStore(state);
     const lines: string[] = [];
-    const slept: number[] = [];
-    const base = { ...options(store, world, lines, slept), workerExists: () => false };
-    expect(removeInstallationToken(base)).toBe(1);
-    expect(slept).toEqual([TOKEN_SETTLE_MS]);
-    expect(world.tokens.size).toBe(0);
-    // A recorded token already gone: no wait, and said so.
-    store.state = state;
-    expect(removeInstallationToken(base)).toBe(0);
-    expect(slept).toEqual([TOKEN_SETTLE_MS]);
-    expect(lines.at(-1)).toBe(`the R2 token ${r2TokenName(plan)} was already gone`);
+    const result = removeInstallationToken({ ...options(store, world, lines), force: true });
+    expect(result.deleted).toBe(0);
+    expect(result.left.map((t) => t.id)).toEqual([old, id]);
+    expect(world.tokens.size).toBe(2);
+    expect(store.state.journal.r2Token).toBeUndefined();
+    expect(store.state.journal.r2TokensToDelete).toEqual(result.left);
+    expect(lines).toEqual([expect.stringMatching(DELETE_STEP)]);
+    expect(lines[0]).toContain(
+      `each of the tokens named exactly ${r2TokenName(plan, AT - 60_000)}; ${r2TokenName(plan, AT)} by hand`,
+    );
+    // Once the person deleted them, a later run finds them gone.
+    world.oauthLogin = false;
+    world.tokens.clear();
+    expect(removeInstallationToken({ ...options(store, world, lines), force: true })).toEqual({
+      deleted: 2,
+      left: [],
+    });
+    expect(store.state.journal.r2TokensToDelete).toBeUndefined();
   });
 
-  it("keeps the record when Cloudflare refuses, so that a later run can delete it", async () => {
-    const { world, state } = withToken(await accountPlan());
-    world.tokensForbidden = true;
+  it("needs no --yes for tokens no Worker uses any more, and then seeks none by name", async () => {
+    const plan = await accountPlan();
+    const { world, id, state } = withTokens(plan, false);
+    const { r2Token: _current, ...journal } = state.journal;
+    const store = new MemoryStore({ ...state, journal });
+    // The Worker exists: the token of the installation's name it may use is left alone.
+    expect(removeInstallationToken(options(store, world, [])).deleted).toBe(1);
+    expect([...world.tokens.keys()]).toEqual([id]);
+  });
+
+  it("also deletes a token of the installation's name that a lost answer left unrecorded, where it may list", async () => {
+    const plan = await accountPlan();
+    const { world, state } = withTokens(plan, false);
+    world.addToken(tokenFor(plan, AT + 60_000));
+    world.addToken({ ...tokenFor(plan), name: "someone-else" });
     const store = new MemoryStore(state);
-    expect(() =>
-      removeInstallationToken({ ...options(store, world, []), workerExists: () => false }),
-    ).toThrow(/403/);
-    expect(store.state.journal.r2Token).toEqual(state.journal.r2Token);
+    expect(removeInstallationToken({ ...options(store, world, []), force: true }).deleted).toBe(3);
+    expect([...world.tokens.values()].map((t) => t.token.name)).toEqual(["someone-else"]);
   });
 });
 
-describe("stagingTokenDeployment: which tokens are a staging installation's", () => {
+describe("stagingTokenDeployment: which listed tokens are a staging installation's", () => {
   it("reads the deployment from the name, only for the staging account's buckets", async () => {
     const plan = await stagingS3();
     const token = { ...tokenFor(plan), id: "t", ipLimited: false };
@@ -141,11 +159,11 @@ describe("stagingTokenDeployment: which tokens are a staging installation's", ()
     expect(stagingTokenDeployment(elsewhere, ACCOUNT)).toBeUndefined();
     expect(stagingTokenDeployment({ ...token, policies: [] }, ACCOUNT)).toBeUndefined();
     for (const name of [
-      `cloudflare-omnigent-r2--${INSTALLATION}`,
-      "cfo-stg-wp24-platform-r2--ins_short",
-      `cfo-stg-wp24-platform-r2--${INSTALLATION}x`,
-      `cfo-stg-wp24-platform-r2--${INSTALLATION.replace("b", "u")}`,
-      `my cfo-stg-wp24-platform-r2--${INSTALLATION}`,
+      `cloudflare-omnigent-r2--${INSTALLATION}--20261028T120000Z`,
+      `cfo-stg-wp24-platform-r2--${INSTALLATION}`,
+      `cfo-stg-wp24-platform-r2--ins_short--20261028T120000Z`,
+      `cfo-stg-wp24-platform-r2--${INSTALLATION.replace("b", "u")}--20261028T120000Z`,
+      `my cfo-stg-wp24-platform-r2--${INSTALLATION}--20261028T120000Z`,
     ]) {
       expect(stagingTokenDeployment({ ...token, name }, ACCOUNT)).toBeUndefined();
     }
@@ -153,72 +171,90 @@ describe("stagingTokenDeployment: which tokens are a staging installation's", ()
 });
 
 describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
-  async function staging(registry: string[] = []) {
+  async function staging(oauth: boolean, registry: string[] = []) {
     const plan = await stagingS3();
-    const world = new FakeWorld(plan);
-    const mine = world.addToken(tokenFor(plan));
-    const other = await stagingS3({
-      installationId: "ins_00000000000000000000000000",
-      platformWorker: "cfo-stg-wp99-platform",
-      webWorker: "cfo-stg-wp99-web",
-      target: {
-        kind: "staging",
-        owner: "WP9.9",
-        platformSuffix: "wp99-platform",
-        webSuffix: "wp99-web",
-        days: 1,
-      },
-    });
-    const live = world.addToken(tokenFor(other));
-    const account = world.addToken(tokenFor(await accountPlan()));
-    const lines: string[] = [];
+    const { world, id, old, state } = withTokens(plan, oauth);
     const statePath = join(dir, "installations", "cfo-stg-wp24-platform.json");
-    fileStateStore(statePath).save({
-      stateVersion: 1,
-      installation: plan,
-      journal: { r2Token: { name: r2TokenName(plan), id: mine } },
-    });
+    fileStateStore(statePath).save(state);
+    const lines: string[] = [];
     const options = {
       accountId: ACCOUNT,
       api: world.tokenApi(),
       lock: (worker: string) => acquireLock(workerLockPath(ACCOUNT, worker), 0, "test"),
       apply: true,
       log: (line: string) => lines.push(line),
-      statePath: (worker: string) => join(dir, "installations", `${worker}.json`),
+      stateFiles: () => installationStateFiles(join(dir, "installations")),
     };
     const gone = (d: string) => !registry.includes(d);
-    return { plan, world, mine, live, account, lines, statePath, options, gone };
+    return { plan, world, id, old, lines, statePath, options, gone };
   }
 
-  it("deletes the token of each removed deployment, by name, and forgets its record", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
+  it("a login that may: deletes the recorded tokens and any named for the deployment", async () => {
+    const s = await staging(false);
+    const extra = s.world.addToken(tokenFor(s.plan, AT + 120_000));
     const result = removeStagingTokens(s.gone, s.options);
-    expect(result).toEqual({ found: [r2TokenName(s.plan)], deleted: 1, problems: [] });
-    expect([...s.world.tokens.keys()].sort()).toEqual([s.live, s.account].sort());
+    expect(result.deleted).toBe(3);
+    expect(result.left).toEqual([]);
+    expect(result.problems).toEqual([]);
+    expect(s.world.tokens.has(extra)).toBe(false);
+    expect(fileStateStore(s.statePath).load().journal.r2TokensToDelete).toBeUndefined();
     expect(fileStateStore(s.statePath).load().journal.r2Token).toBeUndefined();
-    expect(s.lines).toEqual([`cfo-stg-wp24-platform: deleted the R2 token ${r2TokenName(s.plan)}`]);
+  });
+
+  it("an OAuth login: names the tokens with the click, keeps them recorded, and says when they expire", async () => {
+    const s = await staging(true);
+    const store = fileStateStore(s.statePath);
+    const state = store.load();
+    store.save({
+      ...state,
+      journal: {
+        ...state.journal,
+        r2Token: {
+          ...state.journal.r2Token,
+          name: String(state.journal.r2Token?.name),
+          expiresOn: "2026-10-30T12:00:00Z",
+        },
+      },
+    });
+    const result = removeStagingTokens(s.gone, s.options);
+    expect(result.deleted).toBe(0);
+    expect(result.left.map((t) => t.id)).toEqual([s.old, s.id]);
+    expect(store.load().journal.r2TokensToDelete).toEqual(result.left);
+    expect(s.lines).toEqual([
+      expect.stringMatching(
+        /^cfo-stg-wp24-platform: Cloudflare does not let this cf login delete API tokens/,
+      ),
+    ]);
+    expect(s.lines[0]).toContain("(or leave it: it expires on 2026-10-30T12:00:00Z)");
   });
 
   it("only reports without --yes", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
+    const s = await staging(true);
     const result = removeStagingTokens(s.gone, { ...s.options, apply: false });
-    expect(result).toEqual({ found: [r2TokenName(s.plan)], deleted: 0, problems: [] });
-    expect(s.world.tokens.size).toBe(3);
-    expect(s.lines).toEqual([
-      `cfo-stg-wp24-platform: the R2 token ${r2TokenName(s.plan)} outlived its staging installation; sweep --yes deletes it`,
-    ]);
+    expect(result.found).toEqual([r2TokenName(s.plan, AT - 60_000), r2TokenName(s.plan, AT)]);
+    expect(result.deleted).toBe(0);
+    expect(s.lines).toHaveLength(2);
+    expect(s.lines[0]).toContain("outlived its staging installation; sweep --yes deletes it");
   });
 
-  it("finds a token whatever state file the bootstrap used, or none (Codex r1-4)", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
-    rmSync(s.statePath);
-    const { statePath: _custom, ...byDefault } = s.options;
-    expect(removeStagingTokens(s.gone, byDefault).deleted).toBe(1);
-    expect(s.world.tokens.has(s.mine)).toBe(false);
+  it("leaves a deployment the registry still holds, another account's plan and an account installation alone", async () => {
+    const s = await staging(false, ["cfo-stg-wp24-platform"]);
+    expect(removeStagingTokens(s.gone, s.options).found).toEqual([]);
+    const t = await staging(false);
+    expect(removeStagingTokens(t.gone, { ...t.options, accountId: "2".repeat(32) }).found).toEqual(
+      [],
+    );
+    const account = await accountPlan();
+    fileStateStore(join(dir, "installations", "cloudflare-omnigent.json")).save({
+      stateVersion: 1,
+      installation: account,
+      journal: { r2Token: { name: r2TokenName(account, AT), id: "x" } },
+    });
+    expect(removeStagingTokens(t.gone, t.options).found).not.toContain(r2TokenName(account, AT));
   });
 
-  it("keeps a token whose installation a bootstrap run holds, and says so", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
+  it("keeps a token whose installation a bootstrap run holds, and the next sweep finishes it", async () => {
+    const s = await staging(false);
     const release = acquireLock(workerLockPath(ACCOUNT, "cfo-stg-wp24-platform"), 0, "a run");
     try {
       const result = removeStagingTokens(s.gone, s.options);
@@ -226,43 +262,35 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
       expect(result.problems).toEqual([
         "cfo-stg-wp24-platform: a bootstrap run holds this installation; its R2 token was kept",
       ]);
-      expect(s.world.tokens.has(s.mine)).toBe(true);
     } finally {
       release();
     }
-    // The next sweep finishes it (Codex r1-3).
-    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(1);
+    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(2);
   });
 
-  it("checks again under the lock: a deployment that came back keeps its token", async () => {
-    const s = await staging();
+  it("checks again under the locks, and reads the records afresh (Codex r2-2)", async () => {
+    const s = await staging(false);
     let calls = 0;
-    const gone = (d: string) => d === "cfo-stg-wp24-platform" && calls++ === 0;
-    expect(removeStagingTokens(gone, s.options)).toEqual({
-      found: [r2TokenName(s.plan)],
-      deleted: 0,
-      problems: [],
-    });
-    expect(s.world.tokens.has(s.mine)).toBe(true);
-  });
-
-  it("lists again under the locks, and keeps a newer request's record until it settles (Codex r2-2)", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
+    const comesBack = (d: string) => d === "cfo-stg-wp24-platform" && calls++ === 0;
+    expect(removeStagingTokens(comesBack, s.options).deleted).toBe(0);
+    expect(s.world.tokens.size).toBe(2);
+    // A run retired a token and began a create between the reading and the locks.
+    const store = fileStateStore(s.statePath);
     const api = s.world.tokenApi();
     let lists = 0;
-    // Between the first listing and the locks, a bootstrap run deleted the token and sent a
-    // create that has not been answered.
     const racing = {
       ...api,
       list: () => {
         const listed = api.list();
         if (++lists === 1) {
-          s.world.tokens.delete(s.mine);
-          fileStateStore(s.statePath).save({
-            stateVersion: 1,
-            installation: s.plan,
+          store.save({
+            ...store.load(),
             journal: {
-              r2Token: { name: r2TokenName(s.plan), createStartedAt: "2026-10-28T12:00:00Z" },
+              r2Token: {
+                name: r2TokenName(s.plan, AT + 60_000),
+                createStartedAt: "2026-10-28T12:01:00Z",
+              },
+              r2TokensToDelete: [{ name: r2TokenName(s.plan, AT), id: s.id }],
             },
           });
         }
@@ -270,68 +298,28 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
       },
     };
     const result = removeStagingTokens(s.gone, { ...s.options, api: racing });
-    expect(result).toEqual({ found: [r2TokenName(s.plan)], deleted: 0, problems: [] });
-    expect(lists).toBe(2);
-    expect(fileStateStore(s.statePath).load().journal.r2Token?.createStartedAt).toBe(
-      "2026-10-28T12:00:00Z",
+    expect(result.problems).toEqual([]);
+    // The fresh records were used: the unanswered create was looked for by name (not found,
+    // so dropped where listing is allowed), and the old token deleted.
+    expect(s.world.tokens.has(s.id)).toBe(false);
+    expect(store.load().journal.r2TokensToDelete).toBeUndefined();
+  });
+
+  it("finds listed tokens with no state file, and reports a broken state file", async () => {
+    const s = await staging(false);
+    rmSync(s.statePath);
+    writeFileSync(join(dir, "installations", "broken.json"), "{");
+    const result = removeStagingTokens(s.gone, s.options);
+    expect(result.deleted).toBe(2);
+    expect(result.problems).toEqual(
+      expect.arrayContaining([expect.stringContaining("broken.json")]),
     );
-    // A token made meanwhile under the name is deleted too, from the fresh listing.
-    const t = await staging(["cfo-stg-wp99-platform"]);
-    let first = true;
-    const making = {
-      ...t.world.tokenApi(),
-      list: () => {
-        const listed = t.world.tokenApi().list();
-        if (first) {
-          first = false;
-          t.world.addToken(tokenFor(t.plan));
-        }
-        return listed;
-      },
-    };
-    expect(removeStagingTokens(t.gone, { ...t.options, api: making }).deleted).toBe(2);
-    expect([...t.world.tokens.keys()].sort()).toEqual([t.live, t.account].sort());
   });
 
-  it("forgets only a settled record of that installation, in that account, whose token is gone", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
-    // A roll in flight stays recorded.
-    const store = fileStateStore(s.statePath);
-    store.save({
-      stateVersion: 1,
-      installation: s.plan,
-      journal: {
-        r2Token: { name: r2TokenName(s.plan), id: s.mine, rollStartedAt: "2026-10-28T12:00:00Z" },
-      },
-    });
-    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(1);
-    expect(store.load().journal.r2Token?.rollStartedAt).toBeDefined();
-    // A record of a token Cloudflare still lists (not this deployment's by name) stays.
-    const u = await staging(["cfo-stg-wp99-platform"]);
-    fileStateStore(u.statePath).save({
-      stateVersion: 1,
-      installation: u.plan,
-      journal: { r2Token: { name: r2TokenName(u.plan), id: u.live } },
-    });
-    expect(removeStagingTokens(u.gone, u.options).deleted).toBe(1);
-    expect(fileStateStore(u.statePath).load().journal.r2Token?.id).toBe(u.live);
-    // Another account's plan under the same name stays.
-    const v = await staging(["cfo-stg-wp99-platform"]);
-    const elsewhere = { ...v.plan, accountId: "2".repeat(32) };
-    fileStateStore(v.statePath).save({
-      stateVersion: 1,
-      installation: elsewhere,
-      journal: { r2Token: { name: r2TokenName(v.plan), id: v.mine } },
-    });
-    expect(removeStagingTokens(v.gone, v.options).deleted).toBe(1);
-    expect(fileStateStore(v.statePath).load().journal.r2Token?.id).toBe(v.mine);
-  });
-
-  it("reports a failed delete as a problem, and keeps the record", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
-    const api = s.world.tokenApi();
+  it("reports a failed delete as a problem, and keeps the records", async () => {
+    const s = await staging(false);
     const failing = {
-      ...api,
+      ...s.world.tokenApi(),
       remove: () => {
         throw new Error("cf user tokens delete failed: [10000] boom");
       },
@@ -340,33 +328,21 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
     expect(result.problems).toEqual([
       "cfo-stg-wp24-platform: cf user tokens delete failed: [10000] boom",
     ]);
-    expect(fileStateStore(s.statePath).load().journal.r2Token?.id).toBe(s.mine);
-  });
-
-  it("leaves a state file that is not that staging installation's alone", async () => {
-    const s = await staging(["cfo-stg-wp99-platform"]);
-    const foreign = await accountPlan();
-    fileStateStore(s.statePath).save({
-      stateVersion: 1,
-      installation: foreign,
-      journal: { r2Token: { name: r2TokenName(foreign) } },
-    });
-    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(1);
-    expect(fileStateStore(s.statePath).load().journal.r2Token).toEqual({
-      name: r2TokenName(foreign),
-    });
-    // A staging state file without a record is left as it is.
-    const plan = await stagingS3();
-    fileStateStore(s.statePath).save({ stateVersion: 1, installation: plan, journal: {} });
-    s.world.addToken(tokenFor(plan));
-    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(1);
-    expect(fileStateStore(s.statePath).load().journal).toEqual({});
+    expect(fileStateStore(s.statePath).load().journal.r2Token?.id).toBe(s.id);
   });
 });
 
-describe("withInstallationLocks", () => {
+describe("installationStateFiles and withInstallationLocks", () => {
+  it("lists the JSON state files, or none", () => {
+    expect(installationStateFiles(join(dir, "none"))).toEqual([]);
+    mkdirSync(join(dir, "i"));
+    writeFileSync(join(dir, "i", "a.json"), "{}");
+    writeFileSync(join(dir, "i", "a.json.1.tmp"), "{}");
+    expect(installationStateFiles(join(dir, "i"))).toEqual([join(dir, "i", "a.json")]);
+  });
+
   it("releases the locks after use, and after a failure", async () => {
-    const store = new MemoryStore(withToken(await accountPlan()).state);
+    const store = new MemoryStore(withTokens(await accountPlan(), false).state);
     expect(withInstallationLocks(store, "test", () => 7)).toBe(7);
     expect(() =>
       withInstallationLocks(store, "test", () => {

@@ -12,8 +12,8 @@
 // What it never does: create, change or delete an Access application, policy or service
 // token; send a request to the installation's hostname; create a Worker by a secret change;
 // delete or empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the
-// plan, and the installation's own R2 user API token (r2-token.ts, through `cf user tokens`),
-// which it also rolls or deletes; it never touches another token. A token's value comes back on
+// plan, and the installation's own R2 user API tokens (r2-token.ts, through `cf user tokens`),
+// which it also deletes where Cloudflare allows; it never touches another token. A token's value comes back on
 // cf's captured stdout and never leaves this process except as the Worker's secrets, on
 // descriptor 3. The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`),
 // which fails for a missing Worker, where `wrangler secret bulk` would create a draft one.
@@ -241,8 +241,9 @@ export function apiTokenOf(entry: unknown): ApiToken | undefined {
 
 /**
  * The installer's user API tokens through `cf user tokens` (WP3.25). Every answer is captured,
- * never shown; a created or rolled token's value stays in this process. Its arguments carry the
- * name, the policies and the expiry, none of them secret.
+ * never shown; a created token's value stays in this process. Its arguments carry the name, the
+ * policies and the expiry, none of them secret. A 403 is TokensUnavailable: cf's OAuth login
+ * may create tokens but not list or delete them.
  */
 export function cfTokenApi(run: Runner): TokenApi {
   return {
@@ -307,19 +308,6 @@ export function cfTokenApi(run: Runner): TokenApi {
         throw new Error("cf user tokens create answered without the token's ID and value");
       }
       return { id, value };
-    },
-    roll: (id) => {
-      const answer = tokenCf(run, ["user", "tokens", "roll", id, "--force"]);
-      const value =
-        typeof answer === "string"
-          ? answer
-          : answer !== null && typeof answer === "object"
-            ? text(answer as Record<string, unknown>, "value")
-            : undefined;
-      if (value === undefined || value === "") {
-        throw new Error("cf user tokens roll answered without the token's new value");
-      }
-      return value;
     },
     remove: (id) => {
       const args = ["user", "tokens", "delete", id, "--force"];

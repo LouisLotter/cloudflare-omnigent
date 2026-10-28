@@ -50,7 +50,7 @@ export const R2_GROUP_ID = `${"0".repeat(31)}9`;
 export interface CrashPoint {
   /**
    * The call: deployPlatform, deployWeb, updateSecrets, access, secretNames, logs, save, and
-   * the token calls tokenGroup, tokenList, tokenCreate, tokenRoll and tokenRemove.
+   * the token calls tokenGroup, tokenList, tokenCreate and tokenRemove.
    */
   readonly call: string;
   /** Which occurrence of it (1 is the first). */
@@ -110,10 +110,15 @@ export class FakeWorld {
   /** Cloudflare answers 403 to every token call: a login that may not make tokens. */
   tokensForbidden = false;
   /**
+   * Cloudflare answers 403 to listing and deleting tokens, but lets the login make them: cf's
+   * OAuth login, as found on 28 Oct (WP3.25). The default, as for the owner.
+   */
+  oauthLogin = true;
+  /**
    * A token request whose client gives up (cf fails with a timeout) while the request itself
    * takes effect `afterMs` later, as a request left in flight by a stopped run may.
    */
-  late: { call: "tokenCreate" | "tokenRoll"; nth: number; afterMs: number } | undefined;
+  late: { call: "tokenCreate"; nth: number; afterMs: number } | undefined;
   #landing: { due: number; apply: () => void }[] = [];
   #nextVersion = 1;
   #nextToken = 1;
@@ -290,13 +295,14 @@ export class FakeWorld {
   tokenApi(): TokenApi {
     const call = <T>(name: string, effect: () => T): T => {
       const n = this.#enter(name);
-      if (this.tokensForbidden) throw new TokensUnavailable("Cloudflare refused (403)");
+      const managing = name === "tokenList" || name === "tokenRemove";
+      if (this.tokensForbidden || (this.oauthLogin && managing)) {
+        throw new TokensUnavailable("Cloudflare refused (403)");
+      }
       if (this.late?.call === name && this.late.nth === n) {
         this.#landing.push({ due: this.now + this.late.afterMs, apply: () => void effect() });
         this.late = undefined;
-        throw new Error(
-          `cf user tokens ${name === "tokenCreate" ? "create" : "roll"} failed: timeout`,
-        );
+        throw new Error("cf user tokens create failed: timeout");
       }
       const result = effect();
       this.#leave(name, n);
@@ -329,13 +335,6 @@ export class FakeWorld {
             value,
           });
           return { id, value };
-        }),
-      roll: (id) =>
-        call("tokenRoll", () => {
-          const entry = this.tokens.get(id);
-          if (entry === undefined) throw new Error("cf user tokens roll failed: [1003]");
-          entry.value = `${entry.value.replace(/-\d+$/, "")}-${Number(/-(\d+)$/.exec(entry.value)?.[1] ?? 0) + 1}`;
-          return entry.value;
         }),
       remove: (id) => call("tokenRemove", () => (this.tokens.delete(id) ? "deleted" : "absent")),
     };

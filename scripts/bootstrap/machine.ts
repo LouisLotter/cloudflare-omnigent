@@ -7,7 +7,9 @@
 //      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`).
 //      The R2 credentials come from the installation's own user API token, which the run makes
 //      with the installer's `cf` login just before this deploy (r2-token.ts), unless the
-//      installer supplied a token's values. A login that may not make tokens (403) gets the
+//      installer supplied a token's values. A token made earlier whose pair never reached the
+//      Worker is retired: deleted where Cloudflare allows it, otherwise named to the person
+//      with the one click that deletes it. A login that may not make tokens (403) gets the
 //      dashboard step in one sentence, and is asked for that token's two values;
 //   2. reads the hostname's Access application and checks that it is owner-only (no bypass, no
 //      service token, the owner's pin as its one identity) and sets SameSite=lax;
@@ -49,9 +51,13 @@ import {
   verifyRelease,
 } from "./events.ts";
 import {
-  ensureR2Token,
+  type EnsureContext,
+  type LeftToken,
+  makeR2Token,
+  manualDeletion,
   manualR2Step,
   type RecordedToken,
+  retireR2Token,
   type S3Credentials,
   type TokenApi,
   TokensUnavailable,
@@ -152,6 +158,8 @@ export interface Journal {
   readonly verifiedAt?: string;
   /** The installation's R2 user API token, when the bootstrap made it: its ID, never a value. */
   readonly r2Token?: RecordedToken;
+  /** Tokens the bootstrap made and no longer uses, which Cloudflare did not let it delete. */
+  readonly r2TokensToDelete?: readonly LeftToken[];
 }
 
 export interface BootstrapState {
@@ -298,6 +306,30 @@ export async function runBootstrap(
     state = { ...state, journal: { ...state.journal, ...change } };
     ctx.store.save(state);
   };
+  // The token fields are replaced whole, and left out when empty.
+  const tokens: EnsureContext["record"] = (current, left) => {
+    const { r2Token: _current, r2TokensToDelete: _left, ...rest } = state.journal;
+    state = {
+      ...state,
+      journal: {
+        ...rest,
+        ...(current === undefined ? {} : { r2Token: current }),
+        ...(left.length === 0 ? {} : { r2TokensToDelete: left }),
+      },
+    };
+    ctx.store.save(state);
+  };
+  const tokenContext = (api: TokenApi): EnsureContext => ({
+    api,
+    plan,
+    recorded: () => ({
+      current: state.journal.r2Token,
+      left: state.journal.r2TokensToDelete ?? [],
+    }),
+    record: tokens,
+    now: ctx.now,
+    log: ctx.log,
+  });
   const names = async (worker = plan.platformWorker) => {
     const listed = await ctx.cloud.secretNames(worker);
     return listed === null ? null : new Set(listed);
@@ -371,18 +403,17 @@ export async function runBootstrap(
           {
             ...given,
             ...r2Supplied(
-              await r2Credentials(
-                { ...ctx, r2Tokens: ctx.r2Tokens as TokenApi },
-                plan,
-                present,
-                () => state,
-                record,
-              ),
+              await r2Credentials(ctx, tokenContext(ctx.r2Tokens as TokenApi), present),
             ),
           },
           cookie,
         )
       : preview;
+    if (lacksR2 && !makesToken && ctx.r2Tokens !== undefined && !holdsR2(present)) {
+      // The installer's own values replace a token made earlier, whose value is gone.
+      const left = retireR2Token(tokenContext(ctx.r2Tokens));
+      if (left.length > 0) ctx.log(manualDeletion(left));
+    }
     if (makesToken) {
       // The real values, as the checks above saw stand-ins (a hand-made token's are typed in).
       const final = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
@@ -511,24 +542,27 @@ function r2Supplied(pair: S3Credentials): SuppliedSecrets {
 
 const STAND_IN_PAIR: S3Credentials = { accessKeyId: "stand-in", secretAccessKey: "stand-in" };
 
+function holdsR2(present: ReadonlySet<string>): boolean {
+  return R2_SECRET_NAMES.some((name) => present.has(name));
+}
+
 /**
- * The R2 key pair for a platform Worker that holds none: from the installation's token, made
- * or reused with the installer's login, or, when that login may not make tokens, from the
- * installer after the dashboard step.
+ * The R2 key pair for a platform Worker that holds none: from a new token of the installation,
+ * made with the installer's login, or, when that login may not make tokens, from the installer
+ * after the dashboard step. Tokens left to delete are named to the person either way.
  */
 async function r2Credentials(
-  ctx: RunContext & { readonly r2Tokens: TokenApi },
-  plan: Installation,
+  ctx: RunContext,
+  tokens: EnsureContext,
   present: ReadonlySet<string>,
-  current: () => BootstrapState,
-  record: (change: Partial<Journal>) => void,
 ): Promise<S3Credentials> {
-  // A pair still held may come from the installation's token, which a roll or a delete would
-  // break; only supplied values can complete the Worker then.
+  const plan = tokens.plan;
+  // A pair still held may come from the installation's token, which a new token would not
+  // replace: two tokens would be in use. Only supplied values can complete the Worker then.
   const held = R2_SECRET_NAMES.filter((name) => present.has(name));
   if (held.length > 0) {
     throw new BootstrapRefusal(
-      `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs, so the installation's token cannot be rolled; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey"): they replace each incomplete pair whole, and a complete pair is kept`,
+      `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs, so the bootstrap will not make a second token; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey"): they replace each incomplete pair whole, and a complete pair is kept`,
     );
   }
   const step = manualR2Step(plan);
@@ -541,20 +575,17 @@ async function r2Credentials(
     ctx.log(`${why}, so the R2 token is made by hand. ${step}`);
     return ctx.askR2(step);
   };
+  let made: ReturnType<typeof makeR2Token>;
   try {
-    return await ensureR2Token({
-      api: ctx.r2Tokens,
-      plan,
-      recorded: () => current().journal.r2Token,
-      record: (token: RecordedToken) => record({ r2Token: token }),
-      now: ctx.now,
-      sleep: ctx.sleep,
-      log: ctx.log,
-    });
+    made = makeR2Token(tokens);
   } catch (error) {
     if (!(error instanceof TokensUnavailable)) throw error;
+    const left = tokens.recorded().left;
+    if (left.length > 0) ctx.log(manualDeletion(left));
     return manual("your cf login may not make API tokens (Cloudflare answered 403 Forbidden)");
   }
+  if (made.left.length > 0) ctx.log(manualDeletion(made.left));
+  return made.pair;
 }
 
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };

@@ -200,11 +200,24 @@ function parseJournal(value: unknown): Journal {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
     if (t.id !== undefined) token.id = str(t, "id", "journal.r2Token");
-    for (const key of ["createStartedAt", "createdAt", "expiresOn", "rollStartedAt"] as const) {
+    for (const key of ["createStartedAt", "createdAt", "expiresOn"] as const) {
       const time = optionalTime(t, key, "journal.r2Token");
       if (time !== undefined) token[key] = time;
     }
     journal.r2Token = token;
+  }
+  if (j.r2TokensToDelete !== undefined) {
+    if (!Array.isArray(j.r2TokensToDelete)) {
+      throw new Error("the state file's journal.r2TokensToDelete is not a list");
+    }
+    journal.r2TokensToDelete = j.r2TokensToDelete.map((entry: unknown) => {
+      const t = object(entry, "journal.r2TokensToDelete entry");
+      const token: Record<string, string> = { name: str(t, "name", "journal.r2TokensToDelete") };
+      if (t.id !== undefined) token.id = str(t, "id", "journal.r2TokensToDelete");
+      const expiresOn = optionalTime(t, "expiresOn", "journal.r2TokensToDelete");
+      if (expiresOn !== undefined) token.expiresOn = expiresOn;
+      return token;
+    });
   }
   if (j.accepted !== undefined) {
     const a = object(j.accepted, "journal.accepted");

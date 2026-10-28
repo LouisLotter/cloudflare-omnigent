@@ -1,37 +1,30 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
-  type ApiToken,
-  ensureR2Token,
+  API_TOKENS_PAGE,
+  deleteTokens,
+  type EnsureContext,
+  isR2TokenName,
+  type LeftToken,
+  makeR2Token,
+  manualDeletion,
   manualR2Step,
-  R2_WRITE_GROUP,
   type RecordedToken,
   r2TokenExpiry,
   r2TokenName,
-  r2TokenProblems,
+  r2TokenPrefix,
   r2TokenRequest,
   r2TokenResources,
-  removeR2Token,
+  retireR2Token,
   s3Credentials,
+  TokensUnavailable,
 } from "../r2-token.ts";
+import type { Installation } from "../settings.ts";
 import { FakeWorld, R2_GROUP_ID } from "./fake-cloud.ts";
 import { accountPlan, INSTALLATION, stagingPlan } from "./fixtures.ts";
 
 const ACCOUNT = "1".repeat(32);
 const NOW = Date.UTC(2026, 9, 28, 12, 0, 0);
-
-function token(plan: Awaited<ReturnType<typeof accountPlan>>, change: Partial<ApiToken> = {}) {
-  return {
-    id: "cfocanary-token",
-    name: r2TokenName(plan),
-    status: "active",
-    ipLimited: false,
-    policies: [
-      { effect: "allow", permissionGroups: [R2_GROUP_ID], resources: r2TokenResources(plan) },
-    ],
-    ...change,
-  } satisfies ApiToken;
-}
 
 describe("the R2 token's shape", () => {
   it("derives R2's S3 key pair: the ID, and the SHA-256 of the value in hex", () => {
@@ -46,15 +39,33 @@ describe("the R2 token's shape", () => {
     );
   });
 
-  it("names the installation, and covers exactly its two buckets", async () => {
+  it("names each token after the installation and the second of its create", async () => {
     const plan = await accountPlan();
-    expect(r2TokenName(plan)).toBe(`cloudflare-omnigent-r2--${INSTALLATION}`);
+    expect(r2TokenPrefix(plan)).toBe(`cloudflare-omnigent-r2--${INSTALLATION}`);
+    const name = r2TokenName(plan, NOW + 999);
+    expect(name).toBe(`cloudflare-omnigent-r2--${INSTALLATION}--20261028T120000Z`);
+    expect(isR2TokenName(plan, name)).toBe(true);
+    for (const other of [
+      r2TokenPrefix(plan),
+      `${r2TokenPrefix(plan)}--x`,
+      `${r2TokenPrefix(plan)}--20261028T120000`,
+      `cloudflare-omnigent-r2--ins_00000000000000000000000000--20261028T120000Z`,
+    ]) {
+      expect(isR2TokenName(plan, other)).toBe(false);
+    }
+    // At most 120 characters, Cloudflare's limit, for the longest Worker name.
+    const longest = await accountPlan({ platformWorker: "a".repeat(63) });
+    expect(r2TokenName(longest, NOW).length).toBeLessThanOrEqual(120);
+  });
+
+  it("covers exactly the installation's two buckets", async () => {
+    const plan = await accountPlan();
     expect(r2TokenResources(plan)).toEqual({
       [`com.cloudflare.edge.r2.bucket.${ACCOUNT}_default_cfo-canary-replica`]: "*",
       [`com.cloudflare.edge.r2.bucket.${ACCOUNT}_default_cfo-canary-artifacts`]: "*",
     });
     expect(r2TokenRequest(plan, R2_GROUP_ID, NOW)).toEqual({
-      name: r2TokenName(plan),
+      name: r2TokenName(plan, NOW),
       policies: [
         {
           effect: "allow",
@@ -81,136 +92,145 @@ describe("the R2 token's shape", () => {
   });
 });
 
-describe("r2TokenProblems: whether a token of the installation can be kept", () => {
-  it("keeps an active, unlimited, exact token", async () => {
-    const plan = await accountPlan();
-    expect(r2TokenProblems(token(plan), plan, R2_GROUP_ID, NOW)).toEqual([]);
-  });
-
-  it.each([
-    [{ status: "disabled" }, "it is disabled"],
-    [{ status: undefined }, "it is of unknown status"],
-    [{ notBefore: "2026-11-01T00:00:00Z" }, "it is not valid yet"],
-    [{ notBefore: "not a time" }, "it is not valid yet"],
-    [{ expiresOn: "2030-01-01T00:00:00Z" }, "it expires"],
-    [{ ipLimited: true }, "it is limited to client addresses"],
-  ])("refuses %j", async (change, problem) => {
-    const plan = await accountPlan();
-    const { status, ...rest } = token(plan, change as Partial<ApiToken>);
-    const t = "status" in change && change.status === undefined ? rest : { ...rest, status };
-    expect(r2TokenProblems(t as ApiToken, plan, R2_GROUP_ID, NOW)).toEqual([problem]);
-  });
-
-  it("refuses any policy but the one exact policy", async () => {
-    const plan = await accountPlan();
-    const [policy] = token(plan).policies;
-    const wrong = [
-      [],
-      [policy, policy],
-      [{ ...policy, effect: "deny" }],
-      [{ ...policy, permissionGroups: [R2_GROUP_ID, "x"] }],
-      [{ ...policy, permissionGroups: ["x"] }],
-      [{ ...policy, resources: {} }],
-      [{ ...policy, resources: { ...policy?.resources, more: "*" } }],
-      [
-        {
-          ...policy,
-          resources: Object.fromEntries(
-            Object.keys(policy?.resources ?? {}).map((k) => [k, { nested: "*" }]),
-          ),
-        },
-      ],
-    ];
-    for (const policies of wrong) {
-      expect(
-        r2TokenProblems(token(plan, { policies } as Partial<ApiToken>), plan, R2_GROUP_ID, NOW),
-      ).toEqual(["its permissions are not exactly the installation's buckets"]);
-    }
-  });
-
-  it("wants a staging token to last as long as the staging deployments", async () => {
-    const plan = await stagingPlan({ artifacts: { url: "s3://cfo-stg-wp24-artifacts" } });
-    const lasting = token(plan, { expiresOn: "2026-10-29T13:00:00Z" });
-    expect(r2TokenProblems(lasting, plan, R2_GROUP_ID, NOW)).toEqual([]);
-    for (const expiresOn of ["2026-10-29T11:00:00Z", undefined]) {
-      const { expiresOn: _e, ...t } = token(plan);
-      const short = expiresOn === undefined ? t : { ...t, expiresOn };
-      expect(r2TokenProblems(short, plan, R2_GROUP_ID, NOW)).toEqual(["it expires too soon"]);
-    }
+describe("manualDeletion: the one link and the one click", () => {
+  it("names each token exactly", () => {
+    expect(manualDeletion([{ name: "a--20261028T120000Z", id: "i" }])).toBe(
+      `Cloudflare does not let this cf login delete API tokens, so delete the token named exactly a--20261028T120000Z by hand: open ${API_TOKENS_PAGE}, open the three-dot menu next to it, and choose Delete.`,
+    );
+    const several = manualDeletion([
+      { name: "a", id: "i" },
+      { name: "b", expiresOn: "2026-10-30T12:00:00Z" },
+    ]);
+    expect(several).toContain(
+      "delete each of the tokens named exactly a; b if it exists (its create was never answered) (or leave it: it expires on 2026-10-30T12:00:00Z) by hand",
+    );
+    expect(several).toContain("open the three-dot menu next to each, and choose Delete.");
+    expect(API_TOKENS_PAGE).toBe("https://dash.cloudflare.com/profile/api-tokens");
   });
 });
 
-describe("ensureR2Token and removeR2Token, against the fake", () => {
-  async function setup() {
-    const plan = await accountPlan();
-    const world = new FakeWorld(plan);
-    let recorded: RecordedToken | undefined;
-    const lines: string[] = [];
-    const ctx = {
-      api: world.tokenApi(),
-      plan,
-      recorded: () => recorded,
-      record: (t: RecordedToken) => {
-        recorded = t;
-      },
-      now: () => NOW,
-      sleep: async () => {},
-      log: (line: string) => lines.push(line),
-    };
-    return { plan, world, ctx, lines, recorded: () => recorded };
+describe("deleteTokens: what the login may delete, and what it may not", () => {
+  function world(oauth: boolean) {
+    return accountPlan().then((plan) => {
+      const w = new FakeWorld(plan);
+      w.oauthLogin = oauth;
+      const token = (name: string) =>
+        w.addToken({
+          name,
+          status: "active",
+          policies: [
+            { effect: "allow", permissionGroups: [R2_GROUP_ID], resources: r2TokenResources(plan) },
+          ],
+        });
+      return { plan, w, token };
+    });
   }
 
-  it("leaves another installation's token, and every other token, alone", async () => {
-    const { plan, world, ctx } = await setup();
-    const other = world.addToken({ ...token(plan), id: undefined, name: "someone-else" } as never);
-    const pair = await ensureR2Token(ctx);
-    expect(world.tokens.has(other)).toBe(true);
-    expect(world.tokens.size).toBe(2);
-    expect(
-      removeR2Token(world.tokenApi(), plan, { name: r2TokenName(plan), id: pair.accessKeyId }),
-    ).toBe(1);
-    expect([...world.tokens.keys()]).toEqual([other]);
+  it("an OAuth login: nothing is deleted, nothing is lost", async () => {
+    const { w, token } = await world(true);
+    const id = token("a");
+    const tokens: LeftToken[] = [{ name: "a", id }, { name: "b" }];
+    expect(deleteTokens(w.tokenApi(), tokens)).toEqual({
+      deleted: [],
+      left: [tokens[1], tokens[0]],
+    });
+    expect(w.tokens.size).toBe(1);
   });
 
-  it("prefers the recorded token over another valid one, and deletes the other", async () => {
-    const { plan, world, ctx, lines } = await setup();
-    const { id: _a, ...valid } = token(plan);
-    const first = world.addToken(valid);
-    const second = world.addToken(valid);
-    ctx.record({ name: r2TokenName(plan), id: second, createdAt: "2026-10-28T11:00:00.000Z" });
-    expect((await ensureR2Token(ctx)).accessKeyId).toBe(second);
-    expect([...world.tokens.keys()]).toEqual([second]);
-    expect(lines[0]).toBe("deleting an R2 token of this installation: a second one");
-    expect(first).not.toBe(second);
+  it("a login with API Tokens Write: deletes by ID, finds an unanswered create by name, and drops one never made", async () => {
+    const { plan, w, token } = await world(false);
+    const a = token("a");
+    const b = token("b");
+    const stray = token(r2TokenName(plan, NOW));
+    token("someone-else");
+    const result = deleteTokens(
+      w.tokenApi(),
+      [{ name: "a", id: a }, { name: "b" }, { name: "never-made" }, { name: "gone", id: "x" }],
+      { also: (t) => isR2TokenName(plan, t.name) },
+    );
+    expect(result.left).toEqual([]);
+    expect(result.deleted.map((t) => t.id)).toEqual([a, b, "x", stray]);
+    expect([...w.tokens.values()].map((t) => t.token.name)).toEqual(["someone-else"]);
   });
 
-  it("finds a recorded token renamed by hand, and replaces it when it no longer fits", async () => {
-    const { plan, world, ctx, recorded } = await setup();
-    const renamed = world.addToken({ ...token(plan), id: undefined, name: "renamed" } as never);
-    ctx.record({ name: r2TokenName(plan), id: renamed });
-    // Still exact: kept, under its new name, and rolled.
-    expect((await ensureR2Token(ctx)).accessKeyId).toBe(renamed);
-    expect(recorded()?.createdAt).toBeUndefined();
-    const entry = world.tokens.get(renamed);
-    if (entry) entry.token = { ...entry.token, status: "expired" };
-    const made = await ensureR2Token(ctx);
-    expect(made.accessKeyId).not.toBe(renamed);
-    expect(world.tokens.has(renamed)).toBe(false);
+  it("passes on anything but a refusal", async () => {
+    const { w } = await world(false);
+    const api = {
+      ...w.tokenApi(),
+      remove: () => {
+        throw new Error("network down");
+      },
+    };
+    expect(() => deleteTokens(api, [{ name: "a", id: "i" }])).toThrow("network down");
+    const listing = {
+      ...w.tokenApi(),
+      list: () => {
+        throw new Error("network down");
+      },
+    };
+    expect(() => deleteTokens(listing, [{ name: "a" }])).toThrow("network down");
+  });
+});
+
+describe("makeR2Token and retireR2Token", () => {
+  async function setup(plan?: Installation) {
+    const p = plan ?? (await accountPlan());
+    const w = new FakeWorld(p);
+    let current: RecordedToken | undefined;
+    let left: readonly LeftToken[] = [];
+    const lines: string[] = [];
+    const saves: { current: RecordedToken | undefined; left: readonly LeftToken[] }[] = [];
+    const ctx: EnsureContext = {
+      api: w.tokenApi(),
+      plan: p,
+      recorded: () => ({ current, left }),
+      record: (c, l) => {
+        current = c;
+        left = l;
+        saves.push({ current: c, left: l });
+      },
+      now: () => w.now,
+      log: (line) => lines.push(line),
+    };
+    return { w, ctx, lines, saves, state: () => ({ current, left }) };
+  }
+
+  it("records the intent before the create, and the ID after", async () => {
+    const s = await setup();
+    const made = makeR2Token(s.ctx);
+    expect(made.left).toEqual([]);
+    expect(s.saves.map((x) => Object.keys(x.current ?? {}).sort())).toEqual([
+      ["createStartedAt", "name"],
+      ["createdAt", "id", "name"],
+    ]);
+    expect(made.pair).toEqual(s.w.pairOf(String(s.state().current?.id)));
   });
 
-  it("removes a token already gone as gone, and every token under the name", async () => {
-    const { plan, world } = await setup();
-    const { id: _id, ...valid } = token(plan);
-    world.addToken(valid);
-    world.addToken(valid);
-    expect(removeR2Token(world.tokenApi(), plan, { name: r2TokenName(plan), id: "gone" })).toBe(2);
-    expect(world.tokens.size).toBe(0);
-    expect(removeR2Token(world.tokenApi(), plan, undefined)).toBe(0);
+  it("retires nothing when nothing is recorded, and the current token otherwise", async () => {
+    const s = await setup();
+    expect(retireR2Token(s.ctx)).toEqual([]);
+    expect(s.saves).toEqual([]);
+    makeR2Token(s.ctx);
+    const id = s.state().current?.id;
+    expect(retireR2Token(s.ctx)).toEqual([{ name: s.state().left[0]?.name, id }]);
+    expect(s.state().current).toBeUndefined();
   });
 
-  it("asks for the permission group by its name", async () => {
-    const { world } = await setup();
-    expect(world.tokenApi().permissionGroup(R2_WRITE_GROUP)).toBe(R2_GROUP_ID);
-    expect(() => world.tokenApi().permissionGroup("Account Settings Write")).toThrow();
+  it("a refused create leaves no intent; a lost answer leaves it", async () => {
+    const s = await setup();
+    s.w.tokensForbidden = true;
+    expect(() => makeR2Token(s.ctx)).toThrow(TokensUnavailable);
+    expect(s.state().current).toBeUndefined();
+    const t = await setup();
+    t.w.late = { call: "tokenCreate", nth: 1, afterMs: 1 };
+    expect(() => makeR2Token(t.ctx)).toThrow("timeout");
+    expect(t.state().current?.createStartedAt).toBeDefined();
+  });
+
+  it("a staging token records its expiry", async () => {
+    const s = await setup(await stagingPlan({ artifacts: { url: "s3://cfo-stg-wp24-artifacts" } }));
+    makeR2Token(s.ctx);
+    expect(s.state().current?.expiresOn).toBe("2026-10-24T12:00:00Z");
+    expect(retireR2Token(s.ctx)[0]?.expiresOn).toBe("2026-10-24T12:00:00Z");
   });
 });

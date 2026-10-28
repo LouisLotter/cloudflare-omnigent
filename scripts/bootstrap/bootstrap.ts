@@ -39,7 +39,8 @@
 // exactly those buckets, made with the installer's `cf` login (r2-token.ts). Its key pair goes
 // to the platform Worker for both uses, under their own names (the replica's for Litestream,
 // the artifacts' for Omnigent); its value is never shown or kept, and its ID is recorded so
-// that `remove-r2-token` can delete it. A login that may not make API tokens (403) gets the
+// that `remove-r2-token` can delete it. A token made by an earlier run whose pair never reached
+// the Worker is retired the same way. A login that may not make API tokens (403) gets the
 // dashboard step in one sentence and, in a terminal, a prompt for that token's two values.
 // The owner's password is read only when it must be uploaded: from a JSON object on stdin with
 // --secrets-stdin ({"ownerPassword": …}, optionally with an R2 token's values made by hand,
@@ -50,10 +51,11 @@
 // not passed yet (run again); 1 an error or a refusal.
 //
 // `buckets` creates (or, for staging, checks) the plan's buckets without deploying; `run` does
-// the same itself. `remove-r2-token` deletes the installation's R2 token, a step of removing the
-// installation: it refuses while a Worker with the platform Worker's name exists unless --yes.
-// The staging tool's teardown deletes a staging installation's token with its platform
-// deployment, by the token's name, and its sweep finds any left over.
+// the same itself. `remove-r2-token` deletes the installation's R2 tokens, a step of removing
+// the installation: it refuses while a Worker with the platform Worker's name exists unless
+// --yes. cf's OAuth login may make API tokens but not delete them (403): then it names each
+// token to delete, with the one link and click, and exits 1. The staging tool's teardown and
+// sweep do the same for a staging installation's tokens.
 //
 // Afterwards the owner signs in to Omnigent at https://<host> with that username and password
 // (behind Access), and should change the password there.
@@ -65,7 +67,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
 import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
-import { acquireLock, sleepSync } from "../staging/lock.ts";
+import { acquireLock } from "../staging/lock.ts";
 import {
   accountCloud,
   bucketExists,
@@ -412,17 +414,17 @@ function removeToken(path: string, yes: boolean): number {
     () => {
       const plan = store.load().installation;
       const runner = spawnRunner(plan.accountId);
-      removeInstallationToken({
+      const removal = removeInstallationToken({
         store,
         api: cfTokenApi(runner),
         // Any Worker of that name: one whose identity is unknown (no version serving all of
         // its traffic) may well be this installation's (Codex WP3.25 r1-2).
         workerExists: () => workerInstallation(runner, plan.platformWorker).exists,
         force: yes,
-        sleep: sleepSync,
         log: (message) => console.log(`bootstrap: ${message}`),
       });
-      return 0;
+      // Not finished while a token is left for the person to delete (named above).
+      return removal.left.length > 0 ? 1 : 0;
     },
   );
 }

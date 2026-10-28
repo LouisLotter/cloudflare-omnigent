@@ -8,27 +8,26 @@
 // The value exists only in this process's memory, from Cloudflare's answer to the deploy that
 // sets the key pair as the platform Worker's secrets: never printed, logged, written to disk, or
 // put in argv or an environment. The token's ID is the access key ID, which is not secret: the
-// journal keeps it, and the name, so that removal deletes it.
+// journal keeps it, and the name, so that removal can delete it.
 //
-// One token per installation, never two. It is named `<platform Worker>-r2--<installation ID>`,
-// and the name finds a token whose create landed after its run stopped, before the journal
-// could record it. When the value is needed again (the Worker lacks the key pair: an earlier
-// deploy failed), the installation's token is rolled, which keeps its ID and returns a new
-// value, if it is still valid; otherwise it is deleted and a new one made. A token is rolled
-// or deleted only while the Worker holds no key pair from it (machine.ts).
-//
-// A create or a roll whose run stopped before Cloudflare's answer may still take effect later,
-// as the staging tool assumes of every request (scripts/staging/stg.ts, its settle time). Each
-// is journalled before it is sent and cleared once answered; a run that finds one unresolved
-// waits TOKEN_SETTLE_MS first (the lock it holds proves the earlier run's process has ended),
-// so that a late create is listed, and a late roll cannot follow this run's own roll and
-// invalidate the value it deploys. A 403 is an answer: nothing is left in flight.
+// What a login may do. `cf`'s OAuth login (1.0.0-beta.18) may create user API tokens, but
+// Cloudflare refuses it (403) to list, roll or delete them: those need the "API Tokens Read" or
+// "Write" permission, and cf's OAuth client offers no such scope at sign-in. So nothing here
+// depends on listing, rolling or deleting. A token is made only when the platform Worker lacks
+// its key pair; while the Worker holds it, that pair is the installation's credential and no
+// token is touched. A token whose value was lost before the Worker got its pair (a deploy that
+// failed, a create whose answer never came) is useless and goes on the journal's list of tokens
+// to delete; each token has a name of its own (`<platform Worker>-r2--<installation ID>--<UTC
+// time of its create>`), so that a person can tell them apart. The bootstrap deletes what
+// Cloudflare lets it delete (a login with "API Tokens Write" may), and names the rest exactly,
+// with the one link and the one click that delete each (manualDeletion).
 //
 // Expiry. An installation's token does not expire: it is the running server's only way to its
 // database replica and its files, so an expiry would stop replication and the server's start
-// without warning, and nothing rotates it yet. It is scoped to two buckets' objects and is
-// deleted when the installation is removed. A staging installation's token expires a day after
-// the staging deployments do, in case their teardown never runs.
+// without warning, and nothing can replace it on a schedule. It is scoped to two buckets'
+// objects, its secret exists only in the Worker's secrets and the server's environment, and
+// removal deletes it or tells the person to. A staging installation's token expires a day after
+// the staging deployments do, so that one nobody deletes ends on its own.
 
 import { createHash } from "node:crypto";
 import { bucketsOf, type Installation } from "./settings.ts";
@@ -37,6 +36,8 @@ import { bucketsOf, type Installation } from "./settings.ts";
 export const R2_WRITE_GROUP = "Workers R2 Storage Bucket Item Write";
 /** The scope of bucket-level permission groups and resources. */
 export const R2_BUCKET_SCOPE = "com.cloudflare.edge.r2.bucket";
+/** Where a person deletes their user API tokens. */
+export const API_TOKENS_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -47,7 +48,7 @@ export interface ApiToken {
   readonly status?: string;
   readonly expiresOn?: string;
   readonly notBefore?: string;
-  /** Whether it is limited to client IP addresses (the server's address is not fixed). */
+  /** Whether it is limited to client IP addresses. */
   readonly ipLimited: boolean;
   readonly policies: readonly {
     readonly effect?: string;
@@ -71,25 +72,18 @@ export interface TokenRequest {
 export interface TokenApi {
   /** The ID of the one bucket-scoped permission group with this name. */
   permissionGroup(name: string): string;
-  /** Every user API token of the installer's login, expired ones included. */
-  list(): ApiToken[];
   /** Creates a token, and returns its ID and its value, which Cloudflare shows only now. */
   create(request: TokenRequest): { readonly id: string; readonly value: string };
-  /** A new value for the token, which keeps its ID: the old value stops working at once. */
-  roll(id: string): string;
+  /** Every user API token of the login, expired ones included. An OAuth login gets 403. */
+  list(): ApiToken[];
+  /** Deletes a token. An OAuth login gets 403. */
   remove(id: string): "deleted" | "absent";
 }
 
-/** Cloudflare refused (HTTP 403): the installer's login cannot make user API tokens. */
+/** Cloudflare refused (HTTP 403): the installer's login may not do this with API tokens. */
 export class TokensUnavailable extends Error {}
 
-/**
- * How long a token request whose client is gone may still take effect: the staging tool's
- * settle time (Cloudflare's proxy gives up on a response after 100 seconds; three times that).
- */
-export const TOKEN_SETTLE_MS = 300_000;
-
-/** The journal's record of the installation's token: no value, and nothing derived from one. */
+/** The journal's record of the installation's current token: no value, nothing derived. */
 export interface RecordedToken {
   readonly name: string;
   /** Written before the create, so that a run that stops before its answer is recognised. */
@@ -98,18 +92,14 @@ export interface RecordedToken {
   readonly id?: string;
   readonly createdAt?: string;
   readonly expiresOn?: string;
-  /** Written before a roll, removed once it is answered. */
-  readonly rollStartedAt?: string;
 }
 
-/** Whether a create was sent and never answered: it may still make a token. */
-export function createInFlight(recorded: RecordedToken | undefined): boolean {
-  return recorded?.createStartedAt !== undefined && recorded.id === undefined;
-}
-
-/** Whether a create or a roll was sent and never answered. */
-export function requestInFlight(recorded: RecordedToken | undefined): boolean {
-  return createInFlight(recorded) || recorded?.rollStartedAt !== undefined;
+/** A token of the installation that the bootstrap made and no longer uses: to be deleted. */
+export interface LeftToken {
+  readonly name: string;
+  /** Unknown when the create's answer never came. */
+  readonly id?: string;
+  readonly expiresOn?: string;
 }
 
 /** The S3 key pair of an R2 token: its ID, and the SHA-256 of its value in lower-case hex. */
@@ -122,9 +112,24 @@ export function s3Credentials(id: string, value: string): S3Credentials {
   return { accessKeyId: id, secretAccessKey: createHash("sha256").update(value).digest("hex") };
 }
 
-/** The installation's token's name: `<platform Worker>-r2--<installation ID>`. */
-export function r2TokenName(plan: Installation): string {
+/** What every token of the installation's name starts with. */
+export function r2TokenPrefix(plan: Installation): string {
   return `${plan.platformWorker}-r2--${plan.installationId}`;
+}
+
+/** A token's name: the installation's, and the UTC time of its create to the second. */
+export function r2TokenName(plan: Installation, at: number): string {
+  const stamp = new Date(at)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return `${r2TokenPrefix(plan)}--${stamp}`;
+}
+
+/** Whether a name is one the bootstrap gives a token of this installation. */
+export function isR2TokenName(plan: Installation, name: string): boolean {
+  const prefix = `${r2TokenPrefix(plan)}--`;
+  return name.startsWith(prefix) && /^\d{8}T\d{6}Z$/.test(name.slice(prefix.length));
 }
 
 /**
@@ -149,7 +154,7 @@ export function r2TokenExpiry(plan: Installation, now: number): string | undefin
 export function r2TokenRequest(plan: Installation, group: string, now: number): TokenRequest {
   const expiresOn = r2TokenExpiry(plan, now);
   return {
-    name: r2TokenName(plan),
+    name: r2TokenName(plan, now),
     policies: [
       { effect: "allow", permission_groups: [{ id: group }], resources: r2TokenResources(plan) },
     ],
@@ -157,149 +162,169 @@ export function r2TokenRequest(plan: Installation, group: string, now: number): 
   };
 }
 
-/** Why an existing token of the installation cannot be kept; empty when it can. */
-export function r2TokenProblems(
-  token: ApiToken,
-  plan: Installation,
-  group: string,
-  now: number,
-): string[] {
-  const problems: string[] = [];
-  if (token.status !== "active") problems.push(`it is ${token.status ?? "of unknown status"}`);
-  if (token.notBefore !== undefined && !(Date.parse(token.notBefore) <= now)) {
-    problems.push("it is not valid yet");
+/** A recorded token as one to delete. */
+export function leftOf(token: RecordedToken): LeftToken {
+  return {
+    name: token.name,
+    ...(token.id === undefined ? {} : { id: token.id }),
+    ...(token.expiresOn === undefined ? {} : { expiresOn: token.expiresOn }),
+  };
+}
+
+/** The listing, or undefined where Cloudflare refuses it (an OAuth login). */
+function tryList(api: TokenApi): ApiToken[] | undefined {
+  try {
+    return api.list();
+  } catch (error) {
+    if (error instanceof TokensUnavailable) return undefined;
+    throw error;
   }
-  if (plan.target.kind === "staging") {
-    // It must last as long as the staging deployments may.
-    const until = token.expiresOn === undefined ? Number.NaN : Date.parse(token.expiresOn);
-    if (!(until >= now + plan.target.days * DAY_MS)) problems.push("it expires too soon");
-  } else if (token.expiresOn !== undefined) {
-    problems.push("it expires");
+}
+
+export interface Deletion {
+  /** The tokens Cloudflare no longer has. */
+  readonly deleted: readonly LeftToken[];
+  /** The tokens left: Cloudflare refused their delete, or their ID is unknown. */
+  readonly left: readonly LeftToken[];
+}
+
+/**
+ * Deletes the tokens it may. A token whose ID is unknown (its create's answer never came) is
+ * looked for by its name, where Cloudflare lets the login list tokens; where it does not, or a
+ * delete is refused (403), the token stays on the list. With `also`, every listed token it
+ * accepts is deleted too (removal: any token of the installation's name).
+ */
+export function deleteTokens(
+  api: TokenApi,
+  tokens: readonly LeftToken[],
+  options: { readonly also?: (token: ApiToken) => boolean } = {},
+): Deletion {
+  const unknownIds = tokens.some((t) => t.id === undefined);
+  const listed = unknownIds || options.also !== undefined ? tryList(api) : undefined;
+  const wanted: LeftToken[] = [];
+  const left: LeftToken[] = [];
+  for (const token of tokens) {
+    if (token.id !== undefined) {
+      wanted.push(token);
+      continue;
+    }
+    // Not listed while the login may list: never made, or its create has not landed yet.
+    if (listed === undefined) left.push(token);
+    for (const t of listed?.filter((l) => l.name === token.name) ?? []) {
+      wanted.push({ ...token, id: t.id });
+    }
   }
-  if (token.ipLimited) problems.push("it is limited to client addresses");
-  const wanted = r2TokenResources(plan);
-  const [policy, ...more] = token.policies;
-  const exact =
-    policy !== undefined &&
-    more.length === 0 &&
-    policy.effect === "allow" &&
-    policy.permissionGroups.length === 1 &&
-    policy.permissionGroups[0] === group &&
-    Object.keys(policy.resources).length === Object.keys(wanted).length &&
-    Object.entries(policy.resources).every(([resource, value]) => wanted[resource] === value);
-  if (!exact) problems.push("its permissions are not exactly the installation's buckets");
-  return problems;
+  const known = new Set(wanted.map((t) => t.id));
+  for (const t of listed ?? []) {
+    if (options.also?.(t) && !known.has(t.id)) {
+      wanted.push({
+        name: t.name,
+        id: t.id,
+        ...(t.expiresOn === undefined ? {} : { expiresOn: t.expiresOn }),
+      });
+      known.add(t.id);
+    }
+  }
+  const deleted: LeftToken[] = [];
+  for (const token of wanted) {
+    try {
+      api.remove(String(token.id));
+      deleted.push(token);
+    } catch (error) {
+      if (!(error instanceof TokensUnavailable)) throw error;
+      left.push(token);
+    }
+  }
+  return { deleted, left };
+}
+
+/**
+ * What the person does about tokens the bootstrap could not delete: the one link and the one
+ * click, and each token's exact name.
+ */
+export function manualDeletion(left: readonly LeftToken[]): string {
+  const names = left.map((t) => {
+    const ends = t.expiresOn === undefined ? "" : ` (or leave it: it expires on ${t.expiresOn})`;
+    const maybe = t.id === undefined ? " if it exists (its create was never answered)" : "";
+    return `${t.name}${maybe}${ends}`;
+  });
+  const which =
+    names.length === 1
+      ? `the token named exactly ${names[0]}`
+      : `each of the tokens named exactly ${names.join("; ")}`;
+  const next = names.length === 1 ? "it" : "each";
+  return `Cloudflare does not let this cf login delete API tokens, so delete ${which} by hand: open ${API_TOKENS_PAGE}, open the three-dot menu next to ${next}, and choose Delete.`;
 }
 
 export interface EnsureContext {
   readonly api: TokenApi;
   readonly plan: Installation;
-  /** What the journal records now. */
-  readonly recorded: () => RecordedToken | undefined;
-  /** Records the token in the journal (persisted before the step that follows). */
-  readonly record: (token: RecordedToken) => void;
+  /** The journal's current token and its tokens to delete. */
+  readonly recorded: () => {
+    readonly current: RecordedToken | undefined;
+    readonly left: readonly LeftToken[];
+  };
+  /** Records both, before the step that follows (persist-before-effect). */
+  readonly record: (current: RecordedToken | undefined, left: readonly LeftToken[]) => void;
   readonly now: () => number;
-  readonly sleep: (ms: number) => Promise<void>;
   readonly log: (message: string) => void;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** Sends a request; a refusal (403) is an answer, so `answered` runs before it is rethrown. */
-function send<T>(request: () => T, answered: () => void): T {
-  try {
-    return request();
-  } catch (error) {
-    if (error instanceof TokensUnavailable) answered();
-    throw error;
-  }
+/**
+ * Moves the current token, if any, to the tokens to delete (its value is gone: the Worker never
+ * got its pair, or got another), and deletes what Cloudflare lets it delete. Returns the tokens
+ * still to delete.
+ */
+export function retireR2Token(ctx: EnsureContext): readonly LeftToken[] {
+  const { current, left } = ctx.recorded();
+  const retiring = [...left, ...(current === undefined ? [] : [leftOf(current)])];
+  if (retiring.length === 0) return [];
+  ctx.record(undefined, retiring);
+  const result = deleteTokens(ctx.api, retiring);
+  for (const t of result.deleted) ctx.log(`deleted the unused R2 token ${t.name}`);
+  ctx.record(undefined, result.left);
+  return result.left;
 }
 
 /**
- * The installation's token and its S3 key pair, for a platform Worker that holds no key pair
- * from it: the existing token rolled if it is still valid, otherwise a new one. Every other
- * token of the installation (a duplicate, an invalid one) is deleted first.
+ * A new token of the installation and its S3 key pair, for a platform Worker that holds no key
+ * pair: never a roll, which an OAuth login may not do. A token made earlier is retired first.
+ * Returns the pair and the tokens still to delete, which the caller names to the person.
  */
-export async function ensureR2Token(ctx: EnsureContext): Promise<S3Credentials> {
-  const { api, plan } = ctx;
-  const name = r2TokenName(plan);
-  if (requestInFlight(ctx.recorded())) {
-    ctx.log(
-      `an earlier run's request for the R2 token may still take effect; waiting ${TOKEN_SETTLE_MS / 60_000} minutes before looking`,
-    );
-    await ctx.sleep(TOKEN_SETTLE_MS);
-  }
-  const group = api.permissionGroup(R2_WRITE_GROUP);
-  const recordedId = ctx.recorded()?.id;
+export function makeR2Token(ctx: EnsureContext): {
+  readonly pair: S3Credentials;
+  readonly left: readonly LeftToken[];
+} {
+  const left = retireR2Token(ctx);
+  const group = ctx.api.permissionGroup(R2_WRITE_GROUP);
   const now = ctx.now();
-  const mine = api.list().filter((t) => t.name === name || t.id === recordedId);
-  const valid = (t: ApiToken) => r2TokenProblems(t, plan, group, now).length === 0;
-  const keep = mine.find((t) => t.id === recordedId && valid(t)) ?? mine.find(valid);
-  for (const token of mine) {
-    if (token === keep) continue;
-    const why = r2TokenProblems(token, plan, group, now);
-    ctx.log(
-      `deleting an R2 token of this installation: ${why.length > 0 ? why.join(", ") : "a second one"}`,
-    );
-    api.remove(token.id);
+  const request = r2TokenRequest(ctx.plan, group, now);
+  ctx.record({ name: request.name, createStartedAt: iso(now) }, left);
+  let created: { readonly id: string; readonly value: string };
+  try {
+    created = ctx.api.create(request);
+  } catch (error) {
+    // A refusal is an answer: nothing was made. Anything else may still land.
+    if (error instanceof TokensUnavailable) ctx.record(undefined, left);
+    throw error;
   }
-  if (keep !== undefined) {
-    const createdAt = keep.id === recordedId ? ctx.recorded()?.createdAt : undefined;
-    const kept: RecordedToken = {
-      name,
-      id: keep.id,
-      ...(createdAt === undefined ? {} : { createdAt }),
-      ...(keep.expiresOn === undefined ? {} : { expiresOn: keep.expiresOn }),
-    };
-    ctx.record({ ...kept, rollStartedAt: iso(ctx.now()) });
-    const value = send(
-      () => api.roll(keep.id),
-      () => ctx.record(kept),
-    );
-    ctx.record(kept);
-    ctx.log(`reusing the R2 token ${name} with a new value (its old one was never kept)`);
-    return s3Credentials(keep.id, value);
-  }
-  const request = r2TokenRequest(plan, group, now);
-  ctx.record({ name, createStartedAt: iso(now) });
-  const created = send(
-    () => api.create(request),
-    () => ctx.record({ name }),
+  ctx.record(
+    {
+      name: request.name,
+      id: created.id,
+      createdAt: iso(ctx.now()),
+      ...(request.expiresOn === undefined ? {} : { expiresOn: request.expiresOn }),
+    },
+    left,
   );
-  ctx.record({
-    name,
-    id: created.id,
-    createdAt: iso(ctx.now()),
-    ...(request.expiresOn === undefined ? {} : { expiresOn: request.expiresOn }),
-  });
   ctx.log(
-    `created the R2 token ${name}: objects in ${bucketsOf(plan).join(" and ")} only, ${
+    `created the R2 token ${request.name}: objects in ${bucketsOf(ctx.plan).join(" and ")} only, ${
       request.expiresOn === undefined ? "no expiry" : `until ${request.expiresOn}`
     }`,
   );
-  return s3Credentials(created.id, created.value);
-}
-
-/**
- * Deletes the installation's token: the recorded one and any other under its name. Returns how
- * many it deleted; a token already gone counts as deleted by someone else.
- */
-export function removeR2Token(
-  api: TokenApi,
-  plan: Installation,
-  recorded: RecordedToken | undefined,
-): number {
-  const name = r2TokenName(plan);
-  const ids = new Set(
-    api
-      .list()
-      .filter((t) => t.name === name)
-      .map((t) => t.id),
-  );
-  if (recorded?.id !== undefined) ids.add(recorded.id);
-  let deleted = 0;
-  for (const id of ids) if (api.remove(id) === "deleted") deleted++;
-  return deleted;
+  return { pair: s3Credentials(created.id, created.value), left };
 }
 
 /**

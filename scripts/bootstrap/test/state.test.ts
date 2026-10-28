@@ -224,9 +224,18 @@ describe("the state file", () => {
         createdAt: "2026-10-28T12:00:01.000Z",
         expiresOn: "2026-10-30T12:00:00Z",
       },
-      { name: "cfo-stg-wp24-platform-r2--x", id: "i", rollStartedAt: "2026-10-28T12:00:02Z" },
     ]) {
-      const withToken = { ...state, journal: { ...state.journal, r2Token } };
+      const withToken = {
+        ...state,
+        journal: {
+          ...state.journal,
+          r2Token,
+          r2TokensToDelete: [
+            { name: "a" },
+            { name: "b", id: "i", expiresOn: "2026-10-30T12:00:00Z" },
+          ],
+        },
+      };
       fileStateStore(path).save(withToken);
       expect(fileStateStore(path).load()).toEqual(withToken);
     }
@@ -237,9 +246,20 @@ describe("the state file", () => {
       [{ name: "n", id: 7 }, /journal.r2Token.id is not text/],
       [{ name: "n", createdAt: "yesterday" }, /journal.r2Token.createdAt is not a time/],
       [{ name: "n", expiresOn: 1 }, /journal.r2Token.expiresOn is not a time/],
-      [{ name: "n", rollStartedAt: "soon" }, /journal.r2Token.rollStartedAt is not a time/],
+      [{ name: "n", createStartedAt: "soon" }, /journal.r2Token.createStartedAt is not a time/],
     ] as const) {
       expect(() => parseState(JSON.stringify({ ...good, journal: { r2Token } }))).toThrow(message);
+    }
+    for (const [r2TokensToDelete, message] of [
+      [{}, /journal.r2TokensToDelete is not a list/],
+      [["x"], /journal.r2TokensToDelete entry is not an object/],
+      [[{}], /journal.r2TokensToDelete.name is not text/],
+      [[{ name: "a", id: 1 }], /journal.r2TokensToDelete.id is not text/],
+      [[{ name: "a", expiresOn: "later" }], /journal.r2TokensToDelete.expiresOn is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal: { r2TokensToDelete } }))).toThrow(
+        message,
+      );
     }
   });
 

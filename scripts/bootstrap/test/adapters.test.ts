@@ -130,7 +130,6 @@ describe("the plan's R2 buckets (G2-DUR-001)", () => {
 
 describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () => {
   const VALUE = "cfo-canary-r2-token-value-AbCdEf0123456789AbCdEf0123456789AbCd";
-  const ROLLED = "cfo-canary-r2-token-value-rolled-AbCdEf0123456789AbCdEf012345";
   const FORBIDDEN =
     "┌ APIError\n│ [9109] Unauthorized to access requested resource\n│ 403 Forbidden · HTTP /user/tokens\n└\n Check your API token permissions";
   const GROUP = "2".repeat(32);
@@ -141,7 +140,6 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     for (const call of calls) {
       const outside = JSON.stringify([call.args, call.options.env ?? {}, call.fd3 ?? ""]);
       expect(outside).not.toContain(VALUE);
-      expect(outside).not.toContain(ROLLED);
       expect(call.options.inherit).toBe(false);
     }
   }
@@ -180,7 +178,7 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
         "tokens",
         "create",
         "--name",
-        `cfo-stg-wp24-platform-r2--ins_01hs3f9q2m8z4w7k6t5r1n0ybc`,
+        "cfo-stg-wp24-platform-r2--ins_01hs3f9q2m8z4w7k6t5r1n0ybc--20261028T000000Z",
         "--policies",
         JSON.stringify(request.policies),
         "--expires-on",
@@ -191,19 +189,28 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     expectNoValue(fake.calls);
   });
 
-  it("rolls and deletes without asking, and reads a rolled value either way cf prints it", () => {
-    const answers = [JSON.stringify(ROLLED), JSON.stringify({ value: ROLLED })];
-    const fake = fakeRunner(() => ({ stdout: answers.shift() ?? "{}" }));
+  it("deletes without asking, and never rolls", () => {
+    const fake = fakeRunner(() => ({ stdout: JSON.stringify({ id: ID }) }));
     const api = cfTokenApi(fake.runner);
-    expect(api.roll(ID)).toBe(ROLLED);
-    expect(api.roll(ID)).toBe(ROLLED);
     expect(api.remove(ID)).toBe("deleted");
-    expect(fake.calls.map((c) => c.args)).toEqual([
-      ["user", "tokens", "roll", ID, "--force"],
-      ["user", "tokens", "roll", ID, "--force"],
-      ["user", "tokens", "delete", ID, "--force"],
-    ]);
+    expect(fake.calls.map((c) => c.args)).toEqual([["user", "tokens", "delete", ID, "--force"]]);
+    expect("roll" in api).toBe(false);
     expectNoValue(fake.calls);
+  });
+
+  it("an OAuth login's answers, as cf printed them on 28 Oct: 403 on list and delete", () => {
+    const forbiddenAt = (path: string) =>
+      `┌ APIError\n│ [9109] Unauthorized to access requested resource\n│ 403 Forbidden · HTTP ${path}\n└\n → Check your API token permissions`;
+    const fake = fakeRunner((call) =>
+      call.args[2] === "list"
+        ? { status: 1, stderr: forbiddenAt("/user/tokens?per_page=50") }
+        : { status: 1, stderr: forbiddenAt(`/user/tokens/${ID}`) },
+    );
+    const api = cfTokenApi(fake.runner);
+    expect(() => api.list()).toThrow(TokensUnavailable);
+    expect(() => api.remove(ID)).toThrow(
+      "Cloudflare refused `cf user tokens delete` (403): this cf login cannot delete API tokens",
+    );
   });
 
   it("lists every page, expired tokens included", () => {
@@ -282,7 +289,6 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     const api = cfTokenApi(fake.runner);
     expect(() => api.permissionGroup(R2_WRITE_GROUP)).toThrow(TokensUnavailable);
     expect(() => api.list()).toThrow(TokensUnavailable);
-    expect(() => api.roll(ID)).toThrow(TokensUnavailable);
     expect(() => api.remove(ID)).toThrow(TokensUnavailable);
     expect(() => api.create({ name: "n", policies: [] })).toThrow(
       /Cloudflare refused `cf user tokens create` \(403\): this cf login cannot make API tokens/,
@@ -319,15 +325,10 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
       expect(message).toMatch(/cf user tokens create (answered without|printed something)/);
       expect(message).not.toContain(VALUE);
     }
-    for (const stdout of [JSON.stringify(""), JSON.stringify({}), "7"]) {
-      const fake = fakeRunner(() => ({ stdout }));
-      expect(() => cfTokenApi(fake.runner).roll(ID)).toThrow(
-        "cf user tokens roll answered without the token's new value",
-      );
-    }
     const failing = fakeRunner(() => ({ status: 1, stderr: `boom ${VALUE}` }));
-    expect(() => cfTokenApi(failing.runner).roll(ID)).toThrow(/^cf user tokens roll failed: boom /);
-    expect(() => cfTokenApi(failing.runner).roll(ID)).not.toThrow(VALUE);
+    const create = () => cfTokenApi(failing.runner).create({ name: "n", policies: [] });
+    expect(create).toThrow(/^cf user tokens create failed: boom /);
+    expect(create).not.toThrow(VALUE);
   });
 
   it("refuses a permission group it cannot find exactly once", () => {
