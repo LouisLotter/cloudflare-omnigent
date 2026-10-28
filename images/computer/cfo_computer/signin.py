@@ -22,6 +22,13 @@ Ending an attempt (cancel, the 10-minute deadline, a failure, a parser failure, 
 sign-out) kills its whole process group and reaps it before anything else is answered, so the
 terminal offered as the fallback never races a login still running.
 
+Descriptors (WP3.26). Each attempt's thread owns its pty and a wake pipe from the spawn on: only
+it reads them and only it closes them, once the attempt has ended. Ending an attempt from another
+thread kills the CLI and writes to the wake pipe; it never closes a descriptor the reader may
+still be using, because the number, once free, goes to the next open (another attempt's pty, a
+pipe, a socket), and the reader would block on it or read what it holds. The pty is non-blocking,
+so no read or write ever waits on the CLI; every other wait here has a bound.
+
 Custody. The link, Codex's code and the pasted code live in this process's memory only, for the
 attempt's life: they are never written to a file, an alert, a log or the report. Only fixed state
 names and failure reasons ever leave this module. The CLI's output is buffered in memory, bounded,
@@ -65,6 +72,13 @@ KEEP_FINISHED = 8
 #: How long ending an attempt waits for its spawn to finish (the spawn gives up waiting for a
 #: capture's gate as soon as the attempt ends, so this is a bound on a wedged spawn only).
 SPAWN_SETTLE_S = 30.0
+#: How long a reader waits for output before it looks at its attempt again (the deadline, the
+#: link timeout, the process); ending the attempt wakes it at once.
+POLL_S = 0.2
+#: The most a reader takes from the pty at once.
+READ_BYTES = 65536
+#: How long ending an attempt waits for its killed process to be reaped.
+REAP_S = 10.0
 
 _LINK_CHARS = re.compile(r"^https://[A-Za-z0-9\-._~:/?#@!$&()*+,;=%]+$")
 _USER_CODE = re.compile(r"^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$")
@@ -225,13 +239,21 @@ class Attempt:
     started: float = 0.0
     deadline: float = 0.0
     proc: subprocess.Popen[bytes] | None = None
+    #: The pty master, while its reader runs (set and cleared under the lock; the reader owns it).
     fd: int | None = None
+    #: The write end of the reader's wake pipe, while its reader runs: ending the attempt writes a
+    #: byte to it so the reader stops at once (the reader owns and closes it).
+    wake: int | None = None
     out: bytearray = field(default_factory=bytearray)
     #: Offset in the decoded output at the last pasted code; -1 before any.
     after_input: int = -1
     stop: threading.Event = field(default_factory=threading.Event)
     #: Set once its spawn is over: the process is assigned, or killed and reaped, or never made.
     spawned: threading.Event = field(default_factory=threading.Event)
+    #: Held for each kill of its process, check to reap: two callers (a settle and another, or
+    #: the reader and an end) never interleave, so a group is never signalled after the other
+    #: one reaped its leader (Codex WP3.26 r1-1).
+    reaping: threading.Lock = field(default_factory=threading.Lock)
 
     def view(self) -> dict[str, Any]:
         view: dict[str, Any] = {
@@ -252,7 +274,7 @@ class Attempt:
 
 #: spawn(service, cancelled) -> (process, pty master): the CLI's login, as workload, in a new
 #: session whose controlling terminal is the pty. Raises on failure, and ``SpawnCancelled`` when
-#: ``cancelled()`` turns true while it waits.
+#: ``cancelled()`` turns true while it waits (the attempt ended, or its deadline passed).
 Spawn = Callable[[str, Callable[[], bool]], "tuple[subprocess.Popen[bytes], int]"]
 
 
@@ -318,13 +340,17 @@ class SignIns:
             target=self._run, args=(attempt,), name=f"sign-in-{service}", daemon=True
         )
         with self._lock:
+            # Only finished threads are dropped (one not started yet has no ident).
+            self._threads = [t for t in self._threads if t.ident is None or t.is_alive()]
             self._threads.append(thread)
         thread.start()
         self._on_change()
         return self.status(service, number)
 
     def write(self, service: str, number: int, code: str) -> dict[str, Any]:
-        """Claude: the pasted code and a carriage return, to the attempt's pty."""
+        """Claude: the pasted code and a carriage return, to the attempt's pty. The pty is
+        non-blocking: a CLI that no longer takes its input (gone, or not reading it) fails the
+        attempt instead of holding the lock."""
         if service != "claude" or not _CODE.match(code):
             raise SignInConflict("only Claude takes a code, of printable characters")
         with self._lock:
@@ -334,9 +360,16 @@ class SignIns:
             if attempt.state != "awaiting_user" or attempt.fd is None:
                 raise SignInConflict("the attempt is not waiting for a code")
             text = attempt.out.decode("utf-8", "replace")
+            data = code.encode("ascii") + b"\r"
+            try:
+                written = os.write(attempt.fd, data)
+            except OSError:  # BlockingIOError included: the input queue is full
+                written = -1
+            if written != len(data):
+                self._end(attempt, "failed", "cli_exited")
+                return attempt.view()
             attempt.after_input = len(text)
             attempt.notice = None
-            os.write(attempt.fd, code.encode("ascii") + b"\r")
             attempt.state = "completing"
             return attempt.view()
 
@@ -404,15 +437,15 @@ class SignIns:
     def _settle(self, covers: Callable[[Attempt], bool]) -> bool:
         """Waits (never under the lock: the spawning thread needs it) until the spawn of every
         owed attempt ``covers`` names is over, then kills and reaps what it made. True once none
-        of them can still start; those not yet over stay owed for the next settle."""
+        of them can still start and all they made is reaped; the others stay owed for the next
+        settle."""
         with self._lock:
             owed = [a for a in self._unsettled if covers(a)]
         settled = True
         for attempt in owed:
-            if not attempt.spawned.wait(SPAWN_SETTLE_S):
+            if not attempt.spawned.wait(SPAWN_SETTLE_S) or not _kill(attempt):
                 settled = False
                 continue
-            _kill(attempt.proc)
             with self._lock:
                 if attempt in self._unsettled:
                     self._unsettled.remove(attempt)
@@ -431,16 +464,19 @@ class SignIns:
             del finished[old]
 
     def _end(self, attempt: Attempt, state: str, reason: str | None = None) -> None:
-        """Ends an attempt (under the lock): kill and reap its process group, wipe its secrets,
-        and remember only its final state and reason."""
+        """Ends an attempt (under the lock): kill and reap its process group, wake its reader,
+        wipe its secrets, and remember only its final state and reason. It closes no descriptor:
+        the reader may be between waking and reading, and closes them itself once it stops."""
         if attempt.state in FINAL:
             return
         attempt.stop.set()
-        _kill(attempt.proc)
-        if attempt.fd is not None:
+        # Bounded (REAP_S) and under the lock on purpose: the end is visible only once the
+        # process is reaped. One not reaped in time stays owed (below) for the next settle.
+        reaped = _kill(attempt)
+        if attempt.wake is not None:
+            # Non-blocking, written once per attempt: it never waits.
             with contextlib.suppress(OSError):
-                os.close(attempt.fd)
-            attempt.fd = None
+                os.write(attempt.wake, b"\0")
         attempt.state = state
         attempt.reason = reason if state == "failed" else None
         attempt.url = None
@@ -450,67 +486,95 @@ class SignIns:
         attempt.out.clear()
         if state == "failed":
             self._alert("sign_in_failed")
-        if not attempt.spawned.is_set():
+        if not attempt.spawned.is_set() or not reaped:
             self._unsettled.append(attempt)
         self._finished[attempt.service][attempt.number] = attempt.view()
         self._trim(attempt.service)
 
     def _run(self, attempt: Attempt) -> None:
+        """The attempt's thread. From the spawn on it owns the pty and the wake pipe: it alone
+        reads them, and it closes them only once it has stopped reading."""
+        wake: tuple[int, int] | None = None
         try:
-            proc, fd = self._spawn(attempt.service, attempt.stop.is_set)
+            wake = os.pipe()
+            os.set_blocking(wake[1], False)
+            # Waiting to spawn (a capture's gate) gives up when the attempt ends or its deadline
+            # passes (Codex WP3.26 r1-3).
+            proc, fd = self._spawn(
+                attempt.service,
+                lambda: attempt.stop.is_set() or self._clock() >= attempt.deadline,
+            )
         except Exception:  # noqa: BLE001 - never the exception's text (a cancel's included)
+            if wake is not None:
+                _close(*wake)
             with self._lock:
-                self._end(attempt, "failed", "start_failed")
+                if self._clock() >= attempt.deadline:
+                    self._end(attempt, "expired")
+                else:
+                    self._end(attempt, "failed", "start_failed")
             attempt.spawned.set()
             self._on_change()
             return
         with self._lock:
+            # The process is the attempt's either way: a settle that finds it not yet reaped
+            # retries the kill.
+            attempt.proc = proc
             stopped = attempt.stop.is_set()
             if not stopped:
-                attempt.proc = proc
                 attempt.fd = fd
+                attempt.wake = wake[1]
         if stopped:
             # Ended while it was being spawned (a cancel, a newer start): killed and reaped
             # before anyone waiting on the spawn is told it is over.
-            _kill(proc)
-            with contextlib.suppress(OSError):
-                os.close(fd)
+            _kill(attempt)
+            _close(fd, *wake)
             attempt.spawned.set()
             return
         attempt.spawned.set()
         try:
-            self._read(attempt)
+            self._read(attempt, proc, fd, wake[0])
         except Exception:  # noqa: BLE001 - a reader failure ends the attempt, never silently
             with self._lock:
                 self._end(attempt, "failed", "cli_exited")
+        finally:
+            with self._lock:
+                # The reader has stopped: nothing can use these numbers any more.
+                attempt.fd = None
+                attempt.wake = None
+            _close(fd, *wake)
         self._on_change()
 
-    def _read(self, attempt: Attempt) -> None:
-        while not attempt.stop.is_set():
-            fd = attempt.fd
-            if fd is None:
+    def _read(self, attempt: Attempt, proc: subprocess.Popen[bytes], fd: int, wake: int) -> None:
+        """Reads the CLI's output until the attempt ends. Each wait is bounded: the poll by
+        ``POLL_S`` (and cut short by ``_end``'s wake), and reads never block."""
+        os.set_blocking(fd, False)
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        poller.register(wake, select.POLLIN)
+        closed = False  # the pty's other side is gone: everything written to it has been read
+        while True:
+            ready = {ready_fd for ready_fd, _events in poller.poll(POLL_S * 1000)}
+            if attempt.stop.is_set():
                 return
-            try:
-                ready, _, _ = select.select([fd], [], [], 0.2)
-            except (OSError, ValueError):
-                ready = []
+            # The exit is observed before the pty is drained, so everything the CLI printed
+            # before exiting is read before its end is judged (a read takes the pty's pending
+            # output before it answers "nothing now" or "closed"). Codex WP3.26 r1-2.
+            exited = _exited(proc)
             chunk = b""
-            if ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError:
-                    chunk = b""
+            if not closed and (fd in ready or exited):
+                chunk, closed = _drain(fd)
+                if closed:
+                    poller.unregister(fd)  # from here: the wake and the timeout only
             with self._lock:
                 if attempt.stop.is_set():
                     return
+                if exited:
+                    # Its group (any straggler) is killed and it is reaped before the end is
+                    # judged and shown; under the lock, as ``_end``'s kill is, and at once: it has
+                    # exited.
+                    _kill(attempt)
                 if chunk:
                     attempt.out += chunk
-                exited = attempt.proc is not None and attempt.proc.poll() is not None
-                if ready and not chunk and not exited:
-                    # The pty closed (EIO) but the process has not been seen to exit yet.
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        attempt.proc.wait(timeout=1.0)  # type: ignore[union-attr]
-                    exited = attempt.proc.poll() is not None  # type: ignore[union-attr]
                 if self._step(attempt, exited):
                     return
             if chunk or exited:
@@ -525,7 +589,7 @@ class SignIns:
         raw = attempt.out.decode("utf-8", "replace")
         parsed = parse(attempt.service, raw, attempt.after_input)
         if exited:
-            # Whatever is left to read has been read: the pty's other side is gone.
+            # The CLI exited before the pty was drained: everything it printed has been read.
             code = attempt.proc.returncode if attempt.proc is not None else None
             if code == 0 and (parsed.success or attempt.state in ("completing", "awaiting_user")):
                 self._end(attempt, "done")
@@ -554,16 +618,68 @@ class SignIns:
         return False
 
 
-def _kill(proc: subprocess.Popen[bytes] | None) -> None:
-    """Kills the attempt's whole process group (its own session) and reaps the process."""
-    if proc is None:
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        proc.kill()
-    with contextlib.suppress(subprocess.TimeoutExpired, ChildProcessError):
-        proc.wait(timeout=10)
+def _kill(attempt: Attempt) -> bool:
+    """Kills the attempt's whole process group (its own session) and reaps the process; True
+    once it is reaped (or there is none). The group is signalled only while its leader is not
+    yet reaped: until then the leader's ID, which is the group's, cannot be reused. Reaping is
+    left to this function alone (``_exited`` does not reap), so it always kills first, and the
+    attempt's ``reaping`` lock keeps two callers from interleaving. Waiting for that lock and for
+    the reap share one ``REAP_S`` budget, so callers queued behind a process that will not be
+    reaped each give up within it (Codex WP3.26 r2-1); False then, and the attempt stays owed."""
+    deadline = time.monotonic() + REAP_S
+    if not attempt.reaping.acquire(timeout=REAP_S):
+        return False
+    try:
+        proc = attempt.proc
+        if proc is None:
+            return True
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                proc.kill()
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return False
+        except ChildProcessError:
+            pass
+        return True
+    finally:
+        attempt.reaping.release()
+
+
+def _exited(proc: subprocess.Popen[bytes]) -> bool:
+    """Whether the CLI has exited, without reaping it (see ``_kill``)."""
+    if proc.returncode is not None:
+        return True
+    try:
+        return os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    except ChildProcessError:
+        return True
+
+
+def _drain(fd: int) -> tuple[bytes, bool]:
+    """What the pty holds now (at most just over the output bound), and whether its other side
+    is closed. Never blocks: the pty is non-blocking."""
+    data = bytearray()
+    while len(data) <= MAX_OUTPUT_BYTES:
+        try:
+            chunk = os.read(fd, READ_BYTES)
+        except BlockingIOError:
+            return bytes(data), False
+        except OSError:  # EIO: every descriptor of the pty's other side is closed
+            return bytes(data), True
+        if not chunk:
+            return bytes(data), True
+        data += chunk
+    return bytes(data), False
+
+
+def _close(*fds: int) -> None:
+    for fd in fds:
+        with contextlib.suppress(OSError):
+            os.close(fd)
 
 
 def spawn_login(
