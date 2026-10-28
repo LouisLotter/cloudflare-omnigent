@@ -38,7 +38,7 @@ describe("sign-in links", () => {
     ["codex", `${CODEX}'onmouseover=x`, "an apostrophe"],
     ["codex", `${CODEX}?${"a".repeat(2048)}`, "a link over 2048 characters"],
     ["claude", "https://claude.com.", "a trailing dot"],
-  ] as const)("refuses for %s: %s (%s)", (service, url) => {
+  ] as const)("refuses for %s: %s (%s)", (service, url, _why) => {
     expect(signInLinkAllowed(service, url)).toBe(false);
   });
 
