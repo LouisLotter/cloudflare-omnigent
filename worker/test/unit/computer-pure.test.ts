@@ -508,6 +508,12 @@ describe("checkpoints", () => {
     phase = signOutOnPublish(phase, out, true);
     expect(phase).toBe("tombstoned");
     expect(signOutDecided(phase, out)).toBe("tombstoned");
+    // A run started from tombstoned or verified (the table keeps them): a login published between
+    // its logouts takes the claim away until its own tombstones come (Codex r1-1).
+    expect(signOutOnPublish("verified", between, true)).toBe("requested");
+    expect(signOutOnPublish("tombstoned", between, true)).toBe("requested");
+    expect(signOutOnPublish("none", between, true)).toBe("none");
+    expect(signOutOnPublish("verified", out, true)).toBe("verified");
     // The table as before, outside a run: a login undoes any sign-out.
     expect(signOutOnPublish("verified", between, false)).toBe("none");
     expect(signOutOnPublish("requested", out, false)).toBe("tombstoned");

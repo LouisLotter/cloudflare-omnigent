@@ -30,6 +30,7 @@ import {
   nextHeartbeat,
   nextLaptopEvent,
   RC21_MS,
+  RC21_PAUSE_MS,
   reconnects,
   replaceResult,
   restartTimes,
@@ -361,11 +362,16 @@ describe("the soak's analysis after the 28 Oct sitting (WP3.27)", () => {
     const window = [open(reset + 31_000, A), open(reset + 40_000, B)];
     // 28 Oct: the host had connected before the collected window, so T0+10 had no row.
     expect(reconnects([{ kind: "server_reset", at: reset }], window)).toEqual([]);
-    const before = [open(T0 - 30 * MIN, A), open(T0 - 20 * MIN, "cmp_01hzy3m8k6q4t2v9w7x5r0s1n9")];
+    const gone = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n9";
+    const before = [open(T0 - 30 * MIN, A), open(T0 - 20 * MIN, gone)];
     const judged = reconnects([{ kind: "server_reset", at: reset }], window, before);
-    // A is judged; B connected only after the reset; a computer seen only before the window
-    // (removed before the soak) is not judged at all.
-    expect(judged.map((r) => [r.computerId, r.gapMs, r.ok])).toEqual([[A, 31_000, true]]);
+    // A is judged; B connected only after the reset; a computer seen only before the window is
+    // inconclusive (Codex r1-2: removed or asleep before the soak, or never back), never left out.
+    expect(judged.map((r) => [r.computerId, r.gapMs, r.ok])).toEqual([
+      [gone, null, false],
+      [A, 31_000, true],
+    ]);
+    expect(judged[0]?.note).toMatch(/^inconclusive: its host connected before the window/);
     // An earlier open never counts as the reconnect itself.
     expect(
       reconnects(
@@ -374,6 +380,58 @@ describe("the soak's analysis after the 28 Oct sitting (WP3.27)", () => {
         [open(T0 - MIN, A)],
       )[0],
     ).toMatchObject({ gapMs: 300_000, ok: false });
+  });
+
+  it("never passes a host that connected before the window and was not seen again (Codex r1-2)", () => {
+    const reset = T0 + 10 * MIN;
+    // One host, connected before the window, never back after the reset: not an empty table.
+    const lost = reconnects(
+      [
+        { kind: "server_reset", at: reset },
+        { kind: "workspace_reset", at: reset + 90 * MIN },
+      ],
+      [],
+      [open(T0 - 20 * MIN, A)],
+    );
+    expect(lost).toEqual([
+      {
+        kind: "server_reset",
+        at: reset,
+        computerId: A,
+        gapMs: null,
+        boundMs: RC21_MS,
+        ok: false,
+        note: expect.stringMatching(/^inconclusive: .*never reconnected\)$/),
+      },
+    ]);
+    // Two seeded hosts, one back: both have a row, and the one never seen is not ok.
+    const two = reconnects(
+      [{ kind: "server_reset", at: reset, duringPause: true }],
+      [open(reset + 20_000, A)],
+      [open(T0 - 20 * MIN, A), open(T0 - 20 * MIN, B)],
+    );
+    expect(two.map((r) => [r.computerId, r.ok, r.boundMs])).toEqual([
+      [B, false, RC21_PAUSE_MS],
+      [A, true, RC21_PAUSE_MS],
+    ]);
+    // No host at all (the 28 Oct sitting's first analysis): nothing checked, said so.
+    expect(
+      reconnects(
+        [
+          { kind: "end", at: T0 },
+          { kind: "web_deploy", at: reset },
+        ],
+        [],
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "web_deploy",
+        computerId: "(none)",
+        ok: false,
+        note: "inconclusive: no host-tunnel open in the logs, so nothing was checked",
+      }),
+    ]);
+    expect(reconnects([], [])).toEqual([]);
   });
 
   it("names the computer of a host-tunnel open, and nothing else (run.sh collect's filter)", () => {

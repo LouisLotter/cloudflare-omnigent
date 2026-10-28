@@ -45,6 +45,11 @@ const jsonLines = (name: string): LogLine[] =>
         .filter(Boolean)
         .map((line) => JSON.parse(line) as LogLine)
     : [];
+// The window's logs are required (Codex WP3.27 r1-4): without them nothing is checked. Only
+// presence.jsonl, which older collections lack, may be missing.
+if (!existsSync(join(dir, "logs.jsonl"))) {
+  throw new Error(`no logs.jsonl in ${dir}: run \`run.sh collect\` first`);
+}
 const lines = jsonLines("logs.jsonl");
 const presence = jsonLines("presence.jsonl");
 const disruptions: Disruption[] = [

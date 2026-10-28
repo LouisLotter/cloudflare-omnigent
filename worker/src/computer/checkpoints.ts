@@ -425,14 +425,22 @@ export function midSignOut(
   );
 }
 
-/** The sign-out phase once a bundle is published: as the table says, except mid-run (above). */
+/**
+ * The sign-out phase once a bundle is published: as the table says, except mid-run (above). A
+ * login published mid-run never leaves `none`, but it does take away what `tombstoned` and
+ * `verified` claim: a run started from either (the table keeps them at `requested`) goes back to
+ * `requested`, so its own tombstones are published and read back again before it claims them
+ * (Codex WP3.27 r1-1: a login written after a verified sign-out, published between the next run's
+ * logouts, left `verified` standing with a login in the pointer).
+ */
 export function signOutOnPublish(
   phase: SignOutPhase,
   files: FileStates,
   midRun: boolean,
 ): SignOutPhase {
   const event = signOutEventOf(files);
-  return midRun && event === "login_published" ? phase : SIGN_OUT_TABLE[phase][event];
+  if (midRun && event === "login_published") return phase === "none" ? "none" : "requested";
+  return SIGN_OUT_TABLE[phase][event];
 }
 
 /**
@@ -445,9 +453,9 @@ export function signOutDecided(phase: SignOutPhase, pointer: FileStates | null):
 }
 
 /**
- * The phase when a sign-out run ends any other way (given up, its container gone): a login it set
- * aside while its logouts ran counts now. A run still `requested` stays so: asked for, not
- * confirmed, which the page offers to run again.
+ * The phase when a sign-out run ends any other way (given up, its container gone): a login in the
+ * pointer counts now. A run still `requested` stays so (a login it set aside leaves it there):
+ * asked for, not confirmed, which the page offers to run again.
  */
 export function signOutAbandoned(phase: SignOutPhase, pointer: FileStates | null): SignOutPhase {
   return phase !== "requested" && pointer !== null && holdsLogin(pointer)

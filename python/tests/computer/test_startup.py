@@ -54,7 +54,19 @@ def test_reports_whether_the_hostname_resolves_as_sudo_would(
     release = threading.Event()
     monkeypatch.setattr(startup.socket, "getaddrinfo", lambda host, port: release.wait(5))
     assert startup.hostname_resolution(NAME, timeout=0.05) == "unknown"
+    # While it still hangs, the next read is "unknown" at once and starts no second lookup.
+
+    def lookups() -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if t.name == "cfo-hostname"]
+
+    assert len(lookups()) == 1
+    assert startup.hostname_resolution(NAME, timeout=5) == "unknown"
+    assert len(lookups()) == 1
     release.set()
+    for thread in lookups():
+        thread.join(5)
+    monkeypatch.setattr(startup.socket, "getaddrinfo", answer(("addr",)))
+    assert startup.hostname_resolution(NAME) == "resolved"
     # This machine's own name, for real: resolved or unresolved, never an exception.
     monkeypatch.undo()
     assert startup.hostname_resolution() in {"resolved", "unresolved", "unknown"}

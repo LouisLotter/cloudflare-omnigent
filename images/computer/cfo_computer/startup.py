@@ -37,6 +37,11 @@ _HOSTNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})")
 #: on a slow DNS server (``myhostname`` answers before DNS is asked).
 RESOLVE_TIMEOUT_S = 2.0
 _NOT_FOUND = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+#: At most one lookup at a time: a timeout cannot stop a lookup's thread, so while one still
+#: hangs, the next status read says ``unknown`` at once instead of starting another (Codex
+#: WP3.27 r1, optional): hung lookups never pile up.
+_IN_FLIGHT: list[threading.Thread] = []
+_IN_FLIGHT_LOCK = threading.Lock()
 
 
 def hostname_resolution(name: str | None = None, timeout: float = RESOLVE_TIMEOUT_S) -> str:
@@ -62,8 +67,12 @@ def hostname_resolution(name: str | None = None, timeout: float = RESOLVE_TIMEOU
         except (OSError, UnicodeError):
             answer.append("unknown")
 
-    worker = threading.Thread(target=lookup, name="cfo-hostname", daemon=True)
-    worker.start()
+    with _IN_FLIGHT_LOCK:
+        if any(t.is_alive() for t in _IN_FLIGHT):
+            return "unknown"
+        worker = threading.Thread(target=lookup, name="cfo-hostname", daemon=True)
+        _IN_FLIGHT[:] = [worker]
+        worker.start()
     worker.join(timeout)
     return answer[0] if answer else "unknown"
 
