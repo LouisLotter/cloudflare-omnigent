@@ -623,8 +623,13 @@ def _kill(attempt: Attempt) -> bool:
     once it is reaped (or there is none). The group is signalled only while its leader is not
     yet reaped: until then the leader's ID, which is the group's, cannot be reused. Reaping is
     left to this function alone (``_exited`` does not reap), so it always kills first, and the
-    attempt's ``reaping`` lock keeps two callers from interleaving. Bounded by ``REAP_S``."""
-    with attempt.reaping:
+    attempt's ``reaping`` lock keeps two callers from interleaving. Waiting for that lock and for
+    the reap share one ``REAP_S`` budget, so callers queued behind a process that will not be
+    reaped each give up within it (Codex WP3.26 r2-1); False then, and the attempt stays owed."""
+    deadline = time.monotonic() + REAP_S
+    if not attempt.reaping.acquire(timeout=REAP_S):
+        return False
+    try:
         proc = attempt.proc
         if proc is None:
             return True
@@ -634,12 +639,14 @@ def _kill(attempt: Attempt) -> bool:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 proc.kill()
         try:
-            proc.wait(timeout=REAP_S)
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             return False
         except ChildProcessError:
             pass
         return True
+    finally:
+        attempt.reaping.release()
 
 
 def _exited(proc: subprocess.Popen[bytes]) -> bool:

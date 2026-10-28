@@ -875,6 +875,55 @@ def test_a_process_not_reaped_in_time_stays_owed(monkeypatch):
     signins.join()
 
 
+def test_concurrent_retries_on_a_process_not_reaped_stay_within_the_bound(monkeypatch):
+    """Codex WP3.26 r2-1: several cancels at once (a page's retries, a sign-out) for a process
+    that is not reaped in time. Each answers "try again" within about one ``REAP_S``: waiting
+    for another caller's kill counts against the same budget, so the latency never grows with
+    the number of callers."""
+    monkeypatch.setattr(SI, "REAP_S", 0.5)
+    stuck = threading.Event()
+    stuck.set()
+
+    class SlowToReap(subprocess.Popen):
+        def wait(self, timeout=None):
+            if stuck.is_set():
+                time.sleep(timeout or 0)
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            return super().wait(timeout)
+
+    def spawn(_service, _cancelled):
+        master, slave = os.openpty()
+        proc = SlowToReap(
+            ["sleep", "60"], stdin=slave, stdout=slave, stderr=slave, start_new_session=True
+        )
+        os.close(slave)
+        return proc, master
+
+    signins = SI.SignIns(spawn)
+    signins.start("codex", 1)
+    _until(lambda: signins._current["codex"].fd is not None, what="the reader to start")
+    with pytest.raises(SI.SignInUnsettled):
+        signins.cancel("codex", 1)
+    took: list[float] = []
+
+    def retry() -> None:
+        started = time.monotonic()
+        with contextlib.suppress(SI.SignInUnsettled):
+            signins.cancel("codex", 1)
+        took.append(time.monotonic() - started)
+
+    callers = [threading.Thread(target=retry) for _ in range(6)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(30)
+    assert len(took) == 6
+    assert max(took) < 3 * SI.REAP_S, sorted(took)  # queued, the last would take about 6
+    stuck.clear()
+    assert signins.cancel("codex", 1)["state"] == "cancelled"
+    signins.join()
+
+
 def test_concurrent_kills_never_signal_a_reaped_group(monkeypatch):
     """Codex WP3.26 r1-1: two callers kill the same process at once (a settle and another, or the
     reader and an end). One is held right at its group signal; the other must not reap the
