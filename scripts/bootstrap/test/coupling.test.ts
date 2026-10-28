@@ -1,8 +1,9 @@
 // Couplings the bootstrap depends on, checked against the other side's own code:
 //   - the server image (WP2.3) reads the environment the bootstrap gives it, before and after the
 //     release, with its own parser (images/server/cfo_server/config.py, standard library only);
-//   - the bootstrap script never talks to the installation, and never touches Access or tokens;
-//     the only thing it creates besides its deploys is a missing R2 bucket of the plan.
+//   - the bootstrap script never talks to the installation, and never touches Access or service
+//     tokens; besides its deploys it creates only a missing R2 bucket of the plan, and the
+//     installation's own R2 user API token, which it may also roll or delete (WP3.25).
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -165,7 +166,7 @@ describe.skipIf(!python)(
   },
 );
 
-describe("the bootstrap never talks to the installation, Access or tokens", () => {
+describe("the bootstrap never talks to the installation, Access or service tokens", () => {
   const dir = join(ROOT, "scripts", "bootstrap");
   const sources = readdirSync(dir)
     .filter((f) => f.endsWith(".ts"))
@@ -178,6 +179,8 @@ describe("the bootstrap never talks to the installation, Access or tokens", () =
       "cloud.ts",
       "events.ts",
       "machine.ts",
+      "r2-token.ts",
+      "remove.ts",
       "settings.ts",
       "staging.ts",
       "state.ts",
@@ -194,13 +197,29 @@ describe("the bootstrap never talks to the installation, Access or tokens", () =
   it.each(sources)(
     "%s creates or changes no Access application, policy or service token",
     (_file, text) => {
-      // The one creation allowed: a missing R2 bucket of the plan (`bootstrap.ts buckets`).
-      const bucketCreate = /"r2",\s*"buckets",\s*"create",\s*"--body"/g;
-      const code = text.replace(/^\s*\/\/.*$/gm, "").replace(bucketCreate, "");
+      // The creations allowed: a missing R2 bucket of the plan, and the installation's own R2
+      // user API token (cloud.ts's cfTokenApi), which may also be rolled and deleted.
+      const allowed = [
+        /"r2",\s*"buckets",\s*"create",\s*"--body"/g,
+        /"user",\s*"tokens",\s*"(create|roll|delete)"/g,
+      ];
+      const code = allowed.reduce(
+        (rest, pattern) => rest.replace(pattern, ""),
+        text.replace(/^\s*\/\/.*$/gm, ""),
+      );
       expect(code).not.toMatch(/service[-_]tokens?"/);
       expect(code).not.toMatch(/"(create|update|delete|rotate|edit)"/);
       expect(code).not.toMatch(/"policies"/);
       expect(code).not.toMatch(/"r2",\s*"(buckets|objects)",\s*"delete"/);
+      expect(code).not.toMatch(/"(account|accounts)",\s*"tokens"/);
     },
   );
+
+  it("touches user API tokens only in cloud.ts's adapter", () => {
+    for (const [file, text] of sources) {
+      const code = text.replace(/^\s*\/\/.*$/gm, "");
+      const touches = /"user",\s*"tokens"/.test(code);
+      expect([file, touches]).toEqual([file, file === "cloud.ts"]);
+    }
+  });
 });

@@ -46,6 +46,8 @@ export default defineConfig({
         "bootstrap/access.ts": pure,
         "bootstrap/machine.ts": pure,
         "bootstrap/state.ts": pure,
+        "bootstrap/r2-token.ts": pure,
+        "bootstrap/remove.ts": io,
         "bootstrap/cloud.ts": io,
         "bootstrap/staging.ts": io,
         "restore-drill/staging/src/plan.ts": pure,

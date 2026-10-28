@@ -4,7 +4,13 @@
 // In order, each run:
 //   1. deploys the platform Worker with the installation's variables, adding only the secrets it
 //      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password, the
-//      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`);
+//      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`).
+//      The R2 credentials come from the installation's own user API token, which the run makes
+//      with the installer's `cf` login just before this deploy (r2-token.ts), unless the
+//      installer supplied a token's values. A token made earlier whose pair never reached the
+//      Worker is retired: deleted where Cloudflare allows it, otherwise named to the person
+//      with the one click that deletes it. A login that may not make tokens (403) gets the
+//      dashboard step in one sentence, and is asked for that token's two values;
 //   2. reads the hostname's Access application and checks that it is owner-only (no bypass, no
 //      service token, the owner's pin as its one identity) and sets SameSite=lax;
 //   3. deploys the web Worker with ingress's variables, behind that Access application;
@@ -44,6 +50,18 @@ import {
   staleness,
   verifyRelease,
 } from "./events.ts";
+import {
+  type EnsureContext,
+  type LeftToken,
+  makeR2Token,
+  manualDeletion,
+  manualR2Step,
+  type RecordedToken,
+  retireR2Token,
+  type S3Credentials,
+  type TokenApi,
+  TokensUnavailable,
+} from "./r2-token.ts";
 import {
   type AccessSettings,
   ARTIFACTS_KEY_ID_SECRET,
@@ -138,6 +156,10 @@ export interface Journal {
   /** The version the release deployed, as Cloudflare listed it right after. */
   readonly releasedVersionId?: string;
   readonly verifiedAt?: string;
+  /** The installation's R2 user API token, when the bootstrap made it: its ID, never a value. */
+  readonly r2Token?: RecordedToken;
+  /** Tokens the bootstrap made and no longer uses, which Cloudflare did not let it delete. */
+  readonly r2TokensToDelete?: readonly LeftToken[];
 }
 
 export interface BootstrapState {
@@ -162,6 +184,16 @@ export interface RunContext {
   };
   /** The installer's secrets; called only when one of them must be uploaded. */
   readonly secrets: () => SuppliedSecrets;
+  /**
+   * The installer's user API tokens, through their `cf` login: the R2 credentials are made
+   * with it when the installer supplied none. Without it, they must be supplied.
+   */
+  readonly r2Tokens?: TokenApi;
+  /**
+   * Asks the installer for a token's two values, after showing the dashboard step: only when
+   * their login may not make tokens, and only where someone can answer (a terminal).
+   */
+  readonly askR2?: (step: string) => Promise<S3Credentials>;
   readonly random: (bytes: number) => Uint8Array;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
@@ -274,6 +306,30 @@ export async function runBootstrap(
     state = { ...state, journal: { ...state.journal, ...change } };
     ctx.store.save(state);
   };
+  // The token fields are replaced whole, and left out when empty.
+  const tokens: EnsureContext["record"] = (current, left) => {
+    const { r2Token: _current, r2TokensToDelete: _left, ...rest } = state.journal;
+    state = {
+      ...state,
+      journal: {
+        ...rest,
+        ...(current === undefined ? {} : { r2Token: current }),
+        ...(left.length === 0 ? {} : { r2TokensToDelete: left }),
+      },
+    };
+    ctx.store.save(state);
+  };
+  const tokenContext = (api: TokenApi): EnsureContext => ({
+    api,
+    plan,
+    recorded: () => ({
+      current: state.journal.r2Token,
+      left: state.journal.r2TokensToDelete ?? [],
+    }),
+    record: tokens,
+    now: ctx.now,
+    log: ctx.log,
+  });
   const names = async (worker = plan.platformWorker) => {
     const listed = await ctx.cloud.secretNames(worker);
     return listed === null ? null : new Set(listed);
@@ -319,21 +375,52 @@ export async function runBootstrap(
   // 1. The platform Worker.
   if (secrets === null || state.journal.platformDeployedAt === undefined) {
     const present = secrets ?? new Set<string>();
-    const needsInstaller =
-      !present.has(PASSWORD_SECRET) ||
-      (needsReplicaCredentials(plan) &&
-        (!present.has(REPLICA_KEY_ID_SECRET) || !present.has(REPLICA_SECRET_KEY_SECRET))) ||
-      (needsArtifactCredentials(plan) &&
-        (!present.has(ARTIFACTS_KEY_ID_SECRET) || !present.has(ARTIFACTS_SECRET_KEY_SECRET)));
-    const add = secretsToAdd(plan, present, needsInstaller ? ctx.secrets() : {}, {
-      cookieSecret: hex(ctx.random(32)),
-    });
+    const lacksR2 = r2SecretNames(plan).some((name) => !present.has(name));
+    const needsInstaller = !present.has(PASSWORD_SECRET) || lacksR2;
+    const given = needsInstaller ? ctx.secrets() : {};
+    // The bootstrap makes the R2 token itself unless the installer gave one's values. Without
+    // the installer's token API, missing values are named as any missing secret is.
+    const makesToken = lacksR2 && ctx.r2Tokens !== undefined && !suppliesR2(plan, given);
+    const cookie = { cookieSecret: hex(ctx.random(32)) };
     const config = renderPlatformConfig(ctx.baseConfigs.platform, plan);
-    // Present secrets keep their values; a placeholder stands in for the check.
+    // Every check first, with stand-ins for present secrets and for a token not made yet, so
+    // that a token is made only for a deploy that will be sent.
+    const preview = secretsToAdd(
+      plan,
+      present,
+      makesToken ? { ...given, ...r2Supplied(STAND_IN_PAIR) } : given,
+      cookie,
+    );
     const standIns = Object.fromEntries([...present].map((name) => [name, "present"]));
-    const envProblems = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
+    const envProblems = containerEnvProblems(platformVars(plan), { ...standIns, ...preview }, plan);
     if (envProblems.length > 0) {
       throw new BootstrapRefusal(`the server would not start: ${envProblems.join("; ")}`);
+    }
+    const add = makesToken
+      ? secretsToAdd(
+          plan,
+          present,
+          {
+            ...given,
+            ...r2Supplied(
+              await r2Credentials(ctx, tokenContext(ctx.r2Tokens as TokenApi), present),
+            ),
+          },
+          cookie,
+        )
+      : preview;
+    if (lacksR2 && !makesToken && ctx.r2Tokens !== undefined && !holdsWholePair(present)) {
+      // The installer's own values replace every pair a token made earlier could still be in
+      // (an incomplete pair is replaced whole), so that token is unused (Codex WP3.25 r3-4).
+      const left = retireR2Token(tokenContext(ctx.r2Tokens));
+      if (left.length > 0) ctx.log(manualDeletion(left));
+    }
+    if (makesToken) {
+      // The real values, as the checks above saw stand-ins (a hand-made token's are typed in).
+      const final = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
+      if (final.length > 0) {
+        throw new BootstrapRefusal(`the server would not start: ${final.join("; ")}`);
+      }
     }
     record({ platformDeployStartedAt: state.journal.platformDeployStartedAt ?? iso(ctx.now()) });
     ctx.log(
@@ -417,6 +504,91 @@ export async function runBootstrap(
   });
   ctx.log("released: the bootstrap password is gone and the installation is marked initialized");
   return verifyAfterRelease(ctx, () => state, options, record);
+}
+
+/** The R2 secrets an installation holds: the replica's pair, the artifacts' pair, or both. */
+function r2SecretNames(plan: Installation): string[] {
+  return [
+    ...(needsReplicaCredentials(plan) ? [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET] : []),
+    ...(needsArtifactCredentials(plan)
+      ? [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET]
+      : []),
+  ];
+}
+
+/** Whether the installer gave R2 values; the artifacts' default to the replica's. */
+function suppliesR2(plan: Installation, given: SuppliedSecrets): boolean {
+  const has = (value: string | undefined) => value !== undefined && value !== "";
+  const replica = has(given.replicaAccessKeyId) && has(given.replicaSecretAccessKey);
+  const artifacts = has(given.artifactsAccessKeyId) && has(given.artifactsSecretAccessKey);
+  return needsReplicaCredentials(plan) ? replica : replica || artifacts;
+}
+
+/** One token's key pair, for both uses, as the installer would give it. */
+function r2Supplied(pair: S3Credentials): SuppliedSecrets {
+  return {
+    replicaAccessKeyId: pair.accessKeyId,
+    replicaSecretAccessKey: pair.secretAccessKey,
+    artifactsAccessKeyId: pair.accessKeyId,
+    artifactsSecretAccessKey: pair.secretAccessKey,
+  };
+}
+
+const STAND_IN_PAIR: S3Credentials = { accessKeyId: "stand-in", secretAccessKey: "stand-in" };
+
+/** The pairs the Worker holds whole: secretsToAdd keeps them; any other pair is replaced. */
+function wholePairs(present: ReadonlySet<string>): string[][] {
+  return [
+    [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET],
+    [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET],
+  ].filter((pair) => pair.every((name) => present.has(name)));
+}
+
+function holdsWholePair(present: ReadonlySet<string>): boolean {
+  return wholePairs(present).length > 0;
+}
+
+/**
+ * The R2 key pair for a platform Worker that holds none: from a new token of the installation,
+ * made with the installer's login, or, when that login may not make tokens, from the installer
+ * after the dashboard step. Tokens left to delete are named to the person either way.
+ */
+async function r2Credentials(
+  ctx: RunContext,
+  tokens: EnsureContext,
+  present: ReadonlySet<string>,
+): Promise<S3Credentials> {
+  const plan = tokens.plan;
+  // A whole pair still held may come from the installation's token, which a new token would not
+  // replace: two tokens would be in use. Only supplied values can complete the Worker then. An
+  // incomplete pair is useless, and the new token's pair replaces it whole (Codex WP3.25 r3-4).
+  const held = wholePairs(present).flat();
+  if (held.length > 0) {
+    throw new BootstrapRefusal(
+      `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs, so the bootstrap will not make a second token; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey"): they replace each incomplete pair whole, and a complete pair is kept`,
+    );
+  }
+  const step = manualR2Step(plan);
+  const manual = async (why: string): Promise<S3Credentials> => {
+    if (ctx.askR2 === undefined) {
+      throw new BootstrapRefusal(
+        `${why}. ${step} Then run again with them on stdin (--secrets-stdin, as "replicaAccessKeyId" and "replicaSecretAccessKey").`,
+      );
+    }
+    ctx.log(`${why}, so the R2 token is made by hand. ${step}`);
+    return ctx.askR2(step);
+  };
+  let made: ReturnType<typeof makeR2Token>;
+  try {
+    made = makeR2Token(tokens);
+  } catch (error) {
+    if (!(error instanceof TokensUnavailable)) throw error;
+    const left = tokens.recorded().left;
+    if (left.length > 0) ctx.log(manualDeletion(left));
+    return manual("your cf login may not make API tokens (Cloudflare answered 403 Forbidden)");
+  }
+  if (made.left.length > 0) ctx.log(manualDeletion(made.left));
+  return made.pair;
 }
 
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };

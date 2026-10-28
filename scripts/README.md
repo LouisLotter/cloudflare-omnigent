@@ -6,7 +6,7 @@ Repository tools have different effects; choose the tool and test environment be
 |---|---|
 | [canary-scan.ts](canary-scan.ts) | Local synthetic-marker/exact-value scanner and temporary self-test fixtures; no Cloudflare account needed |
 | [staging/stg.ts](staging/stg.ts) | Guarded account/resource operations, owners, expiry, secrets and teardown; not an offline local test |
-| [bootstrap/bootstrap.ts](bootstrap/bootstrap.ts) | Installation planning/state and guarded initialization/release; operational steps use account credentials and owner acceptance |
+| [bootstrap/bootstrap.ts](bootstrap/bootstrap.ts) | Installation planning/state and guarded initialization/release, including the installation's R2 buckets and its bucket-scoped R2 token, made and removed with the installer's `cf` login; operational steps use account credentials and owner acceptance |
 | [restore-drill/](restore-drill/) | Durability/fence calculations, Docker/process fault suites and staging harness; distinguish reference launcher effects from the final production adapter |
 | [vitest.config.ts](vitest.config.ts) | Node test discovery for scanner, staging, bootstrap and restore-drill staging logic |
 
