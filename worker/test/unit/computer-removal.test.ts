@@ -286,3 +286,45 @@ describe("after Omnigent's database loses writes (FH-29)", () => {
     expect((await state(sim)).noContact).toBe(false);
   });
 });
+
+describe("a sign-out run's phase (WP3.27, the 28 Oct sitting's B3)", () => {
+  const runSignOut = async (sim: ComputerSim) => {
+    expect(await pageCall(sim, "sign_out", 1)).toEqual({ action: "sign_out", outcome: "accepted" });
+    const phases: string[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      await sim.advance(5_000);
+      phases.push(sim.record().signOut.phase);
+    }
+    return phases;
+  };
+
+  it("reaches verified when the CLIs log out one after the other, never passing through none", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true };
+    await signedIn(sim);
+    const phases = await runSignOut(sim);
+    expect(phases).not.toContain("none");
+    expect(phases.at(-1)).toBe("verified");
+    expect(sim.record().signOut.job).toBeNull();
+    // Both bundles of the run were published: the in-between one did not undo it.
+    expect(sim.logs.filter((l) => l.event === "credentials_published").length).toBeGreaterThan(3);
+    const status = await sim.controller.computerStatus();
+    expect(status.signOut).toEqual({ phase: "verified", running: false });
+    expect(await state(sim)).toMatchObject({ removal: { signOut: "verified", settled: true } });
+  });
+
+  it("ends undone when a logout leaves its login: the run's snapshot decides", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true, failedLogout: "codex" };
+    await signedIn(sim);
+    const phases = await runSignOut(sim);
+    expect(phases.at(-1)).toBe("none");
+    expect(sim.record().signOut.job).toBeNull();
+    expect(sim.record().credential?.files[".codex/auth.json"].state).toBe("present");
+    expect(sim.logs.find((l) => l.event === "sign_out_ran")?.fields).toMatchObject({
+      claude: "ok",
+      codex: "failed",
+    });
+    expect(await state(sim)).toMatchObject({ removal: { settled: false } });
+  });
+});

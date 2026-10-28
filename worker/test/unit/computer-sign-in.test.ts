@@ -4,6 +4,7 @@
 // The link's state, the expected code and Codex's device code must never reach the logs or the
 // stored record (the sim records a violation if a log holds one; `noSecrets` scans storage).
 import { describe, expect, it } from "vitest";
+import { STATUS_LOG_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, live } from "../support/computer-sim.ts";
 
 const SESSION = "ab".repeat(32);
@@ -746,6 +747,36 @@ describe("the computer's status", () => {
     noSecrets(sim);
   });
 
+  it("keeps what it logged across new instances, each of which says it started (WP3.27)", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    await sim.advance(1_000);
+    const logged = () => sim.logs.filter((l) => l.event === "computer_status").length;
+    const started = () => sim.logs.filter((l) => l.event === "instance_started");
+    const first = logged();
+    const instances = started().length;
+    for (let i = 0; i < 4; i += 1) {
+      await sim.restart();
+      await sim.advance(30_000);
+    }
+    expect(logged()).toBe(first);
+    const lines = started().slice(instances);
+    expect(lines).toHaveLength(4);
+    expect(new Set(lines.map((l) => l.fields.instanceId)).size).toBe(4);
+    expect(lines[0]?.fields).toMatchObject({
+      class: "WorkspaceDO",
+      generation: 1,
+      state: "host_running",
+    });
+    // An unreadable record counts as nothing logged: the next pass logs again.
+    sim.store.put(STATUS_LOG_KEY, { logged: "not a record" });
+    await sim.restart();
+    await sim.advance(1_000);
+    expect(logged()).toBe(first + 1);
+    await sim.advance(5 * 60_000);
+    expect(logged()).toBe(first + 2);
+  });
+
   it("records final save outcomes, bounded; the page shows the last; failures have reasons", async () => {
     const sim = new ComputerSim();
     await sim.running();
@@ -859,5 +890,80 @@ describe("the staging RC-53 switch", () => {
       outcome: "refused",
       reason: "not_offered",
     });
+  });
+});
+
+describe("the staging keep-awake switch (WP3.27)", () => {
+  it("is refused on production, nothing is stored, and Omnigent's sleep goes ahead", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const before = sim.store.dump();
+    expect(await sim.controller.setStagingKeepAwake({ on: true })).toEqual({
+      outcome: "refused",
+      reason: "not_staging",
+    });
+    expect(sim.store.dump()).toBe(before);
+    expect((await sim.controller.computerStatus()).keepAwake).toEqual({
+      staging: false,
+      on: null,
+    });
+    live(sim).runnerProcesses = 0;
+    expect(await sim.call(sim.client.suspendRequest())).toEqual({
+      operation: "suspend",
+      outcome: "in_progress",
+    });
+  });
+
+  it("refuses Omnigent's sleep as an open terminal does, persisted, in every generation, until off", async () => {
+    const sim = new ComputerSim({ staging: true });
+    await sim.running();
+    expect(await sim.controller.setStagingKeepAwake({ on: true })).toEqual({
+      outcome: "accepted",
+      on: true,
+    });
+    expect(sim.logs.some((l) => l.event === "staging_keep_awake_set")).toBe(true);
+    // A new instance (a reset) reads it from storage.
+    await sim.restart();
+    live(sim).runnerProcesses = 0;
+    expect(await sim.call(sim.client.suspendRequest())).toMatchObject({
+      outcome: "refused",
+      reason: "terminal_open",
+    });
+    expect(sim.logs.some((l) => l.event === "sleep_kept_awake")).toBe(true);
+    expect((await sim.controller.computerStatus()).keepAwake).toEqual({ staging: true, on: true });
+    // A new generation: still held.
+    await sim.controller.pages({ interfaceVersion: 1, action: "restart", operationId: op() });
+    await sim.advance(120_000);
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(5_000);
+    const generation = sim.record().lifecycle.generation;
+    expect(generation).toBeGreaterThan(1);
+    live(sim).runnerProcesses = 0;
+    expect(await sim.call(sim.client.suspendRequest())).toMatchObject({
+      reason: "terminal_open",
+    });
+    expect(sim.record().lifecycle.generation).toBe(generation);
+    // Off: the next sleep goes ahead.
+    expect(await sim.controller.setStagingKeepAwake({ on: false })).toEqual({
+      outcome: "accepted",
+      on: false,
+    });
+    expect(await sim.call(sim.client.suspendRequest())).toEqual({
+      operation: "suspend",
+      outcome: "in_progress",
+    });
+    noSecrets(sim);
+  });
+
+  it("is not offered during a removal, and a removal's sleep is gone whatever it says", async () => {
+    const sim = new ComputerSim({ staging: true });
+    await sim.running();
+    await sim.controller.setStagingKeepAwake({ on: true });
+    await sim.call(sim.client.terminateRequest());
+    expect(await sim.controller.setStagingKeepAwake({ on: false })).toEqual({
+      outcome: "refused",
+      reason: "not_offered",
+    });
+    expect(await sim.client.refusal(sim.client.suspendRequest())).toBe("gone");
   });
 });

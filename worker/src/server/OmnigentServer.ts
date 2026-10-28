@@ -42,6 +42,7 @@ import {
 import { z } from "zod";
 import type { PlatformEnv } from "../env.ts";
 import { platformError } from "../shared/errors.ts";
+import { newInstanceId } from "../shared/instance.ts";
 import {
   FORWARD_VERSION_HEADER,
   OMNIGENT_SERVER_INTERFACE_VERSION,
@@ -270,6 +271,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     super(ctx, env);
     this.#container = this.openContainer();
     this.#image = this.serverImage();
+    // Every new instance says so (WP3.27): resets, evictions and version switches are measured.
+    logEvent("watchdog", "instance_started", {
+      class: "OmnigentServer",
+      instanceId: newInstanceId(),
+      containerRunning: this.#container?.running ?? null,
+    });
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage, SERVER_MIGRATIONS);
       const container = this.#container;

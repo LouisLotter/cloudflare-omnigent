@@ -433,3 +433,111 @@ describe("the status and the staging switch in the Workers runtime", () => {
     expect(production.computer.sup?.rc53).toBe(false);
   });
 });
+
+describe("WP3.27 in the Workers runtime", () => {
+  type Status = {
+    status: { signOut: { phase: string; running: boolean }; keepAwake?: unknown };
+    html: string;
+  };
+  const statusOf = async (path: string) => (await (await route(`${path}/status`)).json()) as Status;
+
+  /** One runner pass on a new instance, after `ms`. */
+  async function pass(stub: Stub, computer: SimulatedComputer, ms = 2_000) {
+    await evictDurableObject(stub);
+    testComputers.advance(ms);
+    await runDurableObjectAlarm(stub);
+    await settle(stub, computer);
+  }
+
+  it("a page sign-out advances the phase, and the panel says so, with the CLIs logged out one after the other", async () => {
+    // The real supervisor logs Claude out, then Codex, and its watcher publishes the bundle in
+    // between: Claude's login tombstoned, Codex's still present. On 28 Oct that left the phase
+    // `none` ("No sign-out has run") although every saved login was a tombstone.
+    const { stub, computer, path } = await running({ staggeredLogouts: true });
+    computer.sup?.signIn("claude");
+    computer.sup?.signIn("codex");
+    await settle(stub, computer);
+    expect((await statusOf(path)).html).toContain("No sign-out has run.");
+    const response = await route(`${path}/do/sign-out`, {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ op: op(), intent: await intentOf(path) }).toString(),
+    });
+    expect(response.status).toBe(303);
+    const phases: string[] = [];
+    for (let i = 0; i < 10 && phases.at(-1) !== "verified"; i += 1) {
+      await pass(stub, computer);
+      phases.push((await statusOf(path)).status.signOut.phase);
+    }
+    expect(phases).not.toContain("none");
+    expect(phases.at(-1)).toBe("verified");
+    const { html, status } = await statusOf(path);
+    expect(status.signOut.running).toBe(false);
+    expect(html).toContain("Signed out and checked");
+    expect(html).toContain("not a test in a fresh computer, and not proof that the providers");
+    expect(html.match(/saved as removed \(a tombstone\)/g)).toHaveLength(4);
+    // Two bundles were published by the run: the in-between one, and the snapshot.
+    const published = logs.filter((l) => l.includes('"event":"credentials_published"'));
+    expect(published.length).toBeGreaterThanOrEqual(2);
+    expect(logs.filter((l) => l.includes('"event":"computer_status"')).at(-1)).toContain(
+      '"signOut":"verified"',
+    );
+  });
+
+  it("keeps a staging computer awake from the page, evicted; refused on production", async () => {
+    const switchIt = async (path: string, value: string) =>
+      (
+        await route(`${path}/staging-check`, {
+          method: "POST",
+          headers: { origin: ORIGIN, "content-type": "application/json" },
+          body: JSON.stringify({ op: op(), intent: await intentOf(path), keepAwake: value }),
+        })
+      ).json();
+    const production = await running();
+    expect(await switchIt(production.path, "on")).toMatchObject({
+      outcome: "refused",
+      reason: "not_staging",
+    });
+    expect((await statusOf(production.path)).html).not.toContain("Keep awake");
+    if (production.computer.sup) production.computer.sup.runnerProcesses = 0;
+    expect(await production.client.send(production.client.suspendRequest())).toMatchObject({
+      outcome: "in_progress",
+    });
+
+    const staging = await running({}, true);
+    expect(await switchIt(staging.path, "on")).toEqual({
+      action: "staging_keep_awake",
+      outcome: "accepted",
+      on: true,
+    });
+    await evictDurableObject(staging.stub);
+    if (staging.computer.sup) staging.computer.sup.runnerProcesses = 0;
+    expect(await staging.client.send(staging.client.suspendRequest())).toMatchObject({
+      outcome: "refused",
+      reason: "terminal_open",
+    });
+    const shown = await statusOf(staging.path);
+    expect(shown.status.keepAwake).toEqual({ staging: true, on: true });
+    expect(shown.html).toContain('data-act="keep-awake" data-keep-awake="off"');
+    expect(await switchIt(staging.path, "off")).toMatchObject({ outcome: "accepted", on: false });
+    await evictDurableObject(staging.stub);
+    expect(await staging.client.send(staging.client.suspendRequest())).toEqual({
+      operation: "suspend",
+      outcome: "in_progress",
+    });
+  });
+
+  it("logs an unchanged computer_status once an interval, however often the instance is new", async () => {
+    const { stub, computer } = await running();
+    const statusLines = () => logs.filter((l) => l.includes('"event":"computer_status"')).length;
+    await pass(stub, computer);
+    const first = statusLines();
+    expect(first).toBeGreaterThan(0);
+    // 28 Oct: a new instance about every 30 s, and a line each time. Now none until the interval.
+    for (let i = 0; i < 6; i += 1) await pass(stub, computer, 30_000);
+    expect(statusLines()).toBe(first);
+    expect(logs.filter((l) => l.includes('"event":"instance_started"')).length).toBeGreaterThan(6);
+    await pass(stub, computer, 2 * 60_000 + 1_000);
+    expect(statusLines()).toBe(first + 1);
+  });
+});

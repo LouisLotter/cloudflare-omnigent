@@ -1290,7 +1290,7 @@ describe("the status and the staging switch (WP3.23)", () => {
       logins: { claude: "signed_in" as const, codex: "unknown" as const },
       signIn: { claude: "none" as const, codex: "none" as const },
       rc53: true,
-      hostname: "unmapped" as const,
+      hostname: "unresolved" as const,
       disk: { totalBytes: 20e9, freeBytes: 15e9 },
       alerts: [
         { kind: "rc53_finding" as const, count: 3 },
@@ -1334,13 +1334,14 @@ describe("the status and the staging switch (WP3.23)", () => {
       },
     ],
     rc53: { staging: true, desired: true, applied: true },
+    keepAwake: { staging: true, on: false },
   };
 
   it("renders names and counts only, honestly labelled", () => {
     const html = statusHtml(STATUS, NOW);
     expect(html).toContain("Claude Code 2.1.311, Codex not known, gh 2.103.3");
     expect(html).toContain("Claude signed in, Codex not known");
-    expect(html).toContain("not mapped (sudo prints a warning)");
+    expect(html).toContain('data-status="hostname">does not resolve (sudo prints a warning)');
     expect(html).toContain("15.0 GB free of 20.0 GB");
     expect(html).toContain("RC-53: 1 match in 12 files, 2 not checked");
     expect(html).toContain("RC-53: 14 matches in 12 files");
@@ -1359,12 +1360,34 @@ describe("the status and the staging switch (WP3.23)", () => {
       NOW,
     );
     expect(off).toContain('data-rc53="on"');
-    expect(off).toContain("On the computer now: not known now.");
+    expect(off).toContain("Whether the computer has it now is not known");
+    // The 28 Oct sitting: switched while the computer slept, the page said "not known now".
+    const asleep = statusHtml(
+      {
+        ...STATUS,
+        supervisor: "not_running",
+        metrics: null,
+        rc53: { staging: true, desired: true, applied: null },
+      },
+      NOW,
+    );
+    expect(asleep).toContain("takes effect when it next starts");
+    expect(asleep).not.toContain("not known");
+    const pending = statusHtml(
+      { ...STATUS, rc53: { staging: true, desired: true, applied: false } },
+      NOW,
+    );
+    expect(pending).toContain("On the computer now: off. The change reaches it in a moment");
     const production = statusHtml(
-      { ...STATUS, rc53: { staging: false, desired: null, applied: true } },
+      {
+        ...STATUS,
+        rc53: { staging: false, desired: null, applied: true },
+        keepAwake: { staging: false, on: null },
+      },
       NOW,
     );
     expect(production).not.toContain('data-act="rc53"');
+    expect(production).not.toContain('data-act="keep-awake"');
     expect(production).toContain('data-status="rc53">on');
     const bare = statusHtml(
       {
@@ -1389,13 +1412,29 @@ describe("the status and the staging switch (WP3.23)", () => {
     }
     expect(
       statusHtml(
-        { ...STATUS, metrics: { ...STATUS.metrics, hostname: "mapped", disk: null, alerts: [] } },
+        { ...STATUS, metrics: { ...STATUS.metrics, hostname: "resolved", disk: null, alerts: [] } },
         NOW,
       ),
-    ).toContain("mapped (sudo works without a warning)");
+    ).toContain('data-status="hostname">resolves (sudo works without a warning)');
+    // An older computer's answer (WP3.22: whether /etc/hosts maps it), read the same way.
+    expect(
+      statusHtml({ ...STATUS, metrics: { ...STATUS.metrics, hostname: "mapped" } }, NOW),
+    ).toContain('data-status="hostname">resolves (sudo works without a warning)');
+    expect(
+      statusHtml({ ...STATUS, metrics: { ...STATUS.metrics, hostname: "unmapped" } }, NOW),
+    ).toContain("does not resolve (older computer software; sudo prints a warning)");
     expect(
       statusHtml({ ...STATUS, metrics: { ...STATUS.metrics, hostname: "unknown" } }, NOW),
     ).toContain('data-status="hostname">not known');
+    // WP3.27: staging's keep-awake switch, beside RC-53's.
+    expect(html).toContain('data-act="keep-awake" data-keep-awake="on"');
+    expect(html).toContain("goes to sleep when Omnigent finds it idle");
+    const awake = statusHtml({ ...STATUS, keepAwake: { staging: true, on: true } }, NOW);
+    expect(awake).toContain('data-act="keep-awake" data-keep-awake="off"');
+    expect(awake).toContain("stays awake even when Omnigent finds it idle");
+    // An older WorkspaceDO's view has no switch.
+    const { keepAwake: _k, ...older } = STATUS;
+    expect(statusHtml(older, NOW)).not.toContain("keep-awake");
   });
 
   it("is read with a GET, and the switch changed only with a guarded POST", async () => {
@@ -1449,6 +1488,46 @@ describe("the status and the staging switch (WP3.23)", () => {
       intent: INTENT,
       rc53: true,
     });
+    // WP3.27: the keep-awake switch, on the same guarded route; exactly one switch per change.
+    backend.actResult = { action: "staging_keep_awake", outcome: "accepted", on: true } as never;
+    const awake = await route(
+      `${page}/staging-check`,
+      json({ op: OP, intent: INTENT, keepAwake: "on" }),
+    );
+    expect(await awake.json()).toEqual({
+      action: "staging_keep_awake",
+      outcome: "accepted",
+      on: true,
+    });
+    expect(backend.acts[1]?.call).toEqual({
+      action: "staging_keep_awake",
+      interfaceVersion: 1,
+      operationId: OP,
+      owner: OWNER,
+      intent: INTENT,
+      on: true,
+    });
+    for (const body of [
+      { op: OP, intent: INTENT, keepAwake: "on", rc53: "on" },
+      { op: OP, intent: INTENT },
+      { op: OP, intent: INTENT, keepAwake: "maybe" },
+    ]) {
+      expect((await route(`${page}/staging-check`, json(body))).status).toBe(400);
+    }
+    expect(backend.acts).toHaveLength(2);
+    backend.actResult = {
+      action: "staging_keep_awake",
+      outcome: "refused",
+      reason: "not_staging",
+    } as never;
+    await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, keepAwake: "off" }));
+    expect(logs.some((l) => l.event === "staging_keep_awake_refused")).toBe(true);
+    // An answer for the other switch is not this one's.
+    backend.actResult = { action: "staging_check", outcome: "accepted", rc53: true } as never;
+    expect(
+      (await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, keepAwake: "on" })))
+        .status,
+    ).toBe(503);
     backend.actResult = platformError("unavailable", "down");
     expect(
       (await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, rc53: "off" }))).status,

@@ -358,6 +358,41 @@ const SUPERVISOR_TEXT: Readonly<Record<string, string>> = {
     "This computer's software is older and does not report its own status; only what the platform saved is shown.",
 };
 
+/** Whether the hostname resolves (WP3.27); `mapped`/`unmapped` are an older computer's answer. */
+const HOSTNAME_TEXT: Readonly<Record<string, string>> = {
+  resolved: "resolves (sudo works without a warning)",
+  mapped: "resolves (sudo works without a warning)",
+  unresolved: "does not resolve (sudo prints a warning)",
+  unmapped: "does not resolve (older computer software; sudo prints a warning)",
+  unknown: "not known",
+};
+
+/**
+ * Where a staging switch stands on the computer, in words: the computer applies it at its next
+ * start while it is not running (the 28 Oct sitting read "not known now" while it slept).
+ */
+function appliedText(
+  supervisor: ComputerStatusView["supervisor"],
+  desired: boolean,
+  applied: boolean | null,
+): string {
+  if (supervisor === "not_running") {
+    return "The computer is not running now, so this takes effect when it next starts.";
+  }
+  if (applied === null) {
+    return "Whether the computer has it now is not known: it did not report it. Press Refresh to check again.";
+  }
+  const now = `On the computer now: ${applied ? "on" : "off"}.`;
+  return applied === desired ? now : `${now} The change reaches it in a moment; press Refresh.`;
+}
+
+function switchButton(act: string, on: boolean): string {
+  return button(act, on ? "Turn it off" : "Turn it on").replace(
+    `data-act="${act}"`,
+    `data-act="${act}" data-${act}="${on ? "off" : "on"}"`,
+  );
+}
+
 function gb(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
@@ -389,17 +424,7 @@ export function statusHtml(view: ComputerStatusView, nowMs: number): string {
       ),
       "logins",
     );
-    row(
-      "Hostname",
-      escapeHtml(
-        m.hostname === "mapped"
-          ? "mapped (sudo works without a warning)"
-          : m.hostname === "unmapped"
-            ? "not mapped (sudo prints a warning)"
-            : "not known",
-      ),
-      "hostname",
-    );
+    row("Hostname", escapeHtml(HOSTNAME_TEXT[m.hostname] ?? "not known"), "hostname");
     if (m.disk !== null) {
       row("Disk", escapeHtml(`${gb(m.disk.freeBytes)} free of ${gb(m.disk.totalBytes)}`), "disk");
     }
@@ -455,17 +480,26 @@ export function statusHtml(view: ComputerStatusView, nowMs: number): string {
   const rc53 = view.rc53;
   if (rc53.staging) {
     const desired = rc53.desired === true;
-    const applied = rc53.applied === null ? "not known now" : rc53.applied ? "on" : "off";
     row(
       "RC-53 save check (staging)",
-      `${badge(desired ? "info" : "warn", desired ? "On" : "Off")} <span class="muted">On the computer now: ${escapeHtml(applied)}.</span> ${button(
-        "rc53",
-        desired ? "Turn it off" : "Turn it on",
-      ).replace('data-act="rc53"', `data-act="rc53" data-rc53="${desired ? "off" : "on"}"`)}`,
+      `${badge(desired ? "info" : "warn", desired ? "On" : "Off")} <span class="muted">${escapeHtml(appliedText(view.supervisor, desired, rc53.applied))}</span> ${switchButton("rc53", desired)}`,
       "rc53",
     );
   } else if (m !== null) {
     row("RC-53 save check", escapeHtml(m.rc53 ? "on" : "off"), "rc53");
+  }
+  const keep = view.keepAwake;
+  if (keep?.staging === true) {
+    const on = keep.on === true;
+    row(
+      "Keep awake (staging)",
+      `${badge(on ? "warn" : "info", on ? "On" : "Off")} <span class="muted">${escapeHtml(
+        on
+          ? "The computer stays awake even when Omnigent finds it idle, in every start, until this is turned off. For soaks: turn it off afterwards."
+          : "The computer goes to sleep when Omnigent finds it idle, as usual.",
+      )}</span> ${switchButton("keep-awake", on)}`,
+      "keep-awake",
+    );
   }
   return `<p class="muted" data-observed>As of ${escapeHtml(formatTime(view.observedAt, nowMs))}.</p><dl class="facts">${rows.join("")}</dl>`;
 }
@@ -492,7 +526,7 @@ export async function statusRead(
   }
 }
 
-/** POST `…/staging-check`: RC-53's save check on or off (staging only). */
+/** POST `…/staging-check`: RC-53's save check, or the keep-awake switch, on or off (staging only). */
 export async function stagingChange(
   backend: PagesBackend,
   owner: PageOwner,
@@ -506,23 +540,32 @@ export async function stagingChange(
     log({ event: "staging_change_refused", reason: change.refusal });
     return jsonResponse({ error: { code: "forbidden" } }, 403);
   }
-  const { op, intent, rc53 } = change.value;
+  const { op, intent, rc53, keepAwake } = change.value;
   const operationId = OperationId.safeParse(op);
   if (!operationId.success || intent === undefined || !/^[0-9a-f]{64}$/.test(intent)) {
     return jsonResponse({ error: { code: "forbidden" } }, 403);
   }
-  if (rc53 !== "on" && rc53 !== "off") return jsonResponse({ error: { code: "bad_request" } }, 400);
+  // Exactly one switch per change, "on" or "off".
+  const value = rc53 ?? keepAwake;
+  if ((rc53 === undefined) === (keepAwake === undefined) || (value !== "on" && value !== "off")) {
+    return jsonResponse({ error: { code: "bad_request" } }, 400);
+  }
+  const base = {
+    interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+    operationId: operationId.data,
+    owner,
+    intent,
+  };
+  const action = rc53 === undefined ? "staging_keep_awake" : "staging_check";
   try {
-    const result = await backend.act(id, {
-      action: "staging_check",
-      interfaceVersion: WORKSPACE_INTERFACE_VERSION,
-      operationId: operationId.data,
-      owner,
-      intent,
-      rc53: rc53 === "on",
-    });
-    if (result.action !== "staging_check") throw new Error("not a staging answer");
-    if ("reason" in result) log({ event: "staging_check_refused", reason: String(result.reason) });
+    const result = await backend.act(
+      id,
+      action === "staging_check"
+        ? { ...base, action, rc53: value === "on" }
+        : { ...base, action, on: value === "on" },
+    );
+    if (result.action !== action) throw new Error("not a staging answer");
+    if ("reason" in result) log({ event: `${action}_refused`, reason: String(result.reason) });
     return jsonResponse(result);
   } catch (error) {
     return failure(error, "staging_change_failed", log);

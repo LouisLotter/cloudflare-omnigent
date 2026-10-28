@@ -82,6 +82,7 @@ import {
   isStartRefusedError,
 } from "../shared/computer-port.ts";
 import { errorCodeOf, platformError } from "../shared/errors.ts";
+import { newInstanceId } from "../shared/instance.ts";
 import {
   type ControlRpc,
   type WorkspaceIdentity,
@@ -93,6 +94,7 @@ import {
   credentialManifestOf,
   droppedLayers,
   holdsLogin,
+  midSignOut,
   nextLayer,
   noDeclaredFile,
   notSavedDue,
@@ -103,7 +105,9 @@ import {
   restoreDirs,
   retryDelayMs,
   type SaveRequest,
-  signOutEventOf,
+  signOutAbandoned,
+  signOutDecided,
+  signOutOnPublish,
   uncovered,
   unreferenced,
 } from "./checkpoints.ts";
@@ -136,6 +140,8 @@ import {
   OperationRecord,
   RECORD_KEY,
   SLEEP_PREFIX,
+  STATUS_LOG_KEY,
+  StatusLogRecord,
   type Store,
   TOKEN_KEY,
   TokenRecord,
@@ -431,10 +437,12 @@ export class WorkspaceController {
     readonly at: number;
     readonly status: SupervisorStatus;
   } | null = null;
-  /** What was last logged as `computer_status`, and when. */
-  #statusLogged: { readonly signature: string; readonly at: number } | null = null;
-  /** When the runner's last status read got no answer: it waits an interval before the next. */
-  #statusFailedAt: number | null = null;
+  /**
+   * What was last logged as `computer_status` and when, and when the runner's last status read got
+   * no answer (it waits an interval before the next): persisted (`STATUS_LOG_KEY`), read once per
+   * instance.
+   */
+  #statusLog: StatusLogRecord | null = null;
 
   constructor(deps: ControllerDeps) {
     this.#d = deps;
@@ -869,7 +877,13 @@ export class WorkspaceController {
     d.stopJob = null;
     d.params = null;
     this.#dropToken();
-    if (d.signOut.job !== null) d.signOut = { ...d.signOut, job: null };
+    if (d.signOut.job !== null) {
+      d.signOut = {
+        ...d.signOut,
+        phase: signOutAbandoned(d.signOut.phase, d.credential?.files ?? null),
+        job: null,
+      };
+    }
     d.notSaved = null;
     d.terminalOpenUntil = null;
     d.signIn = endWithContainer(d.signIn);
@@ -1061,6 +1075,14 @@ export class WorkspaceController {
     await this.#exclusive(() => {
       this.#migrateLegacy();
       const r = this.#load();
+      // Every new instance says so (WP3.27): WorkspaceDO's resets, evictions and hibernation
+      // wake-ups are measured, not inferred.
+      this.#log("instance_started", {
+        class: "WorkspaceDO",
+        instanceId: newInstanceId(),
+        generation: r?.lifecycle.generation ?? null,
+        state: r?.lifecycle.context.state ?? null,
+      });
       if (r === null) return;
       if (r.reserving !== null) {
         const pending = r.reserving;
@@ -1361,10 +1383,13 @@ export class WorkspaceController {
     const ctx = r.lifecycle.context;
     const now = this.#now();
     // A sign-in attempt holds the computer awake as an open terminal does (WP3.23), and is
-    // reported to Omnigent as the same refusal: the setup page is in use.
+    // reported to Omnigent as the same refusal: the setup page is in use. So does staging's
+    // keep-awake switch (WP3.27), for a soak.
+    const keepAwake = this.#keepAwake(r);
     const terminalOpen =
       (r.terminalOpenUntil !== null && r.terminalOpenUntil > now) ||
-      leaseActive(r.signIn, r.lifecycle.generation, now);
+      leaseActive(r.signIn, r.lifecycle.generation, now) ||
+      keepAwake;
     // Only the supervisor's answer now can show no runner exists (Lifecycle step 7). If it cannot
     // answer, a cached positive count still refuses, but a cached zero proves nothing: unknown.
     const cached = this.#currentReport(r)?.runnerProcesses ?? null;
@@ -1393,6 +1418,7 @@ export class WorkspaceController {
       }
       if (reply?.kind === "suspend_refused") {
         result = { operation: "suspend", outcome: "refused", reason: reply.reason };
+        if (keepAwake && reply.reason === "terminal_open") this.#log("sleep_kept_awake", {});
       } else if (reply?.kind === "suspend" && reply.outcome === "in_progress") {
         this.#d.store.put(`${SLEEP_PREFIX}${operationId}`, true);
         this.#opPut("launcher", operationId, fingerprint, null);
@@ -1618,7 +1644,7 @@ export class WorkspaceController {
       if (holdsLogin(manifest.files)) d.everHeldLogin = true;
       d.signOut = {
         ...d.signOut,
-        phase: SIGN_OUT_TABLE[d.signOut.phase][signOutEventOf(manifest.files)],
+        phase: signOutOnPublish(d.signOut.phase, manifest.files, midSignOut(d.signOut.job, bundle)),
       };
       this.#step(d, "credential_checkpoint", {});
       this.#log("credentials_published", { generation: bundle.generation, order: bundle.order });
@@ -2190,6 +2216,34 @@ export class WorkspaceController {
     }
   }
 
+  /** Staging's keep-awake switch holds now: on, and only ever on a staging installation. */
+  #keepAwake(r: ComputerRecord): boolean {
+    return this.#d.stagingChecks === true && r.keepAwake;
+  }
+
+  /**
+   * The owner's keep-awake switch (staging only, WP3.27): persisted, and held at every `suspend`
+   * in every generation until it is turned off. Refused on production before anything is stored.
+   */
+  async setStagingKeepAwake(input: {
+    readonly on: boolean;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly on: boolean }
+    | { readonly outcome: "refused"; readonly reason: "not_staging" | "not_offered" }
+  > {
+    if (this.#d.stagingChecks !== true) return { outcome: "refused", reason: "not_staging" };
+    return this.#exclusive(() =>
+      this.#write((d) => {
+        if (d.lifecycle.context.removalIntent || d.lifecycle.context.state === "removed") {
+          return { outcome: "refused" as const, reason: "not_offered" as const };
+        }
+        d.keepAwake = input.on;
+        this.#log("staging_keep_awake_set", { on: input.on });
+        return { outcome: "accepted" as const, on: input.on };
+      }),
+    );
+  }
+
   /** The supervisor's metrics: fresh enough from memory, or asked for now. */
   async #supervisorStatus(
     r: ComputerRecord,
@@ -2240,6 +2294,7 @@ export class WorkspaceController {
       saves: withRc53(r.saves, supervisor.status?.captures ?? []),
       staging: this.#d.stagingChecks === true,
       rc53Desired: r.rc53?.desired ?? false,
+      keepAwake: r.keepAwake,
     });
   }
 
@@ -2258,12 +2313,16 @@ export class WorkspaceController {
     const now = this.#now();
     const interval = this.#t.statusIntervalMs ?? STATUS_INTERVAL_MS;
     // An unanswered read waits an interval: a silent supervisor never holds every runner pass.
-    const failed = this.#statusFailedAt;
+    const memo = this.#loadStatusLog();
+    const failed = memo.failedAt;
     const waiting = failed !== null && now - failed < interval;
     const supervisor = waiting
       ? { part: "unreachable" as const, status: null }
       : await this.#supervisorStatus(r, interval);
-    if (!waiting) this.#statusFailedAt = supervisor.part === "unreachable" ? now : null;
+    if (!waiting) {
+      const failedAt = supervisor.part === "unreachable" ? now : null;
+      if (failedAt !== memo.failedAt) this.#saveStatusLog({ ...this.#loadStatusLog(), failedAt });
+    }
     const captures = supervisor.status?.captures ?? [];
     let current = r;
     if (captures.length > 0 && r.saves.some((s) => s.rc53 === null)) {
@@ -2275,11 +2334,27 @@ export class WorkspaceController {
       );
     }
     const log = statusLog(this.#compose(current, supervisor));
-    const last = this.#statusLogged;
+    const last = this.#loadStatusLog().logged;
     if (last === null || last.signature !== log.signature || now - last.at >= interval) {
-      this.#statusLogged = { signature: log.signature, at: now };
+      this.#saveStatusLog({
+        ...this.#loadStatusLog(),
+        logged: { signature: log.signature, at: now },
+      });
       this.#log("computer_status", { generation: r.lifecycle.generation, ...log.fields });
     }
+  }
+
+  #loadStatusLog(): StatusLogRecord {
+    if (this.#statusLog === null) {
+      const stored = StatusLogRecord.safeParse(this.#d.store.get(STATUS_LOG_KEY));
+      this.#statusLog = stored.success ? stored.data : { logged: null, failedAt: null };
+    }
+    return this.#statusLog;
+  }
+
+  #saveStatusLog(memo: StatusLogRecord): void {
+    this.#d.store.put(STATUS_LOG_KEY, memo);
+    this.#statusLog = memo;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -3229,7 +3304,11 @@ export class WorkspaceController {
         }),
       ).then(() => true);
     const end = (d: ComputerRecord) => {
-      d.signOut = { ...d.signOut, job: null };
+      d.signOut = {
+        ...d.signOut,
+        phase: signOutAbandoned(d.signOut.phase, d.credential?.files ?? null),
+        job: null,
+      };
     };
     if (this.#now() >= job.deadline) {
       this.#log("sign_out_gave_up", { phase: job.phase });
@@ -3267,6 +3346,12 @@ export class WorkspaceController {
             return false;
           }
           return update((d, j) => {
+            // The run's own snapshot (or anything newer) decides, whatever was published while
+            // the logouts ran (`midSignOut`).
+            d.signOut = {
+              ...d.signOut,
+              phase: signOutDecided(d.signOut.phase, d.credential?.files ?? null),
+            };
             if (d.signOut.phase === "tombstoned") j.phase = "verify";
             else end(d);
           });
@@ -3439,6 +3524,8 @@ export class WorkspaceController {
                 if (typeof target !== "string" || !kept.has(target)) this.#d.store.delete(key);
               }
               this.#dropToken();
+              this.#d.store.delete(STATUS_LOG_KEY);
+              this.#statusLog = null;
               const fresh = newRecord(this.#d.computerId, d.createdAt);
               this.#d.store.put(RECORD_KEY, {
                 ...fresh,
