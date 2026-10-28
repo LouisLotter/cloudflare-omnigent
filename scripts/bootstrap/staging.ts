@@ -11,9 +11,10 @@
 //     Worker, which therefore runs once without ingress's variables (it answers 503 to
 //     everything) before the bootstrap reads the application's AUD.
 
-import { spawnSync } from "node:child_process";
+import { type StdioOptions, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { type Runner, spawnRunner } from "../staging/cloud.ts";
+import { heldLockFds } from "../staging/lock.ts";
 import {
   activeVersion,
   cfJson,
@@ -33,6 +34,16 @@ export interface StagingCloudOptions {
   readonly stg?: (args: readonly string[], input?: string) => { status: number; stdout: string };
 }
 
+/**
+ * The staging tool's stdio: the secrets on stdin only when given, its output captured, and the
+ * bootstrap's locks as descriptors 3 and up, so that a tool that outlives a killed bootstrap
+ * (mid-deploy) keeps the installation locked until it ends, as the staging tool's own children
+ * keep its locks (Codex WP3.25 r2-1): no cleanup may delete the token it is deploying.
+ */
+export function stagingToolStdio(withInput: boolean): StdioOptions {
+  return [withInput ? "pipe" : "ignore", "pipe", "inherit", ...heldLockFds()];
+}
+
 function stagingTool(root: string) {
   return (args: readonly string[], input?: string) => {
     const child = spawnSync(
@@ -42,7 +53,7 @@ function stagingTool(root: string) {
         cwd: root,
         encoding: "utf8",
         // The secrets reach the tool only through this pipe.
-        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "inherit"],
+        stdio: stagingToolStdio(input !== undefined),
         ...(input === undefined ? {} : { input }),
         maxBuffer: 64 * 1024 * 1024,
       },

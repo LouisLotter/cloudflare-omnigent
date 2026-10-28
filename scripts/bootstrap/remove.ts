@@ -9,8 +9,12 @@
 //     that name, whatever state file the bootstrap used, and also when an earlier teardown
 //     stopped after removing the deployment's record. It deletes only tokens whose every
 //     resource is in the staging account, and only for a deployment the registry no longer
-//     holds, checked again under the bootstrap's lock for that platform Worker, so that it never
-//     runs beside a bootstrap run that may be making the token.
+//     holds. Under every lock that guards the deployment (the bootstrap's for that platform
+//     Worker, then the staging tool's, which a staging tool outliving a killed bootstrap still
+//     holds), it checks the registry again and lists the tokens afresh, so that it never runs
+//     beside a run that may be making or deploying the token (Codex WP3.25 r2-1, r2-2). The
+//     bootstrap's record of the token is forgotten only when it is settled and its token gone:
+//     an unanswered request stays recorded for the next run to wait for.
 // A create that a stopped run left unanswered may still land; removal waits for it first.
 
 import { existsSync } from "node:fs";
@@ -23,6 +27,7 @@ import {
   R2_BUCKET_SCOPE,
   r2TokenName,
   removeR2Token,
+  requestInFlight,
   TOKEN_SETTLE_MS,
   type TokenApi,
 } from "./r2-token.ts";
@@ -110,7 +115,10 @@ export interface StagingTokenOptions {
   /** The staging account. */
   readonly accountId: string;
   readonly api: TokenApi;
-  /** Takes the bootstrap's lock for a platform Worker, at once; throws when it is busy. */
+  /**
+   * Takes every lock that guards a platform deployment, at once (the bootstrap's, then the
+   * staging tool's), and returns their release; throws when one is busy.
+   */
   readonly lock: (platformWorker: string) => () => void;
   /** Delete the tokens (teardown, sweep --yes), or only report them (sweep). */
   readonly apply: boolean;
@@ -136,16 +144,20 @@ export function removeStagingTokens(
   gone: (deployment: string) => boolean,
   options: StagingTokenOptions,
 ): StagingTokenResult {
-  const byDeployment = new Map<string, ApiToken[]>();
-  for (const token of options.api.list()) {
-    const deployment = stagingTokenDeployment(token, options.accountId);
-    if (deployment === undefined || !gone(deployment)) continue;
-    byDeployment.set(deployment, [...(byDeployment.get(deployment) ?? []), token]);
-  }
+  const tokensOf = (listed: readonly ApiToken[]) => {
+    const byDeployment = new Map<string, ApiToken[]>();
+    for (const token of listed) {
+      const deployment = stagingTokenDeployment(token, options.accountId);
+      if (deployment === undefined) continue;
+      byDeployment.set(deployment, [...(byDeployment.get(deployment) ?? []), token]);
+    }
+    return byDeployment;
+  };
   const found: string[] = [];
   const problems: string[] = [];
   let deleted = 0;
-  for (const [deployment, tokens] of byDeployment) {
+  for (const [deployment, tokens] of tokensOf(options.api.list())) {
+    if (!gone(deployment)) continue;
     found.push(...tokens.map((t) => t.name));
     if (!options.apply) {
       for (const t of tokens) {
@@ -165,13 +177,24 @@ export function removeStagingTokens(
       continue;
     }
     try {
-      // A bootstrap run may have deployed it between the listing and the lock.
+      // A run may have deployed it, or made or replaced its token, between the listing and
+      // the locks: look again under them.
       if (!gone(deployment)) continue;
-      for (const t of tokens) {
+      const listed = options.api.list();
+      const current = tokensOf(listed).get(deployment) ?? [];
+      const removed = new Set<string>();
+      for (const t of current) {
         if (options.api.remove(t.id) === "deleted") deleted++;
+        removed.add(t.id);
         options.log(`${deployment}: deleted the R2 token ${t.name}`);
       }
-      forgetToken(options.statePath?.(deployment) ?? statePathFor(deployment), deployment);
+      const remaining = new Set(listed.map((t) => t.id).filter((id) => !removed.has(id)));
+      forgetToken(
+        options.statePath?.(deployment) ?? statePathFor(deployment),
+        deployment,
+        options.accountId,
+        remaining,
+      );
     } catch (error) {
       problems.push(`${deployment}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -181,14 +204,31 @@ export function removeStagingTokens(
   return { found, deleted, problems };
 }
 
-/** Removes the token's record from a staging installation's state file, if it is that one's. */
-function forgetToken(path: string, deployment: string): void {
+/**
+ * Removes the token's record from a staging installation's state file: only that staging
+ * installation's, in this account, when no request of its is unanswered and its token is no
+ * longer listed (`remaining`: the IDs Cloudflare still lists).
+ */
+function forgetToken(
+  path: string,
+  deployment: string,
+  accountId: string,
+  remaining: ReadonlySet<string>,
+): void {
   if (!existsSync(path)) return;
   const store = fileStateStore(path);
   const state = store.load();
   const plan = state.installation;
-  if (plan.target.kind !== "staging" || plan.platformWorker !== deployment) return;
-  if (state.journal.r2Token === undefined) return;
+  if (
+    plan.target.kind !== "staging" ||
+    plan.platformWorker !== deployment ||
+    plan.accountId !== accountId
+  ) {
+    return;
+  }
+  const recorded = state.journal.r2Token;
+  if (recorded === undefined || requestInFlight(recorded)) return;
+  if (recorded.id !== undefined && remaining.has(recorded.id)) return;
   const { r2Token: _gone, ...journal } = state.journal;
   store.save({ ...state, journal });
 }

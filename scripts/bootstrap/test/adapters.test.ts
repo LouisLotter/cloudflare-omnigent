@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandResult, RunOptions } from "../../staging/cloud.ts";
+import { acquireLock } from "../../staging/lock.ts";
 import {
   accountCloud,
   apiTokenOf,
@@ -25,7 +26,7 @@ import {
 } from "../cloud.ts";
 import { R2_WRITE_GROUP, r2TokenRequest, TokensUnavailable } from "../r2-token.ts";
 import { INITIALIZED_SECRET, PASSWORD_SECRET, RELEASE_CHANGES } from "../settings.ts";
-import { stagingCloud } from "../staging.ts";
+import { stagingCloud, stagingToolStdio } from "../staging.ts";
 import {
   accountPlan,
   baseConfigs,
@@ -346,6 +347,24 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     expect(() => soleAccount(none.runner)).toThrow(/reaches no Cloudflare account/);
     const two = fakeRunner(() => ({ stdout: JSON.stringify([{ id: "a" }, { id: "b" }, {}]) }));
     expect(() => soleAccount(two.runner)).toThrow(/reaches 2 accounts; choose one with --account/);
+  });
+});
+
+describe("the staging tool's stdio (Codex WP3.25 r2-1)", () => {
+  it("hands the bootstrap's locks to the tool, which keeps them if the bootstrap dies", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cfo-bootstrap-stdio-"));
+    try {
+      expect(stagingToolStdio(false)).toEqual(["ignore", "pipe", "inherit"]);
+      const release = acquireLock(join(dir, "x.lock"), 0, "test");
+      const stdio = stagingToolStdio(true) as unknown[];
+      expect(stdio.slice(0, 3)).toEqual(["pipe", "pipe", "inherit"]);
+      expect(stdio).toHaveLength(4);
+      expect(typeof stdio[3]).toBe("number");
+      release();
+      expect(stagingToolStdio(true)).toEqual(["pipe", "pipe", "inherit"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

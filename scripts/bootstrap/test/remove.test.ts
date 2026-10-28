@@ -246,6 +246,87 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
     expect(s.world.tokens.has(s.mine)).toBe(true);
   });
 
+  it("lists again under the locks, and keeps a newer request's record until it settles (Codex r2-2)", async () => {
+    const s = await staging(["cfo-stg-wp99-platform"]);
+    const api = s.world.tokenApi();
+    let lists = 0;
+    // Between the first listing and the locks, a bootstrap run deleted the token and sent a
+    // create that has not been answered.
+    const racing = {
+      ...api,
+      list: () => {
+        const listed = api.list();
+        if (++lists === 1) {
+          s.world.tokens.delete(s.mine);
+          fileStateStore(s.statePath).save({
+            stateVersion: 1,
+            installation: s.plan,
+            journal: {
+              r2Token: { name: r2TokenName(s.plan), createStartedAt: "2026-10-28T12:00:00Z" },
+            },
+          });
+        }
+        return listed;
+      },
+    };
+    const result = removeStagingTokens(s.gone, { ...s.options, api: racing });
+    expect(result).toEqual({ found: [r2TokenName(s.plan)], deleted: 0, problems: [] });
+    expect(lists).toBe(2);
+    expect(fileStateStore(s.statePath).load().journal.r2Token?.createStartedAt).toBe(
+      "2026-10-28T12:00:00Z",
+    );
+    // A token made meanwhile under the name is deleted too, from the fresh listing.
+    const t = await staging(["cfo-stg-wp99-platform"]);
+    let first = true;
+    const making = {
+      ...t.world.tokenApi(),
+      list: () => {
+        const listed = t.world.tokenApi().list();
+        if (first) {
+          first = false;
+          t.world.addToken(tokenFor(t.plan));
+        }
+        return listed;
+      },
+    };
+    expect(removeStagingTokens(t.gone, { ...t.options, api: making }).deleted).toBe(2);
+    expect([...t.world.tokens.keys()].sort()).toEqual([t.live, t.account].sort());
+  });
+
+  it("forgets only a settled record of that installation, in that account, whose token is gone", async () => {
+    const s = await staging(["cfo-stg-wp99-platform"]);
+    // A roll in flight stays recorded.
+    const store = fileStateStore(s.statePath);
+    store.save({
+      stateVersion: 1,
+      installation: s.plan,
+      journal: {
+        r2Token: { name: r2TokenName(s.plan), id: s.mine, rollStartedAt: "2026-10-28T12:00:00Z" },
+      },
+    });
+    expect(removeStagingTokens(s.gone, s.options).deleted).toBe(1);
+    expect(store.load().journal.r2Token?.rollStartedAt).toBeDefined();
+    // A record of a token Cloudflare still lists (not this deployment's by name) stays.
+    const u = await staging(["cfo-stg-wp99-platform"]);
+    fileStateStore(u.statePath).save({
+      stateVersion: 1,
+      installation: u.plan,
+      journal: { r2Token: { name: r2TokenName(u.plan), id: u.live } },
+    });
+    expect(removeStagingTokens(u.gone, u.options).deleted).toBe(1);
+    expect(fileStateStore(u.statePath).load().journal.r2Token?.id).toBe(u.live);
+    // Another account's plan under the same name stays.
+    const v = await staging(["cfo-stg-wp99-platform"]);
+    const elsewhere = { ...v.plan, accountId: "2".repeat(32) };
+    fileStateStore(v.statePath).save({
+      stateVersion: 1,
+      installation: elsewhere,
+      journal: { r2Token: { name: r2TokenName(v.plan), id: v.mine } },
+    });
+    expect(removeStagingTokens(v.gone, v.options).deleted).toBe(1);
+    expect(fileStateStore(v.statePath).load().journal.r2Token?.id).toBe(v.mine);
+  });
+
   it("reports a failed delete as a problem, and keeps the record", async () => {
     const s = await staging(["cfo-stg-wp99-platform"]);
     const api = s.world.tokenApi();
