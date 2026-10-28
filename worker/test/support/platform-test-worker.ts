@@ -31,6 +31,7 @@ import type {
 } from "@cfo/contracts";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
+import { FencedBackupGateway } from "../../src/egress/backups.ts";
 import type { PlatformEnv } from "../../src/env.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../src/server/OmnigentServer.ts";
 import {
@@ -45,7 +46,35 @@ import { testControl } from "./control-harness.ts";
 import { testServers } from "./server-harness.ts";
 import { testComputers } from "./workspace-harness.ts";
 
-export { DirectoryBackupGateway } from "../../src/egress/backups.ts";
+/**
+ * The production fenced gateway, with two fault seams: a part fails as R2's lost connection did
+ * on staging, answered as the SDK's gateway answers an R2 failure (502 and R2's message)
+ * (`assembly.failParts`); a completion's reply is lost after R2 completed the object
+ * (`assembly.loseCompletions`). Everything else, and everything once the seams are spent, is
+ * production's.
+ */
+export class DirectoryBackupGateway extends FencedBackupGateway {
+  override async fetch(request: Request): Promise<Response> {
+    const props = (this.ctx.props ?? {}) as { readonly mode?: unknown };
+    if (props.mode !== "write" || request.method !== "PUT") return super.fetch(request);
+    assembly.partsSeen += 1;
+    if (assembly.failParts === 0) return super.fetch(request);
+    assembly.failParts -= 1;
+    await request.body?.cancel().catch(() => undefined);
+    return new Response("Network connection lost.", { status: 502 });
+  }
+
+  /** The completion seam (`assembly.loseCompletions`): R2 completes the object, the reply is lost. */
+  override async completeUpload(
+    uploadId: string,
+    parts: readonly { readonly partNumber: number; readonly etag: string }[],
+  ): Promise<number> {
+    const size = await super.completeUpload(uploadId, parts);
+    if (assembly.loseCompletions === 0) return size;
+    assembly.loseCompletions -= 1;
+    throw new Error("Network connection lost.");
+  }
+}
 export { default } from "../../src/index.ts";
 export { ComputerApi, OmnigentRoute, PlatformInternal } from "../../src/internal/entrypoints.ts";
 
@@ -77,7 +106,8 @@ export class OmnigentServer extends PlatformOmnigentServer {
 
 /**
  * The assembled WorkspaceDO (WP3.18): the production class, with a simulated runtime container,
- * the test clock and a lost-connection seam. Nothing else is replaced.
+ * the test clock, a lost-connection seam and shortened upload retry delays. Nothing else is
+ * replaced.
  */
 export class WorkspaceDO extends PlatformWorkspaceDO {
   protected override runtimeContainer() {
@@ -89,6 +119,11 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
 
   protected override now() {
     return assembly.now();
+  }
+
+  /** The upload retry's delays, shortened (WP3.22); every other timing is production's. */
+  protected override timing() {
+    return { ...super.timing(), uploadRetryDelaysMs: assembly.uploadRetryDelaysMs };
   }
 
   /** Records the props the intercepts are built with (observation only), then builds them. */

@@ -28,6 +28,7 @@ from .paths import (
 )
 from .policy import Policy
 from .server import CommandServer
+from .startup import prepare
 from .supervisor import Supervisor, Tools
 
 WORKLOAD_CGROUP = "/sys/fs/cgroup/workload"
@@ -99,6 +100,15 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         print("cfo-supervisor: CFO_COMPUTER_ID or CFO_GENERATION is invalid", file=sys.stderr)
         return 78
+    # Before any workload: the hostname resolves (sudo) and / is root's (Claude Code's
+    # messaging sockets), as Cloudflare's durable_object containers leave neither (WP3.22).
+    if os.geteuid() == 0:
+        fixed = prepare()
+        print(
+            "cfo-supervisor: start fixes " + ", ".join(f"{k} {v}" for k, v in fixed.items()),
+            file=sys.stderr,
+            flush=True,
+        )
     policy = Policy.load(layout.policy_file)
     account = Account.lookup()
     supervisor = Supervisor(

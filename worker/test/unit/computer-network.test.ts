@@ -18,7 +18,9 @@ import {
   registerIntercepts,
   startWithIntercepts,
 } from "../../src/computer/network.ts";
+import { isTransientUploadError } from "../../src/computer/upload-errors.ts";
 import { NO_INSTANCE_MESSAGE } from "../../src/shared/computer-port.ts";
+import { SITTING_PART_FAILURE, sdkBackupError } from "../support/backup-errors.ts";
 import { defined } from "../support/defined.ts";
 import { FakeComputerContainer } from "../support/fake-computer-container.ts";
 
@@ -484,5 +486,44 @@ describe("the container port's defaults", () => {
       probe: () => (probes++ === 0 ? new Promise<boolean>(() => undefined) : Promise.resolve(true)),
     });
     expect(late.kind).toBe("ready");
+  });
+});
+
+describe("which upload failures are repeated (WP3.22)", () => {
+  it("repeats the shim's part upload the gateway answered with 502, 503 or 504, or a lost connection", () => {
+    expect(isTransientUploadError(SITTING_PART_FAILURE())).toBe(true);
+    for (const detail of [
+      "gateway rejected the part upload with HTTP 503: Service Unavailable",
+      "gateway rejected the part upload with HTTP 504: a part upload took longer than 60000 ms",
+      "gateway connection failed: connection reset by peer",
+      "gateway connection failed: Connection refused (os error 111)",
+      "part upload failed: broken pipe",
+    ]) {
+      expect(isTransientUploadError(sdkBackupError("BACKUP_TRANSFER", detail)), detail).toBe(true);
+    }
+  });
+
+  it("never repeats a refusal, an integrity failure, a file error, an abort or a stopped container", () => {
+    for (const error of [
+      sdkBackupError(
+        "BACKUP_TRANSFER",
+        "gateway rejected the part upload with HTTP 403: the write fence refused this part: generation",
+      ),
+      sdkBackupError("BACKUP_TRANSFER", "gateway rejected the part upload with HTTP 411: a part"),
+      sdkBackupError("BACKUP_TRANSFER", "gateway returned an invalid part upload result"),
+      sdkBackupError("BACKUP_INTEGRITY", "R2 stored 10 bytes, but the container uploaded 12"),
+      sdkBackupError("BACKUP_NOT_FOUND", "HTTP 502 Network connection lost."),
+      Object.assign(new Error("ENOENT: /var/cfo/staged/lyr_x"), { name: "SandboxFileError" }),
+      new DOMException("deadline passed", "TimeoutError"),
+      new DOMException("aborted", "AbortError"),
+      new Error("Container is not running."),
+      // completeUpload's lost reply: R2 may hold the object already (Codex WP3.22 r1-3).
+      new Error("Network connection lost."),
+      new Error("[forbidden] the write fence refused this upload: generation"),
+      "Network connection lost.",
+      null,
+    ]) {
+      expect(isTransientUploadError(error), String(error)).toBe(false);
+    }
   });
 });

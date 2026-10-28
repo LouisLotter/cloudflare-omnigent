@@ -349,3 +349,316 @@ def test_the_collector_asks_the_host_broker_for_the_github_token(tmp_path: Path)
         if rig is not None:
             rig.close()
         shutil.rmtree(root, ignore_errors=True)
+
+
+# ── The collector takes credentials, never identifiers (WP3.22) ────────────────────────────
+# The 27 Oct 2026 staging sitting: with the check on, every save failed with up to 146
+# findings, none a credential (tool names and descriptions, session and bridge IDs, the server
+# URL, the installation ID, Claude's rateLimitTier, Codex's account_id, hook commands, and the
+# runner's slice key). The fixture is every file the collector reads, as Omnigent's own writers
+# produce them at the image's pin (images/computer/tests/rc53_formats.py, which the image's
+# suite also runs live and checks the fixture against), with each credential as @@label@@.
+
+FORMATS = Path(__file__).resolve().parent / "fixtures" / "rc53-formats.json"
+
+
+def _credential_value(label: str, shape: str) -> str:
+    value = canary(label.replace("_", ""))
+    return {
+        "oat": f"sk-ant-oat01-{value}",
+        "ort": f"sk-ant-ort01-{value}",
+        "sk": f"sk-proj-{value}",
+        "jwt": f"eyJhbGciOiJSUzI1NiIsImtpZCI6InIifQ.eyJzdWIiOiJyYzUzIn0.{value}",
+        "opaque": f"-{value}%s$x",
+        "slash": f"/{value}+==",
+    }.get(shape, value)
+
+
+def _formats(home: Path, tmp: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Write the fixture's files under ``home`` and ``tmp`` with fresh credentials; return the
+    credentials, the identifiers and the runner's environment, filled in the same way."""
+    doc = json.loads(FORMATS.read_text())
+    creds = {k: _credential_value(k, shape) for k, shape in doc["credentials"].items()}
+
+    def fill(text: str) -> str:
+        for label, value in creds.items():
+            text = text.replace(f"@@{label}@@", value)
+        return text.replace("/home/omnigent", str(home)).replace("/tmp/", f"{tmp}/")
+
+    for rel, text in doc["files"].items():
+        root, _, sub = rel.partition("/")
+        path = (home if root == "home" else tmp) / sub
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(fill(text))
+    env = {k: fill(v) for k, v in doc["runner_env"].items()}
+    ids = {k: fill(v) for k, v in doc["identifiers"].items()}
+    return creds, ids, env
+
+
+def _holder(env: dict[str, str]) -> subprocess.Popen[bytes]:
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], env=env)
+
+
+CREDENTIAL_NAMES = [
+    "token",
+    "accessToken",
+    "refreshToken",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "clientSecret",
+    "client_secret",
+    "privateKeyPkcs8B64",
+    "Authorization",
+    "Cookie",
+    "X-Omnigent-Host-Token",
+    "X-Omnigent-Runner-Tunnel-Token",
+    "X-Omnigent-Client-Secret",
+    "X-Api-Key",
+    "OMNIGENT_HOST_TOKEN",
+    "OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN",
+    "OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN",
+    "OMNIGENT_RELAY_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "provider_key",
+    "password",
+]
+IDENTIFIER_NAMES = [
+    "account_id",
+    "login_owner_id",
+    "client_id",
+    "issuer",
+    "X-Omnigent-Installation-Id",
+    "X-Databricks-Omnigent-Slice-Key",
+    "X-Omnigent-Signing-Key-Id",
+    "bridge_id",
+    "active_session_id",
+    "conversation_id",
+    "session_id",
+    "ap_server_url",
+    "url",
+    "name",
+    "description",
+    "command",
+    "workspace",
+    "rateLimitTier",
+    "subscriptionType",
+    "refreshTokenExpiresAt",
+    "expiresAt",
+    "token_type",
+    "auth_mode",
+    "rowPk",
+    "publicKey",
+    "apiKeyHelper",
+    "OMNIGENT_RUNNER_SLICE_KEY",
+    "OMNIGENT_RUNNER_ID",
+    "OMNIGENT_TOKEN_USAGE_JSON",
+    "OMNIGENT_HOST_TOKEN_REFUSED_EXIT_S",
+    "GPG_KEY",
+    "SSH_AUTH_SOCK",
+    "PWD",
+    "",
+]
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_NAMES)
+def test_a_credential_name_is_collected(name: str) -> None:
+    from cfo_computer import rc53_collect
+
+    value = canary("named")
+    assert rc53_collect.credential_name(name)
+    assert value in rc53_collect.from_string(name, value)
+
+
+@pytest.mark.parametrize("name", IDENTIFIER_NAMES)
+def test_an_identifier_name_is_not_collected(name: str) -> None:
+    from cfo_computer import rc53_collect
+
+    assert not rc53_collect.credential_name(name)
+    assert rc53_collect.from_string(name, canary("identifier")) == set()
+
+
+def test_bearers_assignments_formats_and_helpers() -> None:
+    """Rules 2 to 5, and their refusals: a shell variable is not a value, a credential name
+    holding a path or a plain URL is not a credential."""
+    from cfo_computer import rc53_collect as C
+
+    tok = canary("t")
+    assert tok in C.from_string("command", f'curl -H "Authorization: Bearer {tok}" x')
+    assert (
+        C.from_string(
+            "command",
+            'curl -H "Authorization: Bearer $OMNIGENT_RELAY_TOKEN" "$OMNIGENT_RELAY_URL/h"',
+        )
+        == set()
+    )
+    assert C.from_string("", f"OMNIGENT_RELAY_TOKEN='{tok}'") == {tok}
+    assert C.from_string("", "OMNIGENT_RELAY_URL='http://127.0.0.1:41234'") == set()
+    assert C.from_string(
+        "url", f"http://127.0.0.1:1/x?token={tok}&session_id=conv_1234567890abcdef"
+    )
+    assert tok in C.from_string("url", f"https://x-access-token:{tok}@github.com/o/r")
+    for shaped in (f"sk-ant-oat01-{tok}", f"sk-proj-{tok}", f"eyJhbGciOiJ9.eyJzdWIiOiJ9.{tok}"):
+        assert shaped in C.from_string("description", f"see {shaped} here")
+    assert C.from_string("apiKeyHelper", f"printf %s '{tok}'") == {tok}
+    assert C.from_string("OMNIGENT_CLAUDE_API_KEY_HELPER", f"echo -n {tok}") == {tok}
+    assert (
+        C.from_string("apiKeyHelper", "databricks auth token --host https://example.test") == set()
+    )
+    # Only a path that exists is a reference (see the opaque test); this one is a value.
+    missing = "/home/omnigent/.config/gcloud/k.json"
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", missing) == {missing}
+    assert C.from_string("token", "https://omnigent.example.test/v1/token") == set()
+
+
+def test_opaque_credentials_are_collected_whatever_they_start_with(tmp_path: Path) -> None:
+    """Codex WP3.22 r1, findings 1 and 2: a credential is taken by where it is, not by its
+    look. A helper's key may start with "-" or "$" or hold "%" or a quote once quoted; a token
+    may start with "/". Only an expansion, a plain URL or an existing path is not a value. Each
+    is then found in a layer by the actual scanner."""
+    import shlex
+
+    from cfo_computer import rc53_collect as C
+
+    tok = canary("opaque")
+    keys = ["-" + tok, "$" + tok, tok[:8] + "%s%d" + tok[8:], tok + "'s", "/" + tok + "+=="]
+    for key in keys:
+        assert C.from_string("apiKeyHelper", f"printf %s {shlex.quote(key)}") == {key}, key
+        assert C.from_string("apiKeyHelper", f"printf -- '%s' {shlex.quote(key)}") == {key}, key
+        assert C.from_string("OMNIGENT_CLAUDE_API_KEY_HELPER", f"echo -n {shlex.quote(key)}") == {
+            key
+        }
+    assert C.from_string("apiKeyHelper", f"printf {shlex.quote(tok)}") == {tok}
+    for expansion in ('printf %s "$ANTHROPIC_API_KEY"', "printf %s $ANTHROPIC_API_KEY_LONG"):
+        assert C.from_string("apiKeyHelper", expansion) == set()
+    slash = "/" + tok + "+=="
+    assert C.from_string("accessToken", slash) == {slash}
+    assert C.from_environ(f"AWS_SECRET_ACCESS_KEY={slash}".encode()) == {slash}
+    assert C.from_string("", f"OMNIGENT_RELAY_TOKEN='${tok}'") == {"$" + tok}
+    assert C.from_string("", 'OMNIGENT_RELAY_TOKEN="$SOME_VARIABLE_NAME_HERE"') == set()
+    existing = tmp_path / "service-account.json"
+    existing.write_text("{}")
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", str(existing)) == set()
+    # End to end: a leaked key alone in a saved file is found.
+    (tmp_path / "layer").mkdir()
+    for i, key in enumerate(keys):
+        (tmp_path / "layer" / f"{i}.txt").write_text(f"leaked {key} here")
+    code, report = rc53_scan.run([tmp_path / "layer"], sorted(set(keys)), [])
+    assert code == 1 and len({f["file"] for f in report["findings"]}) == len(keys), report
+
+
+HELPERS = [
+    "printf %s {q}",
+    "printf -- '%s' {q}",
+    'printf %s "{k}$"',
+    "printf '{k}%%tail'",
+    "printf '{k}\\141'",
+    "printf '%s\\n' {q}",
+    "printf '%s%s' {q} tail",
+    "printf '%s-%s' {q}",
+    "printf %b '{k}\\x41'",
+    "echo {q}",
+    "echo -n {q}",
+    'echo "{k}$"',
+    "K=1 printf %s {q}",
+]
+
+
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_helper_is_collected_as_sh_prints_it(helper: str) -> None:
+    """Codex WP3.22 r2, findings 1 and 2: what a credential helper prints, judged against
+    ``/bin/sh`` itself: a literal ``$``, ``%%`` and escapes in a format, ``%b``, a reused
+    format, echo. The output (without its final newline) is collected, so the scanner finds the
+    credential however it was written."""
+    import shlex
+
+    from cfo_computer import rc53_collect as C
+
+    k = canary("helper")
+    for key in (k, "-" + k + "%s$x", k + "'s"):
+        command = helper.format(q=shlex.quote(key), k=k)
+        printed = subprocess.run(
+            ["/bin/sh", "-c", command], capture_output=True, text=True, check=True
+        ).stdout
+        got = C.from_string("apiKeyHelper", command)
+        assert printed in got or printed.removesuffix("\n") in got, (command, printed, got)
+
+
+def test_expansions_and_references_are_not_values(tmp_path: Path) -> None:
+    from cfo_computer import rc53_collect as C
+
+    for helper in (
+        'printf %s "$ANTHROPIC_API_KEY"',
+        "printf %s ${ANTHROPIC_API_KEY}",
+        "printf %s $(cat /run/secrets/key)",
+        "printf %s `cat /run/secrets/key`",
+        "databricks auth token --host https://example.test --profile default",
+    ):
+        assert C.from_string("apiKeyHelper", helper) == set(), helper
+    spaced = tmp_path / "My Project" / "service-account.json"
+    spaced.parent.mkdir()
+    spaced.write_text("{}")
+    assert C.from_string("GOOGLE_APPLICATION_CREDENTIALS", str(spaced)) == set()
+    assert C.from_environ(f"GOOGLE_APPLICATION_CREDENTIALS={spaced}".encode()) == set()
+
+
+def test_the_collector_takes_every_credential_and_no_identifier(tmp_path: Path) -> None:
+    from cfo_computer import rc53_collect
+
+    home, tmp = tmp_path / "home", tmp_path / "tmp"
+    creds, ids, env = _formats(home, tmp)
+    holder = _holder(env)
+    try:
+        got = rc53_collect.collect(home, tmp_roots=[tmp], process_scope={holder.pid})
+    finally:
+        holder.kill()
+    assert sorted(k for k, v in creds.items() if v not in got) == []
+    # Anything else collected is a credential in context ("Bearer <token>"), never on its own.
+    assert [v[:24] for v in got if not any(c in v for c in creds.values())] == []
+    assert sorted(k for k, v in ids.items() if v in got) == []
+    assert len(ids) > 50, "the fixture names every identifier the sitting flagged"
+
+
+def test_a_save_holding_every_identifier_passes_and_a_credential_still_fails(
+    tmp_path: Path,
+) -> None:
+    """The sitting's case on the actual receiver: transcripts, settings and logs that hold every
+    identifier (as Claude's and Codex's do) save cleanly with the check on; one credential in a
+    saved file still fails the save before it is offered for upload."""
+    rig = Rig(tmp_path / "a")
+    holder = None
+    try:
+        tmp = tmp_path / "bridges"
+        creds, ids, env = _formats(rig.home, tmp)
+        holder = _holder(env)
+        rig.sup.scope_pids = [holder.pid]
+        rig.boot()
+        (rig.layout.state / "rc53").mkdir()
+        (rig.layout.state / "rc53" / "enabled").write_text("")
+        rig.sup.rc53_tmp_roots = [tmp]
+        transcript = [{"type": "tool_use", "label": k, "value": v} for k, v in ids.items()]
+        (rig.home / "work").mkdir(exist_ok=True)
+        (rig.home / "work" / "transcript.jsonl").write_text(
+            "\n".join(json.dumps(x) for x in transcript)
+        )
+        (rig.home / ".claude.json").write_text(json.dumps({"ids": list(ids.values())}))
+        op, job = rig.capture()
+        assert job["state"] == "staged", job
+        result = rig.result(op)["rc53"]
+        assert result["status"] == 0 and result["findings"] == 0, result
+        assert result["values"] >= len(creds)
+        rig.finish(op)
+        (rig.home / "work" / "leak.txt").write_text(f"relay {creds['relay_token']}")
+        op, job = rig.capture(
+            "delta", {"checkpointId": new_id("ckp"), "treeDigest": job["treeDigest"]}
+        )
+        assert job["state"] == "failed" and job["reason"] == "policy_violation", job
+        assert creds["relay_token"] not in json.dumps(rig.result(op))
+    finally:
+        if holder is not None:
+            holder.kill()
+        rig.close()

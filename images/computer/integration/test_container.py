@@ -310,3 +310,62 @@ def test_layers_round_trip_through_directory_backup(tmp_path: Path) -> None:
     result = json.loads(out.read_text())
     assert proc.returncode == 0 and result["ok"], [c for c in result["checks"] if not c["ok"]]
     assert result["record0"]["format"] == "tar+zstd/1" and result["objects"] == 2
+    # WP3.22: the real shim's failed parts, which WorkspaceDO repeats, left nothing behind.
+    assert [f["code"] for f in result["partFailures"]] == ["BACKUP_TRANSFER"] * 2
+
+
+def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed() -> None:
+    """WP3.22, under the real supervisor: started as Cloudflare's ``durable_object`` runtime
+    leaves a container (a 64-character hostname nothing maps; ``/`` owned by uid 2346, recreated
+    here before tini starts), the supervisor maps the hostname, so ``sudo`` prints no "unable to
+    resolve host", and gives ``/`` back to root, so Claude Code 2.1.311 binds its cross-session
+    messaging sockets instead of refusing them."""
+    tag = secrets.token_hex(4)
+    name = f"cfo-wp34-it-do-{tag}"
+    hostname = secrets.token_hex(32)
+    script = (
+        "chown 2346:2346 / && exec /usr/bin/tini -- /usr/local/bin/python3 -I -m cfo_computer.main"
+    )
+    docker(
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--hostname",
+        hostname,
+        "--network",
+        "none",
+        "-e",
+        f"CFO_COMPUTER_ID={ulid('cmp')}",
+        "-e",
+        "CFO_GENERATION=1",
+        "--entrypoint",
+        "/bin/sh",
+        IMAGE,
+        "-c",
+        script,
+    )
+    try:
+        _wait(lambda: "start fixes" in docker("logs", name, check=False).stderr)
+        assert "hostname mapped, root owner was 2346:2346" in docker("logs", name).stderr
+        assert docker("exec", name, "stat", "-c", "%u:%g %a", "/").stdout.split() == ["0:0", "755"]
+        hosts = docker("exec", name, "cat", "/etc/hosts").stdout
+        assert f"127.0.1.1\t{hostname}" in hosts.splitlines()
+        sudo = docker("exec", "-u", "omnigent", name, "sudo", "-n", "true")
+        assert "unable to resolve host" not in sudo.stderr, sudo.stderr
+        # Claude Code's sockets directory, vetted up to "/", in a throwaway home.
+        claude = " && ".join(
+            [
+                "export HOME=$(mktemp -d)",
+                "cd $HOME",
+                "(timeout 40 script -qfc 'claude --debug-file d.log' /dev/null >/dev/null &)",
+                "for i in $(seq 1 150); do grep -q 'uds-messaging\\]' d.log 2>/dev/null && break;"
+                " sleep 0.2; done",
+                "grep -a 'uds-messaging\\]' d.log | head -3",
+            ]
+        )
+        out = docker("exec", "-u", "omnigent", name, "bash", "-c", claude, timeout=60).stdout
+        assert "[uds-messaging] Listening:" in out, out
+        assert "Failed to set up sockets directory" not in out, out
+    finally:
+        docker("rm", "-f", name, check=False)
