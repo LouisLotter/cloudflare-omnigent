@@ -311,6 +311,9 @@ export function installationProblems(plan: Installation): string[] {
 }
 
 /** The platform Worker's variables: the installation ID and the server's plain settings. */
+/** Set on a staging installation's platform Worker only (WP3.23). */
+export const STAGING_INSTALLATION_VAR = "CFO_STAGING_INSTALLATION";
+
 export function platformVars(plan: Installation): Record<string, string> {
   const vars: Record<string, string> = {
     [INSTALLATION_ID_VAR]: plan.installationId,
@@ -331,6 +334,9 @@ export function platformVars(plan: Installation): Record<string, string> {
     // Only a staging test installation with a file replica (installationProblems).
     vars[`${SERVER_ENV}CFO_ALLOW_LOCAL_ARTIFACTS`] = "true";
   }
+  // A staging installation only (WP3.23): its platform Worker offers the setup page's RC-53
+  // switch. Production never has it.
+  if (plan.target.kind === "staging") vars[STAGING_INSTALLATION_VAR] = plan.platformWorker;
   return vars;
 }
 

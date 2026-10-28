@@ -22,6 +22,7 @@ import {
   renderPlatformConfig,
   renderWebConfig,
   requiredSecretNames,
+  STAGING_INSTALLATION_VAR,
   secretsToAdd,
   usernameProblem,
   webVars,
@@ -174,6 +175,13 @@ describe("the platform Worker's settings and secrets", () => {
       "SERVER_ENV_OMNIGENT_ARTIFACT_URI",
     );
     expect(platformVars(await stagingPlan())).not.toHaveProperty("SERVER_ENV_CFO_REPLICA_ENDPOINT");
+  });
+
+  it("marks a staging installation for the RC-53 switch (WP3.23), and never production", async () => {
+    const staging = await stagingPlan();
+    expect(platformVars(staging)[STAGING_INSTALLATION_VAR]).toBe(staging.platformWorker);
+    expect(staging.platformWorker.startsWith("cfo-stg-")).toBe(true);
+    expect(platformVars(await accountPlan())).not.toHaveProperty(STAGING_INSTALLATION_VAR);
   });
 
   it("adds every missing secret, the initialized flag as false", async () => {

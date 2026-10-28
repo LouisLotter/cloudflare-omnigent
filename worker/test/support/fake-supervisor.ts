@@ -14,9 +14,14 @@ import {
   DeclaredCredentialPath,
   type DirectoryBackupRecord,
   type IndexEntry,
+  type Rc53Counts,
+  SIGN_IN_LINKS,
+  type SignInService,
+  type SignInView,
   type SupervisorMessage,
   type SupervisorReply,
   type SupervisorReport,
+  type SupervisorStatus,
   treeDigest,
   WorkspaceCommand,
   type WorkspaceCommandReply,
@@ -89,6 +94,35 @@ export interface SupervisorOptions {
   holdCredentials: boolean;
   /** Decline the next `start_host` (as if its own restore were not done). */
   declineStarts: number;
+  /**
+   * An older supervisor (before WP3.23): its hello names no features, and it refuses the sign-in,
+   * status and staging commands as unknown (`bad_request`).
+   */
+  legacy: boolean;
+  /** How a sign-in's CLI answers (WP3.23): its link and prompt (`ok`), output the parser does
+   * not know (`unexpected`), or nothing yet (`silent`). */
+  signInMode: "ok" | "unexpected" | "silent";
+  /** RC-53 findings each capture reports while the check is on (they fail the capture). */
+  rc53Findings: number;
+}
+
+/** The canary prefix, built at run time: no source file holds a literal canary. */
+const CANARY = `${"CFO_"}${"CANARY_"}`;
+
+function randomHex(bytes: number): string {
+  return [...crypto.getRandomValues(new Uint8Array(bytes))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** What the fake CLI printed for an attempt: what the person would read at the provider. */
+export interface IssuedSignIn {
+  readonly attempt: number;
+  readonly url: string;
+  /** Claude: the code Anthropic's page would show (with the link's state). */
+  readonly code: string | null;
+  /** Codex: the one-time device code. */
+  readonly userCode: string | null;
 }
 
 /**
@@ -140,6 +174,22 @@ export class FakeSupervisor {
   #acknowledged = new Map<string, string | null>();
   #signedOut = false;
   readonly #ops = new Map<string, WorkspaceCommandReply>();
+  /** Sign-in attempts per service (WP3.23), fenced as the supervisor's `signin.py`. */
+  readonly #signIns: Record<
+    SignInService,
+    { fence: number; current: SignInView | null; finished: Map<number, SignInView> }
+  > = {
+    claude: { fence: 0, current: null, finished: new Map() },
+    codex: { fence: 0, current: null, finished: new Map() },
+  };
+  /** The values each running attempt's CLI printed (synthetic, with the canary prefix). */
+  readonly issued: Record<SignInService, IssuedSignIn | null> = { claude: null, codex: null };
+  /** Every synthetic value ever issued: for the canary scans. */
+  readonly issuedValues: string[] = [];
+  /** RC-53's save check (`staging_check`). */
+  rc53 = false;
+  /** RC-53 counts by capture operation, as `computer_status` reports them. */
+  readonly #rc53Counts = new Map<string, Rc53Counts>();
 
   constructor(
     computerId: ComputerId,
@@ -155,6 +205,9 @@ export class FakeSupervisor {
       failRestores: 0,
       holdCredentials: false,
       declineStarts: 0,
+      legacy: false,
+      signInMode: "ok",
+      rc53Findings: 0,
       ...options,
     };
   }
@@ -232,7 +285,94 @@ export class FakeSupervisor {
   }
 
   hello(): void {
-    this.outbox.push({ type: "hello", ...this.#envelope(), supervisorVersion: "fake-1" });
+    this.outbox.push(
+      this.options.legacy
+        ? { type: "hello", ...this.#envelope(), supervisorVersion: "fake-1" }
+        : {
+            type: "hello",
+            ...this.#envelope(),
+            supervisorVersion: "fake-2",
+            features: ["sign_in", "computer_status", "staging_check"],
+          },
+    );
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Sign-in (WP3.23): the attempts as the supervisor's `signin.py` fences them, with a fake CLI.
+
+  #signInView(service: SignInService, attempt: number): SignInView {
+    const s = this.#signIns[service];
+    if (s.current !== null && s.current.attempt === attempt) return { ...s.current };
+    const finished = s.finished.get(attempt);
+    if (finished !== undefined) return { ...finished };
+    return { service, attempt, state: attempt < s.fence ? "superseded" : "none" };
+  }
+
+  #endSignIn(service: SignInService, state: SignInView["state"], reason?: SignInView["reason"]) {
+    const s = this.#signIns[service];
+    if (
+      s.current === null ||
+      !["starting", "awaiting_user", "completing"].includes(s.current.state)
+    )
+      return;
+    const ended: SignInView = {
+      service,
+      attempt: s.current.attempt,
+      state,
+      ...(state === "failed" && reason !== undefined ? { reason } : {}),
+    };
+    s.current = ended;
+    s.finished.set(ended.attempt, ended);
+    this.issued[service] = null;
+  }
+
+  #signInStart(service: SignInService, attempt: number): SignInView {
+    const s = this.#signIns[service];
+    if (attempt <= s.fence && s.fence > 0) return this.#signInView(service, attempt);
+    s.fence = attempt;
+    this.#endSignIn(service, "superseded");
+    if (this.options.signInMode === "unexpected") {
+      s.current = { service, attempt, state: "failed", reason: "unexpected_output" };
+      s.finished.set(attempt, s.current);
+      return { ...s.current };
+    }
+    if (this.options.signInMode === "silent") {
+      s.current = { service, attempt, state: "starting" };
+      return { ...s.current };
+    }
+    const host = SIGN_IN_LINKS[service];
+    const state = `${CANARY}FAKEstate${randomHex(8)}`;
+    const url =
+      service === "claude"
+        ? `https://${host.host}${host.path}?code=true&code_challenge=${CANARY}FAKEchallenge${randomHex(6)}&state=${state}`
+        : `https://${host.host}${host.path}`;
+    const userCode =
+      service === "codex"
+        ? `${randomHex(2).toUpperCase()}-${randomHex(3).toUpperCase().slice(0, 5)}`
+        : null;
+    const code = service === "claude" ? `${CANARY}FAKEcode${randomHex(10)}#${state}` : null;
+    this.issued[service] = { attempt, url, code, userCode };
+    this.issuedValues.push(...[state, code, userCode].filter((v): v is string => v !== null));
+    s.current = {
+      service,
+      attempt,
+      state: "awaiting_user",
+      url,
+      ...(userCode === null ? {} : { userCode }),
+    };
+    return { ...s.current };
+  }
+
+  /** Codex: the person entered the device code at OpenAI; the CLI signs in. */
+  approve(service: SignInService = "codex"): void {
+    if (this.#signIns[service].current?.state !== "awaiting_user") return;
+    this.#endSignIn(service, "done");
+    this.signIn(service);
+  }
+
+  /** The attempt ran past the platform's deadline on the computer. */
+  expire(service: SignInService): void {
+    this.#endSignIn(service, "expired");
   }
 
   /** Takes a whole credential snapshot under the copy lock and queues its bundle. */
@@ -318,22 +458,50 @@ export class FakeSupervisor {
     const parsed = WorkspaceCommand.safeParse(body);
     if (!parsed.success) return refuse("bad_request", "not a WorkspaceCommand", 400);
     const command = parsed.data;
+    const newer = [
+      "sign_in_start",
+      "sign_in_input",
+      "sign_in_cancel",
+      "sign_in_status",
+      "computer_status",
+      "staging_check",
+    ];
+    if (this.options.legacy && newer.includes(command.type)) {
+      return refuse("bad_request", "not a WorkspaceCommand", 400);
+    }
     this.commands.push(
       command.type === "start_host"
         ? { ...command, token: "redacted-token-000000000000000000000" }
-        : command,
+        : command.type === "sign_in_input"
+          ? { ...command, code: "redacted" }
+          : command,
     );
     if (command.computerId !== this.computerId || command.generation !== this.generation) {
       return refuse("stale_generation", "another computer or generation");
     }
+    const unjournaled = [
+      "job_status",
+      "status",
+      "sign_in_status",
+      "computer_status",
+      "sign_in_start",
+      "sign_in_cancel",
+    ];
     const recorded = this.#ops.get(command.operationId);
-    if (recorded !== undefined && command.type !== "job_status" && command.type !== "status") {
-      return json(recorded);
+    if (recorded !== undefined && !unjournaled.includes(command.type)) return json(recorded);
+    if (command.type === "sign_in_input") {
+      const s = this.#signIns[command.service];
+      if (
+        command.service !== "claude" ||
+        s.current?.attempt !== command.attempt ||
+        s.current.state !== "awaiting_user"
+      ) {
+        return refuse("conflict", "the attempt is not waiting for a code");
+      }
     }
     const reply = await this.#answer(command);
     if (
-      command.type !== "job_status" &&
-      command.type !== "status" &&
+      !unjournaled.includes(command.type) &&
       command.type !== "capture" &&
       command.type !== "restore_workspace"
     ) {
@@ -454,7 +622,29 @@ export class FakeSupervisor {
           } as WorkspaceCommandReply;
         let job: Extract<WorkspaceCommandReply, { type: "capture" }>["job"];
         const cutAt = new Date(Date.UTC(2026, 9, 25, 12, 0, this.#seq % 60)).toISOString();
-        if (this.options.failCaptures > 0) {
+        if (this.rc53) {
+          const findings = this.options.rc53Findings;
+          this.#rc53Counts.set(command.operationId, {
+            status: findings > 0 ? 1 : 0,
+            values: 12,
+            files: this.tree.size,
+            findings,
+            incomplete: 0,
+          });
+          if (this.#rc53Counts.size > 5) {
+            this.#rc53Counts.delete([...this.#rc53Counts.keys()][0] as string);
+          }
+        }
+        if (this.rc53 && this.options.rc53Findings > 0) {
+          this.rc53Captures += 1;
+          job = {
+            kind: "capture",
+            jobOperationId: command.operationId,
+            state: "failed",
+            reason: "policy_violation",
+            pausedMs: 700,
+          };
+        } else if (this.options.failCaptures > 0) {
           this.options.failCaptures -= 1;
           job = {
             kind: "capture",
@@ -539,13 +729,83 @@ export class FakeSupervisor {
       case "credential_snapshot":
         return { type: "credential_snapshot", order: this.#publishCredentials() };
       case "sign_out":
+        this.#endSignIn("claude", "cancelled");
+        this.#endSignIn("codex", "cancelled");
         this.credentials.delete(LOGIN_FILES.claude);
         this.credentials.delete(LOGIN_FILES.codex);
         this.#signedOut = true;
         this.#publishCredentials();
         return { type: "sign_out", claude: "ok", codex: "ok" };
+      case "sign_in_start":
+        return {
+          type: "sign_in_start",
+          view: this.#signInStart(command.service, command.attempt),
+        };
+      case "sign_in_input": {
+        const issued = this.issued.claude;
+        if (issued !== null && command.code === issued.code) {
+          this.#endSignIn("claude", "done");
+          this.signIn("claude");
+        } else if (!command.code.includes("#")) {
+          const s = this.#signIns.claude;
+          if (s.current !== null) s.current = { ...s.current, notice: "incomplete_code" };
+        } else {
+          this.#endSignIn("claude", "failed", "code_rejected");
+        }
+        return { type: "sign_in_input", view: this.#signInView("claude", command.attempt) };
+      }
+      case "sign_in_cancel": {
+        const s = this.#signIns[command.service];
+        s.fence = Math.max(s.fence, command.attempt);
+        if (s.current !== null && s.current.attempt <= command.attempt) {
+          this.#endSignIn(
+            command.service,
+            s.current.attempt === command.attempt ? "cancelled" : "superseded",
+          );
+        }
+        if (s.current?.attempt !== command.attempt && !s.finished.has(command.attempt)) {
+          s.finished.set(command.attempt, {
+            service: command.service,
+            attempt: command.attempt,
+            state: "cancelled",
+          });
+        }
+        return {
+          type: "sign_in_cancel",
+          view: this.#signInView(command.service, command.attempt),
+        };
+      }
+      case "sign_in_status":
+        return {
+          type: "sign_in_status",
+          view: this.#signInView(command.service, command.attempt),
+        };
+      case "computer_status":
+        return { type: "computer_status", status: this.metrics() };
+      case "staging_check":
+        this.rc53 = command.rc53;
+        return { type: "staging_check", rc53: this.rc53 };
     }
   }
+
+  /** `computer_status`'s metrics: names, versions, states and counts only. */
+  metrics(): SupervisorStatus {
+    const state = (s: SignInService) => this.#signIns[s].current?.state ?? "none";
+    return {
+      supervisorVersion: "fake-2",
+      versions: { claude: "2.1.311", codex: "0.164.0", gh: "2.103.3" },
+      logins: this.state().logins,
+      signIn: { claude: state("claude"), codex: state("codex") },
+      rc53: this.rc53,
+      hostname: "mapped",
+      disk: { totalBytes: 20_000_000_000, freeBytes: 15_000_000_000 },
+      alerts: this.rc53Captures > 0 ? [{ kind: "rc53_finding", count: this.rc53Captures }] : [],
+      captures: [...this.#rc53Counts].map(([jobOperationId, rc53]) => ({ jobOperationId, rc53 })),
+    };
+  }
+
+  /** Captures that failed RC-53's check. */
+  rc53Captures = 0;
 
   /** A job's reply: `running` for its remaining polls, then its outcome. */
   #poll(operationId: string): Extract<WorkspaceCommandReply, { job: unknown }> & { job: never } {

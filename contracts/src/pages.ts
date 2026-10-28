@@ -1,5 +1,20 @@
 import { z } from "zod";
+import {
+  CliLoginStatus,
+  CliVersion,
+  Rc53Counts,
+  SignInAttempt,
+  SignInCode,
+  SignInFailure,
+  SignInLink,
+  SignInNotice,
+  SignInService,
+  SignInState,
+  SignInUserCode,
+  SupervisorAlertKind,
+} from "./computer-protocol.ts";
 import { ComputerId, Generation, OperationId, Timestamp } from "./ids.ts";
+import { DeclaredCredentialPath } from "./manifests.ts";
 
 // The platform pages (WP3.5): what the web Worker's pages send to WorkspaceDO beyond the
 // controller's own `PagesCall`, and the setup terminal's stream. WorkspaceDO's page front
@@ -89,6 +104,37 @@ export const PageFrontCall = z.discriminatedUnion("action", [
    * calls (FH-29, FH-31): offered only while the page shows it as not connected to Omnigent.
    */
   z.looseObject({ action: z.literal("remove"), ...front }),
+  // Sign-in from the page (WP3.23). Each attempt is bound to the computer, its generation, the
+  // service and the Access session that started it (the caller's `owner`); input and cancel act
+  // only on that attempt, and only from that session. A repeated operation ID returns the same
+  // attempt. The pasted code travels in this call only: it is never journaled or stored.
+  /**
+   * Starts a sign-in attempt; ends the service's earlier attempt. `generation`: the computer's
+   * generation the page was showing; a start for any other is refused (Codex WP3.23 r1-2).
+   */
+  z.looseObject({
+    action: z.literal("sign_in_start"),
+    ...front,
+    service: SignInService,
+    generation: Generation,
+  }),
+  /** Claude: the code the person pastes, for the attempt's CLI. */
+  z.looseObject({
+    action: z.literal("sign_in_input"),
+    ...front,
+    service: SignInService,
+    attempt: SignInAttempt,
+    code: SignInCode,
+  }),
+  /** Ends the attempt, including one whose start has not reached the computer yet. */
+  z.looseObject({
+    action: z.literal("sign_in_cancel"),
+    ...front,
+    service: SignInService,
+    attempt: SignInAttempt,
+  }),
+  /** Staging only: the RC-53 save check's desired state, applied in every generation. */
+  z.looseObject({ action: z.literal("staging_check"), ...front, rc53: z.boolean() }),
 ]);
 export type PageFrontCall = z.infer<typeof PageFrontCall>;
 
@@ -103,6 +149,61 @@ export const TerminalRefusal = z.enum([
   "window_closed",
 ]);
 export type TerminalRefusal = z.infer<typeof TerminalRefusal>;
+
+/**
+ * Why the page cannot start or continue a sign-in now:
+ * - `not_running`: the computer is asleep, starting or stopped;
+ * - `busy`: it is stopping or signing out;
+ * - `not_offered`: a removal is pending or resolved;
+ * - `unsupported`: its supervisor predates page sign-in: the page offers the terminal;
+ * - `not_yours`: the attempt was started from another browser session;
+ * - `stale`: the attempt ended, was replaced, or belongs to an earlier start of the computer;
+ * - `unreachable`: the computer did not answer.
+ */
+export const SignInRefusal = z.enum([
+  "not_running",
+  "busy",
+  "not_offered",
+  "unsupported",
+  "not_yours",
+  "stale",
+  "unreachable",
+]);
+export type SignInRefusal = z.infer<typeof SignInRefusal>;
+
+/** An attempt as the page sees it: the supervisor's view, read now (`SignInView`). */
+export const PageSignInView = z.looseObject({
+  service: SignInService,
+  attempt: SignInAttempt,
+  state: SignInState,
+  url: SignInLink.optional(),
+  userCode: SignInUserCode.optional(),
+  reason: SignInFailure.optional(),
+  notice: SignInNotice.optional(),
+  /** The platform's deadline for the attempt. */
+  deadline: Timestamp.optional(),
+  /**
+   * The attempt has ended here, but the computer has not yet confirmed that its CLI stopped (a
+   * cancel not yet answered, or a deadline just passed). The page waits before offering the
+   * terminal (Codex WP3.23 r1-6).
+   */
+  pending: z.literal(true).optional(),
+});
+export type PageSignInView = z.infer<typeof PageSignInView>;
+
+const signInOutcome = (action: string) =>
+  z.discriminatedUnion("outcome", [
+    z.looseObject({
+      action: z.literal(action),
+      outcome: z.literal("accepted"),
+      view: PageSignInView,
+    }),
+    z.looseObject({
+      action: z.literal(action),
+      outcome: z.literal("refused"),
+      reason: SignInRefusal,
+    }),
+  ]);
 
 export const PageFrontResult = z.discriminatedUnion("action", [
   z.discriminatedUnion("outcome", [
@@ -132,8 +233,148 @@ export const PageFrontResult = z.discriminatedUnion("action", [
       reason: z.enum(["not_offered", "busy"]),
     }),
   ]),
+  signInOutcome("sign_in_start"),
+  signInOutcome("sign_in_input"),
+  signInOutcome("sign_in_cancel"),
+  z.discriminatedUnion("outcome", [
+    z.looseObject({
+      action: z.literal("staging_check"),
+      outcome: z.literal("accepted"),
+      rc53: z.boolean(),
+    }),
+    z.looseObject({
+      action: z.literal("staging_check"),
+      outcome: z.literal("refused"),
+      /** `not_staging`: a production installation never has the switch. */
+      reason: z.enum(["not_staging", "not_offered"]),
+    }),
+  ]),
 ]);
 export type PageFrontResult = z.infer<typeof PageFrontResult>;
+
+// ---------------------------------------------------------------------------------------------
+// Reads (WP3.23). Behind a page GET: they change nothing, so they carry no intent token, but they
+// name the admitted owner, and a sign-in attempt is shown only to the session that started it.
+
+/** A final save outcome, as WorkspaceDO recorded it. */
+export const SaveFailureReason = z.enum([
+  "lease_expired",
+  "disk_budget",
+  "copy_failed",
+  "stage_failed",
+  "parent_mismatch",
+  "policy_violation",
+  "busy",
+  "upload",
+  "deadline",
+  "parent_changed",
+  "internal",
+]);
+export type SaveFailureReason = z.infer<typeof SaveFailureReason>;
+
+export const SaveOutcome = z.looseObject({
+  at: Timestamp,
+  generation: Generation,
+  outcome: z.enum(["published", "unchanged", "discarded", "failed"]),
+  reason: SaveFailureReason.nullable(),
+  kind: z.enum(["base", "delta"]).nullable(),
+  /** RC-53's counts for this save's capture, when the check ran and the computer reported them. */
+  rc53: Rc53Counts.nullable(),
+});
+export type SaveOutcome = z.infer<typeof SaveOutcome>;
+
+/**
+ * The setup page's "Computer status", composed by WorkspaceDO (the design review's revision 3):
+ * the supervisor's metrics read now, the published credential manifest, the sign-out phase, its
+ * own history of final save outcomes and the RC-53 switch. Names, versions, enum states and
+ * counts only.
+ */
+export const ComputerStatusView = z.looseObject({
+  observedAt: Timestamp,
+  /** The supervisor's part: `ok` when it answered now; otherwise why it is missing. */
+  supervisor: z.enum(["ok", "not_running", "unreachable", "unsupported"]),
+  metrics: z
+    .looseObject({
+      supervisorVersion: z.string().max(64),
+      versions: z.looseObject({
+        claude: CliVersion.nullable(),
+        codex: CliVersion.nullable(),
+        gh: CliVersion.nullable(),
+      }),
+      logins: z.looseObject({ claude: CliLoginStatus, codex: CliLoginStatus }),
+      signIn: z.looseObject({ claude: SignInState, codex: SignInState }),
+      rc53: z.boolean(),
+      hostname: z.enum(["mapped", "unmapped", "unknown"]),
+      disk: z
+        .looseObject({ totalBytes: z.number().int().min(0), freeBytes: z.number().int().min(0) })
+        .nullable(),
+      alerts: z
+        .array(z.looseObject({ kind: SupervisorAlertKind, count: z.number().int().min(0) }))
+        .max(32),
+    })
+    .nullable(),
+  /**
+   * The published credential checkpoint: each declared file present or tombstoned, or `none`
+   * without a checkpoint. A tombstone proves only that the saved checkpoint holds no such file.
+   */
+  credentials: z.looseObject({
+    checkpoint: z
+      .looseObject({ generation: Generation, order: z.number().int().min(1), createdAt: Timestamp })
+      .nullable(),
+    files: z
+      .array(
+        z.looseObject({
+          path: DeclaredCredentialPath,
+          state: z.enum(["present", "tombstone", "none"]),
+        }),
+      )
+      .max(8),
+  }),
+  /**
+   * The sign-out's phase: `tombstoned` (the published checkpoint holds tombstones for the logins)
+   * and `verified` (a read-back of the stored bundle holds four tombstones). Neither is a restore
+   * into a fresh computer, nor proof of revocation at the providers.
+   */
+  signOut: z.looseObject({
+    phase: z.enum(["none", "requested", "tombstoned", "verified"]),
+    running: z.boolean(),
+  }),
+  /** The last final save outcomes, newest first. */
+  saves: z.array(SaveOutcome).max(10),
+  /** The RC-53 switch: offered on a staging installation only. */
+  rc53: z.looseObject({
+    staging: z.boolean(),
+    /** The switch's persisted, desired state; null off staging. */
+    desired: z.boolean().nullable(),
+    /** What the supervisor reports now; null if it was not read. */
+    applied: z.boolean().nullable(),
+  }),
+});
+export type ComputerStatusView = z.infer<typeof ComputerStatusView>;
+
+export const PageReadCall = z.discriminatedUnion("action", [
+  /** An attempt's state now, for the session that started it. */
+  z.looseObject({
+    action: z.literal("sign_in_status"),
+    interfaceVersion: z.number().int().min(1),
+    owner: PageOwner,
+    service: SignInService,
+    attempt: SignInAttempt,
+  }),
+  /** The computer's status now. */
+  z.looseObject({
+    action: z.literal("computer_status"),
+    interfaceVersion: z.number().int().min(1),
+    owner: PageOwner,
+  }),
+]);
+export type PageReadCall = z.infer<typeof PageReadCall>;
+
+export const PageReadResult = z.discriminatedUnion("action", [
+  signInOutcome("sign_in_status"),
+  z.looseObject({ action: z.literal("computer_status"), status: ComputerStatusView }),
+]);
+export type PageReadResult = z.infer<typeof PageReadResult>;
 
 /**
  * The web Worker's upgrade to WorkspaceDO's `fetch`, as JSON in `TERMINAL_UPGRADE_HEADER`. The

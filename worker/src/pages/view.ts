@@ -97,6 +97,10 @@ export interface ComputerView {
   readonly pending: PendingRemoval | null;
   /** The sign-out's persisted phase, for the removal steps' wording. */
   readonly signOutPhase: ComputerPageState["removal"]["signOut"];
+  /** Whether the cards offer sign-in from the page (WP3.23); `no`: an older computer. */
+  readonly signIn: "yes" | "no" | "unknown";
+  /** The last final save failed: the list's badge (WP3.23). */
+  readonly lastSaveFailed: boolean;
 }
 
 const PROVIDER_TITLE: Record<SetupProvider, string> = { claude: "Claude", codex: "Codex" };
@@ -363,6 +367,8 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     removal: removalStep(state),
     pending: pendingRemoval(state),
     signOutPhase: state.removal.signOut,
+    signIn: state.signIn?.available ?? "unknown",
+    lastSaveFailed: state.lastSave?.outcome === "failed",
   };
 }
 

@@ -50,6 +50,10 @@
 #                        and no capability in any line; the terminal's and the pages' events
 #   run.sh layers <computer ID>
 #                        download the computer's workspace layers for the RC-53 laptop scan
+#   run.sh status [minutes]
+#                        WP3.23: the computers' `computer_status` events (default: the last 60
+#                        minutes) from the platform Worker's logs, as each status changed, then each
+#                        computer's latest (names, versions, outcomes, reasons and counts only)
 #   run.sh teardown      tear everything down (web first, platform, the holder), sweep, and
 #                        remove the local secrets and the installation's state file
 #
@@ -347,6 +351,13 @@ print(json.dumps({
     to=$(now_ms)
     for worker in "$platform" "$web"; do scan_worker "$worker" "$from" "$to"; done |
       "${redact[@]}" | tee "$out/scan.jsonl"
+    ;;
+  status)
+    minutes="${2:-60}"
+    case "$minutes" in *[!0-9]*|'') echo "run.sh: status [minutes]" >&2; exit 2 ;; esac
+    to=$(now_ms)
+    node "$here/logs.ts" "$platform" "$(( to - minutes * 60000 ))" "$to" |
+      node "$here/status.ts" | "${redact[@]}" | tee "$out/status.jsonl"
     ;;
   layers)
     computer="${2:?run.sh layers <computer ID>}"

@@ -61,6 +61,8 @@ export interface SimOptions {
    */
   readonly gateway?: boolean;
   readonly start?: number;
+  /** A staging installation: the RC-53 switch is offered and applied (WP3.23). */
+  readonly staging?: boolean;
 }
 
 /** The running computer's supervisor; fails the test if no container runs. */
@@ -99,12 +101,14 @@ export class ComputerSim {
 
   readonly #noBucket: boolean;
   readonly #gateway: boolean;
+  readonly #staging: boolean;
   /** The gateway's checks, in order. */
   readonly gatewayChecks: { readonly key: string; readonly allowed: boolean }[] = [];
 
   constructor(options: SimOptions = {}) {
     this.#noBucket = options.noBucket ?? false;
     this.#gateway = options.gateway ?? false;
+    this.#staging = options.staging ?? false;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, async (request) => {
@@ -240,8 +244,13 @@ export class ComputerSim {
         for (const token of this.tokens) {
           if (text.includes(token)) this.violations.push(`token logged in ${event}`);
         }
+        // WP3.23: a sign-in's link, code or device code is never logged.
+        for (const value of this.computer.supervisors.flatMap((s) => s.issuedValues)) {
+          if (text.includes(value)) this.violations.push(`sign-in value logged in ${event}`);
+        }
         this.logs.push({ event, fields });
       },
+      stagingChecks: this.#staging,
     });
   }
 

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "sign_in_status",
+          "type": "string"
+        },
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "service": {
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "owner",
+        "service",
+        "attempt"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "computer_status",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "owner"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "PageReadCall"
+}

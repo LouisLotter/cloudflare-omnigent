@@ -1,0 +1,5 @@
+{
+  "action": "staging_check",
+  "outcome": "refused",
+  "reason": "not_staging"
+}

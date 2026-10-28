@@ -140,8 +140,49 @@ async function commands(): Promise<unknown[]> {
     operationId: "op_00000000000000000000000001",
   });
   await sim.advance(3 * 60_000);
+  // WP3.23: sign-in from the page, the status and the staging switch, on a staging computer.
+  const staging = new ComputerSim({ staging: true });
+  await staging.running();
+  const session = "ab".repeat(32);
+  await staging.controller.setStagingCheck({ rc53: true });
+  await staging.advance(1_000);
+  const started = await staging.controller.signInStart({
+    service: "claude",
+    session,
+    operationId: "op_00000000000000000000000002",
+    generation: 1,
+  });
+  const attempt = started.outcome === "accepted" ? started.view.attempt : 0;
+  await staging.controller.signInStatus({ service: "claude", attempt, session });
+  await staging.controller.signInInput({
+    service: "claude",
+    attempt,
+    code: live(staging).issued.claude?.code ?? "",
+    session,
+    operationId: "op_00000000000000000000000003",
+  });
+  const codex = await staging.controller.signInStart({
+    service: "codex",
+    session,
+    operationId: "op_00000000000000000000000004",
+    generation: 1,
+  });
+  await staging.controller.signInCancel({
+    service: "codex",
+    attempt: codex.outcome === "accepted" ? codex.view.attempt : 0,
+    session,
+  });
+  await staging.controller.computerStatus();
+  await staging.advance(60_000);
   const seen = new Map<string, unknown>();
-  for (const body of sim.computer.supervisors.flatMap((s) => s.raw)) {
+  for (const raw of [...sim.computer.supervisors, ...staging.computer.supervisors].flatMap(
+    (s) => s.raw,
+  )) {
+    // The corpus is committed: a pasted code is replaced with a synthetic one of the same form.
+    const body =
+      (raw as { type?: unknown }).type === "sign_in_input"
+        ? { ...(raw as object), code: "synthetic-code-0000#synthetic-state-0000" }
+        : raw;
     const c = body as Record<string, unknown>;
     const shape = [c.type, c.kind, c.outcome, c.bundle === null, c.manifest === null].join("/");
     if (!seen.has(shape)) seen.set(shape, body);
@@ -156,12 +197,18 @@ describe("the commands WorkspaceDO sends", () => {
     expect([...types].sort()).toEqual(
       [
         "capture",
+        "computer_status",
         "credential_snapshot",
         "finish_capture",
         "install_credentials",
         "job_status",
         "restore_workspace",
+        "sign_in_cancel",
+        "sign_in_input",
+        "sign_in_start",
+        "sign_in_status",
         "sign_out",
+        "staging_check",
         "start_host",
         "status",
       ].sort(),

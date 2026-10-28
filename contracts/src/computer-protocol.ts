@@ -84,11 +84,23 @@ const envelope = {
 // ---------------------------------------------------------------------------------------------
 // Supervisor → WorkspaceDO.
 
+/**
+ * What a supervisor can do beyond protocol 1's first commands (WP3.23), named in its `hello`:
+ * `sign_in` (`sign_in_start`, `sign_in_input`, `sign_in_cancel`, `sign_in_status`),
+ * `computer_status` and `staging_check`. A supervisor whose `hello` names none of them is an
+ * older one: the setup page then offers the terminal for signing in. The list is free text on the
+ * wire, so a newer supervisor may name more without being refused.
+ */
+export const SUPERVISOR_FEATURES = ["sign_in", "computer_status", "staging_check"] as const;
+export type SupervisorFeature = (typeof SUPERVISOR_FEATURES)[number];
+
 /** First message of each generation, once the supervisor runs. Idempotent per generation. */
 export const SupervisorHello = z.strictObject({
   type: z.literal("hello"),
   ...envelope,
   supervisorVersion: z.string().min(1).max(64),
+  /** Additive (WP3.23): what this supervisor can do; absent from an older one. */
+  features: z.array(z.string().min(1).max(32)).max(32).optional(),
 });
 export type SupervisorHello = z.infer<typeof SupervisorHello>;
 
@@ -329,6 +341,188 @@ export const CredentialSnapshotCommand = z.strictObject({
  * the tombstones. Idempotent: signing out again changes nothing. */
 export const SignOutCommand = z.strictObject({ type: z.literal("sign_out"), ...envelope });
 
+// Sign-in from the setup page (WP3.23; design, Signing in, D31). The supervisor runs the
+// unmodified CLI's own login (`claude auth login --claudeai`, `codex login --device-auth`) in a
+// pty as the computer's user, with the terminal's environment and under the workload's spawn and
+// capture controls, and reads the link (and Codex's one-time code) from what the CLI prints. The
+// person signs in at the provider; for Claude the page relays the code they paste to the pty.
+// Completion is unchanged: the credential watcher publishes the login as after a terminal sign-in.
+//
+// Fencing (the design review's revision 1). WorkspaceDO numbers attempts per computer, never
+// reusing a number, and binds each to the computer, its generation, the service and the Access
+// session that started it. The supervisor keeps, per service, a fence: the highest attempt it has
+// seen in a start or a cancel. A start below the fence, or at it once cancelled, is `superseded`;
+// a newer start ends the running attempt first; a cancel raises the fence, so a start delayed in
+// transit can never begin after its cancel. Input, cancel and status name their attempt and act
+// only on it.
+//
+// Never stored or logged, anywhere: the link, Codex's one-time code and the code the person
+// pastes. The supervisor holds them in memory only, WorkspaceDO only on the request path.
+
+export const SignInService = z.enum(["claude", "codex"]);
+export type SignInService = z.infer<typeof SignInService>;
+
+/** A sign-in attempt's number, from WorkspaceDO: increasing per computer, never reused. */
+export const SignInAttempt = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Where each pinned CLI's sign-in link goes, observed with Claude Code 2.1.311 and Codex 0.164.0
+ * (WP3.23's captured transcripts). A parsed link is accepted only if it is HTTPS on exactly this
+ * host and path, with no port or user information: anything else fails the attempt as
+ * unexpected output, and the page offers the terminal.
+ */
+export const SIGN_IN_LINKS = {
+  claude: { host: "claude.com", path: "/cai/oauth/authorize" },
+  codex: { host: "auth.openai.com", path: "/codex/device" },
+} as const satisfies Record<SignInService, { readonly host: string; readonly path: string }>;
+
+/** A link's characters: RFC 3986's, without the apostrophe and the brackets. */
+export const SignInLink = z
+  .string()
+  .min(9)
+  .max(2048)
+  .regex(/^https:\/\/[A-Za-z0-9\-._~:/?#@!$&()*+,;=%]+$/);
+
+/** Whether `url` is a sign-in link the pinned CLI for `service` would print. */
+export function signInLinkAllowed(service: SignInService, url: string): boolean {
+  if (!SignInLink.safeParse(url).success) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const expected = SIGN_IN_LINKS[service];
+  return (
+    parsed.protocol === "https:" &&
+    parsed.hostname === expected.host &&
+    parsed.host === expected.host &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.pathname === expected.path &&
+    url.startsWith(`https://${expected.host}${expected.path}`)
+  );
+}
+
+/** Codex's one-time device code, as Codex 0.164.0 prints it (four, a hyphen, five). */
+export const SignInUserCode = z.string().regex(/^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$/);
+
+/** The code the person pastes for Claude: printable ASCII, no spaces or control characters. */
+export const SignInCode = z
+  .string()
+  .min(1)
+  .max(1024)
+  .regex(/^[\x21-\x7e]+$/);
+
+/**
+ * An attempt's state:
+ * - `starting`: the CLI runs; its link is not read yet;
+ * - `awaiting_user`: the link (and Codex's code) are read; the person signs in at the provider
+ *   (and, for Claude, pastes the code);
+ * - `completing`: Claude's code was written to the CLI; it is checking it;
+ * - `done`: the CLI exited successfully; the credential watcher saves the login;
+ * - `failed` (with `reason`), `expired` (the 10-minute platform deadline; a provider's code may
+ *   expire sooner), `cancelled`;
+ * - `superseded`: a newer attempt for the service started, or this one was cancelled before it
+ *   began;
+ * - `none`: the supervisor knows no such attempt (for example after a restart).
+ */
+export const SignInState = z.enum([
+  "starting",
+  "awaiting_user",
+  "completing",
+  "done",
+  "failed",
+  "expired",
+  "cancelled",
+  "superseded",
+  "none",
+]);
+export type SignInState = z.infer<typeof SignInState>;
+
+/**
+ * Why an attempt failed, as fixed reasons (the CLI's own text is never forwarded):
+ * - `code_rejected`: Claude Code said the pasted code was not accepted;
+ * - `denied`: Codex said the device sign-in failed (refused or not allowed at the provider);
+ * - `network`: the CLI could not reach its provider;
+ * - `unexpected_output`: the CLI printed something the parser does not know, or no valid link in
+ *   time, or a link on another host;
+ * - `cli_exited`: the CLI ended without a result the parser knows;
+ * - `start_failed`: the CLI could not be started;
+ * - `not_ready`: the computer's credentials are not installed yet (its restore runs).
+ */
+export const SignInFailure = z.enum([
+  "code_rejected",
+  "denied",
+  "network",
+  "unexpected_output",
+  "cli_exited",
+  "start_failed",
+  "not_ready",
+]);
+export type SignInFailure = z.infer<typeof SignInFailure>;
+
+/** A note while waiting: Claude Code said the pasted code was incomplete and still waits. */
+export const SignInNotice = z.enum(["incomplete_code"]);
+
+/** An attempt as the supervisor sees it. */
+export const SignInView = z.strictObject({
+  service: SignInService,
+  attempt: SignInAttempt,
+  state: SignInState,
+  /** While `awaiting_user` or `completing`: the provider's link, checked (`signInLinkAllowed`). */
+  url: SignInLink.optional(),
+  /** Codex, while `awaiting_user`: the one-time code to enter on OpenAI's page. */
+  userCode: SignInUserCode.optional(),
+  reason: SignInFailure.optional(),
+  notice: SignInNotice.optional(),
+});
+export type SignInView = z.infer<typeof SignInView>;
+
+const signIn = { ...envelope, service: SignInService, attempt: SignInAttempt };
+
+/**
+ * Start attempt `attempt` for `service`: ends the service's running attempt first, then spawns
+ * the CLI's login. Idempotent by attempt: a repeat answers the attempt's state; an attempt at or
+ * below the fence that is not the running one is `superseded`. Answers at once with `starting`;
+ * the link follows in `sign_in_status`.
+ */
+export const SignInStartCommand = z.strictObject({ type: z.literal("sign_in_start"), ...signIn });
+
+/**
+ * Claude only: write `code` and a carriage return to the attempt's pty, while it is
+ * `awaiting_user`. Idempotent by operation ID: a repeat never writes the code twice. The
+ * supervisor never writes the code to a file or a log, nor keeps it after the write.
+ */
+export const SignInInputCommand = z.strictObject({
+  type: z.literal("sign_in_input"),
+  ...signIn,
+  code: SignInCode,
+});
+
+/** End the attempt (and any older one) and raise the fence to it: kills and reaps the whole
+ * process group. Idempotent. */
+export const SignInCancelCommand = z.strictObject({ type: z.literal("sign_in_cancel"), ...signIn });
+
+/** The attempt's state. Read-only. */
+export const SignInStatusCommand = z.strictObject({ type: z.literal("sign_in_status"), ...signIn });
+
+/** The supervisor's metrics for the setup page's status (WP3.23). Read-only. */
+export const ComputerStatusCommand = z.strictObject({
+  type: z.literal("computer_status"),
+  ...envelope,
+});
+
+/**
+ * Staging only: turn RC-53's save check on or off (`/var/cfo/rc53/enabled`). WorkspaceDO sends it
+ * only on a staging installation, before captures, in every generation. Idempotent.
+ */
+export const StagingCheckCommand = z.strictObject({
+  type: z.literal("staging_check"),
+  ...envelope,
+  rc53: z.boolean(),
+});
+
 export const WorkspaceCommand = z.discriminatedUnion("type", [
   InstallCredentialsCommand,
   RestoreWorkspaceCommand,
@@ -339,6 +533,12 @@ export const WorkspaceCommand = z.discriminatedUnion("type", [
   StatusCommand,
   CredentialSnapshotCommand,
   SignOutCommand,
+  SignInStartCommand,
+  SignInInputCommand,
+  SignInCancelCommand,
+  SignInStatusCommand,
+  ComputerStatusCommand,
+  StagingCheckCommand,
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommand>;
 
@@ -417,6 +617,71 @@ export const CaptureJob = z.discriminatedUnion("state", [
   }),
 ]);
 
+/** A CLI's version, normalized to its three numbers. */
+export const CliVersion = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}$/);
+
+/**
+ * The supervisor's alerts by kind (WP3.23): fixed names, counted. The alerts' own text can hold
+ * exception names or paths, so it never leaves the computer.
+ */
+export const SupervisorAlertKind = z.enum([
+  "command_failed",
+  "restore_stripped",
+  "restore_failed",
+  "rc53_collect_failed",
+  "rc53_finding",
+  "capture_skipped_paths",
+  "capture_resumed",
+  "capture_journal_failed",
+  "capture_no_result",
+  "credential_refused",
+  "credential_alert",
+  "hello_unanswered",
+  "report_failed",
+  "sign_in_failed",
+  "other",
+]);
+export type SupervisorAlertKind = z.infer<typeof SupervisorAlertKind>;
+
+const StatusCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+
+/** A capture's RC-53 result, counts only: never a value or a path. */
+export const Rc53Counts = z.strictObject({
+  /** 0: no finding; 1: a staged layer holds a live value; other: the scan was incomplete. */
+  status: z.number().int().min(0).max(255),
+  values: StatusCount,
+  files: StatusCount,
+  findings: StatusCount,
+  incomplete: StatusCount,
+});
+export type Rc53Counts = z.infer<typeof Rc53Counts>;
+
+/**
+ * The supervisor's part of the computer's status (WP3.23): names, normalized versions, enum
+ * states and bounded counts only. No path under the CLIs' homes beyond the declared names, no
+ * environment, no file contents, no alert text, no capture result whole.
+ */
+export const SupervisorStatus = z.strictObject({
+  supervisorVersion: z.string().min(1).max(64),
+  versions: z.strictObject({
+    claude: CliVersion.nullable(),
+    codex: CliVersion.nullable(),
+    gh: CliVersion.nullable(),
+  }),
+  logins: z.strictObject({ claude: CliLoginStatus, codex: CliLoginStatus }),
+  signIn: z.strictObject({ claude: SignInState, codex: SignInState }),
+  /** RC-53's save check is on (`/var/cfo/rc53/enabled` exists). */
+  rc53: z.boolean(),
+  /** Whether `/etc/hosts` maps the container's hostname (sudo warns otherwise). */
+  hostname: z.enum(["mapped", "unmapped", "unknown"]),
+  /** The home directory's filesystem. */
+  disk: z.strictObject({ totalBytes: StatusCount, freeBytes: StatusCount }).nullable(),
+  alerts: z.array(z.strictObject({ kind: SupervisorAlertKind, count: StatusCount })).max(32),
+  /** The latest captures' RC-53 counts, by capture operation, newest last. */
+  captures: z.array(z.strictObject({ jobOperationId: OperationId, rc53: Rc53Counts })).max(8),
+});
+export type SupervisorStatus = z.infer<typeof SupervisorStatus>;
+
 export const WorkspaceCommandReply = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("install_credentials"),
@@ -445,6 +710,12 @@ export const WorkspaceCommandReply = z.discriminatedUnion("type", [
     claude: z.enum(["ok", "failed"]),
     codex: z.enum(["ok", "failed"]),
   }),
+  z.strictObject({ type: z.literal("sign_in_start"), view: SignInView }),
+  z.strictObject({ type: z.literal("sign_in_input"), view: SignInView }),
+  z.strictObject({ type: z.literal("sign_in_cancel"), view: SignInView }),
+  z.strictObject({ type: z.literal("sign_in_status"), view: SignInView }),
+  z.strictObject({ type: z.literal("computer_status"), status: SupervisorStatus }),
+  z.strictObject({ type: z.literal("staging_check"), rc53: z.boolean() }),
 ]);
 export type WorkspaceCommandReply = z.infer<typeof WorkspaceCommandReply>;
 
@@ -455,7 +726,7 @@ export type WorkspaceCommandReply = z.infer<typeof WorkspaceCommandReply>;
  * - `per_generation`: one effect per generation; a repeat returns the same answer;
  * - `sequence`: ordered by `seq`; an already applied one is acknowledged and ignored;
  * - `order`: ordered by (`generation`, copy order); an older or equal one is `superseded`;
- * - `attempt`: one effect per start attempt; see `StartHostCommand`;
+ * - `attempt`: one effect per start attempt; see `StartHostCommand` (and the sign-in fence, above);
  * - `operation_id`: the outcome is recorded under the operation ID and a repeat returns it;
  * - `read_only`: no effect.
  * All of them may be repeated after "Network connection lost." or any unanswered request.
@@ -474,6 +745,12 @@ export const COMPUTER_API_MESSAGES = {
   status: { direction: "to_supervisor", idempotency: "read_only" },
   credential_snapshot: { direction: "to_supervisor", idempotency: "operation_id" },
   sign_out: { direction: "to_supervisor", idempotency: "operation_id" },
+  sign_in_start: { direction: "to_supervisor", idempotency: "attempt" },
+  sign_in_input: { direction: "to_supervisor", idempotency: "operation_id" },
+  sign_in_cancel: { direction: "to_supervisor", idempotency: "attempt" },
+  sign_in_status: { direction: "to_supervisor", idempotency: "read_only" },
+  computer_status: { direction: "to_supervisor", idempotency: "read_only" },
+  staging_check: { direction: "to_supervisor", idempotency: "operation_id" },
 } as const satisfies Record<
   SupervisorMessage["type"] | WorkspaceCommand["type"],
   {

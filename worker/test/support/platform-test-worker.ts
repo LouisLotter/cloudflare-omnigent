@@ -25,6 +25,8 @@ import type {
   LauncherResult,
   PageFrontCall,
   PageFrontResult,
+  PageReadCall,
+  PageReadResult,
   PagesCall,
   PagesResult,
   SupervisorReply,
@@ -143,7 +145,9 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     return super.computer(call);
   }
 
-  override pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
+  override pages(
+    call: PagesCall | PageFrontCall | PageReadCall,
+  ): Promise<PagesResult | PageFrontResult | PageReadResult> {
     assembly.maybeLose();
     return super.pages(call);
   }
@@ -193,6 +197,11 @@ export class WorkspaceUnderFakes extends PlatformWorkspaceDO {
     return testComputers.terminalTiming;
   }
 
+  /** A staging installation where the test says so (WP3.23); production otherwise. */
+  protected override stagingChecks() {
+    return testComputers.staging.has(this.ctx.id.name ?? "") || super.stagingChecks();
+  }
+
   /** The production hooks the overrides above replace, as this test configuration wires them:
    * no container (the test configuration has none), R2 behind the fence where CHECKPOINTS is
    * bound, the two computer intercepts, the real clock and timing, and ControlDO's binding. */
@@ -211,6 +220,7 @@ export class WorkspaceUnderFakes extends PlatformWorkspaceDO {
       clockSkewMs: Math.abs(super.now() - Date.now()),
       heartbeatMs: super.timing().heartbeatMs,
       control: typeof super.controlRpc().control,
+      stagingChecks: super.stagingChecks(),
     };
   }
 

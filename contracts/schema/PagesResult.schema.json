@@ -85,6 +85,128 @@
                 }
               ]
             },
+            "lastSave": {
+              "anyOf": [
+                {
+                  "additionalProperties": {},
+                  "properties": {
+                    "at": {
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "type": "string"
+                    },
+                    "generation": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "base",
+                            "delta"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "enum": [
+                        "published",
+                        "unchanged",
+                        "discarded",
+                        "failed"
+                      ],
+                      "type": "string"
+                    },
+                    "rc53": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "files": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "findings": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "incomplete": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "status": {
+                              "maximum": 255,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "values": {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "values",
+                            "files",
+                            "findings",
+                            "incomplete"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "enum": [
+                            "lease_expired",
+                            "disk_budget",
+                            "copy_failed",
+                            "stage_failed",
+                            "parent_mismatch",
+                            "policy_violation",
+                            "busy",
+                            "upload",
+                            "deadline",
+                            "parent_changed",
+                            "internal"
+                          ],
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "at",
+                    "generation",
+                    "outcome",
+                    "reason",
+                    "kind",
+                    "rc53"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "lastSavedAt": {
               "anyOf": [
                 {
@@ -236,6 +358,52 @@
               "minItems": 2,
               "type": "array"
             },
+            "signIn": {
+              "additionalProperties": {},
+              "properties": {
+                "attempts": {
+                  "items": {
+                    "additionalProperties": {},
+                    "properties": {
+                      "attempt": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "service": {
+                        "enum": [
+                          "claude",
+                          "codex"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "attempt"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 4,
+                  "type": "array"
+                },
+                "available": {
+                  "enum": [
+                    "yes",
+                    "no",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "cancelPending": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "available"
+              ],
+              "type": "object"
+            },
             "size": {
               "enum": [
                 "lite",
@@ -248,6 +416,9 @@
               "type": "string"
             },
             "sizeWarning": {
+              "type": "boolean"
+            },
+            "stagingChecks": {
               "type": "boolean"
             },
             "status": {

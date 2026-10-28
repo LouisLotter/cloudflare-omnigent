@@ -8,7 +8,12 @@
 //   - closes the setup terminal before every credential-sensitive step: a restart, "Stop without
 //     saving", a sign-out, a removal, Omnigent's `terminate`, and a sleep or a start-deadline
 //     stop once the window has expired (design, "Live streams end");
-//   - adds the session's intent token and the terminal's window to the page state.
+//   - adds the session's intent token and the terminal's window to the page state;
+//   - sign-in from the page (WP3.23): starts, input and cancels pass the same intent check, bound
+//     to the caller's Access session, and run one at a time with the terminal's steps; reads (an
+//     attempt's state, the computer's status) change nothing and carry no token, but an attempt is
+//     shown only to the session that started it. The pasted code passes through to the controller
+//     on the request path only: it is never journaled, stored or logged here.
 //
 // The request-intent token is HMAC-SHA256 under a random secret kept in this WorkspaceDO's
 // storage, over the owner's `sub` and Access session ID: stored, bound to the session, and never
@@ -16,6 +21,7 @@
 
 import {
   type ComputerPageState,
+  type ComputerStatusView,
   IntentToken,
   LAUNCHER_PROTOCOL_VERSION,
   type LauncherCall,
@@ -23,8 +29,13 @@ import {
   PageFrontCall,
   type PageFrontResult,
   PageOwner,
+  PageReadCall,
+  type PageReadResult,
+  type PageSignInView,
   PagesCall,
   type PagesResult,
+  type SignInRefusal,
+  type SignInService,
   TERMINAL_UPGRADE_HEADER,
   TerminalUpgrade,
   WORKSPACE_INTERFACE_VERSION,
@@ -33,10 +44,48 @@ import { platformError } from "../shared/errors.ts";
 import type { Store } from "./record.ts";
 import type { TerminalBridge, TerminalTarget } from "./terminal.ts";
 
+type SignInAnswer =
+  | { readonly outcome: "accepted"; readonly view: PageSignInView }
+  | { readonly outcome: "refused"; readonly reason: SignInRefusal };
+
 /** What the front needs from the controller: its public RPC answers. */
 export interface FrontController {
   pages(call: unknown): Promise<PagesResult>;
   launcher(call: unknown): Promise<LauncherResult>;
+  signInStart(input: {
+    readonly service: SignInService;
+    readonly session: string;
+    readonly operationId: string;
+    readonly generation: number;
+  }): Promise<SignInAnswer>;
+  signInInput(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly code: string;
+    readonly session: string;
+    readonly operationId: string;
+  }): Promise<SignInAnswer>;
+  signInCancel(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly session: string;
+  }): Promise<SignInAnswer>;
+  signInStatus(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly session: string;
+  }): Promise<SignInAnswer>;
+  computerStatus(): Promise<ComputerStatusView>;
+  setStagingCheck(input: {
+    readonly rc53: boolean;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly rc53: boolean }
+    | { readonly outcome: "refused"; readonly reason: "not_staging" | "not_offered" }
+  >;
+  sessionAttempts(session: string): readonly {
+    readonly service: SignInService;
+    readonly attempt: number;
+  }[];
 }
 
 export interface PageFrontDeps {
@@ -87,8 +136,15 @@ export function signOutRunning(state: ComputerPageState): boolean {
 /** Whether the computer can have a terminal, from the controller's page state. */
 export function terminalTarget(state: ComputerPageState): TerminalTarget {
   if (state.removal.state !== "none") return { ok: false, reason: "not_offered" };
-  // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1).
-  if (state.status === "stopping" || signOutRunning(state)) return { ok: false, reason: "busy" };
+  // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1); or a page
+  // sign-in whose CLI is not yet confirmed stopped, so a manual sign-in never races it (WP3.23).
+  if (
+    state.status === "stopping" ||
+    signOutRunning(state) ||
+    state.signIn?.cancelPending === true
+  ) {
+    return { ok: false, reason: "busy" };
+  }
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
   return { ok: true, generation: state.generation };
 }
@@ -178,7 +234,13 @@ export class PageFront {
   }
 
   /** WorkspaceDO's `pages` RPC. */
-  async pages(raw: unknown): Promise<PagesResult | PageFrontResult> {
+  async pages(raw: unknown): Promise<PagesResult | PageFrontResult | PageReadResult> {
+    const read = PageReadCall.safeParse(raw);
+    if (read.success) {
+      this.#checkInterface(read.data.interfaceVersion);
+      await this.#state(); // `not_found` for a computer that does not exist
+      return this.#read(read.data);
+    }
     const front = PageFrontCall.safeParse(raw);
     if (front.success) {
       this.#checkInterface(front.data.interfaceVersion);
@@ -194,9 +256,18 @@ export class PageFront {
       const result = await this.#stateResult(call.interfaceVersion);
       const computer = { ...result.computer, terminal: this.#d.terminal.view() };
       const owner = PageOwner.safeParse(call.owner);
-      return owner.success
-        ? { ...result, computer, intentToken: await this.intentFor(owner.data) }
-        : { ...result, computer };
+      if (!owner.success) return { ...result, computer };
+      // The caller's own sign-in attempts still running, so a reloaded page resumes them.
+      const signIn = computer.signIn;
+      const attempts = this.#d.controller.sessionAttempts(owner.data.sessionId);
+      return {
+        ...result,
+        computer:
+          signIn === undefined
+            ? computer
+            : { ...computer, signIn: { ...signIn, attempts: [...attempts] } },
+        intentToken: await this.intentFor(owner.data),
+      };
     }
     await this.#state();
     await this.#checkIntent(call as Record<string, unknown>);
@@ -244,7 +315,57 @@ export class PageFront {
         this.#d.log("page_removal_recorded", { removal: result.removal });
         return { action: "remove", outcome: "accepted" };
       }
+      case "sign_in_start":
+        return {
+          action: "sign_in_start",
+          ...(await this.#d.controller.signInStart({
+            service: call.service,
+            session: owner.sessionId,
+            operationId: call.operationId,
+            generation: call.generation,
+          })),
+        };
+      case "sign_in_input":
+        return {
+          action: "sign_in_input",
+          ...(await this.#d.controller.signInInput({
+            service: call.service,
+            attempt: call.attempt,
+            code: call.code,
+            session: owner.sessionId,
+            operationId: call.operationId,
+          })),
+        };
+      case "sign_in_cancel":
+        return {
+          action: "sign_in_cancel",
+          ...(await this.#d.controller.signInCancel({
+            service: call.service,
+            attempt: call.attempt,
+            session: owner.sessionId,
+          })),
+        };
+      case "staging_check":
+        return {
+          action: "staging_check",
+          ...(await this.#d.controller.setStagingCheck({ rc53: call.rc53 })),
+        };
     }
+  }
+
+  /** A page GET's read: changes nothing. */
+  async #read(call: PageReadCall): Promise<PageReadResult> {
+    if (call.action === "computer_status") {
+      return { action: "computer_status", status: await this.#d.controller.computerStatus() };
+    }
+    return {
+      action: "sign_in_status",
+      ...(await this.#d.controller.signInStatus({
+        service: call.service,
+        attempt: call.attempt,
+        session: call.owner.sessionId,
+      })),
+    };
   }
 
   /** Before a launcher call: `terminate` closes the terminal; a sleep checks the window first. */

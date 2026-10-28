@@ -164,6 +164,10 @@ function flash(url: URL): string {
 
 function computerCard(view: ComputerView): string {
   const setup = view.needsSetup ? ` ${badge("warn", "Needs setup")}` : "";
+  // WP3.23: the details are on the computer's own page, under "Computer status".
+  const lastSave = view.lastSaveFailed
+    ? ` <span data-badge="last-save-failed">${badge("danger", "Last save failed")}</span>`
+    : "";
   const cards = view.cards
     .map(
       (c) =>
@@ -183,7 +187,7 @@ function computerCard(view: ComputerView): string {
   }
   return `<article class="card" data-computer="${escapeHtml(view.id)}">
 <h3>${escapeHtml(view.name)}</h3>
-<p>${badge(view.statusTone, view.status)}${setup}</p>
+<p>${badge(view.statusTone, view.status)}${setup}${lastSave}</p>
 <ul>${cards}</ul>
 <p class="muted" data-saving>${escapeHtml(view.saving)}</p>
 ${view.notices.map(notice).join("\n")}

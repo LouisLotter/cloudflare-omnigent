@@ -1,0 +1,8 @@
+{
+  "type": "sign_in_cancel",
+  "view": {
+    "service": "codex",
+    "attempt": 4,
+    "state": "cancelled"
+  }
+}

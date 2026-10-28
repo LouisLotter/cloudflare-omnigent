@@ -8,6 +8,8 @@ import type {
   PageFrontCall,
   PageFrontResult,
   PageOwner,
+  PageReadCall,
+  PageReadResult,
   PagesCall,
   PagesResult,
   ReplicationHealth,
@@ -17,6 +19,7 @@ import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
+import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import { isPlatformPath, routePlatform } from "../../src/pages/router.ts";
 import { platformError } from "../../src/shared/errors.ts";
 import { NEVER_SIGNED_IN, NOW, PAGE_CMP, pageState } from "../support/page-states.ts";
@@ -59,6 +62,17 @@ class FakeBackend implements PagesBackend {
     this.acts.push({ id, call });
     if (this.actResult instanceof Error) throw this.actResult;
     return this.actResult;
+  }
+  readonly reads: { id: string; call: PageReadCall }[] = [];
+  readResult: PageReadResult | Error = {
+    action: "sign_in_status",
+    outcome: "refused",
+    reason: "stale",
+  };
+  async read(id: ComputerId, call: PageReadCall) {
+    this.reads.push({ id, call });
+    if (this.readResult instanceof Error) throw this.readResult;
+    return this.readResult;
   }
   async upgrade(_id: ComputerId, request: Request) {
     this.upgrades.push(request);
@@ -494,8 +508,22 @@ describe("the setup page", () => {
     expect(html).toContain(`data-intent="${INTENT}"`);
     expect(html).toContain(`data-terminal-url="${page}/terminal"`);
     expect(html).toContain("Ctrl+Shift+V");
-    expect(html).toContain("<code>claude auth login --claudeai</code>");
-    expect(html).toContain("<code>codex login --device-auth</code>");
+    // WP3.23: each card signs in from the page; the terminal's commands are the fallback.
+    expect(html).toContain('data-sign-in="claude"');
+    expect(html).toContain('data-sign-in="codex"');
+    expect(html).toContain(">Sign in to Claude</button>");
+    expect(html).toContain(">Sign in to Codex</button>");
+    expect(html).toContain("https://chatgpt.com/#settings/Security");
+    expect(html).not.toContain("<code>claude auth login --claudeai</code>");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ setupCards: [...NEVER_SIGNED_IN], signIn: { available: "no" } }),
+      intentToken: INTENT,
+    });
+    const older = await (await route(page)).text();
+    expect(older).toContain("<code>claude auth login --claudeai</code>");
+    expect(older).toContain("<code>codex login --device-auth</code>");
+    expect(older).not.toContain('data-sign-in="claude"');
     expect(html).toContain('<script src="/platform/assets/setup-client.js" defer></script>');
     expect(html).not.toMatch(/<script>(?!<\/script>)/);
     expect(html).not.toContain("onclick");
@@ -1053,6 +1081,558 @@ describe("a pending removal's steps (Codex r1-4)", () => {
     expect(body.statusHtml).toContain("Removal pending");
     expect(body.noticesHtml).toContain('data-notice="removal_pending"');
     const html = await (await route(page)).text();
-    expect(html).toContain(`<div id="computer-page" data-state-url="${page}/state">`);
+    expect(html).toContain(`<div id="computer-page" data-state-url="${page}/state"`);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// WP3.23: sign-in from the page, the computer's status and the staging switch.
+
+const CLAUDE_LINK =
+  "https://claude.com/cai/oauth/authorize?code=true&code_challenge=synthetic&state=synthetic";
+
+describe("the sign-in routes (WP3.23)", () => {
+  it("read an attempt with a GET that changes nothing", async () => {
+    const { route, backend } = setup();
+    backend.readResult = {
+      action: "sign_in_status",
+      outcome: "accepted",
+      view: { service: "claude", attempt: 3, state: "awaiting_user", url: CLAUDE_LINK },
+    };
+    const response = await route(`${page}/sign-in?service=claude&attempt=3`);
+    expectFramingProtection(response);
+    const body = (await response.json()) as { html: string; view: { url: string } };
+    expect(body.view.url).toBe(CLAUDE_LINK);
+    expect(body.html).toContain(`href="${CLAUDE_LINK.replaceAll("&", "&amp;")}"`);
+    expect(body.html).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(backend.reads).toEqual([
+      {
+        id: PAGE_CMP,
+        call: {
+          action: "sign_in_status",
+          interfaceVersion: 1,
+          owner: OWNER,
+          service: "claude",
+          attempt: 3,
+        },
+      },
+    ]);
+    expect(backend.acts).toEqual([]);
+    for (const query of [
+      "service=gemini&attempt=1",
+      "service=claude&attempt=0",
+      "service=claude",
+    ]) {
+      expect((await route(`${page}/sign-in?${query}`)).status).toBe(400);
+    }
+    backend.readResult = platformError("unavailable", "down");
+    expect((await route(`${page}/sign-in?service=claude&attempt=3`)).status).toBe(503);
+    backend.readResult = { action: "computer_status" } as never;
+    expect((await route(`${page}/sign-in?service=claude&attempt=3`)).status).toBe(503);
+    expect((await route(`${page}/sign-in`, { method: "PUT" })).status).toBe(405);
+  });
+
+  it("start, relay a code and cancel only with the exact origin and the page's token", async () => {
+    const { route, backend, logs } = setup();
+    backend.actResult = {
+      action: "sign_in_start",
+      outcome: "accepted",
+      view: { service: "codex", attempt: 4, state: "starting" },
+    } as never;
+    const ok = { op: OP, intent: INTENT };
+    for (const headers of [
+      { origin: "https://evil.example" },
+      { origin: "null" },
+      { "sec-fetch-site": "cross-site" },
+    ]) {
+      const refused = await route(
+        `${page}/sign-in`,
+        json({ ...ok, mode: "start", service: "codex", generation: "7" }, headers),
+      );
+      expect(refused.status).toBe(403);
+    }
+    const missing = await route(`${page}/sign-in`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...ok, mode: "start", service: "codex" }),
+    });
+    expect(missing.status).toBe(403);
+    expect(
+      (await route(`${page}/sign-in`, form({ ...ok, mode: "start", service: "codex" }))).status,
+    ).toBe(403);
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ op: "x", intent: INTENT, mode: "start", service: "codex" }),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ op: OP, intent: "x", mode: "start", service: "codex" }),
+        )
+      ).status,
+    ).toBe(403);
+    expect(backend.acts).toEqual([]);
+    expect(logs.some((l) => l.event === "sign_in_change_refused")).toBe(true);
+    expect(
+      (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "x" }))).status,
+    ).toBe(400);
+    expect(
+      (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "codex" }))).status,
+    ).toBe(400);
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "x" }),
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (await route(`${page}/sign-in`, json({ ...ok, mode: "cancel", service: "codex" }))).status,
+    ).toBe(400);
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "other", service: "codex", attempt: "4" }),
+        )
+      ).status,
+    ).toBe(400);
+    const started = await route(
+      `${page}/sign-in`,
+      json({ ...ok, mode: "start", service: "codex", generation: "7" }),
+    );
+    expect(started.status).toBe(200);
+    expect(((await started.json()) as { html: string }).html).toContain("Starting the sign-in");
+    await route(`${page}/sign-in`, json({ ...ok, mode: "cancel", service: "codex", attempt: "4" }));
+    backend.actResult = {
+      action: "sign_in_input",
+      outcome: "refused",
+      reason: "stale",
+    } as never;
+    const input = await route(
+      `${page}/sign-in`,
+      json({ ...ok, mode: "input", service: "claude", attempt: 4, code: "  synthetic#code \n" }),
+    );
+    expect(((await input.json()) as { html: string }).html).toContain("This sign-in has ended");
+    expect(backend.acts.map((a) => a.call)).toEqual([
+      {
+        action: "sign_in_start",
+        interfaceVersion: 1,
+        operationId: OP,
+        owner: OWNER,
+        intent: INTENT,
+        service: "codex",
+        generation: 7,
+      },
+      {
+        action: "sign_in_cancel",
+        interfaceVersion: 1,
+        operationId: OP,
+        owner: OWNER,
+        intent: INTENT,
+        service: "codex",
+        attempt: 4,
+      },
+      {
+        action: "sign_in_input",
+        interfaceVersion: 1,
+        operationId: OP,
+        owner: OWNER,
+        intent: INTENT,
+        service: "claude",
+        attempt: 4,
+        code: "synthetic#code",
+      },
+    ]);
+    expect(logs.some((l) => l.event === "sign_in_refused" && l.reason === "stale")).toBe(true);
+    // The code is never logged.
+    expect(JSON.stringify(logs)).not.toContain("synthetic#code");
+    const bad = await route(
+      `${page}/sign-in`,
+      json({ ...ok, mode: "input", service: "claude", attempt: 4, code: "two words" }),
+    );
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: { code: "bad_request", field: "code" } });
+    backend.actResult = platformError("forbidden", "token");
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "7" }),
+        )
+      ).status,
+    ).toBe(403);
+    backend.actResult = { action: "restart", outcome: "accepted" };
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "7" }),
+        )
+      ).status,
+    ).toBe(503);
+  });
+});
+
+describe("the status and the staging switch (WP3.23)", () => {
+  const STATUS = {
+    observedAt: "2026-10-22T09:20:00.000Z",
+    supervisor: "ok" as const,
+    metrics: {
+      supervisorVersion: "0.2.0",
+      versions: { claude: "2.1.311", codex: null, gh: "2.103.3" },
+      logins: { claude: "signed_in" as const, codex: "unknown" as const },
+      signIn: { claude: "none" as const, codex: "none" as const },
+      rc53: true,
+      hostname: "unmapped" as const,
+      disk: { totalBytes: 20e9, freeBytes: 15e9 },
+      alerts: [
+        { kind: "rc53_finding" as const, count: 3 },
+        { kind: "other" as const, count: 1 },
+      ],
+    },
+    credentials: {
+      checkpoint: { generation: 1, order: 4, createdAt: "2026-10-22T09:00:00.000Z" },
+      files: [
+        { path: ".claude/.credentials.json" as const, state: "present" as const },
+        { path: ".claude/.device-keys.json" as const, state: "tombstone" as const },
+        { path: ".codex/auth.json" as const, state: "none" as const },
+        { path: ".codex/.credentials.json" as const, state: "tombstone" as const },
+      ],
+    },
+    signOut: { phase: "verified" as const, running: true },
+    saves: [
+      {
+        at: "2026-10-22T09:10:00.000Z",
+        generation: 1,
+        outcome: "failed" as const,
+        reason: "policy_violation" as const,
+        kind: "delta" as const,
+        rc53: { status: 1, values: 9, files: 12, findings: 1, incomplete: 2 },
+      },
+      {
+        at: "2026-10-22T09:05:00.000Z",
+        generation: 1,
+        outcome: "failed" as const,
+        reason: "upload" as const,
+        kind: "delta" as const,
+        rc53: { status: 1, values: 9, files: 12, findings: 14, incomplete: 0 },
+      },
+      {
+        at: "2026-10-22T09:00:00.000Z",
+        generation: 1,
+        outcome: "published" as const,
+        reason: null,
+        kind: "base" as const,
+        rc53: null,
+      },
+    ],
+    rc53: { staging: true, desired: true, applied: true },
+  };
+
+  it("renders names and counts only, honestly labelled", () => {
+    const html = statusHtml(STATUS, NOW);
+    expect(html).toContain("Claude Code 2.1.311, Codex not known, gh 2.103.3");
+    expect(html).toContain("Claude signed in, Codex not known");
+    expect(html).toContain("not mapped (sudo prints a warning)");
+    expect(html).toContain("15.0 GB free of 20.0 GB");
+    expect(html).toContain("RC-53: 1 match in 12 files, 2 not checked");
+    expect(html).toContain("RC-53: 14 matches in 12 files");
+    expect(html).toContain("the upload failed");
+    expect(html).toContain(
+      "not a test in a fresh computer, and not proof that the providers revoked",
+    );
+    expect(html).toContain("A sign-out runs now.");
+    expect(html).toContain("saved as removed (a tombstone)");
+    expect(html).toContain("nothing saved yet");
+    expect(html).toContain('data-alert="rc53_finding"');
+    expect(html).toContain('data-act="rc53" data-rc53="off"');
+    expect(html).toContain("On the computer now: on.");
+    const off = statusHtml(
+      { ...STATUS, rc53: { staging: true, desired: false, applied: null } },
+      NOW,
+    );
+    expect(off).toContain('data-rc53="on"');
+    expect(off).toContain("On the computer now: not known now.");
+    const production = statusHtml(
+      { ...STATUS, rc53: { staging: false, desired: null, applied: true } },
+      NOW,
+    );
+    expect(production).not.toContain('data-act="rc53"');
+    expect(production).toContain('data-status="rc53">on');
+    const bare = statusHtml(
+      {
+        ...STATUS,
+        supervisor: "unreachable",
+        metrics: null,
+        credentials: { checkpoint: null, files: STATUS.credentials.files },
+        signOut: { phase: "none", running: false },
+        saves: [],
+        rc53: { staging: false, desired: null, applied: null },
+      },
+      NOW,
+    );
+    expect(bare).toContain("did not answer just now");
+    expect(bare).toContain("No login has been saved.");
+    expect(bare).toContain("No save has finished yet.");
+    expect(bare).not.toContain('data-status="rc53"');
+    for (const supervisor of ["not_running", "unsupported"] as const) {
+      expect(statusHtml({ ...STATUS, supervisor, metrics: null }, NOW)).toContain(
+        supervisor === "unsupported" ? "older" : "not running",
+      );
+    }
+    expect(
+      statusHtml(
+        { ...STATUS, metrics: { ...STATUS.metrics, hostname: "mapped", disk: null, alerts: [] } },
+        NOW,
+      ),
+    ).toContain("mapped (sudo works without a warning)");
+    expect(
+      statusHtml({ ...STATUS, metrics: { ...STATUS.metrics, hostname: "unknown" } }, NOW),
+    ).toContain('data-status="hostname">not known');
+  });
+
+  it("is read with a GET, and the switch changed only with a guarded POST", async () => {
+    const { route, backend, logs } = setup();
+    backend.readResult = { action: "computer_status", status: STATUS };
+    const read = await route(`${page}/status`);
+    expectFramingProtection(read);
+    expect(((await read.json()) as { html: string }).html).toContain("Saved logins");
+    expect(backend.reads[0]?.call).toEqual({
+      action: "computer_status",
+      interfaceVersion: 1,
+      owner: OWNER,
+    });
+    expect((await route(`${page}/status`, json({}))).status).toBe(405);
+    backend.readResult = platformError("not_found", "gone");
+    expect((await route(`${page}/status`)).status).toBe(404);
+    backend.readResult = { action: "sign_in_status", outcome: "refused", reason: "stale" };
+    expect((await route(`${page}/status`)).status).toBe(503);
+    expect((await route(`${page}/staging-check`)).status).toBe(405);
+    expect(
+      (
+        await route(
+          `${page}/staging-check`,
+          json({ op: OP, intent: INTENT, rc53: "on" }, { origin: "https://evil.example" }),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await route(`${page}/staging-check`, json({ op: OP, intent: "x", rc53: "on" }))).status,
+    ).toBe(403);
+    expect(
+      (await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, rc53: "yes" }))).status,
+    ).toBe(400);
+    expect(backend.acts).toEqual([]);
+    backend.actResult = {
+      action: "staging_check",
+      outcome: "refused",
+      reason: "not_staging",
+    } as never;
+    const refused = await route(
+      `${page}/staging-check`,
+      json({ op: OP, intent: INTENT, rc53: "on" }),
+    );
+    expect(await refused.json()).toMatchObject({ outcome: "refused", reason: "not_staging" });
+    expect(logs.some((l) => l.event === "staging_check_refused")).toBe(true);
+    expect(backend.acts[0]?.call).toEqual({
+      action: "staging_check",
+      interfaceVersion: 1,
+      operationId: OP,
+      owner: OWNER,
+      intent: INTENT,
+      rc53: true,
+    });
+    backend.actResult = platformError("unavailable", "down");
+    expect(
+      (await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, rc53: "off" }))).status,
+    ).toBe(503);
+    backend.actResult = { action: "restart", outcome: "accepted" };
+    expect(
+      (await route(`${page}/staging-check`, json({ op: OP, intent: INTENT, rc53: "off" }))).status,
+    ).toBe(503);
+  });
+
+  it("badges a computer whose last save failed on the list", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lastSave: {
+          at: "2026-10-22T09:10:00.000Z",
+          generation: 1,
+          outcome: "failed",
+          reason: "upload",
+          kind: "delta",
+          rc53: null,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    const html = await (await route("/platform/computers")).text();
+    expect(html).toContain('data-badge="last-save-failed"');
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lastSave: {
+          at: "2026-10-22T09:10:00.000Z",
+          generation: 1,
+          outcome: "published",
+          reason: null,
+          kind: "delta",
+          rc53: null,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route("/platform/computers")).text()).not.toContain("last-save-failed");
+  });
+
+  it("offers sign-in on the cards only while the computer runs, and not during a removal", async () => {
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "asleep",
+        status: "stopped",
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    const asleep = await (await route(page)).text();
+    expect(asleep).toContain('data-act="start" disabled');
+    expect(asleep).toContain("The computer is not running.");
+    backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
+    expect(await (await route(page)).text()).toContain("Sign in to Claude again");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        removal: {
+          state: "pending",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).not.toContain("data-sign-in=");
+  });
+});
+
+describe("the sign-in markup (WP3.23)", () => {
+  const view = (extra: Record<string, unknown>) => ({
+    outcome: "accepted" as const,
+    view: { service: "claude" as const, attempt: 1, ...extra } as never,
+  });
+
+  it("walks each state in plain words, offering the terminal on a failure", () => {
+    expect(signInHtml("claude", view({ state: "starting" }), NOW)).toContain(
+      "Starting the sign-in",
+    );
+    const waiting = signInHtml(
+      "claude",
+      view({
+        state: "awaiting_user",
+        url: CLAUDE_LINK,
+        notice: "incomplete_code",
+        deadline: "2026-10-22T09:30:00.000Z",
+      }),
+      NOW,
+    );
+    expect(waiting).toContain("Open Anthropic's sign-in page");
+    expect(waiting).toContain("Paste the code Anthropic shows you");
+    expect(waiting).toContain("That code looks incomplete");
+    expect(waiting).toContain("It ends at 09:30 UTC");
+    expect(signInHtml("claude", view({ state: "awaiting_user" }), NOW)).not.toContain(
+      "data-provider-link",
+    );
+    const codex = signInHtml(
+      "codex",
+      {
+        outcome: "accepted",
+        view: {
+          service: "codex",
+          attempt: 2,
+          state: "awaiting_user",
+          url: "https://auth.openai.com/codex/device",
+          userCode: "ABCD-EFGH1",
+        },
+      },
+      NOW,
+    );
+    expect(codex).toContain("Open OpenAI's page");
+    expect(codex).toContain("data-user-code>ABCD-EFGH1</code>");
+    expect(codex).toContain("https://chatgpt.com/#settings/Security");
+    expect(
+      signInHtml(
+        "codex",
+        { outcome: "accepted", view: { service: "codex", attempt: 2, state: "awaiting_user" } },
+        NOW,
+      ),
+    ).toContain("data-user-code></code>");
+    expect(signInHtml("claude", view({ state: "completing" }), NOW)).toContain("Signing in…");
+    expect(signInHtml("claude", view({ state: "done" }), NOW)).toContain("Signed in.");
+    for (const [reason, text] of [
+      ["code_rejected", "The code was not accepted"],
+      ["denied", "OpenAI did not accept this sign-in"],
+      ["network", "could not reach Anthropic"],
+      ["unexpected_output", "Claude Code answered something unexpected"],
+      ["cli_exited", "stopped unexpectedly"],
+      ["start_failed", "could not start on the computer"],
+      ["not_ready", "still starting"],
+      ["mystery", "stopped unexpectedly"],
+    ] as const) {
+      const html = signInHtml("claude", view({ state: "failed", reason }), NOW);
+      expect(html).toContain(text);
+      expect(html).toContain("<code>claude auth login --claudeai</code>");
+      expect(html).toContain('data-act="terminal"');
+    }
+    expect(
+      signInHtml(
+        "codex",
+        {
+          outcome: "accepted",
+          view: { service: "codex", attempt: 1, state: "failed", reason: "unexpected_output" },
+        },
+        NOW,
+      ),
+    ).toContain("Codex answered");
+    expect(signInHtml("claude", view({ state: "failed" }), NOW)).toContain("stopped unexpectedly");
+    expect(signInHtml("claude", view({ state: "expired" }), NOW)).toContain(
+      "expired after 10 minutes",
+    );
+    expect(signInHtml("claude", view({ state: "cancelled" }), NOW)).toContain("Cancelled.");
+    // Not yet confirmed stopped on the computer: no terminal offered yet.
+    const stopping = signInHtml("claude", view({ state: "cancelled", pending: true }), NOW);
+    expect(stopping).toContain("Stopping the sign-in on the computer");
+    expect(stopping).not.toContain('data-act="terminal"');
+    expect(signInHtml("claude", view({ state: "superseded" }), NOW)).toContain("A newer sign-in");
+    expect(signInHtml("claude", view({ state: "none" }), NOW)).toContain("The computer restarted");
+  });
+
+  it("explains every refusal; the older computer's offers the terminal", () => {
+    for (const [reason, text] of [
+      ["not_running", "not running"],
+      ["busy", "stopping or signing out"],
+      ["not_offered", "removal is pending"],
+      ["unsupported", "older"],
+      ["not_yours", "another browser window"],
+      ["stale", "has ended"],
+      ["unreachable", "did not answer"],
+    ] as const) {
+      const html = signInHtml("codex", { outcome: "refused", reason }, NOW);
+      expect(html).toContain(text);
+      expect(html.includes("codex login --device-auth")).toBe(reason === "unsupported");
+    }
+    expect(signInHtml("codex", { outcome: "refused", reason: "not_offered" }, NOW)).toContain(
+      'data-act="start" disabled',
+    );
   });
 });

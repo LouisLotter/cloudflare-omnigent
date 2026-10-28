@@ -23,6 +23,18 @@ Never point it at a real account: it never contacts a network.
 
 Test knobs: ``CFO_FAKE_SLOW_WRITE_MS`` widens Codex's in-place write (half, pause, rest);
 ``CFO_FAKE_REVOKE_FAILS=1`` makes revocation fail silently, as the real CLIs report it.
+
+Interactive sign-in (WP3.23). On a terminal, ``claude auth login --claudeai`` and ``codex login
+--device-auth`` replay the pinned CLIs' captured transcripts (``login_transcripts.json``) with
+synthetic values that carry the canary prefix (Claude's link state and challenge, the code it
+expects) or a fresh synthetic device code (Codex), recorded in the fake provider's state so a test
+can play the person: read the code "from Anthropic's page" (``pending_login``), or approve or deny
+Codex's device code (``decide``). Claude takes the code from the pty, as the real one: no ``#``
+gives its "Invalid code" line and it waits again; a wrong code fails with its real message; the
+right one signs in. ``CFO_FAKE_LOGIN`` picks a failure instead: ``crash`` (exits after the
+prompt), ``garbage`` (prints output no parser knows and waits), ``hang`` (waits at the prompt),
+``wrong_host`` (a link on another host), ``network`` (Codex cannot reach its provider), ``denied``
+(the provider refuses Codex's code).
 """
 
 from __future__ import annotations
@@ -34,6 +46,7 @@ import json
 import os
 import secrets
 import sys
+import termios
 import time
 from pathlib import Path
 
@@ -191,8 +204,169 @@ def claude_set_global(update) -> None:
     write_rename_claude_style(CLAUDE_GLOBAL, json.dumps(data, indent=2))
 
 
+TRANSCRIPTS = Path(__file__).resolve().with_name("login_transcripts.json")
+
+
+def _transcripts() -> dict:
+    return json.loads(TRANSCRIPTS.read_text())
+
+
+def _say(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _fill(text: str, values: dict[str, str]) -> str:
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return text
+
+
+def _replay(chunks: list[dict], values: dict[str, str], *, stop_at_input: bool) -> None:
+    """Prints a transcript's output chunks, with their original pauses, up to its input mark."""
+    last = 0.0
+    for chunk in chunks:
+        if chunk.get("input"):
+            if stop_at_input:
+                return
+            continue
+        time.sleep(min(max(chunk["at"] - last, 0.0), 0.5))
+        last = chunk["at"]
+        _say(_fill(chunk["text"], values))
+
+
+def _no_echo() -> None:
+    """The real CLIs read the code without echoing it."""
+    with contextlib.suppress(termios.error, OSError):
+        attrs = termios.tcgetattr(0)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(0, termios.TCSANOW, attrs)
+
+
+def _wait_forever() -> int:
+    while True:
+        time.sleep(3600)
+
+
+def pending_login(provider: str) -> dict | None:
+    """The interactive sign-in a fake CLI is waiting on (tests: what the person would see)."""
+    with provider_state() as st:
+        return st.get(f"{provider}_login")
+
+
+def decide(provider: str, approved: bool) -> None:
+    """Codex: the person entered (or refused) the device code on the provider's page."""
+    with provider_state() as st:
+        login = st.get(f"{provider}_login")
+        if login is not None:
+            login["approved"] = approved
+
+
+def claude_interactive() -> int:
+    mode = os.environ.get("CFO_FAKE_LOGIN", "success")
+    t = _transcripts()["claude"]
+    state = f"{CANARY_PREFIX}FAKEstate{secrets.token_hex(10)}"
+    values = {
+        "state": state,
+        "code_challenge": f"{CANARY_PREFIX}FAKEchallenge{secrets.token_hex(10)}",
+        "client_id": _transcripts()["claude"]["client_id"],
+    }
+    expected = f"{CANARY_PREFIX}FAKEcode{secrets.token_hex(12)}#{state}"
+    with provider_state() as st:
+        st["claude_login"] = {"code": expected, "state": state}
+    if mode == "garbage":
+        _say("\x1b[2Jsomething this parser has never seen\r\n")
+        return _wait_forever()
+    if mode == "wrong_host":
+        values["state"] = state
+        chunks = [
+            {**c, "text": c["text"].replace("https://claude.com/", "https://claude.example.net/")}
+            if "text" in c
+            else c
+            for c in t["prompt"]["chunks"]
+        ]
+        _replay(chunks, values, stop_at_input=True)
+        return _wait_forever()
+    _no_echo()
+    _replay(t["prompt"]["chunks"], values, stop_at_input=True)
+    if mode == "crash":
+        os._exit(70)
+    if mode == "hang":
+        return _wait_forever()
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 1
+        code = line.strip()
+        if "#" not in code:
+            _replay(t["incomplete_code"]["chunks"][-1:], values, stop_at_input=False)
+            continue
+        if code != expected:
+            for chunk in t["wrong_code"]["chunks"]:
+                if chunk.get("text", "").startswith("Login failed"):
+                    _say(chunk["text"])
+            return 1
+        current = read_json(CLAUDE_CREDS) or {}
+        access, refresh, exp = provider_issue("claude")
+        claude_store(
+            access, refresh, exp, {k: v for k, v in current.items() if k != "claudeAiOauth"}
+        )
+        claude_set_global(lambda d: d.update(oauthAccount={"accountUuid": "synthetic"}))
+        with provider_state() as st:
+            st.pop("claude_login", None)
+        _say("Login successful.\r\n\x1b[?25h")
+        return 0
+
+
+def codex_interactive() -> int:
+    mode = os.environ.get("CFO_FAKE_LOGIN", "success")
+    t = _transcripts()["codex"]
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    user_code = (
+        "".join(secrets.choice(alphabet) for _ in range(4))
+        + "-"
+        + "".join(secrets.choice(alphabet) for _ in range(5))
+    )
+    url = t["url"] if mode != "wrong_host" else "https://auth.openai.example.net/codex/device"
+    values = {"url": url, "user_code": user_code}
+    if mode == "network":
+        _replay(t["network_error"]["chunks"], values, stop_at_input=False)
+        return 1
+    if mode == "garbage":
+        _say("\r\nWelcome to something else entirely\r\n")
+        return _wait_forever()
+    codex_logout()
+    with provider_state() as st:
+        st["codex_login"] = {"user_code": user_code, "approved": None}
+    _replay(t["prompt"]["chunks"], values, stop_at_input=False)
+    if mode == "crash":
+        os._exit(70)
+    if mode == "hang" or mode == "wrong_host":
+        return _wait_forever()
+    if mode == "denied":
+        decide("codex", False)
+    while True:
+        login = pending_login("codex") or {}
+        if login.get("approved") is True:
+            access, refresh, _ = provider_issue("codex")
+            codex_write(access, refresh)
+            with provider_state() as st:
+                st.pop("codex_login", None)
+            _say(_fill(t["success"]["chunks"][-1]["text"], values))
+            return 0
+        if login.get("approved") is False:
+            _say(_fill(t["denied"]["chunks"][-1]["text"], values))
+            return 1
+        time.sleep(0.1)
+
+
 def claude(args: list[str]) -> int:
     cmd = args[:2]
+    if args == ["--version"]:
+        print("2.1.311 (Claude Code)")
+        return 0
+    if args == ["auth", "login", "--claudeai"] and os.isatty(1):
+        return claude_interactive()
     if cmd == ["auth", "login"]:
         current = read_json(CLAUDE_CREDS) or {}
         access, refresh, exp = provider_issue("claude")
@@ -277,6 +451,9 @@ def codex_logout() -> bool:
 
 
 def codex(args: list[str]) -> int:
+    if args == ["--version"]:
+        print("codex-cli 0.164.0")
+        return 0
     if args[:2] == ["login", "status"]:
         data = read_json(CODEX_AUTH)
         if CODEX_AUTH.exists() and data is None:
@@ -285,6 +462,8 @@ def codex(args: list[str]) -> int:
         ok = bool(data and data.get("tokens"))
         print("Logged in using ChatGPT" if ok else "Not logged in")
         return 0 if ok else 1
+    if args == ["login", "--device-auth"] and os.isatty(1):
+        return codex_interactive()
     if args[:1] == ["login"]:
         codex_logout()
         access, refresh, _ = provider_issue("codex")

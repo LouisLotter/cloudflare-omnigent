@@ -26,7 +26,13 @@ import {
   WorkspaceManifest,
 } from "./manifests.ts";
 import { OutageRecord } from "./outage.ts";
-import { PageFrontCall, PageFrontResult, TerminalUpgrade } from "./pages.ts";
+import {
+  PageFrontCall,
+  PageFrontResult,
+  PageReadCall,
+  PageReadResult,
+  TerminalUpgrade,
+} from "./pages.ts";
 import { ReplicationHealth, ReplicationPosition } from "./replication.ts";
 
 export * from "./access.ts";
@@ -70,6 +76,8 @@ export const wireSchemas = {
   PagesResult,
   PageFrontCall,
   PageFrontResult,
+  PageReadCall,
+  PageReadResult,
   ReplicationHealth,
   ReplicationPosition,
   ReservationState,

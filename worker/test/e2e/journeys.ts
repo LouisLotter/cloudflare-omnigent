@@ -338,9 +338,15 @@ async function main(): Promise<number> {
       checks.push("a close during a reconnect handshake stays closed; the late socket is dropped");
     });
 
+    const signIns = async (id: string) =>
+      (await (await fetch(`${base}/__e2e/sign-ins?computer=${id}`)).json()) as {
+        starts: number;
+        issued: string[];
+      };
     await run("J3-hostile-origin", async (page, checks) => {
       const id = ids["managed-ready"] ?? "";
       const before = await state(id);
+      const startsBefore = (await signIns(id)).starts;
       await page.goto(`http://localhost:${hostilePort}/${encodeURIComponent(id)}`);
       const report = await waitFor(
         "the hostile page's report",
@@ -355,6 +361,18 @@ async function main(): Promise<number> {
         throw new Error(`POST: ${String(report.post)}`);
       if (report.socket !== "refused") throw new Error(`socket: ${String(report.socket)}`);
       checks.push("cross-origin POST and WebSocket refused");
+      for (const name of ["signInStart", "signInInput", "signInCancel", "stagingCheck"]) {
+        if (report[name] !== "opaque" && report[name] !== "error") {
+          throw new Error(`${name}: ${String(report[name])}`);
+        }
+      }
+      if (report.signInRead !== "unreadable" || report.statusRead !== "unreadable") {
+        throw new Error(`reads: ${String(report.signInRead)} ${String(report.statusRead)}`);
+      }
+      if ((await signIns(id)).starts !== startsBefore) throw new Error("a sign-in started");
+      checks.push(
+        "cross-origin sign-in, code, cancel and switch POSTs refused; reads unreadable; no sign-in started",
+      );
       const after = await state(id);
       if (
         after.generation !== before.generation ||
@@ -438,6 +456,179 @@ async function main(): Promise<number> {
       checks.push("after the sign-out, the page links to Omnigent's deletion");
     });
 
+    await run("J8-claude-signs-in-on-the-page", async (page, checks) => {
+      const id = ids["managed-pagesignin"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      const card = page.locator('[data-card="claude"]');
+      await card.locator('[data-act="start"]').click();
+      const link = card.locator("[data-provider-link]");
+      await link.waitFor();
+      const href = (await link.getAttribute("href")) ?? "";
+      if (!href.startsWith("https://claude.com/cai/oauth/authorize?")) {
+        throw new Error(`link: ${href.slice(0, 40)}`);
+      }
+      if ((await link.getAttribute("target")) !== "_blank") throw new Error("link target");
+      checks.push("the button started the CLI's login; Anthropic's link shown (pinned host)");
+      // What the person types survives the page's polling (Codex WP3.23 r1-5).
+      await card.locator("[data-code]").fill("half-typed");
+      await page.waitForTimeout(4_500);
+      if ((await card.locator("[data-code]").inputValue()) !== "half-typed") {
+        throw new Error("the code field was cleared by a poll");
+      }
+      checks.push("text typed into the code field survives two polls");
+      // A wrong code first: the failure is plain, and the terminal is offered.
+      await card.locator("[data-code]").fill("WRONG-CODE#synthetic");
+      await card.locator('[data-act="continue"]').click();
+      await card.getByText("The code was not accepted").waitFor();
+      await card.locator('[data-act="terminal"]').waitFor();
+      checks.push("a wrong code fails plainly, offering the terminal");
+      await card.locator('[data-act="start"]').click();
+      await card.locator("[data-provider-link]").waitFor();
+      const issued = (await (
+        await fetch(`${base}/__e2e/issued?computer=${id}&service=claude`)
+      ).json()) as { code: string };
+      // Pasted with spaces around it, as people often do.
+      await card.locator("[data-code]").fill(`  ${issued.code}  `);
+      await card.locator("[data-code]").press("Enter");
+      await page
+        .locator('[data-card="claude"][data-state="signed_in"]')
+        .waitFor({ timeout: 20_000 });
+      checks.push("the pasted code signed in; the card shows signed in");
+      const html = await page.content();
+      if (html.includes(issued.code)) throw new Error("the code is still on the page");
+      checks.push("the code is gone from the page");
+    });
+
+    await run("J9-codex-signs-in-on-the-page", async (page, checks) => {
+      const id = ids["managed-pagesignin"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      const card = page.locator('[data-card="codex"]');
+      await card.locator("[data-codex-setting] a").waitFor();
+      if (
+        (await card.locator("[data-codex-setting] a").getAttribute("href")) !==
+        "https://chatgpt.com/#settings/Security"
+      ) {
+        throw new Error("no link to ChatGPT's setting");
+      }
+      checks.push("links to ChatGPT's device-code setting");
+      await card.locator('[data-act="start"]').click();
+      const code = card.locator("[data-user-code]");
+      await code.waitFor();
+      const shown = (await code.textContent()) ?? "";
+      const issued = (await (
+        await fetch(`${base}/__e2e/issued?computer=${id}&service=codex`)
+      ).json()) as { userCode: string };
+      if (shown !== issued.userCode) throw new Error("another code shown");
+      checks.push("OpenAI's link and the one-time code shown; the page waits");
+      // A reload resumes the running attempt.
+      await page.reload();
+      await page.locator('[data-card="codex"] [data-user-code]').waitFor();
+      checks.push("a reload resumes the attempt");
+      await fetch(`${base}/__e2e/approve?computer=${id}&service=codex`, { method: "POST" });
+      await page
+        .locator('[data-card="codex"][data-state="signed_in"]')
+        .waitFor({ timeout: 20_000 });
+      checks.push("once the code was entered at OpenAI, the card shows signed in");
+    });
+
+    await run("J10-second-tab-other-browser-and-cancel", async (page, checks) => {
+      const id = ids["managed-pagesignin"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      const card = page.locator('[data-card="claude"]');
+      await card.locator('[data-act="start"]').click();
+      await card.locator("[data-provider-link]").waitFor();
+      // A second tab of the same browser (the same Access session) resumes the same attempt.
+      const tab = await context.newPage();
+      try {
+        await tab.goto(`${base}/platform/computers/${id}`);
+        await tab.locator('[data-card="claude"] [data-provider-link]').waitFor();
+        checks.push("a second tab of the same session shows the running attempt");
+      } finally {
+        await tab.close();
+      }
+      // Another browser (another Access session) starts its own: the first tab says so.
+      const other = await browser?.newContext({
+        extraHTTPHeaders: {
+          "cf-access-jwt-assertion": await sign(
+            key,
+            claims(now, { exp: now + 3600, identity_nonce: "synthetic-second-browser" }),
+          ),
+        },
+      });
+      if (other === undefined) throw new Error("no browser");
+      try {
+        const second = await other.newPage();
+        await second.goto(`${base}/platform/computers/${id}`);
+        await second.locator('[data-card="claude"] [data-act="start"]').click();
+        await second.locator('[data-card="claude"] [data-provider-link]').waitFor();
+        await card.getByText("A newer sign-in was started").waitFor({ timeout: 10_000 });
+        checks.push("another browser's start ends the first; the first tab says so");
+        await second.locator('[data-card="claude"] [data-act="cancel"]').click();
+        await second.locator('[data-card="claude"] [data-sign-in-state="cancelled"]').waitFor();
+        checks.push("Cancel ends the attempt");
+      } finally {
+        await other.close();
+      }
+    });
+
+    await run("J11-status-switch-and-badge", async (page, checks) => {
+      const id = ids["managed-staging"] ?? "";
+      await page.goto(`${base}/platform/computers`);
+      await page.locator(`[data-computer="${id}"] [data-badge="last-save-failed"]`).waitFor();
+      const others = await page.locator('[data-badge="last-save-failed"]').count();
+      if (others !== 1) throw new Error(`${others} badges`);
+      checks.push("the list shows 'Last save failed' on that computer only");
+      await page.goto(`${base}/platform/computers/${id}`);
+      const body = page.locator("#status-body");
+      await body.locator('[data-status="versions"]').getByText("Claude Code 2.1.311").waitFor();
+      await body.locator('[data-save="failed"]').getByText("Failed").waitFor();
+      await body
+        .locator('[data-status="credentials"] [data-file=".claude/.credentials.json"]')
+        .waitFor();
+      await body.locator('[data-status="sign-out"]').waitFor();
+      checks.push("status: versions, last saves, all four saved login files, the sign-out");
+      await body.locator('[data-act="rc53"][data-rc53="on"]').click();
+      await body.locator('[data-act="rc53"][data-rc53="off"]').waitFor();
+      await waitFor("the switch applied on the computer", async () => {
+        if ((await body.locator('[data-status="rc53"]').innerText()).includes("now: on"))
+          return true;
+        await page.locator("#status-refresh").click();
+        return false;
+      });
+      checks.push("the staging switch turned RC-53 on, applied on the computer");
+      await page.screenshot({ path: join(DIR, "setup-status.png"), fullPage: true });
+      await page.goto(`${base}/platform/computers/${ids["managed-ready"] ?? ""}`);
+      await page.locator('#status-body [data-status="saves"]').waitFor();
+      if ((await page.locator('[data-act="rc53"]').count()) !== 0) {
+        throw new Error("a non-staging computer shows the switch");
+      }
+      checks.push("a production computer shows no switch");
+    });
+
+    await run("J12-older-computer-uses-the-terminal", async (page, checks) => {
+      const id = ids["managed-older"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.getByText("This computer's software is older").first().waitFor();
+      await page.locator("code", { hasText: "claude auth login --claudeai" }).waitFor();
+      if ((await page.locator('[data-act="start"]').count()) !== 0) {
+        throw new Error("sign-in buttons on an older computer");
+      }
+      await page.locator('#status-body [data-status="supervisor"]').getByText("older").waitFor();
+      checks.push("an older computer offers the terminal, plainly, and no buttons");
+    });
+
+    await run("J13-no-sign-in-value-left-anywhere", async (_page, checks) => {
+      const id = ids["managed-pagesignin"] ?? "";
+      const { issued } = await signIns(id);
+      if (issued.length < 3) throw new Error(`${issued.length} issued values`);
+      const log = (await import("node:fs")).readFileSync(join(DIR, "wrangler.log"), "utf8");
+      const found = issued.filter((value) => log.includes(value));
+      if (found.length > 0) throw new Error(`${found.length} sign-in values in the logs`);
+      checks.push(
+        `${issued.length} synthetic links' states, codes and device codes: none in Wrangler's log`,
+      );
+    });
+
     await run("J7-notices", async (page, checks) => {
       await page.goto(`${base}/platform/computers`);
       await page
@@ -482,6 +673,24 @@ function hostilePage(base: string, id: string): string {
     await fetch("${base}/platform/computers/${id}/do/restart", { method: "POST", mode: "no-cors", body, credentials: "include" });
     report.post = "opaque";
   } catch { report.post = "error"; }
+  const json = (o) => JSON.stringify(Object.assign({ op: "op_00000000000000000000000001", intent: "${"0".repeat(64)}" }, o));
+  for (const [name, path, body] of [
+    ["signInStart", "sign-in", { mode: "start", service: "claude" }],
+    ["signInInput", "sign-in", { mode: "input", service: "claude", attempt: "1", code: "synthetic#x" }],
+    ["signInCancel", "sign-in", { mode: "cancel", service: "claude", attempt: "1" }],
+    ["stagingCheck", "staging-check", { rc53: "on" }],
+  ]) {
+    try {
+      await fetch("${base}/platform/computers/${id}/" + path, { method: "POST", mode: "no-cors", body: json(body), credentials: "include" });
+      report[name] = "opaque";
+    } catch { report[name] = "error"; }
+  }
+  for (const [name, path] of [["signInRead", "sign-in?service=claude&attempt=1"], ["statusRead", "status"]]) {
+    try {
+      await fetch("${base}/platform/computers/${id}/" + path, { credentials: "include" });
+      report[name] = "READABLE";
+    } catch { report[name] = "unreadable"; }
+  }
   report.socket = await new Promise((resolve) => {
     const ws = new WebSocket("${base.replace("http", "ws")}/platform/computers/${id}/terminal", ["tty", "cfo-capability.${"A".repeat(43)}"]);
     ws.onopen = () => resolve("opened");

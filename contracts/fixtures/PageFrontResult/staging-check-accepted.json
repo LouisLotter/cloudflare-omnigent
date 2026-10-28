@@ -1,0 +1,5 @@
+{
+  "action": "staging_check",
+  "outcome": "accepted",
+  "rc53": true
+}
