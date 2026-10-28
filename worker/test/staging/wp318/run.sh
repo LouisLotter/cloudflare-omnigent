@@ -11,7 +11,12 @@
 #                        s3://cfo-stg-wp318-r2-artifacts), check the buckets, and generate the
 #                        owner's Omnigent password into $WP318_DIR (mode 600)
 #   run.sh token         [owner] paste one R2 token's two values (not echoed; one token for both
-#                        buckets); starts the bootstrap in the background ($WP318_DIR/bootstrap.log),
+#                        buckets); or `run.sh token --create`: the owner's own `cf` login creates
+#                        that token itself (a user API token, "Workers R2 Storage Bucket Item
+#                        Write" on exactly the two buckets, expiring in a day; its S3 key pair is
+#                        its ID and the SHA-256 of its value, as R2's docs give them), never shown,
+#                        and teardown deletes it. Either way it starts the bootstrap in the
+#                        background ($WP318_DIR/bootstrap.log),
 #                        which sets them for the replica and for the artifacts under their own
 #                        names, deploys both Workers with the server and computer images, waits
 #                        for the durable owner, releases, and verifies that the watchdog's
@@ -38,7 +43,7 @@
 #                        start-to-ready times (restarts.json): #1 the bootstrap's release, #2 the
 #                        launcher's key
 #   run.sh web-deploy    deploy the web Worker once, now (WP3.5's FH-38 check before the soak)
-#   run.sh password      [owner] print the owner's generated Omnigent password
+#   run.sh password      [owner] the owner's generated Omnigent password, onto the clipboard
 #   run.sh hostile <computer ID>
 #                        WP3.5's hostile page for the owner's browser (http://127.0.0.1:8088/)
 #   run.sh campaign      after the owner's Start click: the web and platform deploys at their
@@ -86,6 +91,41 @@ now_ms() { date +%s%3N; }
 
 account() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["accountId"])' "$state_dir/config.json"; }
 zone() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["zone"])' "$state_dir/config.json"; }
+
+create_r2_token() { # the R2 token, made by the owner's `cf` login: its S3 key pair on stdout
+  # A user API token with "Workers R2 Storage Bucket Item Write" (read, write and list objects:
+  # the dashboard's "Object Read & Write") on exactly the two buckets, expiring in a day. R2's S3
+  # key pair is the token's ID and the SHA-256 of its value. The value goes from `cf`'s stdout
+  # through a pipe to Python, which prints only the key pair to the caller's command substitution;
+  # the token's ID alone (not a secret) is kept for teardown's delete.
+  local expires policies
+  expires="$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)"
+  policies="$(cf user tokens permission-groups list | python3 -I -c '
+import json, sys
+groups = json.load(sys.stdin)
+groups = groups.get("result", groups) if isinstance(groups, dict) else groups
+write = [g["id"] for g in groups if g.get("name") == "Workers R2 Storage Bucket Item Write"]
+if len(write) != 1:
+    sys.exit("run.sh: the R2 bucket write permission group was not found")
+account, *buckets = sys.argv[1:]
+print(json.dumps([{
+    "effect": "allow",
+    "permission_groups": [{"id": write[0]}],
+    "resources": {f"com.cloudflare.edge.r2.bucket.{account}_default_{b}": "*" for b in buckets},
+}]))' "$(account)" "$replica_bucket" "$artifacts_bucket")" || return 1
+  cf user tokens create --name "cfo-stg-wp318-r2 (until $expires)" --expires-on "$expires" \
+    --policies "$policies" 2>"$out/token-create.err" | python3 -I -c '
+import hashlib, json, sys
+answer = json.load(sys.stdin)
+token = answer.get("result", answer) if isinstance(answer, dict) else {}
+token_id, value = token.get("id"), token.get("value")
+if not token_id or not value:
+    sys.exit("run.sh: cf created no token (see token-create.err)")
+with open(sys.argv[1], "w") as kept:
+    kept.write(token_id + "\n")
+print(token_id)
+print(hashlib.sha256(value.encode()).hexdigest())' "$out/r2-token-id"
+}
 
 logged() { # name, command...: run, redact, keep the log
   local name="$1"; shift
@@ -180,11 +220,19 @@ case "${1:-}" in
     ;;
   token)
     [ -f "$secrets" ] || { echo "run.sh bucket first"; exit 2; }
-    echo "Paste the R2 token's values (they are not shown). Buckets: $replica_bucket, $artifacts_bucket"
-    read -rsp "Access Key ID: " key_id
-    echo
-    read -rsp "Secret Access Key: " key_secret
-    echo
+    if [ "${2:-}" = "--create" ]; then
+      echo "Creating the R2 token with your cf login (buckets $replica_bucket, $artifacts_bucket; not shown)"
+      pair="$(create_r2_token)" || { echo "run.sh: no token created; see $out/token-create.err" >&2; exit 1; }
+      key_id="${pair%%$'\n'*}"
+      key_secret="${pair#*$'\n'}"
+      unset pair
+    else
+      echo "Paste the R2 token's values (they are not shown). Buckets: $replica_bucket, $artifacts_bucket"
+      read -rsp "Access Key ID: " key_id
+      echo
+      read -rsp "Secret Access Key: " key_secret
+      echo
+    fi
     now_ms >"$out/token-at"
     # The values go from this shell's builtin printf, through a pipe, to Python, and from it to
     # the bootstrap's stdin: never on a command line, in an environment or in a file. The
@@ -304,7 +352,14 @@ print(json.dumps({
     tail -n 1 "$out/sitting-deploys.jsonl"
     ;;
   password)
-    python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
+    # Onto the owner's clipboard where there is one (nothing to copy by hand); printed otherwise.
+    if command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1; then
+      python3 -I -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets" |
+        { if command -v wl-copy >/dev/null 2>&1; then wl-copy; else xclip -selection clipboard; fi; }
+      echo "The owner's Omnigent password is on your clipboard: paste it into Omnigent's sign-in page."
+    else
+      python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
+    fi
     ;;
   hostile)
     computer="${2:?run.sh hostile <computer ID>}"
@@ -382,6 +437,11 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     logged teardown-web node "$root/scripts/staging/stg.ts" teardown --suffix wp318-web || true
     logged teardown-platform node "$root/scripts/staging/stg.ts" teardown --suffix wp318-platform || true
     logged teardown-bucket node "$root/scripts/staging/stg.ts" teardown --suffix wp318-r2 || true
+    # The R2 token `run.sh token --create` made: deleted, not left to expire.
+    if [ -s "$out/r2-token-id" ]; then
+      logged teardown-token cf user tokens delete "$(cat "$out/r2-token-id")" --force &&
+        rm -f "$out/r2-token-id" || true
+    fi
     logged teardown-list node "$root/scripts/staging/stg.ts" list
     logged sweep node "$root/scripts/staging/stg.ts" sweep
     rm -f "${secrets:?}" "${launcher:?}" "${install_dir:?}/${platform:?}.json"
