@@ -31,7 +31,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
+ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -67,7 +67,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's images are built: review these stages against its `host` target, then update it.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "6d07b51a938e1e3b7b770fe4253360569247ece1738a7dd706fb5f730bf5550b  /tmp/omnigent.Dockerfile" \
+RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/
@@ -84,11 +84,12 @@ RUN uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-edita
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps . ./sdks/python-client ./sdks/ui \
  && ! grep -R --include='*.pth' --include='*.egg-link' -nE '/build(/|$)' /opt/venv/lib/python*/site-packages
-# Trust pins over the lock, hash-checked, until the fork's uv.lock carries them: the lock's
-# certifi (2026.5.20) still trusts emSign ECC Root CA - G3, and the venv's pip (25.0.1) trusts
-# both roots of the eMudhra key compromise (October 2026) through the certifi it vendors. pip
-# 26.2.2 and certifi 2026.10.19 are the first fixed releases. Drop the override once the lock
-# has certifi >= 2026.10.19; the runtime stage's trust check fails the build either way.
+# Trust pins over the lock, hash-checked. Since 3d7f7d08c the lock's certifi is 2026.10.19,
+# which no longer trusts emSign ECC Root CA - G3; the image keeps WP3.20's tested 2026.10.23.
+# The venv's pip (25.0.1) trusts both roots of the eMudhra key compromise (October 2026)
+# through the certifi it vendors; pip 26.2.2 is the first fixed release. Drop the certifi
+# override once the lock reaches the pin; the runtime stage's trust check fails the build
+# either way.
 ARG CERTIFI_PIN
 ARG PIP_PIN
 RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
@@ -156,8 +157,8 @@ RUN npm install -g --ignore-scripts --no-audit --no-fund --registry=https://regi
  && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
  && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*
 
-# gh, checked: raised from the fork's pin (2.100.0, Go 1.26.8) to a release built with Go
-# 1.27.3, whose crypto/x509 refuses chains through the compromised eMudhra keys.
+# gh, checked: the fork's own pin since 3d7f7d08c, a release built with Go 1.27.3, whose
+# crypto/x509 refuses chains through the compromised eMudhra keys.
 ARG GH_VERSION=2.103.3
 ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 RUN set -eu; \
@@ -228,7 +229,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="3228d4de38ef05f69ecc80a4539d7c02727ce314" \
+      cloudflare-omnigent.omnigent-commit="3d7f7d08c99344a5835516e059d5c15b8b78f37f" \
       cloudflare-omnigent.claude-code="2.1.311" \
       cloudflare-omnigent.codex="0.164.0" \
       cloudflare-omnigent.gh="2.103.3"
