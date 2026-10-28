@@ -97,6 +97,9 @@ class FakeWorkspace:
                 return
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # Readiness can go stale before accept (for example, a client reset). Keep the
+        # listener nonblocking so serve_forever can observe shutdown instead of hanging.
+        self.server.socket.setblocking(False)
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/messages"

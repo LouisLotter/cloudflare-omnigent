@@ -144,3 +144,57 @@ def test_the_command_port_binds_whatever_the_hostname(tmp_path: Path, monkeypatc
         rig.boot()  # a restore and an install, answered through that port
     finally:
         rig.close()
+
+
+def test_fake_workspace_shutdown_after_stale_listener_readiness(monkeypatch) -> None:
+    """A readiness notification without a queued connection must not trap shutdown in accept.
+
+    CI's thread dump showed this fake's accept blocked while fixture teardown waited in
+    shutdown. Force that interleaving; wake the old blocking implementation in finally so
+    the negative control fails without leaving a server or teardown thread behind.
+    """
+    import socket
+    import socketserver
+    import threading
+
+    import harness
+
+    entered = threading.Event()
+    closed = threading.Event()
+
+    class StaleReadyOnce(socketserver._ServerSelector):
+        first = True
+
+        def select(self, timeout=None):
+            if self.first:
+                self.first = False
+                return [(next(iter(self.get_map().values())), 1)]
+            return super().select(timeout)
+
+    class ObservedServer(harness.ThreadingHTTPServer):
+        def get_request(self):
+            entered.set()
+            return super().get_request()
+
+    monkeypatch.setattr(socketserver, "_ServerSelector", StaleReadyOnce)
+    monkeypatch.setattr(harness, "ThreadingHTTPServer", ObservedServer)
+    ws = FakeWorkspace()
+
+    def close() -> None:
+        ws.close()
+        closed.set()
+
+    closer = threading.Thread(target=close, daemon=True)
+    try:
+        assert entered.wait(2), "the listener never consumed the injected readiness"
+        closer.start()
+        assert closed.wait(2), "fake workspace shutdown blocked in accept"
+    finally:
+        if closer.ident is None:
+            closer.start()
+        if closer.is_alive():
+            # Release the blocked accept only on the broken implementation, never mask it.
+            with socket.create_connection(ws.server.server_address, timeout=2):
+                pass
+        closer.join(2)
+        assert not closer.is_alive(), "the test's fake workspace did not clean up"
