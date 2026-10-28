@@ -60,7 +60,8 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
       computer = new SimulatedComputer(name as ComputerId);
       computer.supervisorOptions = {
         legacy: legacy.has(name),
-        failCaptures: failingSaves.has(name) ? 1 : 0,
+        // Its saves keep failing: the list's badge stays.
+        failCaptures: failingSaves.has(name) ? 1_000 : 0,
       };
       const simulated = computer;
       computer.terminal = fakeTtyd({ onSignIn: (provider) => simulated.sup?.signIn(provider) });

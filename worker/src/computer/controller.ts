@@ -2133,6 +2133,8 @@ export class WorkspaceController {
       // An older supervisor cannot apply it: saves go on without the check.
       this.#log("staging_check_unsupported", { generation });
     }
+    // The status read next shows the switch as the supervisor now has it.
+    this.#metrics = null;
     // If the owner changed it meanwhile, the next pass applies the new value.
     await this.#exclusive(() =>
       this.#write((d) => {

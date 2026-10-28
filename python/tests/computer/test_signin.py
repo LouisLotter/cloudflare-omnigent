@@ -342,6 +342,11 @@ def test_failures_end_with_fixed_reasons(rig: Rig, service, mode, reason):
     view = _wait_state(rig, service, 1, "failed")
     assert view == {"service": service, "attempt": 1, "state": "failed", "reason": reason}
     assert rig.sup.signins._current[service].proc is None or _group_gone(_pid(rig, service))
+    # A parser failure keeps nothing either: the values the fake CLI printed are nowhere.
+    pending = rig.fake.pending_login(service) or {}
+    values = [v for k, v in pending.items() if k in ("code", "state", "user_code") and v]
+    if values:
+        _secrets_absent(rig, values, [view])
 
 
 @pytest.mark.parametrize("service", ["claude", "codex"])

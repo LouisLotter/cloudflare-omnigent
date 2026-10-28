@@ -524,24 +524,43 @@ async function main(): Promise<number> {
       checks.push("once the code was entered at OpenAI, the card shows signed in");
     });
 
-    await run("J10-cancel-and-a-second-tab", async (page, checks) => {
+    await run("J10-second-tab-other-browser-and-cancel", async (page, checks) => {
       const id = ids["managed-pagesignin"] ?? "";
       await page.goto(`${base}/platform/computers/${id}`);
       const card = page.locator('[data-card="claude"]');
       await card.locator('[data-act="start"]').click();
       await card.locator("[data-provider-link]").waitFor();
-      const second = await context.newPage();
+      // A second tab of the same browser (the same Access session) resumes the same attempt.
+      const tab = await context.newPage();
       try {
+        await tab.goto(`${base}/platform/computers/${id}`);
+        await tab.locator('[data-card="claude"] [data-provider-link]').waitFor();
+        checks.push("a second tab of the same session shows the running attempt");
+      } finally {
+        await tab.close();
+      }
+      // Another browser (another Access session) starts its own: the first tab says so.
+      const other = await browser?.newContext({
+        extraHTTPHeaders: {
+          "cf-access-jwt-assertion": await sign(
+            key,
+            claims(now, { exp: now + 3600, identity_nonce: "synthetic-second-browser" }),
+          ),
+        },
+      });
+      if (other === undefined) throw new Error("no browser");
+      try {
+        const second = await other.newPage();
         await second.goto(`${base}/platform/computers/${id}`);
         await second.locator('[data-card="claude"] [data-act="start"]').click();
         await second.locator('[data-card="claude"] [data-provider-link]').waitFor();
         await card.getByText("A newer sign-in was started").waitFor({ timeout: 10_000 });
-        checks.push("a second tab's start ends the first; the first tab says so");
+        checks.push("another browser's start ends the first; the first tab says so");
         await second.locator('[data-card="claude"] [data-act="cancel"]').click();
         await second.locator('[data-card="claude"] [data-sign-in-state="cancelled"]').waitFor();
         checks.push("Cancel ends the attempt");
       } finally {
-        await second.close();
+        await other.close();
       }
     });
 
@@ -563,10 +582,14 @@ async function main(): Promise<number> {
       checks.push("status: versions, last saves, all four saved login files, the sign-out");
       await body.locator('[data-act="rc53"][data-rc53="on"]').click();
       await body.locator('[data-act="rc53"][data-rc53="off"]').waitFor();
-      await body.locator('[data-status="rc53"]').getByText("On the computer now: on").waitFor({
-        timeout: 20_000,
+      await waitFor("the switch applied on the computer", async () => {
+        if ((await body.locator('[data-status="rc53"]').innerText()).includes("now: on"))
+          return true;
+        await page.locator("#status-refresh").click();
+        return false;
       });
       checks.push("the staging switch turned RC-53 on, applied on the computer");
+      await page.screenshot({ path: join(DIR, "setup-status.png"), fullPage: true });
       await page.goto(`${base}/platform/computers/${ids["managed-ready"] ?? ""}`);
       await page.locator('#status-body [data-status="saves"]').waitFor();
       if ((await page.locator('[data-act="rc53"]').count()) !== 0) {

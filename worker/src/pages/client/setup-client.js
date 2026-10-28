@@ -354,6 +354,8 @@
       // the status below shows what holds
     }
     await readStatus();
+    // The computer applies the switch moments later: read it again then.
+    setTimeout(() => void readStatus(), 3000);
   });
   void readStatus();
 
