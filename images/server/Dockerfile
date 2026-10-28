@@ -12,7 +12,9 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
 #     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
-#     entrypoint's GET /status (`build`) and boot log line. 3228d4de3 (26 Oct 2026) has the
+#     entrypoint's GET /status (`build`) and boot log line. 3d7f7d08c (28 Oct 2026, WP3.24) adds a
+#     Codex policy hook that fails closed (UC-110), Claude's renderer named in its hook settings
+#     (UC-107), certifi 2026.10.19 in the lock and gh 2.103.3 to 3228d4de3 (26 Oct), which has the
 #     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
 #     the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable resume
 #     refusal (AIR2-008) and, since 184b5cf8b, persistent hosts provisioned by the whole host ID,
@@ -32,7 +34,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=3228d4de38ef05f69ecc80a4539d7c02727ce314
+ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
@@ -77,7 +79,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's image is built: review these stages against it, then update the digest.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "6d07b51a938e1e3b7b770fe4253360569247ece1738a7dd706fb5f730bf5550b  /tmp/omnigent.Dockerfile" \
+RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/
@@ -94,11 +96,11 @@ RUN uv export --frozen --no-dev --extra s3 --no-emit-project --no-emit-workspace
       -o /tmp/requirements.txt \
  && uv pip install --no-cache-dir -r /tmp/requirements.txt \
  && uv pip install --no-cache-dir --no-deps -e .
-# Trust pins over the lock, hash-checked, until the fork's uv.lock carries them: the lock's
-# certifi (2026.5.20), which httpx, requests and botocore use, still trusts emSign ECC Root CA
-# - G3, and pip 25.0.1 vendors a certifi with both roots of the eMudhra key compromise
-# (October 2026). Drop the override once the lock has certifi >= 2026.10.19; the runtime
-# stage's trust check fails the build either way.
+# Trust pins over the lock, hash-checked. Since 3d7f7d08c the lock's certifi is 2026.10.19,
+# which no longer trusts emSign ECC Root CA - G3; the image keeps WP3.20's tested 2026.10.23
+# (httpx, requests and botocore use it). pip 25.0.1 vendors a certifi with both roots of the
+# eMudhra key compromise (October 2026). Drop the certifi override once the lock reaches the
+# pin; the runtime stage's trust check fails the build either way.
 ARG CERTIFI_PIN
 ARG PIP_PIN
 RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
@@ -205,7 +207,7 @@ CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", "trust/t
 FROM builder AS fork-test-requirements
 # The test group, plus asgiref at its locked version (the Stop-over-tunnel test drives the app
 # with its ApplicationCommunicator; the fork's own environment has it through OpenTelemetry).
-# certifi stays at the runtime's trust pin: the lock's (2026.5.20) would replace it here.
+# certifi stays at the runtime's trust pin: the lock's (2026.10.19) would replace it here.
 RUN uv export --frozen --only-group test --no-emit-project --no-emit-workspace --no-hashes \
       -o /tmp/fork-test-requirements.txt \
  && sed -i '/^certifi==/d' /tmp/fork-test-requirements.txt \
