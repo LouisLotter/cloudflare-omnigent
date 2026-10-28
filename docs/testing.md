@@ -1,6 +1,6 @@
 # Testing and qualification
 
-Run commands from the repository root unless noted. These entry points are source-verified for platform `91261d7e8fe4b87c8010d50739cd921dd4bf09fe`; listing them does not claim they were executed or pass on a selected release. Read [compatibility](compatibility.md) before choosing a main, candidate or draft checkout. Tests against a source checkout do not establish the code in a deployed image.
+Run commands from the repository root unless noted. Listing an entry point does not claim it was executed or passes on a selected release. Read [compatibility](compatibility.md) before choosing a main, candidate or draft checkout. Tests against a source checkout do not establish the code in a deployed image.
 
 ## Choose the execution boundary
 
@@ -81,7 +81,7 @@ Run the last command only after generating both nonempty output directories. Exi
 
 ## Server image tests — CI and local Docker
 
-The [Dockerfile](../images/server/Dockerfile) has `server` and `test` targets. Builds fetch public dependencies and use significant disk/CPU. From an isolated local test environment without real account credentials:
+The [Dockerfile](../images/server/Dockerfile) has `server`, `test` and `fork-tests` targets. Builds fetch public dependencies and use significant disk/CPU. From an isolated local test environment without real account credentials:
 
 ```bash
 docker build --platform linux/amd64 -f images/server/Dockerfile --target server -t cfo-server:local-runtime .
@@ -98,7 +98,14 @@ The last command uses the existing image CMD: unit/in-process tests excluding `t
 
 The heavier [server integration suite](../images/server/tests/integration/conftest.py) uses actual containers, MinIO/Toxiproxy, generated credentials, local ports and kill/replace cleanup. Its conftest documents the required image tag and separate uv invocation. The [restore-drill Python suite](../scripts/restore-drill/tests/conftest.py) needs its own dependencies/drill image and local services; the root Python lock alone is insufficient. Its in-process fence launcher is a recording stub, not the production Cloudflare adapter. Read those suite-specific prerequisites and ownership/cleanup behavior before running; do not point them at real installation storage.
 
-The separate server candidate adds a `fork-tests` build target and image-revision tests. Those do not exist in main. Its tree-comparison test needs a matching fork checkout and is excluded by the default image test CMD.
+The `fork-tests` target runs the fork's Stop tests against the Omnigent packaged in the server image:
+
+```bash
+docker build --platform linux/amd64 -f images/server/Dockerfile --target fork-tests -t cfo-server:local-fork-tests .
+docker run --rm --network none cfo-server:local-fork-tests
+```
+
+The integration suite also checks the image labels, build record, running `/status` and installed source tree. Set `CFO_OMNIGENT_FORK` to a checkout containing the pinned commit for the tree comparison; inspect the skip if it is absent. These integration tests are excluded by the default image test CMD.
 
 ## Computer image tests — local Docker
 

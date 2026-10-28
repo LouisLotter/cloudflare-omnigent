@@ -10,15 +10,11 @@
 #   docker run --rm cfo-server:fork-tests     (the fork's Stop tests against this image's Omnigent)
 #
 # What it holds:
-#   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
-#     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
-#     entrypoint's GET /status (`build`) and boot log line. 3d7f7d08c (28 Oct 2026, WP3.24) adds a
-#     Codex policy hook that fails closed (UC-110), Claude's renderer named in its hook settings
-#     (UC-107), certifi 2026.10.19 in the lock and gh 2.103.3 to 3228d4de3 (26 Oct), which has the
-#     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
-#     the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable resume
-#     refusal (AIR2-008) and, since 184b5cf8b, persistent hosts provisioned by the whole host ID,
-#     with one sandbox never shared by two hosts (WP3.8b). The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
+#   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which
+#     the image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
+#     (`build`) and boot log line. The 0.20.0 fork retains single-attempt Stop and launch
+#     outcomes, persistent hosts, native transcript reconciliation and credential custody.
+#     The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
 #     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Three
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
 #     resolves them afresh), the `s3` extra is installed with them (the fork's image adds
@@ -34,7 +30,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
+ARG OMNIGENT_COMMIT=d2e98c9e7bbd885c5c7fc72ba01ec5f0d39bcfd9
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
@@ -57,6 +53,7 @@ ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org \
     PNPM_CONFIG_REGISTRY=https://registry.npmjs.org
 WORKDIR /web
 COPY --from=omnigent-src /pnpm-workspace.yaml /pnpm-lock.yaml ./
+COPY --from=omnigent-src /patches/ ./patches/
 COPY --from=omnigent-src /web/package.json ./web/
 COPY --from=omnigent-src /web/electron/package.json ./web/electron/
 RUN npm install -g pnpm@11.15.1
@@ -79,7 +76,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's image is built: review these stages against it, then update the digest.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
+RUN echo "dca1880e581694c345a7138da34f10274c28c45c04cbee39ca61c24238cc21cd  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/

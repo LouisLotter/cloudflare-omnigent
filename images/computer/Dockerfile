@@ -8,7 +8,7 @@
 # The last stage is the computer, so a build without --target (Wrangler's) gets the computer.
 #
 # What it holds:
-#   - Omnigent's host, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
+#   - Omnigent's host, built from the fork LouisLotter/omnigent at the pinned fork
 #     commit. The stages mirror the `host` target of the fork's deploy/docker/Dockerfile, whose
 #     SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Differences:
 #     Python packages install from the fork's uv.lock; only Claude Code and Codex are installed
@@ -31,7 +31,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
+ARG OMNIGENT_COMMIT=d2e98c9e7bbd885c5c7fc72ba01ec5f0d39bcfd9
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -67,7 +67,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's images are built: review these stages against its `host` target, then update it.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
+RUN echo "dca1880e581694c345a7138da34f10274c28c45c04cbee39ca61c24238cc21cd  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/
@@ -229,7 +229,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="3d7f7d08c99344a5835516e059d5c15b8b78f37f" \
+      cloudflare-omnigent.omnigent-commit="d2e98c9e7bbd885c5c7fc72ba01ec5f0d39bcfd9" \
       cloudflare-omnigent.claude-code="2.1.311" \
       cloudflare-omnigent.codex="0.164.0" \
       cloudflare-omnigent.gh="2.103.3"

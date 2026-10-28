@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "3d7f7d08c99344a5835516e059d5c15b8b78f37f"
+COMMIT = "d2e98c9e7bbd885c5c7fc72ba01ec5f0d39bcfd9"
 
 
 def _write(path: Path, **fields: object) -> Path:
@@ -65,10 +65,8 @@ def _dockerfile_commit() -> str:
 
 
 def test_the_dockerfile_pins_the_fork_commit_with_the_stop_fix() -> None:
-    # cfo/integration 3d7f7d08c (WP3.24) on 3228d4de3: the Stop fix (AIR2-007), core changes 20
-    # and 21, WP3.16's notices, AIR2-008's resume refusal, WP3.8b's provision by the whole host ID,
-    # and WP3.24's Codex policy hook failing closed and Claude's renderer pin. A later fork merge
-    # bumps it; this test then names the new commit.
+    # The 0.20.0 fork retains the single-attempt Stop fix and explicit delivery outcomes.
+    # A pin bump must update both the image and this independent build-info expectation.
     assert _dockerfile_commit() == COMMIT
 
 
