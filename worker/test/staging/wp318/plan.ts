@@ -10,7 +10,15 @@
 // `/v1/hosts/<host id>/tunnel`), so the analysis measures, for each disruption that drops the
 // live connection, how long each computer's host took to open its tunnel again (RC-21: 60 s,
 // 100 s when the drop overlaps a capture pause), and, for a web Worker deploy, that no host
-// tunnel was reopened at all (no drop).
+// tunnel was reopened at all (no drop). A WorkspaceDO reset is judged like a web deploy: host
+// tunnels run through OmnigentServer, not WorkspaceDO, so it drops none (the 28 Oct sitting's
+// reset dropped nothing; the analysis then measured 306.5 s to an unrelated later break). If a
+// tunnel did reopen within the no-drop window, it must have done so within RC-21's bound.
+//
+// A computer counts for a disruption only if its host was connected before it. For a computer the
+// window shows, that is seeded from its host-tunnel opens before the window too (`run.sh
+// collect`'s presence.jsonl), so the first disruption is judged (on 28 Oct, T0+10's reset had no
+// row: the host had connected before the window).
 //
 // A reset's time is the soak run's own record, taken just before it. A platform deploy's drop is
 // OmnigentServer's own version switch (every host tunnel runs through that object), never read
@@ -146,16 +154,22 @@ interface Open {
   readonly version: string | undefined;
 }
 
+/** The computer whose host's tunnel this line opened (101), or null for any other line. */
+export function hostTunnelOpen(line: LogLine): string | null {
+  const s = typeof line.source === "object" && line.source !== null ? line.source : null;
+  if (s === null || s.cfo !== "computer_route" || s.event !== "request") return null;
+  if (s.status !== 101 || typeof s.path !== "string" || !HOST_TUNNEL.test(s.path)) return null;
+  return typeof s.computerId === "string" ? s.computerId : null;
+}
+
 function openLines(lines: readonly LogLine[]): Map<string, Open[]> {
   const opens = new Map<string, Open[]>();
   for (const line of lines) {
-    const s = typeof line.source === "object" && line.source !== null ? line.source : null;
-    if (s === null || s.cfo !== "computer_route" || s.event !== "request") continue;
-    if (s.status !== 101 || typeof s.path !== "string" || !HOST_TUNNEL.test(s.path)) continue;
-    if (typeof s.computerId !== "string") continue;
-    const list = opens.get(s.computerId) ?? [];
+    const computerId = hostTunnelOpen(line);
+    if (computerId === null) continue;
+    const list = opens.get(computerId) ?? [];
     list.push({ at: line.timestamp, version: line.version });
-    opens.set(s.computerId, list);
+    opens.set(computerId, list);
   }
   for (const list of opens.values()) list.sort((a, b) => a.at - b.at);
   return opens;
@@ -211,16 +225,24 @@ export interface Reconnect {
   readonly note?: string;
 }
 
+/** Kinds that drop no host tunnel: none may reopen within the no-drop window (see the top). */
+const NO_DROP: ReadonlySet<SoakEventKind> = new Set(["web_deploy", "workspace_reset"]);
+
 /**
- * For every disruption and every computer seen in the logs: the reconnect (resets and platform
- * deploys must reconnect within RC-21's bound) or the absence of one (a web deploy must drop no
- * computer's connection).
+ * For every disruption and every computer seen in the logs: the reconnect (server resets and
+ * platform deploys must reconnect within RC-21's bound) or the absence of one (a web deploy and
+ * a WorkspaceDO reset must drop no computer's connection, or reconnect it within the bound).
+ * `before`: lines from before the collected window, read only for each host's earlier opens.
  */
 export function reconnects(
   disruptions: readonly Disruption[],
   lines: readonly LogLine[],
+  before: readonly LogLine[] = [],
 ): Reconnect[] {
   const opens = openLines(lines);
+  // Earlier opens only date a host the window shows too: a computer removed before the soak is
+  // not judged by it.
+  const earlier = openLines(before);
   const results: Reconnect[] = [];
   for (const d of disruptions) {
     if (d.kind === "end") continue;
@@ -233,18 +255,29 @@ export function reconnects(
     for (const [computerId, list] of opens) {
       const times = list.map((o) => o.at);
       // Only a computer whose host was connected before the disruption can be dropped by it.
-      if (!times.some((t) => t < d.at)) continue;
-      if (d.kind === "web_deploy") {
+      const connected = [...(earlier.get(computerId) ?? []).map((o) => o.at), ...times];
+      if (!connected.some((t) => t < d.at)) continue;
+      if (NO_DROP.has(d.kind)) {
         const from = d.deployEndedAt ?? d.at;
         const reopened = times.find((t) => t >= d.at && t <= from + NO_DROP_WINDOW_MS);
+        const gapMs = reopened === undefined ? null : reopened - d.at;
+        // A web deploy must drop nothing; a WorkspaceDO reset drops nothing, or the host is back
+        // within RC-21's bound.
+        const ok = gapMs === null || (d.kind === "workspace_reset" && gapMs <= boundMs);
         results.push({
           kind: d.kind,
           at: d.at,
           computerId,
-          gapMs: reopened === undefined ? null : reopened - d.at,
-          boundMs: 0,
-          ok: reopened === undefined,
-          ...(reopened === undefined ? {} : { note: "a host tunnel reopened: a drop" }),
+          gapMs,
+          boundMs: d.kind === "web_deploy" ? 0 : boundMs,
+          ok,
+          ...(gapMs === null
+            ? {}
+            : {
+                note: ok
+                  ? "a host tunnel reopened within the bound"
+                  : "a host tunnel reopened: a drop",
+              }),
         });
         continue;
       }
