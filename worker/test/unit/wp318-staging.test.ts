@@ -361,7 +361,9 @@ describe("the soak's analysis after the 28 Oct sitting (WP3.27)", () => {
     const reset = T0 + 10 * MIN;
     const window = [open(reset + 31_000, A), open(reset + 40_000, B)];
     // 28 Oct: the host had connected before the collected window, so T0+10 had no row.
-    expect(reconnects([{ kind: "server_reset", at: reset }], window)).toEqual([]);
+    expect(reconnects([{ kind: "server_reset", at: reset }], window)).toEqual([
+      expect.objectContaining({ computerId: "(none)", ok: false }),
+    ]);
     const gone = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n9";
     const before = [open(T0 - 30 * MIN, A), open(T0 - 20 * MIN, gone)];
     const judged = reconnects([{ kind: "server_reset", at: reset }], window, before);
@@ -415,22 +417,21 @@ describe("the soak's analysis after the 28 Oct sitting (WP3.27)", () => {
       [A, true, RC21_PAUSE_MS],
     ]);
     // No host at all (the 28 Oct sitting's first analysis): nothing checked, said so.
-    expect(
-      reconnects(
-        [
-          { kind: "end", at: T0 },
-          { kind: "web_deploy", at: reset },
-        ],
-        [],
-      ),
-    ).toEqual([
-      expect.objectContaining({
-        kind: "web_deploy",
-        computerId: "(none)",
-        ok: false,
-        note: "inconclusive: no host-tunnel open in the logs, so nothing was checked",
-      }),
+    const nothing = expect.objectContaining({
+      kind: "web_deploy",
+      computerId: "(none)",
+      ok: false,
+      note: "inconclusive: no host was connected before any disruption, so nothing was checked",
+    });
+    const deploy = { kind: "web_deploy", at: reset } as const;
+    expect(reconnects([{ kind: "end", at: T0 }, deploy], [])).toEqual([nothing]);
+    // Codex r2-1: hosts in the logs, but each opened only after the disruptions, and no presence
+    // from before the window: still nothing checked, and a later open never dates the host.
+    expect(reconnects([deploy], [open(reset + 20_000, A), open(reset + 40_000, B)])).toEqual([
+      nothing,
     ]);
+    expect(reconnects([{ kind: "end", at: T0 }], [open(T0, A)])).toEqual([]);
+    expect(reconnects([{ kind: "end", at: T0 }], [], [open(T0 - MIN, A)])).toEqual([]);
     expect(reconnects([], [])).toEqual([]);
   });
 

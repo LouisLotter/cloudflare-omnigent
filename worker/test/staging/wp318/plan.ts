@@ -18,8 +18,8 @@
 // A computer counts for a disruption only if its host was connected before it. For a computer the
 // window shows, that is seeded from its host-tunnel opens before the window too (`run.sh
 // collect`'s presence.jsonl), so the first disruption is judged (on 28 Oct, T0+10's reset had no
-// row: the host had connected before the window). A host seen only before the window, and a
-// window with no host at all, are inconclusive rows: never a silent pass.
+// row: the host had connected before the window). A host seen only before the window, and
+// disruptions with nothing checked, are inconclusive rows: never a silent pass.
 //
 // A reset's time is the soak run's own record, taken just before it. A platform deploy's drop is
 // OmnigentServer's own version switch (every host tunnel runs through that object), never read
@@ -247,26 +247,27 @@ export function reconnects(
   const results: Reconnect[] = [];
   // Hosts connected before the window and never seen in it (Codex WP3.27 r1-2): removed or asleep
   // before the soak, or never back after its first drop. The logs cannot tell which, so each is
-  // one inconclusive row at the first disruption, never silently left out. Nothing seen at all
-  // (no host-tunnel open, as in the 28 Oct sitting's first analysis) is the same: nothing checked.
+  // one inconclusive row at the first disruption, never silently left out.
   const first = disruptions.find((d) => d.kind !== "end");
-  if (first !== undefined) {
-    const unseen = [...earlier.keys()].filter((id) => !opens.has(id));
-    if (opens.size === 0 && unseen.length === 0) unseen.push("(none)");
-    for (const computerId of unseen) {
-      results.push({
-        kind: first.kind,
-        at: first.at,
-        computerId,
-        gapMs: null,
-        boundMs: first.duringPause ? RC21_PAUSE_MS : RC21_MS,
-        ok: false,
-        note:
-          computerId === "(none)"
-            ? "inconclusive: no host-tunnel open in the logs, so nothing was checked"
-            : "inconclusive: its host connected before the window and never opened a tunnel in it (removed or asleep before the soak, or never reconnected)",
-      });
-    }
+  const inconclusive = (computerId: string, note: string): Reconnect | null =>
+    first === undefined
+      ? null
+      : {
+          kind: first.kind,
+          at: first.at,
+          computerId,
+          gapMs: null,
+          boundMs: first.duringPause ? RC21_PAUSE_MS : RC21_MS,
+          ok: false,
+          note: `inconclusive: ${note}`,
+        };
+  for (const computerId of earlier.keys()) {
+    if (opens.has(computerId)) continue;
+    const row = inconclusive(
+      computerId,
+      "its host connected before the window and never opened a tunnel in it (removed or asleep before the soak, or never reconnected)",
+    );
+    if (row !== null) results.push(row);
   }
   for (const d of disruptions) {
     if (d.kind === "end") continue;
@@ -351,6 +352,16 @@ export function reconnects(
         ok: gapMs !== null && gapMs <= boundMs,
       });
     }
+  }
+  // Disruptions with nothing checked (no host connected before any of them: none in the logs, as
+  // in the 28 Oct sitting's first analysis, or only hosts that first connected after them) are
+  // never a clean verdict (Codex WP3.27 r2-1).
+  if (results.length === 0) {
+    const row = inconclusive(
+      "(none)",
+      "no host was connected before any disruption, so nothing was checked",
+    );
+    if (row !== null) results.push(row);
   }
   return results;
 }
