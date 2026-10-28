@@ -165,7 +165,21 @@ function installationTokens(ctx: Context, named: (d: string) => boolean, apply: 
     const result = removeStagingTokens(gone, {
       accountId: ctx.config.accountId,
       api: cfTokenApi(spawnRunner(ctx.config.accountId)),
-      lock: (worker) => acquireLock(workerLockPath(ctx.config.accountId, worker), 0, holder),
+      // The bootstrap's lock, then the staging tool's for the deployment: a deploy holds the
+      // second even when the bootstrap that started it is gone (Codex WP3.25 r2-1).
+      lock: (worker) => {
+        const bootstrap = acquireLock(workerLockPath(ctx.config.accountId, worker), 0, holder);
+        try {
+          const staging = ctx.lock(worker);
+          return () => {
+            staging();
+            bootstrap();
+          };
+        } catch (error) {
+          bootstrap();
+          throw error;
+        }
+      },
       apply,
       log: (message) => console.log(message),
     });
