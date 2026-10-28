@@ -286,6 +286,86 @@
       "path": ".omnigent/codex-native/3f2a/codex-home/tmp/arg0-linux/codex-arg0aVJHaz/.lock",
       "action": "exclude",
       "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/logs_2.sqlite",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/logs_2.sqlite-wal",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/logs_2.sqlite-shm",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/logs_1.sqlite-journal",
+      "action": "exclude",
+      "rule": "codex-home-temporaries"
+    },
+    {
+      "path": ".codex/logs_2.sqlite",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".codex/logs_2.sqlite-wal",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".codex/logs_2.sqlite-shm",
+      "action": "exclude",
+      "rule": "codex-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/state_5.sqlite-wal",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/goals_1.sqlite",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/queue_1.sqlite",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/thread_history_1.sqlite",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/memories_v2_1.sqlite",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".omnigent/codex-native/3f2a/codex-home/history.jsonl",
+      "action": "save",
+      "rule": "codex-home-other"
+    },
+    {
+      "path": ".codex/state_5.sqlite",
+      "action": "save",
+      "rule": "workspace"
+    },
+    {
+      "path": ".codex/thread_history_1.sqlite",
+      "action": "save",
+      "rule": "workspace"
+    },
+    {
+      "path": "work/logs_2.sqlite",
+      "action": "save",
+      "rule": "workspace"
     }
   ]
 }
