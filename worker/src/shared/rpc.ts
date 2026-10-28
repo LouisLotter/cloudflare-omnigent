@@ -15,6 +15,8 @@ import {
   type OutageRecord,
   type PageFrontCall,
   type PageFrontResult,
+  type PageReadCall,
+  type PageReadResult,
   type PagesCall,
   type PagesResult,
   type ReplicationHealth,
@@ -121,7 +123,9 @@ export const CONTROL_OBJECT_NAME = "control";
  * - `pages`: the web Worker's pages (WP3.5), never the launcher's operations. WorkspaceDO's page
  *   front (`computer/page-front.ts`) answers `PageFrontCall` itself (the setup terminal's window
  *   and capability, a page-started removal), and checks every mutating `PagesCall`'s `owner` and
- *   request-intent token before the controller sees it.
+ *   request-intent token before the controller sees it. It also answers the reads behind page GETs
+ *   (`PageReadCall`, WP3.23): a sign-in attempt's state and the computer's status, which change
+ *   nothing.
  * - `reservation`: ControlDO's reconciliation (WP3.2).
  * - `identity`: the computer's route (`internal/omnigent-route.ts`, WP3.3), on every request.
  * The setup terminal's stream goes through `fetch` (WP3.5): the web Worker's upgrade, carrying
@@ -130,7 +134,9 @@ export const CONTROL_OBJECT_NAME = "control";
 export interface WorkspaceRpc {
   launcher(call: LauncherCall): Promise<LauncherResult>;
   computer(call: ComputerCall): Promise<SupervisorReply>;
-  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult>;
+  pages(
+    call: PagesCall | PageFrontCall | PageReadCall,
+  ): Promise<PagesResult | PageFrontResult | PageReadResult>;
   reservation(call: { readonly interfaceVersion: number }): Promise<ReservationState | null>;
   /** The backup gateway's fence (WP3.3), asked before every write into the checkpoint bucket. */
   writeAllowed(call: WriteCheck): Promise<WriteDecision>;
@@ -211,7 +217,9 @@ export interface ControlRpc {
  * this way in the web Worker, so the compiler keeps the pages to it.
  */
 export interface WorkspacePagesStub {
-  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult>;
+  pages(
+    call: PagesCall | PageFrontCall | PageReadCall,
+  ): Promise<PagesResult | PageFrontResult | PageReadResult>;
   fetch(request: Request): Promise<Response>;
 }
 

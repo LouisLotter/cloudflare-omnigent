@@ -160,6 +160,249 @@
         "intent"
       ],
       "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "sign_in_start",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "service": {
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "service"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "sign_in_input",
+          "type": "string"
+        },
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "code": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[\\x21-\\x7e]+$",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "service": {
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "service",
+        "attempt",
+        "code"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "sign_in_cancel",
+          "type": "string"
+        },
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "service": {
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "service",
+        "attempt"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "staging_check",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        },
+        "rc53": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "rc53"
+      ],
+      "type": "object"
     }
   ],
   "title": "PageFrontCall"

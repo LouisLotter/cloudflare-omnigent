@@ -1,0 +1,10 @@
+{
+  "action": "sign_in_status",
+  "outcome": "accepted",
+  "view": {
+    "service": "claude",
+    "attempt": 3,
+    "state": "awaiting_user",
+    "url": "javascript:alert(1)"
+  }
+}

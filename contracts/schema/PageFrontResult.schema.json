@@ -144,6 +144,430 @@
           "type": "object"
         }
       ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_start",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            },
+            "view": {
+              "additionalProperties": {},
+              "properties": {
+                "attempt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "deadline": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                "notice": {
+                  "enum": [
+                    "incomplete_code"
+                  ],
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "code_rejected",
+                    "denied",
+                    "network",
+                    "unexpected_output",
+                    "cli_exited",
+                    "start_failed",
+                    "not_ready"
+                  ],
+                  "type": "string"
+                },
+                "service": {
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "starting",
+                    "awaiting_user",
+                    "completing",
+                    "done",
+                    "failed",
+                    "expired",
+                    "cancelled",
+                    "superseded",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                "url": {
+                  "maxLength": 2048,
+                  "minLength": 9,
+                  "pattern": "^https:\\/\\/[A-Za-z0-9\\-._~:/?#@!$&()*+,;=%]+$",
+                  "type": "string"
+                },
+                "userCode": {
+                  "pattern": "^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service",
+                "attempt",
+                "state"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "view"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_start",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_running",
+                "busy",
+                "not_offered",
+                "unsupported",
+                "not_yours",
+                "stale",
+                "unreachable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_input",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            },
+            "view": {
+              "additionalProperties": {},
+              "properties": {
+                "attempt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "deadline": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                "notice": {
+                  "enum": [
+                    "incomplete_code"
+                  ],
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "code_rejected",
+                    "denied",
+                    "network",
+                    "unexpected_output",
+                    "cli_exited",
+                    "start_failed",
+                    "not_ready"
+                  ],
+                  "type": "string"
+                },
+                "service": {
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "starting",
+                    "awaiting_user",
+                    "completing",
+                    "done",
+                    "failed",
+                    "expired",
+                    "cancelled",
+                    "superseded",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                "url": {
+                  "maxLength": 2048,
+                  "minLength": 9,
+                  "pattern": "^https:\\/\\/[A-Za-z0-9\\-._~:/?#@!$&()*+,;=%]+$",
+                  "type": "string"
+                },
+                "userCode": {
+                  "pattern": "^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service",
+                "attempt",
+                "state"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "view"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_input",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_running",
+                "busy",
+                "not_offered",
+                "unsupported",
+                "not_yours",
+                "stale",
+                "unreachable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_cancel",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            },
+            "view": {
+              "additionalProperties": {},
+              "properties": {
+                "attempt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "deadline": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                  "type": "string"
+                },
+                "notice": {
+                  "enum": [
+                    "incomplete_code"
+                  ],
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "code_rejected",
+                    "denied",
+                    "network",
+                    "unexpected_output",
+                    "cli_exited",
+                    "start_failed",
+                    "not_ready"
+                  ],
+                  "type": "string"
+                },
+                "service": {
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ],
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "starting",
+                    "awaiting_user",
+                    "completing",
+                    "done",
+                    "failed",
+                    "expired",
+                    "cancelled",
+                    "superseded",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                "url": {
+                  "maxLength": 2048,
+                  "minLength": 9,
+                  "pattern": "^https:\\/\\/[A-Za-z0-9\\-._~:/?#@!$&()*+,;=%]+$",
+                  "type": "string"
+                },
+                "userCode": {
+                  "pattern": "^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service",
+                "attempt",
+                "state"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "view"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "sign_in_cancel",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_running",
+                "busy",
+                "not_offered",
+                "unsupported",
+                "not_yours",
+                "stale",
+                "unreachable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "staging_check",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            },
+            "rc53": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "rc53"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "staging_check",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_staging",
+                "not_offered"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     }
   ],
   "title": "PageFrontResult"

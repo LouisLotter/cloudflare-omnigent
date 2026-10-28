@@ -1,0 +1,39 @@
+{
+  "action": "computer_status",
+  "status": {
+    "observedAt": "2026-10-28T10:00:00.000Z",
+    "supervisor": "not_running",
+    "metrics": null,
+    "credentials": {
+      "checkpoint": null,
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "none"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "none"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "none"
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "state": "none"
+        }
+      ]
+    },
+    "signOut": {
+      "phase": "verified",
+      "running": false
+    },
+    "saves": [],
+    "rc53": {
+      "staging": false,
+      "desired": null,
+      "applied": null
+    }
+  }
+}

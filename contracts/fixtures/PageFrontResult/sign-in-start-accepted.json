@@ -1,0 +1,10 @@
+{
+  "action": "sign_in_start",
+  "outcome": "accepted",
+  "view": {
+    "service": "codex",
+    "attempt": 4,
+    "state": "starting",
+    "deadline": "2026-10-28T10:10:00.000Z"
+  }
+}

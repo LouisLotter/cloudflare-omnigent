@@ -1,0 +1,93 @@
+{
+  "action": "computer_status",
+  "status": {
+    "observedAt": "2026-10-28T10:00:00.000Z",
+    "supervisor": "ok",
+    "metrics": {
+      "supervisorVersion": "0.2.0",
+      "versions": {
+        "claude": "2.1.311",
+        "codex": "0.164.0",
+        "gh": "2.103.3"
+      },
+      "logins": {
+        "claude": "signed_in",
+        "codex": "signed_in"
+      },
+      "signIn": {
+        "claude": "none",
+        "codex": "none"
+      },
+      "rc53": true,
+      "hostname": "mapped",
+      "disk": {
+        "totalBytes": 21474836480,
+        "freeBytes": 17179869184
+      },
+      "alerts": [
+        {
+          "kind": "rc53_finding",
+          "count": 1
+        }
+      ]
+    },
+    "credentials": {
+      "checkpoint": {
+        "generation": 7,
+        "order": 4,
+        "createdAt": "2026-10-28T09:58:00.000Z"
+      },
+      "files": [
+        {
+          "path": ".claude/.credentials.json",
+          "state": "present"
+        },
+        {
+          "path": ".claude/.device-keys.json",
+          "state": "tombstone"
+        },
+        {
+          "path": ".codex/auth.json",
+          "state": "present"
+        },
+        {
+          "path": ".codex/.credentials.json",
+          "state": "tombstone"
+        }
+      ]
+    },
+    "signOut": {
+      "phase": "none",
+      "running": false
+    },
+    "saves": [
+      {
+        "at": "2026-10-28T09:59:00.000Z",
+        "generation": 7,
+        "outcome": "failed",
+        "reason": "policy_violation",
+        "kind": "delta",
+        "rc53": {
+          "status": 1,
+          "values": 196,
+          "files": 1423,
+          "findings": 14,
+          "incomplete": 0
+        }
+      },
+      {
+        "at": "2026-10-28T09:50:00.000Z",
+        "generation": 7,
+        "outcome": "published",
+        "reason": null,
+        "kind": "base",
+        "rc53": null
+      }
+    ],
+    "rc53": {
+      "staging": true,
+      "desired": true,
+      "applied": true
+    }
+  }
+}

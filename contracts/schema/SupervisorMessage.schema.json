@@ -8,6 +8,15 @@
           "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
           "type": "string"
         },
+        "features": {
+          "items": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
         "generation": {
           "maximum": 9007199254740991,
           "minimum": 0,

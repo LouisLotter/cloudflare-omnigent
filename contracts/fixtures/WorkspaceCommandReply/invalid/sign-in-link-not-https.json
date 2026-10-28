@@ -1,0 +1,9 @@
+{
+  "type": "sign_in_status",
+  "view": {
+    "service": "claude",
+    "attempt": 3,
+    "state": "awaiting_user",
+    "url": "http://claude.com/cai/oauth/authorize?state=x"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "type": "sign_in_start",
+  "view": {
+    "service": "codex",
+    "attempt": 4,
+    "state": "awaiting_user",
+    "url": "https://auth.openai.com/codex/device",
+    "userCode": "SYNT-H0000"
+  }
+}

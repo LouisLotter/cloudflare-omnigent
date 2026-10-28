@@ -1,0 +1,9 @@
+{
+  "type": "sign_in_status",
+  "view": {
+    "service": "claude",
+    "attempt": 3,
+    "state": "awaiting_user",
+    "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-4000-8000-000000000000&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile+user%3Ainference&code_challenge=synthetic-challenge-0000&code_challenge_method=S256&state=synthetic-state-0000"
+  }
+}

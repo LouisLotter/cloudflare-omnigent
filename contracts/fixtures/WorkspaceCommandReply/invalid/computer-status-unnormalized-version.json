@@ -1,0 +1,24 @@
+{
+  "type": "computer_status",
+  "status": {
+    "supervisorVersion": "0.2.0",
+    "versions": {
+      "claude": "2.1.311 (Claude Code)",
+      "codex": null,
+      "gh": null
+    },
+    "logins": {
+      "claude": "unknown",
+      "codex": "unknown"
+    },
+    "signIn": {
+      "claude": "none",
+      "codex": "none"
+    },
+    "rc53": false,
+    "hostname": "unknown",
+    "disk": null,
+    "alerts": [],
+    "captures": []
+  }
+}

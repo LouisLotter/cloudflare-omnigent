@@ -1,0 +1,9 @@
+{
+  "type": "sign_in_status",
+  "view": {
+    "service": "claude",
+    "attempt": 3,
+    "state": "failed",
+    "reason": "code_rejected"
+  }
+}

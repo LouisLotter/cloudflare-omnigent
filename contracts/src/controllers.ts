@@ -1,9 +1,14 @@
 import { z } from "zod";
-import { InterceptProps, SupervisorMessage } from "./computer-protocol.ts";
+import {
+  InterceptProps,
+  SignInAttempt,
+  SignInService,
+  SupervisorMessage,
+} from "./computer-protocol.ts";
 import { ComputerId, Generation, HostId, InstanceSize, OperationId, Timestamp } from "./ids.ts";
 import { AdmissionReason, HostSandboxStatus, LauncherRequest, ProvisionName } from "./launcher.ts";
 import { LifecycleState, type PageRefusal } from "./lifecycle.ts";
-import { IntentToken, PageOwner, TerminalWindow } from "./pages.ts";
+import { IntentToken, PageOwner, SaveOutcome, TerminalWindow } from "./pages.ts";
 import { SetupCard } from "./setup-cards.ts";
 
 // The payloads of WorkspaceDO's and ControlDO's RPC (the TypeScript interfaces are in
@@ -194,6 +199,25 @@ export const ComputerPageState = z.looseObject({
   /** Three sleeps in a row were refused: "Stop without saving the latest changes" (FH-35). */
   stopWithoutSavingOffered: z.boolean().optional(),
   terminal: TerminalWindow.optional(),
+  // Additive (WP3.23): sign-in from the page, the status's switch and the last save's outcome.
+  /**
+   * Whether the page can offer sign-in now: `yes` (the computer runs and its supervisor has the
+   * commands), `no` (an older supervisor: the terminal instead) or `unknown` (not reported yet).
+   * `attempts`: the caller's own session's attempts still running, from the page front.
+   */
+  signIn: z
+    .looseObject({
+      available: z.enum(["yes", "no", "unknown"]),
+      attempts: z
+        .array(z.looseObject({ service: SignInService, attempt: SignInAttempt }))
+        .max(4)
+        .optional(),
+    })
+    .optional(),
+  /** A staging installation: the page shows the RC-53 switch. Never true on production. */
+  stagingChecks: z.boolean().optional(),
+  /** The last final save outcome WorkspaceDO recorded (the list's "last save failed" badge). */
+  lastSave: SaveOutcome.nullable().optional(),
 });
 export type ComputerPageState = z.infer<typeof ComputerPageState>;
 
