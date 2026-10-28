@@ -150,6 +150,7 @@ async function commands(): Promise<unknown[]> {
     service: "claude",
     session,
     operationId: "op_00000000000000000000000002",
+    generation: 1,
   });
   const attempt = started.outcome === "accepted" ? started.view.attempt : 0;
   await staging.controller.signInStatus({ service: "claude", attempt, session });
@@ -164,6 +165,7 @@ async function commands(): Promise<unknown[]> {
     service: "codex",
     session,
     operationId: "op_00000000000000000000000004",
+    generation: 1,
   });
   await staging.controller.signInCancel({
     service: "codex",

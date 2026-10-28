@@ -1147,7 +1147,7 @@ describe("the sign-in routes (WP3.23)", () => {
     ]) {
       const refused = await route(
         `${page}/sign-in`,
-        json({ ...ok, mode: "start", service: "codex" }, headers),
+        json({ ...ok, mode: "start", service: "codex", generation: "7" }, headers),
       );
       expect(refused.status).toBe(403);
     }
@@ -1182,6 +1182,17 @@ describe("the sign-in routes (WP3.23)", () => {
       (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "x" }))).status,
     ).toBe(400);
     expect(
+      (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "codex" }))).status,
+    ).toBe(400);
+    expect(
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "x" }),
+        )
+      ).status,
+    ).toBe(400);
+    expect(
       (await route(`${page}/sign-in`, json({ ...ok, mode: "cancel", service: "codex" }))).status,
     ).toBe(400);
     expect(
@@ -1194,7 +1205,7 @@ describe("the sign-in routes (WP3.23)", () => {
     ).toBe(400);
     const started = await route(
       `${page}/sign-in`,
-      json({ ...ok, mode: "start", service: "codex" }),
+      json({ ...ok, mode: "start", service: "codex", generation: "7" }),
     );
     expect(started.status).toBe(200);
     expect(((await started.json()) as { html: string }).html).toContain("Starting the sign-in");
@@ -1217,6 +1228,7 @@ describe("the sign-in routes (WP3.23)", () => {
         owner: OWNER,
         intent: INTENT,
         service: "codex",
+        generation: 7,
       },
       {
         action: "sign_in_cancel",
@@ -1249,11 +1261,21 @@ describe("the sign-in routes (WP3.23)", () => {
     expect(await bad.json()).toEqual({ error: { code: "bad_request", field: "code" } });
     backend.actResult = platformError("forbidden", "token");
     expect(
-      (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "codex" }))).status,
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "7" }),
+        )
+      ).status,
     ).toBe(403);
     backend.actResult = { action: "restart", outcome: "accepted" };
     expect(
-      (await route(`${page}/sign-in`, json({ ...ok, mode: "start", service: "codex" }))).status,
+      (
+        await route(
+          `${page}/sign-in`,
+          json({ ...ok, mode: "start", service: "codex", generation: "7" }),
+        )
+      ).status,
     ).toBe(503);
   });
 });
@@ -1587,6 +1609,10 @@ describe("the sign-in markup (WP3.23)", () => {
       "expired after 10 minutes",
     );
     expect(signInHtml("claude", view({ state: "cancelled" }), NOW)).toContain("Cancelled.");
+    // Not yet confirmed stopped on the computer: no terminal offered yet.
+    const stopping = signInHtml("claude", view({ state: "cancelled", pending: true }), NOW);
+    expect(stopping).toContain("Stopping the sign-in on the computer");
+    expect(stopping).not.toContain('data-act="terminal"');
     expect(signInHtml("claude", view({ state: "superseded" }), NOW)).toContain("A newer sign-in");
     expect(signInHtml("claude", view({ state: "none" }), NOW)).toContain("The computer restarted");
   });

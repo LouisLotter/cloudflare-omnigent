@@ -130,12 +130,21 @@ async function post(
   headers: Record<string, string> = { origin: ORIGIN },
   sessionId = OWNER.sessionId,
 ) {
+  // A start names the generation the page shows, as the page's script sends it.
+  const generation =
+    body.mode === "start" && body.generation === undefined
+      ? /data-generation="([0-9]+)"/.exec(await (await route(path, {}, sessionId)).text())?.[1]
+      : undefined;
   const response = await route(
     `${path}/sign-in`,
     {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify({ op: op(), ...body }),
+      body: JSON.stringify({
+        op: op(),
+        ...(generation === undefined ? {} : { generation }),
+        ...body,
+      }),
     },
     sessionId,
   );
@@ -234,6 +243,9 @@ describe("sign-in through the pages and the real WorkspaceDO", () => {
     expect(
       (await post(path, { intent: "00".repeat(32), mode: "start", service: "claude" })).status,
     ).toBe(403);
+    // A start prepared for another generation is refused (Codex WP3.23 r1-2).
+    const stale = await post(path, { intent, mode: "start", service: "claude", generation: "999" });
+    expect(stale.json).toMatchObject({ outcome: "refused", reason: "stale" });
     // A GET, even one shaped like a change, only reads.
     await route(`${path}/sign-in?service=claude&attempt=1&mode=start&intent=${intent}`);
     await route(`${path}/status`);

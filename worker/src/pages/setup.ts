@@ -113,7 +113,7 @@ export async function setupPage(
 <div id="terminal" hidden></div>
 </div>`;
   const resume = JSON.stringify(state.computer.signIn?.attempts ?? []);
-  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-resume="${escapeHtml(resume)}">
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-resume="${escapeHtml(resume)}">
 <h1>${escapeHtml(view.name)}</h1>
 <p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
@@ -121,7 +121,7 @@ ${flashNotice(url)}
 <div class="layout">
 <section>
 <h2>Set up this computer</h2>
-<p class="muted">Sign in once to each service. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself.</p>
+<p class="muted">Sign in once to each service with the buttons on its card. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself. The terminal below is for troubleshooting, and for signing in by hand if the buttons do not work.</p>
 ${terminalPanel}
 </section>
 <section>
@@ -167,6 +167,7 @@ export async function stateJson(
     running: view.running,
     saving: view.saving,
     intent: state.intentToken ?? null,
+    generation: state.computer.generation,
     terminal: state.computer.terminal ?? null,
     cards: view.cards.map((c) => ({ ...c, html: card(c, view) })),
     notices: view.notices,

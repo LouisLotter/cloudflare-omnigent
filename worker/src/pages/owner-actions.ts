@@ -16,6 +16,7 @@
 import {
   type ComputerId,
   type ComputerStatusView,
+  Generation,
   OperationId,
   type PageOwner,
   type PageSignInView,
@@ -74,7 +75,7 @@ const REFUSED: Readonly<Record<SignInRefusal, string>> = {
     "This computer's software is older and cannot sign in from this page. Use the terminal instead.",
   not_yours:
     "This sign-in was started in another browser window. Start a new one here if you want to continue here.",
-  stale: "This sign-in has ended. Start again.",
+  stale: "This sign-in has ended, or the computer restarted since this page loaded. Start again.",
   unreachable: "The computer did not answer just now. This page keeps trying.",
 };
 
@@ -112,6 +113,10 @@ export function signInHtml(
     return `<p class="tone-warn" data-sign-in-refused="${answer.reason}">${escapeHtml(REFUSED[answer.reason])}</p>${fallback}${again}`;
   }
   const v = answer.view;
+  if (v.pending === true) {
+    // Ended here, not yet confirmed stopped on the computer: no terminal offer until it is.
+    return `<p class="muted" data-sign-in-state="stopping">Stopping the sign-in on the computer…</p>`;
+  }
   const until = v.deadline
     ? ` It ends at ${escapeHtml(formatTime(v.deadline, nowMs))} if not finished.`
     : "";
@@ -219,7 +224,15 @@ export async function signInChange(
     log({ event: "sign_in_change_refused", reason: change.refusal });
     return jsonResponse({ error: { code: "forbidden" } }, 403);
   }
-  const { op, intent, mode, service: rawService, attempt: rawAttempt, code } = change.value;
+  const {
+    op,
+    intent,
+    mode,
+    service: rawService,
+    attempt: rawAttempt,
+    code,
+    generation: rawGeneration,
+  } = change.value;
   const operationId = OperationId.safeParse(op);
   const service = parseService(rawService);
   if (!operationId.success || intent === undefined || !/^[0-9a-f]{64}$/.test(intent)) {
@@ -233,8 +246,16 @@ export async function signInChange(
     intent,
   };
   let call: Parameters<PagesBackend["act"]>[1];
-  if (mode === "start") call = { action: "sign_in_start", ...base, service };
-  else {
+  if (mode === "start") {
+    // The generation the page shows: a start for another is refused (WorkspaceDO checks it).
+    const generation = Generation.safeParse(
+      rawGeneration !== undefined && /^[0-9]{1,15}$/.test(rawGeneration)
+        ? Number(rawGeneration)
+        : -1,
+    );
+    if (!generation.success) return jsonResponse({ error: { code: "bad_request" } }, 400);
+    call = { action: "sign_in_start", ...base, service, generation: generation.data };
+  } else {
     const attempt = parseAttempt(rawAttempt);
     if (attempt === null) return jsonResponse({ error: { code: "bad_request" } }, 400);
     if (mode === "cancel") call = { action: "sign_in_cancel", ...base, service, attempt };

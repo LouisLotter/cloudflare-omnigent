@@ -153,6 +153,8 @@ import {
   attemptOfOp,
   begin,
   callerAttempt,
+  cancelsPending,
+  cleanupPending,
   closeAll,
   endedState,
   endWithContainer,
@@ -431,6 +433,8 @@ export class WorkspaceController {
   } | null = null;
   /** What was last logged as `computer_status`, and when. */
   #statusLogged: { readonly signature: string; readonly at: number } | null = null;
+  /** When the runner's last status read got no answer: it waits an interval before the next. */
+  #statusFailedAt: number | null = null;
 
   constructor(deps: ControllerDeps) {
     this.#d = deps;
@@ -1784,7 +1788,10 @@ export class WorkspaceController {
       sizeWarning: workspaceSizeWarning(r.workspaceBytes),
       stopWithoutSavingOffered: r.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
       // Additive (WP3.23).
-      signIn: { available: signInAvailable(r.supervisorInfo, r.lifecycle.generation) },
+      signIn: {
+        available: signInAvailable(r.supervisorInfo, r.lifecycle.generation),
+        cancelPending: cancelsPending(r.signIn, r.lifecycle.generation, now),
+      },
       stagingChecks: this.#d.stagingChecks === true,
       lastSave: r.saves[0] === undefined ? null : saveView(r.saves[0]),
     };
@@ -1813,6 +1820,8 @@ export class WorkspaceController {
     readonly service: SignInService;
     readonly session: string;
     readonly operationId: string;
+    /** The generation the page was showing: a start for any other is refused. */
+    readonly generation: number;
   }): Promise<
     | { readonly outcome: "accepted"; readonly view: PageSignInView }
     | { readonly outcome: "refused"; readonly reason: SignInRefusal }
@@ -1821,9 +1830,14 @@ export class WorkspaceController {
     const admitted = await this.#exclusive(() =>
       this.#write((d): SignInAttemptRecord | SignInRefusal => {
         const known = attemptOfOp(d.signIn, input.operationId);
+        // A repeat whose attempt is no longer kept ended long ago: never a second attempt.
+        if (known === "expired") return "stale";
         if (known !== undefined) return known;
         const refusal = startRefusal(this.#signInFacts(d));
         if (refusal !== null) return refusal;
+        // A start prepared on a page showing another generation (a delayed request, a page
+        // left open across a restart) is never admitted into this one (Codex WP3.23 r1-2).
+        if (input.generation !== d.lifecycle.generation) return "stale";
         const started = begin(d.signIn, {
           service: input.service,
           generation: d.lifecycle.generation,
@@ -1843,7 +1857,11 @@ export class WorkspaceController {
       const r = this.#require();
       const ended = endedState(admitted, r.lifecycle.generation, now);
       if (ended !== null || admitted.delivered) {
-        return { outcome: "accepted", view: pageView(admitted, null, ended ?? "starting") };
+        const pending = cleanupPending(admitted, r.lifecycle.generation, now);
+        return {
+          outcome: "accepted",
+          view: pageView(admitted, null, ended ?? "starting", pending),
+        };
       }
       const delivered = await this.#deliverStart(r, admitted);
       if (delivered === "unsupported") return { outcome: "refused", reason: "unsupported" };
@@ -1967,8 +1985,10 @@ export class WorkspaceController {
     );
     try {
       if (typeof ended === "string") return { outcome: "refused", reason: ended };
-      await this.#deliverCancel(this.#require(), ended);
-      return { outcome: "accepted", view: pageView(ended, null, "cancelled") };
+      // Unanswered, it stays owed (the runner repeats it): the page is told the CLI is not yet
+      // confirmed stopped, and the terminal is not offered meanwhile (Codex WP3.23 r1-6).
+      const confirmed = await this.#deliverCancel(this.#require(), ended);
+      return { outcome: "accepted", view: pageView(ended, null, "cancelled", !confirmed) };
     } finally {
       this.#kick();
     }
@@ -2018,7 +2038,8 @@ export class WorkspaceController {
     if (a.session !== input.session) return { outcome: "refused", reason: "not_yours" };
     const ended = endedState(a, r.lifecycle.generation, now);
     if (ended !== null || !a.delivered) {
-      return { outcome: "accepted", view: pageView(a, null, ended ?? "starting") };
+      const pending = cleanupPending(a, r.lifecycle.generation, now);
+      return { outcome: "accepted", view: pageView(a, null, ended ?? "starting", pending) };
     }
     try {
       const reply = await this.#command({
@@ -2236,7 +2257,13 @@ export class WorkspaceController {
   async #statusTick(r: ComputerRecord): Promise<void> {
     const now = this.#now();
     const interval = this.#t.statusIntervalMs ?? STATUS_INTERVAL_MS;
-    const supervisor = await this.#supervisorStatus(r, interval);
+    // An unanswered read waits an interval: a silent supervisor never holds every runner pass.
+    const failed = this.#statusFailedAt;
+    const waiting = failed !== null && now - failed < interval;
+    const supervisor = waiting
+      ? { part: "unreachable" as const, status: null }
+      : await this.#supervisorStatus(r, interval);
+    if (!waiting) this.#statusFailedAt = supervisor.part === "unreachable" ? now : null;
     const captures = supervisor.status?.captures ?? [];
     let current = r;
     if (captures.length > 0 && r.saves.some((s) => s.rc53 === null)) {

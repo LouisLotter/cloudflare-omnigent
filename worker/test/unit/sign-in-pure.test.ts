@@ -8,6 +8,8 @@ import {
   attemptOfOp,
   begin,
   callerAttempt,
+  cancelsPending,
+  cleanupPending,
   closeAll,
   endedState,
   endWithContainer,
@@ -58,7 +60,7 @@ describe("sign-in attempts", () => {
     expect(b.record.attempts[0]).toMatchObject({ ended: "superseded", cancel: "pending" });
     const c = started(b.record, 3, "codex");
     expect(c.record.attempts[1]?.ended).toBeNull();
-    expect(attemptOfOp(c.record, "op_2")?.attempt).toBe(2);
+    expect(attemptOfOp(c.record, "op_2")).toMatchObject({ attempt: 2 });
     expect(attemptOfOp(c.record, "op_9")).toBeUndefined();
     const custom = begin(NO_SIGN_IN, {
       service: "claude",
@@ -73,7 +75,7 @@ describe("sign-in attempts", () => {
 
   it("keeps a bounded record, never dropping an attempt still owed a cancel", () => {
     let r = NO_SIGN_IN;
-    for (let i = 0; i < 30; i += 1) r = started(r, i, i % 2 === 0 ? "claude" : "codex").record;
+    for (let i = 0; i < 70; i += 1) r = started(r, i, i % 2 === 0 ? "claude" : "codex").record;
     expect(r.attempts.length).toBeLessThanOrEqual(MAX_ATTEMPTS + 1);
     expect(r.ops).toHaveLength(MAX_START_OPS);
     const owed: SignInRecord = {
@@ -86,7 +88,40 @@ describe("sign-in attempts", () => {
         cancel: "pending" as const,
       })),
     };
-    expect(prune(owed).attempts).toHaveLength(MAX_ATTEMPTS + 1);
+    // Twelve owed cancels of one service compact to the newest; the rest can be dropped.
+    expect(prune(owed).attempts).toHaveLength(MAX_ATTEMPTS);
+    expect(prune(owed).attempts.filter((a) => a.cancel === "pending")).toHaveLength(1);
+    // Active attempts are never dropped, even past the bound.
+    const active: SignInRecord = {
+      ...owed,
+      attempts: owed.attempts.map((a) => ({ ...a, ended: null, cancel: "none" as const })),
+    };
+    expect(prune(active).attempts).toHaveLength(12);
+  });
+
+  it("compacts owed cancels per service and marks a pruned attempt's operation expired", () => {
+    let r = started(NO_SIGN_IN, 0, "codex").record;
+    for (let i = 1; i < 20; i += 1) r = started(r, i).record;
+    expect(r.attempts.find((a) => a.service === "codex")?.ended).toBeNull();
+    expect(r.attempts.filter((a) => a.cancel === "pending")).toHaveLength(1);
+    expect(r.attempts.length).toBeLessThanOrEqual(MAX_ATTEMPTS);
+    expect(attemptOfOp(r, "op_1")).toBe("expired");
+    expect(attemptOfOp(r, "op_19")).toMatchObject({ attempt: 20 });
+    expect(attemptOfOp(r, "op_none")).toBeUndefined();
+  });
+
+  it("says when an ended attempt's CLI is not yet confirmed stopped", () => {
+    const { record, attempt: a } = started(NO_SIGN_IN, 1);
+    expect(cleanupPending(a, 1, 2_000)).toBe(false);
+    expect(cleanupPending(a, 1, 601_000)).toBe(true);
+    expect(cleanupPending(a, 2, 601_000)).toBe(false);
+    expect(cleanupPending({ ...a, ended: "cancelled", cancel: "pending" }, 1, 0)).toBe(true);
+    expect(cancelsPending(record, 1, 2_000)).toBe(false);
+    expect(cancelsPending(closeAll(record), 1, 2_000)).toBe(true);
+    expect(pageView(a, null, "cancelled", true)).toMatchObject({
+      state: "cancelled",
+      pending: true,
+    });
   });
 
   it("closes every active attempt, and ends them all with the container", () => {

@@ -19,6 +19,8 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -455,7 +457,7 @@ def test_a_spawn_that_fails_is_start_failed(rig: Rig):
 
 
 def test_a_spawn_error_is_start_failed():
-    def spawn(_service):
+    def spawn(_service, _cancelled):
         raise OSError("no pty")
 
     signins = SI.SignIns(spawn)
@@ -469,17 +471,86 @@ def test_a_spawn_error_is_start_failed():
     }
 
 
+def _sleeper() -> tuple[subprocess.Popen[bytes], int]:
+    """A process in its own session, with a pty: what a spawn makes."""
+    master, slave = os.openpty()
+    proc = subprocess.Popen(
+        ["sleep", "60"], stdin=slave, stdout=slave, stderr=slave, start_new_session=True
+    )
+    os.close(slave)
+    return proc, master
+
+
+def test_a_cancel_mid_spawn_answers_only_once_nothing_can_start():
+    """Codex r1-3: a spawn waiting for a capture's gate gives up when the attempt ends; one that
+    completes anyway is killed and reaped before the cancel is answered."""
+    gate = threading.Event()
+    gave_up = []
+
+    def waits_for_the_gate(_service, cancelled):
+        while not gate.wait(0.05):
+            if cancelled():
+                gave_up.append(True)
+                raise SI.SpawnCancelled
+        return _sleeper()
+
+    signins = SI.SignIns(waits_for_the_gate)
+    signins.start("codex", 1)
+    view = signins.cancel("codex", 1)
+    assert view["state"] == "cancelled" and gave_up == [True]
+    assert signins._current["codex"].proc is None
+
+    made = []
+
+    def ignores_the_cancel(_service, _cancelled):
+        time.sleep(0.5)
+        proc, fd = _sleeper()
+        made.append(proc)
+        return proc, fd
+
+    signins = SI.SignIns(ignores_the_cancel)
+    signins.start("claude", 1)
+    assert signins.cancel("claude", 1)["state"] == "cancelled"
+    assert made and made[0].poll() is not None and _group_gone(made[0].pid)
+    # A newer start ends an older one mid-spawn the same way before it begins.
+    made.clear()
+    signins.start("claude", 2)
+    signins.start("claude", 3)
+    assert made and made[0].poll() is not None
+    signins.cancel_all()
+    signins.join()
+    assert all(p.poll() is not None for p in made)
+
+
+def test_an_unsettled_spawn_is_reported(monkeypatch):
+    monkeypatch.setattr(SI, "SPAWN_SETTLE_S", 0.2)
+    release = threading.Event()
+
+    def wedged(_service, _cancelled):
+        release.wait(5)
+        return _sleeper()
+
+    signins = SI.SignIns(wedged)
+    signins.start("codex", 1)
+    with pytest.raises(SI.SignInUnsettled):
+        signins.cancel("codex", 1)
+    assert signins.cancel_all() is True  # nothing left running to end
+    release.set()
+    signins.join()
+    assert signins._current["codex"].state == "cancelled"
+
+
 def test_output_beyond_its_bound_is_unexpected():
     attempt = SI.Attempt("codex", 1, started=0.0, deadline=100.0)
     attempt.out += b"x" * (SI.MAX_OUTPUT_BYTES + 1)
-    signins = SI.SignIns(lambda s: (_ for _ in ()).throw(OSError()), clock=lambda: 1.0)
+    signins = SI.SignIns(lambda s, c: (_ for _ in ()).throw(OSError()), clock=lambda: 1.0)
     with signins._lock:
         assert signins._step(attempt, exited=False)
     assert attempt.view()["reason"] == "unexpected_output"
 
 
 def test_only_claude_takes_a_code_and_never_a_control_character():
-    signins = SI.SignIns(lambda s: (_ for _ in ()).throw(OSError()))
+    signins = SI.SignIns(lambda s, c: (_ for _ in ()).throw(OSError()))
     for service, code in [("codex", "a#b"), ("claude", "a\rb"), ("claude", "a b")]:
         with pytest.raises(SI.SignInConflict):
             signins.write(service, 1, code)

@@ -62,6 +62,9 @@ LINK_TIMEOUT_S = 60.0
 MAX_OUTPUT_BYTES = 64 * 1024
 #: Finished attempts remembered for their status, per service.
 KEEP_FINISHED = 8
+#: How long ending an attempt waits for its spawn to finish (the spawn gives up waiting for a
+#: capture's gate as soon as the attempt ends, so this is a bound on a wedged spawn only).
+SPAWN_SETTLE_S = 30.0
 
 _LINK_CHARS = re.compile(r"^https://[A-Za-z0-9\-._~:/?#@!$&()*+,;=%]+$")
 _USER_CODE = re.compile(r"^[A-Z0-9]{4,12}(?:-[A-Z0-9]{4,12}){0,3}$")
@@ -201,6 +204,15 @@ class SignInConflict(Exception):
     """The command does not fit the attempt's state (no such attempt, not waiting, Codex)."""
 
 
+class SignInUnsettled(Exception):
+    """An ended attempt's spawn has not finished in time: its process may still start; the
+    caller answers "try again" (Codex WP3.23 r1-3)."""
+
+
+class SpawnCancelled(Exception):
+    """The attempt ended while its spawn waited (for a capture's gate)."""
+
+
 @dataclass
 class Attempt:
     service: str
@@ -218,6 +230,8 @@ class Attempt:
     #: Offset in the decoded output at the last pasted code; -1 before any.
     after_input: int = -1
     stop: threading.Event = field(default_factory=threading.Event)
+    #: Set once its spawn is over: the process is assigned, or killed and reaped, or never made.
+    spawned: threading.Event = field(default_factory=threading.Event)
 
     def view(self) -> dict[str, Any]:
         view: dict[str, Any] = {
@@ -236,9 +250,10 @@ class Attempt:
         return view
 
 
-#: spawn(service) -> (process, pty master): the CLI's login, as workload, in a new session whose
-#: controlling terminal is the pty. Raises on failure.
-Spawn = Callable[[str], "tuple[subprocess.Popen[bytes], int]"]
+#: spawn(service, cancelled) -> (process, pty master): the CLI's login, as workload, in a new
+#: session whose controlling terminal is the pty. Raises on failure, and ``SpawnCancelled`` when
+#: ``cancelled()`` turns true while it waits.
+Spawn = Callable[[str, Callable[[], bool]], "tuple[subprocess.Popen[bytes], int]"]
 
 
 class SignIns:
@@ -279,22 +294,28 @@ class SignIns:
                     return current.view()
                 return self._known(service, number)
             self._fence[service] = number
-            if current is not None:
-                self._end(current, "superseded")
+            superseded = current if current is not None and current.state in ACTIVE else None
+            if superseded is not None:
+                self._end(superseded, "superseded")
             attempt = Attempt(service, number, started=self._clock())
             attempt.deadline = attempt.started + self.deadline_s
             self._current[service] = attempt
             if not self._ready():
                 self._end(attempt, "failed", "not_ready")
+                attempt.spawned.set()
                 return attempt.view()
-            thread = threading.Thread(
-                target=self._run, args=(attempt,), name=f"sign-in-{service}", daemon=True
-            )
+        # The older attempt is ended first: its process killed and reaped, even mid-spawn. A
+        # wedged spawn does not hold the new attempt back; its own thread kills it when it ends.
+        if superseded is not None and not self._settle([superseded]):
+            self._alert("sign_in_failed")
+        thread = threading.Thread(
+            target=self._run, args=(attempt,), name=f"sign-in-{service}", daemon=True
+        )
+        with self._lock:
             self._threads.append(thread)
-            thread.start()
-            view = attempt.view()
+        thread.start()
         self._on_change()
-        return view
+        return self.status(service, number)
 
     def write(self, service: str, number: int, code: str) -> dict[str, Any]:
         """Claude: the pasted code and a carriage return, to the attempt's pty."""
@@ -314,11 +335,15 @@ class SignIns:
             return attempt.view()
 
     def cancel(self, service: str, number: int) -> dict[str, Any]:
+        """Ends the attempt (and any older one); answers only once its process can no longer
+        start and any it made is reaped. Raises ``SignInUnsettled`` otherwise."""
         with self._lock:
             self._fence[service] = max(self._fence[service], number)
             current = self._current[service]
+            ended = []
             if current is not None and current.number <= number:
                 self._end(current, "cancelled" if current.number == number else "superseded")
+                ended.append(current)
             if current is None or current.number != number:
                 finished = self._finished[service]
                 finished.setdefault(
@@ -326,7 +351,10 @@ class SignIns:
                 )
                 self._trim(service)
             view = self._known(service, number)
+        settled = self._settle(ended)
         self._on_change()
+        if not settled:
+            raise SignInUnsettled("the attempt's spawn has not finished")
         return view
 
     def status(self, service: str, number: int) -> dict[str, Any]:
@@ -336,15 +364,20 @@ class SignIns:
                 return current.view()
             return self._known(service, number)
 
-    def cancel_all(self) -> None:
-        """Ends every running attempt (a sign-out, a stop): killed and reaped before returning."""
+    def cancel_all(self) -> bool:
+        """Ends every running attempt (a sign-out, a stop): killed and reaped before returning.
+        False if a spawn has not finished in time (its process may still start)."""
         with self._lock:
+            ended = []
             for service in SERVICES:
                 current = self._current[service]
                 if current is not None and current.state in ACTIVE:
                     self._fence[service] = max(self._fence[service], current.number)
                     self._end(current, "cancelled")
+                    ended.append(current)
+        settled = self._settle(ended)
         self._on_change()
+        return settled
 
     def states(self) -> dict[str, str]:
         """Each service's latest attempt's state, or ``none``: names only, for the status."""
@@ -360,6 +393,17 @@ class SignIns:
             thread.join(timeout)
 
     # -- internals ----------------------------------------------------------------------------
+
+    def _settle(self, ended: list[Attempt]) -> bool:
+        """Waits (never under the lock: the spawning thread needs it) until each ended attempt's
+        spawn is over, then kills and reaps what it made. True once none can still start."""
+        settled = True
+        for attempt in ended:
+            if not attempt.spawned.wait(SPAWN_SETTLE_S):
+                settled = False
+                continue
+            _kill(attempt.proc)
+        return settled
 
     def _known(self, service: str, number: int) -> dict[str, Any]:
         finished = self._finished[service].get(number)
@@ -398,21 +442,27 @@ class SignIns:
 
     def _run(self, attempt: Attempt) -> None:
         try:
-            proc, fd = self._spawn(attempt.service)
-        except Exception:  # noqa: BLE001 - never the exception's text
+            proc, fd = self._spawn(attempt.service, attempt.stop.is_set)
+        except Exception:  # noqa: BLE001 - never the exception's text (a cancel's included)
             with self._lock:
                 self._end(attempt, "failed", "start_failed")
+            attempt.spawned.set()
             self._on_change()
             return
         with self._lock:
-            if attempt.stop.is_set():
-                # Ended while it was being spawned (a cancel, a newer start).
-                _kill(proc)
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-                return
-            attempt.proc = proc
-            attempt.fd = fd
+            stopped = attempt.stop.is_set()
+            if not stopped:
+                attempt.proc = proc
+                attempt.fd = fd
+        if stopped:
+            # Ended while it was being spawned (a cancel, a newer start): killed and reaped
+            # before anyone waiting on the spawn is told it is over.
+            _kill(proc)
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            attempt.spawned.set()
+            return
+        attempt.spawned.set()
         try:
             self._read(attempt)
         except Exception:  # noqa: BLE001 - a reader failure ends the attempt, never silently

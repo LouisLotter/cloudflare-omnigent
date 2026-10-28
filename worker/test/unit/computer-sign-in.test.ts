@@ -14,8 +14,18 @@ const op = () => {
   return `op_${String(ops).padStart(26, "0")}`;
 };
 
+function generation(sim: ComputerSim): number {
+  const raw = sim.store.get("computer") as { lifecycle?: { generation?: number } } | undefined;
+  return raw?.lifecycle?.generation ?? 0;
+}
+
 function start(sim: ComputerSim, service: "claude" | "codex" = "claude", session = SESSION) {
-  return sim.controller.signInStart({ service, session, operationId: op() });
+  return sim.controller.signInStart({
+    service,
+    session,
+    operationId: op(),
+    generation: generation(sim),
+  });
 }
 
 function accepted<T extends { outcome: string }>(answer: T) {
@@ -54,7 +64,7 @@ describe("signing in from the page", () => {
   it("signs in to Claude: link, the pasted code, the card; nothing stored or logged", async () => {
     const sim = new ComputerSim();
     await sim.running();
-    expect((await sim.page()).signIn).toEqual({ available: "yes" });
+    expect((await sim.page()).signIn).toMatchObject({ available: "yes", cancelPending: false });
     const started = accepted(await start(sim));
     expect(started.view.state).toBe("awaiting_user");
     expect(started.view.url).toMatch(/^https:\/\/claude\.com\/cai\/oauth\/authorize\?/);
@@ -115,18 +125,33 @@ describe("signing in from the page", () => {
     await sim.running();
     const id = op();
     const first = accepted(
-      await sim.controller.signInStart({ service: "claude", session: SESSION, operationId: id }),
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: id,
+        generation: generation(sim),
+      }),
     );
     await sim.restart();
     const again = accepted(
-      await sim.controller.signInStart({ service: "claude", session: SESSION, operationId: id }),
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: id,
+        generation: generation(sim),
+      }),
     );
     expect(again.view.attempt).toBe(first.view.attempt);
     expect(again.view.state).toBe("starting");
     expect(sim.record().signIn.next).toBe(first.view.attempt);
     // Another session repeating the same operation does not get the attempt.
     expect(
-      await sim.controller.signInStart({ service: "claude", session: OTHER, operationId: id }),
+      await sim.controller.signInStart({
+        service: "claude",
+        session: OTHER,
+        operationId: id,
+        generation: generation(sim),
+      }),
     ).toEqual({ outcome: "refused", reason: "not_yours" });
   });
 
@@ -152,14 +177,14 @@ describe("signing in from the page", () => {
     const sim = new ComputerSim();
     sim.computer.supervisorOptions = { legacy: true };
     await sim.running();
-    expect((await sim.page()).signIn).toEqual({ available: "no" });
+    expect((await sim.page()).signIn).toMatchObject({ available: "no" });
     expect(await start(sim)).toEqual({ outcome: "refused", reason: "unsupported" });
     // A record that never heard its hello: the start is tried, refused as unknown, and recorded.
     const r = sim.record();
     sim.store.put("computer", { ...r, supervisorInfo: null });
-    expect((await sim.page()).signIn).toEqual({ available: "unknown" });
+    expect((await sim.page()).signIn).toMatchObject({ available: "unknown" });
     expect(await start(sim)).toEqual({ outcome: "refused", reason: "unsupported" });
-    expect((await sim.page()).signIn).toEqual({ available: "no" });
+    expect((await sim.page()).signIn).toMatchObject({ available: "no" });
     expect(sim.record().signIn.attempts.at(-1)?.ended).toBe("finished");
   });
 
@@ -397,6 +422,163 @@ describe("more sign-in edges", () => {
 
   it("knows no attempt of a computer that has no record", () => {
     expect(new ComputerSim().controller.sessionAttempts(SESSION)).toEqual([]);
+  });
+});
+
+describe("Codex WP3.23 r1 regressions", () => {
+  it("r1-1: never forgets an active attempt or an owed cancel, however many starts pile up", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const codex = accepted(await start(sim, "codex")).view.attempt;
+    await offline(sim, async () => {
+      for (let i = 0; i < 9; i += 1) accepted(await start(sim));
+    });
+    const r = sim.record();
+    expect(r.signIn.attempts.find((a) => a.attempt === codex)?.ended).toBeNull();
+    expect(r.signIn.attempts.length).toBeLessThanOrEqual(8);
+    expect(
+      r.signIn.attempts.filter((a) => a.cancel === "pending" && a.service === "claude"),
+    ).toHaveLength(1);
+    live(sim).runnerProcesses = 0;
+    expect(await sim.call(sim.client.suspendRequest())).toMatchObject({ reason: "terminal_open" });
+    await sim.controller.pages({ interfaceVersion: 1, action: "restart", operationId: op() });
+    await sim.advance(30_000);
+    const types = sim.computer.supervisors[0]?.commands.map((c) => c) ?? [];
+    const codexCancel = types.findIndex(
+      (c) => c.type === "sign_in_cancel" && (c as { attempt: number }).attempt === codex,
+    );
+    expect(codexCancel).toBeGreaterThan(-1);
+    expect(codexCancel).toBeLessThan(types.findIndex((c) => c.type === "credential_snapshot"));
+  });
+
+  it("r1-2: refuses a start prepared for another generation", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const shown = generation(sim);
+    expect(
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: op(),
+        generation: shown + 1,
+      }),
+    ).toEqual({ outcome: "refused", reason: "stale" });
+    // The page loaded in generation 1; the computer is restarted into generation 2 meanwhile.
+    live(sim).runnerProcesses = 0;
+    await sim.controller.pages({ interfaceVersion: 1, action: "restart", operationId: op() });
+    await sim.advance(120_000);
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(5_000);
+    expect(generation(sim)).toBeGreaterThan(shown);
+    expect(
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: op(),
+        generation: shown,
+      }),
+    ).toEqual({ outcome: "refused", reason: "stale" });
+    expect(sent(sim, "sign_in_start")).toHaveLength(0);
+  });
+
+  it("r1-4: a repeated start whose attempt is no longer kept never starts another", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const first = op();
+    const g = generation(sim);
+    const view = accepted(
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: first,
+        generation: g,
+      }),
+    ).view;
+    await sim.controller.signInCancel({
+      service: "claude",
+      attempt: view.attempt,
+      session: SESSION,
+    });
+    for (let i = 0; i < 9; i += 1) {
+      const a = accepted(await start(sim)).view.attempt;
+      await sim.controller.signInCancel({ service: "claude", attempt: a, session: SESSION });
+    }
+    await sim.restart();
+    expect(sim.record().signIn.attempts.some((a) => a.attempt === view.attempt)).toBe(false);
+    const before = sim.record().signIn.next;
+    expect(
+      await sim.controller.signInStart({
+        service: "claude",
+        session: SESSION,
+        operationId: first,
+        generation: g,
+      }),
+    ).toEqual({ outcome: "refused", reason: "stale" });
+    expect(sim.record().signIn.next).toBe(before);
+  });
+
+  it("r1-6: an unanswered cancel stays pending, and the terminal waits for it", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const { attempt } = accepted(await start(sim, "codex")).view;
+    const cancelled = await offline(sim, () =>
+      sim.controller.signInCancel({ service: "codex", attempt, session: SESSION }),
+    );
+    expect(accepted(cancelled).view).toMatchObject({ state: "cancelled", pending: true });
+    expect((await sim.page()).signIn?.cancelPending).toBe(true);
+    expect(
+      accepted(await sim.controller.signInStatus({ service: "codex", attempt, session: SESSION }))
+        .view.pending,
+    ).toBe(true);
+    await sim.advance(2_000);
+    expect((await sim.page()).signIn?.cancelPending).toBe(false);
+    expect(
+      accepted(await sim.controller.signInStatus({ service: "codex", attempt, session: SESSION }))
+        .view,
+    ).toMatchObject({ state: "cancelled" });
+  });
+
+  it("an expired attempt is pending until its cancel is answered", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    const { attempt } = accepted(await start(sim)).view;
+    sim.now += 10 * 60_000 + 1;
+    expect(
+      accepted(await sim.controller.signInStatus({ service: "claude", attempt, session: SESSION }))
+        .view,
+    ).toMatchObject({ state: "expired", pending: true });
+    expect((await sim.page()).signIn?.cancelPending).toBe(true);
+    await sim.advance(5_000);
+    expect((await sim.page()).signIn?.cancelPending).toBe(false);
+  });
+
+  it("asks a silent supervisor for its status at most once an interval", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    await sim.advance(5 * 60_000);
+    let asked = 0;
+    const handler = sim.computer.supervisor;
+    sim.computer.supervisor = async (request) => {
+      const body = (await request.clone().json()) as { type?: string };
+      if (body.type === "computer_status") {
+        asked += 1;
+        return Response.json(
+          { error: { code: "unavailable", message: "down", retryable: true } },
+          { status: 503 },
+        );
+      }
+      return (handler as (r: Request) => Promise<Response>)(request);
+    };
+    await sim.advance(5 * 60_000 + 1_000);
+    expect(asked).toBe(1);
+    await sim.advance(4 * 60_000);
+    expect(asked).toBe(1);
+    await sim.advance(2 * 60_000);
+    expect(asked).toBe(2);
+    sim.computer.supervisor = handler;
+    expect(sim.logs.filter((l) => l.event === "computer_status").at(-1)?.fields.supervisor).toBe(
+      "unreachable",
+    );
   });
 });
 

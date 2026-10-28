@@ -66,6 +66,7 @@
       if (!response.ok) return;
       const json = await response.json();
       if (typeof json.intent === "string") state.intent = json.intent;
+      if (Number.isSafeInteger(json.generation)) root.dataset.generation = String(json.generation);
       if (Array.isArray(json.cards)) {
         for (const card of json.cards) updateCard(card.provider, card.html);
       }
@@ -94,7 +95,7 @@
   // ------------------------------------------------------------------------------------------
   // Sign-in from the page.
 
-  /** Running flows by service: { attempt, state, notice, timer }. */
+  /** Running flows by service: { attempt, state, shown, timer }. `shown`: what the markup shows. */
   const flows = {};
   const POLL_MS = 2000;
   const ACTIVE = new Set(["starting", "awaiting_user", "completing"]);
@@ -155,17 +156,21 @@
 
   /** Applies an answer: the server's markup, and polling while the attempt is active. */
   function apply(service, json) {
-    const flow = flows[service] ?? { attempt: null, state: null, notice: null, timer: null };
+    const flow = flows[service] ?? { attempt: null, state: null, shown: null, timer: null };
     flows[service] = flow;
     const view = json?.view;
     if (json?.outcome === "accepted" && view) {
-      const changed = view.state !== flow.state || view.notice !== flow.notice;
+      // The markup changes only with the attempt, its state, its notice or a pending cleanup,
+      // so a code being typed is never wiped by a poll (Codex WP3.23 r1-5).
+      const shown = `${view.attempt}/${view.state}/${view.notice ?? ""}/${view.pending === true}`;
+      const changed = shown !== flow.shown;
+      // A cleanup not yet confirmed keeps polling, as an active attempt does.
+      const active = ACTIVE.has(view.state) || view.pending === true;
       flow.attempt = view.attempt;
-      flow.state = ACTIVE.has(view.state) ? view.state : null;
-      flow.notice = view.notice ?? null;
-      // An unchanged state keeps the markup, so a code being typed is never wiped.
+      flow.state = active ? view.state : null;
+      flow.shown = shown;
       if (changed) showFlow(service, json.html);
-      if (ACTIVE.has(view.state)) schedule(service);
+      if (active) schedule(service);
       else {
         stopPolling(service);
         if (view.state === "done") void refresh();
@@ -268,7 +273,7 @@
     const flow = flows[service];
     switch (button.getAttribute("data-act")) {
       case "start":
-        void act(service, { mode: "start" }, button);
+        void act(service, { mode: "start", generation: root.dataset.generation }, button);
         break;
       case "cancel":
         if (flow?.attempt) void act(service, { mode: "cancel", attempt: flow.attempt }, button);
@@ -304,7 +309,7 @@
   // A reload resumes this session's attempts that still run.
   try {
     for (const { service, attempt } of JSON.parse(root.dataset.resume || "[]")) {
-      flows[service] = { attempt, state: "starting", notice: null, timer: null };
+      flows[service] = { attempt, state: "starting", shown: null, timer: null };
       void poll(service);
     }
   } catch {

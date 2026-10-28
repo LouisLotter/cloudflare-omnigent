@@ -592,6 +592,18 @@ describe("terminal admission is serialized with the steps that end it (Codex r1-
 });
 
 describe("sign-in from the page (WP3.23)", () => {
+  it("keeps the terminal closed while a sign-in's CLI is not yet confirmed stopped", () => {
+    expect(
+      terminalTarget(pageState({ signIn: { available: "yes", cancelPending: true } })),
+    ).toEqual({
+      ok: false,
+      reason: "busy",
+    });
+    expect(
+      terminalTarget(pageState({ signIn: { available: "yes", cancelPending: false } })).ok,
+    ).toBe(true);
+  });
+
   const base = (intent: string, extra: Record<string, unknown>) => ({
     interfaceVersion: 1,
     operationId: OP(7),
@@ -603,7 +615,7 @@ describe("sign-in from the page (WP3.23)", () => {
   it("checks the intent token before any sign-in effect", async () => {
     const { front, controller } = harness();
     for (const extra of [
-      { action: "sign_in_start", service: "claude" },
+      { action: "sign_in_start", service: "claude", generation: 7 },
       { action: "sign_in_input", service: "claude", attempt: 1, code: "a#b" },
       { action: "sign_in_cancel", service: "codex", attempt: 2 },
       { action: "staging_check", rc53: true },
@@ -617,7 +629,9 @@ describe("sign-in from the page (WP3.23)", () => {
     const { front, controller } = harness();
     const intent = await intentOf(front);
     expect(
-      await front.pages(base(intent, { action: "sign_in_start", service: "claude" })),
+      await front.pages(
+        base(intent, { action: "sign_in_start", service: "claude", generation: 7 }),
+      ),
     ).toMatchObject({ action: "sign_in_start", outcome: "accepted" });
     await front.pages(
       base(intent, { action: "sign_in_input", service: "claude", attempt: 1, code: "a#b" }),
@@ -632,7 +646,7 @@ describe("sign-in from the page (WP3.23)", () => {
     expect(calls).toEqual([
       {
         method: "start",
-        input: { service: "claude", session: OWNER.sessionId, operationId: OP(7) },
+        input: { service: "claude", session: OWNER.sessionId, operationId: OP(7), generation: 7 },
       },
       {
         method: "input",

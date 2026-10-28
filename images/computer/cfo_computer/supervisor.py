@@ -62,7 +62,7 @@ from .paths import OMNIGENT_INTERNAL_URL, Account, Layout
 from .policy import Policy
 from .procutil import module_argv, run_workload, spawn_workload, workload_argv, workload_env
 from .restore import RestoreFailed, restore_workspace
-from .signin import SignInConflict, SignIns, spawn_login
+from .signin import SignInConflict, SignIns, SignInUnsettled, SpawnCancelled, spawn_login
 from .tree import tree_digest
 
 REPORT_INTERVAL_S = 30.0
@@ -357,11 +357,19 @@ class Supervisor:
             with self._lock:
                 self._workload_pids.add(self.terminal.pid)
 
-    def _spawn_login(self, service: str) -> tuple[subprocess.Popen[bytes], int]:
+    def _spawn_login(
+        self, service: str, cancelled: Callable[[], bool]
+    ) -> tuple[subprocess.Popen[bytes], int]:
         """A sign-in's CLI login (signin.py), as workload: the terminal's environment, the
-        person's account, the workload cgroup, and never while a capture runs."""
+        person's account, the workload cgroup, and never while a capture runs. Waiting for a
+        capture's gate gives up as soon as the attempt ends."""
         cli = self.tools.claude if service == "claude" else self.tools.codex
-        with self._spawn_gate():
+        while not self._capture_gate.acquire(timeout=0.2):
+            if cancelled():
+                raise SpawnCancelled
+        try:
+            if cancelled():
+                raise SpawnCancelled
             proc, fd = spawn_login(
                 service,
                 cli=cli,
@@ -373,6 +381,8 @@ class Supervisor:
             )
             with self._lock:
                 self._workload_pids.add(proc.pid)
+        finally:
+            self._capture_gate.release()
         return proc, fd
 
     # -- commands ----------------------------------------------------------------------------
@@ -916,8 +926,10 @@ class Supervisor:
         return {"type": "credential_snapshot", "order": bundle["order"]}
 
     def _cmd_sign_out(self, command: dict[str, Any]) -> dict[str, Any]:
-        # A sign-in still running could finish after the logouts: it is ended first.
-        self.signins.cancel_all()
+        # A sign-in still running could finish after the logouts: it is ended first, its process
+        # reaped; if that cannot be confirmed, nothing runs and WorkspaceDO asks again.
+        if not self.signins.cancel_all():
+            raise CommandError("unavailable", "a sign-in is still being stopped", retryable=True)
         result = L.sign_out(
             lambda argv, timeout: self._run(list(argv), timeout),
             self.tools.claude,
@@ -941,7 +953,10 @@ class Supervisor:
         return {"type": "sign_in_input", "view": view}
 
     def _cmd_sign_in_cancel(self, command: dict[str, Any]) -> dict[str, Any]:
-        view = self.signins.cancel(command["service"], int(command["attempt"]))
+        try:
+            view = self.signins.cancel(command["service"], int(command["attempt"]))
+        except SignInUnsettled as exc:
+            raise CommandError("unavailable", str(exc), retryable=True) from None
         return {"type": "sign_in_cancel", "view": view}
 
     def _cmd_sign_in_status(self, command: dict[str, Any]) -> dict[str, Any]:

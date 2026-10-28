@@ -32,9 +32,13 @@ import { z } from "zod";
 export const SIGN_IN_DEADLINE_MS = 10 * 60_000;
 /** How often the runner asks the supervisor whether an active attempt has finished. */
 export const SIGN_IN_CHECK_MS = 15_000;
-/** Attempts and start operations kept in the record. */
+/**
+ * Attempts and start operations kept in the record. Only ended attempts with no cancel owed are
+ * ever dropped; at most one attempt per service is active and, after compaction, at most one
+ * cancel per service is owed, so the bound always holds (Codex WP3.23 r1-1).
+ */
 export const MAX_ATTEMPTS = 8;
-export const MAX_START_OPS = 16;
+export const MAX_START_OPS = 64;
 
 const Millis = z.number().int().min(0).max(8.64e15);
 const Count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -62,7 +66,7 @@ export type SignInAttemptRecord = z.infer<typeof SignInAttemptRecord>;
 export const SignInRecord = z.strictObject({
   /** The last attempt number given; never decreases. */
   next: Count,
-  attempts: z.array(SignInAttemptRecord).max(MAX_ATTEMPTS + 1),
+  attempts: z.array(SignInAttemptRecord).max(MAX_ATTEMPTS + 4),
   /** Start operations and the attempt each made, so a retried start gets the same attempt. */
   ops: z.array(z.strictObject({ op: z.string().max(64), attempt: Count })).max(MAX_START_OPS + 1),
 });
@@ -119,10 +123,18 @@ export function leaseUntil(r: SignInRecord, generation: number, now: number): nu
   return active.length === 0 ? null : Math.max(...active.map((a) => a.deadline));
 }
 
-/** The attempt a start operation made, if any. */
-export function attemptOfOp(r: SignInRecord, op: string): SignInAttemptRecord | undefined {
+/**
+ * The attempt a start operation made; `expired` when the operation is known but its attempt is
+ * no longer kept (it ended long ago: a repeat must never start another, Codex WP3.23 r1-4);
+ * undefined for a new operation.
+ */
+export function attemptOfOp(
+  r: SignInRecord,
+  op: string,
+): SignInAttemptRecord | "expired" | undefined {
   const known = r.ops.find((o) => o.op === op);
-  return known === undefined ? undefined : r.attempts.find((a) => a.attempt === known.attempt);
+  if (known === undefined) return undefined;
+  return r.attempts.find((a) => a.attempt === known.attempt) ?? "expired";
 }
 
 /** Starts a new attempt (persisted by the caller): supersedes the service's active ones. */
@@ -168,26 +180,46 @@ export function begin(
   };
 }
 
-/** Keeps the newest attempts and start operations, never one still owed a cancel. */
+/**
+ * A cancel for a service's attempt N raises the supervisor's fence to N and ends any attempt of
+ * that service up to N, so an owed cancel for an older attempt of the same service is covered by
+ * a newer owed one: only the newest per service stays owed.
+ */
+function compact(attempts: readonly SignInAttemptRecord[]): SignInAttemptRecord[] {
+  const newest = new Map<string, number>();
+  for (const a of attempts) {
+    if (a.cancel === "pending")
+      newest.set(a.service, Math.max(newest.get(a.service) ?? 0, a.attempt));
+  }
+  return attempts.map((a) =>
+    a.cancel === "pending" && a.attempt < (newest.get(a.service) ?? 0)
+      ? { ...a, cancel: "done" as const }
+      : a,
+  );
+}
+
+/**
+ * Keeps the record bounded: owed cancels compacted, then the oldest ended attempts with no cancel
+ * owed dropped. An active attempt or an owed cancel is never dropped (Codex WP3.23 r1-1).
+ */
 export function prune(r: SignInRecord): SignInRecord {
-  let attempts = [...r.attempts];
+  const attempts = compact(r.attempts);
   while (attempts.length > MAX_ATTEMPTS) {
     const drop = attempts.findIndex((a) => a.ended !== null && a.cancel !== "pending");
     if (drop < 0) break;
     attempts.splice(drop, 1);
   }
-  attempts = attempts.slice(-(MAX_ATTEMPTS + 1));
   return { ...r, attempts, ops: r.ops.slice(-MAX_START_OPS) };
 }
 
 /** Ends every active attempt (a stop, a sign-out, a removal): each cancel is queued. */
 export function closeAll(r: SignInRecord): SignInRecord {
-  return {
+  return prune({
     ...r,
     attempts: r.attempts.map((a) =>
       a.ended === null ? { ...a, ended: "cancelled" as const, cancel: "pending" as const } : a,
     ),
-  };
+  });
 }
 
 /** The container stopped, or a new generation starts: every attempt ended with it, and no
@@ -207,13 +239,28 @@ export function endWithContainer(r: SignInRecord): SignInRecord {
   };
 }
 
-/** Changes one attempt (by number). */
+/** Changes one attempt (by number), keeping the record compact. */
 export function update(
   r: SignInRecord,
   attempt: number,
   fn: (a: SignInAttemptRecord) => SignInAttemptRecord,
 ): SignInRecord {
-  return { ...r, attempts: r.attempts.map((a) => (a.attempt === attempt ? fn(a) : a)) };
+  return prune({ ...r, attempts: r.attempts.map((a) => (a.attempt === attempt ? fn(a) : a)) });
+}
+
+/**
+ * Whether this attempt's CLI may still run on the computer although the attempt ended here: a
+ * cancel not yet answered, or its deadline passed and its cancel not yet queued.
+ */
+export function cleanupPending(a: SignInAttemptRecord, generation: number, now: number): boolean {
+  return (
+    a.cancel === "pending" || (a.ended === null && a.generation === generation && now >= a.deadline)
+  );
+}
+
+/** Whether any attempt's CLI may still run unconfirmed: the terminal is not offered meanwhile. */
+export function cancelsPending(r: SignInRecord, generation: number, now: number): boolean {
+  return r.attempts.some((a) => cleanupPending(a, generation, now));
 }
 
 /**
@@ -267,10 +314,11 @@ export function pageView(
   a: SignInAttemptRecord,
   supervisor: SignInView | null,
   state: PageSignInView["state"] | null,
+  pending = false,
 ): PageSignInView {
   const deadline = new Date(a.deadline).toISOString();
   const base = { service: a.service, attempt: a.attempt, deadline };
-  if (state !== null) return { ...base, state };
+  if (state !== null) return pending ? { ...base, state, pending: true } : { ...base, state };
   if (supervisor === null) return { ...base, state: "starting" };
   const view: PageSignInView = { ...base, state: supervisor.state };
   const linked = supervisor.state === "awaiting_user" || supervisor.state === "completing";

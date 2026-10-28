@@ -56,6 +56,7 @@ export interface FrontController {
     readonly service: SignInService;
     readonly session: string;
     readonly operationId: string;
+    readonly generation: number;
   }): Promise<SignInAnswer>;
   signInInput(input: {
     readonly service: SignInService;
@@ -135,8 +136,15 @@ export function signOutRunning(state: ComputerPageState): boolean {
 /** Whether the computer can have a terminal, from the controller's page state. */
 export function terminalTarget(state: ComputerPageState): TerminalTarget {
   if (state.removal.state !== "none") return { ok: false, reason: "not_offered" };
-  // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1).
-  if (state.status === "stopping" || signOutRunning(state)) return { ok: false, reason: "busy" };
+  // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1); or a page
+  // sign-in whose CLI is not yet confirmed stopped, so a manual sign-in never races it (WP3.23).
+  if (
+    state.status === "stopping" ||
+    signOutRunning(state) ||
+    state.signIn?.cancelPending === true
+  ) {
+    return { ok: false, reason: "busy" };
+  }
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
   return { ok: true, generation: state.generation };
 }
@@ -314,6 +322,7 @@ export class PageFront {
             service: call.service,
             session: owner.sessionId,
             operationId: call.operationId,
+            generation: call.generation,
           })),
         };
       case "sign_in_input":

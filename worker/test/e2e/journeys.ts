@@ -469,6 +469,13 @@ async function main(): Promise<number> {
       }
       if ((await link.getAttribute("target")) !== "_blank") throw new Error("link target");
       checks.push("the button started the CLI's login; Anthropic's link shown (pinned host)");
+      // What the person types survives the page's polling (Codex WP3.23 r1-5).
+      await card.locator("[data-code]").fill("half-typed");
+      await page.waitForTimeout(4_500);
+      if ((await card.locator("[data-code]").inputValue()) !== "half-typed") {
+        throw new Error("the code field was cleared by a poll");
+      }
+      checks.push("text typed into the code field survives two polls");
       // A wrong code first: the failure is plain, and the terminal is offered.
       await card.locator("[data-code]").fill("WRONG-CODE#synthetic");
       await card.locator('[data-act="continue"]').click();
