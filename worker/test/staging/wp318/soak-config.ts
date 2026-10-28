@@ -18,14 +18,45 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readAccess, withRenderedConfig } from "../../../../scripts/bootstrap/cloud.ts";
-import { renderPlatformConfig, renderWebConfig } from "../../../../scripts/bootstrap/settings.ts";
+import {
+  type Installation,
+  renderPlatformConfig,
+  renderWebConfig,
+} from "../../../../scripts/bootstrap/settings.ts";
 import { parseState, statePathFor } from "../../../../scripts/bootstrap/state.ts";
 import { readWranglerConfig, spawnRunner } from "../../../../scripts/staging/cloud.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const WORKER = join(ROOT, "worker");
-/** The bootstrap's staging installation for this soak (`plan --staging wp318`). */
-const PLATFORM = "cfo-stg-wp318-platform";
+/** The namespace selected by run.sh; direct tooling retains the legacy default. */
+export function soakBase(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.CFO_SOAK_BASE ?? "wp318";
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,31}[a-z0-9])?$/.test(base) || base.includes("--")) {
+    throw new Error("invalid soak staging base");
+  }
+  return base;
+}
+
+export function selectedInstallation(installation: Installation, base = soakBase()) {
+  const target = installation.target;
+  if (
+    target.kind !== "staging" ||
+    installation.platformWorker !== `cfo-stg-${base}-platform` ||
+    installation.webWorker !== `cfo-stg-${base}-web` ||
+    target.platformSuffix !== `${base}-platform` ||
+    target.webSuffix !== `${base}-web` ||
+    (process.env.CFO_SOAK_OWNER !== undefined && target.owner !== process.env.CFO_SOAK_OWNER)
+  ) {
+    throw new Error("soak installation does not match the selected staging base and owner");
+  }
+  return { installation, target };
+}
+
+export function soakInstallation() {
+  const base = soakBase();
+  const state = parseState(readFileSync(statePathFor(`cfo-stg-${base}-platform`), "utf8"));
+  return selectedInstallation(state.installation, base);
+}
 
 type Raw = Record<string, unknown>;
 
@@ -46,13 +77,6 @@ export function soakPlatformConfig(rendered: Readonly<Raw>, build: string): Raw 
     ],
     vars: { ...(rendered.vars as Raw), WP318_BUILD: build },
   };
-}
-
-function plan() {
-  const state = parseState(readFileSync(statePathFor(PLATFORM), "utf8"));
-  const installation = state.installation;
-  if (installation.target.kind !== "staging") throw new Error("not a staging installation");
-  return { installation, target: installation.target };
 }
 
 function stg(args: readonly string[]): void {
@@ -80,7 +104,7 @@ function masked(config: Raw): string {
 
 async function main(): Promise<void> {
   const [command, build] = process.argv.slice(2);
-  const { installation, target } = plan();
+  const { installation, target } = soakInstallation();
   const base = (file: string) => readWranglerConfig(join(WORKER, file), WORKER).raw;
   if (command === "platform" || command === "check") {
     const config = soakPlatformConfig(

@@ -1,10 +1,18 @@
 // WP3.18's staging soak (RC-26): the schedule, the rendered configuration and the reconnect
 // analysis, in Node (worker/test/staging/wp318).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withRenderedConfig } from "../../../scripts/bootstrap/cloud.ts";
 import {
   type Installation,
@@ -18,6 +26,7 @@ import {
   validateDeployConfig,
   withStagingNames,
 } from "../../../scripts/staging/guard.ts";
+import { logQuery } from "../staging/wp318/logs.ts";
 import {
   configRestarts,
   dueEvents,
@@ -38,7 +47,12 @@ import {
   switchBracket,
   tunnelOpens,
 } from "../staging/wp318/plan.ts";
-import { soakPlatformConfig } from "../staging/wp318/soak-config.ts";
+import {
+  selectedInstallation,
+  soakBase,
+  soakInstallation,
+  soakPlatformConfig,
+} from "../staging/wp318/soak-config.ts";
 
 const T0 = 1_800_000_000_000;
 const HOST = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
@@ -379,6 +393,65 @@ describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR
     ]);
   });
 
+  it("renders every upgrade resource in its own namespace and refuses a mismatched installation", async () => {
+    const legacy = await planned();
+    const plan = JSON.parse(
+      JSON.stringify(legacy).replaceAll("wp318", "upgrade020"),
+    ) as Installation;
+    expect(selectedInstallation(plan, "upgrade020").installation).toEqual(plan);
+    expect(() => selectedInstallation(legacy, "upgrade020")).toThrow("does not match");
+    const base = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER).raw;
+    const config = soakPlatformConfig(renderPlatformConfig(base, plan), "upgrade020-build");
+    expect(config.r2_buckets).toEqual([
+      { binding: "CHECKPOINTS", bucket_name: "cfo-stg-upgrade020-platform-checkpoints" },
+      { binding: "RESULTS", bucket_name: "cfo-stg-upgrade020-platform-results" },
+    ]);
+    expect(config.vars).toMatchObject({
+      SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-stg-upgrade020-r2-db/omnigent",
+      SERVER_ENV_OMNIGENT_ARTIFACT_URI: "s3://cfo-stg-upgrade020-r2-artifacts",
+    });
+    const holder = readWranglerConfig(
+      join(WORKER, "test/staging/wp318/bucket/wrangler.jsonc"),
+      WORKER,
+    ).raw;
+    const renamed = withStagingNames(holder, "cfo-stg-upgrade020-r2");
+    expect(renamed.r2_buckets).toEqual([
+      { binding: "REPLICA", bucket_name: "cfo-stg-upgrade020-r2-db" },
+      { binding: "ARTIFACTS", bucket_name: "cfo-stg-upgrade020-r2-artifacts" },
+    ]);
+    // The guarded deploy supplies --name; this helper remaps resource bindings.
+    expect(JSON.stringify(renamed.r2_buckets)).not.toContain("cfo-stg-wp318");
+    expect(JSON.stringify(config)).not.toContain("cfo-stg-wp318");
+  });
+
+  it("loads only the selected state file and checks its base and owner before deployment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "soak-selection-"));
+    const legacy = await planned();
+    const plan = JSON.parse(
+      JSON.stringify(legacy).replaceAll("wp318", "upgrade020"),
+    ) as Installation;
+    const file = join(dir, "cfo-stg-upgrade020-platform.json");
+    const save = (installation: Installation) =>
+      writeFileSync(file, JSON.stringify({ stateVersion: 1, installation, journal: {} }));
+    try {
+      vi.stubEnv("CFO_INSTALL_DIR", dir);
+      vi.stubEnv("CFO_SOAK_BASE", "upgrade020");
+      vi.stubEnv("CFO_SOAK_OWNER", "WP3.18");
+      // A legacy file is deliberately invalid: selection must never even parse it.
+      writeFileSync(join(dir, "cfo-stg-wp318-platform.json"), "not the selected installation");
+      save(plan);
+      expect(soakInstallation().installation).toEqual(plan);
+      vi.stubEnv("CFO_SOAK_OWNER", "another-owner");
+      expect(() => soakInstallation()).toThrow("does not match");
+      vi.stubEnv("CFO_SOAK_OWNER", "WP3.18");
+      save(legacy);
+      expect(() => soakInstallation()).toThrow("does not match");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true });
+    }
+  });
+
   it("holds the replica's and the artifacts' buckets under the holder's own name", () => {
     const path = join(WORKER, "test", "staging", "wp318", "bucket", "wrangler.jsonc");
     expect(readWranglerConfig(path, WORKER).raw.r2_buckets).toEqual([
@@ -561,5 +634,225 @@ describe("the server's measured restarts and the forced replacement (WP3.19)", (
       answeredAfterKillS: null,
       configPass: null,
     });
+  });
+});
+
+describe("isolated staging selection", () => {
+  it("retains the legacy default but rejects unsafe or overlong bases", () => {
+    expect(soakBase({})).toBe("wp318");
+    expect(soakBase({ CFO_SOAK_BASE: "upgrade020-20261028" })).toBe("upgrade020-20261028");
+    for (const base of ["", "../wp318", "-x", "x-", "x--y", "UPGRADE", "a".repeat(34), "a\nb"]) {
+      expect(() => soakBase({ CFO_SOAK_BASE: base })).toThrow("invalid soak staging base");
+    }
+  });
+
+  it("allows logs only for the selected exact Worker names", () => {
+    const names = ["cfo-stg-upgrade020-platform", "cfo-stg-upgrade020-web"];
+    for (const name of names) expect(logQuery([name, "1", "2"], names).name).toBe(name);
+    for (const name of ["cfo-stg-wp318-platform", "cfo-stg-upgrade020-extra", `${names[0]}-evil`]) {
+      expect(() => logQuery([name, "1", "2"], names)).toThrow();
+    }
+    for (const times of [
+      ["2", "1"],
+      ["NaN", "2"],
+      ["", "2"],
+    ]) {
+      expect(() => logQuery(["cfo-stg-upgrade020-platform", ...times], names)).toThrow();
+    }
+  });
+});
+
+/** No cloud command can execute: every node/cf invocation is a private fake. */
+function campaignHarness() {
+  const dir = mkdtempSync(join(tmpdir(), "soak-isolation-"));
+  const bin = join(dir, "bin");
+  const home = join(dir, "home");
+  const staging = join(dir, "shared-staging");
+  const installs = join(dir, "installations");
+  const out = join(dir, "upgrade");
+  const calls = join(dir, "calls.jsonl");
+  for (const path of [bin, home, staging, installs]) mkdirSync(path, { recursive: true });
+  writeFileSync(
+    join(staging, "config.json"),
+    JSON.stringify({ accountId: "1".repeat(32), zone: "example.test" }),
+  );
+  const fake = `#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+args = sys.argv[1:]
+name = pathlib.Path(sys.argv[0]).name
+with open(os.environ["SOAK_TEST_CALLS"], "a") as f:
+    f.write(json.dumps({"name": name, "args": args, "base": os.environ.get("CFO_SOAK_BASE"), "staging": os.environ.get("CFO_STAGING_DIR")}) + "\\n")
+if name == "cf":
+    if "permission-groups" in args: print(json.dumps([{"id":"synthetic-permission", "name":"Workers R2 Storage Bucket Item Write"}]))
+    elif "create" in args: print(json.dumps({"id":"synthetic-token", "value":"synthetic-test-value"}))
+    elif "list" in args: print("[]")
+    elif "get" in args: print(json.dumps({"t0": int(os.environ["SOAK_TEST_T0"])}))
+elif name == "node":
+    if args and args[0].endswith("logs.ts"): print("{}")
+    elif args and args[0].endswith(("restart.ts", "server-checks.ts")): print("{}")
+    elif args and args[0].endswith("soak-config.ts"): print("Current Version ID: 12345678-1234-1234-1234-123456789abc")
+    elif "--secrets-stdin" in args or "secrets" in args: sys.stdin.read()
+`;
+  for (const name of ["node", "cf", "timeout"])
+    writeFileSync(join(bin, name), fake, { mode: 0o700 });
+  const script = resolve(import.meta.dirname, "../staging/wp318/run.sh");
+  const env = {
+    ...process.env,
+    HOME: home,
+    PATH: `${bin}:${process.env.PATH}`,
+    CFO_STAGING_DIR: staging,
+    CFO_INSTALL_DIR: installs,
+    SOAK_TEST_CALLS: calls,
+    SOAK_TEST_T0: String(Date.now() - 4 * 3600000),
+    CFO_SOAK_BASE: "wp318",
+    CFO_SOAK_OWNER: "",
+    WP318_DIR: "",
+  };
+  const run = (...args: string[]) =>
+    spawnSync("bash", [script, ...args], { env, encoding: "utf8", timeout: 10_000 });
+  const selected = (...args: string[]) =>
+    run(
+      "--upgrade",
+      "--staging",
+      "upgrade020",
+      "--owner",
+      "Upgrade-Test",
+      "--output",
+      out,
+      ...args,
+    );
+  const recorded = () =>
+    existsSync(calls)
+      ? readFileSync(calls, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(
+            (s) => JSON.parse(s) as { name: string; args: string[]; base: string; staging: string },
+          )
+      : [];
+  return { dir, home, out, calls, installs, staging, run, selected, recorded };
+}
+
+describe("the shell campaign's resource isolation", () => {
+  it("refuses missing upgrade selection, unsafe names, symlinked legacy output and reused records before any command", () => {
+    const h = campaignHarness();
+    try {
+      for (const args of [
+        ["--upgrade", "bucket"],
+        ["--upgrade", "--staging", "upgrade020", "bucket"],
+        ["--upgrade", "--staging", "wp318", "--output", h.out, "teardown"],
+        ...["../wp318", "x--y", "-x", "X", "x".repeat(34)].map((base) => [
+          "--staging",
+          base,
+          "bucket",
+        ]),
+      ])
+        expect(h.run(...args).status).not.toBe(0);
+      const legacy = join(h.home, ".pt/wp318/staging");
+      mkdirSync(legacy, { recursive: true });
+      symlinkSync(legacy, h.out);
+      expect(h.selected("teardown").status).not.toBe(0);
+      rmSync(h.out);
+      mkdirSync(h.out);
+      writeFileSync(
+        join(h.out, ".soak-selection.json"),
+        JSON.stringify({ base: "wp318", owner: "WP3.18" }),
+      );
+      expect(h.selected("teardown").status).not.toBe(0);
+      rmSync(join(h.out, ".soak-selection.json"));
+      writeFileSync(join(h.out, "existing-secret"), "synthetic");
+      expect(h.selected("bucket").status).not.toBe(0);
+      expect(h.recorded()).toEqual([]);
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it("keeps existing no-option bucket runs on wp318", () => {
+    const h = campaignHarness();
+    try {
+      const result = h.run("bucket");
+      expect(result.status, result.stderr).toBe(0);
+      expect(h.recorded().map((c) => c.args)).toEqual(
+        expect.arrayContaining([
+          expect.arrayContaining(["--suffix", "wp318-r2"]),
+          expect.arrayContaining(["plan", "--staging", "wp318", "--staging-owner", "WP3.18"]),
+        ]),
+      );
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it("targets only the selected installation through bootstrap, child, secrets, collection and teardown", async () => {
+    const h = campaignHarness();
+    try {
+      const legacy = join(h.home, ".pt/wp318/staging");
+      mkdirSync(join(legacy, "layers"), { recursive: true });
+      writeFileSync(join(legacy, "layers/keep"), "legacy-evidence");
+      writeFileSync(join(h.installs, "cfo-stg-wp318-platform.json"), "legacy-state");
+      for (const command of ["bucket", "resume"]) {
+        const result = h.selected(command);
+        expect(result.status, result.stderr).toBe(0);
+      }
+      const token = h.selected("token", "--create");
+      expect(token.status, token.stderr).toBe(0);
+      await vi.waitFor(() =>
+        expect(readFileSync(join(h.out, "bootstrap.log"), "utf8")).toContain("exit 0"),
+      );
+      for (const args of [
+        ["follow"],
+        ["launcher-key"],
+        ["soak-deploy"],
+        ["replace"],
+        ["restarts"],
+        ["web-deploy"],
+        ["hostile", "cmp_synthetic"],
+        ["campaign"],
+        ["collect"],
+        ["analyze"],
+        ["scan"],
+        ["status"],
+        ["layers", "cmp_synthetic"],
+      ]) {
+        const result = h.selected(...args);
+        expect(result.status, `${args}: ${result.stderr}`).toBe(0);
+      }
+      const key = JSON.parse(readFileSync(join(h.out, "launcher-secrets.json"), "utf8"));
+      expect(key.SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID).toMatch(/^k-upgrade020-/);
+      writeFileSync(join(h.installs, "cfo-stg-upgrade020-platform.json"), "selected-state");
+      expect(h.selected("teardown").status).toBe(0);
+      expect(existsSync(join(h.out, "owner-secrets.json"))).toBe(false);
+      expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(false);
+      expect(readFileSync(join(h.installs, "cfo-stg-wp318-platform.json"), "utf8")).toBe(
+        "legacy-state",
+      );
+      expect(readFileSync(join(legacy, "layers/keep"), "utf8")).toBe("legacy-evidence");
+      const calls = h.recorded();
+      expect(calls.every((c) => c.base === "upgrade020" && c.staging === h.staging)).toBe(true);
+      // Source paths retain wp318; resource arguments must never do so.
+      const resourceArgs = calls.flatMap((c) => c.args).filter((a) => !a.includes("/"));
+      expect(resourceArgs.some((a) => a.includes("wp318"))).toBe(false);
+      expect(calls.map((c) => c.args)).toEqual(
+        expect.arrayContaining([
+          expect.arrayContaining(["run", "--staging", "upgrade020", "--secrets-stdin"]),
+          expect.arrayContaining(["--suffix", "upgrade020-r2"]),
+          expect.arrayContaining(["--suffix", "upgrade020-platform", "--owner", "Upgrade-Test"]),
+          ...["web", "platform", "r2"].map((kind) =>
+            expect.arrayContaining(["teardown", "--suffix", `upgrade020-${kind}`]),
+          ),
+          expect.arrayContaining(["--bucket-name", "cfo-stg-upgrade020-platform-results"]),
+          expect.arrayContaining(["--bucket-name", "cfo-stg-upgrade020-platform-checkpoints"]),
+        ]),
+      );
+      const create = calls.find((c) => c.name === "cf" && c.args.includes("create"));
+      expect(JSON.stringify(create)).toContain("cfo-stg-upgrade020-r2-db");
+      expect(JSON.stringify(create)).toContain("cfo-stg-upgrade020-r2-artifacts");
+      expect(JSON.stringify(create)).not.toContain("wp318");
+      expect(calls.some((c) => c.args.includes("sweep") && c.args.includes("--yes"))).toBe(false);
+    } finally {
+      rmSync(h.dir, { recursive: true });
+    }
   });
 });

@@ -62,6 +62,8 @@
 #   run.sh teardown      tear everything down (web first, platform, the holder), sweep, and
 #                        remove the local secrets and the installation's state file
 #
+# Upgrade invocation: run.sh --upgrade --staging <unique-base> --owner <label> --output <private-dir> <command>
+# All recursive calls retain the selection. Staging registry and locks remain shared.
 # Output goes to $WP318_DIR (default $HOME/.pt/wp318/staging), outside the repository, redacted
 # with spikes/x1/scripts/redact.py (account, zone, owner address) before it leaves the laptop.
 # Push images one at a time: run no other staging deploy while the bootstrap pushes its images.
@@ -71,16 +73,75 @@ set -euo pipefail
 set +x
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../../.." && pwd)"
-out="${WP318_DIR:-$HOME/.pt/wp318/staging}"
+# Existing invocations retain wp318. Upgrade qualification must explicitly opt into
+# a distinct namespace and private output directory: no output-only isolation.
+base="${CFO_SOAK_BASE:-wp318}"
+owner="${CFO_SOAK_OWNER:-}"
+out="${WP318_DIR:-}"
+upgrade=0
+base_given=0
+out_given=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --staging) base="${2:?--staging needs a base}"; base_given=1; shift 2 ;;
+    --owner) owner="${2:?--owner needs a label}"; shift 2 ;;
+    --output) out="${2:?--output needs a directory}"; out_given=1; shift 2 ;;
+    --upgrade) upgrade=1; shift ;;
+    *) echo "run.sh: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+[[ "$base" =~ ^[a-z0-9]([a-z0-9-]{0,31}[a-z0-9])?$ && "$base" != *--* ]] || {
+  echo "run.sh: staging base must be 1-33 lowercase letters/digits/hyphens, no edge or doubled hyphens" >&2; exit 2;
+}
+if [ "$upgrade" -eq 1 ] && { [ "$base_given" -ne 1 ] || [ "$out_given" -ne 1 ] || [ "$base" = wp318 ]; }; then
+  echo "run.sh: --upgrade requires --staging <unique-base> and --output <isolated-directory>" >&2; exit 2
+fi
+owner="${owner:-$([ "$base" = wp318 ] && echo WP3.18 || echo "soak-$base")}"
+[[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
+  echo "run.sh: owner must be a short alphanumeric label (dots, hyphens and underscores allowed)" >&2; exit 2;
+}
+out="${out:-$HOME/.pt/$base/staging}"
+# Pin local records to the resource namespace before any cloud command or secret
+# access. Resolve symlinks, reject overlapping legacy output, and never adopt an
+# unlabelled nonempty directory for a new installation.
+out=$(python3 -I -c '
+import json, os, pathlib, sys
+out, legacy, repo = (pathlib.Path(p).resolve() for p in sys.argv[1:4])
+base, owner = sys.argv[4:]
+def overlaps(a, b): return a == b or a in b.parents or b in a.parents
+if base != "wp318" and (overlaps(out, legacy) or overlaps(out, repo)):
+    sys.exit("run.sh: isolated output overlaps the legacy output or repository")
+marker = out / ".soak-selection.json"
+expected = {"base": base, "owner": owner}
+if marker.exists():
+    if json.loads(marker.read_text()) != expected:
+        sys.exit("run.sh: output belongs to another staging installation or owner")
+else:
+    if base != "wp318" and out.exists() and any(out.iterdir()):
+        sys.exit("run.sh: isolated output must be empty or already pinned to this installation")
+    if any((p / marker.name).exists() for p in out.parents):
+        sys.exit("run.sh: output is nested in another campaign")
+    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        with marker.open("x") as kept: json.dump(expected, kept)
+    except FileExistsError:
+        if json.loads(marker.read_text()) != expected:
+            sys.exit("run.sh: concurrent campaign selected another installation")
+os.chmod(out, 0o700)
+os.chmod(marker, 0o600)
+print(out)
+' "$out" "$HOME/.pt/wp318/staging" "$root" "$base" "$owner")
+export CFO_SOAK_BASE="$base" CFO_SOAK_OWNER="$owner"
+self=("$0" --staging "$base" --owner "$owner" --output "$out")
+if [ "$upgrade" -eq 1 ]; then self+=(--upgrade); fi
 state_dir="${CFO_STAGING_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cloudflare-omnigent/staging}"
 install_dir="${CFO_INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cloudflare-omnigent/installations}"
 redact=(python3 -I "$root/spikes/x1/scripts/redact.py" "$state_dir/config.json" -)
-platform=cfo-stg-wp318-platform
-web=cfo-stg-wp318-web
-owner=WP3.18
+platform="cfo-stg-$base-platform"
+web="cfo-stg-$base-web"
 days=2
-replica_bucket=cfo-stg-wp318-r2-db
-artifacts_bucket=cfo-stg-wp318-r2-artifacts
+replica_bucket="cfo-stg-$base-r2-db"
+artifacts_bucket="cfo-stg-$base-r2-artifacts"
 secrets="$out/owner-secrets.json"
 launcher="$out/launcher-secrets.json"
 bootstrap=(node "$root/scripts/bootstrap/bootstrap.ts")
@@ -113,7 +174,7 @@ print(json.dumps([{
     "permission_groups": [{"id": write[0]}],
     "resources": {f"com.cloudflare.edge.r2.bucket.{account}_default_{b}": "*" for b in buckets},
 }]))' "$(account)" "$replica_bucket" "$artifacts_bucket")" || return 1
-  cf user tokens create --name "cfo-stg-wp318-r2 (until $expires)" --expires-on "$expires" \
+  cf user tokens create --name "cfo-stg-$base-r2 (until $expires)" --expires-on "$expires" \
     --policies "$policies" 2>"$out/token-create.err" | python3 -I -c '
 import hashlib, json, sys
 answer = json.load(sys.stdin)
@@ -157,7 +218,7 @@ deploy_at() { # kind, at (ms)[, record file]: wait until then, deploy, record it
   local kind="$1" at="$2" record="${3:-$out/deploys.jsonl}" start end status build raw version
   local left=$(( (at - $(now_ms)) / 1000 ))
   if [ "$left" -gt 0 ]; then sleep "$left"; fi
-  build="wp318-$(date -u +%Y%m%dT%H%M%SZ)-$kind"
+  build="$base-$(date -u +%Y%m%dT%H%M%SZ)-$kind"
   # Wrangler's own output, unredacted (mode 600), kept only until the version is read from it.
   raw="$(mktemp "$out/deploys/.raw.XXXXXX")"
   start=$(now_ms)
@@ -206,13 +267,13 @@ print(json.dumps({"worker": sys.argv[1], "canaryHits": canary, "capabilityHits":
 case "${1:-}" in
   bucket)
     now_ms >"$out/t0"
-    logged bucket node "$root/scripts/staging/stg.ts" deploy --suffix wp318-r2 --owner "$owner" \
+    logged bucket node "$root/scripts/staging/stg.ts" deploy --suffix "$base-r2" --owner "$owner" \
       --config "$here/bucket/wrangler.jsonc" --days "$days"
-    logged plan "${bootstrap[@]}" plan --staging wp318 --staging-owner "$owner" \
+    logged plan "${bootstrap[@]}" plan --staging "$base" --staging-owner "$owner" \
       --owner-username owner --replica-url "s3://$replica_bucket/omnigent" \
       --artifacts-url "s3://$artifacts_bucket" \
       --replica-endpoint "https://$(account).r2.cloudflarestorage.com" --days "$days"
-    logged buckets "${bootstrap[@]}" buckets --staging wp318
+    logged buckets "${bootstrap[@]}" buckets --staging "$base"
     if [ ! -f "$secrets" ]; then
       (umask 077; python3 -I -c 'import json,secrets; print(json.dumps({"ownerPassword": "cfo-stg-" + secrets.token_urlsafe(18)}))' >"$secrets")
     fi
@@ -256,7 +317,7 @@ print(json.dumps({
       while true; do
         from=$(wc -l <"$3")
         printf "%s" "$given" |
-          node "$1/scripts/bootstrap/bootstrap.ts" run --staging wp318 --secrets-stdin --wait-minutes 45 2>&1 |
+          node "$1/scripts/bootstrap/bootstrap.ts" run --staging "$4" --secrets-stdin --wait-minutes 45 2>&1 |
           python3 -I "$1/spikes/x1/scripts/redact.py" "$2" - |
           sed -E -e "s#[a-z0-9-]+\.cloudflareaccess\.com#<team>#g" -e "s#hmac-sha256:[A-Za-z0-9_:-]+#<owner-pin>#g" >>"$3"
         status=${PIPESTATUS[1]}
@@ -271,7 +332,7 @@ print(json.dumps({
         break
       done
       unset given
-      echo "exit $status" >>"$3"' _ "$root" "$state_dir/config.json" "$out/bootstrap.log" \
+      echo "exit $status" >>"$3"' _ "$root" "$state_dir/config.json" "$out/bootstrap.log" "$base" \
       >/dev/null 2>&1 &
     echo "$!" >"$out/bootstrap.pid"
     unset key_id key_secret
@@ -284,22 +345,22 @@ print(json.dumps({
     [ "$last" = "exit 0" ] || { echo "the bootstrap ended with: $last"; exit 1; }
     ;;
   resume)
-    logged resume "${bootstrap[@]}" run --staging wp318 --wait-minutes 30
+    logged resume "${bootstrap[@]}" run --staging "$base" --wait-minutes 30
     ;;
   launcher-key)
     if [ ! -f "$launcher" ]; then
       umask 077
-      python3 -I -c 'import json,secrets,time; print(json.dumps({
+      python3 -I -c 'import json,secrets,time,sys; print(json.dumps({
   "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY": secrets.token_urlsafe(48),
-  "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-wp318-" + time.strftime("%Y%m%d")}))' >"$launcher"
+  "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-" + sys.argv[1] + "-" + time.strftime("%Y%m%d")}))' "$base" >"$launcher"
     fi
     since=$(now_ms)
     echo "$since" >"$out/launcher-at"
-    logged launcher-key node "$root/scripts/staging/stg.ts" secrets --suffix wp318-platform \
+    logged launcher-key node "$root/scripts/staging/stg.ts" secrets --suffix "$base-platform" \
       --owner "$owner" <"$launcher"
     # A secret release reaches the running server only through the watchdog's controlled restart
     # (G2-SEC-001): the version switch (5 to 7 minutes), the next alarm, then about 30 s.
-    "$0" applied "$since"
+    "${self[@]}" applied "$since"
     ;;
   applied)
     since="${2:?run.sh applied <since ms>}"
@@ -318,13 +379,13 @@ print(json.dumps({
     done
     ;;
   soak-deploy)
-    logged soak-deploy node "$here/soak-config.ts" platform "wp318-$(date -u +%Y%m%dT%H%M%SZ)-soak"
+    logged soak-deploy node "$here/soak-config.ts" platform "$base-$(date -u +%Y%m%dT%H%M%SZ)-soak"
     ;;
   replace)
     since=$(now_ms)
     echo "$since" >"$out/replace-at"
     echo '{"M3_STEP": "replace"}' | logged replace node "$root/scripts/staging/stg.ts" secrets \
-      --suffix wp318-platform --owner "$owner"
+      --suffix "$base-platform" --owner "$owner"
     # The version switch (5 to 7 minutes), the next cron tick, the kill and the watch (G2's limit:
     # 20 minutes), then the checks after it.
     deadline=$(( $(now_ms) + 2400000 ))
@@ -384,7 +445,7 @@ print(json.dumps({
     end=$(( t0 + 3 * 3600000 + 120000 ))
     left=$(( (end - $(now_ms)) / 1000 ))
     if [ "$left" -gt 0 ]; then sleep "$left"; fi
-    "$0" collect
+    "${self[@]}" collect
     ;;
   collect)
     t0="$(soak_t0)"
@@ -434,9 +495,9 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     ls -l "$dir"
     ;;
   teardown)
-    logged teardown-web node "$root/scripts/staging/stg.ts" teardown --suffix wp318-web || true
-    logged teardown-platform node "$root/scripts/staging/stg.ts" teardown --suffix wp318-platform || true
-    logged teardown-bucket node "$root/scripts/staging/stg.ts" teardown --suffix wp318-r2 || true
+    logged teardown-web node "$root/scripts/staging/stg.ts" teardown --suffix "$base-web" || true
+    logged teardown-platform node "$root/scripts/staging/stg.ts" teardown --suffix "$base-platform" || true
+    logged teardown-bucket node "$root/scripts/staging/stg.ts" teardown --suffix "$base-r2" || true
     # The R2 token `run.sh token --create` made: deleted, not left to expire.
     if [ -s "$out/r2-token-id" ]; then
       logged teardown-token cf user tokens delete "$(cat "$out/r2-token-id")" --force &&
