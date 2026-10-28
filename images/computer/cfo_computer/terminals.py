@@ -48,8 +48,11 @@ REAP_INTERVAL_S = 5.0
 TMUX_TIMEOUT_S = 5.0
 #: How long a session's processes get after their hang-up before ``end_all`` kills them.
 HANGUP_GRACE_S = 1.0
-#: How long ``end_all`` waits for what it killed to be gone before it says it could not.
+#: How long ``end_all`` keeps killing what it finds before it says it could not.
 KILL_WAIT_S = 3.0
+#: How long ``end_all`` must find nothing before it is done: a session that a wrapper started
+#: just before its stream was closed is found too.
+SETTLE_S = 0.3
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -103,6 +106,8 @@ class TerminalSessions:
         self._lock = threading.Lock()
         #: When the reaper first saw each session with nothing attached (monotonic).
         self._unattached: dict[tuple[str, int], float] = {}
+        #: Processes an ``end_all`` could not end, looked for again by the next one.
+        self._owed: set[tuple[int, int]] = set()
 
     # -- tmux --------------------------------------------------------------------------------
 
@@ -168,30 +173,55 @@ class TerminalSessions:
             return len(self.sessions())
 
     def end_all(self) -> None:
-        """Ends every session and every process in one, whether or not the server answers, and
+        """Ends every session and every process of one, whether or not the server answers, and
         confirms it: raises NotEnded (or the error that stopped it) otherwise, so the step it
-        guards does not run (Codex WP3.28 r1-3).
+        guards does not run (Codex WP3.28 r1-3, r2-1).
 
-        ``kill-server`` first (each shell gets its hang-up), then SIGKILL for any server process
-        on this socket still alive (one paused by a capture, or wedged), and, after a short
-        grace, for any process that was in a session when this began (one that ignores its
-        hang-up, or that a killed server left behind)."""
+        A process of the terminal is a tmux server on this socket, anything below one, or any
+        process whose environment says it runs in one of its panes (tmux's ``TMUX``, which a
+        process keeps when its server's death, or a ``kill-session`` before this, orphaned it);
+        plus any an earlier call could not end. ``kill-server`` first (each shell gets its
+        hang-up), a short grace, then SIGKILL (checked by start time) for every process of the
+        terminal found, again and again, until none has been found for ``SETTLE_S``: so a session
+        that a wrapper was starting as this began is ended too. Code that deliberately hides from
+        all of these (a changed environment and a new parent) is a rogue agent, which the
+        security calibration accepts."""
         with self._lock:
             self._unattached.clear()
-            procs = P.scan()
-            servers = self._server_pids(procs)
-            members = {procs[pid].key for pid in P.descendants(procs, set(servers))}
+            targets = self._terminal(P.scan()) | self._owed
+            # Nothing to settle when no server ran and nothing of the terminal was found.
+            settle = SETTLE_S if targets or os.path.exists(self.socket) else 0.0
             if os.path.exists(self.socket):
                 # Even a client that cannot start (no descriptors left) leaves the signals.
                 with contextlib.suppress(NotAnswering, OSError):
                     self._tmux("kill-server")
-            for pid in self.server_pids():
-                _kill(pid, None)
-            left = _wait_gone(members, HANGUP_GRACE_S)
-            for pid, start in left:
-                _kill(pid, start)
-            if _wait_gone(members, KILL_WAIT_S) or self.server_pids():
-                raise NotEnded
+            targets = _wait_gone(targets, HANGUP_GRACE_S)
+            deadline = time.monotonic() + KILL_WAIT_S
+            quiet: float | None = None
+            while True:
+                left = _alive(targets) | self._terminal(P.scan())
+                now = time.monotonic()
+                if not left:
+                    if quiet is None:
+                        quiet = now
+                    if now - quiet >= settle:
+                        break
+                elif now >= deadline:
+                    self._owed = left
+                    raise NotEnded
+                else:
+                    quiet = None
+                    for pid, start in left:
+                        _kill(pid, start)
+                    targets = left
+                time.sleep(0.05)
+            self._owed = set()
+
+    def _terminal(self, procs: dict[int, P.Proc]) -> set[tuple[int, int]]:
+        """The terminal's processes now (see ``end_all``), zombies left out."""
+        servers = set(self._server_pids(procs))
+        found = P.descendants(procs, servers) | {pid for pid in procs if _in_pane(pid, self.socket)}
+        return {procs[pid].key for pid in found if pid in procs and procs[pid].state != "Z"}
 
     def server_pids(self) -> list[int]:
         """The tmux server processes of this socket, owned by the person's account."""
@@ -236,6 +266,16 @@ class TerminalSessions:
         return ended
 
 
+def _in_pane(pid: int, socket: Path) -> bool:
+    """Whether the process's environment names a pane of this socket's server (``TMUX``)."""
+    try:
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return False
+    marker = b"TMUX=" + os.fsencode(str(socket)) + b","
+    return any(entry.startswith(marker) for entry in environ.split(b"\0"))
+
+
 def _alive(keys: set[tuple[int, int]]) -> set[tuple[int, int]]:
     """Which of these processes (pid, start time) still run; a zombie has ended."""
     out: set[tuple[int, int]] = set()
@@ -256,12 +296,11 @@ def _wait_gone(keys: set[tuple[int, int]], timeout_s: float) -> set[tuple[int, i
     return left
 
 
-def _kill(pid: int, start: int | None) -> None:
-    """SIGKILL, to this very process when its start time is given (never a recycled ID)."""
-    if start is not None:
-        proc = P.read_proc(pid, with_cmdline=False)
-        if proc is None or proc.starttime != start:
-            return
+def _kill(pid: int, start: int) -> None:
+    """SIGKILL to this very process, checked by its start time (never a recycled ID)."""
+    proc = P.read_proc(pid, with_cmdline=False)
+    if proc is None or proc.starttime != start:
+        return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.kill(pid, signal.SIGKILL)
 

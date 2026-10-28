@@ -150,14 +150,16 @@ def test_attach_without_a_session_ends_the_stream_and_starts_nothing(
     computer: Computer,
 ) -> None:
     client = computer.connect("attach", "5")
-    client.wait_closed()
+    # A normal close (1000): the bridge tells the page the session ended, and it does not
+    # reconnect. ttyd would close with 1006 for a non-zero exit (Codex r2-2).
+    assert client.wait_closed() == 1000
     assert computer.names() == []
     first = computer.connect("new", "12")
     shell_pid(first, "a")
     first.close()
     # An exact match only: w1 is not w12.
     client = computer.connect("attach", "1")
-    client.wait_closed()
+    assert client.wait_closed() == 1000
     assert computer.names() == ["w12"]
 
 
@@ -177,7 +179,7 @@ def test_nothing_but_workspacedos_two_forms_starts_a_session(
     computer: Computer, args: list[str]
 ) -> None:
     client = computer.connect(*args)
-    client.wait_closed()
+    assert client.wait_closed() == 1000
     assert b"uid=" not in client.output
     assert computer.names() == []
 

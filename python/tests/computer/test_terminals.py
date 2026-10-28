@@ -70,6 +70,15 @@ def test_a_refused_call_runs_nothing(capsys: pytest.CaptureFixture[str]) -> None
     assert "refused" in capsys.readouterr().err
 
 
+def test_an_ending_the_wrapper_decides_on_exits_0(monkeypatch) -> None:
+    """ttyd closes with 1006 for a non-zero exit, which the bridge reads as a dropped link and
+    the page reconnects after: a refusal or an attach with nothing to attach to is final."""
+    assert TS.exit_status(TS.GONE) == 0 and TS.exit_status(TS.USAGE) == 0
+    assert TS.exit_status(7) == 7
+    monkeypatch.setattr(TS, "TMUX", "/nonexistent/tmux")  # tmux cannot even be asked
+    assert TS.main(["attach", "3"]) == TS.GONE
+
+
 def test_ttyd_runs_the_wrapper_with_the_url_arguments() -> None:
     argv = M.terminal_argv()
     assert argv[:7] == [
@@ -586,17 +595,73 @@ def test_a_page_sign_in_fails_to_start_when_the_sessions_cannot_be_ended(rig) ->
         SV.spawn_login = original
 
 
-def test_end_all_confirms_every_process_gone_or_says_so(fake, monkeypatch) -> None:
-    sessions, tmux, _ = fake
-    sessions.end_all()  # nothing on the socket: confirmed at once
+def _in_a_pane(sock: Path, *, ignore_hup: bool = True) -> subprocess.Popen[bytes]:
+    """A process whose environment says it runs in a pane of ``sock``'s server, though no tmux
+    is its parent: what a ``kill-session`` or a server's death leaves of a process that ignores
+    its hang-up."""
+    env = {"PATH": "/usr/bin:/bin", "TMUX": f"{sock},4242,0"}
+    script = ("trap '' HUP; " if ignore_hup else "") + "exec sleep 600"
+    return subprocess.Popen(["/bin/sh", "-c", script], env=env, start_new_session=True)
+
+
+@pytest.fixture
+def quick(monkeypatch):
+    monkeypatch.setattr(T, "HANGUP_GRACE_S", 0.1)
+    monkeypatch.setattr(T, "KILL_WAIT_S", 0.5)
+    monkeypatch.setattr(T, "SETTLE_S", 0.3)
+
+
+def test_end_all_confirms_every_process_gone_or_says_so(fake, quick, monkeypatch) -> None:
+    sessions, _tmux, _ = fake
+    sessions.end_all()  # nothing of the terminal: confirmed at once
 
     # A tmux client that cannot even start (no descriptors left) still leaves the signals.
     def no_client(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         raise OSError(24, "Too many open files")
 
     sessions._run = no_client  # type: ignore[assignment]
-    sessions.end_all()
-    # A server on the socket that survives every signal: not confirmed.
-    monkeypatch.setattr(sessions, "server_pids", lambda: [999_999])
-    with pytest.raises(T.NotEnded):
+    orphan = _in_a_pane(sessions.socket)
+    try:
         sessions.end_all()
+        assert orphan.wait(5) == -9
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+
+
+def test_a_process_end_all_could_not_end_is_owed_to_the_next_call(fake, quick, monkeypatch) -> None:
+    """Once orphaned and out of sight it is still looked for (Codex r2-1)."""
+    sessions, _tmux, _ = fake
+    survivor = subprocess.Popen(["/bin/sh", "-c", "trap '' HUP; exec sleep 600"])
+    try:
+        key = P.read_proc(survivor.pid).key  # type: ignore[union-attr]
+        real_kill = T._kill
+        monkeypatch.setattr(sessions, "_terminal", lambda procs: {key})
+        monkeypatch.setattr(T, "_kill", lambda pid, start: None)  # it survives every signal
+        with pytest.raises(T.NotEnded):
+            sessions.end_all()
+        assert sessions._owed == {key}
+        # Now nothing points at it any more, but it is still owed, and this time it ends.
+        monkeypatch.setattr(sessions, "_terminal", lambda procs: set())
+        monkeypatch.setattr(T, "_kill", real_kill)
+        sessions.end_all()
+        assert survivor.wait(5) == -9 and sessions._owed == set()
+    finally:
+        if survivor.poll() is None:
+            survivor.kill()
+
+
+def test_end_all_ends_a_terminal_process_that_appears_while_it_settles(fake, quick) -> None:
+    """A session a wrapper was still starting when the backstop began is ended too."""
+    sessions, _tmux, _ = fake
+    late: list[subprocess.Popen[bytes]] = []
+    timer = threading.Timer(0.15, lambda: late.append(_in_a_pane(sessions.socket)))
+    timer.start()
+    try:
+        sessions.end_all()  # the socket exists (the fixture's): it settles for 0.3 s
+        timer.join()
+        assert late and late[0].wait(5) == -9
+    finally:
+        for proc in late:
+            if proc.poll() is None:
+                proc.kill()

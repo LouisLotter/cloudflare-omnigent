@@ -8,7 +8,7 @@ nothing else is accepted: exactly two arguments, the mode and a window number of
 
 - ``new <window>`` ends every other window's session (a new window never inherits an old shell),
   then starts, or joins if it already exists, the session ``w<window>`` running ``bash -l``.
-- ``attach <window>`` joins ``w<window>`` and exits 3 if it does not exist: the stream then ends,
+- ``attach <window>`` joins ``w<window>``, and ends if it does not exist: the stream then ends,
   and the page says the session on the computer ended. A reconnect never gets a new shell
   silently, so a code pasted for a CLI's prompt can never run as a command and land in
   ``~/.bash_history``, which saves include.
@@ -34,8 +34,9 @@ SOCKET_NAME = "cfo-terminal"
 CONFIG = Path(__file__).resolve().with_name("terminal-tmux.conf")
 WINDOW = re.compile(r"[1-9][0-9]{0,8}")
 SESSION = re.compile(r"w[1-9][0-9]{0,8}")
-#: The exit status of ``attach`` when the window's session no longer exists.
+#: ``main``'s answer when ``attach`` finds no session for the window (or tmux cannot be asked).
 GONE = 3
+#: ``main``'s answer to arguments that are not WorkspaceDO's two forms.
 USAGE = 2
 
 
@@ -89,14 +90,17 @@ def main(argv: list[str] | None = None) -> int:
     name = f"w{window}"
     env = _env()
     if mode == "attach":
-        exists = subprocess.run(
-            _tmux("has-session", "-t", f"={name}"),
-            env=env,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-        if exists.returncode != 0:
+        try:
+            exists = subprocess.run(
+                _tmux("has-session", "-t", f"={name}"),
+                env=env,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            exists = 1
+        if exists != 0:
             return GONE
         os.execve(TMUX, _tmux("attach-session", "-t", f"={name}"), env)
     for other in _sessions(env):
@@ -112,5 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     return USAGE  # not reached
 
 
+def exit_status(answer: int) -> int:
+    """The process's exit status for ``main``'s answer. ttyd 1.7.7 closes the stream with 1000
+    when its command exits 0 and with 1006 otherwise, and WorkspaceDO's bridge reads 1006 as a
+    dropped link, after which the page reconnects (Codex WP3.28 r2-2). An ending the wrapper
+    decides on (no session to attach to, or a refusal) is final, so it exits 0: the page then says
+    the session on the computer ended."""
+    return 0 if answer in (GONE, USAGE) else answer
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(exit_status(main()))
