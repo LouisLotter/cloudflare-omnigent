@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   CliLoginStatus,
   CliVersion,
+  HostnameState,
   Rc53Counts,
   SignInAttempt,
   SignInCode,
@@ -135,6 +136,12 @@ export const PageFrontCall = z.discriminatedUnion("action", [
   }),
   /** Staging only: the RC-53 save check's desired state, applied in every generation. */
   z.looseObject({ action: z.literal("staging_check"), ...front, rc53: z.boolean() }),
+  /**
+   * Staging only (WP3.27): keep the computer awake, for a soak. While it is on, WorkspaceDO refuses
+   * Omnigent's `suspend` as it does for an open terminal, in every generation, until it is turned
+   * off. Persisted.
+   */
+  z.looseObject({ action: z.literal("staging_keep_awake"), ...front, on: z.boolean() }),
 ]);
 export type PageFrontCall = z.infer<typeof PageFrontCall>;
 
@@ -249,6 +256,19 @@ export const PageFrontResult = z.discriminatedUnion("action", [
       reason: z.enum(["not_staging", "not_offered"]),
     }),
   ]),
+  z.discriminatedUnion("outcome", [
+    z.looseObject({
+      action: z.literal("staging_keep_awake"),
+      outcome: z.literal("accepted"),
+      on: z.boolean(),
+    }),
+    z.looseObject({
+      action: z.literal("staging_keep_awake"),
+      outcome: z.literal("refused"),
+      /** `not_staging`: a production installation never has the switch. */
+      reason: z.enum(["not_staging", "not_offered"]),
+    }),
+  ]),
 ]);
 export type PageFrontResult = z.infer<typeof PageFrontResult>;
 
@@ -304,7 +324,7 @@ export const ComputerStatusView = z.looseObject({
       logins: z.looseObject({ claude: CliLoginStatus, codex: CliLoginStatus }),
       signIn: z.looseObject({ claude: SignInState, codex: SignInState }),
       rc53: z.boolean(),
-      hostname: z.enum(["mapped", "unmapped", "unknown"]),
+      hostname: HostnameState,
       disk: z
         .looseObject({ totalBytes: z.number().int().min(0), freeBytes: z.number().int().min(0) })
         .nullable(),
@@ -349,6 +369,11 @@ export const ComputerStatusView = z.looseObject({
     /** What the supervisor reports now; null if it was not read. */
     applied: z.boolean().nullable(),
   }),
+  /**
+   * The keep-awake switch (WP3.27): offered on a staging installation only; `on` is null off
+   * staging. Absent from an older WorkspaceDO.
+   */
+  keepAwake: z.looseObject({ staging: z.boolean(), on: z.boolean().nullable() }).optional(),
 });
 export type ComputerStatusView = z.infer<typeof ComputerStatusView>;
 

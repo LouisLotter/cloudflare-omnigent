@@ -16,7 +16,7 @@
       "codex": "awaiting_user"
     },
     "rc53": true,
-    "hostname": "mapped",
+    "hostname": "resolved",
     "disk": {
       "totalBytes": 21474836480,
       "freeBytes": 17179869184
