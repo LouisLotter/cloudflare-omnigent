@@ -394,6 +394,9 @@
                     "unknown"
                   ],
                   "type": "string"
+                },
+                "cancelPending": {
+                  "type": "boolean"
                 }
               },
               "required": [

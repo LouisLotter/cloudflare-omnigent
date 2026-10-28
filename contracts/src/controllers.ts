@@ -212,6 +212,11 @@ export const ComputerPageState = z.looseObject({
         .array(z.looseObject({ service: SignInService, attempt: SignInAttempt }))
         .max(4)
         .optional(),
+      /**
+       * An ended attempt's CLI is not yet confirmed stopped on the computer: the terminal is not
+       * offered meanwhile, so a manual sign-in never races it.
+       */
+      cancelPending: z.boolean().optional(),
     })
     .optional(),
   /** A staging installation: the page shows the RC-53 switch. Never true on production. */

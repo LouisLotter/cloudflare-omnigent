@@ -1,0 +1,11 @@
+{
+  "action": "sign_in_status",
+  "outcome": "accepted",
+  "view": {
+    "service": "codex",
+    "attempt": 4,
+    "state": "cancelled",
+    "pending": true,
+    "deadline": "2026-10-28T10:10:00.000Z"
+  }
+}

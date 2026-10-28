@@ -168,6 +168,11 @@
           "const": "sign_in_start",
           "type": "string"
         },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
         "intent": {
           "pattern": "^[0-9a-f]{64}$",
           "type": "string"
@@ -214,7 +219,8 @@
         "operationId",
         "owner",
         "intent",
-        "service"
+        "service",
+        "generation"
       ],
       "type": "object"
     },

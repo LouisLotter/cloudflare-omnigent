@@ -177,6 +177,10 @@
                   ],
                   "type": "string"
                 },
+                "pending": {
+                  "const": true,
+                  "type": "boolean"
+                },
                 "reason": {
                   "enum": [
                     "code_rejected",
@@ -301,6 +305,10 @@
                   ],
                   "type": "string"
                 },
+                "pending": {
+                  "const": true,
+                  "type": "boolean"
+                },
                 "reason": {
                   "enum": [
                     "code_rejected",
@@ -424,6 +432,10 @@
                     "incomplete_code"
                   ],
                   "type": "string"
+                },
+                "pending": {
+                  "const": true,
+                  "type": "boolean"
                 },
                 "reason": {
                   "enum": [

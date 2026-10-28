@@ -33,6 +33,10 @@
                   ],
                   "type": "string"
                 },
+                "pending": {
+                  "const": true,
+                  "type": "boolean"
+                },
                 "reason": {
                   "enum": [
                     "code_rejected",

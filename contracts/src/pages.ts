@@ -108,8 +108,16 @@ export const PageFrontCall = z.discriminatedUnion("action", [
   // service and the Access session that started it (the caller's `owner`); input and cancel act
   // only on that attempt, and only from that session. A repeated operation ID returns the same
   // attempt. The pasted code travels in this call only: it is never journaled or stored.
-  /** Starts a sign-in attempt; ends the service's earlier attempt. */
-  z.looseObject({ action: z.literal("sign_in_start"), ...front, service: SignInService }),
+  /**
+   * Starts a sign-in attempt; ends the service's earlier attempt. `generation`: the computer's
+   * generation the page was showing; a start for any other is refused (Codex WP3.23 r1-2).
+   */
+  z.looseObject({
+    action: z.literal("sign_in_start"),
+    ...front,
+    service: SignInService,
+    generation: Generation,
+  }),
   /** Claude: the code the person pastes, for the attempt's CLI. */
   z.looseObject({
     action: z.literal("sign_in_input"),
@@ -174,6 +182,12 @@ export const PageSignInView = z.looseObject({
   notice: SignInNotice.optional(),
   /** The platform's deadline for the attempt. */
   deadline: Timestamp.optional(),
+  /**
+   * The attempt has ended here, but the computer has not yet confirmed that its CLI stopped (a
+   * cancel not yet answered, or a deadline just passed). The page waits before offering the
+   * terminal (Codex WP3.23 r1-6).
+   */
+  pending: z.literal(true).optional(),
 });
 export type PageSignInView = z.infer<typeof PageSignInView>;
 

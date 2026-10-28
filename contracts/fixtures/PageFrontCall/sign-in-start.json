@@ -7,5 +7,6 @@
     "sessionId": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
   },
   "intent": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-  "service": "claude"
+  "service": "claude",
+  "generation": 7
 }
