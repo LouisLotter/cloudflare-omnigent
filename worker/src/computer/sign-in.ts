@@ -217,10 +217,11 @@ export function update(
 }
 
 /**
- * Whether this session may act on this attempt now. `stale`: unknown, of another generation,
- * ended (a cancel, a newer attempt, its deadline); `not_yours`: another session's.
+ * The attempt, if this session may act on it now; otherwise why not. `stale`: unknown, of another
+ * service or generation, ended (a cancel, a newer attempt, its deadline); `not_yours`: another
+ * session's.
  */
-export function callerRefusal(
+export function callerAttempt(
   a: SignInAttemptRecord | undefined,
   input: {
     readonly service: SignInService;
@@ -228,11 +229,11 @@ export function callerRefusal(
     readonly generation: number;
     readonly now: number;
   },
-): SignInRefusal | null {
+): SignInAttemptRecord | SignInRefusal {
   if (a === undefined || a.service !== input.service) return "stale";
   if (a.session !== input.session) return "not_yours";
   if (!isActive(a, input.generation, input.now)) return "stale";
-  return null;
+  return a;
 }
 
 /** The state an ended attempt shows, without asking the supervisor. */

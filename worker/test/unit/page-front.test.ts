@@ -590,3 +590,109 @@ describe("terminal admission is serialized with the steps that end it (Codex r1-
     });
   });
 });
+
+describe("sign-in from the page (WP3.23)", () => {
+  const base = (intent: string, extra: Record<string, unknown>) => ({
+    interfaceVersion: 1,
+    operationId: OP(7),
+    owner: OWNER,
+    intent,
+    ...extra,
+  });
+
+  it("checks the intent token before any sign-in effect", async () => {
+    const { front, controller } = harness();
+    for (const extra of [
+      { action: "sign_in_start", service: "claude" },
+      { action: "sign_in_input", service: "claude", attempt: 1, code: "a#b" },
+      { action: "sign_in_cancel", service: "codex", attempt: 2 },
+      { action: "staging_check", rc53: true },
+    ]) {
+      expect(await codeOf(front.pages(base("00".repeat(32), extra)))).toBe("forbidden");
+    }
+    expect(controller.signIns).toEqual([]);
+  });
+
+  it("binds each change to the caller's session; nothing of the token reaches the controller", async () => {
+    const { front, controller } = harness();
+    const intent = await intentOf(front);
+    expect(
+      await front.pages(base(intent, { action: "sign_in_start", service: "claude" })),
+    ).toMatchObject({ action: "sign_in_start", outcome: "accepted" });
+    await front.pages(
+      base(intent, { action: "sign_in_input", service: "claude", attempt: 1, code: "a#b" }),
+    );
+    await front.pages(base(intent, { action: "sign_in_cancel", service: "claude", attempt: 1 }));
+    expect(await front.pages(base(intent, { action: "staging_check", rc53: false }))).toEqual({
+      action: "staging_check",
+      outcome: "accepted",
+      rc53: false,
+    });
+    const calls = controller.signIns.filter((c) => c.method !== "sessionAttempts");
+    expect(calls).toEqual([
+      {
+        method: "start",
+        input: { service: "claude", session: OWNER.sessionId, operationId: OP(7) },
+      },
+      {
+        method: "input",
+        input: {
+          service: "claude",
+          attempt: 1,
+          code: "a#b",
+          session: OWNER.sessionId,
+          operationId: OP(7),
+        },
+      },
+      { method: "cancel", input: { service: "claude", attempt: 1, session: OWNER.sessionId } },
+      { method: "staging", input: { rc53: false } },
+    ]);
+    expect(JSON.stringify(calls)).not.toContain(intent);
+  });
+
+  it("answers reads without a token, naming the caller's session", async () => {
+    const { front, controller } = harness();
+    expect(
+      await front.pages({
+        action: "sign_in_status",
+        interfaceVersion: 1,
+        owner: OWNER,
+        service: "codex",
+        attempt: 3,
+      }),
+    ).toMatchObject({ action: "sign_in_status", outcome: "accepted" });
+    expect(
+      await front.pages({ action: "computer_status", interfaceVersion: 1, owner: OWNER }),
+    ).toMatchObject({ action: "computer_status", status: { observedAt: expect.any(String) } });
+    expect(controller.signIns).toEqual([
+      { method: "status", input: { service: "codex", attempt: 3, session: OWNER.sessionId } },
+      { method: "computer_status", input: null },
+    ]);
+    expect(
+      await codeOf(front.pages({ action: "computer_status", interfaceVersion: 99, owner: OWNER })),
+    ).toBe("unsupported_version");
+    controller.state = null;
+    expect(
+      await codeOf(front.pages({ action: "computer_status", interfaceVersion: 1, owner: OWNER })),
+    ).toBe("not_found");
+  });
+
+  it("adds the caller's running attempts to the page state", async () => {
+    const { front, controller } = harness();
+    controller.attempts = [{ service: "codex", attempt: 4 }];
+    controller.state = pageState({ signIn: { available: "yes" } });
+    const state = await front.pages({ action: "state", interfaceVersion: 1, owner: OWNER });
+    expect((state as { computer: { signIn: unknown } }).computer.signIn).toEqual({
+      available: "yes",
+      attempts: [{ service: "codex", attempt: 4 }],
+    });
+    // Without the owner, or from an older controller without `signIn`, nothing is added.
+    const anonymous = await front.pages({ action: "state", interfaceVersion: 1 });
+    expect((anonymous as { computer: { signIn: unknown } }).computer.signIn).toEqual({
+      available: "yes",
+    });
+    controller.state = pageState();
+    const older = await front.pages({ action: "state", interfaceVersion: 1, owner: OWNER });
+    expect((older as { computer: { signIn?: unknown } }).computer.signIn).toBeUndefined();
+  });
+});

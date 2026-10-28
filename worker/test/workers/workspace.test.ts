@@ -331,6 +331,8 @@ describe("WorkspaceDO's production defaults", () => {
       clockSkewMs: expect.any(Number),
       heartbeatMs: 60_000,
       control: "function",
+      // WP3.23: the test configuration sets no `CFO_STAGING_INSTALLATION`: production.
+      stagingChecks: false,
     });
     expect((await stub.defaults()).clockSkewMs).toBeLessThan(5_000);
   });

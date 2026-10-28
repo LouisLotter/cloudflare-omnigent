@@ -152,7 +152,7 @@ import {
 import {
   attemptOfOp,
   begin,
-  callerRefusal,
+  callerAttempt,
   closeAll,
   endedState,
   endWithContainer,
@@ -1913,15 +1913,16 @@ export class WorkspaceController {
     | { readonly outcome: "refused"; readonly reason: SignInRefusal }
   > {
     const r = this.#require();
-    const a = r.signIn.attempts.find((x) => x.attempt === input.attempt);
-    const refusal = callerRefusal(a, {
-      service: input.service,
-      session: input.session,
-      generation: r.lifecycle.generation,
-      now: this.#now(),
-    });
-    if (refusal !== null || a === undefined)
-      return { outcome: "refused", reason: refusal ?? "stale" };
+    const a = callerAttempt(
+      r.signIn.attempts.find((x) => x.attempt === input.attempt),
+      {
+        service: input.service,
+        session: input.session,
+        generation: r.lifecycle.generation,
+        now: this.#now(),
+      },
+    );
+    if (typeof a === "string") return { outcome: "refused", reason: a };
     if (input.service !== "claude" || !a.delivered) return { outcome: "refused", reason: "stale" };
     try {
       const reply = await this.#command({
@@ -1956,7 +1957,8 @@ export class WorkspaceController {
         const a = d.signIn.attempts.find((x) => x.attempt === input.attempt);
         if (a === undefined || a.service !== input.service) return "stale";
         if (a.session !== input.session) return "not_yours";
-        if (a.ended !== null) return a;
+        // Ended already (a cancel, a newer attempt, its deadline, or finished): nothing to cancel.
+        if (a.ended !== null) return "stale";
         const cancelled = { ...a, ended: "cancelled" as const, cancel: "pending" as const };
         d.signIn = update(d.signIn, a.attempt, () => cancelled);
         this.#log("sign_in_cancelled", { service: a.service, attempt: a.attempt });
@@ -1965,40 +1967,35 @@ export class WorkspaceController {
     );
     try {
       if (typeof ended === "string") return { outcome: "refused", reason: ended };
-      const r = this.#require();
-      if (ended.cancel === "pending") await this.#deliverCancel(r, ended);
-      return {
-        outcome: "accepted",
-        view: pageView(ended, null, endedState(ended, r.lifecycle.generation, now) ?? "cancelled"),
-      };
+      await this.#deliverCancel(this.#require(), ended);
+      return { outcome: "accepted", view: pageView(ended, null, "cancelled") };
     } finally {
       this.#kick();
     }
   }
 
-  /** An attempt's cancel, to the supervisor; true once answered (or nothing is left to cancel). */
+  /**
+   * An attempt's cancel, to the supervisor; true once answered. A cancel is owed only to the
+   * running generation's supervisor: a container's end clears it (`endWithContainer`).
+   */
   async #deliverCancel(r: ComputerRecord, a: SignInAttemptRecord): Promise<boolean> {
-    if (a.generation === r.lifecycle.generation && restored(r.lifecycle.context.state)) {
-      try {
-        await this.#command({
-          type: "sign_in_cancel",
-          ...this.#envelope(r, this.#d.newId("op")),
-          service: a.service,
-          attempt: a.attempt,
-        });
-      } catch (error) {
-        // An older supervisor has no such command, and so no attempt to cancel.
-        if (errorCodeOf(error) !== "bad_request") {
-          this.#log("sign_in_cancel_unanswered", { service: a.service, attempt: a.attempt });
-          return false;
-        }
+    try {
+      await this.#command({
+        type: "sign_in_cancel",
+        ...this.#envelope(r, this.#d.newId("op")),
+        service: a.service,
+        attempt: a.attempt,
+      });
+    } catch (error) {
+      // An older supervisor has no such command, and so no attempt to cancel.
+      if (errorCodeOf(error) !== "bad_request") {
+        this.#log("sign_in_cancel_unanswered", { service: a.service, attempt: a.attempt });
+        return false;
       }
     }
     await this.#exclusive(() =>
       this.#write((d) => {
-        d.signIn = update(d.signIn, a.attempt, (x) =>
-          x.cancel === "pending" ? { ...x, cancel: "done" } : x,
-        );
+        d.signIn = update(d.signIn, a.attempt, (x) => ({ ...x, cancel: "done" }));
       }),
     );
     return true;
@@ -2048,9 +2045,7 @@ export class WorkspaceController {
 
   /** Whether a sign-in cancel is still owed to the running generation's supervisor. */
   #cancelsPending(r: ComputerRecord): boolean {
-    return r.signIn.attempts.some(
-      (a) => a.cancel === "pending" && a.generation === r.lifecycle.generation,
-    );
+    return r.signIn.attempts.some((a) => a.cancel === "pending");
   }
 
   /** The runner's part: cancels, expiries, undelivered starts, and finished attempts. */
@@ -2065,9 +2060,11 @@ export class WorkspaceController {
     if (expired !== undefined) {
       await this.#exclusive(() =>
         this.#write((d) => {
-          d.signIn = update(d.signIn, expired.attempt, (x) =>
-            x.ended === null ? { ...x, ended: "expired", cancel: "pending" } : x,
-          );
+          d.signIn = update(d.signIn, expired.attempt, (x) => ({
+            ...x,
+            ended: "expired",
+            cancel: "pending",
+          }));
         }),
       );
       this.#log("sign_in_expired", { service: expired.service, attempt: expired.attempt });
@@ -2114,7 +2111,11 @@ export class WorkspaceController {
   async #advanceStagingCheck(r: ComputerRecord): Promise<"progress" | "blocked" | "idle"> {
     const want = r.rc53;
     const generation = r.lifecycle.generation;
-    if (this.#d.stagingChecks !== true || want === null || want.appliedGeneration === generation) {
+    if (
+      this.#d.stagingChecks !== true ||
+      want === null ||
+      (want.applied?.generation === generation && want.applied.rc53 === want.desired)
+    ) {
       return "idle";
     }
     try {
@@ -2132,11 +2133,10 @@ export class WorkspaceController {
       // An older supervisor cannot apply it: saves go on without the check.
       this.#log("staging_check_unsupported", { generation });
     }
+    // If the owner changed it meanwhile, the next pass applies the new value.
     await this.#exclusive(() =>
       this.#write((d) => {
-        if (d.rc53 !== null && d.rc53.desired === want.desired) {
-          d.rc53 = { ...d.rc53, appliedGeneration: generation };
-        }
+        d.rc53 = { ...(d.rc53 as typeof want), applied: { generation, rc53: want.desired } };
       }),
     );
     return "progress";
@@ -2157,7 +2157,7 @@ export class WorkspaceController {
           if (d.lifecycle.context.removalIntent || d.lifecycle.context.state === "removed") {
             return { outcome: "refused" as const, reason: "not_offered" as const };
           }
-          d.rc53 = { desired: input.rc53, appliedGeneration: null };
+          d.rc53 = { desired: input.rc53, applied: d.rc53?.applied ?? null };
           this.#log("staging_check_set", { rc53: input.rc53 });
           return { outcome: "accepted" as const, rc53: input.rc53 };
         }),
@@ -3086,7 +3086,7 @@ export class WorkspaceController {
           generation: c.generation,
           op: c.op,
           outcome,
-          reason: outcome === "failed" ? (reason ?? "internal").slice(0, 32) : null,
+          reason: outcome === "failed" ? String(reason).slice(0, 32) : null,
           kind: c.kind,
           rc53: null,
         });

@@ -85,6 +85,13 @@ describe("bindingsBackend", () => {
     expect(await (await backend.upgrade(PAGE_CMP, request)).text()).toBe("bridged");
   });
 
+  it("passes the page GETs' reads (WP3.23) to the computer's object", async () => {
+    const { backend, names } = bindings({ pages: (c) => c });
+    const call = { action: "computer_status", interfaceVersion: 1, owner: OWNER } as const;
+    expect(await backend.read(PAGE_CMP, call)).toBe(call);
+    expect(names).toEqual([PAGE_CMP]);
+  });
+
   it("reads outages and replication, null when they cannot be read", async () => {
     const ok = bindings({ outages: () => [], replication: () => ({ state: "replicating" }) });
     expect(

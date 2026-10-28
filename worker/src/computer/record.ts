@@ -334,7 +334,8 @@ export const ComputerRecord = z.strictObject({
   rc53: z
     .strictObject({
       desired: z.boolean(),
-      appliedGeneration: Count.nullable(),
+      /** What was last applied, and in which generation. */
+      applied: z.strictObject({ generation: Count, rc53: z.boolean() }).nullable(),
     })
     .nullable()
     .default(null),
