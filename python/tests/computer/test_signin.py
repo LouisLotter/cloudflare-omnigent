@@ -522,22 +522,77 @@ def test_a_cancel_mid_spawn_answers_only_once_nothing_can_start():
     assert all(p.poll() is not None for p in made)
 
 
-def test_an_unsettled_spawn_is_reported(monkeypatch):
-    monkeypatch.setattr(SI, "SPAWN_SETTLE_S", 0.2)
-    release = threading.Event()
-
+def _wedged_spawner(release: threading.Event, made: list):
     def wedged(_service, _cancelled):
-        release.wait(5)
-        return _sleeper()
+        release.wait(10)
+        proc, fd = _sleeper()
+        made.append(proc)
+        return proc, fd
 
-    signins = SI.SignIns(wedged)
+    return wedged
+
+
+def test_an_unsettled_spawn_stays_owed_until_it_is_over(monkeypatch):
+    """Codex r2-1: a spawn not over within the bound is never forgotten: every later cancel that
+    covers it, and every sign-out, waits for it and fails retryably until it is reaped."""
+    monkeypatch.setattr(SI, "SPAWN_SETTLE_S", 0.2)
+    release, made = threading.Event(), []
+    signins = SI.SignIns(_wedged_spawner(release, made))
     signins.start("codex", 1)
     with pytest.raises(SI.SignInUnsettled):
         signins.cancel("codex", 1)
-    assert signins.cancel_all() is True  # nothing left running to end
+    # Retries, and a sign-out, still see it.
+    with pytest.raises(SI.SignInUnsettled):
+        signins.cancel("codex", 1)
+    assert signins.cancel_all() is False
+    assert signins.cancel_all() is False
     release.set()
+    assert signins.cancel_all() is True
+    assert made and made[0].poll() is not None and _group_gone(made[0].pid)
+    assert signins.cancel("codex", 1)["state"] == "cancelled"
     signins.join()
-    assert signins._current["codex"].state == "cancelled"
+
+
+def test_a_superseded_spawn_stays_owed_by_the_newer_attempts_cancel(monkeypatch):
+    monkeypatch.setattr(SI, "SPAWN_SETTLE_S", 0.2)
+    release, made = threading.Event(), []
+    signins = SI.SignIns(_wedged_spawner(release, made))
+    signins.start("claude", 1)
+    signins.start("claude", 2)  # attempt 1's spawn is past the bound: 2 starts anyway
+    with pytest.raises(SI.SignInUnsettled):
+        signins.cancel("claude", 2)  # covers attempt 1 too
+    release.set()
+    assert signins.cancel("claude", 2)["state"] == "cancelled"
+    assert made and all(p.poll() is not None for p in made)
+    signins.join()
+    assert all(p.poll() is not None for p in made)
+
+
+def test_cancelling_a_superseded_attempt_waits_for_its_spawn():
+    """Within the bound: while a newer start waits for the older attempt's spawn, a cancel of the
+    older one answers only once that spawn is over and reaped."""
+    made = []
+    first = threading.Event()
+
+    def slow_first(_service, _cancelled):
+        if not first.is_set():
+            first.set()
+            time.sleep(0.8)
+        proc, fd = _sleeper()
+        made.append(proc)
+        return proc, fd
+
+    signins = SI.SignIns(slow_first)
+    signins.start("codex", 1)
+    newer = threading.Thread(target=signins.start, args=("codex", 2))
+    newer.start()
+    time.sleep(0.1)
+    view = signins.cancel("codex", 1)
+    assert view["state"] == "superseded"
+    assert made and made[0].poll() is not None
+    newer.join()
+    signins.cancel_all()
+    signins.join()
 
 
 def test_output_beyond_its_bound_is_unexpected():

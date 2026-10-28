@@ -282,6 +282,9 @@ class SignIns:
         self._current: dict[str, Attempt | None] = dict.fromkeys(SERVICES)
         self._finished: dict[str, dict[int, dict[str, Any]]] = {s: {} for s in SERVICES}
         self._threads: list[threading.Thread] = []
+        #: Ended attempts whose spawn is not yet confirmed over: kept, whatever their visible
+        #: state, until a settle sees them over and reaped (Codex WP3.23 r2-1).
+        self._unsettled: list[Attempt] = []
 
     # -- the commands -----------------------------------------------------------------------
 
@@ -301,12 +304,15 @@ class SignIns:
             attempt.deadline = attempt.started + self.deadline_s
             self._current[service] = attempt
             if not self._ready():
-                self._end(attempt, "failed", "not_ready")
                 attempt.spawned.set()
+                self._end(attempt, "failed", "not_ready")
                 return attempt.view()
-        # The older attempt is ended first: its process killed and reaped, even mid-spawn. A
-        # wedged spawn does not hold the new attempt back; its own thread kills it when it ends.
-        if superseded is not None and not self._settle([superseded]):
+        # The older attempts are ended first: their processes killed and reaped, even mid-spawn.
+        # A wedged spawn does not hold the new attempt back, but stays owed: any later cancel of
+        # this service, or a sign-out, waits for it.
+        if superseded is not None and not self._settle(
+            lambda a: a.service == service and a.number < number
+        ):
             self._alert("sign_in_failed")
         thread = threading.Thread(
             target=self._run, args=(attempt,), name=f"sign-in-{service}", daemon=True
@@ -351,7 +357,9 @@ class SignIns:
                 )
                 self._trim(service)
             view = self._known(service, number)
-        settled = self._settle(ended)
+        # Every attempt this cancel covers (its own and any older of the service), including
+        # ones ended earlier whose spawn is still not over.
+        settled = self._settle(lambda a: a.service == service and a.number <= number)
         self._on_change()
         if not settled:
             raise SignInUnsettled("the attempt's spawn has not finished")
@@ -368,14 +376,13 @@ class SignIns:
         """Ends every running attempt (a sign-out, a stop): killed and reaped before returning.
         False if a spawn has not finished in time (its process may still start)."""
         with self._lock:
-            ended = []
             for service in SERVICES:
                 current = self._current[service]
                 if current is not None and current.state in ACTIVE:
                     self._fence[service] = max(self._fence[service], current.number)
                     self._end(current, "cancelled")
-                    ended.append(current)
-        settled = self._settle(ended)
+        # Every ended attempt still owed a settle, earlier ones included.
+        settled = self._settle(lambda _a: True)
         self._on_change()
         return settled
 
@@ -394,15 +401,21 @@ class SignIns:
 
     # -- internals ----------------------------------------------------------------------------
 
-    def _settle(self, ended: list[Attempt]) -> bool:
-        """Waits (never under the lock: the spawning thread needs it) until each ended attempt's
-        spawn is over, then kills and reaps what it made. True once none can still start."""
+    def _settle(self, covers: Callable[[Attempt], bool]) -> bool:
+        """Waits (never under the lock: the spawning thread needs it) until the spawn of every
+        owed attempt ``covers`` names is over, then kills and reaps what it made. True once none
+        of them can still start; those not yet over stay owed for the next settle."""
+        with self._lock:
+            owed = [a for a in self._unsettled if covers(a)]
         settled = True
-        for attempt in ended:
+        for attempt in owed:
             if not attempt.spawned.wait(SPAWN_SETTLE_S):
                 settled = False
                 continue
             _kill(attempt.proc)
+            with self._lock:
+                if attempt in self._unsettled:
+                    self._unsettled.remove(attempt)
         return settled
 
     def _known(self, service: str, number: int) -> dict[str, Any]:
@@ -437,6 +450,8 @@ class SignIns:
         attempt.out.clear()
         if state == "failed":
             self._alert("sign_in_failed")
+        if not attempt.spawned.is_set():
+            self._unsettled.append(attempt)
         self._finished[attempt.service][attempt.number] = attempt.view()
         self._trim(attempt.service)
 
