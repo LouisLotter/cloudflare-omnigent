@@ -29,9 +29,12 @@
 //
 // A deployment that teardown or sweep --yes removes may have been a staging installation's
 // platform Worker (scripts/bootstrap, `plan --staging`). The R2 user API token that the
-// bootstrap made for that installation goes with it: the one its state file records, the
-// bootstrap's own record of what it made (scripts/bootstrap/remove.ts). A token whose removal
-// fails is reported, with the bootstrap command that removes it, and the command exits 1.
+// bootstrap made for that installation, named `<deployment>-r2--<installation ID>` with every
+// resource in the staging account, goes with it (scripts/bootstrap/remove.ts). Teardown deletes
+// it once the deployment's record is gone, and resumes that for a deployment an interrupted
+// teardown already removed. Sweep reports every such token whose deployment the registry no
+// longer holds, and deletes them with --yes. A token kept because a bootstrap run holds its
+// installation, or one whose delete failed, is reported, and the command exits 1.
 //
 // A Durable Object binding may name another deployment in script_name if the registry shows it
 // deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
@@ -82,8 +85,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { cfTokenApi } from "../bootstrap/cloud.ts";
-import { removeDeploymentToken } from "../bootstrap/remove.ts";
-import { statePathFor } from "../bootstrap/state.ts";
+import { removeStagingTokens } from "../bootstrap/remove.ts";
+import { workerLockPath } from "../bootstrap/state.ts";
 import {
   cliCloud,
   fileStore,
@@ -93,7 +96,7 @@ import {
   spawnRunner,
   writePrivateFile,
 } from "./cloud.ts";
-import { assertAccount, expired, resourceName, type StagingConfig } from "./guard.ts";
+import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
 import {
   type Context,
@@ -150,24 +153,31 @@ function context(config: StagingConfig, command: string): Context {
 }
 
 /**
- * After `deployments` were removed: the R2 token of a staging installation whose platform Worker
- * one of them was. A failure is reported, never hides the teardown's own result.
+ * The R2 tokens of staging installations whose platform deployment, among those `named`, the
+ * registry no longer holds: deleted, or with `apply` false only reported. Returns how many it
+ * found. A problem is reported and makes the command exit 1, after the teardown's own result.
  */
-function removeInstallationTokens(config: StagingConfig, deployments: readonly string[]): void {
-  for (const deployment of deployments) {
-    try {
-      removeDeploymentToken(deployment, {
-        accountId: config.accountId,
-        api: cfTokenApi,
-        runner: spawnRunner,
-        log: (message) => console.log(message),
-      });
-    } catch (error) {
-      console.error(
-        `stg: ${deployment}: its staging installation's R2 token was not removed: ${error instanceof Error ? error.message : String(error)}; run node scripts/bootstrap/bootstrap.ts remove-r2-token --state ${statePathFor(deployment)} --yes`,
-      );
-      process.exitCode = 1;
-    }
+function installationTokens(ctx: Context, named: (d: string) => boolean, apply: boolean): number {
+  const holder = `pid ${process.pid}, stg.ts R2 token cleanup`;
+  const gone = (deployment: string) =>
+    named(deployment) && !ctx.store.load().some((d) => d.name === deployment);
+  try {
+    const result = removeStagingTokens(gone, {
+      accountId: ctx.config.accountId,
+      api: cfTokenApi(spawnRunner(ctx.config.accountId)),
+      lock: (worker) => acquireLock(workerLockPath(ctx.config.accountId, worker), 0, holder),
+      apply,
+      log: (message) => console.log(message),
+    });
+    for (const problem of result.problems) console.error(`stg: ${problem}`);
+    if (result.problems.length > 0) process.exitCode = 1;
+    return result.found.length;
+  } catch (error) {
+    console.error(
+      `stg: staging installations' R2 tokens were not checked: ${error instanceof Error ? error.message : String(error)}; run sweep to try again`,
+    );
+    process.exitCode = 1;
+    return 0;
   }
 }
 
@@ -287,21 +297,17 @@ function main(): void {
       if (!values.suffix) throw new Error("teardown needs --suffix");
       const ctx = context(loadConfig(), command);
       const name = resourceName(values.suffix);
-      teardown(ctx, name);
-      removeInstallationTokens(ctx.config, [name]);
+      // A deployment whose record an interrupted teardown already removed: only its token is left.
+      const recorded = ctx.store.load().some((d) => d.name === name);
+      if (recorded) teardown(ctx, name);
+      const found = installationTokens(ctx, (d) => d === name, true);
+      if (!recorded && found === 0) throw new Error(`no recorded deployment named ${name}`);
       return;
     }
     case "sweep": {
       const ctx = context(loadConfig(), command);
-      const due = expired(ctx.store.load(), ctx.now()).map((d) => d.name);
       const failures = sweep(ctx, values.yes);
-      if (values.yes) {
-        const left = new Set(ctx.store.load().map((d) => d.name));
-        removeInstallationTokens(
-          ctx.config,
-          due.filter((name) => !left.has(name)),
-        );
-      }
+      installationTokens(ctx, () => true, values.yes);
       if (failures.length > 0) throw new Error(`teardown failed for:\n  ${failures.join("\n  ")}`);
       return;
     }
