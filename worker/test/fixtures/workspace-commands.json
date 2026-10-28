@@ -206,7 +206,7 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_00000000000000000000000007",
+    "operationId": "op_00000000000000000000000008",
     "service": "claude",
     "attempt": 1
   },
@@ -215,7 +215,7 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_00000000000000000000000008",
+    "operationId": "op_00000000000000000000000009",
     "service": "claude",
     "attempt": 1
   },
@@ -234,7 +234,7 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000b",
+    "operationId": "op_0000000000000000000000000c",
     "service": "codex",
     "attempt": 2
   }
