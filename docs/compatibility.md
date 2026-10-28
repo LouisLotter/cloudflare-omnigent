@@ -4,7 +4,7 @@ Source snapshot dated 28 October 2026. Builds, tests and production qualificatio
 
 | Source assembly | Server's default Omnigent source | Status |
 |---|---|---|
-| 0.20.0 upgrade assembly | `72ba29a4f9aed97f08bcd44d3b7d8b2b260b72d6` (both server and computer) | Includes upstream 0.20.0 and the existing fork contracts, plus explicit runner-replacement capability admission. Built and tested locally: server, packaged fork Stop, privileged computer and local fault/restore suites. Image IDs only, no registry manifest digest; not deployed |
+| 0.20.0 upgrade assembly | `5885829815a9fba3f91828c578a4b1acad6a6ba1` (both server and computer) | Includes upstream 0.20.0 and the existing fork contracts, plus explicit runner-replacement capability admission. Built and tested locally: server, packaged fork Stop, privileged computer and the 22-case local server integration suite with MinIO/Toxiproxy. The separate restore-drill CLI suite and cloud restore qualification are tracked independently. Image IDs only, no registry manifest digest; not deployed |
 | Previous platform main | `3d7f7d08c99344a5835516e059d5c15b8b78f37f` (current fork integration) | Integrated; CI builds the server image and runs its tests and the fork's Stop tests. Real R2 startup was measured at `184b5cf8b` on `basic`, the server's size under the default scheduling policy; the server now runs under the `durable_object` policy on a custom 1 vCPU, 3 GiB, 8 GB instance, not yet measured. Not repeated at this pin |
 | Earlier main | `184b5cf8b32815b48c7859973a00a139e8aa50f0`, before that `35ac1ebd2405264de7c0456084f45c4af1e657ca` (WP2.6) and `af3e49de2b169a8593e2d91e7ab98e2581f9f90a` | Superseded; see the behavior table for what they lacked |
 | Platform pages (this snapshot) | Not applicable (platform Worker code) | Implemented in source; tested locally only. Bundles xterm.js 6.0.0 and `@xterm/addon-fit` 0.11.0 in the web Worker. Bridges ttyd 1.7.7's WebSocket protocol (`tty` subprotocol, port 7681) from the computer image. Workspace interface version 1 with additive page calls |
@@ -49,15 +49,17 @@ The upgrade adds a merge migration joining the earlier fork and upstream migrati
 - **Runner environment.** Omnigent's host passes a runner only an allowlist of its environment. That allowlist left out the image's Claude Code settings (telemetry, error reporting and updates off). The supervisor now names those settings in the host's `OMNIGENT_RUNNER_ENV_PASSTHROUGH`.
 - **Sandbox SDK 1.0.0 retries nothing.** Its shim uploads each part once, and when R2 fails a part, its gateway answers 502 with R2's message. One lost connection ("Network connection lost.") therefore failed a whole save. WorkspaceDO now repeats the whole upload after a transient failure: a 502, 503 or 504 from the gateway, or a lost or reset connection. It tries twice more, after 5 s and then 15 s, within the same upload deadline. A failed attempt leaves no object, and only the attempt that returns a record is published.
 
-| Behavior | `af3e49de2` | `35ac1ebd2` | `184b5cf8b` | `3228d4de3` | `3d7f7d08c` (previous default) |
-|---|---|---|---|---|---|
-| Single-attempt Stop with explicit delivery outcome | Absent | Included | Included | Included | Included |
-| Referenced native provider-key file and transcript replay | Absent | Included | Included | Included | Included |
-| Later main-chat Stop failure and launch-outcome notices | Absent | Absent | Included | Included | Included |
-| Later history-unavailable resume refusal and resume-ID preservation | Absent | Absent | Included | Included | Included |
-| Persistent hosts provisioned by the whole host ID; a sandbox never shared by two hosts | Absent | Absent | Absent | Included | Included |
-| Codex's policy hook fails closed (deny with a reason) when no verdict is available, within Codex's hook timeout | Absent | Absent | Absent | Absent | Included |
-| Claude's hook settings name the default renderer unless the person's own settings choose one | Absent | Absent | Absent | Absent | Included |
+| Behavior | `af3e49de2` | `35ac1ebd2` | `184b5cf8b` | `3228d4de3` | `3d7f7d08c` (previous default) | `588582981` (upgrade) |
+|---|---|---|---|---|---|---|
+| Single-attempt Stop with explicit delivery outcome | Absent | Included | Included | Included | Included | Included |
+| Referenced native provider-key file and transcript replay | Absent | Included | Included | Included | Included | Included |
+| Later main-chat Stop failure and launch-outcome notices | Absent | Absent | Included | Included | Included | Included |
+| Later history-unavailable resume refusal and resume-ID preservation | Absent | Absent | Included | Included | Included | Included |
+| Persistent hosts provisioned by the whole host ID; a sandbox never shared by two hosts | Absent | Absent | Absent | Included | Included | Included |
+| Codex's policy hook fails closed (deny with a reason) when no verdict is available, within Codex's hook timeout | Absent | Absent | Absent | Absent | Included | Included |
+| Claude's hook settings name the default renderer unless the person's own settings choose one | Absent | Absent | Absent | Absent | Included | Included |
+| Explicit replacement-capability admission before new runner launches | Absent | Absent | Absent | Absent | Absent | Included; compatible computer required |
+| Cloud qualification of the 0.20.0 assembly | Not applicable | Not applicable | Not applicable | Not applicable | Not applicable | Pending |
 
 These are source-inclusion statements. They do not establish runtime behavior on an uninspected image. The main server registers the [Cloudflare launcher](../images/server/cfo_server/launcher.py) (launcher protocol version 1) and [disables GitHub linking](../images/server/cfo_server/app.py). The platform Worker's [internal platform bridge](../worker/src/internal/platform-api.ts) verifies signed launcher calls and reaches ControlDO and WorkspaceDO, which is wired in source to its container, intercepts and fenced backup gateway. That chain is tested in the Workers runtime with a simulated container; it has not run on Cloudflare with the computer image. Fork capabilities do not make those product integrations complete.
 

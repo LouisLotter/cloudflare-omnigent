@@ -2,7 +2,7 @@
 
 Runs on Omnigent's interpreter (``/opt/venv/bin/python -I``) with a throwaway HOME and TMPDIR.
 The bridge, relay, router, hook and settings files are written by Omnigent's own code at the
-image's pin (fork ``cfo/integration``), with the arguments a host-launched runner passes; the
+image's pinned fork revision, with the arguments a host-launched runner passes; the
 runner's environment is the host's own ``_build_runner_env``. The login files are written in the
 CLIs' formats (Claude Code 2.1.311's ``.credentials.json`` and ``.device-keys.json``, Codex
 0.164.0's ``auth.json`` with ``login_owner_id`` and ``oauth_provenance``), as surveyed with real

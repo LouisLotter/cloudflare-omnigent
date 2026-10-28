@@ -1,7 +1,7 @@
 """The native harnesses' secret files and continuation state, on the real capture and restore.
 
 Ported from S6's follow-up (``spikes/s6/followup/bridge_check.py``) onto the supervisor: the
-writers are Omnigent's own (``/opt/venv``, fork ``cfo/integration`` at the image's pin), the
+writers are Omnigent's own (``/opt/venv`` at the image's pinned fork revision), the
 captures and restores go through the actual receiver.
 
 1. Paused writers (G1BR-001's residual): each secret writer is held after its temporary file

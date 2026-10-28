@@ -27,6 +27,7 @@ import {
   validateDeployConfig,
   withStagingNames,
 } from "../../../scripts/staging/guard.ts";
+import { acquireLock } from "../../../scripts/staging/lock.ts";
 import { logQuery } from "../staging/wp318/logs.ts";
 import {
   configRestarts,
@@ -857,7 +858,32 @@ describe("the shell campaign's resource isolation", () => {
     }
   });
 
-  it.each(["teardown", "delete"])(
+  it("allows follow and status while the platform deployment lock is held", async () => {
+    const h = campaignHarness();
+    let release: (() => void) | undefined;
+    try {
+      await writeCampaignInstallation(h);
+      expect(h.selected("bucket").status).toBe(0);
+      writeFileSync(join(h.out, "bootstrap.pid"), "999999999");
+      writeFileSync(join(h.out, "bootstrap.log"), "exit 0\n");
+      release = acquireLock(
+        join(h.staging, "locks", "cfo-stg-upgrade020-platform.lock"),
+        0,
+        "test deployment",
+      );
+      for (const command of ["follow", "status"]) {
+        const result = h.selected(command);
+        expect(result.status, result.stderr).toBe(0);
+      }
+      expect(h.recorded().some((c) => c.name === "timeout")).toBe(true);
+      expect(h.recorded().some((c) => c.args[0]?.endsWith("logs.ts"))).toBe(true);
+    } finally {
+      release?.();
+      rmSync(h.dir, { recursive: true });
+    }
+  });
+
+  it.each(["upgrade020-platform", "delete"])(
     "keeps upgrade recovery records after a failed %s and permits retry",
     async (failure) => {
       const h = campaignHarness();
@@ -872,12 +898,29 @@ describe("the shell campaign's resource isolation", () => {
         for (const file of ["owner-secrets.json", "launcher-secrets.json", "r2-token-id"])
           expect(existsSync(join(h.out, file))).toBe(true);
         expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(true);
-        if (failure === "teardown")
+        const teardowns = () =>
+          h.recorded().filter((c) => c.args[0]?.endsWith("stg.ts") && c.args[1] === "teardown");
+        if (failure === "upgrade020-platform") {
+          expect(teardowns().map((c) => c.args[c.args.indexOf("--suffix") + 1])).toEqual([
+            "upgrade020-web",
+            "upgrade020-platform",
+          ]);
+          expect(readFileSync(join(h.out, "teardown-web.log"), "utf8")).toContain("exit 0");
+          expect(readFileSync(join(h.out, "teardown-platform.log"), "utf8")).toContain("exit 1");
           expect(h.recorded().some((c) => c.name === "cf" && c.args.includes("delete"))).toBe(
             false,
           );
+        }
+        const beforeRetry = teardowns().length;
         rmSync(join(h.dir, "fail"));
         expect(h.selected("teardown").status).toBe(0);
+        const retried = teardowns().slice(beforeRetry);
+        expect(retried.map((c) => c.args[c.args.indexOf("--suffix") + 1])).toEqual([
+          "upgrade020-web",
+          "upgrade020-platform",
+          "upgrade020-r2",
+        ]);
+        expect(retried.every((c) => c.args.includes("--if-present"))).toBe(true);
         expect(existsSync(join(h.out, "owner-secrets.json"))).toBe(false);
         expect(existsSync(join(h.installs, "cfo-stg-upgrade020-platform.json"))).toBe(false);
       } finally {

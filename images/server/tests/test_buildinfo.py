@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "72ba29a4f9aed97f08bcd44d3b7d8b2b260b72d6"
+COMMIT = "5885829815a9fba3f91828c578a4b1acad6a6ba1"
 
 
 def _write(path: Path, **fields: object) -> Path:

@@ -27,8 +27,6 @@ import {
 import { parseState, statePathFor } from "../../../../scripts/bootstrap/state.ts";
 import { fileStore, readWranglerConfig, spawnRunner } from "../../../../scripts/staging/cloud.ts";
 
-import { acquireLock } from "../../../../scripts/staging/lock.ts";
-
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const WORKER = join(ROOT, "worker");
 /** The namespace selected by run.sh; direct tooling retains the legacy default. */
@@ -74,20 +72,15 @@ export function preflightSoak(requireInstallation = false): void {
       "staging",
     );
   const names = ["platform", "web", "r2"].map((kind) => `cfo-stg-${base}-${kind}`).sort();
-  const release: (() => void)[] = [];
-  try {
-    for (const name of names)
-      release.push(acquireLock(join(state, "locks", `${name}.lock`), 0, "soak preflight"));
-    for (const record of fileStore(join(state, "resources.json"), "soak preflight").load()) {
-      if (names.includes(record.name) && record.owner !== owner) {
-        throw new Error(`${record.name} belongs to ${record.owner}, not ${owner}`);
-      }
+  // Registry updates use atomic rename. Advisory reads must not contend with
+  // image uploads; each mutation repeats its owner check under its own lock.
+  for (const record of fileStore(join(state, "resources.json"), "soak preflight").load()) {
+    if (names.includes(record.name) && record.owner !== owner) {
+      throw new Error(`${record.name} belongs to ${record.owner}, not ${owner}`);
     }
-    const path = statePathFor(`cfo-stg-${base}-platform`);
-    if (requireInstallation || existsSync(path)) soakInstallation();
-  } finally {
-    for (const unlock of release.reverse()) unlock();
   }
+  const path = statePathFor(`cfo-stg-${base}-platform`);
+  if (requireInstallation || existsSync(path)) soakInstallation();
 }
 
 type Raw = Record<string, unknown>;
