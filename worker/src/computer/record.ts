@@ -31,6 +31,8 @@ import {
   WorkspaceManifest,
 } from "@cfo/contracts";
 import { z } from "zod";
+import { NO_SIGN_IN, SignInRecord } from "./sign-in.ts";
+import { SaveRecord } from "./status.ts";
 
 /**
  * A Durable Object's synchronous storage, as the controller uses it: JSON values by key, and a
@@ -310,6 +312,33 @@ export const ComputerRecord = z.strictObject({
   /** The setup terminal is open until then (WP3.5's terminal sets it). */
   terminalOpenUntil: Millis.nullable(),
 
+  // WP3.23: sign-in from the page, the status, and the staging switch. Records from before them
+  // read with the defaults.
+  /** What the supervisor's `hello` said, for the generation it came from. */
+  supervisorInfo: z
+    .strictObject({
+      generation: Count,
+      version: z.string().max(64),
+      features: z.array(z.string().max(32)).max(32),
+    })
+    .nullable()
+    .default(null),
+  /** Sign-in attempts and the sign-in lease (`sign-in.ts`); never a link or a code. */
+  signIn: SignInRecord.default(NO_SIGN_IN),
+  /** The last final save outcomes, newest first (`status.ts`). */
+  saves: z.array(SaveRecord).max(10).default([]),
+  /**
+   * Staging only: RC-53's save check, as the owner set it on the page, and the generation it was
+   * last applied in. Applied again in every generation before its captures. Null: never set.
+   */
+  rc53: z
+    .strictObject({
+      desired: z.boolean(),
+      appliedGeneration: Count.nullable(),
+    })
+    .nullable()
+    .default(null),
+
   /** A resolved removal's deletions, in order. */
   deletion: z
     .strictObject({
@@ -404,6 +433,10 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     refusedSleeps: 0,
     stopRefusedAt: null,
     terminalOpenUntil: null,
+    supervisorInfo: null,
+    signIn: NO_SIGN_IN,
+    saves: [],
+    rc53: null,
     deletion: null,
   };
 }

@@ -13,6 +13,9 @@ Command rules (contracts/src/computer-protocol.ts, ``COMPUTER_API_MESSAGES``):
   (for a job, its current state), and the same ID with another body is a ``conflict``. Only
   answers are recorded, never failures, so a failed command can be repeated;
 - ``start_host`` is idempotent by attempt (``host.py``); ``status`` and ``job_status`` read.
+- the sign-in commands (WP3.23, ``signin.py``) are fenced by attempt: ``sign_in_start`` and
+  ``sign_in_cancel`` are idempotent by attempt and never journaled; ``sign_in_input`` is journaled
+  by operation ID without its code; ``sign_in_status`` and ``computer_status`` read.
 Ordering the design requires and the receiver enforces: the workspace restore, then the
 credential install, then the host. No capture before the restore is confirmed.
 """
@@ -34,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from . import (
+    SUPERVISOR_FEATURES,
     SUPERVISOR_PROTOCOL_VERSION,
     SUPERVISOR_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -41,6 +45,7 @@ from . import (
 )
 from . import logins as L
 from . import runners as R
+from . import status as S
 from .api import ComputerApi, Refused, Unanswered
 from .capture import journal_deadline, resume_journal
 from .contract import Contract, ContractError, error_body
@@ -55,8 +60,9 @@ from .host import HostManager, StartParams, host_argv, host_config_command, host
 from .ids import new_operation_id
 from .paths import OMNIGENT_INTERNAL_URL, Account, Layout
 from .policy import Policy
-from .procutil import module_argv, run_workload, spawn_workload, workload_env
+from .procutil import module_argv, run_workload, spawn_workload, workload_argv, workload_env
 from .restore import RestoreFailed, restore_workspace
+from .signin import SignInConflict, SignIns, spawn_login
 from .tree import tree_digest
 
 REPORT_INTERVAL_S = 30.0
@@ -73,6 +79,15 @@ class _CaptureRefused(Exception):
 
 
 LOGIN_INTERVAL_S = 300.0
+#: The CLIs' versions are read again after this.
+VERSIONS_INTERVAL_S = 3600.0
+#: Captures whose RC-53 counts the status keeps.
+KEEP_CAPTURE_COUNTS = 5
+#: Commands that are never journaled by operation ID: reads, and the sign-in commands fenced by
+#: attempt (signin.py).
+UNJOURNALED = frozenset(
+    {"status", "job_status", "sign_in_status", "computer_status", "sign_in_start", "sign_in_cancel"}
+)
 #: The capture worker is given this long after its lease before it is killed as wedged.
 CAPTURE_WORKER_GRACE_S = 900.0
 
@@ -103,12 +118,23 @@ class Tools:
     venv_python: str = "/opt/venv/bin/python"
     claude: str = "claude"
     codex: str = "codex"
+    #: gh itself, for its version (the venv's gh is the credential broker's wrapper).
+    gh: str = "/usr/local/bin/gh"
     terminal: list[str] | None = None
     server_url: str = OMNIGENT_INTERNAL_URL
 
 
 def _fingerprint(command: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(command, sort_keys=True).encode()).hexdigest()
+
+
+def _journaled(reply: dict[str, Any]) -> dict[str, Any]:
+    """What the journal keeps of a reply: a sign-in's view without its link or code, which
+    must not outlive the attempt (a repeat is answered without them)."""
+    view = reply.get("view")
+    if not isinstance(view, dict):
+        return reply
+    return {**reply, "view": {k: v for k, v in view.items() if k not in ("url", "userCode")}}
 
 
 class Supervisor:
@@ -158,6 +184,13 @@ class Supervisor:
         self._changed = threading.Event()
         self._login_wake = threading.Event()
         self.alerts: list[str] = []
+        #: The alerts by fixed kind, for the status; their text never leaves the computer.
+        self.alert_counts: dict[str, int] = {}
+        #: The latest captures' RC-53 counts, by capture operation (oldest first).
+        self._capture_rc53: dict[str, dict[str, int]] = {}
+        #: The CLIs' normalized versions, read in the background (None until read).
+        self.cli_versions: dict[str, str | None] = {"claude": None, "codex": None, "gh": None}
+        self._versions_at: float | None = None
         # Capture settings; tests narrow them (and inject faults into the worker).
         self.capture_margin_bytes = 64 << 20
         self.capture_grace_s = CAPTURE_WORKER_GRACE_S
@@ -178,7 +211,13 @@ class Supervisor:
             computer_id=computer_id,
             generation=generation,
             publish=self._publish_bundle,
+            alert=lambda message: self._alert(message, credential=True),
+        )
+        self.signins = SignIns(
+            self._spawn_login,
+            ready=lambda: self.credentials_installed,
             alert=self._alert,
+            on_change=self.changed,
         )
         self.creds.on_change = self.changed
         kwargs = {"backoff": host_backoff} if host_backoff else {}
@@ -192,9 +231,11 @@ class Supervisor:
 
     # -- small helpers ---------------------------------------------------------------------
 
-    def _alert(self, message: str) -> None:
+    def _alert(self, message: str, *, credential: bool = False) -> None:
+        kind = S.alert_kind(message, credential=credential)
         with self._lock:
             self.alerts = [*self.alerts[-19:], message]
+            self.alert_counts[kind] = self.alert_counts.get(kind, 0) + 1
 
     def changed(self) -> None:
         self._changed.set()
@@ -316,6 +357,24 @@ class Supervisor:
             with self._lock:
                 self._workload_pids.add(self.terminal.pid)
 
+    def _spawn_login(self, service: str) -> tuple[subprocess.Popen[bytes], int]:
+        """A sign-in's CLI login (signin.py), as workload: the terminal's environment, the
+        person's account, the workload cgroup, and never while a capture runs."""
+        cli = self.tools.claude if service == "claude" else self.tools.codex
+        with self._spawn_gate():
+            proc, fd = spawn_login(
+                service,
+                cli=cli,
+                env=self._env({"TERM": "xterm-256color"}),
+                cwd=str(self.account.home),
+                argv_wrapper=lambda argv: workload_argv(
+                    argv, uid=self.account.uid, gid=self.account.gid, cgroup_dir=self.cgroup_dir
+                ),
+            )
+            with self._lock:
+                self._workload_pids.add(proc.pid)
+        return proc, fd
+
     # -- commands ----------------------------------------------------------------------------
 
     def handle(self, body: bytes) -> tuple[int, dict[str, Any]]:
@@ -361,8 +420,11 @@ class Supervisor:
             return {"type": "status", "report": self.report()}
         if kind == "job_status":
             return {"type": "job_status", "job": self._job_view(command["jobOperationId"])}
+        if kind in UNJOURNALED:
+            return getattr(self, f"_cmd_{kind}")(command)
         op = command["operationId"]
-        fingerprint = _fingerprint(command)
+        # Never the pasted code, not even hashed: the journal outlives the attempt.
+        fingerprint = _fingerprint({k: v for k, v in command.items() if k != "code"})
         # Reserve the operation ID before any effect (Codex r1, finding 6): a concurrent repeat
         # waits for the first one's answer instead of running the command again, and the same
         # ID with another body is refused. A failure releases the reservation unrecorded.
@@ -395,7 +457,7 @@ class Supervisor:
         try:
             reply = getattr(self, f"_cmd_{kind}")(command)
             with self._lock:
-                self._journal[op] = (fingerprint, reply)
+                self._journal[op] = (fingerprint, _journaled(reply))
         finally:
             with self._lock:
                 _fp, event = self._running.pop(op)
@@ -741,6 +803,12 @@ class Supervisor:
                 self.capture_running = False
             self._capture_gate.release()
             self.changed()
+        counts = S.rc53_counts(result)
+        if counts is not None:
+            with self._lock:
+                self._capture_rc53[op] = counts
+                while len(self._capture_rc53) > KEEP_CAPTURE_COUNTS:
+                    del self._capture_rc53[next(iter(self._capture_rc53))]
         if result.get("rc53", {}).get("status", 0) != 0:
             self._alert("RC-53: a staged layer holds a live token value or could not be scanned")
         if result.get("skipped"):
@@ -848,6 +916,8 @@ class Supervisor:
         return {"type": "credential_snapshot", "order": bundle["order"]}
 
     def _cmd_sign_out(self, command: dict[str, Any]) -> dict[str, Any]:
+        # A sign-in still running could finish after the logouts: it is ended first.
+        self.signins.cancel_all()
         result = L.sign_out(
             lambda argv, timeout: self._run(list(argv), timeout),
             self.tools.claude,
@@ -856,6 +926,82 @@ class Supervisor:
         self.creds.tick()
         self._login_wake.set()
         return {"type": "sign_out", "claude": result["claude"], "codex": result["codex"]}
+
+    # sign-in, status and the staging check (WP3.23) ------------------------------------------
+
+    def _cmd_sign_in_start(self, command: dict[str, Any]) -> dict[str, Any]:
+        view = self.signins.start(command["service"], int(command["attempt"]))
+        return {"type": "sign_in_start", "view": view}
+
+    def _cmd_sign_in_input(self, command: dict[str, Any]) -> dict[str, Any]:
+        try:
+            view = self.signins.write(command["service"], int(command["attempt"]), command["code"])
+        except SignInConflict as exc:
+            raise CommandError("conflict", str(exc)) from None
+        return {"type": "sign_in_input", "view": view}
+
+    def _cmd_sign_in_cancel(self, command: dict[str, Any]) -> dict[str, Any]:
+        view = self.signins.cancel(command["service"], int(command["attempt"]))
+        return {"type": "sign_in_cancel", "view": view}
+
+    def _cmd_sign_in_status(self, command: dict[str, Any]) -> dict[str, Any]:
+        view = self.signins.status(command["service"], int(command["attempt"]))
+        return {"type": "sign_in_status", "view": view}
+
+    def _cmd_computer_status(self, command: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "computer_status", "status": self.computer_status()}
+
+    def _cmd_staging_check(self, command: dict[str, Any]) -> dict[str, Any]:
+        """RC-53's save check on or off: ``<state>/rc53/enabled``. WorkspaceDO sends it only on
+        a staging installation."""
+        flag = self.layout.state / "rc53" / "enabled"
+        if command["rc53"]:
+            flag.parent.mkdir(mode=0o700, exist_ok=True)
+            flag.touch(mode=0o600, exist_ok=True)
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                flag.unlink()
+        self.changed()
+        return {"type": "staging_check", "rc53": self._rc53_enabled()}
+
+    def computer_status(self) -> dict[str, Any]:
+        """The supervisor's metrics (status.py): names, versions, states and counts only."""
+        with self._lock:
+            alerts = [
+                {"kind": kind, "count": count}
+                for kind, count in sorted(self.alert_counts.items())
+                if kind in S.ALERT_KINDS
+            ][:32]
+            captures = [
+                {"jobOperationId": op, "rc53": counts}
+                for op, counts in list(self._capture_rc53.items())[-KEEP_CAPTURE_COUNTS:]
+            ]
+            logins = dict(self.logins)
+            versions = dict(self.cli_versions)
+        return {
+            "supervisorVersion": SUPERVISOR_VERSION,
+            "versions": versions,
+            "logins": logins,
+            "signIn": self.signins.states(),
+            "rc53": self._rc53_enabled(),
+            "hostname": S.hostname_mapped(),
+            "disk": S.disk(self.account.home),
+            "alerts": alerts,
+            "captures": captures,
+        }
+
+    def refresh_versions(self, now: float | None = None) -> None:
+        """Reads the CLIs' versions, as workload, at most every ``VERSIONS_INTERVAL_S``."""
+        now = time.monotonic() if now is None else now
+        if self._versions_at is not None and now - self._versions_at < VERSIONS_INTERVAL_S:
+            return
+        found = S.versions(
+            lambda argv, timeout: self._run(list(argv), timeout),
+            {"claude": self.tools.claude, "codex": self.tools.codex, "gh": self.tools.gh},
+        )
+        with self._lock:
+            self.cli_versions = found
+            self._versions_at = now
 
     def verify_signed_out(self, bundle: dict[str, Any] | None) -> list[str]:
         """Q6: the published bundle, installed into a scratch home, leaves no declared file.
@@ -939,6 +1085,7 @@ class Supervisor:
         assert self.api is not None
         message = self._envelope("hello")
         message["supervisorVersion"] = SUPERVISOR_VERSION
+        message["features"] = list(SUPERVISOR_FEATURES)
         self.api.send(message, stop=self._stop.is_set)
 
     def send_report(self) -> None:
@@ -992,12 +1139,16 @@ class Supervisor:
                 return
             with contextlib.suppress(Exception):
                 self.refresh_logins()
+            if self.credentials_installed:
+                with contextlib.suppress(Exception):
+                    self.refresh_versions()
 
     def stop(self) -> None:
         self._stop.set()
         self._changed.set()
         self._login_wake.set()
         self.creds.stop()
+        self.signins.cancel_all()
         self.host.stop()
         if self.terminal is not None and self.terminal.poll() is None:
             self.terminal.terminate()

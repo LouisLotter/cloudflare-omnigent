@@ -20,6 +20,11 @@ export interface PlatformVars {
    * The launcher API verifies with the server's own `SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY` and
    * `…_ID` (WP3.3, `internal/platform-api.ts`). */
   readonly [name: `SERVER_ENV_${string}`]: string | undefined;
+  /**
+   * Set only on a staging installation, by the bootstrap for a staging target, to the platform
+   * Worker's own `cfo-stg-` name (WP3.23): it offers the setup page's RC-53 switch.
+   */
+  readonly CFO_STAGING_INSTALLATION?: string;
   /** The launcher's previous signing key and its ID, set only during a rotation (WP3.3). */
   readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS?: string;
   readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS_ID?: string;

@@ -15,12 +15,18 @@ ROOT = Path(__file__).resolve().parents[3]
 CORPUS = json.loads((ROOT / "worker/test/fixtures/workspace-commands.json").read_text())
 SENT = {
     "capture",
+    "computer_status",
     "credential_snapshot",
     "finish_capture",
     "install_credentials",
     "job_status",
     "restore_workspace",
+    "sign_in_cancel",
+    "sign_in_input",
+    "sign_in_start",
+    "sign_in_status",
     "sign_out",
+    "staging_check",
     "start_host",
     "status",
 }

@@ -9,6 +9,10 @@
 //   POST /platform/computers/{id}/do/{action}     the action, guarded, then a 303
 //   POST /platform/computers/{id}/terminal        open, reconnect or close the terminal window
 //   GET  /platform/computers/{id}/terminal        with Upgrade: websocket, the bridged terminal
+//   GET  /platform/computers/{id}/sign-in         a sign-in attempt's state (WP3.23, JSON)
+//   POST /platform/computers/{id}/sign-in         start a sign-in, relay the pasted code, cancel
+//   GET  /platform/computers/{id}/status          the computer's status (JSON)
+//   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check on or off
 //   GET  /platform/assets/{name}                  the pages' own scripts and styles
 
 import type { PageOwner } from "@cfo/contracts";
@@ -26,6 +30,7 @@ import {
 } from "./computers.ts";
 import { COMPUTERS_PATH, PAGES_ROOT } from "./html.ts";
 import { securityHeaders } from "./http.ts";
+import { signInChange, signInRead, stagingChange, statusRead } from "./owner-actions.ts";
 import { setupPage, stateJson, terminalChange, terminalUpgrade } from "./setup.ts";
 
 /** One asset: its body and content type. */
@@ -122,6 +127,21 @@ export async function routePlatform(
         return terminalChange(backend, owner, id, request, admitted.origin, log);
       }
       return methodNotAllowed("POST");
+    }
+    if (parts.length === 3 && parts[2] === "sign-in") {
+      if (read) return head(request, await signInRead(backend, owner, id, url, now(), log));
+      if (request.method === "POST") {
+        return signInChange(backend, owner, id, request, admitted.origin, now(), log);
+      }
+      return methodNotAllowed("GET, HEAD, POST");
+    }
+    if (parts.length === 3 && parts[2] === "status") {
+      if (!read) return methodNotAllowed("GET, HEAD");
+      return head(request, await statusRead(backend, owner, id, now(), log));
+    }
+    if (parts.length === 3 && parts[2] === "staging-check") {
+      if (request.method !== "POST") return methodNotAllowed("POST");
+      return stagingChange(backend, owner, id, request, admitted.origin, log);
     }
     if (parts.length === 4 && parts[2] === "do") {
       const spec = actionBySlug(parts[3] ?? "");

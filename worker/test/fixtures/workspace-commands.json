@@ -17,11 +17,18 @@
     "bundle": null
   },
   {
+    "type": "computer_status",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_00000000000000000000000004"
+  },
+  {
     "type": "start_host",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_00000000000000000000000004",
+    "operationId": "op_00000000000000000000000005",
     "startAttempt": 1,
     "hostId": "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
     "hostName": "Work computer",
@@ -37,8 +44,8 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_00000000000000000000000005",
-    "layerId": "lyr_00000000000000000000000007",
+    "operationId": "op_00000000000000000000000006",
+    "layerId": "lyr_00000000000000000000000008",
     "policyVersion": 1,
     "lease": {
       "targetMs": 20000,
@@ -52,18 +59,18 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_00000000000000000000000006",
-    "captureOperationId": "op_00000000000000000000000005",
+    "operationId": "op_00000000000000000000000007",
+    "captureOperationId": "op_00000000000000000000000006",
     "outcome": "published",
-    "checkpointId": "ckp_00000000000000000000000008"
+    "checkpointId": "ckp_00000000000000000000000009"
   },
   {
     "type": "capture",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000a",
-    "layerId": "lyr_0000000000000000000000000c",
+    "operationId": "op_0000000000000000000000000b",
+    "layerId": "lyr_0000000000000000000000000d",
     "policyVersion": 1,
     "lease": {
       "targetMs": 20000,
@@ -71,7 +78,7 @@
     },
     "kind": "delta",
     "parent": {
-      "checkpointId": "ckp_00000000000000000000000008",
+      "checkpointId": "ckp_00000000000000000000000009",
       "treeDigest": "95abf9c46a9508f15387ead850228ae2701347e3efc647bda862963d8141916b"
     }
   },
@@ -80,16 +87,16 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000d",
-    "jobOperationId": "op_0000000000000000000000000a"
+    "operationId": "op_0000000000000000000000000e",
+    "jobOperationId": "op_0000000000000000000000000b"
   },
   {
     "type": "finish_capture",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000g",
-    "captureOperationId": "op_0000000000000000000000000f",
+    "operationId": "op_0000000000000000000000000h",
+    "captureOperationId": "op_0000000000000000000000000g",
     "outcome": "discarded",
     "checkpointId": null
   },
@@ -98,44 +105,44 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000r"
+    "operationId": "op_0000000000000000000000000s"
   },
   {
     "type": "credential_snapshot",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 1,
-    "operationId": "op_0000000000000000000000000s"
+    "operationId": "op_0000000000000000000000000t"
   },
   {
     "type": "restore_workspace",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 2,
-    "operationId": "op_00000000000000000000000010",
+    "operationId": "op_00000000000000000000000012",
     "manifest": {
       "formatVersion": 1,
-      "checkpointId": "ckp_0000000000000000000000000q",
+      "checkpointId": "ckp_0000000000000000000000000r",
       "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
       "generation": 1,
       "policyVersion": 1,
-      "parentCheckpointId": "ckp_0000000000000000000000000e",
-      "cutAt": "2026-10-25T12:00:02.000Z",
-      "createdAt": "2026-10-25T12:00:02.000Z",
+      "parentCheckpointId": "ckp_0000000000000000000000000f",
+      "cutAt": "2026-10-25T12:00:03.000Z",
+      "createdAt": "2026-10-25T12:00:03.000Z",
       "roots": ["work", ".claude", ".claude.json", ".codex", ".omnigent"],
       "layers": [
         {
           "kind": "base",
-          "layerId": "lyr_0000000000000000000000000n",
+          "layerId": "lyr_0000000000000000000000000p",
           "backup": {
             "id": "00000000-0000-4000-8000-000000000003",
-            "dir": "/var/cfo/staged/lyr_0000000000000000000000000n",
+            "dir": "/var/cfo/staged/lyr_0000000000000000000000000p",
             "size": 1003,
-            "name": "lyr_0000000000000000000000000n",
+            "name": "lyr_0000000000000000000000000p",
             "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
             "format": "tar+zstd/1"
           },
-          "indexSha256": "7b476fcf7b476fcf7b476fcf7b476fcf7b476fcf7b476fcf7b476fcf7b476fcf",
+          "indexSha256": "7147601171476011714760117147601171476011714760117147601171476011",
           "treeDigest": "f295c378ca0dac7ddd51547c7d36d5cb57cc2fc13ff893e2508681e138368d5c",
           "entries": 1,
           "deleted": 0,
@@ -144,14 +151,14 @@
       ],
       "treeDigest": "f295c378ca0dac7ddd51547c7d36d5cb57cc2fc13ff893e2508681e138368d5c"
     },
-    "layerDirs": ["/var/cfo/restore/lyr_0000000000000000000000000n"]
+    "layerDirs": ["/var/cfo/restore/lyr_0000000000000000000000000p"]
   },
   {
     "type": "install_credentials",
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 2,
-    "operationId": "op_00000000000000000000000011",
+    "operationId": "op_00000000000000000000000013",
     "bundle": {
       "formatVersion": 1,
       "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
@@ -162,7 +169,7 @@
           "state": "present",
           "mode": 384,
           "copyOrder": 1,
-          "contentBase64": "Y2xhdWRlLWxvZ2luLWNhbmFyeS0x"
+          "contentBase64": "Y2xhdWRlLWxvZ2luLWNhbmFyeS0y"
         },
         ".claude/.device-keys.json": {
           "state": "tombstone",
@@ -184,6 +191,51 @@
     "protocolVersion": 1,
     "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
     "generation": 3,
-    "operationId": "op_0000000000000000000000001c"
+    "operationId": "op_0000000000000000000000001f"
+  },
+  {
+    "type": "staging_check",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_00000000000000000000000006",
+    "rc53": true
+  },
+  {
+    "type": "sign_in_start",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_00000000000000000000000007",
+    "service": "claude",
+    "attempt": 1
+  },
+  {
+    "type": "sign_in_status",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_00000000000000000000000008",
+    "service": "claude",
+    "attempt": 1
+  },
+  {
+    "type": "sign_in_input",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_00000000000000000000000003",
+    "service": "claude",
+    "attempt": 1,
+    "code": "synthetic-code-0000#synthetic-state-0000"
+  },
+  {
+    "type": "sign_in_cancel",
+    "protocolVersion": 1,
+    "computerId": "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+    "generation": 1,
+    "operationId": "op_0000000000000000000000000b",
+    "service": "codex",
+    "attempt": 2
   }
 ]

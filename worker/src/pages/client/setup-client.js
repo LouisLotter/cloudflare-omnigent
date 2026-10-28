@@ -8,7 +8,13 @@
 //   never in the URL. After a drop the platform did not cause (a web Worker deploy, FH-38), it asks
 //   for a fresh capability for the same window and reconnects, retrying a failed handshake too,
 //   within about ten seconds.
-// Nothing here stores or logs what the terminal shows.
+// - Sign-in from the page (WP3.23): each card's button starts its CLI's own login on the computer;
+//   the card then shows the provider's link (and Codex's code), takes Claude's pasted code, polls
+//   the attempt's state every 2 seconds, and offers Cancel; a failure offers the terminal. A
+//   reload resumes the session's running attempts. The markup comes from the server, escaped.
+// - "Computer status": read on load and on Refresh; on staging, the RC-53 switch.
+// Nothing here stores or logs what the terminal shows, the provider's link, Codex's code or the
+// code the person pastes.
 (() => {
   const root = document.getElementById("computer-page");
   if (root === null) return;
@@ -24,7 +30,7 @@
   const CLOSED_BY_COMPUTER = 4002;
 
   const state = {
-    intent: panel?.dataset.intent || "",
+    intent: panel?.dataset.intent || root.dataset.intent || "",
     window: panel?.dataset.window ? Number(panel.dataset.window) : null,
     socket: null,
     term: null,
@@ -60,9 +66,8 @@
       if (!response.ok) return;
       const json = await response.json();
       if (typeof json.intent === "string") state.intent = json.intent;
-      const cards = document.getElementById("cards");
-      if (cards !== null && Array.isArray(json.cards)) {
-        cards.innerHTML = json.cards.map((card) => card.html).join("\n");
+      if (Array.isArray(json.cards)) {
+        for (const card of json.cards) updateCard(card.provider, card.html);
       }
       const status = document.getElementById("status");
       if (status !== null && typeof json.statusHtml === "string")
@@ -85,6 +90,272 @@
   setInterval(() => {
     if (document.visibilityState === "visible") void refresh();
   }, 5000);
+
+  // ------------------------------------------------------------------------------------------
+  // Sign-in from the page.
+
+  /** Running flows by service: { attempt, state, notice, timer }. */
+  const flows = {};
+  const POLL_MS = 2000;
+  const ACTIVE = new Set(["starting", "awaiting_user", "completing"]);
+
+  function cardOf(service) {
+    return document.querySelector(`#cards [data-card="${service}"]`);
+  }
+
+  function slotOf(service) {
+    return document.querySelector(`#cards [data-sign-in="${service}"]`);
+  }
+
+  /** A card from the state refresh: whole, unless a flow runs in it, which keeps its slot. */
+  function updateCard(service, html) {
+    const card = cardOf(service);
+    if (card === null || typeof html !== "string") return;
+    const template = document.createElement("template");
+    template.innerHTML = html.trim();
+    const fresh = template.content.firstElementChild;
+    if (fresh === null) return;
+    const flow = flows[service];
+    if (flow === undefined || flow.state === null) {
+      card.replaceWith(fresh);
+      return;
+    }
+    const slot = slotOf(service);
+    const freshSlot = fresh.querySelector("[data-sign-in]");
+    if (slot !== null && freshSlot !== null) freshSlot.replaceWith(slot);
+    card.replaceWith(fresh);
+  }
+
+  function showFlow(service, html) {
+    const slot = slotOf(service);
+    if (slot !== null && typeof html === "string") slot.innerHTML = html;
+  }
+
+  async function signInPost(body) {
+    const response = await fetch(root.dataset.signInUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op: operationId(), intent: state.intent, ...body }),
+    });
+    let json = null;
+    try {
+      json = await response.json();
+    } catch {
+      json = null;
+    }
+    return { status: response.status, json };
+  }
+
+  function stopPolling(service) {
+    const flow = flows[service];
+    if (flow?.timer) clearTimeout(flow.timer);
+    if (flow) flow.timer = null;
+  }
+
+  /** Applies an answer: the server's markup, and polling while the attempt is active. */
+  function apply(service, json) {
+    const flow = flows[service] ?? { attempt: null, state: null, notice: null, timer: null };
+    flows[service] = flow;
+    const view = json?.view;
+    if (json?.outcome === "accepted" && view) {
+      const changed = view.state !== flow.state || view.notice !== flow.notice;
+      flow.attempt = view.attempt;
+      flow.state = ACTIVE.has(view.state) ? view.state : null;
+      flow.notice = view.notice ?? null;
+      // An unchanged state keeps the markup, so a code being typed is never wiped.
+      if (changed) showFlow(service, json.html);
+      if (ACTIVE.has(view.state)) schedule(service);
+      else {
+        stopPolling(service);
+        if (view.state === "done") void refresh();
+      }
+      return;
+    }
+    if (json?.outcome === "refused") {
+      if (json.reason === "unreachable" && flow.state !== null) {
+        schedule(service); // the computer may answer again
+        return;
+      }
+      flow.state = null;
+      stopPolling(service);
+      showFlow(service, json.html);
+      return;
+    }
+    flow.state = null;
+    stopPolling(service);
+  }
+
+  function schedule(service) {
+    const flow = flows[service];
+    if (flow === undefined) return;
+    stopPolling(service);
+    flow.timer = setTimeout(() => void poll(service), POLL_MS);
+  }
+
+  async function poll(service) {
+    const flow = flows[service];
+    if (flow === undefined || flow.attempt === null) return;
+    try {
+      const url = new URL(root.dataset.signInUrl, location.href);
+      url.searchParams.set("service", service);
+      url.searchParams.set("attempt", String(flow.attempt));
+      const response = await fetch(url.href, { credentials: "same-origin" });
+      if (!response.ok) {
+        schedule(service);
+        return;
+      }
+      apply(service, await response.json());
+    } catch {
+      schedule(service);
+    }
+  }
+
+  function tell(service, text) {
+    const slot = slotOf(service);
+    if (slot === null) return;
+    let line = slot.querySelector("[data-sign-in-message]");
+    if (line === null) {
+      line = document.createElement("p");
+      line.className = "tone-warn";
+      line.setAttribute("data-sign-in-message", "");
+      slot.append(line);
+    }
+    line.textContent = text;
+  }
+
+  async function act(service, body, button) {
+    if (button) button.disabled = true;
+    try {
+      const answer = await signInPost({ service, ...body });
+      if (answer.status === 403) {
+        await refresh();
+        tell(service, "This page was out of date. Try again.");
+        return;
+      }
+      if (answer.status === 400 && answer.json?.error?.field === "code") {
+        tell(service, "Paste the whole code, without spaces.");
+        return;
+      }
+      if (answer.json?.error) {
+        tell(service, "The computer could not be reached now. Try again shortly.");
+        return;
+      }
+      apply(service, answer.json);
+    } catch {
+      tell(service, "The computer could not be reached now. Try again shortly.");
+    } finally {
+      if (button?.isConnected) button.disabled = false;
+    }
+  }
+
+  async function copyCode(button) {
+    const code = button.closest("[data-sign-in]")?.querySelector("[data-user-code]");
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code.textContent ?? "");
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Select the code to copy it";
+    }
+  }
+
+  document.getElementById("cards")?.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-act]") : null;
+    const slot = button?.closest("[data-sign-in]");
+    if (!button || !slot) return;
+    const service = slot.getAttribute("data-sign-in");
+    const flow = flows[service];
+    switch (button.getAttribute("data-act")) {
+      case "start":
+        void act(service, { mode: "start" }, button);
+        break;
+      case "cancel":
+        if (flow?.attempt) void act(service, { mode: "cancel", attempt: flow.attempt }, button);
+        break;
+      case "continue": {
+        const input = slot.querySelector("[data-code]");
+        const code = input ? input.value : "";
+        if (input) input.value = "";
+        if (flow?.attempt) {
+          void act(service, { mode: "input", attempt: flow.attempt, code }, button);
+        }
+        break;
+      }
+      case "copy":
+        void copyCode(button);
+        break;
+      case "terminal": {
+        const terminal = document.getElementById("terminal-panel");
+        terminal?.scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById("terminal-open")?.focus();
+        break;
+      }
+    }
+  });
+
+  document.getElementById("cards")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !(event.target instanceof Element)) return;
+    if (!event.target.matches("[data-code]")) return;
+    event.preventDefault();
+    event.target.closest("[data-sign-in]")?.querySelector('[data-act="continue"]')?.click();
+  });
+
+  // A reload resumes this session's attempts that still run.
+  try {
+    for (const { service, attempt } of JSON.parse(root.dataset.resume || "[]")) {
+      flows[service] = { attempt, state: "starting", notice: null, timer: null };
+      void poll(service);
+    }
+  } catch {
+    // nothing to resume
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Computer status, and the staging-only RC-53 switch.
+
+  const statusSection = document.getElementById("computer-status");
+  const statusBody = document.getElementById("status-body");
+  const statusRefresh = document.getElementById("status-refresh");
+
+  async function readStatus() {
+    if (statusSection === null || statusBody === null) return;
+    if (statusRefresh) statusRefresh.disabled = true;
+    try {
+      const response = await fetch(statusSection.dataset.statusUrl, { credentials: "same-origin" });
+      const json = await response.json();
+      if (response.ok && typeof json.html === "string") statusBody.innerHTML = json.html;
+      else statusBody.textContent = "The status could not be read now. Try Refresh shortly.";
+    } catch {
+      statusBody.textContent = "The status could not be read now. Try Refresh shortly.";
+    } finally {
+      if (statusRefresh) statusRefresh.disabled = false;
+    }
+  }
+
+  statusRefresh?.addEventListener("click", () => void readStatus());
+  statusBody?.addEventListener("click", async (event) => {
+    const button =
+      event.target instanceof Element ? event.target.closest('[data-act="rc53"]') : null;
+    if (!button || statusSection === null) return;
+    button.disabled = true;
+    try {
+      await fetch(statusSection.dataset.stagingUrl, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: operationId(),
+          intent: state.intent,
+          rc53: button.getAttribute("data-rc53"),
+        }),
+      });
+    } catch {
+      // the status below shows what holds
+    }
+    await readStatus();
+  });
+  void readStatus();
 
   if (panel === null) return;
 

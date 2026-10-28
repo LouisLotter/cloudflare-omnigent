@@ -10,6 +10,8 @@ import {
   type PageFrontCall,
   type PageFrontResult,
   type PageOwner,
+  type PageReadCall,
+  type PageReadResult,
   type PagesCall,
   type PagesResult,
   type ReplicationHealth,
@@ -39,6 +41,8 @@ export interface PagesBackend {
     computerId: ComputerId,
     call: PagesCall | PageFrontCall,
   ): Promise<PagesResult | PageFrontResult>;
+  /** A page GET's read (WP3.23): an attempt's state or the computer's status. Changes nothing. */
+  read(computerId: ComputerId, call: PageReadCall): Promise<PageReadResult>;
   /** The terminal's upgrade, as the web Worker built it, to the computer's WorkspaceDO. */
   upgrade(computerId: ComputerId, request: Request): Promise<Response>;
   /** The server's outages overlapping [from, to); empty if they cannot be read. */
@@ -86,7 +90,10 @@ export function bindingsBackend(env: WebEnv | PagesBindings): PagesBackend {
       }
     },
     act(computerId, call) {
-      return workspace(computerId).pages(call);
+      return workspace(computerId).pages(call) as Promise<PagesResult | PageFrontResult>;
+    },
+    read(computerId, call) {
+      return workspace(computerId).pages(call) as Promise<PageReadResult>;
     },
     upgrade(computerId, request) {
       return workspace(computerId).fetch(request);

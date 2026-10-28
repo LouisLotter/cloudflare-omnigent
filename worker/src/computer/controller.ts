@@ -18,6 +18,10 @@
 //   - WorkspaceDO never stops a running computer on its own: only Omnigent's `suspend`, a removal,
 //     the page's restart, "stop without saving" and the 300 s start deadline for a computer with no
 //     host incarnation do (design, Lifecycle step 7).
+//   - Sign-in from the page (WP3.23, `sign-in.ts`): fenced attempts persisted here, delivered and
+//     cancelled by the runner, and a bounded sign-in lease that counts for sleep and the start
+//     deadline as an open terminal does. The computer's status (`status.ts`) is composed here
+//     from the supervisor's metrics and this record, and logged as `computer_status`.
 
 import {
   CHECKPOINT_POLICY_V1,
@@ -26,6 +30,7 @@ import {
   ComputerCall,
   type ComputerId,
   type ComputerPageState,
+  type ComputerStatusView,
   type ControlResult,
   CREDENTIAL_PROVIDER,
   CredentialBundle,
@@ -43,12 +48,16 @@ import {
   type LauncherRequest,
   type LauncherResult,
   type LifecycleEvent,
+  type PageSignInView,
   PagesCall,
   type PagesResult,
   type Reply,
   type ReservationState,
   ruleFor,
   SIGN_OUT_TABLE,
+  type SignInRefusal,
+  type SignInService,
+  type SignInView,
   SUPERVISOR_API_PORT,
   SUPERVISOR_COMMANDS_PATH,
   SUPERVISOR_PROTOCOL_VERSION,
@@ -58,6 +67,7 @@ import {
   type SupervisorMessage,
   type SupervisorReply,
   type SupervisorReport,
+  type SupervisorStatus,
   signOutSettled,
   TIMING,
   typedStatus,
@@ -139,7 +149,36 @@ import {
   running,
   starting,
 } from "./reservations.ts";
+import {
+  attemptOfOp,
+  begin,
+  callerRefusal,
+  closeAll,
+  endedState,
+  endWithContainer,
+  finalState,
+  isActive,
+  leaseActive,
+  leaseUntil,
+  pageView,
+  SIGN_IN_CHECK_MS,
+  SIGN_IN_DEADLINE_MS,
+  type SignInAttemptRecord,
+  sessionAttempts,
+  signInAvailable,
+  startRefusal,
+  update,
+} from "./sign-in.ts";
 import { chooseSize, clampSize, sizeForStart, workspaceSizeWarning } from "./sizing.ts";
+import {
+  composeStatus,
+  recordSave,
+  STATUS_FRESH_MS,
+  STATUS_INTERVAL_MS,
+  saveView,
+  statusLog,
+  withRc53,
+} from "./status.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Dependencies.
@@ -195,6 +234,12 @@ export interface ControllerTiming {
   /** Consecutive transient restore failures before the restore counts as failed. */
   readonly restoreFailures: number;
   readonly operationRecordMs: number;
+  /** A sign-in attempt's platform deadline, which bounds its lease (WP3.23). */
+  readonly signInDeadlineMs?: number;
+  /** How often the runner asks whether an active sign-in attempt has finished. */
+  readonly signInCheckMs?: number;
+  /** How often the status is read and logged while the computer runs. */
+  readonly statusIntervalMs?: number;
 }
 
 export const CONTROLLER_TIMING: ControllerTiming = {
@@ -247,6 +292,11 @@ export interface ControllerDeps {
    * controller.
    */
   readonly terminal?: { closeNow(reason: string): void };
+  /**
+   * A staging installation (WP3.23): the page's RC-53 switch is offered and applied. Never true
+   * on production: WorkspaceDO sets it only from the staging tool's variable.
+   */
+  readonly stagingChecks?: boolean;
 }
 
 /** The soonest the alarm is ever set after now. */
@@ -345,6 +395,14 @@ export class WorkspaceController {
   #wakeDeferrals = 0;
   /** The layer restore in flight, aborted when its restore is abandoned (a stop, a removal). */
   #restoreAbort: AbortController | null = null;
+  /** The supervisor's latest metrics (in memory only): the page's status and the logs. */
+  #metrics: {
+    readonly generation: number;
+    readonly at: number;
+    readonly status: SupervisorStatus;
+  } | null = null;
+  /** What was last logged as `computer_status`, and when. */
+  #statusLogged: { readonly signature: string; readonly at: number } | null = null;
 
   constructor(deps: ControllerDeps) {
     this.#d = deps;
@@ -635,6 +693,7 @@ export class WorkspaceController {
           break;
         case "prepare_stop":
           this.#closeTerminal(d, "the computer is stopping");
+          d.signIn = closeAll(d.signIn);
           d.stopJob = {
             generation,
             reason: after.stopPrep ?? "sleep",
@@ -647,6 +706,7 @@ export class WorkspaceController {
           break;
         case "prepare_credential_stop":
           this.#closeTerminal(d, "the computer is stopping without saving");
+          d.signIn = closeAll(d.signIn);
           d.stopJob = {
             generation,
             reason: after.stopPrep ?? "without_saving",
@@ -706,6 +766,7 @@ export class WorkspaceController {
           this.#log("start_failed", { generation, refusals: d.start?.refusals ?? null });
           break;
         case "record_removal_intent":
+          d.signIn = closeAll(d.signIn);
           this.#log("removal_intent", { generation });
           break;
         case "accept_save_request":
@@ -731,6 +792,7 @@ export class WorkspaceController {
           break;
         case "run_sign_out":
           this.#closeTerminal(d, "a sign-out started");
+          d.signIn = closeAll(d.signIn);
           d.signOut = {
             ...d.signOut,
             phase: SIGN_OUT_TABLE[d.signOut.phase].requested,
@@ -778,6 +840,7 @@ export class WorkspaceController {
     if (d.signOut.job !== null) d.signOut = { ...d.signOut, job: null };
     d.notSaved = null;
     d.terminalOpenUntil = null;
+    d.signIn = endWithContainer(d.signIn);
     if (d.lifecycle.context.state !== "waking") {
       d.start = null;
       d.noHostSince = null;
@@ -1265,7 +1328,11 @@ export class WorkspaceController {
     const r = this.#require();
     const ctx = r.lifecycle.context;
     const now = this.#now();
-    const terminalOpen = r.terminalOpenUntil !== null && r.terminalOpenUntil > now;
+    // A sign-in attempt holds the computer awake as an open terminal does (WP3.23), and is
+    // reported to Omnigent as the same refusal: the setup page is in use.
+    const terminalOpen =
+      (r.terminalOpenUntil !== null && r.terminalOpenUntil > now) ||
+      leaseActive(r.signIn, r.lifecycle.generation, now);
     // Only the supervisor's answer now can show no runner exists (Lifecycle step 7). If it cannot
     // answer, a cached positive count still refuses, but a cached zero proves nothing: unknown.
     const cached = this.#currentReport(r)?.runnerProcesses ?? null;
@@ -1372,6 +1439,15 @@ export class WorkspaceController {
       throw platformError("stale_generation", "not this computer's current generation");
     switch (message.type) {
       case "hello":
+        // What it can do (WP3.23): an older supervisor names no features, and the page then
+        // offers the terminal for signing in.
+        this.#write((d) => {
+          d.supervisorInfo = {
+            generation,
+            version: message.supervisorVersion,
+            features: [...(message.features ?? [])],
+          };
+        });
         return { type: "hello", protocolVersion: SUPERVISOR_PROTOCOL_VERSION };
       case "report": {
         const applied = this.#write((d) => {
@@ -1679,7 +1755,474 @@ export class WorkspaceController {
       noContact: !ctx.removalIntent && noContact(r.lastContactAt, now, this.#t.noContactMs),
       sizeWarning: workspaceSizeWarning(r.workspaceBytes),
       stopWithoutSavingOffered: r.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
+      // Additive (WP3.23).
+      signIn: { available: signInAvailable(r.supervisorInfo, r.lifecycle.generation) },
+      stagingChecks: this.#d.stagingChecks === true,
+      lastSave: r.saves[0] === undefined ? null : saveView(r.saves[0]),
     };
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Sign-in from the page, the computer's status and the staging switch (WP3.23), behind the page
+  // front (`page-front.ts`), which has checked the owner's request-intent token for every change.
+
+  #signInFacts(r: ComputerRecord) {
+    const ctx = r.lifecycle.context;
+    return {
+      removal: ctx.removalIntent || ctx.state === "removed",
+      running: restored(ctx.state),
+      busy: ctx.stopPrep !== null || ctx.state === "stopping" || r.signOut.job !== null,
+      available: signInAvailable(r.supervisorInfo, r.lifecycle.generation),
+    };
+  }
+
+  /**
+   * Starts a sign-in attempt for the session (persisted first: its number, binding and lease),
+   * then delivers it now; the runner delivers it later if this delivery gets no answer. A
+   * repeated operation ID returns the same attempt.
+   */
+  async signInStart(input: {
+    readonly service: SignInService;
+    readonly session: string;
+    readonly operationId: string;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly view: PageSignInView }
+    | { readonly outcome: "refused"; readonly reason: SignInRefusal }
+  > {
+    const now = this.#now();
+    const admitted = await this.#exclusive(() =>
+      this.#write((d): SignInAttemptRecord | SignInRefusal => {
+        const known = attemptOfOp(d.signIn, input.operationId);
+        if (known !== undefined) return known;
+        const refusal = startRefusal(this.#signInFacts(d));
+        if (refusal !== null) return refusal;
+        const started = begin(d.signIn, {
+          service: input.service,
+          generation: d.lifecycle.generation,
+          session: input.session,
+          op: input.operationId,
+          now,
+          deadlineMs: this.#t.signInDeadlineMs ?? SIGN_IN_DEADLINE_MS,
+        });
+        d.signIn = started.record;
+        this.#log("sign_in_started", { service: input.service, attempt: started.attempt.attempt });
+        return started.attempt;
+      }),
+    );
+    try {
+      if (typeof admitted === "string") return { outcome: "refused", reason: admitted };
+      if (admitted.session !== input.session) return { outcome: "refused", reason: "not_yours" };
+      const r = this.#require();
+      const ended = endedState(admitted, r.lifecycle.generation, now);
+      if (ended !== null || admitted.delivered) {
+        return { outcome: "accepted", view: pageView(admitted, null, ended ?? "starting") };
+      }
+      const delivered = await this.#deliverStart(r, admitted);
+      if (delivered === "unsupported") return { outcome: "refused", reason: "unsupported" };
+      return { outcome: "accepted", view: pageView(admitted, delivered, null) };
+    } finally {
+      this.#kick();
+    }
+  }
+
+  /**
+   * The start of `a`, to the supervisor. Its answer is recorded (delivered; finished if final).
+   * An older supervisor refuses the command: it is recorded as lacking sign-in, so the page
+   * offers the terminal. Null: no answer now (the runner tries again).
+   */
+  async #deliverStart(
+    r: ComputerRecord,
+    a: SignInAttemptRecord,
+  ): Promise<SignInView | "unsupported" | null> {
+    let view: SignInView;
+    try {
+      const reply = await this.#command({
+        type: "sign_in_start",
+        ...this.#envelope(r, this.#d.newId("op")),
+        service: a.service,
+        attempt: a.attempt,
+      });
+      view = reply.view;
+    } catch (error) {
+      if (errorCodeOf(error) !== "bad_request") {
+        this.#log("sign_in_unanswered", { service: a.service, attempt: a.attempt });
+        return null;
+      }
+      await this.#exclusive(() =>
+        this.#write((d) => {
+          d.signIn = update(d.signIn, a.attempt, (x) => ({ ...x, ended: "finished" }));
+          d.supervisorInfo = {
+            generation: a.generation,
+            version: d.supervisorInfo?.version ?? "unknown",
+            features: [],
+          };
+        }),
+      );
+      this.#log("sign_in_unsupported", { service: a.service });
+      return "unsupported";
+    }
+    await this.#exclusive(() =>
+      this.#write((d) => {
+        d.signIn = update(d.signIn, a.attempt, (x) => ({
+          ...x,
+          delivered: true,
+          ended: x.ended === null && finalState(view.state) ? "finished" : x.ended,
+        }));
+      }),
+    );
+    return view;
+  }
+
+  /** Claude's pasted code, relayed now to the attempt's CLI. Never persisted or logged. */
+  async signInInput(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly code: string;
+    readonly session: string;
+    readonly operationId: string;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly view: PageSignInView }
+    | { readonly outcome: "refused"; readonly reason: SignInRefusal }
+  > {
+    const r = this.#require();
+    const a = r.signIn.attempts.find((x) => x.attempt === input.attempt);
+    const refusal = callerRefusal(a, {
+      service: input.service,
+      session: input.session,
+      generation: r.lifecycle.generation,
+      now: this.#now(),
+    });
+    if (refusal !== null || a === undefined)
+      return { outcome: "refused", reason: refusal ?? "stale" };
+    if (input.service !== "claude" || !a.delivered) return { outcome: "refused", reason: "stale" };
+    try {
+      const reply = await this.#command({
+        type: "sign_in_input",
+        ...this.#envelope(r, input.operationId),
+        service: input.service,
+        attempt: input.attempt,
+        code: input.code,
+      });
+      return { outcome: "accepted", view: pageView(a, reply.view, null) };
+    } catch (error) {
+      // `conflict`: the attempt is no longer waiting for a code (it ended, or was replaced).
+      return {
+        outcome: "refused",
+        reason: errorCodeOf(error) === "conflict" ? "stale" : "unreachable",
+      };
+    }
+  }
+
+  /** Ends the session's attempt: recorded first, so a start not yet delivered never is. */
+  async signInCancel(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly session: string;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly view: PageSignInView }
+    | { readonly outcome: "refused"; readonly reason: SignInRefusal }
+  > {
+    const now = this.#now();
+    const ended = await this.#exclusive(() =>
+      this.#write((d): SignInAttemptRecord | SignInRefusal => {
+        const a = d.signIn.attempts.find((x) => x.attempt === input.attempt);
+        if (a === undefined || a.service !== input.service) return "stale";
+        if (a.session !== input.session) return "not_yours";
+        if (a.ended !== null) return a;
+        const cancelled = { ...a, ended: "cancelled" as const, cancel: "pending" as const };
+        d.signIn = update(d.signIn, a.attempt, () => cancelled);
+        this.#log("sign_in_cancelled", { service: a.service, attempt: a.attempt });
+        return cancelled;
+      }),
+    );
+    try {
+      if (typeof ended === "string") return { outcome: "refused", reason: ended };
+      const r = this.#require();
+      if (ended.cancel === "pending") await this.#deliverCancel(r, ended);
+      return {
+        outcome: "accepted",
+        view: pageView(ended, null, endedState(ended, r.lifecycle.generation, now) ?? "cancelled"),
+      };
+    } finally {
+      this.#kick();
+    }
+  }
+
+  /** An attempt's cancel, to the supervisor; true once answered (or nothing is left to cancel). */
+  async #deliverCancel(r: ComputerRecord, a: SignInAttemptRecord): Promise<boolean> {
+    if (a.generation === r.lifecycle.generation && restored(r.lifecycle.context.state)) {
+      try {
+        await this.#command({
+          type: "sign_in_cancel",
+          ...this.#envelope(r, this.#d.newId("op")),
+          service: a.service,
+          attempt: a.attempt,
+        });
+      } catch (error) {
+        // An older supervisor has no such command, and so no attempt to cancel.
+        if (errorCodeOf(error) !== "bad_request") {
+          this.#log("sign_in_cancel_unanswered", { service: a.service, attempt: a.attempt });
+          return false;
+        }
+      }
+    }
+    await this.#exclusive(() =>
+      this.#write((d) => {
+        d.signIn = update(d.signIn, a.attempt, (x) =>
+          x.cancel === "pending" ? { ...x, cancel: "done" } : x,
+        );
+      }),
+    );
+    return true;
+  }
+
+  /** An attempt's state now, for the session that started it. Changes nothing. */
+  async signInStatus(input: {
+    readonly service: SignInService;
+    readonly attempt: number;
+    readonly session: string;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly view: PageSignInView }
+    | { readonly outcome: "refused"; readonly reason: SignInRefusal }
+  > {
+    const r = this.#require();
+    const now = this.#now();
+    const a = r.signIn.attempts.find((x) => x.attempt === input.attempt);
+    if (a === undefined || a.service !== input.service)
+      return { outcome: "refused", reason: "stale" };
+    if (a.session !== input.session) return { outcome: "refused", reason: "not_yours" };
+    const ended = endedState(a, r.lifecycle.generation, now);
+    if (ended !== null || !a.delivered) {
+      return { outcome: "accepted", view: pageView(a, null, ended ?? "starting") };
+    }
+    try {
+      const reply = await this.#command({
+        type: "sign_in_status",
+        ...this.#envelope(r, this.#d.newId("op")),
+        service: a.service,
+        attempt: a.attempt,
+      });
+      return { outcome: "accepted", view: pageView(a, reply.view, null) };
+    } catch {
+      return { outcome: "refused", reason: "unreachable" };
+    }
+  }
+
+  /** The session's attempts still active (the page resumes them after a reload). */
+  sessionAttempts(
+    session: string,
+  ): { readonly service: SignInService; readonly attempt: number }[] {
+    const r = this.#load();
+    return r === null
+      ? []
+      : sessionAttempts(r.signIn, session, r.lifecycle.generation, this.#now());
+  }
+
+  /** Whether a sign-in cancel is still owed to the running generation's supervisor. */
+  #cancelsPending(r: ComputerRecord): boolean {
+    return r.signIn.attempts.some(
+      (a) => a.cancel === "pending" && a.generation === r.lifecycle.generation,
+    );
+  }
+
+  /** The runner's part: cancels, expiries, undelivered starts, and finished attempts. */
+  async #advanceSignIns(r: ComputerRecord): Promise<boolean> {
+    const now = this.#now();
+    const generation = r.lifecycle.generation;
+    const owed = r.signIn.attempts.find((a) => a.cancel === "pending");
+    if (owed !== undefined) return this.#deliverCancel(r, owed);
+    const expired = r.signIn.attempts.find(
+      (a) => a.ended === null && a.generation === generation && now >= a.deadline,
+    );
+    if (expired !== undefined) {
+      await this.#exclusive(() =>
+        this.#write((d) => {
+          d.signIn = update(d.signIn, expired.attempt, (x) =>
+            x.ended === null ? { ...x, ended: "expired", cancel: "pending" } : x,
+          );
+        }),
+      );
+      this.#log("sign_in_expired", { service: expired.service, attempt: expired.attempt });
+      return true;
+    }
+    const undelivered = r.signIn.attempts.find((a) => isActive(a, generation, now) && !a.delivered);
+    if (undelivered !== undefined) return (await this.#deliverStart(r, undelivered)) !== null;
+    const checkMs = this.#t.signInCheckMs ?? SIGN_IN_CHECK_MS;
+    const due = r.signIn.attempts.find(
+      (a) => isActive(a, generation, now) && (a.checkedAt === null || now - a.checkedAt >= checkMs),
+    );
+    if (due === undefined) return false;
+    let state: SignInView["state"] | null = null;
+    try {
+      const reply = await this.#command({
+        type: "sign_in_status",
+        ...this.#envelope(r, this.#d.newId("op")),
+        service: due.service,
+        attempt: due.attempt,
+      });
+      state = reply.view.state;
+    } catch (error) {
+      this.#log("sign_in_check_failed", { error: describe(error) });
+    }
+    await this.#exclusive(() =>
+      this.#write((d) => {
+        d.signIn = update(d.signIn, due.attempt, (x) => ({
+          ...x,
+          checkedAt: now,
+          ended: x.ended === null && state !== null && finalState(state) ? "finished" : x.ended,
+        }));
+      }),
+    );
+    if (state !== null && finalState(state)) {
+      this.#log("sign_in_ended", { service: due.service, attempt: due.attempt, state });
+    }
+    return true;
+  }
+
+  /**
+   * Staging only: the RC-53 switch, applied in each generation before its captures. `blocked`:
+   * not applied yet, so no capture starts; `idle`: nothing to apply.
+   */
+  async #advanceStagingCheck(r: ComputerRecord): Promise<"progress" | "blocked" | "idle"> {
+    const want = r.rc53;
+    const generation = r.lifecycle.generation;
+    if (this.#d.stagingChecks !== true || want === null || want.appliedGeneration === generation) {
+      return "idle";
+    }
+    try {
+      const reply = await this.#command({
+        type: "staging_check",
+        ...this.#envelope(r, this.#d.newId("op")),
+        rc53: want.desired,
+      });
+      this.#log("staging_check_applied", { generation, rc53: reply.rc53 });
+    } catch (error) {
+      if (errorCodeOf(error) !== "bad_request") {
+        this.#log("staging_check_failed", { error: describe(error) });
+        return "blocked";
+      }
+      // An older supervisor cannot apply it: saves go on without the check.
+      this.#log("staging_check_unsupported", { generation });
+    }
+    await this.#exclusive(() =>
+      this.#write((d) => {
+        if (d.rc53 !== null && d.rc53.desired === want.desired) {
+          d.rc53 = { ...d.rc53, appliedGeneration: generation };
+        }
+      }),
+    );
+    return "progress";
+  }
+
+  /** The owner's switch (staging only): persisted, then applied by the runner. */
+  async setStagingCheck(input: {
+    readonly rc53: boolean;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly rc53: boolean }
+    | { readonly outcome: "refused"; readonly reason: "not_staging" | "not_offered" }
+  > {
+    // Refused on production before anything is stored (the design: never on production).
+    if (this.#d.stagingChecks !== true) return { outcome: "refused", reason: "not_staging" };
+    try {
+      return await this.#exclusive(() =>
+        this.#write((d) => {
+          if (d.lifecycle.context.removalIntent || d.lifecycle.context.state === "removed") {
+            return { outcome: "refused" as const, reason: "not_offered" as const };
+          }
+          d.rc53 = { desired: input.rc53, appliedGeneration: null };
+          this.#log("staging_check_set", { rc53: input.rc53 });
+          return { outcome: "accepted" as const, rc53: input.rc53 };
+        }),
+      );
+    } finally {
+      this.#kick();
+    }
+  }
+
+  /** The supervisor's metrics: fresh enough from memory, or asked for now. */
+  async #supervisorStatus(
+    r: ComputerRecord,
+    freshMs: number,
+  ): Promise<{
+    readonly part: ComputerStatusView["supervisor"];
+    readonly status: SupervisorStatus | null;
+  }> {
+    const generation = r.lifecycle.generation;
+    const info = r.supervisorInfo;
+    if (!restored(r.lifecycle.context.state)) return { part: "not_running", status: null };
+    if (
+      info !== null &&
+      info.generation === generation &&
+      !info.features.includes("computer_status")
+    ) {
+      return { part: "unsupported", status: null };
+    }
+    const cached = this.#metrics;
+    if (cached !== null && cached.generation === generation && this.#now() - cached.at < freshMs) {
+      return { part: "ok", status: cached.status };
+    }
+    try {
+      const reply = await this.#command({
+        type: "computer_status",
+        ...this.#envelope(r, this.#d.newId("op")),
+      });
+      this.#metrics = { generation, at: this.#now(), status: reply.status };
+      return { part: "ok", status: reply.status };
+    } catch {
+      return { part: "unreachable", status: null };
+    }
+  }
+
+  #compose(
+    r: ComputerRecord,
+    supervisor: {
+      readonly part: ComputerStatusView["supervisor"];
+      readonly status: SupervisorStatus | null;
+    },
+  ): ComputerStatusView {
+    return composeStatus({
+      now: this.#now(),
+      supervisor: supervisor.part,
+      metrics: supervisor.status,
+      credential: r.credential,
+      signOut: { phase: r.signOut.phase, running: r.signOut.job !== null },
+      saves: withRc53(r.saves, supervisor.status?.captures ?? []),
+      staging: this.#d.stagingChecks === true,
+      rc53Desired: r.rc53?.desired ?? false,
+    });
+  }
+
+  /** The page's "Computer status": read now, composed here. Changes nothing durable. */
+  async computerStatus(): Promise<ComputerStatusView> {
+    const r = this.#require();
+    return this.#compose(r, await this.#supervisorStatus(r, STATUS_FRESH_MS));
+  }
+
+  /**
+   * The runner's status: read every `statusIntervalMs` while the computer runs, its RC-53 counts
+   * kept with the saves they belong to, and logged as `computer_status` (names and counts only)
+   * on every change and at each interval.
+   */
+  async #statusTick(r: ComputerRecord): Promise<void> {
+    const now = this.#now();
+    const interval = this.#t.statusIntervalMs ?? STATUS_INTERVAL_MS;
+    const supervisor = await this.#supervisorStatus(r, interval);
+    const captures = supervisor.status?.captures ?? [];
+    let current = r;
+    if (captures.length > 0 && r.saves.some((s) => s.rc53 === null)) {
+      current = await this.#exclusive(() =>
+        this.#write((d) => {
+          d.saves = withRc53(d.saves, captures);
+          return d;
+        }),
+      );
+    }
+    const log = statusLog(this.#compose(current, supervisor));
+    const last = this.#statusLogged;
+    if (last === null || last.signature !== log.signature || now - last.at >= interval) {
+      this.#statusLogged = { signature: log.signature, at: now };
+      this.#log("computer_status", { generation: r.lifecycle.generation, ...log.fields });
+    }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -1813,10 +2356,15 @@ export class WorkspaceController {
       } else if (state === "stopping") {
         if (await this.#advanceStopping(r, port)) return true;
       } else if (restored(state)) {
+        // Sign-in cancels go first: a stop's credential barrier and a sign-out wait for them.
+        if (await this.#advanceSignIns(r)) return true;
         if (await this.#advanceDeliver(r)) return true;
-        if (await this.#advanceSaves(r, port)) return true;
+        const check = await this.#advanceStagingCheck(r);
+        if (check === "progress") return true;
+        if (check === "idle" && (await this.#advanceSaves(r, port))) return true;
         if (await this.#advanceStopJob(r)) return true;
         if (await this.#advanceSignOut(r)) return true;
+        await this.#statusTick(r);
       }
     }
     return this.#chores(r, port);
@@ -1832,7 +2380,8 @@ export class WorkspaceController {
     const before = JSON.stringify(r);
     this.#write((d) => {
       if (d.terminalOpenUntil !== null && d.terminalOpenUntil <= now) d.terminalOpenUntil = null;
-      const terminalOpen = d.terminalOpenUntil !== null;
+      // A sign-in attempt defers the start deadline as an open terminal does (WP3.23).
+      const terminalOpen = d.terminalOpenUntil !== null || leaseActive(d.signIn, generation, now);
       // A stop whose preparation just failed is tried again a heartbeat later, not at once.
       const stopRetryDue = d.stopRefusedAt === null || now - d.stopRefusedAt >= this.#t.heartbeatMs;
       if (
@@ -2471,6 +3020,16 @@ export class WorkspaceController {
         d.capture = null;
         this.#step(d, "capture_finished", {});
         const now = this.#now();
+        // The final outcome, for the status and the list's badge (WP3.23).
+        d.saves = recordSave(d.saves, {
+          at: now,
+          generation: c.generation,
+          op: c.op,
+          outcome,
+          reason: outcome === "failed" ? (reason ?? "internal").slice(0, 32) : null,
+          kind: c.kind,
+          rc53: null,
+        });
         const ok = outcome === "published" || outcome === "unchanged";
         if (ok) {
           d.saveRequests = [...uncovered(d.saveRequests, c.covers)];
@@ -2516,6 +3075,8 @@ export class WorkspaceController {
       ).then(() => true);
     if (job.phase === "credentials") {
       if (job.deadline !== null && now >= job.deadline) return fail();
+      // A sign-in still running could change a login after the barrier: its cancel goes first.
+      if (this.#cancelsPending(r)) return false;
       try {
         const reply = await this.#command({
           type: "credential_snapshot",
@@ -2588,6 +3149,9 @@ export class WorkspaceController {
     try {
       switch (job.phase) {
         case "command": {
+          // Every sign-in attempt is cancelled before the logouts (the supervisor also ends any
+          // it still runs).
+          if (this.#cancelsPending(r)) return false;
           const reply = await this.#command({ type: "sign_out", ...this.#envelope(r, job.op) });
           this.#log("sign_out_ran", { claude: reply.claude, codex: reply.codex });
           return update((_, j) => {
@@ -2910,7 +3474,9 @@ export class WorkspaceController {
       times.push(now + t.pollMs);
     }
     // Deadlines only while their action is eligible; a deferred one waits for what defers it.
-    const terminalOpen = r.terminalOpenUntil !== null && r.terminalOpenUntil > now;
+    const terminalOpen =
+      (r.terminalOpenUntil !== null && r.terminalOpenUntil > now) ||
+      leaseActive(r.signIn, r.lifecycle.generation, now);
     const stopRetryAt = r.stopRefusedAt === null ? now : r.stopRefusedAt + t.heartbeatMs;
     if (r.noHostSince !== null && withoutHost(ctx.state)) {
       const deferred = restored(ctx.state) && (ctx.stopPrep !== null || terminalOpen);
@@ -2934,6 +3500,10 @@ export class WorkspaceController {
     for (const sweep of r.credentialSweeps) times.push(sweep.at);
     if (r.prefixSweepAt !== null) times.push(r.prefixSweepAt);
     if (terminalOpen && r.terminalOpenUntil !== null) times.push(r.terminalOpenUntil);
+    // Sign-in (WP3.23): the lease's end, the attempts' checks, and cancels or starts to deliver.
+    const lease = leaseUntil(r.signIn, r.lifecycle.generation, now);
+    if (lease !== null) times.push(lease, now + (t.signInCheckMs ?? SIGN_IN_CHECK_MS));
+    if (r.signIn.attempts.some((a) => a.cancel === "pending")) times.push(now + t.pollMs);
     if (times.length === 0) {
       await this.#d.alarm.clear();
       return;

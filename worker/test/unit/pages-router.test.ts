@@ -8,6 +8,8 @@ import type {
   PageFrontCall,
   PageFrontResult,
   PageOwner,
+  PageReadCall,
+  PageReadResult,
   PagesCall,
   PagesResult,
   ReplicationHealth,
@@ -59,6 +61,17 @@ class FakeBackend implements PagesBackend {
     this.acts.push({ id, call });
     if (this.actResult instanceof Error) throw this.actResult;
     return this.actResult;
+  }
+  readonly reads: { id: string; call: PageReadCall }[] = [];
+  readResult: PageReadResult | Error = {
+    action: "sign_in_status",
+    outcome: "refused",
+    reason: "stale",
+  };
+  async read(id: ComputerId, call: PageReadCall) {
+    this.reads.push({ id, call });
+    if (this.readResult instanceof Error) throw this.readResult;
+    return this.readResult;
   }
   async upgrade(_id: ComputerId, request: Request) {
     this.upgrades.push(request);
@@ -494,8 +507,22 @@ describe("the setup page", () => {
     expect(html).toContain(`data-intent="${INTENT}"`);
     expect(html).toContain(`data-terminal-url="${page}/terminal"`);
     expect(html).toContain("Ctrl+Shift+V");
-    expect(html).toContain("<code>claude auth login --claudeai</code>");
-    expect(html).toContain("<code>codex login --device-auth</code>");
+    // WP3.23: each card signs in from the page; the terminal's commands are the fallback.
+    expect(html).toContain('data-sign-in="claude"');
+    expect(html).toContain('data-sign-in="codex"');
+    expect(html).toContain(">Sign in to Claude</button>");
+    expect(html).toContain(">Sign in to Codex</button>");
+    expect(html).toContain("https://chatgpt.com/#settings/Security");
+    expect(html).not.toContain("<code>claude auth login --claudeai</code>");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ setupCards: [...NEVER_SIGNED_IN], signIn: { available: "no" } }),
+      intentToken: INTENT,
+    });
+    const older = await (await route(page)).text();
+    expect(older).toContain("<code>claude auth login --claudeai</code>");
+    expect(older).toContain("<code>codex login --device-auth</code>");
+    expect(older).not.toContain('data-sign-in="claude"');
     expect(html).toContain('<script src="/platform/assets/setup-client.js" defer></script>');
     expect(html).not.toMatch(/<script>(?!<\/script>)/);
     expect(html).not.toContain("onclick");
@@ -1053,6 +1080,6 @@ describe("a pending removal's steps (Codex r1-4)", () => {
     expect(body.statusHtml).toContain("Removal pending");
     expect(body.noticesHtml).toContain('data-notice="removal_pending"');
     const html = await (await route(page)).text();
-    expect(html).toContain(`<div id="computer-page" data-state-url="${page}/state">`);
+    expect(html).toContain(`<div id="computer-page" data-state-url="${page}/state"`);
   });
 });

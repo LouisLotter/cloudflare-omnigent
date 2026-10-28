@@ -36,6 +36,11 @@ const bucket = new FakeBucket();
 const computers = new Map<string, SimulatedComputer>();
 /** Computers whose "no contact" time is short, so they show as not connected to Omnigent. */
 const lostContact = new Set<string>();
+/** WP3.23: computers with an older supervisor (no page sign-in), on a staging installation, or
+ * whose next capture fails (the list's "last save failed" badge). */
+const legacy = new Set<string>();
+const staging = new Set<string>();
+const failingSaves = new Set<string>();
 const scenario: { outages: OutageRecord[]; replication: ReplicationHealth } = {
   outages: [],
   replication: { state: "replicating", lastSyncAt: null, checkedAt: new Date().toISOString() },
@@ -51,7 +56,12 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     const id = this.ctx.id.toString();
     let computer = computers.get(id);
     if (computer === undefined) {
-      computer = new SimulatedComputer((this.ctx.id.name ?? "cmp_unnamed") as ComputerId);
+      const name = this.ctx.id.name ?? "cmp_unnamed";
+      computer = new SimulatedComputer(name as ComputerId);
+      computer.supervisorOptions = {
+        legacy: legacy.has(name),
+        failCaptures: failingSaves.has(name) ? 1 : 0,
+      };
       const simulated = computer;
       computer.terminal = fakeTtyd({ onSignIn: (provider) => simulated.sup?.signIn(provider) });
       computers.set(id, computer);
@@ -65,6 +75,10 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
 
   protected override intercepts(props: Parameters<PlatformWorkspaceDO["intercepts"]>[0]) {
     return [{ host: "computer.internal", target: { props } as unknown as Fetcher }];
+  }
+
+  protected override stagingChecks(): boolean {
+    return staging.has(this.ctx.id.name ?? "");
   }
 
   protected override timing(): ControllerTiming {
@@ -117,6 +131,26 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     computers.get(this.ctx.id.toString())?.sup?.signIn(provider);
     await this.e2eSettle();
   }
+
+  /** What the provider's page would show the person for the running attempt (WP3.23). */
+  async e2eIssued(service: "claude" | "codex") {
+    return computers.get(this.ctx.id.toString())?.sup?.issued[service] ?? null;
+  }
+
+  /** Codex: the person entered the code at OpenAI. */
+  async e2eApprove(): Promise<void> {
+    computers.get(this.ctx.id.toString())?.sup?.approve("codex");
+    await this.e2eSettle();
+  }
+
+  /** The sign-in starts the computer received, and every sign-in value issued (for scans). */
+  async e2eSignIns() {
+    const sups = computers.get(this.ctx.id.toString())?.supervisors ?? [];
+    return {
+      starts: sups.flatMap((s) => s.commands).filter((c) => c.type === "sign_in_start").length,
+      issued: sups.flatMap((s) => s.issuedValues),
+    };
+  }
 }
 
 export class ControlDO extends PlatformControlDO {}
@@ -155,6 +189,9 @@ interface E2eStub {
   launcher: WorkspaceDO["launcher"];
   e2eSettle(): Promise<void>;
   e2eSignIn(provider: "claude" | "codex"): Promise<void>;
+  e2eIssued: WorkspaceDO["e2eIssued"];
+  e2eApprove(): Promise<void>;
+  e2eSignIns: WorkspaceDO["e2eSignIns"];
 }
 
 async function create(env: Env, name: string) {
@@ -177,9 +214,22 @@ async function create(env: Env, name: string) {
 
 async function seed(env: Env): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  for (const name of ["managed-new", "managed-ready", "managed-lost", "managed-deleted"]) {
+  for (const name of [
+    "managed-new",
+    "managed-ready",
+    "managed-lost",
+    "managed-deleted",
+    "managed-pagesignin",
+    "managed-older",
+    "managed-staging",
+  ]) {
     const { computerId, stub, client } = await create(env, name);
     if (name === "managed-lost") lostContact.add(computerId);
+    if (name === "managed-older") legacy.add(computerId);
+    if (name === "managed-staging") {
+      staging.add(computerId);
+      failingSaves.add(computerId);
+    }
     await client.send(client.provisionRequest(name));
     await client.wake({ hostId: HOST, token: `synthetic-launch-token-canary-e2e-${name}` });
     await stub.e2eSettle();
@@ -189,6 +239,11 @@ async function seed(env: Env): Promise<Record<string, string>> {
     }
     if (name === "managed-deleted") {
       await client.send(client.terminateRequest());
+      for (let i = 0; i < 20; i += 1) await stub.e2eSettle();
+    }
+    if (name === "managed-staging") {
+      // Its first save fails: the list's "last save failed" badge, and the status's saves.
+      await client.send(client.checkpointRequest());
       for (let i = 0; i < 20; i += 1) await stub.e2eSettle();
     }
     out[name] = computerId;
@@ -221,6 +276,21 @@ export default {
     if (request.method === "GET" && url.pathname === "/__e2e/state" && id !== null) {
       const stub = env.WORKSPACE.getByName(id);
       return Response.json(await stub.pages({ ...call, action: "state" }));
+    }
+    // WP3.23: the provider's side of a sign-in, played by the journeys.
+    const service = url.searchParams.get("service") === "codex" ? "codex" : "claude";
+    if (request.method === "GET" && url.pathname === "/__e2e/issued" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      return Response.json(await stub.e2eIssued(service));
+    }
+    if (request.method === "POST" && url.pathname === "/__e2e/approve" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      await stub.e2eApprove();
+      return Response.json({ approved: true });
+    }
+    if (request.method === "GET" && url.pathname === "/__e2e/sign-ins" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      return Response.json(await stub.e2eSignIns());
     }
     return new Response("not found", { status: 404 });
   },

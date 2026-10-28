@@ -1,0 +1,145 @@
+{
+  "_about": "Login transcripts of the pinned CLIs (Claude Code 2.1.311, Codex 0.164.0), captured on 28 Oct 2026 in a throwaway home (WP3.23): each CLI's own output through a pty, chunk by chunk, with the seconds since start. 'prompt' runs were stopped at the prompt; the others ran the real CLIs against local fake providers (a throwaway CA for Anthropic's hosts; Codex's --experimental_issuer), so no real sign-in happened. Every value is a placeholder: {url}, {state}, {code_challenge}, {client_id} and {user_code} are filled with synthetic values by the fake CLIs and the tests. Codex's link is its real one, https://auth.openai.com/codex/device (from the prompt run). 'input' marks where the pasted code was written.",
+  "claude": {
+    "success": {
+      "argv": ["claude", "auth", "login", "--claudeai"],
+      "chunks": [
+        {
+          "at": 0.105,
+          "text": "Opening browser to sign in…\r\n"
+        },
+        {
+          "at": 0.106,
+          "text": "If the browser didn't open, visit: \u001b]8;;https://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u0007\u001b[94mhttps://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u001b[39m\u001b]8;;\u0007\r\nPaste code here if prompted > "
+        },
+        {
+          "at": 0.606,
+          "input": true
+        },
+        {
+          "at": 0.848,
+          "text": "Login successful.\r\n"
+        },
+        {
+          "at": 0.848,
+          "text": "\u001b[?25h"
+        }
+      ],
+      "exit": 0
+    },
+    "wrong_code": {
+      "argv": ["claude", "auth", "login", "--claudeai"],
+      "chunks": [
+        {
+          "at": 0.104,
+          "text": "Opening browser to sign in…\r\n"
+        },
+        {
+          "at": 0.104,
+          "text": "If the browser didn't open, visit: \u001b]8;;https://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u0007\u001b[94mhttps://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u001b[39m\u001b]8;;\u0007\r\nPaste code here if prompted > "
+        },
+        {
+          "at": 0.605,
+          "input": true
+        },
+        {
+          "at": 0.658,
+          "text": "Login failed: That code wasn't accepted. It may be incomplete, expired, already used, or from an earlier sign-in attempt. Sign in again to get a new code.\r\n"
+        },
+        {
+          "at": 0.661,
+          "text": "\u001b[?25h"
+        }
+      ],
+      "exit": 1
+    },
+    "incomplete_code": {
+      "argv": ["claude", "auth", "login", "--claudeai"],
+      "chunks": [
+        {
+          "at": 0.104,
+          "text": "Opening browser to sign in…\r\n"
+        },
+        {
+          "at": 0.105,
+          "text": "If the browser didn't open, visit: \u001b]8;;https://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u0007\u001b[94mhttps://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u001b[39m\u001b]8;;\u0007\r\nPaste code here if prompted > "
+        },
+        {
+          "at": 0.605,
+          "input": true
+        },
+        {
+          "at": 0.606,
+          "text": "Invalid code. Please make sure the full code was copied.\r\n"
+        }
+      ],
+      "exit": null
+    },
+    "prompt": {
+      "argv": ["claude", "auth", "login", "--claudeai"],
+      "chunks": [
+        {
+          "at": 0.538,
+          "text": "Opening browser to sign in…\r\n"
+        },
+        {
+          "at": 0.538,
+          "text": "If the browser didn't open, visit: \u001b]8;;https://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u0007\u001b[94mhttps://claude.com/cai/oauth/authorize?code=true&client_id={client_id}&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge={code_challenge}&code_challenge_method=S256&state={state}\u001b[39m\u001b]8;;\u0007\r\nPaste code here if prompted > "
+        }
+      ],
+      "exit": null
+    },
+    "client_id": "00000000-0000-4000-8000-000000000000"
+  },
+  "codex": {
+    "success": {
+      "argv": ["codex", "login", "--device-auth"],
+      "chunks": [
+        {
+          "at": 0.049,
+          "text": "\r\nWelcome to Codex [v\u001b[90m0.164.0\u001b[0m]\r\n\u001b[90mOpenAI's command-line coding agent\u001b[0m\r\n\r\nFollow these steps to sign in with ChatGPT using device code authorization:\r\n\r\n1. Open this link in your browser and sign in to your account\r\n   \u001b[94m{url}\u001b[0m\r\n\r\n2. Enter this one-time code \u001b[90m(expires in 15 minutes)\u001b[0m\r\n   \u001b[94m{user_code}\u001b[0m\r\n\r\n\u001b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\u001b[0m\r\n\r\n"
+        },
+        {
+          "at": 1.066,
+          "text": "Successfully logged in\r\n"
+        }
+      ],
+      "exit": 0
+    },
+    "denied": {
+      "argv": ["codex", "login", "--device-auth"],
+      "chunks": [
+        {
+          "at": 0.039,
+          "text": "\r\nWelcome to Codex [v\u001b[90m0.164.0\u001b[0m]\r\n\u001b[90mOpenAI's command-line coding agent\u001b[0m\r\n\r\nFollow these steps to sign in with ChatGPT using device code authorization:\r\n\r\n1. Open this link in your browser and sign in to your account\r\n   \u001b[94m{url}\u001b[0m\r\n\r\n2. Enter this one-time code \u001b[90m(expires in 15 minutes)\u001b[0m\r\n   \u001b[94m{user_code}\u001b[0m\r\n\r\n\u001b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\u001b[0m\r\n\r\n"
+        },
+        {
+          "at": 1.047,
+          "text": "Error logging in with device code: device auth failed with status 400 Bad Request\r\n"
+        }
+      ],
+      "exit": 1
+    },
+    "prompt": {
+      "argv": ["codex", "login", "--device-auth"],
+      "chunks": [
+        {
+          "at": 0.241,
+          "text": "\r\nWelcome to Codex [v\u001b[90m0.164.0\u001b[0m]\r\n\u001b[90mOpenAI's command-line coding agent\u001b[0m\r\n\r\nFollow these steps to sign in with ChatGPT using device code authorization:\r\n\r\n1. Open this link in your browser and sign in to your account\r\n   \u001b[94m{url}\u001b[0m\r\n\r\n2. Enter this one-time code \u001b[90m(expires in 15 minutes)\u001b[0m\r\n   \u001b[94m{user_code}\u001b[0m\r\n\r\n\u001b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\u001b[0m\r\n\r\n"
+        }
+      ],
+      "exit": null
+    },
+    "network_error": {
+      "argv": ["codex", "login", "--device-auth"],
+      "chunks": [
+        {
+          "at": 5.591,
+          "text": "Error logging in with device code: error sending request for url (https://auth.openai.com/api/accounts/deviceauth/usercode)\r\n"
+        }
+      ],
+      "exit": 1
+    },
+    "url": "https://auth.openai.com/codex/device"
+  }
+}

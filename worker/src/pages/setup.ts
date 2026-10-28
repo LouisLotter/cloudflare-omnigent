@@ -38,21 +38,44 @@ import {
   readChange,
   socketOriginOf,
 } from "./http.ts";
-import { type CardView, computerView } from "./view.ts";
+import { signInIdleHtml } from "./owner-actions.ts";
+import { type CardView, type ComputerView, computerView } from "./view.ts";
 
+/** The terminal's way, for a computer whose software predates signing in from the page. */
 const CARD_HOW: Readonly<Record<SetupProvider, string>> = {
-  claude: `<p>In the terminal, run <code>claude auth login --claudeai</code>. Open the link it prints, sign in at Anthropic, and paste the code it gives you back into the terminal.</p>`,
-  codex: `<p>In the terminal, run <code>codex login --device-auth</code>. Open the link it prints and enter the code it shows. Device-code sign-in must first be turned on in ChatGPT's security settings.</p>`,
+  claude: `<p>This computer's software is older, so sign in with the terminal below: run <code>claude auth login --claudeai</code>, open the link it prints, sign in at Anthropic, and paste the code it gives you back into the terminal.</p>`,
+  codex: `<p>This computer's software is older, so sign in with the terminal below: run <code>codex login --device-auth</code>, open the link it prints and enter the code it shows. Device-code sign-in must first be turned on in ChatGPT's security settings.</p>`,
 };
+
+/**
+ * The card's sign-in (WP3.23): a button that starts the flow on this page, the terminal's way for
+ * an older computer, or why it is not offered now. The page's script runs the flow.
+ */
+function signInPart(c: CardView, view: ComputerView): string {
+  const removing = view.removal === "pending" || view.removal === "resolved";
+  if (removing) return "";
+  if (view.signIn === "no") return CARD_HOW[c.provider];
+  const offered = view.running;
+  const note = offered
+    ? ""
+    : "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then sign in here.";
+  const signedIn = c.state === "signed_in";
+  return `<div class="sign-in" data-sign-in="${c.provider}">${signInIdleHtml(
+    c.provider,
+    offered,
+    signedIn ? "" : note,
+    signedIn,
+  )}</div>`;
+}
 
 export const PASTE_HINT =
   "Paste into the terminal with Ctrl+Shift+V (Cmd+V on a Mac), Shift+Insert or a middle click.";
 
-function card(c: CardView): string {
+function card(c: CardView, view: ComputerView): string {
   return `<article class="card${c.open ? " open" : ""}" data-card="${c.provider}" data-state="${c.state}">
 <h3>${escapeHtml(c.title)} ${badge(c.tone, c.label)}</h3>
 <p data-detail>${escapeHtml(c.detail)}</p>
-${c.open ? CARD_HOW[c.provider] : ""}
+${signInPart(c, view)}
 </article>`;
 }
 
@@ -89,7 +112,8 @@ export async function setupPage(
 <p class="muted" data-paste-hint>${escapeHtml(PASTE_HINT)}</p>
 <div id="terminal" hidden></div>
 </div>`;
-  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}">
+  const resume = JSON.stringify(state.computer.signIn?.attempts ?? []);
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-resume="${escapeHtml(resume)}">
 <h1>${escapeHtml(view.name)}</h1>
 <p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
@@ -102,9 +126,14 @@ ${terminalPanel}
 </section>
 <section>
 <h2>Sign-ins</h2>
-<div class="cards" id="cards">${view.cards.map(card).join("\n")}</div>
+<div class="cards" id="cards">${view.cards.map((c) => card(c, view)).join("\n")}</div>
 </section>
 </div>
+<section id="computer-status" data-status-url="${escapeHtml(`${computerPath(id)}/status`)}" data-staging-url="${escapeHtml(`${computerPath(id)}/staging-check`)}">
+<h2>Computer status</h2>
+<div class="actions"><button type="button" id="status-refresh">Refresh</button></div>
+<div id="status-body"><p class="muted">Reading the computer's status…</p></div>
+</section>
 ${removing ? "" : manageSection(view, state.computer, state.intentToken)}
 ${removalSection(view)}
 </div>`;
@@ -139,7 +168,7 @@ export async function stateJson(
     saving: view.saving,
     intent: state.intentToken ?? null,
     terminal: state.computer.terminal ?? null,
-    cards: view.cards.map((c) => ({ ...c, html: card(c) })),
+    cards: view.cards.map((c) => ({ ...c, html: card(c, view) })),
     notices: view.notices,
     // Server-rendered, escaped markup the page swaps in, so its sections follow the state.
     statusHtml: badge(view.statusTone, view.status),

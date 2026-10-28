@@ -34,6 +34,8 @@ import {
   type LauncherResult,
   type PageFrontCall,
   type PageFrontResult,
+  type PageReadCall,
+  type PageReadResult,
   type PagesCall,
   type PagesResult,
   type ReservationState,
@@ -70,6 +72,7 @@ import { type InterceptExports, interceptTargets } from "./network.ts";
 import { PageFront } from "./page-front.ts";
 import type { Store } from "./record.ts";
 import { WORKSPACE_MIGRATIONS } from "./schema.ts";
+import { isStagingInstallation } from "./staging.ts";
 import { type BridgeSocket, TerminalBridge, type TerminalTiming } from "./terminal.ts";
 
 /** The controller's store on the Durable Object's SQLite storage: one JSON value per key. */
@@ -164,6 +167,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       timing: this.timing(),
       log: (event, fields) => logEvent("workspace", event, fields),
       terminal: { closeNow: (reason) => bridge?.closeNow(reason) },
+      stagingChecks: this.stagingChecks(),
     });
     const controller = this.#controller;
     let front: PageFront | null = null;
@@ -274,6 +278,16 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return Date.now();
   }
 
+  /**
+   * A staging installation (WP3.23): the setup page's RC-53 switch is offered and applied. Only
+   * the staging tool's variable makes it so: the bootstrap sets `CFO_STAGING_INSTALLATION` to the
+   * platform Worker's own name for a staging target only, and production names never carry the
+   * staging prefix (the bootstrap refuses them).
+   */
+  protected stagingChecks(): boolean {
+    return isStagingInstallation(this.env.CFO_STAGING_INSTALLATION);
+  }
+
   protected timing(): ControllerTiming {
     return CONTROLLER_TIMING;
   }
@@ -307,8 +321,11 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.controller.computer(call);
   }
 
-  /** The pages, through the page front (WP3.5): intent tokens, the terminal, removal. */
-  pages(call: PagesCall | PageFrontCall): Promise<PagesResult | PageFrontResult> {
+  /** The pages, through the page front (WP3.5): intent tokens, the terminal, removal; and (WP3.23)
+   * sign-in from the page and the computer's status. */
+  pages(
+    call: PagesCall | PageFrontCall | PageReadCall,
+  ): Promise<PagesResult | PageFrontResult | PageReadResult> {
     return this.front.pages(call);
   }
 

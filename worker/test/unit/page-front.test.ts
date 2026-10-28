@@ -37,6 +37,46 @@ class FakeController implements FrontController {
     this.launches.push(call);
     return { operation: "terminate" as const, removal: "pending" as const };
   }
+
+  // WP3.23: sign-in, status and the staging switch, recorded.
+  readonly signIns: { method: string; input: unknown }[] = [];
+  attempts: { service: "claude" | "codex"; attempt: number }[] = [];
+  #view(input: { service: "claude" | "codex"; attempt?: number }) {
+    return {
+      outcome: "accepted" as const,
+      view: { service: input.service, attempt: input.attempt ?? 1, state: "starting" as const },
+    };
+  }
+  async signInStart(input: Parameters<FrontController["signInStart"]>[0]) {
+    this.signIns.push({ method: "start", input });
+    return this.#view(input);
+  }
+  async signInInput(input: Parameters<FrontController["signInInput"]>[0]) {
+    this.signIns.push({ method: "input", input });
+    return this.#view(input);
+  }
+  async signInCancel(input: Parameters<FrontController["signInCancel"]>[0]) {
+    this.signIns.push({ method: "cancel", input });
+    return this.#view(input);
+  }
+  async signInStatus(input: Parameters<FrontController["signInStatus"]>[0]) {
+    this.signIns.push({ method: "status", input });
+    return this.#view(input);
+  }
+  async computerStatus() {
+    this.signIns.push({ method: "computer_status", input: null });
+    return { observedAt: "2026-10-28T10:00:00.000Z" } as Awaited<
+      ReturnType<FrontController["computerStatus"]>
+    >;
+  }
+  async setStagingCheck(input: { readonly rc53: boolean }) {
+    this.signIns.push({ method: "staging", input });
+    return { outcome: "accepted" as const, rc53: input.rc53 };
+  }
+  sessionAttempts(session: string) {
+    this.signIns.push({ method: "sessionAttempts", input: session });
+    return this.attempts;
+  }
 }
 
 function harness() {

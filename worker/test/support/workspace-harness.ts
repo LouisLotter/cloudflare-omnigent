@@ -18,6 +18,8 @@ class TestComputers {
   readonly bucket = new FakeBucket();
   /** The setup terminal's timing in the tests' WorkspaceDO (WP3.5): real-time checks every 25 ms. */
   readonly terminalTiming: Partial<TerminalTiming> = { checkMs: 25, dialRetryMs: [5, 10] };
+  /** Computers (by WorkspaceDO name) whose installation is staging (WP3.23's RC-53 switch). */
+  readonly staging = new Set<string>();
   readonly #computers = new Map<string, SimulatedComputer>();
 
   constructor() {

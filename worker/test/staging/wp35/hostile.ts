@@ -1,7 +1,9 @@
 // WP3.5 staging (the G3 sitting; RC-07's platform-page part, P2's synthetic negatives): a page on
 // a foreign origin that the owner opens in the browser signed in to the installation's Access. It
-// frames the computer's setup page, sends a change to a control URL and opens the terminal's
-// WebSocket with a made-up capability, then records what it saw. Nothing it sends can change
+// frames the computer's setup page, sends a change to a control URL, tries WP3.23's routes (start
+// a sign-in, send a code, cancel, turn the staging RC-53 switch, read an attempt and the status
+// across origins), and opens the terminal's WebSocket with a made-up capability, then records what
+// it saw. Nothing it sends can change
 // anything: each attempt must be refused (by Access, whose cookie is SameSite=Lax, or by the
 // platform's own origin checks). The owner also confirms by eye that the frame shows an error.
 //
@@ -40,6 +42,26 @@ const page = `<!doctype html><meta charset="utf-8"><title>WP3.5 hostile origin</
     await fetch("${base}/platform/computers/${computerId}/do/restart", { method: "POST", mode: "no-cors", body, credentials: "include" });
     report.post = "sent (opaque answer)";
   } catch (e) { report.post = "refused by the browser or network"; }
+  // WP3.23's changes: each must be refused before any effect (no attempt may start).
+  const json = (o) => JSON.stringify({ op: "op_00000000000000000000000001", intent: "${"0".repeat(64)}", ...o });
+  for (const [name, path, body] of [
+    ["signInStart", "sign-in", { mode: "start", service: "claude" }],
+    ["signInInput", "sign-in", { mode: "input", service: "claude", attempt: "1", code: "synthetic-code#synthetic" }],
+    ["signInCancel", "sign-in", { mode: "cancel", service: "codex", attempt: "1" }],
+    ["stagingCheck", "staging-check", { rc53: "off" }],
+  ]) {
+    try {
+      await fetch("${base}/platform/computers/${computerId}/" + path, { method: "POST", mode: "no-cors", body: json(body), credentials: "include" });
+      report[name] = "sent (opaque answer)";
+    } catch (e) { report[name] = "refused by the browser or network"; }
+  }
+  // Reads across origins: the browser must not let this page see them.
+  for (const [name, path] of [["signInRead", "sign-in?service=claude&attempt=1"], ["statusRead", "status"]]) {
+    try {
+      const r = await fetch("${base}/platform/computers/${computerId}/" + path, { credentials: "include" });
+      report[name] = "READABLE (failure): " + r.status;
+    } catch (e) { report[name] = "unreadable"; }
+  }
   report.socket = await new Promise((resolve) => {
     const ws = new WebSocket("wss://${hostname}/platform/computers/${computerId}/terminal", ["tty", "cfo-capability.${"A".repeat(43)}"]);
     ws.onopen = () => { ws.close(); resolve("OPENED (failure)"); };
