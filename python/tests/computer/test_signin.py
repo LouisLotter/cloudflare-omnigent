@@ -22,6 +22,7 @@ import os
 import random
 import re
 import select
+import signal
 import subprocess
 import threading
 import time
@@ -604,16 +605,22 @@ def test_cancelling_a_superseded_attempt_waits_for_its_spawn():
 
 class _PauseAfterWaking:
     """Stands in for the ``select`` module in signin: once armed, the next sign-in reader that
-    wakes with something ready pauses there, before it reads, until released. That is the window
-    in which another thread ends the attempt (a cancel, a newer start, a sign-out)."""
+    wakes with something ready (or, ``idle``, with nothing) pauses there, before it reads or looks
+    at its process, until released. That is the window in which another thread ends the attempt
+    (a cancel, a newer start, a sign-out), or the CLI prints its last words and exits."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, idle: bool = False) -> None:
+        self.idle = idle
         self.armed = threading.Event()
         self.paused = threading.Event()
         self.release = threading.Event()
 
     def _woke(self, ready) -> None:
-        if ready and self.armed.is_set() and threading.current_thread().name.startswith("sign-in-"):
+        if (
+            bool(ready) != self.idle
+            and self.armed.is_set()
+            and threading.current_thread().name.startswith("sign-in-")
+        ):
             self.armed.clear()
             self.paused.set()
             self.release.wait(10)
@@ -697,12 +704,14 @@ def test_an_ended_attempts_reader_never_touches_a_reused_descriptor(monkeypatch)
 
 
 # A stand-in CLI for the churn: prints a valid link and prompt, then says every code it is
-# given is incomplete (Claude), or waits (Codex). It never prints anything secret.
+# given is incomplete (Claude), or waits (Codex). It never prints anything secret. Shell builtins
+# only, so it is one process: where the test runner is PID 1 (the image's test target), a killed
+# child would stay a zombie in the group, unreaped.
 _CHURN_CLI = (
-    "stty -echo 2>/dev/null; printf '%s' \"$1\"; "
+    "printf '%s' \"$1\"; "
     "while IFS= read -r line; do "
     "printf '%s\\r\\n' 'Invalid code. Please make sure the full code was copied.'; "
-    "done; sleep 60"
+    "done"
 )
 _CHURN_PROMPT = {
     "claude": "https://claude.com/cai/oauth/authorize?state=synthetic\r\n"
@@ -713,10 +722,12 @@ _CHURN_PROMPT = {
 
 
 def _ptys_open() -> int:
+    """Pty masters this process holds (``/dev/ptmx``, or ``/dev/pts/ptmx`` where devpts has its
+    own: Codex WP3.26 r1-5)."""
     count = 0
     for name in os.listdir("/proc/self/fd"):
         with contextlib.suppress(OSError):
-            count += os.readlink(f"/proc/self/fd/{name}") == "/dev/ptmx"
+            count += os.readlink(f"/proc/self/fd/{name}") in ("/dev/ptmx", "/dev/pts/ptmx")
     return count
 
 
@@ -743,6 +754,12 @@ def test_churning_attempts_never_cross_descriptors():
         return proc, master
 
     baseline = _ptys_open()
+    master, slave = os.openpty()
+    try:
+        assert _ptys_open() == baseline + 1, "the pty count does not see a master"
+    finally:
+        os.close(master)
+        os.close(slave)
     signins = SI.SignIns(spawn)
     stop = threading.Event()
     problems: list[str] = []
@@ -856,6 +873,94 @@ def test_a_process_not_reaped_in_time_stays_owed(monkeypatch):
     assert signins.cancel_all() is True
     assert _group_gone(pid)
     signins.join()
+
+
+def test_concurrent_kills_never_signal_a_reaped_group(monkeypatch):
+    """Codex WP3.26 r1-1: two callers kill the same process at once (a settle and another, or the
+    reader and an end). One is held right at its group signal; the other must not reap the
+    leader meanwhile, or the held signal would reach a group ID that may already be reused."""
+    proc, fd = _sleeper()
+    os.close(fd)
+    attempt = SI.Attempt("codex", 1)
+    attempt.proc = proc
+    real_killpg = os.killpg
+    first = threading.Event()
+    late: list[int] = []
+
+    def killpg(pid, sig):
+        if sig == signal.SIGKILL:
+            if not first.is_set():
+                first.set()
+                time.sleep(0.5)  # the window: an unserialized second caller reaps here
+            try:
+                os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            except ChildProcessError:
+                late.append(pid)  # its leader was already reaped
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    callers = [threading.Thread(target=SI._kill, args=(attempt,)) for _ in range(2)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(15)
+    assert proc.returncode is not None and _group_gone(proc.pid)
+    assert not late, "a group was signalled after its leader was reaped"
+
+
+def test_output_printed_just_before_the_exit_is_read_before_the_end_is_judged(monkeypatch):
+    """Codex WP3.26 r1-2: the reader finds the pty empty; before it looks at the process, the CLI
+    prints its error and exits. That output is still read, and the attempt ends with the reason
+    it gives, not as an unexplained exit."""
+    hook = _PauseAfterWaking(idle=True)
+    monkeypatch.setattr(SI, "select", hook)
+    script = (
+        "IFS= read -r line; "
+        f"printf '%s\\r\\n' '{SI.CODEX_ERROR} {SI.CODEX_NETWORK} for url'; exit 1"
+    )
+    made: list[tuple[subprocess.Popen[bytes], int]] = []
+
+    def spawn(_service, _cancelled):
+        master, slave = os.openpty()
+        proc = subprocess.Popen(
+            ["sh", "-c", script], stdin=slave, stdout=slave, stderr=slave, start_new_session=True
+        )
+        os.close(slave)
+        made.append((proc, master))
+        return proc, master
+
+    signins = SI.SignIns(spawn)
+    signins.start("codex", 1)
+    _until(lambda: signins._current["codex"].fd is not None, what="the reader to start")
+    proc, master = made[0]
+    hook.armed.set()
+    assert hook.paused.wait(5), "the reader never found the pty idle"
+    os.write(master, b"go\n")  # the CLI prints its error and exits while the reader is held
+    _until(lambda: SI._exited(proc), what="the CLI to exit")
+    hook.release.set()
+    view = _until(
+        lambda: (v := signins.status("codex", 1))["state"] in SI.FINAL and v, what="the end"
+    )
+    assert view == {"service": "codex", "attempt": 1, "state": "failed", "reason": "network"}
+    signins.join()
+
+
+def test_a_spawn_still_waiting_at_the_deadline_expires_the_attempt():
+    """Codex WP3.26 r1-3: waiting to spawn (for a capture's gate) is bounded by the attempt's
+    deadline, not only by a cancel."""
+    gave_up = threading.Event()
+
+    def waits_for_the_gate(_service, cancelled):
+        while not cancelled():
+            time.sleep(0.02)
+        gave_up.set()
+        raise SI.SpawnCancelled
+
+    signins = SI.SignIns(waits_for_the_gate, deadline_s=0.3)
+    signins.start("claude", 1)
+    assert gave_up.wait(5), "the spawn kept waiting past the deadline"
+    signins.join()
+    assert signins.status("claude", 1) == {"service": "claude", "attempt": 1, "state": "expired"}
 
 
 def test_a_code_the_cli_cannot_take_fails_the_attempt():

@@ -9,7 +9,10 @@ before any effect.
 from __future__ import annotations
 
 import json
+import os
+import socket
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -167,3 +170,24 @@ def test_an_accept_with_nothing_waiting_never_blocks_the_command_server(tmp_path
         assert rig.ok("computer_status")["type"] == "computer_status"
     finally:
         rig.close()
+
+
+def test_a_listener_moved_under_the_test_workspace_fails_fast_and_closes_nothing_else() -> None:
+    """The harness's own guard (WP3.26): when a server's descriptor number has come to hold
+    another owner's socket, closing the server names that at once, without a shutdown that could
+    block or a close that would hit the other owner's descriptor."""
+    workspace = FakeWorkspace()
+    other = socket.socket()
+    other.bind(("127.0.0.1", 0))
+    other.listen(1)  # blocking, as another owner's listener may be
+    number = workspace.server.fileno()
+    os.dup2(other.fileno(), number)  # what a stale close and a reuse would leave behind
+    try:
+        started = time.monotonic()
+        with pytest.raises(AssertionError, match="now holds another file"):
+            workspace.close()
+        assert time.monotonic() - started < 5
+        os.fstat(number)  # the other owner's descriptor is still open
+    finally:
+        os.close(number)
+        other.close()

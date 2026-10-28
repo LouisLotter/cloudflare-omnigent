@@ -131,9 +131,11 @@ class FakeWorkspace:
 
     def close(self) -> None:
         moved = listening_moved(self.server, self.listening)
+        if moved is not None:
+            abandon(self.server)
+            raise AssertionError(f"the test workspace's {moved}")
         self.server.shutdown()
         self.server.server_close()
-        assert moved is None, f"the test workspace's {moved}"
 
 
 def listening_identity(server: Any) -> tuple[int, int]:
@@ -154,6 +156,14 @@ def listening_moved(server: Any, identity: tuple[int, int]) -> str | None:
     if now != identity:
         return f"listening descriptor {server.fileno()} now holds another file"
     return None
+
+
+def abandon(server: Any) -> None:
+    """A server whose descriptor number is no longer its own: its loop is asked to stop without
+    waiting for it (it may be blocked on another owner's socket), and its socket object lets go
+    of the number, so neither a shutdown nor a close here acts on what another owner holds."""
+    threading.Thread(target=server.shutdown, daemon=True).start()
+    server.socket.detach()
 
 
 def newer(candidate: dict[str, Any], current: dict[str, Any] | None) -> bool:
@@ -305,9 +315,11 @@ class Rig:
     def close(self) -> None:
         moved = listening_moved(self.server, self.listening)
         self.sup.stop()
+        if moved is not None:
+            abandon(self.server)
+            raise AssertionError(f"the command server's {moved}")
         self.server.shutdown()
         self.server.server_close()
-        assert moved is None, f"the command server's {moved}"
 
 
 def layer_record(job: dict[str, Any], index: dict[str, Any]) -> dict[str, Any]:
