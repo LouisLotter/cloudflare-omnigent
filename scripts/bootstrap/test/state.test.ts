@@ -87,7 +87,22 @@ describe("the state file", () => {
     const cases: [unknown, RegExp][] = [
       ["not json {", /not JSON/],
       [[], /top level is not an object/],
-      [{ ...good, stateVersion: 2 }, /unknown version/],
+      [{ ...good, stateVersion: 3 }, /unknown version/],
+      [{ ...good, stateVersion: "1" }, /unknown version/],
+      // D33: version 2 records the bucket tag, and only version 2 does.
+      [{ ...good, stateVersion: 2 }, /version 2 plan records no bucket tag/],
+      [
+        { ...good, installation: { ...good.installation, bucketTag: "01hs3f9q" } },
+        /has a bucket tag, which only version 2 records/,
+      ],
+      [
+        { ...good, stateVersion: 2, installation: { ...good.installation, bucketTag: 7 } },
+        /installation.bucketTag is not text/,
+      ],
+      [
+        { ...good, stateVersion: 2, installation: { ...good.installation, bucketTag: "zzzzzzzz" } },
+        /plan is not usable: the bucket tag is not the first 8 digits of the installation ID/,
+      ],
       [
         { ...good, installation: { ...good.installation, hostname: 7 } },
         /installation.hostname is not text/,

@@ -9,6 +9,9 @@
 //       the bootstrap's web configuration again, with ingress's variables: a new version
 //   node worker/test/staging/wp318/soak-config.ts check
 //       renders both and prints them with the installation's values masked (no deploy)
+//   node worker/test/staging/wp318/soak-config.ts checkpoints
+//       prints the platform Worker's checkpoint bucket, as the bootstrap names it from the plan
+//       (with its tag since D33, WP3.30), for `run.sh layers`
 //
 // The rendered files sit next to the checked-in configurations, so that their relative paths
 // resolve, under the bootstrap's ignored name (.cfo-bootstrap.*.jsonc), and are removed after use.
@@ -48,6 +51,14 @@ export function soakPlatformConfig(rendered: Readonly<Raw>, build: string): Raw 
   };
 }
 
+/** The platform Worker's checkpoint bucket in a rendered configuration (CHECKPOINTS). */
+export function checkpointBucket(rendered: Readonly<Raw>): string {
+  const buckets = (rendered.r2_buckets ?? []) as { binding?: unknown; bucket_name?: unknown }[];
+  const name = buckets.find((b) => b.binding === "CHECKPOINTS")?.bucket_name;
+  if (typeof name !== "string") throw new Error("the platform configuration binds no CHECKPOINTS");
+  return name;
+}
+
 function plan() {
   const state = parseState(readFileSync(statePathFor(PLATFORM), "utf8"));
   const installation = state.installation;
@@ -82,6 +93,10 @@ async function main(): Promise<void> {
   const [command, build] = process.argv.slice(2);
   const { installation, target } = plan();
   const base = (file: string) => readWranglerConfig(join(WORKER, file), WORKER).raw;
+  if (command === "checkpoints") {
+    console.log(checkpointBucket(renderPlatformConfig(base("wrangler.jsonc"), installation)));
+    return;
+  }
   if (command === "platform" || command === "check") {
     const config = soakPlatformConfig(
       renderPlatformConfig(base("wrangler.jsonc"), installation),
@@ -97,7 +112,7 @@ async function main(): Promise<void> {
     else deploy(config, target.webSuffix, target.owner, target.days);
   }
   if (!["platform", "web", "check"].includes(command ?? "")) {
-    throw new Error("soak-config.ts platform <build> | web | check");
+    throw new Error("soak-config.ts platform <build> | web | check | checkpoints");
   }
 }
 

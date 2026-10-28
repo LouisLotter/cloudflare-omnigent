@@ -30,6 +30,7 @@ import {
   type TokenApi,
   TokensUnavailable,
 } from "./r2-token.ts";
+import { bucketsOf, type Installation } from "./settings.ts";
 import { fileStateStore, installationsDir, resourceLockPaths } from "./state.ts";
 
 /** The tokens a state file records: the current one and those left to delete. */
@@ -112,8 +113,22 @@ export function removeInstallationToken(options: RemoveTokenOptions): Removal {
   options.store.save(withTokensLeft(options.store.load(), result.left));
   for (const t of result.deleted) options.log(`deleted the R2 token ${t.name}`);
   const named = [...result.left, ...result.unconfirmed];
-  if (named.length > 0) options.log(manualDeletion(named));
+  if (named.length > 0) options.log(`${manualDeletion(named)}${stillCovers(plan, named.length)}`);
   return { deleted: result.deleted.length, left: result.left, unconfirmed: result.unconfirmed };
+}
+
+/**
+ * What a token left to delete can still reach: the installation's buckets, by name, and any
+ * bucket created later under one of those names (why new installations' default names carry
+ * their ID's tag, D33).
+ */
+export function stillCovers(plan: Installation, tokens: number): string {
+  const buckets = bucketsOf(plan);
+  if (buckets.length === 0) return "";
+  const which =
+    buckets.length === 1 ? `the bucket ${buckets[0]}` : `the buckets ${buckets.join(" and ")}`;
+  const later = buckets.length === 1 ? "that name" : "one of those names";
+  return ` Until then ${tokens === 1 ? "it" : "each"} can read and write the objects in ${which}, and in any bucket created later under ${later}.`;
 }
 
 /**

@@ -9,6 +9,7 @@ import { withRenderedConfig } from "../../../scripts/bootstrap/cloud.ts";
 import {
   type Installation,
   installationProblems,
+  planInstallation,
   renderPlatformConfig,
 } from "../../../scripts/bootstrap/settings.ts";
 import { ownerPin } from "../../../scripts/bootstrap/test/fixtures.ts";
@@ -40,7 +41,7 @@ import {
   switchBracket,
   tunnelOpens,
 } from "../staging/wp318/plan.ts";
-import { soakPlatformConfig } from "../staging/wp318/soak-config.ts";
+import { checkpointBucket, soakPlatformConfig } from "../staging/wp318/soak-config.ts";
 
 const T0 = 1_800_000_000_000;
 const HOST = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
@@ -448,8 +449,12 @@ describe("the soak's analysis after the 28 Oct sitting (WP3.27)", () => {
 describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR-001)", () => {
   const WORKER = resolve(import.meta.dirname, "..", "..");
   const ACCOUNT = "1".repeat(32);
-  /** The plan `run.sh bucket` makes: one holder's two buckets, one endpoint, staging wp318. */
-  const planned = async (): Promise<Installation> => ({
+  /**
+   * The plan `run.sh bucket` makes: one holder's two buckets, one endpoint, staging wp318. Since
+   * D33 (WP3.30) it records its bucket tag, so the platform Worker's checkpoint bucket carries
+   * it; `legacy` is a plan from before, which keeps the untagged name.
+   */
+  const planned = async (legacy = false): Promise<Installation> => ({
     installationId: "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
     accountId: ACCOUNT,
     platformWorker: "cfo-stg-wp318-platform",
@@ -462,6 +467,7 @@ describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR
       endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
     },
     artifacts: { url: "s3://cfo-stg-wp318-r2-artifacts" },
+    ...(legacy ? {} : { bucketTag: "01hs3f9q" }),
     target: {
       kind: "staging",
       owner: "WP3.18",
@@ -480,6 +486,19 @@ describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR
     const plan = await planned();
     expect(installationProblems(plan)).toEqual([]);
     const base = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER).raw;
+    // What `run.sh bucket`'s `plan --staging wp318 …` makes of its arguments (WP3.30).
+    const { replica, artifacts, bucketTag: _tag, ...given } = plan;
+    expect(
+      planInstallation(
+        {
+          ...given,
+          replicaUrl: replica.url,
+          replicaEndpoint: String(replica.endpoint),
+          artifactsUrl: String(artifacts?.url),
+        },
+        base,
+      ),
+    ).toEqual(plan);
     const config = soakPlatformConfig(renderPlatformConfig(base, plan), "b1");
     const vars = config.vars as Record<string, string>;
     expect(vars).toMatchObject({
@@ -498,11 +517,25 @@ describe("the M3 sitting's installation (R2 replica and artifacts bucket, G2-DUR
     const serverEnv = (v: Record<string, string>) =>
       Object.entries(v).filter(([k]) => k.startsWith("SERVER_ENV_"));
     expect(serverEnv(again)).toEqual(serverEnv(vars));
+    // The checkpoint bucket carries the plan's tag (D33), and still the deployment's name, so
+    // the staging guard accepts it and teardown deletes it with the deployment.
     expect(config.r2_buckets).toEqual([
-      { binding: "CHECKPOINTS", bucket_name: "cfo-stg-wp318-platform-checkpoints" },
+      { binding: "CHECKPOINTS", bucket_name: "cfo-stg-wp318-platform-01hs3f9q-checkpoints" },
       { binding: "RESULTS", bucket_name: "cfo-stg-wp318-platform-results" },
     ]);
     withRenderedConfig(WORKER, config, (path) =>
+      expect(() => guard(path, "cfo-stg-wp318-platform")).not.toThrow(),
+    );
+    // `run.sh layers` reads the same bucket (soak-config.ts checkpoints).
+    expect(checkpointBucket(config)).toBe("cfo-stg-wp318-platform-01hs3f9q-checkpoints");
+    expect(() => checkpointBucket({ r2_buckets: [] })).toThrow(/binds no CHECKPOINTS/);
+    // A plan from before D33 keeps the untagged name, which the guard accepts as before.
+    const legacy = soakPlatformConfig(renderPlatformConfig(base, await planned(true)), "b1");
+    expect(legacy.r2_buckets).toEqual([
+      { binding: "CHECKPOINTS", bucket_name: "cfo-stg-wp318-platform-checkpoints" },
+      { binding: "RESULTS", bucket_name: "cfo-stg-wp318-platform-results" },
+    ]);
+    withRenderedConfig(WORKER, legacy, (path) =>
       expect(() => guard(path, "cfo-stg-wp318-platform")).not.toThrow(),
     );
     // Both containers under the `durable_object` policy (WP3.19): the staging tool records the

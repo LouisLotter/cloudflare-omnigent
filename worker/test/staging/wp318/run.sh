@@ -430,7 +430,9 @@ print(json.dumps({
     dir="$out/layers/$computer"
     mkdir -p "$dir"
     chmod 700 "$out/layers" "$dir"
-    CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects list --bucket-name "$platform-checkpoints" \
+    # The bucket as the bootstrap names it from the plan: tagged since D33 (WP3.30).
+    checkpoints="$(node --no-warnings "$here/soak-config.ts" checkpoints)"
+    CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects list --bucket-name "$checkpoints" \
       --prefix "workspace/$computer/" --per-page 1000 |
       python3 -I -c 'import json,sys
 d = json.load(sys.stdin)
@@ -439,7 +441,7 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     print(o["key"])' |
       while read -r key; do
         CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects get "$key" \
-          --bucket-name "$platform-checkpoints" >"$dir/$(basename "$key")"
+          --bucket-name "$checkpoints" >"$dir/$(basename "$key")"
       done
     ls -l "$dir"
     ;;
