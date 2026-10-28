@@ -27,6 +27,12 @@
 // it removes, with --yes, only the ones that carry the nonce of a create the tool gave up on:
 // its own, landed late.
 //
+// A deployment that teardown or sweep --yes removes may have been a staging installation's
+// platform Worker (scripts/bootstrap, `plan --staging`). The R2 user API token that the
+// bootstrap made for that installation goes with it: the one its state file records, the
+// bootstrap's own record of what it made (scripts/bootstrap/remove.ts). A token whose removal
+// fails is reported, with the bootstrap command that removes it, and the command exits 1.
+//
 // A Durable Object binding may name another deployment in script_name if the registry shows it
 // deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
 // in an optional staging manifest, staging.jsonc, next to it. It applies to every configuration
@@ -75,15 +81,19 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { cfTokenApi } from "../bootstrap/cloud.ts";
+import { removeDeploymentToken } from "../bootstrap/remove.ts";
+import { statePathFor } from "../bootstrap/state.ts";
 import {
   cliCloud,
   fileStore,
   readStagingManifest,
   readWranglerConfig,
   removeStaleSecretDirs,
+  spawnRunner,
   writePrivateFile,
 } from "./cloud.ts";
-import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
+import { assertAccount, expired, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
 import {
   type Context,
@@ -137,6 +147,28 @@ function context(config: StagingConfig, command: string): Context {
     nonce: () => randomBytes(4).toString("hex"),
     log: (message) => console.log(message),
   };
+}
+
+/**
+ * After `deployments` were removed: the R2 token of a staging installation whose platform Worker
+ * one of them was. A failure is reported, never hides the teardown's own result.
+ */
+function removeInstallationTokens(config: StagingConfig, deployments: readonly string[]): void {
+  for (const deployment of deployments) {
+    try {
+      removeDeploymentToken(deployment, {
+        accountId: config.accountId,
+        api: cfTokenApi,
+        runner: spawnRunner,
+        log: (message) => console.log(message),
+      });
+    } catch (error) {
+      console.error(
+        `stg: ${deployment}: its staging installation's R2 token was not removed: ${error instanceof Error ? error.message : String(error)}; run node scripts/bootstrap/bootstrap.ts remove-r2-token --state ${statePathFor(deployment)} --yes`,
+      );
+      process.exitCode = 1;
+    }
+  }
 }
 
 /**
@@ -253,11 +285,23 @@ function main(): void {
     }
     case "teardown": {
       if (!values.suffix) throw new Error("teardown needs --suffix");
-      teardown(context(loadConfig(), command), resourceName(values.suffix));
+      const ctx = context(loadConfig(), command);
+      const name = resourceName(values.suffix);
+      teardown(ctx, name);
+      removeInstallationTokens(ctx.config, [name]);
       return;
     }
     case "sweep": {
-      const failures = sweep(context(loadConfig(), command), values.yes);
+      const ctx = context(loadConfig(), command);
+      const due = expired(ctx.store.load(), ctx.now()).map((d) => d.name);
+      const failures = sweep(ctx, values.yes);
+      if (values.yes) {
+        const left = new Set(ctx.store.load().map((d) => d.name));
+        removeInstallationTokens(
+          ctx.config,
+          due.filter((name) => !left.has(name)),
+        );
+      }
       if (failures.length > 0) throw new Error(`teardown failed for:\n  ${failures.join("\n  ")}`);
       return;
     }
