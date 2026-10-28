@@ -191,6 +191,7 @@ function installationTokens(
       apply,
       log: (message) => console.log(message),
       stateFiles,
+      now: () => Date.now(),
     });
     for (const problem of result.problems) console.error(`stg: ${problem}`);
     // Tokens left for the person (named above, with the click) mean the cleanup is not done.
