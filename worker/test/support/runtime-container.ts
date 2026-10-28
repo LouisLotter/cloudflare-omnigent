@@ -271,7 +271,10 @@ export class FakeRuntimeContainer {
       body: bytes,
     });
     if (response.status !== 200) {
-      const detail = (await response.text()).slice(0, 200);
+      // The real shim's report of a refused part (sandbox-shim 1.0.0).
+      const detail = `gateway rejected the part upload with HTTP ${response.status}: ${(
+        await response.text()
+      ).slice(0, 200)}`;
       await io.write(dataFrame({ kind: "error", code: "transfer", detail }));
       return 1;
     }

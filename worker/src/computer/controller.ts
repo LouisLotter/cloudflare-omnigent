@@ -179,6 +179,7 @@ import {
   statusLog,
   withRc53,
 } from "./status.ts";
+import { isTransientUploadError } from "./upload-errors.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Dependencies.
@@ -213,6 +214,11 @@ export interface ControllerTiming {
   readonly startDeadlineMs: number;
   readonly inactivityTimeoutMs: number;
   readonly uploadDeadlineMs: number;
+  /**
+   * After a transient upload failure (`isTransientUploadError`), the whole upload is repeated
+   * after each of these delays in turn, within the same upload deadline (WP3.22).
+   */
+  readonly uploadRetryDelaysMs: readonly number[];
   /** One layer's restore; a transfer that stalls longer is given up and retried. */
   readonly restoreLayerDeadlineMs: number;
   /** A capture that has not ended after this is given up. */
@@ -250,6 +256,7 @@ export const CONTROLLER_TIMING: ControllerTiming = {
   startDeadlineMs: TIMING.startDeadlineS * 1000,
   inactivityTimeoutMs: INACTIVITY_TIMEOUT_MS,
   uploadDeadlineMs: TIMING.uploadDeadlineS * 1000,
+  uploadRetryDelaysMs: [5_000, 15_000],
   restoreLayerDeadlineMs: 300_000,
   captureDeadlineMs: (TIMING.uploadDeadlineS + 300) * 1000,
   backstopMs: TIMING.backstopSaveS * 1000,
@@ -281,6 +288,8 @@ export interface ControllerDeps {
    * it once the call ended, so no timer outlives its call and keeps the object in memory.
    */
   readonly deadline: (ms: number) => { readonly signal: AbortSignal; clear(): void };
+  /** Waits `ms`, or rejects once `signal` aborts (an upload's retry delay). Real timers if absent. */
+  readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** The computer's intercepts for these props: `omnigent.internal`, `computer.internal` (3.3). */
   readonly intercepts: (props: InterceptProps) => readonly InterceptTarget[];
   readonly timing?: ControllerTiming;
@@ -372,6 +381,25 @@ function credentialPrefix(computerId: ComputerId): string {
 function isMissingLayer(error: unknown): boolean {
   const message = describe(error).toLowerCase();
   return message.includes("backup_not_found") || message.includes("not found");
+}
+
+/** An upload retry's wait: resolves after `ms`, or rejects with the signal's reason once it aborts. */
+export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 function isNotRunning(error: unknown): boolean {
@@ -2914,13 +2942,7 @@ export class WorkspaceController {
           let backup: Awaited<ReturnType<ComputerContainerPort["backup"]>>;
           const deadline = this.#d.deadline(this.#t.uploadDeadlineMs);
           try {
-            backup = await port.backup({
-              dir: staged.layerDir,
-              name: c.layerId,
-              prefix: workspaceBackupPrefix(this.#d.computerId),
-              generation: c.generation,
-              signal: deadline.signal,
-            });
+            backup = await this.#upload(port, c, staged.layerDir, deadline.signal);
           } catch (error) {
             this.#log("upload_failed", { generation: c.generation, error: describe(error) });
             await update((_, x) => {
@@ -3005,6 +3027,44 @@ export class WorkspaceController {
       });
       if (isNotRunning(error)) return true;
       return false;
+    }
+  }
+
+  /**
+   * The staged layer's upload, repeated after a transient failure (WP3.22), each time after the
+   * next of `uploadRetryDelaysMs`, all within the one upload deadline. Nothing is persisted between
+   * attempts: an attempt that failed left no object, and only the attempt that returns a record
+   * is recorded, so a layer is never published incomplete or twice. An eviction mid-way re-runs
+   * the upload phase from its first attempt, still bounded by the capture's own deadline. The
+   * upload stops being repeated once its capture is no longer current.
+   */
+  async #upload(
+    port: ComputerContainerPort,
+    c: CaptureRecord,
+    layerDir: string,
+    signal: AbortSignal,
+  ): Promise<Awaited<ReturnType<ComputerContainerPort["backup"]>>> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await port.backup({
+          dir: layerDir,
+          name: c.layerId,
+          prefix: workspaceBackupPrefix(this.#d.computerId),
+          generation: c.generation,
+          signal,
+        });
+      } catch (error) {
+        const delay = this.#t.uploadRetryDelaysMs[attempt];
+        if (delay === undefined || signal.aborted || !isTransientUploadError(error)) throw error;
+        if (this.#load()?.capture?.op !== c.op) throw error;
+        this.#log("upload_retry", {
+          generation: c.generation,
+          attempt: attempt + 1,
+          delayMs: delay,
+          error: describe(error),
+        });
+        await (this.#d.sleep ?? abortableSleep)(delay, signal);
+      }
     }
   }
 

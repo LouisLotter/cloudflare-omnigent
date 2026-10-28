@@ -202,6 +202,15 @@ RUN printf '%s\n' '#!/opt/venv/bin/python -I' \
 
 # Codex settings a restored ~/.codex/config.toml cannot override (design, "Network").
 COPY images/computer/config/codex-managed_config.toml /etc/codex/managed_config.toml
+# Claude Code settings no user or Omnigent settings file can override (managed settings, root's,
+# 0644). `tui` named: while no settings name a renderer, Claude Code 2.1.311 shows its fullscreen
+# upsell ("Try the new fullscreen renderer?") on the first three starts, an interactive dialog that
+# blocked the terminal Omnigent drives (the 27 Oct 2026 staging sitting). "default" keeps the
+# renderer Omnigent's harness was built for. The directory first: COPY --chmod would give the
+# directory it creates the file's mode, which no other user can enter.
+RUN install -d -m 0755 /etc/claude-code
+COPY --chmod=0644 images/computer/config/claude-managed-settings.json \
+     /etc/claude-code/managed-settings.json
 
 # The person's account. Its home holds nothing at first: no CLI, Omnigent or login state.
 RUN useradd --create-home --home-dir /home/omnigent --uid 1000 --shell /bin/bash omnigent \

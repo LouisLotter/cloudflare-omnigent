@@ -63,6 +63,10 @@ export class FakeComputerContainer implements ComputerContainerPort {
   /** The next backup uploads fail; `holdBackups` makes them wait for their abort signal. */
   failBackups = 0;
   holdBackups = false;
+  /** The next backup uploads throw these, in order (after `holdBackups`, before `failBackups`). */
+  backupErrors: unknown[] = [];
+  /** Every backup attempt, by layer name, including the failed ones. */
+  readonly backupAttempts: string[] = [];
   clock: () => number = () => Date.now();
 
   readonly starts: StartRecord[] = [];
@@ -172,6 +176,8 @@ export class FakeComputerContainer implements ComputerContainerPort {
         options.signal?.addEventListener("abort", () => reject(options.signal?.reason));
       });
     }
+    this.backupAttempts.push(options.name);
+    if (this.backupErrors.length > 0) throw this.backupErrors.shift();
     if (this.failBackups > 0) {
       this.failBackups -= 1;
       throw new Error("BACKUP_TRANSFER: a part upload failed");

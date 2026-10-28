@@ -123,6 +123,9 @@ export class ComputerSim {
   /** Deadlines handed out (uploads, commands); `expire` fires them. */
   readonly deadlines: { readonly ms: number; readonly controller: AbortController }[] = [];
 
+  /** The controller's waits (an upload's retry delays): they return at once, unless aborted. */
+  readonly sleeps: number[] = [];
+
   /** Fires every deadline of at least `ms` handed out so far. */
   expire(ms: number): void {
     for (const d of this.deadlines) {
@@ -225,6 +228,10 @@ export class ComputerSim {
         const controller = new AbortController();
         this.deadlines.push({ ms, controller });
         return { signal: controller.signal, clear: () => undefined };
+      },
+      sleep: async (ms, signal) => {
+        this.sleeps.push(ms);
+        signal.throwIfAborted();
       },
       intercepts: (props) => [
         { host: "computer.internal", target: { props } as unknown as Fetcher },

@@ -59,6 +59,13 @@ The accepted design keeps checkpoint buckets private and accessible through Work
 
 ## Verification and incident response
 
-The [canary scanner](../scripts/canary-scan.ts) checks synthetic markers and exact configured values in selected supported inputs. Its existing CI invocation is not a whole-repository/history/image or arbitrary-secret scan; incomplete input fails. Actual checkpoint qualification additionally walks/decompresses every published layer, covers all live token generations and encoded forms, and proves detection with planted values. Those product tests are still pending integration.
+The [canary scanner](../scripts/canary-scan.ts) checks synthetic markers and exact configured values in selected supported inputs. Its existing CI invocation is not a whole-repository/history/image or arbitrary-secret scan; incomplete input fails. Actual checkpoint qualification additionally walks/decompresses every published layer, covers all live token generations and encoded forms, and proves detection with planted values. Those product tests are still pending integration. The computer's opt-in check before each save (`/var/cfo/rc53/enabled`, for staging) scans each staged layer for the live credentials it collects in memory. It collects credentials only:
+- values whose field, header, variable or file name says they are one;
+- bearer tokens;
+- values in a credential format;
+- a credential helper's inline key;
+- the broker's GitHub token.
+
+It never collects identifiers such as session IDs, tool names, server URLs or account IDs, which Omnigent and the CLIs write into files that are meant to be saved. The [collector](../images/computer/cfo_computer/rc53_collect.py) documents the rule and the file formats it was checked against.
 
 Use [security operations](operations/security.md) for provider-side revocation, account-generation invalidation, persistence review and safe evidence collection. A computer wipe or local CLI logout alone does not establish revocation of copied credentials.

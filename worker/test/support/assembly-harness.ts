@@ -9,6 +9,9 @@
  *   - the clock, a day ahead of real time, so an alarm never fires by itself: tests run it;
  *   - a fault seam: the next RPC calls into WorkspaceDO fail with "Network connection lost."
  *     before reaching it, as a reset or a dropped connection would.
+ *   - a part fault seam: the next part uploads the backup gateway admits fail as R2's lost
+ *     connection did on staging (27 Oct 2026), "502 Network connection lost.", and the upload
+ *     retry's delays are shortened (WP3.22).
  * workerd runs this module in the tests' own isolate, so a test and the objects share it.
  */
 import type { ComputerId } from "@cfo/contracts";
@@ -21,6 +24,14 @@ class Assembly {
   readonly #containers = new Map<string, FakeRuntimeContainer>();
   /** RPC calls into WorkspaceDO that fail before reaching it (a lost connection). */
   loseCalls = 0;
+  /** Part uploads the gateway answers with 502 "Network connection lost." after its fence. */
+  failParts = 0;
+  /** Part uploads the gateway received, failed or not. */
+  partsSeen = 0;
+  /** completeUpload calls whose reply is lost after R2 completed the object. */
+  loseCompletions = 0;
+  /** WorkspaceDO's upload retry delays: production's, shortened for the tests' real timers. */
+  readonly uploadRetryDelaysMs: readonly number[] = [5, 10];
 
   now(): number {
     return this.#now;
