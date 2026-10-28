@@ -124,6 +124,12 @@ export const CLOSED_BY_PLATFORM = 4001;
  * window's shell gone (WP3.28). The page says the session on the computer ended.
  */
 export const CLOSED_BY_COMPUTER = 4002;
+/**
+ * 4003: the connection to the computer dropped (this object's shutdown, the container's network),
+ * not ttyd's own close (WP3.28). The shell may still be there: the page reconnects as after any
+ * drop, and the reconnect attaches to it, or learns it ended (4002).
+ */
+export const COMPUTER_LINK_DROPPED = 4003;
 
 export interface TerminalDeps {
   readonly computerId: ComputerId;
@@ -177,8 +183,12 @@ const WindowRecord = z.strictObject({
   until: Millis.nullable(),
   /** The Access session that opened the window: only it may reconnect to the window. */
   sessionId: z.string().max(128).nullable().default(null),
-  /** A stream of this window reached ttyd (WP3.28): every later dial only attaches. */
-  bridged: z.boolean().default(false),
+  /**
+   * A stream of this window reached ttyd (WP3.28): every later dial only attaches. Every window
+   * this code opens says so either way; a record from before it, which may have had a stream,
+   * counts as bridged, so its reconnect never gets a new shell (Codex WP3.28 r1-2).
+   */
+  bridged: z.boolean().default(true),
 });
 type WindowRecord = z.infer<typeof WindowRecord>;
 
@@ -514,37 +524,72 @@ export class TerminalBridge {
       return refuse("generation_changed");
     }
 
-    // The window's stream, still bridged: waiting for this reconnect, or, if its browser stream
-    // still looks attached (half-open), taken over by the new browser (WP3.28). The shell stays.
-    const live = [...this.#sessions].find(
-      (s) => !s.ended && s.window === w.window && s.generation === target.generation,
-    );
-    if (live !== undefined) {
-      this.#takeOver(live);
-      return this.#attach(live, true);
-    }
-    // One client at a time on ttyd: any other stream ends first.
-    for (const s of [...this.#sessions]) this.#end(s, "a newer stream replaced it");
-    let mode: TerminalDialMode = "new";
-    if (w.bridged) {
-      // Never a silent new shell (WP3.28): only the window's own session may answer, and only
-      // while it may still exist: with an older supervisor, whose ttyd ended it with its stream,
-      // or once its end is owed (its stream ended for good), the answer is that it ended.
-      if (target.keepsShells !== true || this.#endOwed(w.window, target.generation)) {
-        return this.#sessionGone(w.window);
+    // Decided, dialled, then decided again before the browser can send anything: ttyd starts its
+    // command (the session wrapper) only on the client's first message, which can only follow
+    // this answer. So a dial whose decision no longer holds (another upgrade for the window
+    // bridged it, ended its stream or replaced it meanwhile) has started nothing on the computer,
+    // and is let go and decided again (Codex WP3.28 r1-1).
+    for (let round = 0; ; round += 1) {
+      const now = this.#window();
+      if (!this.#isOpen(now) || now.window !== cap.window || now.generation !== target.generation) {
+        return refuse("window_closed");
       }
-      mode = "attach";
+      // The window's stream, still bridged: waiting for this reconnect, or, if its browser
+      // stream still looks attached (half-open), taken over by the new browser (WP3.28). The
+      // shell stays.
+      const live = this.#liveSession(now.window, target.generation);
+      if (live !== undefined) {
+        this.#takeOver(live);
+        return this.#attach(live, true);
+      }
+      // One client at a time on ttyd: any other stream ends first.
+      for (const s of [...this.#sessions]) this.#end(s, "a newer stream replaced it");
+      const mode = this.#dialMode(now, target);
+      // Never a silent new shell (WP3.28): only the window's own session may answer, and only
+      // while it may still exist.
+      if (mode === null) return this.#sessionGone(now.window);
+      const session = await this.#dialSession(now.window, target.generation, mode);
+      if (session === null) return refuse("dial_failed");
+      const after = this.#window();
+      if (!this.#isOpen(after) || after.window !== cap.window) {
+        this.#end(session, "its window has closed", { keepShell: true });
+        return refuse("window_closed");
+      }
+      const others = [...this.#sessions].some((s) => s !== session && s.window === after.window);
+      if (
+        others ||
+        after.generation !== target.generation ||
+        this.#dialMode(after, target) !== mode
+      ) {
+        this.#end(session, "another stream changed the window meanwhile", { keepShell: true });
+        if (round >= 2) return refuse("dial_failed");
+        continue;
+      }
+      if (!after.bridged) this.#d.store.put(WINDOW_KEY, { ...after, bridged: true });
+      return this.#attach(session, mode === "attach");
     }
-    const session = await this.#dialSession(w.window, target.generation, mode);
-    if (session === null) return refuse("dial_failed");
-    // Checked again: the window may have closed while ttyd answered.
-    const after = this.#window();
-    if (!this.#isOpen(after) || after.window !== cap.window) {
-      this.#end(session, "its window has closed");
-      return refuse("window_closed");
-    }
-    if (!after.bridged) this.#d.store.put(WINDOW_KEY, { ...after, bridged: true });
-    return this.#attach(session, mode === "attach");
+  }
+
+  /** The window's stream still bridged in this instance, attached or waiting for a reattach. */
+  #liveSession(window: number, generation: number): Session | undefined {
+    return [...this.#sessions].find(
+      (s) => !s.ended && s.window === window && s.generation === generation,
+    );
+  }
+
+  /**
+   * How a stream of window `w` may be dialled now (WP3.28): `new` for its first, `attach` for
+   * any later one, or null when only its own shell may answer and it cannot be there: an older
+   * supervisor's ttyd ended it with its stream, or its end is already owed (its stream ended for
+   * good).
+   */
+  #dialMode(
+    w: WindowRecord,
+    target: Extract<TerminalTarget, { ok: true }>,
+  ): TerminalDialMode | null {
+    if (!w.bridged) return "new";
+    if (target.keepsShells !== true || this.#endOwed(w.window, target.generation)) return null;
+    return "attach";
   }
 
   /**
@@ -610,17 +655,30 @@ export class TerminalBridge {
         };
         this.#sessions.add(session);
         socket.addEventListener("message", (event) => this.#fromComputer(session, event.data));
-        socket.addEventListener("close", (event) =>
-          this.#end(session, "closed by the computer", { byComputer: true, event }),
-        );
-        socket.addEventListener("error", (event) =>
-          this.#end(session, "computer side error", { byComputer: true, event }),
-        );
+        socket.addEventListener("close", (event) => this.#computerClosed(session, event, false));
+        socket.addEventListener("error", (event) => this.#computerClosed(session, event, true));
         return session;
       }
       const wait = this.#t.dialRetryMs[attempt];
       if (wait === undefined) return null;
       await this.#d.sleep(wait);
+    }
+  }
+
+  /**
+   * The computer's side of `session` closed. ttyd's own close (its command ended: the shell
+   * exited, or an `attach` found no session) is a close frame: the session ended, and the browser
+   * is told so (4002). A dropped connection (code 1006, or an error) is not: the shell may still be
+   * there, so it is not ended, and the browser reconnects (4003). Without this, a shutdown of this
+   * object that ran the close callback before it went would owe the shell's end, and the
+   * reconnect it is meant to survive would be refused (Codex WP3.28 r1, question 1).
+   */
+  #computerClosed(session: Session, event: unknown, error: boolean): void {
+    const info = closeInfo(event);
+    if (!error && info.code !== null && info.code !== 1006 && info.clean !== false) {
+      this.#end(session, "closed by the computer", { byComputer: true, event });
+    } else {
+      this.#end(session, "the connection to the computer dropped", { dropped: true, event });
     }
   }
 
@@ -713,6 +771,8 @@ export class TerminalBridge {
     opts: {
       /** The computer's side closed: the browser gets 4002. */
       readonly byComputer?: boolean;
+      /** The connection to the computer dropped: the browser gets 4003, the shell is kept. */
+      readonly dropped?: boolean;
       /** Only the bridge lets go; the shell on the computer is not ended. */
       readonly keepShell?: boolean;
       /** The computer side's close event, for its code. */
@@ -727,7 +787,12 @@ export class TerminalBridge {
     const reason = `terminal closed: ${why}`.slice(0, 120);
     let sent: number | null = null;
     if (session.browser !== null) {
-      sent = opts.byComputer === true ? CLOSED_BY_COMPUTER : CLOSED_BY_PLATFORM;
+      sent =
+        opts.dropped === true
+          ? COMPUTER_LINK_DROPPED
+          : opts.byComputer === true
+            ? CLOSED_BY_COMPUTER
+            : CLOSED_BY_PLATFORM;
       try {
         session.browser.close(sent, reason);
       } catch {
@@ -741,7 +806,9 @@ export class TerminalBridge {
       // already closed
     }
     // The shell on the computer outlives its stream (WP3.28): it is ended explicitly.
-    if (opts.keepShell !== true) this.#recordEnd(session.window, session.generation);
+    if (opts.keepShell !== true && opts.dropped !== true) {
+      this.#recordEnd(session.window, session.generation);
+    }
     const computer = closeInfo(opts.event);
     this.#d.log("terminal_stream_ended", {
       window: session.window,

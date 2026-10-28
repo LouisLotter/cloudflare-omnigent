@@ -108,10 +108,14 @@ export class FakeTtyd {
   dials = 0;
   /** Throws on dial, as a dropped container connection does. */
   fail = false;
+  /** Each dial waits for the next of these first, while any are left (overlapping upgrades). */
+  readonly holds: Promise<void>[] = [];
 
   dial = async (mode = "new", window = 0): Promise<Response> => {
     this.dials += 1;
     this.dialled.push({ mode, window });
+    const hold = this.holds.shift();
+    if (hold !== undefined) await hold;
     if (this.fail) throw new Error("Network connection lost.");
     if (this.busy > 0) {
       this.busy -= 1;
