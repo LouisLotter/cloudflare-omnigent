@@ -409,8 +409,9 @@ export async function runBootstrap(
           cookie,
         )
       : preview;
-    if (lacksR2 && !makesToken && ctx.r2Tokens !== undefined && !holdsR2(present)) {
-      // The installer's own values replace a token made earlier, whose value is gone.
+    if (lacksR2 && !makesToken && ctx.r2Tokens !== undefined && !holdsWholePair(present)) {
+      // The installer's own values replace every pair a token made earlier could still be in
+      // (an incomplete pair is replaced whole), so that token is unused (Codex WP3.25 r3-4).
       const left = retireR2Token(tokenContext(ctx.r2Tokens));
       if (left.length > 0) ctx.log(manualDeletion(left));
     }
@@ -515,13 +516,6 @@ function r2SecretNames(plan: Installation): string[] {
   ];
 }
 
-const R2_SECRET_NAMES = [
-  REPLICA_KEY_ID_SECRET,
-  REPLICA_SECRET_KEY_SECRET,
-  ARTIFACTS_KEY_ID_SECRET,
-  ARTIFACTS_SECRET_KEY_SECRET,
-];
-
 /** Whether the installer gave R2 values; the artifacts' default to the replica's. */
 function suppliesR2(plan: Installation, given: SuppliedSecrets): boolean {
   const has = (value: string | undefined) => value !== undefined && value !== "";
@@ -542,8 +536,16 @@ function r2Supplied(pair: S3Credentials): SuppliedSecrets {
 
 const STAND_IN_PAIR: S3Credentials = { accessKeyId: "stand-in", secretAccessKey: "stand-in" };
 
-function holdsR2(present: ReadonlySet<string>): boolean {
-  return R2_SECRET_NAMES.some((name) => present.has(name));
+/** The pairs the Worker holds whole: secretsToAdd keeps them; any other pair is replaced. */
+function wholePairs(present: ReadonlySet<string>): string[][] {
+  return [
+    [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET],
+    [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET],
+  ].filter((pair) => pair.every((name) => present.has(name)));
+}
+
+function holdsWholePair(present: ReadonlySet<string>): boolean {
+  return wholePairs(present).length > 0;
 }
 
 /**
@@ -557,9 +559,10 @@ async function r2Credentials(
   present: ReadonlySet<string>,
 ): Promise<S3Credentials> {
   const plan = tokens.plan;
-  // A pair still held may come from the installation's token, which a new token would not
-  // replace: two tokens would be in use. Only supplied values can complete the Worker then.
-  const held = R2_SECRET_NAMES.filter((name) => present.has(name));
+  // A whole pair still held may come from the installation's token, which a new token would not
+  // replace: two tokens would be in use. Only supplied values can complete the Worker then. An
+  // incomplete pair is useless, and the new token's pair replaces it whole (Codex WP3.25 r3-4).
+  const held = wholePairs(present).flat();
   if (held.length > 0) {
     throw new BootstrapRefusal(
       `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs, so the bootstrap will not make a second token; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey"): they replace each incomplete pair whole, and a complete pair is kept`,

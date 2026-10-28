@@ -19,7 +19,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
 import type { BootstrapState, Journal, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
@@ -32,6 +32,23 @@ export function installationsDir(env: NodeJS.ProcessEnv = process.env): string {
 
 export function statePathFor(platformWorker: string, dir: string = installationsDir()): string {
   return join(dir, `${platformWorker}.json`);
+}
+
+/**
+ * Why a state file may not be used at this path, or undefined. A staging installation's lives
+ * only at its default path, where the staging tool's teardown and sweep look for its R2 tokens:
+ * a login that may not list tokens leaves no other way to find them (Codex WP3.25 r3-5).
+ */
+export function stagingStateProblem(
+  plan: Pick<Installation, "platformWorker" | "target">,
+  path: string,
+  dir: string = installationsDir(),
+): string | undefined {
+  if (plan.target.kind !== "staging") return undefined;
+  const expected = statePathFor(plan.platformWorker, dir);
+  return resolve(path) === resolve(expected)
+    ? undefined
+    : `a staging installation's state file lives at ${expected}, where the staging tool finds its R2 tokens; leave out --state`;
 }
 
 /**
@@ -214,8 +231,10 @@ function parseJournal(value: unknown): Journal {
       const t = object(entry, "journal.r2TokensToDelete entry");
       const token: Record<string, string> = { name: str(t, "name", "journal.r2TokensToDelete") };
       if (t.id !== undefined) token.id = str(t, "id", "journal.r2TokensToDelete");
-      const expiresOn = optionalTime(t, "expiresOn", "journal.r2TokensToDelete");
-      if (expiresOn !== undefined) token.expiresOn = expiresOn;
+      for (const key of ["expiresOn", "createStartedAt"] as const) {
+        const time = optionalTime(t, key, "journal.r2TokensToDelete");
+        if (time !== undefined) token[key] = time;
+      }
       return token;
     });
   }

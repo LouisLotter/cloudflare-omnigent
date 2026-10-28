@@ -38,13 +38,27 @@ function recordedTokens(state: BootstrapState): LeftToken[] {
   return [...(state.journal.r2TokensToDelete ?? []), ...(current ? [leftOf(current)] : [])];
 }
 
-/** The state with no current token, and `left` as the tokens still to delete. */
+/**
+ * The state after a deletion: the current token stays current while it exists (a refused
+ * delete must not weaken the guard on a token a Worker may use, Codex WP3.25 r3-1); the rest of
+ * `left` stays to delete.
+ */
 function withTokensLeft(state: BootstrapState, left: readonly LeftToken[]): BootstrapState {
-  const { r2Token: _current, r2TokensToDelete: _left, ...journal } = state.journal;
+  const { r2Token: current, r2TokensToDelete: _left, ...journal } = state.journal;
+  const stays = current !== undefined && left.some((t) => sameToken(t, current));
+  const rest = left.filter((t) => current === undefined || !sameToken(t, current));
   return {
     ...state,
-    journal: { ...journal, ...(left.length > 0 ? { r2TokensToDelete: left } : {}) },
+    journal: {
+      ...journal,
+      ...(stays && current !== undefined ? { r2Token: current } : {}),
+      ...(rest.length > 0 ? { r2TokensToDelete: rest } : {}),
+    },
   };
+}
+
+function sameToken(t: LeftToken, current: { readonly name: string; readonly id?: string }) {
+  return t.id !== undefined ? t.id === current.id : t.name === current.name;
 }
 
 export interface RemoveTokenOptions {
@@ -57,13 +71,16 @@ export interface RemoveTokenOptions {
   readonly workerExists: () => boolean;
   /** Remove the current token even so (the installer said --yes). */
   readonly force: boolean;
+  readonly now: () => number;
   readonly log: (message: string) => void;
 }
 
 export interface Removal {
   readonly deleted: number;
-  /** Tokens the person still has to delete, named in the output. */
+  /** Tokens the person still has to delete, named in the output; they stay recorded. */
   readonly left: readonly LeftToken[];
+  /** Creates never answered, named "if it exists" once, and then no longer recorded. */
+  readonly unconfirmed: readonly LeftToken[];
 }
 
 /** Deletes the installation's R2 tokens: the current one and any left to delete. */
@@ -73,7 +90,7 @@ export function removeInstallationToken(options: RemoveTokenOptions): Removal {
   const tokens = recordedTokens(state);
   if (tokens.length === 0) {
     options.log("no R2 token recorded for this installation: nothing to delete");
-    return { deleted: 0, left: [] };
+    return { deleted: 0, left: [], unconfirmed: [] };
   }
   // A Worker that may still use a token: the current one is refused, and no token is sought by
   // its name, which might be the one in use.
@@ -85,15 +102,18 @@ export function removeInstallationToken(options: RemoveTokenOptions): Removal {
   }
   // Otherwise also any token of the installation's name that a lost answer left unrecorded,
   // where the login may list tokens.
+  const now = options.now();
   const result = deleteTokens(
     options.api,
     tokens,
-    workerThere ? {} : { also: (t) => isR2TokenName(plan, t.name) },
+    workerThere ? { now } : { now, also: (t) => isR2TokenName(plan, t.name) },
   );
+  // A create never answered that nothing can check is named once, here, and then forgotten.
   options.store.save(withTokensLeft(options.store.load(), result.left));
   for (const t of result.deleted) options.log(`deleted the R2 token ${t.name}`);
-  if (result.left.length > 0) options.log(manualDeletion(result.left));
-  return { deleted: result.deleted.length, left: result.left };
+  const named = [...result.left, ...result.unconfirmed];
+  if (named.length > 0) options.log(manualDeletion(named));
+  return { deleted: result.deleted.length, left: result.left, unconfirmed: result.unconfirmed };
 }
 
 /**
@@ -112,7 +132,7 @@ export function withInstallationLocks<T>(store: StateStore, holder: string, use:
   }
 }
 
-const STAGING_TOKEN = /^(cfo-stg-[a-z0-9-]+)-r2--(ins_[0-9a-z]{26})--\d{8}T\d{6}Z$/;
+const STAGING_TOKEN = /^(cfo-stg-[a-z0-9-]+)-r2--(ins_[0-9a-z]{26})--\d{8}T\d{6}Z(-\d+)?$/;
 
 /**
  * The staging deployment a listed token is named for, when it is a staging installation's R2
@@ -157,6 +177,7 @@ export interface StagingTokenOptions {
   readonly log: (message: string) => void;
   /** The bootstrap state files to look in. */
   readonly stateFiles: () => readonly string[];
+  readonly now: () => number;
 }
 
 export interface StagingTokenResult {
@@ -254,6 +275,7 @@ export function removeStagingTokens(
       if (!gone(deployment)) continue;
       const fresh = stagingStates(options, problems).get(deployment);
       const result = deleteTokens(options.api, fresh ? recordedTokens(fresh.state) : [], {
+        now: options.now(),
         also: (t) => stagingTokenDeployment(t, options.accountId) === deployment,
       });
       if (fresh !== undefined) {
@@ -262,10 +284,11 @@ export function removeStagingTokens(
       }
       deleted += result.deleted.length;
       for (const t of result.deleted) options.log(`${deployment}: deleted the R2 token ${t.name}`);
-      if (result.left.length > 0) {
-        left.push(...result.left);
-        options.log(`${deployment}: ${manualDeletion(result.left)}`);
-      }
+      // A create never answered that nothing can check is named once and forgotten: a
+      // staging token expires on its own.
+      const named = [...result.left, ...result.unconfirmed];
+      if (result.left.length > 0) left.push(...result.left);
+      if (named.length > 0) options.log(`${deployment}: ${manualDeletion(named)}`);
     } catch (error) {
       problems.push(`${deployment}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {

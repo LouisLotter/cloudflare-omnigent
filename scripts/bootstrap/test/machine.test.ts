@@ -1000,6 +1000,80 @@ describe("runBootstrap: the R2 token (WP3.25)", () => {
     expectNoTokenSecret(h);
   });
 
+  it("a retry within the same second: the new token is named apart, and never named to delete (Codex r3-3)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    expect(await h.run()).toEqual({ kind: "done" });
+    const current = String(h.store.state.journal.r2Token?.name);
+    expect(current).toBe(`cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z-2`);
+    const steps = h.lines.filter((l) => DELETE_STEP.test(l));
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).not.toContain(current);
+    expectAccounted(h);
+  });
+
+  it("supplied values for a Worker holding only half a pair retire the token made earlier (Codex r3-4)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    // The first deploy left only the replica's access key ID of the first token.
+    h.world.dropOnDeploy = [
+      REPLICA_SECRET_KEY_SECRET,
+      ARTIFACTS_KEY_ID_SECRET,
+      ARTIFACTS_SECRET_KEY_SECRET,
+    ];
+    await expect(h.run()).rejects.toThrow("lacks");
+    h.world.dropOnDeploy = [];
+    const [first] = tokensOf(h);
+    const ctx = {
+      cloud: h.world.cloud(),
+      store: h.store,
+      baseConfigs: BASE,
+      secrets: () => ({
+        ownerPassword: OWNER_PASSWORD,
+        replicaAccessKeyId: REPLICA_KEY_ID,
+        replicaSecretAccessKey: REPLICA_SECRET,
+      }),
+      r2Tokens: h.world.tokenApi(),
+      random: (n: number) => new Uint8Array(n).fill(0xab),
+      now: () => h.world.now,
+      sleep: async (ms: number) => {
+        h.world.now += Math.max(0, ms);
+      },
+      log: (line: string) => h.lines.push(line),
+    };
+    const { platformDeployedAt: _deployed, ...journal } = h.store.state.journal;
+    h.store.state = { ...h.store.state, journal };
+    expect(await runBootstrap(ctx, OPTIONS)).toEqual({ kind: "done" });
+    // Both pairs are the supplied values; the first token is no longer current.
+    const secrets = h.world.secretsOf(plan.platformWorker);
+    expect(secrets?.get(REPLICA_KEY_ID_SECRET)).toBe(REPLICA_KEY_ID);
+    expect(secrets?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(REPLICA_KEY_ID);
+    expect(h.store.state.journal.r2Token).toBeUndefined();
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      { name: first?.token.name, id: first?.token.id },
+    ]);
+  });
+
+  it("a Worker holding only half a pair gets a new token: the half is replaced whole (Codex r3-4)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.dropOnDeploy = [
+      REPLICA_SECRET_KEY_SECRET,
+      ARTIFACTS_KEY_ID_SECRET,
+      ARTIFACTS_SECRET_KEY_SECRET,
+    ];
+    await expect(h.run()).rejects.toThrow("lacks");
+    h.world.dropOnDeploy = [];
+    h.world.now += 60_000;
+    const { platformDeployedAt: _deployed, ...journal } = h.store.state.journal;
+    h.store.state = { ...h.store.state, journal };
+    expect(await h.run()).toEqual({ kind: "done" });
+    expectAccounted(h);
+    expect(h.store.state.journal.r2TokensToDelete).toHaveLength(1);
+  });
+
   it("deletes the old token itself where the login may (API Tokens Write)", async () => {
     const plan = await accountPlan();
     const h = harness(plan, freshState(plan), TOKENS);
@@ -1026,7 +1100,10 @@ describe("runBootstrap: the R2 token (WP3.25)", () => {
     h.world.now += 300_000;
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.store.state.journal.r2TokensToDelete).toEqual([
-      { name: `cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z` },
+      {
+        name: `cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z`,
+        createStartedAt: "2026-10-22T12:00:00.000Z",
+      },
     ]);
     expect(h.lines).toContainEqual(
       expect.stringContaining(

@@ -13,7 +13,8 @@
 // token; send a request to the installation's hostname; create a Worker by a secret change;
 // delete or empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the
 // plan, and the installation's own R2 user API tokens (r2-token.ts, through `cf user tokens`),
-// which it also deletes where Cloudflare allows; it never touches another token. A token's value comes back on
+// which it also deletes where Cloudflare allows, and reads by ID to see whether a person has
+// deleted one; it never touches another token. A token's value comes back on
 // cf's captured stdout and never leaves this process except as the Worker's secrets, on
 // descriptor 3. The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`),
 // which fails for a missing Worker, where `wrangler secret bulk` would create a draft one.
@@ -308,6 +309,19 @@ export function cfTokenApi(run: Runner): TokenApi {
         throw new Error("cf user tokens create answered without the token's ID and value");
       }
       return { id, value };
+    },
+    get: (id) => {
+      const args = ["user", "tokens", "get", id];
+      const result = run("cf", args, { inherit: false });
+      if (result.status !== 0 && tokenMissing(result)) return undefined;
+      if (result.status !== 0 && forbidden(result)) {
+        throw new TokensUnavailable(
+          "Cloudflare refused `cf user tokens get` (403): this cf login cannot read API tokens",
+        );
+      }
+      const token = apiTokenOf(cfAnswer(result, args));
+      if (token === undefined) throw new Error("cf user tokens get answered without a token");
+      return token;
     },
     remove: (id) => {
       const args = ["user", "tokens", "delete", id, "--force"];

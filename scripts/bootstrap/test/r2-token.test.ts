@@ -17,6 +17,7 @@ import {
   r2TokenResources,
   retireR2Token,
   s3Credentials,
+  TOKEN_SETTLE_MS,
   TokensUnavailable,
 } from "../r2-token.ts";
 import type { Installation } from "../settings.ts";
@@ -53,9 +54,16 @@ describe("the R2 token's shape", () => {
     ]) {
       expect(isR2TokenName(plan, other)).toBe(false);
     }
+    // A recorded name is never given again (a retry within the second, a clock set back).
+    const taken = new Set([name, `${name}-2`]);
+    expect(r2TokenName(plan, NOW, taken)).toBe(`${name}-3`);
+    expect(isR2TokenName(plan, `${name}-3`)).toBe(true);
+    expect(isR2TokenName(plan, `${name}-x`)).toBe(false);
     // At most 120 characters, Cloudflare's limit, for the longest Worker name.
     const longest = await accountPlan({ platformWorker: "a".repeat(63) });
-    expect(r2TokenName(longest, NOW).length).toBeLessThanOrEqual(120);
+    expect(
+      r2TokenName(longest, NOW, new Set([r2TokenName(longest, NOW)])).length,
+    ).toBeLessThanOrEqual(120);
   });
 
   it("covers exactly the installation's two buckets", async () => {
@@ -130,11 +138,37 @@ describe("deleteTokens: what the login may delete, and what it may not", () => {
     const { w, token } = await world(true);
     const id = token("a");
     const tokens: LeftToken[] = [{ name: "a", id }, { name: "b" }];
-    expect(deleteTokens(w.tokenApi(), tokens)).toEqual({
+    expect(deleteTokens(w.tokenApi(), tokens, { now: NOW })).toEqual({
       deleted: [],
-      left: [tokens[1], tokens[0]],
+      left: [tokens[0]],
+      unconfirmed: [tokens[1]],
     });
     expect(w.tokens.size).toBe(1);
+  });
+
+  it("an OAuth login: a token the person deleted by hand reads as gone (Codex r3, question)", async () => {
+    const { w, token } = await world(true);
+    const id = token("a");
+    w.tokens.delete(id);
+    expect(deleteTokens(w.tokenApi(), [{ name: "a", id }], { now: NOW })).toEqual({
+      deleted: [{ name: "a", id }],
+      left: [],
+      unconfirmed: [],
+    });
+    // A login that may not even read it keeps it.
+    w.tokensForbidden = true;
+    expect(deleteTokens(w.tokenApi(), [{ name: "a", id }], { now: NOW }).left).toEqual([
+      { name: "a", id },
+    ]);
+  });
+
+  it("keeps an unanswered create not listed yet until the settle time has passed (Codex r3-2)", async () => {
+    const { w } = await world(false);
+    const pending = { name: "p", createStartedAt: new Date(NOW).toISOString() };
+    expect(deleteTokens(w.tokenApi(), [pending], { now: NOW + 1_000 }).left).toEqual([pending]);
+    expect(deleteTokens(w.tokenApi(), [pending], { now: NOW + TOKEN_SETTLE_MS }).left).toEqual([]);
+    // With no time recorded, it is kept: nothing says it has settled.
+    expect(deleteTokens(w.tokenApi(), [{ name: "p" }], { now: NOW }).left).toEqual([{ name: "p" }]);
   });
 
   it("a login with API Tokens Write: deletes by ID, finds an unanswered create by name, and drops one never made", async () => {
@@ -145,8 +179,13 @@ describe("deleteTokens: what the login may delete, and what it may not", () => {
     token("someone-else");
     const result = deleteTokens(
       w.tokenApi(),
-      [{ name: "a", id: a }, { name: "b" }, { name: "never-made" }, { name: "gone", id: "x" }],
-      { also: (t) => isR2TokenName(plan, t.name) },
+      [
+        { name: "a", id: a },
+        { name: "b" },
+        { name: "never-made", createStartedAt: new Date(NOW - TOKEN_SETTLE_MS).toISOString() },
+        { name: "gone", id: "x" },
+      ],
+      { now: NOW, also: (t) => isR2TokenName(plan, t.name) },
     );
     expect(result.left).toEqual([]);
     expect(result.deleted.map((t) => t.id)).toEqual([a, b, "x", stray]);
@@ -161,14 +200,26 @@ describe("deleteTokens: what the login may delete, and what it may not", () => {
         throw new Error("network down");
       },
     };
-    expect(() => deleteTokens(api, [{ name: "a", id: "i" }])).toThrow("network down");
+    expect(() => deleteTokens(api, [{ name: "a", id: "i" }], { now: NOW })).toThrow("network down");
     const listing = {
       ...w.tokenApi(),
       list: () => {
         throw new Error("network down");
       },
     };
-    expect(() => deleteTokens(listing, [{ name: "a" }])).toThrow("network down");
+    expect(() => deleteTokens(listing, [{ name: "a" }], { now: NOW })).toThrow("network down");
+    const reading = {
+      ...w.tokenApi(),
+      remove: () => {
+        throw new TokensUnavailable("403");
+      },
+      get: () => {
+        throw new Error("network down");
+      },
+    };
+    expect(() => deleteTokens(reading, [{ name: "a", id: "i" }], { now: NOW })).toThrow(
+      "network down",
+    );
   });
 });
 
@@ -214,6 +265,17 @@ describe("makeR2Token and retireR2Token", () => {
     const id = s.state().current?.id;
     expect(retireR2Token(s.ctx)).toEqual([{ name: s.state().left[0]?.name, id }]);
     expect(s.state().current).toBeUndefined();
+  });
+
+  it("never gives a new token the name of one recorded to delete (Codex r3-3)", async () => {
+    const s = await setup();
+    makeR2Token(s.ctx);
+    const first = s.state().current?.name;
+    // A retry in the same second: the first is retired, the new one named apart.
+    const made = makeR2Token(s.ctx);
+    expect(s.state().left.map((t) => t.name)).toEqual([first]);
+    expect(s.state().current?.name).toBe(`${first}-2`);
+    expect(made.left.map((t) => t.name)).not.toContain(s.state().current?.name);
   });
 
   it("a refused create leaves no intent; a lost answer leaves it", async () => {

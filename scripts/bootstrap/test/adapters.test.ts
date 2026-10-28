@@ -198,6 +198,31 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     expectNoValue(fake.calls);
   });
 
+  it("reads one token by its ID: the token, gone (404), or refused (403)", () => {
+    const answers: Partial<CommandResult>[] = [
+      { stdout: JSON.stringify({ id: ID, name: "n", status: "active", policies: [] }) },
+      {
+        status: 1,
+        stderr: "┌ APIError\n│ [1003] token not found\n│ 404 Not Found · HTTP /user/tokens/x\n└",
+      },
+      { status: 1, stderr: "│ [9109] Unauthorized\n│ 403 Forbidden · HTTP /user/tokens/x" },
+      { stdout: JSON.stringify({ name: "no id" }) },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfTokenApi(fake.runner);
+    expect(api.get(ID)).toEqual({
+      id: ID,
+      name: "n",
+      status: "active",
+      ipLimited: false,
+      policies: [],
+    });
+    expect(api.get(ID)).toBeUndefined();
+    expect(() => api.get(ID)).toThrow(TokensUnavailable);
+    expect(() => api.get(ID)).toThrow("cf user tokens get answered without a token");
+    expect(fake.calls[0]?.args).toEqual(["user", "tokens", "get", ID]);
+  });
+
   it("an OAuth login's answers, as cf printed them on 28 Oct: 403 on list and delete", () => {
     const forbiddenAt = (path: string) =>
       `┌ APIError\n│ [9109] Unauthorized to access requested resource\n│ 403 Forbidden · HTTP ${path}\n└\n → Check your API token permissions`;

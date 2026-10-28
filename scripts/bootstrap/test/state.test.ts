@@ -9,6 +9,7 @@ import {
   locksDir,
   parseState,
   resourceLockPaths,
+  stagingStateProblem,
   statePathFor,
   writeAtomic,
 } from "../state.ts";
@@ -261,6 +262,24 @@ describe("the state file", () => {
         message,
       );
     }
+  });
+
+  it("keeps a staging installation's state where the staging tool finds it (Codex WP3.25 r3-5)", async () => {
+    const staging = await stagingPlan();
+    const home = join(dir, "installations");
+    expect(stagingStateProblem(staging, join(home, "cfo-stg-wp24-platform.json"), home)).toBe(
+      undefined,
+    );
+    expect(stagingStateProblem(staging, join(home, ".", "cfo-stg-wp24-platform.json"), home)).toBe(
+      undefined,
+    );
+    expect(stagingStateProblem(staging, join(dir, "elsewhere.json"), home)).toBe(
+      `a staging installation's state file lives at ${join(home, "cfo-stg-wp24-platform.json")}, where the staging tool finds its R2 tokens; leave out --state`,
+    );
+    // An installation in the installer's own account may keep it anywhere.
+    expect(stagingStateProblem(await accountPlan(), join(dir, "elsewhere.json"), home)).toBe(
+      undefined,
+    );
   });
 
   it("lives outside the repository, by platform Worker", () => {

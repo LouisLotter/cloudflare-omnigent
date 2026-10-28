@@ -78,6 +78,7 @@ describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
       api: world.tokenApi(),
       workerExists: () => true,
       force: false,
+      now: () => AT + 3_600_000,
       log: (line: string) => lines.push(line),
     };
   }
@@ -91,12 +92,20 @@ describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
       /a Worker named cloudflare-omnigent still exists, .* or pass --yes to cut it off now/,
     );
     expect(world.tokens.size).toBe(2);
-    expect(removeInstallationToken({ ...base, force: true })).toEqual({ deleted: 2, left: [] });
+    expect(removeInstallationToken({ ...base, force: true })).toEqual({
+      deleted: 2,
+      left: [],
+      unconfirmed: [],
+    });
     expect(world.tokens.size).toBe(0);
     expect(store.state.journal.r2Token).toBeUndefined();
     expect(store.state.journal.r2TokensToDelete).toBeUndefined();
     expect(store.state.journal.platformDeployedAt).toBe("2026-10-28T12:00:00.000Z");
-    expect(removeInstallationToken({ ...base, force: true })).toEqual({ deleted: 0, left: [] });
+    expect(removeInstallationToken({ ...base, force: true })).toEqual({
+      deleted: 0,
+      left: [],
+      unconfirmed: [],
+    });
     expect(lines.at(-1)).toBe("no R2 token recorded for this installation: nothing to delete");
   });
 
@@ -109,19 +118,40 @@ describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
     expect(result.deleted).toBe(0);
     expect(result.left.map((t) => t.id)).toEqual([old, id]);
     expect(world.tokens.size).toBe(2);
-    expect(store.state.journal.r2Token).toBeUndefined();
-    expect(store.state.journal.r2TokensToDelete).toEqual(result.left);
+    // The current token stays current: a later removal still guards it (Codex r3-1).
+    expect(store.state.journal.r2Token).toEqual(state.journal.r2Token);
+    expect(store.state.journal.r2TokensToDelete).toEqual([result.left[0]]);
     expect(lines).toEqual([expect.stringMatching(DELETE_STEP)]);
     expect(lines[0]).toContain(
       `each of the tokens named exactly ${r2TokenName(plan, AT - 60_000)}; ${r2TokenName(plan, AT)} by hand`,
     );
-    // Once the person deleted them, a later run finds them gone.
-    world.oauthLogin = false;
+    expect(() => removeInstallationToken(options(store, world, lines))).toThrow(
+      /still exists, .* pass --yes/,
+    );
+    // Once the person deleted them by hand, the same OAuth login reads them as gone.
     world.tokens.clear();
     expect(removeInstallationToken({ ...options(store, world, lines), force: true })).toEqual({
       deleted: 2,
       left: [],
+      unconfirmed: [],
     });
+    expect(store.state.journal.r2Token).toBeUndefined();
+    expect(store.state.journal.r2TokensToDelete).toBeUndefined();
+  });
+
+  it("names a create never answered once, if it exists, and then forgets it (OAuth)", async () => {
+    const plan = await accountPlan();
+    const world = new FakeWorld(plan);
+    const pending = { name: r2TokenName(plan, AT), createStartedAt: "2026-10-28T12:00:00.000Z" };
+    const store = new MemoryStore({
+      stateVersion: 1,
+      installation: plan,
+      journal: { r2TokensToDelete: [pending] },
+    });
+    const lines: string[] = [];
+    const result = removeInstallationToken({ ...options(store, world, lines), force: true });
+    expect(result).toEqual({ deleted: 0, left: [], unconfirmed: [pending] });
+    expect(lines[0]).toContain(`${pending.name} if it exists (its create was never answered)`);
     expect(store.state.journal.r2TokensToDelete).toBeUndefined();
   });
 
@@ -184,6 +214,7 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
       apply: true,
       log: (line: string) => lines.push(line),
       stateFiles: () => installationStateFiles(join(dir, "installations")),
+      now: () => AT + 3_600_000,
     };
     const gone = (d: string) => !registry.includes(d);
     return { plan, world, id, old, lines, statePath, options, gone };
@@ -219,7 +250,8 @@ describe("removeStagingTokens: the staging tool's teardown and sweep", () => {
     const result = removeStagingTokens(s.gone, s.options);
     expect(result.deleted).toBe(0);
     expect(result.left.map((t) => t.id)).toEqual([s.old, s.id]);
-    expect(store.load().journal.r2TokensToDelete).toEqual(result.left);
+    expect(store.load().journal.r2TokensToDelete).toEqual([result.left[0]]);
+    expect(store.load().journal.r2Token?.id).toBe(s.id);
     expect(s.lines).toEqual([
       expect.stringMatching(
         /^cfo-stg-wp24-platform: Cloudflare does not let this cf login delete API tokens/,

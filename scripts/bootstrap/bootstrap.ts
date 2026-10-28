@@ -54,8 +54,10 @@
 // the same itself. `remove-r2-token` deletes the installation's R2 tokens, a step of removing
 // the installation: it refuses while a Worker with the platform Worker's name exists unless
 // --yes. cf's OAuth login may make API tokens but not delete them (403): then it names each
-// token to delete, with the one link and click, and exits 1. The staging tool's teardown and
-// sweep do the same for a staging installation's tokens.
+// token to delete, with the one link and click, and exits 1; run again once they are deleted,
+// it reads each by its ID and finds them gone. The staging tool's teardown and sweep do the
+// same for a staging installation's tokens, whose state file therefore stays at its default
+// path (--state is refused for one).
 //
 // Afterwards the owner signs in to Omnigent at https://<host> with that username and password
 // (behind Access), and should change the password there.
@@ -99,7 +101,7 @@ import {
   usernameProblem,
 } from "./settings.ts";
 import { stagingCloud } from "./staging.ts";
-import { fileStateStore, resourceLockPaths, statePathFor } from "./state.ts";
+import { fileStateStore, resourceLockPaths, stagingStateProblem, statePathFor } from "./state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -196,6 +198,8 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
   const problems = installationProblems(installation);
   if (problems.length > 0) throw new Error(problems.join("; "));
   const path = text("state") ?? statePathFor(platformWorker);
+  const misplaced = stagingStateProblem(installation, path);
+  if (misplaced !== undefined) throw new Error(misplaced);
   if (existsSync(path)) {
     throw new Error(
       `${path} exists: this installation is planned already; run it, or remove the file by hand`,
@@ -318,6 +322,8 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       releases.push(acquireLock(lock, 0, holder));
     }
     const installation = store.load().installation;
+    const misplaced = stagingStateProblem(installation, path);
+    if (misplaced !== undefined) throw new BootstrapRefusal(misplaced);
     const runner = spawnRunner(installation.accountId);
     // The first deploy needs the plan's buckets, which the R2 token covers (G2-DUR-001): created
     // here when missing; a staging installation's come from the staging tool.
@@ -421,6 +427,7 @@ function removeToken(path: string, yes: boolean): number {
         // its traffic) may well be this installation's (Codex WP3.25 r1-2).
         workerExists: () => workerInstallation(runner, plan.platformWorker).exists,
         force: yes,
+        now: () => Date.now(),
         log: (message) => console.log(`bootstrap: ${message}`),
       });
       // Not finished while a token is left for the person to delete (named above).

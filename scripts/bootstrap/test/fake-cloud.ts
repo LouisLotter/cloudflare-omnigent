@@ -315,6 +315,8 @@ export class FakeWorld {
           return R2_GROUP_ID;
         }),
       list: () => call("tokenList", () => [...this.tokens.values()].map((t) => t.token)),
+      // An OAuth login may read a token by its ID (28 Oct): 404 once it is gone.
+      get: (id) => call("tokenGet", () => this.tokens.get(id)?.token),
       create: (request) =>
         call("tokenCreate", () => {
           const id = this.#tokenId();
