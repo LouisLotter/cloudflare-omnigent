@@ -98,6 +98,10 @@ class FakeWorkspace:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
+        # As the CommandServer does (server.py): an accept whose connection is gone by then
+        # fails instead of blocking, so ``shutdown`` cannot wait for ever (CI's hang, WP3.26).
+        self.server.socket.setblocking(False)
+        self.listening = listening_identity(self.server)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/messages"
 
@@ -126,8 +130,30 @@ class FakeWorkspace:
             return [m for m in self.messages if m["type"] == kind]
 
     def close(self) -> None:
+        moved = listening_moved(self.server, self.listening)
         self.server.shutdown()
         self.server.server_close()
+        assert moved is None, f"the test workspace's {moved}"
+
+
+def listening_identity(server: Any) -> tuple[int, int]:
+    """The listening socket's (device, inode): unique to that socket while it is open."""
+    st = os.fstat(server.fileno())
+    return st.st_dev, st.st_ino
+
+
+def listening_moved(server: Any, identity: tuple[int, int]) -> str | None:
+    """Why the server's descriptor number no longer holds its own listening socket (closed, or
+    reused by something else: some code closed a number it did not own), or None. CI hung once
+    with a server blocked in accept, which fits exactly that (WP3.26); this names it at the
+    test where it happens."""
+    try:
+        now = listening_identity(server)
+    except OSError:
+        return f"listening descriptor {server.fileno()} was closed under the server"
+    if now != identity:
+        return f"listening descriptor {server.fileno()} now holds another file"
+    return None
 
 
 def newer(candidate: dict[str, Any], current: dict[str, Any] | None) -> bool:
@@ -182,6 +208,7 @@ class Rig:
             **kwargs,
         )
         self.server = CommandServer(("127.0.0.1", 0), self.sup)
+        self.listening = listening_identity(self.server)
         self.server.start_in_thread()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/commands"
 
@@ -276,9 +303,11 @@ class Rig:
         return json.loads((self.layout.log / f"capture-{op}.result.json").read_text())
 
     def close(self) -> None:
+        moved = listening_moved(self.server, self.listening)
         self.sup.stop()
         self.server.shutdown()
         self.server.server_close()
+        assert moved is None, f"the command server's {moved}"
 
 
 def layer_record(job: dict[str, Any], index: dict[str, Any]) -> dict[str, Any]:

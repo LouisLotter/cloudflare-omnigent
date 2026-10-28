@@ -9,6 +9,7 @@ before any effect.
 from __future__ import annotations
 
 import json
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -142,5 +143,27 @@ def test_the_command_port_binds_whatever_the_hostname(tmp_path: Path, monkeypatc
         assert isinstance(rig.server, CommandServer)
         assert rig.server.server_name == "127.0.0.1"
         rig.boot()  # a restore and an install, answered through that port
+    finally:
+        rig.close()
+
+
+def test_an_accept_with_nothing_waiting_never_blocks_the_command_server(tmp_path: Path) -> None:
+    """WP3.26. ``serve_forever`` accepts only after a poll says a connection waits. If it is gone
+    by then (another acceptor of the socket, or its descriptor number reused under the server),
+    the accept fails and the loop goes on: a blocking accept would wait for the next connection,
+    and ``shutdown`` for ever (CI's hang, in the test workspace's server). Accepted connections
+    still block normally."""
+    rig = Rig(tmp_path / "a")
+    try:
+        assert rig.server.socket.getblocking() is False
+        handled = threading.Event()
+
+        def accept_once() -> None:
+            rig.server._handle_request_noblock()  # what serve_forever calls after its poll
+            handled.set()
+
+        threading.Thread(target=accept_once, daemon=True).start()
+        assert handled.wait(5), "an accept with no connection waiting blocked"
+        assert rig.ok("computer_status")["type"] == "computer_status"
     finally:
         rig.close()
