@@ -154,6 +154,7 @@ describe("ensureR2Token and removeR2Token, against the fake", () => {
         recorded = t;
       },
       now: () => NOW,
+      sleep: async () => {},
       log: (line: string) => lines.push(line),
     };
     return { plan, world, ctx, lines, recorded: () => recorded };
@@ -162,7 +163,7 @@ describe("ensureR2Token and removeR2Token, against the fake", () => {
   it("leaves another installation's token, and every other token, alone", async () => {
     const { plan, world, ctx } = await setup();
     const other = world.addToken({ ...token(plan), id: undefined, name: "someone-else" } as never);
-    const pair = ensureR2Token(ctx);
+    const pair = await ensureR2Token(ctx);
     expect(world.tokens.has(other)).toBe(true);
     expect(world.tokens.size).toBe(2);
     expect(
@@ -177,7 +178,7 @@ describe("ensureR2Token and removeR2Token, against the fake", () => {
     const first = world.addToken(valid);
     const second = world.addToken(valid);
     ctx.record({ name: r2TokenName(plan), id: second, createdAt: "2026-10-28T11:00:00.000Z" });
-    expect(ensureR2Token(ctx).accessKeyId).toBe(second);
+    expect((await ensureR2Token(ctx)).accessKeyId).toBe(second);
     expect([...world.tokens.keys()]).toEqual([second]);
     expect(lines[0]).toBe("deleting an R2 token of this installation: a second one");
     expect(first).not.toBe(second);
@@ -188,11 +189,11 @@ describe("ensureR2Token and removeR2Token, against the fake", () => {
     const renamed = world.addToken({ ...token(plan), id: undefined, name: "renamed" } as never);
     ctx.record({ name: r2TokenName(plan), id: renamed });
     // Still exact: kept, under its new name, and rolled.
-    expect(ensureR2Token(ctx).accessKeyId).toBe(renamed);
+    expect((await ensureR2Token(ctx)).accessKeyId).toBe(renamed);
     expect(recorded()?.createdAt).toBeUndefined();
     const entry = world.tokens.get(renamed);
     if (entry) entry.token = { ...entry.token, status: "expired" };
-    const made = ensureR2Token(ctx);
+    const made = await ensureR2Token(ctx);
     expect(made.accessKeyId).not.toBe(renamed);
     expect(world.tokens.has(renamed)).toBe(false);
   });

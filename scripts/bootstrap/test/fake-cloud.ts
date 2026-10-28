@@ -109,6 +109,12 @@ export class FakeWorld {
   readonly tokens = new Map<string, { token: ApiToken; value: string }>();
   /** Cloudflare answers 403 to every token call: a login that may not make tokens. */
   tokensForbidden = false;
+  /**
+   * A token request whose client gives up (cf fails with a timeout) while the request itself
+   * takes effect `afterMs` later, as a request left in flight by a stopped run may.
+   */
+  late: { call: "tokenCreate" | "tokenRoll"; nth: number; afterMs: number } | undefined;
+  #landing: { due: number; apply: () => void }[] = [];
   #nextVersion = 1;
   #nextToken = 1;
 
@@ -118,7 +124,16 @@ export class FakeWorld {
     this.plan = plan;
   }
 
+  /** Lands every late request now, however long it would still take. */
+  landLate(): void {
+    for (const { apply } of this.#landing.splice(0)) apply();
+  }
+
   #enter(call: string): number {
+    // Late requests whose time has come land before anything else is seen.
+    const due = this.#landing.filter((l) => l.due <= this.now);
+    this.#landing = this.#landing.filter((l) => l.due > this.now);
+    for (const { apply } of due) apply();
     this.calls.push(call);
     const n = (this.counts.get(call) ?? 0) + 1;
     this.counts.set(call, n);
@@ -276,6 +291,13 @@ export class FakeWorld {
     const call = <T>(name: string, effect: () => T): T => {
       const n = this.#enter(name);
       if (this.tokensForbidden) throw new TokensUnavailable("Cloudflare refused (403)");
+      if (this.late?.call === name && this.late.nth === n) {
+        this.#landing.push({ due: this.now + this.late.afterMs, apply: () => void effect() });
+        this.late = undefined;
+        throw new Error(
+          `cf user tokens ${name === "tokenCreate" ? "create" : "roll"} failed: timeout`,
+        );
+      }
       const result = effect();
       this.#leave(name, n);
       return result;

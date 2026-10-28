@@ -218,14 +218,23 @@ describe("the platform Worker's settings and secrets", () => {
     expect(add[ARTIFACTS_KEY_ID_SECRET]).toBe("cfo-canary-artifacts-id");
     expect(add[ARTIFACTS_SECRET_KEY_SECRET]).toBe("cfo-canary-artifacts-secret");
     expect(add[REPLICA_KEY_ID_SECRET]).toBe(SUPPLIED.replicaAccessKeyId);
-    // A Worker holding the artifacts' pair keeps it; one missing half is asked for.
+    // A Worker holding a whole pair keeps it; an incomplete pair is replaced whole, never
+    // completed with another key's half (Codex WP3.25 r1-5).
     const present = new Set(requiredSecretNames(plan).filter((n) => n !== ARTIFACTS_KEY_ID_SECRET));
-    expect(Object.keys(secretsToAdd(plan, present, SUPPLIED, { cookieSecret: COOKIE }))).toEqual([
-      ARTIFACTS_KEY_ID_SECRET,
-    ]);
+    expect(secretsToAdd(plan, present, SUPPLIED, { cookieSecret: COOKIE })).toEqual({
+      [ARTIFACTS_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
+      [ARTIFACTS_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
+    });
     expect(() =>
       secretsToAdd(plan, present, { ownerPassword: OWNER_PASSWORD }, { cookieSecret: COOKIE }),
     ).toThrow(`the artifact bucket's access key ID is needed (${ARTIFACTS_KEY_ID_SECRET})`);
+    const halfReplica = new Set(
+      requiredSecretNames(plan).filter((n) => n !== REPLICA_SECRET_KEY_SECRET),
+    );
+    expect(secretsToAdd(plan, halfReplica, SUPPLIED, { cookieSecret: COOKIE })).toEqual({
+      [REPLICA_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
+      [REPLICA_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
+    });
   });
 
   it("never overwrites a secret the Worker holds", async () => {

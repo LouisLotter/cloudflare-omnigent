@@ -17,6 +17,13 @@
 // value, if it is still valid; otherwise it is deleted and a new one made. A token is rolled
 // or deleted only while the Worker holds no key pair from it (machine.ts).
 //
+// A create or a roll whose run stopped before Cloudflare's answer may still take effect later,
+// as the staging tool assumes of every request (scripts/staging/stg.ts, its settle time). Each
+// is journalled before it is sent and cleared once answered; a run that finds one unresolved
+// waits TOKEN_SETTLE_MS first (the lock it holds proves the earlier run's process has ended),
+// so that a late create is listed, and a late roll cannot follow this run's own roll and
+// invalidate the value it deploys. A 403 is an answer: nothing is left in flight.
+//
 // Expiry. An installation's token does not expire: it is the running server's only way to its
 // database replica and its files, so an expiry would stop replication and the server's start
 // without warning, and nothing rotates it yet. It is scoped to two buckets' objects and is
@@ -76,6 +83,12 @@ export interface TokenApi {
 /** Cloudflare refused (HTTP 403): the installer's login cannot make user API tokens. */
 export class TokensUnavailable extends Error {}
 
+/**
+ * How long a token request whose client is gone may still take effect: the staging tool's
+ * settle time (Cloudflare's proxy gives up on a response after 100 seconds; three times that).
+ */
+export const TOKEN_SETTLE_MS = 300_000;
+
 /** The journal's record of the installation's token: no value, and nothing derived from one. */
 export interface RecordedToken {
   readonly name: string;
@@ -85,6 +98,18 @@ export interface RecordedToken {
   readonly id?: string;
   readonly createdAt?: string;
   readonly expiresOn?: string;
+  /** Written before a roll, removed once it is answered. */
+  readonly rollStartedAt?: string;
+}
+
+/** Whether a create was sent and never answered: it may still make a token. */
+export function createInFlight(recorded: RecordedToken | undefined): boolean {
+  return recorded?.createStartedAt !== undefined && recorded.id === undefined;
+}
+
+/** Whether a create or a roll was sent and never answered. */
+export function requestInFlight(recorded: RecordedToken | undefined): boolean {
+  return createInFlight(recorded) || recorded?.rollStartedAt !== undefined;
 }
 
 /** The S3 key pair of an R2 token: its ID, and the SHA-256 of its value in lower-case hex. */
@@ -174,19 +199,36 @@ export interface EnsureContext {
   /** Records the token in the journal (persisted before the step that follows). */
   readonly record: (token: RecordedToken) => void;
   readonly now: () => number;
+  readonly sleep: (ms: number) => Promise<void>;
   readonly log: (message: string) => void;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** Sends a request; a refusal (403) is an answer, so `answered` runs before it is rethrown. */
+function send<T>(request: () => T, answered: () => void): T {
+  try {
+    return request();
+  } catch (error) {
+    if (error instanceof TokensUnavailable) answered();
+    throw error;
+  }
+}
 
 /**
  * The installation's token and its S3 key pair, for a platform Worker that holds no key pair
  * from it: the existing token rolled if it is still valid, otherwise a new one. Every other
  * token of the installation (a duplicate, an invalid one) is deleted first.
  */
-export function ensureR2Token(ctx: EnsureContext): S3Credentials {
+export async function ensureR2Token(ctx: EnsureContext): Promise<S3Credentials> {
   const { api, plan } = ctx;
   const name = r2TokenName(plan);
+  if (requestInFlight(ctx.recorded())) {
+    ctx.log(
+      `an earlier run's request for the R2 token may still take effect; waiting ${TOKEN_SETTLE_MS / 60_000} minutes before looking`,
+    );
+    await ctx.sleep(TOKEN_SETTLE_MS);
+  }
   const group = api.permissionGroup(R2_WRITE_GROUP);
   const recordedId = ctx.recorded()?.id;
   const now = ctx.now();
@@ -203,18 +245,27 @@ export function ensureR2Token(ctx: EnsureContext): S3Credentials {
   }
   if (keep !== undefined) {
     const createdAt = keep.id === recordedId ? ctx.recorded()?.createdAt : undefined;
-    ctx.record({
+    const kept: RecordedToken = {
       name,
       id: keep.id,
       ...(createdAt === undefined ? {} : { createdAt }),
       ...(keep.expiresOn === undefined ? {} : { expiresOn: keep.expiresOn }),
-    });
+    };
+    ctx.record({ ...kept, rollStartedAt: iso(ctx.now()) });
+    const value = send(
+      () => api.roll(keep.id),
+      () => ctx.record(kept),
+    );
+    ctx.record(kept);
     ctx.log(`reusing the R2 token ${name} with a new value (its old one was never kept)`);
-    return s3Credentials(keep.id, api.roll(keep.id));
+    return s3Credentials(keep.id, value);
   }
   const request = r2TokenRequest(plan, group, now);
   ctx.record({ name, createStartedAt: iso(now) });
-  const created = api.create(request);
+  const created = send(
+    () => api.create(request),
+    () => ctx.record({ name }),
+  );
   ctx.record({
     name,
     id: created.id,

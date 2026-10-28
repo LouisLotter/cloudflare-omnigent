@@ -1086,11 +1086,76 @@ describe("runBootstrap: the R2 token (WP3.25)", () => {
     const [made] = tokensOf(h);
     h.world.dropOnDeploy = [];
     await expect(h.run()).rejects.toThrow(
-      /holds .*LITESTREAM_ACCESS_KEY_ID.* but not every R2 credential it needs; supply one token's values with --secrets-stdin/,
+      /holds .*LITESTREAM_ACCESS_KEY_ID.* but not every R2 credential it needs, so the installation's token cannot be rolled; supply one token's values with --secrets-stdin .*: they replace each incomplete pair whole, and a complete pair is kept/,
     );
     // The token the Worker's replica pair comes from is untouched.
     expect(h.world.tokens.get(String(made?.token.id))?.value).toBe(made?.value);
     expect(h.world.counts.get("tokenRoll")).toBeUndefined();
+  });
+
+  it("waits for a create a stopped run left in flight, and adopts it rather than make a second (Codex r1-1)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.late = { call: "tokenCreate", nth: 1, afterMs: 120_000 };
+    await expect(h.run()).rejects.toThrow("cf user tokens create failed: timeout");
+    expect(h.world.tokens.size).toBe(0);
+    const start = h.world.now;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.lines).toContainEqual(
+      "an earlier run's request for the R2 token may still take effect; waiting 5 minutes before looking",
+    );
+    h.world.landLate();
+    const [kept, ...more] = tokensOf(h);
+    expect(more).toEqual([]);
+    expect(h.world.counts.get("tokenCreate")).toBe(1);
+    expectWorkerUses(h, String(kept?.token.id));
+    expect(h.world.now - start).toBeGreaterThanOrEqual(300_000);
+  });
+
+  it("waits for a roll a stopped run left in flight, so it cannot break the deployed value (Codex r1-1)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    h.world.late = { call: "tokenRoll", nth: 1, afterMs: 120_000 };
+    await expect(h.run()).rejects.toThrow("cf user tokens roll failed: timeout");
+    expect(h.store.state.journal.r2Token?.rollStartedAt).toEqual(expect.any(String));
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.store.state.journal.r2Token?.rollStartedAt).toBeUndefined();
+    h.world.landLate();
+    const [kept, ...more] = tokensOf(h);
+    expect(more).toEqual([]);
+    expectWorkerUses(h, String(kept?.token.id));
+    expectNoTokenSecret(h);
+  });
+
+  it("a 403 leaves nothing in flight: the next run does not wait", async () => {
+    const plan = await accountPlan();
+    const ask = async () => ({ accessKeyId: REPLICA_KEY_ID, secretAccessKey: REPLICA_SECRET });
+    const h = harness(plan, freshState(plan), { tokens: true, ask });
+    h.world.before = {
+      call: "tokenCreate",
+      nth: 1,
+      run: () => {
+        h.world.tokensForbidden = true;
+      },
+    };
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.store.state.journal.r2Token).toEqual({ name: r2TokenName(plan) });
+    // A roll refused (403) is answered too: nothing is left in flight.
+    const roll = harness(plan, freshState(plan), { tokens: true, ask });
+    roll.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(roll.run()).rejects.toThrow(Crash);
+    roll.world.before = {
+      call: "tokenRoll",
+      nth: 1,
+      run: () => {
+        roll.world.tokensForbidden = true;
+      },
+    };
+    expect(await roll.run()).toEqual({ kind: "done" });
+    expect(roll.store.state.journal.r2Token?.rollStartedAt).toBeUndefined();
+    expect(roll.lines.some((l) => l.includes("may still take effect"))).toBe(false);
   });
 
   it("makes no token for a deploy that would be refused", async () => {

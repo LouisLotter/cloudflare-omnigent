@@ -43,6 +43,15 @@ export function locksDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(config, "cloudflare-omnigent", "bootstrap-locks");
 }
 
+/** The bootstrap's lock for one Worker, keyed by account and Worker name. */
+export function workerLockPath(
+  accountId: string,
+  worker: string,
+  dir: string = locksDir(),
+): string {
+  return join(dir, `${accountId}.${worker}.lock`);
+}
+
 /**
  * The locks a run holds for its whole length: one per Worker it may change, keyed by account
  * and Worker name, in a fixed order (Codex WP2.4 r1, finding 1).
@@ -52,7 +61,7 @@ export function resourceLockPaths(
   dir: string = locksDir(),
 ): string[] {
   return [plan.platformWorker, plan.webWorker]
-    .map((worker) => join(dir, `${plan.accountId}.${worker}.lock`))
+    .map((worker) => workerLockPath(plan.accountId, worker, dir))
     .sort();
 }
 
@@ -191,7 +200,7 @@ function parseJournal(value: unknown): Journal {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
     if (t.id !== undefined) token.id = str(t, "id", "journal.r2Token");
-    for (const key of ["createStartedAt", "createdAt", "expiresOn"] as const) {
+    for (const key of ["createStartedAt", "createdAt", "expiresOn", "rollStartedAt"] as const) {
       const time = optionalTime(t, key, "journal.r2Token");
       if (time !== undefined) token[key] = time;
     }

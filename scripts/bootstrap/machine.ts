@@ -383,6 +383,13 @@ export async function runBootstrap(
           cookie,
         )
       : preview;
+    if (makesToken) {
+      // The real values, as the checks above saw stand-ins (a hand-made token's are typed in).
+      const final = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
+      if (final.length > 0) {
+        throw new BootstrapRefusal(`the server would not start: ${final.join("; ")}`);
+      }
+    }
     record({ platformDeployStartedAt: state.journal.platformDeployStartedAt ?? iso(ctx.now()) });
     ctx.log(
       `deploying the platform Worker ${plan.platformWorker}${
@@ -521,7 +528,7 @@ async function r2Credentials(
   const held = R2_SECRET_NAMES.filter((name) => present.has(name));
   if (held.length > 0) {
     throw new BootstrapRefusal(
-      `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey")`,
+      `${plan.platformWorker} holds ${held.join(", ")} but not every R2 credential it needs, so the installation's token cannot be rolled; supply one token's values with --secrets-stdin ("replicaAccessKeyId", "replicaSecretAccessKey"): they replace each incomplete pair whole, and a complete pair is kept`,
     );
   }
   const step = manualR2Step(plan);
@@ -535,12 +542,13 @@ async function r2Credentials(
     return ctx.askR2(step);
   };
   try {
-    return ensureR2Token({
+    return await ensureR2Token({
       api: ctx.r2Tokens,
       plan,
       recorded: () => current().journal.r2Token,
       record: (token: RecordedToken) => record({ r2Token: token }),
       now: ctx.now,
+      sleep: ctx.sleep,
       log: ctx.log,
     });
   } catch (error) {

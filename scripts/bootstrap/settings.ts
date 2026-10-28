@@ -371,8 +371,10 @@ export function requiredSecretNames(plan: Installation): string[] {
 /**
  * The secrets the first platform deploy must add: each required one the Worker does not hold
  * yet. An existing secret is never overwritten: a cookie secret kept keeps sessions, and an
- * `INITIALIZED` already set is never reset. `generated` supplies the cookie secret, and
- * `supplied` the installer's values; a missing value is an error naming it, never its value.
+ * `INITIALIZED` already set is never reset. The one exception is half of an R2 key pair: a pair
+ * is one credential, so an incomplete pair is replaced whole, never completed with another
+ * key's half. `generated` supplies the cookie secret, and `supplied` the installer's values; a
+ * missing value is an error naming it, never its value.
  */
 export function secretsToAdd(
   plan: Installation,
@@ -395,22 +397,35 @@ export function secretsToAdd(
     if (problem) throw new Error(problem);
     add[PASSWORD_SECRET] = password as string;
   }
+  const needPair = (
+    pair: readonly (readonly [name: string, value: string | undefined, what: string])[],
+  ) => {
+    if (pair.every(([name]) => present.has(name))) return;
+    for (const [name, value, what] of pair) {
+      if (value === undefined || value === "") throw new Error(`${what} is needed (${name})`);
+      add[name] = value;
+    }
+  };
   if (needsReplicaCredentials(plan)) {
-    need(REPLICA_KEY_ID_SECRET, supplied.replicaAccessKeyId, "the replica's access key ID");
-    need(REPLICA_SECRET_KEY_SECRET, supplied.replicaSecretAccessKey, "the replica's secret key");
+    needPair([
+      [REPLICA_KEY_ID_SECRET, supplied.replicaAccessKeyId, "the replica's access key ID"],
+      [REPLICA_SECRET_KEY_SECRET, supplied.replicaSecretAccessKey, "the replica's secret key"],
+    ]);
   }
   if (needsArtifactCredentials(plan)) {
-    // One R2 token may cover both buckets: the installer pastes its values once.
-    need(
-      ARTIFACTS_KEY_ID_SECRET,
-      supplied.artifactsAccessKeyId ?? supplied.replicaAccessKeyId,
-      "the artifact bucket's access key ID",
-    );
-    need(
-      ARTIFACTS_SECRET_KEY_SECRET,
-      supplied.artifactsSecretAccessKey ?? supplied.replicaSecretAccessKey,
-      "the artifact bucket's secret key",
-    );
+    // One R2 token may cover both buckets: its values serve both pairs.
+    needPair([
+      [
+        ARTIFACTS_KEY_ID_SECRET,
+        supplied.artifactsAccessKeyId ?? supplied.replicaAccessKeyId,
+        "the artifact bucket's access key ID",
+      ],
+      [
+        ARTIFACTS_SECRET_KEY_SECRET,
+        supplied.artifactsSecretAccessKey ?? supplied.replicaSecretAccessKey,
+        "the artifact bucket's secret key",
+      ],
+    ]);
   }
   return add;
 }

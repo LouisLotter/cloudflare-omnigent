@@ -51,8 +51,9 @@
 //
 // `buckets` creates (or, for staging, checks) the plan's buckets without deploying; `run` does
 // the same itself. `remove-r2-token` deletes the installation's R2 token, a step of removing the
-// installation: it refuses while the platform Worker exists unless --yes. The staging tool's
-// teardown deletes a staging installation's token with its platform deployment.
+// installation: it refuses while a Worker with the platform Worker's name exists unless --yes.
+// The staging tool's teardown deletes a staging installation's token with its platform
+// deployment, by the token's name, and its sweep finds any left over.
 //
 // Afterwards the owner signs in to Omnigent at https://<host> with that username and password
 // (behind Access), and should change the password there.
@@ -64,7 +65,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
 import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
-import { acquireLock } from "../staging/lock.ts";
+import { acquireLock, sleepSync } from "../staging/lock.ts";
 import {
   accountCloud,
   bucketExists,
@@ -414,11 +415,11 @@ function removeToken(path: string, yes: boolean): number {
       removeInstallationToken({
         store,
         api: cfTokenApi(runner),
-        workerExists: () => {
-          const identity = workerInstallation(runner, plan.platformWorker);
-          return identity.exists && identity.installationId === plan.installationId;
-        },
+        // Any Worker of that name: one whose identity is unknown (no version serving all of
+        // its traffic) may well be this installation's (Codex WP3.25 r1-2).
+        workerExists: () => workerInstallation(runner, plan.platformWorker).exists,
         force: yes,
+        sleep: sleepSync,
         log: (message) => console.log(`bootstrap: ${message}`),
       });
       return 0;
