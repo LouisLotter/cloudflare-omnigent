@@ -69,7 +69,7 @@ const stagingS3 = (overrides: Partial<Installation> = {}) =>
   });
 
 const DELETE_STEP =
-  /^Cloudflare does not let this cf login delete API tokens, so delete .* by hand: open https:\/\/dash\.cloudflare\.com\/profile\/api-tokens, open the three-dot menu next to (it|each), and choose Delete\.$/;
+  /^Cloudflare does not let this cf login delete API tokens, so delete .* by hand: open https:\/\/dash\.cloudflare\.com\/profile\/api-tokens, open the three-dot menu next to (it|each), and choose Delete\.( Until then .*)?$/;
 
 describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
   function options(store: MemoryStore, world: FakeWorld, lines: string[]) {
@@ -124,6 +124,10 @@ describe("removeInstallationToken: bootstrap.ts remove-r2-token", () => {
     expect(lines).toEqual([expect.stringMatching(DELETE_STEP)]);
     expect(lines[0]).toContain(
       `each of the tokens named exactly ${r2TokenName(plan, AT - 60_000)}; ${r2TokenName(plan, AT)} by hand`,
+    );
+    // What a token left behind still reaches, by name (D33).
+    expect(lines[0]).toMatch(
+      /choose Delete\. Until then each can read and write the objects in the buckets cfo-canary-replica and cfo-canary-artifacts, and in any bucket created later under one of those names\.$/,
     );
     expect(() => removeInstallationToken(options(store, world, lines))).toThrow(
       /still exists, .* pass --yes/,

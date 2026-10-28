@@ -6,7 +6,7 @@
 //
 //   node scripts/bootstrap/bootstrap.ts plan --hostname <host> [--account <id>] \
 //       --owner-email <address> --owner-username <name> \
-//       --replica-url s3://<bucket>/<path> [--replica-endpoint <url>] \
+//       [--replica-url s3://<bucket>/<path>] [--replica-endpoint <url>] \
 //       [--artifacts-url s3://<bucket>[/<prefix>]] [--artifacts-endpoint <url>] \
 //       [--platform-worker cloudflare-omnigent] [--web-worker cloudflare-omnigent-web] [--state <file>]
 //   node scripts/bootstrap/bootstrap.ts run [--platform-worker <name> | --state <file>]
@@ -24,13 +24,22 @@
 // `plan` records the installation in a state file (state.ts) and changes nothing at Cloudflare.
 // It generates the installation ID and the owner pin; the owner's address is not kept. Without
 // --account it asks cf for the one account the installer's login reaches (several: it names
-// the way to choose). An S3 replica's endpoint defaults to the account's R2 endpoint. With an
-// S3 replica, Omnigent's artifacts (uploaded files, session resources) get a bucket of their
-// own, `<platform Worker>-artifacts` unless --artifacts-url names another, at the replica's
-// endpoint unless --artifacts-endpoint names another: the container's disk is lost at every
-// restart (G2-DUR-001). Create the hostname's owner-only Access application before `run`
-// (cookie SameSite=lax, the owner's address as the only rule, no bypass, no service token):
-// `run` checks it and never changes it.
+// the way to choose). The bucket names it derives carry the installation's tag, the first 8
+// digits of its ID (owner decision D33: an R2 token that removal could not delete never covers
+// a later installation's bucket):
+//   - the replica, `s3://<platform Worker>-<tag>-replica/omnigent` unless --replica-url names
+//     another (a staging installation names its own), at the account's R2 endpoint unless
+//     --replica-endpoint names another;
+//   - with an S3 replica, Omnigent's artifacts (uploaded files, session resources) in a bucket
+//     of their own, `<platform Worker>-<tag>-artifacts` unless --artifacts-url names another,
+//     at the replica's endpoint unless --artifacts-endpoint names another: the container's disk
+//     is lost at every restart (G2-DUR-001);
+//   - the computers' checkpoints, `<platform Worker>-<tag>-checkpoints`.
+// Names given are kept exactly; a platform Worker name too long for a derived one is refused.
+// The plan records them all, and nothing renames them later: a plan from before D33 keeps its
+// untagged names. Create the hostname's owner-only Access application before `run` (cookie
+// SameSite=lax, the owner's address as the only rule, no bypass, no service token): `run`
+// checks it and never changes it.
 //
 // `run` does the rest (machine.ts) and can be repeated at any point, also after a crash: it
 // continues where the last run stopped. Before the first deploy it creates the plan's R2
@@ -90,18 +99,23 @@ import type { S3Credentials } from "./r2-token.ts";
 import { removeInstallationToken, withInstallationLocks } from "./remove.ts";
 import {
   bucketsOf,
-  defaultArtifactsUrl,
-  type Installation,
   installationProblems,
   newInstallationId,
   passwordProblem,
-  r2Endpoint,
+  planInstallation,
+  platformBucketNames,
   type SuppliedSecrets,
   type Target,
   usernameProblem,
 } from "./settings.ts";
 import { stagingCloud } from "./staging.ts";
-import { fileStateStore, resourceLockPaths, stagingStateProblem, statePathFor } from "./state.ts";
+import {
+  fileStateStore,
+  resourceLockPaths,
+  stagingStateProblem,
+  statePathFor,
+  stateVersionFor,
+} from "./state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -166,37 +180,31 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
     platformWorker = text("platform-worker") ?? "cloudflare-omnigent";
     webWorker = text("web-worker") ?? "cloudflare-omnigent-web";
   }
-  const replicaUrl = required("replica-url");
-  // An S3 replica in R2: the account's endpoint, unless another is named.
-  const endpoint =
-    text("replica-endpoint") ?? (replicaUrl.startsWith("s3:") ? r2Endpoint(accountId) : undefined);
-  // A file replica (staging tests) keeps the artifacts on the container's disk unless named.
-  const artifactsUrl =
-    text("artifacts-url") ??
-    (replicaUrl.startsWith("s3:") ? defaultArtifactsUrl(platformWorker) : undefined);
+  // Default bucket names carry part of the installation ID (D33), and the plan records them:
+  // the replica and the artifacts as their URLs, the platform Worker's own by the tag.
+  const basePlatform = readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER).raw;
+  const replicaUrl = text("replica-url");
+  const replicaEndpoint = text("replica-endpoint");
+  const artifactsUrl = text("artifacts-url");
   const artifactsEndpoint = text("artifacts-endpoint");
-  const installation: Installation = {
-    installationId: newInstallationId((n) => new Uint8Array(randomBytes(n))),
-    accountId,
-    platformWorker,
-    webWorker,
-    hostname,
-    ownerPin: await makeOwnerPin(email, new Uint8Array(randomBytes(32))),
-    ownerUsername: username,
-    replica: { url: replicaUrl, ...(endpoint === undefined ? {} : { endpoint }) },
-    ...(artifactsUrl === undefined
-      ? {}
-      : {
-          artifacts: {
-            url: artifactsUrl,
-            ...(artifactsEndpoint === undefined ? {} : { endpoint: artifactsEndpoint }),
-          },
-        }),
-    target,
-    plannedAt: new Date().toISOString(),
-  };
-  const problems = installationProblems(installation);
-  if (problems.length > 0) throw new Error(problems.join("; "));
+  const installation = planInstallation(
+    {
+      installationId: newInstallationId((n) => new Uint8Array(randomBytes(n))),
+      accountId,
+      platformWorker,
+      webWorker,
+      hostname,
+      ownerPin: await makeOwnerPin(email, new Uint8Array(randomBytes(32))),
+      ownerUsername: username,
+      target,
+      ...(replicaUrl === undefined ? {} : { replicaUrl }),
+      ...(replicaEndpoint === undefined ? {} : { replicaEndpoint }),
+      ...(artifactsUrl === undefined ? {} : { artifactsUrl }),
+      ...(artifactsEndpoint === undefined ? {} : { artifactsEndpoint }),
+      plannedAt: new Date().toISOString(),
+    },
+    basePlatform,
+  );
   const path = text("state") ?? statePathFor(platformWorker);
   const misplaced = stagingStateProblem(installation, path);
   if (misplaced !== undefined) throw new Error(misplaced);
@@ -205,14 +213,23 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
       `${path} exists: this installation is planned already; run it, or remove the file by hand`,
     );
   }
-  const state: BootstrapState = { stateVersion: 1, installation, journal: {} };
+  const state: BootstrapState = {
+    stateVersion: stateVersionFor(installation),
+    installation,
+    journal: {},
+  };
   fileStateStore(path).save(state);
   console.log(
     `planned ${installation.installationId}: ${platformWorker} and ${webWorker} for https://${hostname}; state in ${path}`,
   );
   const buckets = bucketsOf(installation);
+  const own = platformBucketNames(basePlatform, installation);
+  const made =
+    installation.target.kind === "staging"
+      ? "a staging deployment holds them; `run` checks them and makes their token"
+      : "`run` creates them and their token";
   console.log(
-    `${buckets.length > 0 ? `R2 buckets: ${buckets.join(", ")}; \`run\` creates them and their token. ` : ""}Next: bootstrap.ts run.`,
+    `${buckets.length > 0 ? `R2 buckets: ${buckets.join(", ")}; ${made}. ` : ""}${own.length > 0 ? `The platform Worker's own: ${own.join(", ")}, created by its deploy. ` : ""}Next: bootstrap.ts run.`,
   );
 }
 

@@ -163,7 +163,8 @@ export interface Journal {
 }
 
 export interface BootstrapState {
-  readonly stateVersion: 1;
+  /** 2 when the plan records its bucket tag (D33), 1 for a plan from before it (state.ts). */
+  readonly stateVersion: 1 | 2;
   readonly installation: Installation;
   readonly journal: Journal;
 }
