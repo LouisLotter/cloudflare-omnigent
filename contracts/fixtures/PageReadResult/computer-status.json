@@ -19,7 +19,7 @@
         "codex": "none"
       },
       "rc53": true,
-      "hostname": "mapped",
+      "hostname": "resolved",
       "disk": {
         "totalBytes": 21474836480,
         "freeBytes": 17179869184
@@ -88,6 +88,10 @@
       "staging": true,
       "desired": true,
       "applied": true
+    },
+    "keepAwake": {
+      "staging": true,
+      "on": true
     }
   }
 }

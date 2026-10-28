@@ -339,6 +339,11 @@ export const ComputerRecord = z.strictObject({
     })
     .nullable()
     .default(null),
+  /**
+   * The keep-awake switch (staging only, WP3.27): while on, a `suspend` is refused as with the
+   * setup terminal open, in every generation. Records from before it read as off.
+   */
+  keepAwake: z.boolean().default(false),
 
   /** A resolved removal's deletions, in order. */
   deletion: z
@@ -359,6 +364,19 @@ export const TOKEN_KEY = "launch-token";
 export const OPERATION_PREFIX = "op:";
 /** The same operations by the time they began, for pruning: `opt:<16-digit ms>:<kind>:<id>`. */
 export const OPERATION_TIME_PREFIX = "opt:";
+
+/**
+ * What the runner last logged as `computer_status`, and when its last status read got no answer
+ * (WP3.27). Kept beside the record, so a new instance neither logs an unchanged status again nor
+ * asks a silent supervisor sooner than an interval: WorkspaceDO hibernates seconds after each
+ * request, and on 28 Oct logged the status 2 to 3 times a minute instead of once every 5 minutes.
+ */
+export const STATUS_LOG_KEY = "status-log";
+export const StatusLogRecord = z.strictObject({
+  logged: z.strictObject({ signature: z.string().max(16_384), at: Millis }).nullable(),
+  failedAt: Millis.nullable(),
+});
+export type StatusLogRecord = z.infer<typeof StatusLogRecord>;
 
 export const TokenRecord = z.strictObject({ attempt: Count, token: z.string().min(1).max(512) });
 
@@ -438,6 +456,7 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     signIn: NO_SIGN_IN,
     saves: [],
     rc53: null,
+    keepAwake: false,
     deletion: null,
   };
 }

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import re
-import socket
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -79,23 +78,6 @@ def disk(path: Path) -> dict[str, int] | None:
     except OSError:
         return None
     return {"totalBytes": st.f_blocks * st.f_frsize, "freeBytes": st.f_bavail * st.f_frsize}
-
-
-def hostname_mapped(hosts: Path = Path("/etc/hosts"), name: str | None = None) -> str:
-    """Whether ``/etc/hosts`` maps the container's hostname (WP3.22's start fix): ``mapped``,
-    ``unmapped`` or ``unknown``."""
-    try:
-        name = name if name is not None else socket.gethostname()
-        text = hosts.read_text()
-    except (OSError, UnicodeDecodeError):
-        return "unknown"
-    if not name:
-        return "unknown"
-    for line in text.splitlines():
-        fields = line.split("#", 1)[0].split()
-        if len(fields) >= 2 and name in fields[1:]:
-            return "mapped"
-    return "unmapped"
 
 
 def rc53_counts(result: dict[str, Any]) -> dict[str, int] | None:

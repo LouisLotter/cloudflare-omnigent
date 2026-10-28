@@ -63,6 +63,7 @@ from .policy import Policy
 from .procutil import module_argv, run_workload, spawn_workload, workload_argv, workload_env
 from .restore import RestoreFailed, restore_workspace
 from .signin import SignInConflict, SignIns, SignInUnsettled, SpawnCancelled, spawn_login
+from .startup import hostname_resolution
 from .tree import tree_digest
 
 REPORT_INTERVAL_S = 30.0
@@ -999,7 +1000,7 @@ class Supervisor:
             "logins": logins,
             "signIn": self.signins.states(),
             "rc53": self._rc53_enabled(),
-            "hostname": S.hostname_mapped(),
+            "hostname": hostname_resolution(),
             "disk": S.disk(self.account.home),
             "alerts": alerts,
             "captures": captures,

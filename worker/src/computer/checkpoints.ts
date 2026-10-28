@@ -31,7 +31,9 @@ import {
   LOGIN_FILE,
   MAX_DELTAS_PER_BASE,
   NEW_BASE_DELTA_BYTES_RATIO,
+  SIGN_OUT_TABLE,
   type SignOutEvent,
+  type SignOutPhase,
   TIMING,
   WORKSPACE_FORMAT_VERSION,
   type WorkspaceLayer,
@@ -402,4 +404,61 @@ export function noDeclaredFile(files: FileStates): boolean {
  */
 export function signOutEventOf(files: FileStates): SignOutEvent {
   return holdsLogin(files) ? "login_published" : "tombstones_published";
+}
+
+/**
+ * Whether a bundle was published while a sign-out run's logouts and snapshot are still under
+ * way: in the run's generation, before its snapshot's order is known, or below it. Such a bundle
+ * is an in-between state, never a sign-out undone: the CLIs log out one after the other, and the
+ * supervisor's credential watcher publishes between them (Claude's login tombstoned, Codex's still
+ * present), which on 28 Oct left the phase `none` after a sign-out that tombstoned everything. The
+ * run's snapshot decides instead (`signOutDecided`).
+ */
+export function midSignOut(
+  job: { readonly generation: number; readonly order: number | null } | null,
+  bundle: { readonly generation: number; readonly order: number },
+): boolean {
+  return (
+    job !== null &&
+    job.generation === bundle.generation &&
+    (job.order === null || bundle.order < job.order)
+  );
+}
+
+/**
+ * The sign-out phase once a bundle is published: as the table says, except mid-run (above). A
+ * login published mid-run never leaves `none`, but it does take away what `tombstoned` and
+ * `verified` claim: a run started from either (the table keeps them at `requested`) goes back to
+ * `requested`, so its own tombstones are published and read back again before it claims them
+ * (Codex WP3.27 r1-1: a login written after a verified sign-out, published between the next run's
+ * logouts, left `verified` standing with a login in the pointer).
+ */
+export function signOutOnPublish(
+  phase: SignOutPhase,
+  files: FileStates,
+  midRun: boolean,
+): SignOutPhase {
+  const event = signOutEventOf(files);
+  if (midRun && event === "login_published") return phase === "none" ? "none" : "requested";
+  return SIGN_OUT_TABLE[phase][event];
+}
+
+/**
+ * The phase a sign-out run settles on once its snapshot (or anything newer) is the published
+ * pointer: tombstones advance it, a login undoes it (a logout that failed, or a login written
+ * meanwhile).
+ */
+export function signOutDecided(phase: SignOutPhase, pointer: FileStates | null): SignOutPhase {
+  return pointer === null ? phase : SIGN_OUT_TABLE[phase][signOutEventOf(pointer)];
+}
+
+/**
+ * The phase when a sign-out run ends any other way (given up, its container gone): a login in the
+ * pointer counts now. A run still `requested` stays so (a login it set aside leaves it there):
+ * asked for, not confirmed, which the page offers to run again.
+ */
+export function signOutAbandoned(phase: SignOutPhase, pointer: FileStates | null): SignOutPhase {
+  return phase !== "requested" && pointer !== null && holdsLogin(pointer)
+    ? SIGN_OUT_TABLE[phase].login_published
+    : phase;
 }

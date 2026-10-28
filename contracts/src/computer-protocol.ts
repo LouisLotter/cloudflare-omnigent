@@ -657,6 +657,16 @@ export const Rc53Counts = z.strictObject({
 export type Rc53Counts = z.infer<typeof Rc53Counts>;
 
 /**
+ * Whether the container's hostname resolves, which `sudo` needs (it warns "unable to resolve
+ * host" otherwise): `resolved` or `unresolved` through the C library's lookup (WP3.27: NSS
+ * `myhostname`, since Cloudflare's `/etc/hosts` is read-only), or `unknown`. `mapped` and
+ * `unmapped` come from an older supervisor (WP3.22), which reported whether `/etc/hosts` maps the
+ * name: an image without `myhostname` resolves it only then.
+ */
+export const HostnameState = z.enum(["resolved", "unresolved", "mapped", "unmapped", "unknown"]);
+export type HostnameState = z.infer<typeof HostnameState>;
+
+/**
  * The supervisor's part of the computer's status (WP3.23): names, normalized versions, enum
  * states and bounded counts only. No path under the CLIs' homes beyond the declared names, no
  * environment, no file contents, no alert text, no capture result whole.
@@ -672,8 +682,8 @@ export const SupervisorStatus = z.strictObject({
   signIn: z.strictObject({ claude: SignInState, codex: SignInState }),
   /** RC-53's save check is on (`/var/cfo/rc53/enabled` exists). */
   rc53: z.boolean(),
-  /** Whether `/etc/hosts` maps the container's hostname (sudo warns otherwise). */
-  hostname: z.enum(["mapped", "unmapped", "unknown"]),
+  /** Whether the container's hostname resolves (`sudo` warns otherwise). */
+  hostname: HostnameState,
   /** The home directory's filesystem. */
   disk: z.strictObject({ totalBytes: StatusCount, freeBytes: StatusCount }).nullable(),
   alerts: z.array(z.strictObject({ kind: SupervisorAlertKind, count: StatusCount })).max(32),

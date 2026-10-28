@@ -12,7 +12,7 @@
 //   the card then shows the provider's link (and Codex's code), takes Claude's pasted code, polls
 //   the attempt's state every 2 seconds, and offers Cancel; a failure offers the terminal. A
 //   reload resumes the session's running attempts. The markup comes from the server, escaped.
-// - "Computer status": read on load and on Refresh; on staging, the RC-53 switch.
+// - "Computer status": read on load and on Refresh; on staging, the RC-53 and keep-awake switches.
 // Nothing here stores or logs what the terminal shows, the provider's link, Codex's code or the
 // code the person pastes.
 (() => {
@@ -317,7 +317,7 @@
   }
 
   // ------------------------------------------------------------------------------------------
-  // Computer status, and the staging-only RC-53 switch.
+  // Computer status, and the staging-only switches: RC-53's save check and keep-awake.
 
   const statusSection = document.getElementById("computer-status");
   const statusBody = document.getElementById("status-body");
@@ -341,19 +341,19 @@
   statusRefresh?.addEventListener("click", () => void readStatus());
   statusBody?.addEventListener("click", async (event) => {
     const button =
-      event.target instanceof Element ? event.target.closest('[data-act="rc53"]') : null;
+      event.target instanceof Element
+        ? event.target.closest('[data-act="rc53"], [data-act="keep-awake"]')
+        : null;
     if (!button || statusSection === null) return;
+    const which = button.getAttribute("data-act") === "rc53" ? "rc53" : "keepAwake";
+    const value = button.getAttribute(which === "rc53" ? "data-rc53" : "data-keep-awake");
     button.disabled = true;
     try {
       await fetch(statusSection.dataset.stagingUrl, {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          op: operationId(),
-          intent: state.intent,
-          rc53: button.getAttribute("data-rc53"),
-        }),
+        body: JSON.stringify({ op: operationId(), intent: state.intent, [which]: value }),
       });
     } catch {
       // the status below shows what holds

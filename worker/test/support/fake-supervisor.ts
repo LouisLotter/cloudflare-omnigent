@@ -104,6 +104,14 @@ export interface SupervisorOptions {
   signInMode: "ok" | "unexpected" | "silent";
   /** RC-53 findings each capture reports while the check is on (they fail the capture). */
   rc53Findings: number;
+  /**
+   * `sign_out` logs the CLIs out one after the other, as the real supervisor does (`logins.py`),
+   * and its credential watcher publishes the bundle in between: Claude's login tombstoned, Codex's
+   * still present (the 28 Oct sitting's B3). Otherwise both go at once.
+   */
+  staggeredLogouts: boolean;
+  /** `sign_out`: this CLI's logout fails and leaves its login file (null: both succeed). */
+  failedLogout: SignInService | null;
 }
 
 /** The canary prefix, built at run time: no source file holds a literal canary. */
@@ -208,6 +216,8 @@ export class FakeSupervisor {
       legacy: false,
       signInMode: "ok",
       rc53Findings: 0,
+      staggeredLogouts: false,
+      failedLogout: null,
       ...options,
     };
   }
@@ -728,14 +738,21 @@ export class FakeSupervisor {
         return { type: "status", report: this.state() };
       case "credential_snapshot":
         return { type: "credential_snapshot", order: this.#publishCredentials() };
-      case "sign_out":
+      case "sign_out": {
         this.#endSignIn("claude", "cancelled");
         this.#endSignIn("codex", "cancelled");
-        this.credentials.delete(LOGIN_FILES.claude);
-        this.credentials.delete(LOGIN_FILES.codex);
-        this.#signedOut = true;
+        const failed = this.options.failedLogout;
+        if (failed !== "claude") this.credentials.delete(LOGIN_FILES.claude);
+        if (this.options.staggeredLogouts) this.#publishCredentials();
+        if (failed !== "codex") this.credentials.delete(LOGIN_FILES.codex);
+        this.#signedOut = failed === null;
         this.#publishCredentials();
-        return { type: "sign_out", claude: "ok", codex: "ok" };
+        return {
+          type: "sign_out",
+          claude: failed === "claude" ? "failed" : "ok",
+          codex: failed === "codex" ? "failed" : "ok",
+        };
+      }
       case "sign_in_start":
         return {
           type: "sign_in_start",
@@ -797,7 +814,7 @@ export class FakeSupervisor {
       logins: this.state().logins,
       signIn: { claude: state("claude"), codex: state("codex") },
       rc53: this.rc53,
-      hostname: "mapped",
+      hostname: "resolved",
       disk: { totalBytes: 20_000_000_000, freeBytes: 15_000_000_000 },
       alerts: this.rc53Captures > 0 ? [{ kind: "rc53_finding", count: this.rc53Captures }] : [],
       captures: [...this.#rc53Counts].map(([jobOperationId, rc53]) => ({ jobOperationId, rc53 })),

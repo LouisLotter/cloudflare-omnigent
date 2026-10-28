@@ -213,6 +213,25 @@
               ],
               "type": "object"
             },
+            "keepAwake": {
+              "additionalProperties": {},
+              "properties": {
+                "on": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "staging": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "staging",
+                "on"
+              ],
+              "type": "object"
+            },
             "metrics": {
               "anyOf": [
                 {
@@ -286,6 +305,8 @@
                     },
                     "hostname": {
                       "enum": [
+                        "resolved",
+                        "unresolved",
                         "mapped",
                         "unmapped",
                         "unknown"

@@ -27,6 +27,7 @@ import {
 import type { PlatformEnv } from "../env.ts";
 import { describeError, logEvent } from "../server/responses.ts";
 import { platformError } from "../shared/errors.ts";
+import { newInstanceId } from "../shared/instance.ts";
 import { type ControlRpc, type WorkspaceRpc, workspaceObjectName } from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
 import {
@@ -131,6 +132,12 @@ export class ControlDO extends DurableObject<PlatformEnv> implements ControlRpc 
         )
         .one();
       this.#boots = Number(row.value);
+      // Every new instance says so (WP3.27), with the count of starts this object has had.
+      log("instance_started", {
+        class: "ControlDO",
+        instanceId: newInstanceId(),
+        boots: this.#boots,
+      });
       await this.#armAfterRestart();
     });
   }

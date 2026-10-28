@@ -580,6 +580,58 @@
           "type": "object"
         }
       ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "staging_keep_awake",
+              "type": "string"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "on"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "staging_keep_awake",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "not_staging",
+                "not_offered"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     }
   ],
   "title": "PageFrontResult"
