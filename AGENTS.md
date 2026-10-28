@@ -4,6 +4,16 @@
 
 Implementation has started. Work runs in milestones M0 to M7, each split into work packages and ending at a gate with recorded evidence.
 
+## Overriding principle: automate everything that can be automated
+
+This project is for people who are not technical, and the maintainer's time is the scarcest resource. Before any step is given to a person to do by hand (a dashboard page, a pasted command, a copied value, a manual check), find out whether a CLI, an API or a script can do it, and if it can, build that. The order of preference is:
+
+1. the product does it itself (the installer, a page);
+2. one command or one button;
+3. a guided manual step.
+
+Only what genuinely needs a human stays manual: a provider's own sign-in, an approval, a decision, a payment. Even then, give it the shortest path. Check the tools (`cf cli search`, `cf docs search`, the APIs) before declaring a step manual. When a secret must not pass through an agent, write the script for the person to run rather than handing them the steps. This principle applies to runbooks, staging sittings, plans and designs, and it overrides older documents that say otherwise.
+
 ## Public documentation and private process records
 
 Maintain the product architecture, trust/credential model, compatibility contracts, generic operating guidance and accepted engineering decisions in `docs/`, with an index in [docs/decisions/README.md](docs/decisions/README.md). Public documents must be understandable without private notes and must distinguish accepted design, implemented source, packaged artifacts and runtime qualification.
