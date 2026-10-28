@@ -43,7 +43,7 @@
 #                        start-to-ready times (restarts.json): #1 the bootstrap's release, #2 the
 #                        launcher's key
 #   run.sh web-deploy    deploy the web Worker once, now (WP3.5's FH-38 check before the soak)
-#   run.sh password      [owner] print the owner's generated Omnigent password
+#   run.sh password      [owner] the owner's generated Omnigent password, onto the clipboard
 #   run.sh hostile <computer ID>
 #                        WP3.5's hostile page for the owner's browser (http://127.0.0.1:8088/)
 #   run.sh campaign      after the owner's Start click: the web and platform deploys at their
@@ -352,7 +352,14 @@ print(json.dumps({
     tail -n 1 "$out/sitting-deploys.jsonl"
     ;;
   password)
-    python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
+    # Onto the owner's clipboard where there is one (nothing to copy by hand); printed otherwise.
+    if command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1; then
+      python3 -I -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets" |
+        { if command -v wl-copy >/dev/null 2>&1; then wl-copy; else xclip -selection clipboard; fi; }
+      echo "The owner's Omnigent password is on your clipboard: paste it into Omnigent's sign-in page."
+    else
+      python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
+    fi
     ;;
   hostile)
     computer="${2:?run.sh hostile <computer ID>}"
