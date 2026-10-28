@@ -333,7 +333,8 @@ function isMissingLayer(error: unknown): boolean {
   return message.includes("backup_not_found") || message.includes("not found");
 }
 
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+/** An upload retry's wait: resolves after `ms`, or rejects with the signal's reason once it aborts. */
+export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(signal.reason);

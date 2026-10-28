@@ -3,6 +3,7 @@
 // what was published.
 
 import { describe, expect, it } from "vitest";
+import { abortableSleep } from "../../src/computer/controller.ts";
 import { RECORD_KEY } from "../../src/computer/record.ts";
 import { SITTING_PART_FAILURE, sdkBackupError } from "../support/backup-errors.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
@@ -277,6 +278,34 @@ describe("workspace checkpoints", () => {
     expect(sim.logs.filter((l) => l.event === "save_failed").at(-1)?.fields).toMatchObject({
       reason: "upload",
     });
+  });
+
+  it("never repeats an upload whose capture ended meanwhile (WP3.22)", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    live(sim).write("work/a.txt", "1");
+    // While the attempt is in flight, its capture ends (as a stop or a new generation would end
+    // it), then the attempt fails transiently: repeating it would upload for no capture.
+    sim.computer.backup = async () => {
+      sim.store.put(RECORD_KEY, { ...sim.record(), capture: null });
+      throw SITTING_PART_FAILURE();
+    };
+    await sim.call(sim.client.checkpointRequest());
+    await sim.settle();
+    expect(sim.sleeps).toEqual([]);
+    expect(sim.logs.some((l) => l.event === "upload_retry")).toBe(false);
+    expect(sim.record().workspace).toBeNull();
+  });
+
+  it("waits out a retry's delay, or ends the wait with the deadline's abort (WP3.22)", async () => {
+    await expect(abortableSleep(1, new AbortController().signal)).resolves.toBeUndefined();
+    const before = new AbortController();
+    before.abort(new Error("deadline"));
+    await expect(abortableSleep(60_000, before.signal)).rejects.toThrow("deadline");
+    const during = new AbortController();
+    const wait = abortableSleep(60_000, during.signal);
+    during.abort(new Error("deadline"));
+    await expect(wait).rejects.toThrow("deadline");
   });
 
   it("keeps an accepted request across a crash at every step of its capture (R-18)", async () => {
