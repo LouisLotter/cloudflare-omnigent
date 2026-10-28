@@ -18,6 +18,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -27,6 +28,10 @@ import pytest
 
 IMAGE = os.environ.get("CFO_IT_IMAGE", "cfo-computer:dev")
 HERE = Path(__file__).resolve().parent
+# ttyd's WebSocket client from the image's own tests (standard library only).
+sys.path.insert(0, str(HERE.parent / "tests"))
+from ttyd_client import Closed, TtydClient, shell_pid  # noqa: E402
+
 ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 
 
@@ -85,11 +90,16 @@ class Computer:
         # ID, longer than a DNS label: every computer here runs under such a hostname.
         self.hostname = secrets.token_hex(32)
         args = ["run", "-d", "--name", self.name, "--hostname", self.hostname]
-        args += ["--network", self.net, "-p", "127.0.0.1::8090"]
+        args += ["--network", self.net, "-p", "127.0.0.1::8090", "-p", "127.0.0.1::7681"]
         for k, v in base_env.items():
             args += ["-e", f"{k}={v}"]
         docker(*args, IMAGE)
         self.port = None
+
+    def terminal_port(self) -> int:
+        """The setup terminal's ttyd, published for the test as WorkspaceDO reaches it."""
+        out = docker("port", self.name, "7681/tcp").stdout.strip().splitlines()[0]
+        return int(out.rsplit(":", 1)[1])
 
     def url(self) -> str:
         if self.port is None:
@@ -157,6 +167,18 @@ def computer():
     c = Computer()
     yield c
     c.close()
+
+
+def _terminal(port: int, args: list[str]) -> TtydClient:
+    """A stream to ttyd, once it listens and has let go of any earlier one (one at a time)."""
+    end = time.monotonic() + 30
+    while True:
+        try:
+            return TtydClient(port, args)
+        except (Closed, OSError):
+            if time.monotonic() > end:
+                raise
+            time.sleep(0.2)
 
 
 def _wait(predicate, timeout: float = 30.0) -> None:
@@ -238,6 +260,12 @@ def test_assembled_restore_install_host_capture_and_sigterm(computer: Computer) 
     )
     assert reply == {"type": "start_host", "outcome": "taken"}
     _wait(lambda: "omnigent host" in computer.exec("ps", "-e", "-o", "args").stdout)
+    # The setup terminal's shell in its tmux session (WP3.28), its stream then dropped: the
+    # tmux server, reparented to tini, is paused with the workload, and the shell survives.
+    port = computer.terminal_port()
+    terminal = _terminal(port, ["new", "1"])
+    shell = shell_pid(terminal, "it")
+    terminal.drop()
     # A process the platform starts with exec is outside init's tree: never paused.
     exec_proc = subprocess.Popen(["docker", "exec", computer.name, "sleep", "120"])
     computer.exec(
@@ -265,6 +293,7 @@ def test_assembled_restore_install_host_capture_and_sigterm(computer: Computer) 
     )
     kinds = result["stoppedByKind"]
     assert kinds.get("omnigent-host", 0) >= 1 and kinds.get("terminal", 0) >= 1, kinds
+    assert kinds.get("terminal-session", 0) >= 1 and kinds.get("other:bash", 0) >= 1, kinds
     assert not any(k.startswith("other:sleep") for k in kinds), kinds
     assert not any(k in ("supervisor", "capture-worker", "lease-guard", "init") for k in kinds), (
         kinds
@@ -274,6 +303,9 @@ def test_assembled_restore_install_host_capture_and_sigterm(computer: Computer) 
     assert (entry["uid"], entry["gid"]) == (1000, 1000)
     states = computer.exec("ps", "-e", "-o", "stat=").stdout.split()
     assert not any(s.startswith("T") for s in states), "everything resumed"
+    again = _terminal(port, ["attach", "1"])
+    assert shell_pid(again, "it2") == shell
+    again.close()
     exec_proc.kill()
     # A report carries the state; SIGTERM asks for a save and the supervisor keeps serving.
     _wait(

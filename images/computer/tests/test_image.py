@@ -28,6 +28,7 @@ def test_pinned_versions() -> None:
     assert "0.19.0.dev0" in _run("/opt/venv/bin/omnigent", "--version")
     assert _run("/usr/local/bin/gh", "--version").split()[2] == "2.103.3"
     assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith("1.7.7")
+    assert _run("/usr/bin/tmux", "-V").strip() == "tmux 3.5a"  # WP3.28
     assert Path("/usr/local/bin/sandbox-shim").exists()
     assert Path("/usr/bin/tini").exists()
 

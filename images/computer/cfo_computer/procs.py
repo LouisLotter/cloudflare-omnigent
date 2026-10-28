@@ -122,12 +122,17 @@ def kind(p: Proc, procs: dict[int, Proc] | None = None) -> str:
         return "lease-guard"
     if "cfo_computer.capture" in cmd:
         return "capture-worker"
+    # The setup terminal before the supervisor: ttyd's command line names the session wrapper
+    # (``cfo_computer.terminal_shell``), and tmux's names its configuration's path (WP3.28).
+    if p.comm == "ttyd":
+        return "terminal"
+    if p.comm.startswith("tmux") or "cfo_computer.terminal_shell" in cmd:
+        # The setup terminal's sessions run on their own socket; Omnigent's tmux on its own.
+        return "terminal-session" if "cfo-terminal" in cmd or "terminal_shell" in cmd else "tmux"
     if "cfo_computer" in cmd:
         return "supervisor"
     if "sandbox-shim" in cmd:
         return "sandbox-shim"
-    if p.comm == "ttyd":
-        return "terminal"
     if "omnigent" in cmd or "/opt/venv/bin/python" in cmd:
         return "omnigent-other"
     if "claude" in cmd:

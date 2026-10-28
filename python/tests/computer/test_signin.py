@@ -1066,7 +1066,7 @@ def test_computer_status_holds_names_and_counts_only(rig: Rig):
     assert status["versions"] == {"claude": "2.1.311", "codex": "0.164.0", "gh": None} or (
         status["versions"]["claude"] == "2.1.311" and status["versions"]["codex"] == "0.164.0"
     )
-    assert status["supervisorVersion"] == "0.2.0"
+    assert status["supervisorVersion"] == "0.3.0"
     assert status["signIn"] == {"claude": "none", "codex": "none"}
     assert status["hostname"] in ("mapped", "unmapped", "unknown")
     assert status["disk"]["totalBytes"] >= status["disk"]["freeBytes"] > 0
@@ -1096,7 +1096,7 @@ def test_the_staging_check_switches_rc53_and_captures_report_counts(rig: Rig):
 
 def test_hello_names_the_features(rig: Rig):
     hello = _until(lambda: rig.workspace.of("hello"), what="the hello")[0]
-    assert hello["features"] == ["sign_in", "computer_status", "staging_check"]
+    assert hello["features"] == ["sign_in", "computer_status", "staging_check", "terminal_sessions"]
 
 
 def test_versions_are_normalized():
@@ -1143,7 +1143,7 @@ def test_the_status_schema_refuses_alert_text():
     bad = {
         "type": "computer_status",
         "status": {
-            "supervisorVersion": "0.2.0",
+            "supervisorVersion": "0.3.0",
             "versions": {"claude": None, "codex": None, "gh": None},
             "logins": {"claude": "unknown", "codex": "unknown"},
             "signIn": {"claude": "none", "codex": "none"},

@@ -29,6 +29,7 @@ SENT = {
     "staging_check",
     "start_host",
     "status",
+    "terminal_end",
 }
 
 
@@ -44,7 +45,11 @@ def test_the_corpus_covers_every_command_workspacedo_sends():
 @pytest.mark.parametrize(
     "command",
     CORPUS,
-    ids=[f"{c['type']}-{c.get('kind') or c.get('outcome') or i}" for i, c in enumerate(CORPUS)],
+    ids=[
+        f"{c['type']}-{c.get('kind') or c.get('outcome') or i}"
+        + ("-end-terminals" if c.get("endTerminals") else "")
+        for i, c in enumerate(CORPUS)
+    ],
 )
 def test_the_supervisor_accepts_each_command(contract, command):
     parsed = contract.parse_command(command)
