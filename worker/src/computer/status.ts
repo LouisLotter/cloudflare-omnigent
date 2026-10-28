@@ -135,6 +135,8 @@ export function composeStatus(input: StatusInput): ComputerStatusView {
             hostname: m.hostname,
             disk: m.disk === null ? null : { ...m.disk },
             alerts: m.alerts.map((a) => ({ kind: a.kind, count: a.count })),
+            // The setup terminal's sessions on the computer (WP3.28), when counted.
+            ...(m.terminals === undefined ? {} : { terminals: m.terminals }),
           },
     credentials: {
       checkpoint:
@@ -177,6 +179,7 @@ export function statusLog(view: ComputerStatusView): {
     signIn: m?.signIn ?? null,
     hostname: m?.hostname ?? null,
     alerts: Object.fromEntries((m?.alerts ?? []).map((a) => [a.kind, a.count])),
+    terminals: typeof m?.terminals === "number" ? m.terminals : null,
     credentials: Object.fromEntries(view.credentials.files.map((f) => [f.path, f.state])),
     credentialOrder: view.credentials.checkpoint?.order ?? null,
     signOut: view.signOut.phase,

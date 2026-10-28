@@ -166,7 +166,11 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       intercepts: (props) => this.intercepts(props),
       timing: this.timing(),
       log: (event, fields) => logEvent("workspace", event, fields),
-      terminal: { closeNow: (reason) => bridge?.closeNow(reason) },
+      terminal: {
+        closeNow: (reason) => bridge?.closeNow(reason),
+        pendingEnd: () => bridge?.pendingEnd() ?? null,
+        endSettled: (op) => bridge?.endSettled(op),
+      },
       stagingChecks: this.stagingChecks(),
     });
     const controller = this.#controller;
@@ -180,11 +184,16 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
         if (front === null) throw platformError("internal", "no page front");
         return front.target();
       },
-      dial: () => {
+      dial: (mode, window) => {
         if (port === null) throw platformError("unavailable", "no container");
+        // ttyd's URL arguments (WP3.28): built here only, never from the browser's request.
+        const args = new URLSearchParams([
+          ["arg", mode],
+          ["arg", String(window)],
+        ]);
         return port.fetch(
           TERMINAL_PORT,
-          new Request(`http://computer${TERMINAL_WS_PATH}`, {
+          new Request(`http://computer${TERMINAL_WS_PATH}?${args}`, {
             headers: { upgrade: "websocket", "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
           }),
         );
@@ -206,6 +215,9 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
       log: (event, fields) => logEvent("workspace", event, fields),
+      // A shell's end is owed to the supervisor (WP3.28): the runner sends it at once, not at its
+      // next heartbeat. Deferred, since the bridge may record one inside a controller transition.
+      endRecorded: () => queueMicrotask(() => controller.terminalEndOwed()),
     });
     bridge = terminal;
     front = new PageFront(computerId.data, {

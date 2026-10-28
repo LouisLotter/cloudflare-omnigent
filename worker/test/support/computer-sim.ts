@@ -105,6 +105,15 @@ export class ComputerSim {
   /** The gateway's checks, in order. */
   readonly gatewayChecks: { readonly key: string; readonly allowed: boolean }[] = [];
 
+  /**
+   * The setup terminal as the controller sees it (WP3.5, WP3.28): every `closeNow`, and the
+   * `terminal_end` its bridge owes the supervisor. Kept across a crash, as storage is.
+   */
+  readonly terminal = {
+    closes: [] as string[],
+    pending: null as { window: number; generation: number; op: string } | null,
+  };
+
   constructor(options: SimOptions = {}) {
     this.#noBucket = options.noBucket ?? false;
     this.#gateway = options.gateway ?? false;
@@ -251,6 +260,15 @@ export class ComputerSim {
         this.logs.push({ event, fields });
       },
       stagingChecks: this.#staging,
+      terminal: {
+        closeNow: (reason) => {
+          this.terminal.closes.push(reason);
+        },
+        pendingEnd: () => this.terminal.pending,
+        endSettled: (op) => {
+          if (this.terminal.pending?.op === op) this.terminal.pending = null;
+        },
+      },
     });
   }
 

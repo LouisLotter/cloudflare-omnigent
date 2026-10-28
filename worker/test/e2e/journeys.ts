@@ -338,6 +338,83 @@ async function main(): Promise<number> {
       checks.push("a close during a reconnect handshake stays closed; the late socket is dropped");
     });
 
+    // WP3.28: the shell lives on the computer, so a WorkspaceDO reset keeps it (FH-38).
+    const terminals = async (id: string) =>
+      (await (await fetch(`${base}/__e2e/terminals?computer=${id}`)).json()) as {
+        sessions: number[];
+        ends: number;
+      };
+    /** The shell's number from a new `echo $$` (the page's terminal keeps earlier output). */
+    const shellNumber = async (page: Page) => {
+      const numbers = async () =>
+        (await page.locator(".xterm-rows").innerText()).match(/\b4\d{3}\b/g) ?? [];
+      const before = (await numbers()).length;
+      await page.locator(".xterm-helper-textarea").focus();
+      await page.keyboard.type("echo $$");
+      await page.keyboard.press("Enter");
+      return waitFor("the shell's number", async () => {
+        const text = await page.locator(".xterm-rows").innerText();
+        const found = text.match(/\b4\d{3}\b/g) ?? [];
+        // Answered: a number more, and the prompt back after it.
+        const last = found.at(-1);
+        const done = last !== undefined && /omnigent@computer:~\$\s*$/.test(text.trimEnd() + " ");
+        return found.length > before && done ? last : null;
+      });
+    };
+
+    await run("J2d-reconnect-after-a-workspace-reset", async (page, checks) => {
+      const id = ids["managed-ready"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor();
+      const shell = await shellNumber(page);
+      if ((await terminals(id)).sessions.length !== 1)
+        throw new Error("no session on the computer");
+      const dropped = Date.now();
+      // WorkspaceDO's instance is replaced (a platform shutdown or a deploy's switch): its memory
+      // and both sockets go; the window, its marker and the computer's session stay.
+      await fetch(`${base}/__e2e/reset?computer=${id}`, { method: "POST" });
+      await page.getByText("Reconnecting…").waitFor();
+      await page.getByText("Connected.").waitFor({ timeout: 10_000 });
+      const ms = Date.now() - dropped;
+      if (ms > 10_000) throw new Error(`reconnected after ${ms} ms`);
+      checks.push(`reconnected after a WorkspaceDO reset in ${ms} ms`);
+      const again = await shellNumber(page);
+      if (again !== shell) throw new Error(`a new shell: ${again}, was ${shell}`);
+      checks.push(`the same shell (${shell}) continued on the computer`);
+      await page.click("#terminal-close");
+      await page.getByText("Closed. The computer may go to sleep again.").waitFor();
+      await waitFor("the shell's end on the computer", async () => {
+        const t = await terminals(id);
+        return t.sessions.length === 0 && t.ends >= 1;
+      });
+      checks.push("closing the window ended the shell on the computer (terminal_end)");
+    });
+
+    await run("J2e-a-shell-gone-after-a-reset-is-never-replaced", async (page, checks) => {
+      const id = ids["managed-ready"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor();
+      const shell = await shellNumber(page);
+      // The reset, and meanwhile the computer's reaper ends the session.
+      await fetch(`${base}/__e2e/end-terminals?computer=${id}`, { method: "POST" });
+      await fetch(`${base}/__e2e/reset?computer=${id}`, { method: "POST" });
+      await page
+        .getByText("The terminal session on the computer ended. Open it again for a new one.")
+        .waitFor({ timeout: 10_000 });
+      if ((await terminals(id)).sessions.length !== 0) throw new Error("a new shell was started");
+      checks.push(
+        "the reconnect was refused (4002): the page says the session ended, no new shell",
+      );
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor();
+      const next = await shellNumber(page);
+      if (next === shell) throw new Error("the old shell came back");
+      checks.push(`opening it again gives a new window and a new shell (${next})`);
+      await page.click("#terminal-close");
+    });
+
     const signIns = async (id: string) =>
       (await (await fetch(`${base}/__e2e/sign-ins?computer=${id}`)).json()) as {
         starts: number;

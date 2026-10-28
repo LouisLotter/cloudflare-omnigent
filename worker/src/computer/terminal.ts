@@ -17,12 +17,28 @@
 //   logged, parsed or kept, except output buffered for a reattach.
 // - **Reattach.** A browser stream that drops while its window is open (a web Worker deploy)
 //   leaves the computer's socket open for `detachedGraceMs`, buffering at most `bufferBytes` of
-//   output, so a reconnect with a fresh capability finds the same shell. ttyd ends the shell when
-//   its socket closes.
+//   output, so a reconnect with a fresh capability finds the same shell.
+// - **Shells on the computer** (WP3.28, FH-38). A supervisor with `terminal_sessions` keeps each
+//   window's shell in a tmux session that outlives its stream, so a reconnect after this object
+//   was reset (its sockets and memory gone) finds the same shell too. The first dial of a window
+//   asks ttyd for a `new` session and persists a "bridged" marker; every later dial only
+//   `attach`es, and ttyd ends the stream if the session is gone. Never a silent new shell: with an
+//   older supervisor, whose ttyd ends the shell with its stream, a reconnect that would need a new
+//   dial is answered with 4002 at once. A reconnect while the old browser stream still looks
+//   attached (half-open) takes the stream over instead of ending it.
+// - **Ending the shell.** Since the shell outlives its stream, every close path (the window's
+//   deadline or close, a new window, a removal, a new generation, a stop, a sign-out, a page
+//   sign-in, a stream that ended for good) records a pending `terminal_end` in the same storage
+//   write, which the controller's runner sends to the supervisor until it is answered
+//   (`pendingEnd`, `endSettled`). The supervisor also ends every session itself before its
+//   credential-sensitive steps, and reaps one left without a stream for 45 s or older than 30
+//   minutes.
 // - **Enforcement.** While any stream exists, a check runs every `checkMs` (15 s) and closes
 //   streams whose window is closed or past its deadline, or whose computer is no longer the
 //   restored, running generation they were opened for. A Durable Object restart drops every
-//   stream; the persisted window and used capabilities keep the rules after it.
+//   stream; the persisted window, its marker, the pending end and the used capabilities keep the
+//   rules after it.
+// - **Measurement.** Close codes of both sides are logged as numbers (never a reason's text).
 //
 // Platform code never reads what passes through: the sign-in codes the person pastes go to the
 // CLI on the computer and nowhere else.
@@ -38,6 +54,7 @@ import {
   type TerminalWindow,
 } from "@cfo/contracts";
 import { z } from "zod";
+import { randomId } from "./ids.ts";
 import type { Store } from "./record.ts";
 
 /** The parts of a WebSocket the bridge uses: workerd's, or a test's fake. */
@@ -52,8 +69,29 @@ export interface BridgeSocket {
 
 /** Whether the computer can have a terminal now, as the controller sees it. */
 export type TerminalTarget =
-  | { readonly ok: true; readonly generation: number }
+  | {
+      readonly ok: true;
+      readonly generation: number;
+      /**
+       * The supervisor keeps each window's shell in a session that outlives its stream
+       * (`terminal_sessions`, WP3.28). Unknown counts as no.
+       */
+      readonly keepsShells?: boolean;
+    }
   | { readonly ok: false; readonly reason: Exclude<TerminalRefusal, "window_closed"> };
+
+/** How a stream is dialled (WP3.28): a window's first starts its session; later ones attach. */
+export type TerminalDialMode = "new" | "attach";
+
+/** A `terminal_end` owed to the computer's supervisor (WP3.28). */
+export interface TerminalEnd {
+  /** Every session up to this window ends. */
+  readonly window: number;
+  /** The generation whose supervisor it is for; another generation's container is gone. */
+  readonly generation: number;
+  /** The command's operation ID, the same in every delivery. */
+  readonly op: string;
+}
 
 export interface TerminalTiming {
   /** A window's hard deadline after it opens. */
@@ -81,7 +119,10 @@ export const TERMINAL_TIMING: TerminalTiming = {
 
 /** Close codes the browser sees. 4001: closed by the platform, do not reconnect on your own. */
 export const CLOSED_BY_PLATFORM = 4001;
-/** 4002: the computer's side ended (the shell exited, or ttyd went away). */
+/**
+ * 4002: the computer's side ended (the shell exited, or ttyd went away), or a reconnect found the
+ * window's shell gone (WP3.28). The page says the session on the computer ended.
+ */
 export const CLOSED_BY_COMPUTER = 4002;
 
 export interface TerminalDeps {
@@ -92,8 +133,11 @@ export interface TerminalDeps {
   readonly timing?: Partial<TerminalTiming>;
   /** The computer as the controller sees it now. */
   readonly target: () => Promise<TerminalTarget>;
-  /** An upgrade to ttyd on the computer's terminal port; its answer carries `webSocket`. */
-  readonly dial: () => Promise<Response>;
+  /**
+   * An upgrade to ttyd on the computer's terminal port; its answer carries `webSocket`. `mode`
+   * and `window` become ttyd's URL arguments (WP3.28): only WorkspaceDO builds them.
+   */
+  readonly dial: (mode: TerminalDialMode, window: number) => Promise<Response>;
   /** Tells the controller the window is open until `until` (ms), or closed (null). */
   readonly setWindow: (until: number | null) => Promise<void>;
   /** A connected pair: [the end for the browser's response, the end the bridge keeps]. */
@@ -107,9 +151,17 @@ export interface TerminalDeps {
   readonly clearTimer: (handle: unknown) => void;
   /** One structured log line. Never given a capability, a token or terminal data. */
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  /**
+   * A `terminal_end` was recorded (WP3.28): the controller's runner should send it soon. Called
+   * after the write, possibly inside one of the controller's own transitions (`closeNow`), so it
+   * must only schedule, never call back synchronously.
+   */
+  readonly endRecorded?: () => void;
 }
 
 const WINDOW_KEY = "terminal/window";
+/** The `terminal_end` owed to the supervisor (WP3.28). */
+const END_KEY = "terminal/end";
 const CAP_PREFIX = "terminal/cap/";
 const OP_PREFIX = "terminal/op/";
 /** At most this many issued capabilities are kept per window (reconnects, retries). */
@@ -125,8 +177,16 @@ const WindowRecord = z.strictObject({
   until: Millis.nullable(),
   /** The Access session that opened the window: only it may reconnect to the window. */
   sessionId: z.string().max(128).nullable().default(null),
+  /** A stream of this window reached ttyd (WP3.28): every later dial only attaches. */
+  bridged: z.boolean().default(false),
 });
 type WindowRecord = z.infer<typeof WindowRecord>;
+
+const EndRecord = z.strictObject({
+  window: z.number().int().min(1),
+  generation: z.number().int().min(0),
+  op: z.string().regex(/^op_[0-9a-z]{26}$/),
+});
 
 const CapabilityRecord = z.strictObject({
   sub: z.string().min(1).max(256),
@@ -149,6 +209,7 @@ const CLOSED_WINDOW: WindowRecord = {
   generation: null,
   until: null,
   sessionId: null,
+  bridged: false,
 };
 
 /** Why an upgrade was refused; logged, never sent to the browser. */
@@ -195,6 +256,15 @@ function base64url(bytes: Uint8Array): string {
 
 function byteLength(data: string | ArrayBuffer | ArrayBufferView): number {
   return typeof data === "string" ? encoder.encode(data).byteLength : data.byteLength;
+}
+
+/** A close event's code and cleanliness, as numbers and booleans only (never its reason). */
+function closeInfo(event: unknown): { code: number | null; clean: boolean | null } {
+  const e = (typeof event === "object" && event !== null ? event : {}) as Record<string, unknown>;
+  return {
+    code: typeof e.code === "number" ? e.code : null,
+    clean: typeof e.wasClean === "boolean" ? e.wasClean : null,
+  };
 }
 
 function asSendable(data: unknown): string | ArrayBuffer | ArrayBufferView | null {
@@ -282,17 +352,19 @@ export class TerminalBridge {
       await this.#d.setWindow(w.until);
       return this.#issue(w, call.owner);
     }
-    // A new window: everything in the old one ends first.
+    // A new window: everything in the old one ends first, its shell on the computer too.
     this.#endAll("a new terminal window was opened");
     const now = this.#d.now();
-    const next = {
+    const next: WindowRecord = {
       window: w.window + 1,
       open: true,
       generation: target.generation,
       until: now + this.#t.windowMs,
       sessionId: call.owner.sessionId,
+      bridged: false,
     };
     this.#d.store.transaction(() => {
+      this.#endShellOf(w);
       this.#dropCapabilities();
       this.#d.store.put(WINDOW_KEY, next);
       this.#d.store.put(opKey, { window: next.window, at: now });
@@ -300,7 +372,7 @@ export class TerminalBridge {
     });
     await this.#d.setWindow(next.until);
     this.#d.log("terminal_window_opened", { window: next.window, generation: next.generation });
-    return this.#issue(next, call.owner);
+    return this.#issue(next as WindowRecord & { until: number; generation: number }, call.owner);
   }
 
   async #issue(
@@ -347,6 +419,7 @@ export class TerminalBridge {
     this.#endAll(reason);
     if (wasOpen || this.#d.store.keys(CAP_PREFIX, 1).length > 0) {
       this.#d.store.transaction(() => {
+        this.#endShellOf(w);
         this.#dropCapabilities();
         this.#d.store.put(WINDOW_KEY, {
           ...w,
@@ -372,6 +445,7 @@ export class TerminalBridge {
   closeNow(reason: string): void {
     this.#endAll(reason);
     const w = this.#window();
+    this.#endShellOf(w);
     this.#dropCapabilities();
     if (w.open) {
       this.#d.store.put(WINDOW_KEY, {
@@ -440,10 +514,28 @@ export class TerminalBridge {
       return refuse("generation_changed");
     }
 
-    const detached = [...this.#sessions].find(
-      (s) => !s.ended && s.browser === null && s.window === w.window,
+    // The window's stream, still bridged: waiting for this reconnect, or, if its browser stream
+    // still looks attached (half-open), taken over by the new browser (WP3.28). The shell stays.
+    const live = [...this.#sessions].find(
+      (s) => !s.ended && s.window === w.window && s.generation === target.generation,
     );
-    const session = detached ?? (await this.#dialSession(w.window, target.generation));
+    if (live !== undefined) {
+      this.#takeOver(live);
+      return this.#attach(live, true);
+    }
+    // One client at a time on ttyd: any other stream ends first.
+    for (const s of [...this.#sessions]) this.#end(s, "a newer stream replaced it");
+    let mode: TerminalDialMode = "new";
+    if (w.bridged) {
+      // Never a silent new shell (WP3.28): only the window's own session may answer, and only
+      // while it may still exist: with an older supervisor, whose ttyd ended it with its stream,
+      // or once its end is owed (its stream ended for good), the answer is that it ended.
+      if (target.keepsShells !== true || this.#endOwed(w.window, target.generation)) {
+        return this.#sessionGone(w.window);
+      }
+      mode = "attach";
+    }
+    const session = await this.#dialSession(w.window, target.generation, mode);
     if (session === null) return refuse("dial_failed");
     // Checked again: the window may have closed while ttyd answered.
     const after = this.#window();
@@ -451,16 +543,52 @@ export class TerminalBridge {
       this.#end(session, "its window has closed");
       return refuse("window_closed");
     }
-    return this.#attach(session, detached !== undefined);
+    if (!after.bridged) this.#d.store.put(WINDOW_KEY, { ...after, bridged: true });
+    return this.#attach(session, mode === "attach");
   }
 
-  async #dialSession(window: number, generation: number): Promise<Session | null> {
-    // One client at a time on ttyd: any older socket is ended first.
-    for (const s of this.#sessions) this.#end(s, "a newer stream replaced it");
+  /**
+   * The browser stream of `session` is replaced by a new one (WP3.28, B): the old browser end is
+   * closed with 4001, so a page still holding it does not reconnect on its own.
+   */
+  #takeOver(session: Session): void {
+    const old = session.browser;
+    if (old === null) return;
+    session.browser = null;
+    try {
+      old.close(CLOSED_BY_PLATFORM, "terminal closed: the terminal was opened again");
+    } catch {
+      // already closed
+    }
+    this.#d.log("terminal_taken_over", { window: session.window });
+  }
+
+  /**
+   * A reconnect whose shell cannot be reached (WP3.28, C): answered with a stream that closes at
+   * once with 4002, so the page says the session ended. Never a new shell in its place: a code
+   * pasted for a CLI's prompt would run as a command, and bash would keep it in its history.
+   */
+  #sessionGone(window: number): Response {
+    const [client, browser] = this.#d.pair();
+    browser.accept();
+    try {
+      browser.close(CLOSED_BY_COMPUTER, "terminal closed: the session on the computer ended");
+    } catch {
+      // already closed
+    }
+    this.#d.log("terminal_session_gone", { window, code: CLOSED_BY_COMPUTER });
+    return this.#d.upgradeResponse(client);
+  }
+
+  async #dialSession(
+    window: number,
+    generation: number,
+    mode: TerminalDialMode,
+  ): Promise<Session | null> {
     for (let attempt = 0; ; attempt += 1) {
       let socket: BridgeSocket | null = null;
       try {
-        const response = await this.#d.dial();
+        const response = await this.#d.dial(mode, window);
         socket = this.#d.socketOf(response);
         if (socket === null) await response.body?.cancel();
       } catch {
@@ -482,8 +610,12 @@ export class TerminalBridge {
         };
         this.#sessions.add(session);
         socket.addEventListener("message", (event) => this.#fromComputer(session, event.data));
-        socket.addEventListener("close", () => this.#end(session, "closed by the computer", true));
-        socket.addEventListener("error", () => this.#end(session, "computer side error", true));
+        socket.addEventListener("close", (event) =>
+          this.#end(session, "closed by the computer", { byComputer: true, event }),
+        );
+        socket.addEventListener("error", (event) =>
+          this.#end(session, "computer side error", { byComputer: true, event }),
+        );
         return session;
       }
       const wait = this.#t.dialRetryMs[attempt];
@@ -511,7 +643,7 @@ export class TerminalBridge {
         this.#end(session, "a send failed");
       }
     });
-    const detach = () => this.#detach(session, browser);
+    const detach = (event: unknown) => this.#detach(session, browser, event);
     browser.addEventListener("close", detach);
     browser.addEventListener("error", detach);
     for (const chunk of session.buffer) browser.send(chunk);
@@ -539,7 +671,9 @@ export class TerminalBridge {
     }
     const size = byteLength(data);
     if (session.buffered + size > this.#t.bufferBytes) {
-      this.#end(session, "too much output while disconnected");
+      // Only the bridge lets go: a supervisor that keeps shells keeps this one, and a reconnect
+      // attaches to it again (tmux redraws its screen). With an older one, the shell ends here.
+      this.#end(session, "too much output while disconnected", { keepShell: true });
       return;
     }
     const copy =
@@ -553,7 +687,7 @@ export class TerminalBridge {
   }
 
   /** The browser's stream dropped: keep the shell for a reattach while the window is open. */
-  #detach(session: Session, browser: BridgeSocket): void {
+  #detach(session: Session, browser: BridgeSocket, event?: unknown): void {
     if (session.ended || session.browser !== browser) return;
     session.browser = null;
     try {
@@ -570,19 +704,32 @@ export class TerminalBridge {
       session.graceTimer = null;
       this.#end(session, "no reconnect in time");
     }, this.#t.detachedGraceMs);
-    this.#d.log("terminal_detached", { window: session.window });
+    this.#d.log("terminal_detached", { window: session.window, ...closeInfo(event) });
   }
 
-  #end(session: Session, why: string, byComputer = false): void {
+  #end(
+    session: Session,
+    why: string,
+    opts: {
+      /** The computer's side closed: the browser gets 4002. */
+      readonly byComputer?: boolean;
+      /** Only the bridge lets go; the shell on the computer is not ended. */
+      readonly keepShell?: boolean;
+      /** The computer side's close event, for its code. */
+      readonly event?: unknown;
+    } = {},
+  ): void {
     if (session.ended) return;
     session.ended = true;
     this.#sessions.delete(session);
     if (session.graceTimer !== null) this.#d.clearTimer(session.graceTimer);
     session.buffer = [];
     const reason = `terminal closed: ${why}`.slice(0, 120);
+    let sent: number | null = null;
     if (session.browser !== null) {
+      sent = opts.byComputer === true ? CLOSED_BY_COMPUTER : CLOSED_BY_PLATFORM;
       try {
-        session.browser.close(byComputer ? CLOSED_BY_COMPUTER : CLOSED_BY_PLATFORM, reason);
+        session.browser.close(sent, reason);
       } catch {
         // already closed
       }
@@ -593,13 +740,65 @@ export class TerminalBridge {
     } catch {
       // already closed
     }
-    this.#d.log("terminal_stream_ended", { window: session.window, reason: why });
+    // The shell on the computer outlives its stream (WP3.28): it is ended explicitly.
+    if (opts.keepShell !== true) this.#recordEnd(session.window, session.generation);
+    const computer = closeInfo(opts.event);
+    this.#d.log("terminal_stream_ended", {
+      window: session.window,
+      reason: why,
+      code: sent,
+      computerCode: computer.code,
+      computerClean: computer.clean,
+    });
     // At most one session exists (ttyd takes one client), so none is left to check.
-    this.#disarmCheck();
+    if (this.#sessions.size === 0) this.#disarmCheck();
   }
 
   #endAll(why: string): void {
     for (const s of [...this.#sessions]) this.#end(s, why);
+  }
+
+  /** A window that reached ttyd owes its shell's end, if it still belongs to a generation. */
+  #endShellOf(w: WindowRecord): void {
+    if (w.bridged && w.generation !== null) this.#recordEnd(w.window, w.generation);
+  }
+
+  /**
+   * Records that every session up to `window` of `generation` must end on the computer: one
+   * pending `terminal_end`, raised to the newest window. A newer generation's replaces an older
+   * one's (the older container is gone with its sessions).
+   */
+  #recordEnd(window: number, generation: number): void {
+    const prior = EndRecord.safeParse(this.#d.store.get(END_KEY));
+    if (prior.success) {
+      if (prior.data.generation > generation) return;
+      if (prior.data.generation === generation && prior.data.window >= window) return;
+    }
+    const keep = prior.success && prior.data.generation === generation;
+    this.#d.store.put(END_KEY, {
+      window: keep ? Math.max(prior.data.window, window) : window,
+      generation,
+      op: randomId("op"),
+    });
+    this.#d.endRecorded?.();
+  }
+
+  /** Whether the pending `terminal_end` covers `window` of `generation`. */
+  #endOwed(window: number, generation: number): boolean {
+    const end = this.pendingEnd();
+    return end !== null && end.generation === generation && end.window >= window;
+  }
+
+  /** The `terminal_end` owed to the supervisor, if any (the controller's runner sends it). */
+  pendingEnd(): TerminalEnd | null {
+    const parsed = EndRecord.safeParse(this.#d.store.get(END_KEY));
+    return parsed.success ? parsed.data : null;
+  }
+
+  /** The supervisor answered `op`, or it can no longer be delivered: it is owed no more. */
+  endSettled(op: string): void {
+    const parsed = EndRecord.safeParse(this.#d.store.get(END_KEY));
+    if (!parsed.success || parsed.data.op === op) this.#d.store.delete(END_KEY);
   }
 
   #armCheck(): void {

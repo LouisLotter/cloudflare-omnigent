@@ -22,6 +22,10 @@
 //     cancelled by the runner, and a bounded sign-in lease that counts for sleep and the start
 //     deadline as an open terminal does. The computer's status (`status.ts`) is composed here
 //     from the supervisor's metrics and this record, and logged as `computer_status`.
+//   - The setup terminal's shells (WP3.28): a supervisor with `terminal_sessions` keeps them in
+//     sessions that outlive their streams. The runner sends the terminal bridge's pending
+//     `terminal_end` first in every pass, a stop's final capture asks the supervisor to end every
+//     session (`endTerminals`), and a page sign-in closes the terminal as a sign-out does.
 
 import {
   CHECKPOINT_POLICY_V1,
@@ -298,11 +302,20 @@ export interface ControllerDeps {
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
   /**
    * The setup terminal (WP3.5): ends every stream at once, synchronously, when a transition starts
-   * a credential-sensitive step (a stop's checkpoints, "Stop without saving", a sign-out run), so
-   * none of the step's commands runs while a stream is open. It must not call back into the
-   * controller.
+   * a credential-sensitive step (a stop's checkpoints, "Stop without saving", a sign-out run, a
+   * page sign-in), so none of the step's commands runs while a stream is open. It must not call
+   * back into the controller. `pendingEnd` and `endSettled` (WP3.28): the `terminal_end` the
+   * runner owes the supervisor, recorded by the bridge with each close.
    */
-  readonly terminal?: { closeNow(reason: string): void };
+  readonly terminal?: {
+    closeNow(reason: string): void;
+    pendingEnd?(): {
+      readonly window: number;
+      readonly generation: number;
+      readonly op: string;
+    } | null;
+    endSettled?(op: string): void;
+  };
   /**
    * A staging installation (WP3.23): the page's RC-53 switch is offered and applied. Never true
    * on production: WorkspaceDO sets it only from the staging tool's variable.
@@ -1847,6 +1860,9 @@ export class WorkspaceController {
           deadlineMs: this.#t.signInDeadlineMs ?? SIGN_IN_DEADLINE_MS,
         });
         d.signIn = started.record;
+        // The setup terminal closes first, its shell with it (WP3.28): a manual sign-in in it
+        // never races the page's.
+        this.#closeTerminal(d, "a sign-in from the page started");
         this.#log("sign_in_started", { service: input.service, attempt: started.attempt.attempt });
         return started.attempt;
       }),
@@ -2062,6 +2078,74 @@ export class WorkspaceController {
     return r === null
       ? []
       : sessionAttempts(r.signIn, session, r.lifecycle.generation, this.#now());
+  }
+
+  /**
+   * Whether this generation's supervisor keeps the setup terminal's shells in sessions that
+   * outlive their streams (WP3.28): its `hello` named `terminal_sessions`.
+   */
+  #keepsShells(r: ComputerRecord): boolean {
+    const info = r.supervisorInfo;
+    return (
+      info !== null &&
+      info.generation === r.lifecycle.generation &&
+      info.features.includes("terminal_sessions")
+    );
+  }
+
+  /** For the page front: whether the terminal may reattach to a shell after a reset. */
+  terminalShellsKept(): boolean {
+    const r = this.#load();
+    return r !== null && this.#keepsShells(r);
+  }
+
+  /** The terminal bridge recorded a shell's end (WP3.28): the runner sends it now. */
+  terminalEndOwed(): void {
+    this.#kick();
+  }
+
+  /**
+   * The setup terminal's shell end owed to the supervisor (WP3.28), recorded by the bridge with
+   * each close. Sent until answered. Dropped when it is for another generation (that container
+   * is gone with its sessions) or the supervisor does not know the command (its ttyd ends the
+   * shell with its stream). Not while a capture pauses the computer: the supervisor refuses it
+   * then, and the capture's own `endTerminals` covers a stop.
+   */
+  async #advanceTerminalEnd(r: ComputerRecord): Promise<boolean> {
+    const terminal = this.#d.terminal;
+    const end = terminal?.pendingEnd?.() ?? null;
+    if (terminal === undefined || end === null) return false;
+    const settle = (event: string, fields: Record<string, unknown>): true => {
+      terminal.endSettled?.(end.op);
+      this.#log(event, { window: end.window, generation: end.generation, ...fields });
+      return true;
+    };
+    if (end.generation !== r.lifecycle.generation) {
+      return settle("terminal_end_dropped", { reason: "another_generation" });
+    }
+    const info = r.supervisorInfo;
+    if (info !== null && info.generation === end.generation && !this.#keepsShells(r)) {
+      return settle("terminal_end_dropped", { reason: "unsupported" });
+    }
+    if (r.capture !== null && (r.capture.phase === "command" || r.capture.phase === "poll")) {
+      return false;
+    }
+    try {
+      const reply = await this.#command({
+        type: "terminal_end",
+        ...this.#envelope(r, end.op),
+        window: end.window,
+      });
+      return settle("terminal_end_delivered", { remaining: reply.remaining });
+    } catch (error) {
+      if (errorCodeOf(error) === "bad_request") {
+        return settle("terminal_end_dropped", { reason: "unsupported" });
+      }
+      if (errorCodeOf(error) !== "unavailable") {
+        this.#log("terminal_end_failed", { window: end.window, error: describe(error) });
+      }
+      return false;
+    }
   }
 
   /** Whether a sign-in cancel is still owed to the running generation's supervisor. */
@@ -2413,7 +2497,9 @@ export class WorkspaceController {
       } else if (state === "stopping") {
         if (await this.#advanceStopping(r, port)) return true;
       } else if (restored(state)) {
-        // Sign-in cancels go first: a stop's credential barrier and a sign-out wait for them.
+        // A setup terminal's shell end goes first (WP3.28), then sign-in cancels: a stop's
+        // credential barrier and a sign-out wait for those.
+        if (await this.#advanceTerminalEnd(r)) return true;
         if (await this.#advanceSignIns(r)) return true;
         if (await this.#advanceDeliver(r)) return true;
         const check = await this.#advanceStagingCheck(r);
@@ -2905,6 +2991,10 @@ export class WorkspaceController {
                   ...(c.kind === "base" || c.parent === null
                     ? { kind: "base" as const, parent: null }
                     : { kind: "delta" as const, parent: c.parent }),
+                  // A stop's final capture ends the terminal's sessions first (WP3.28).
+                  ...(c.purpose === "stop" && this.#keepsShells(r)
+                    ? { endTerminals: true as const }
+                    : {}),
                 }
               : {
                   type: "job_status",
