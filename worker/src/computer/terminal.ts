@@ -246,6 +246,11 @@ interface Session {
   buffered: number;
   graceTimer: unknown;
   ended: boolean;
+  /**
+   * Dialled for an upgrade that has not yet decided to keep it (WP3.28): no other upgrade may
+   * take it over, and letting it go owes nothing, since it started nothing on the computer.
+   */
+  provisional: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -542,14 +547,26 @@ export class TerminalBridge {
         this.#takeOver(live);
         return this.#attach(live, true);
       }
+      // Another upgrade's dial for this window has just answered and is being decided: this one
+      // gives way (the page asks again, and then finds that stream to take over) (Codex r2-3).
+      if ([...this.#sessions].some((s) => s.provisional && s.window === now.window)) {
+        return refuse("dial_failed");
+      }
       // One client at a time on ttyd: any other stream ends first.
-      for (const s of [...this.#sessions]) this.#end(s, "a newer stream replaced it");
+      for (const s of [...this.#sessions]) {
+        this.#end(s, "a newer stream replaced it", { keepShell: s.provisional });
+      }
       const mode = this.#dialMode(now, target);
       // Never a silent new shell (WP3.28): only the window's own session may answer, and only
       // while it may still exist.
       if (mode === null) return this.#sessionGone(now.window);
       const session = await this.#dialSession(now.window, target.generation, mode);
       if (session === null) return refuse("dial_failed");
+      if (session.ended) {
+        // Ended before it was decided (its window closed, or ttyd let it go): decided again.
+        if (round >= 2) return refuse("dial_failed");
+        continue;
+      }
       const after = this.#window();
       if (!this.#isOpen(after) || after.window !== cap.window) {
         this.#end(session, "its window has closed", { keepShell: true });
@@ -573,7 +590,7 @@ export class TerminalBridge {
   /** The window's stream still bridged in this instance, attached or waiting for a reattach. */
   #liveSession(window: number, generation: number): Session | undefined {
     return [...this.#sessions].find(
-      (s) => !s.ended && s.window === window && s.generation === generation,
+      (s) => !s.ended && !s.provisional && s.window === window && s.generation === generation,
     );
   }
 
@@ -652,6 +669,7 @@ export class TerminalBridge {
           buffered: 0,
           graceTimer: null,
           ended: false,
+          provisional: true,
         };
         this.#sessions.add(session);
         socket.addEventListener("message", (event) => this.#fromComputer(session, event.data));
@@ -667,15 +685,23 @@ export class TerminalBridge {
 
   /**
    * The computer's side of `session` closed. ttyd's own close (its command ended: the shell
-   * exited, or an `attach` found no session) is a close frame: the session ended, and the browser
-   * is told so (4002). A dropped connection (code 1006, or an error) is not: the shell may still be
-   * there, so it is not ended, and the browser reconnects (4003). Without this, a shutdown of this
-   * object that ran the close callback before it went would owe the shell's end, and the
-   * reconnect it is meant to survive would be refused (Codex WP3.28 r1, question 1).
+   * exited, or an `attach` found no session) is a close frame, whatever its code (ttyd sends 1006
+   * for a command that exited non-zero): the session ended, and the browser is told so (4002). A
+   * dropped connection (no close frame: workerd's 1006 with `wasClean` false, or an error) is
+   * not: the shell may still be there, so it is not ended, and the browser reconnects (4003).
+   * Without this, a shutdown of this object that ran the close callback before it went would owe
+   * the shell's end, and the reconnect it is meant to survive would be refused (Codex WP3.28 r1,
+   * question 1; r2-2). An event without `wasClean` is judged by its code.
    */
   #computerClosed(session: Session, event: unknown, error: boolean): void {
     const info = closeInfo(event);
-    if (!error && info.code !== null && info.code !== 1006 && info.clean !== false) {
+    const byTtyd =
+      !error &&
+      (info.clean === true || (info.clean === null && info.code !== null && info.code !== 1006));
+    if (session.provisional) {
+      // Before any browser was attached nothing was started: nothing is owed.
+      this.#end(session, "closed by the computer before use", { keepShell: true, event });
+    } else if (byTtyd) {
       this.#end(session, "closed by the computer", { byComputer: true, event });
     } else {
       this.#end(session, "the connection to the computer dropped", { dropped: true, event });
@@ -690,6 +716,9 @@ export class TerminalBridge {
       this.#d.clearTimer(session.graceTimer);
       session.graceTimer = null;
     }
+    // A browser end this replaces is always told (never left open and silent; Codex r2-3).
+    this.#takeOver(session);
+    session.provisional = false;
     session.browser = browser;
     browser.addEventListener("message", (event) => {
       if (session.browser !== browser || session.ended) return;

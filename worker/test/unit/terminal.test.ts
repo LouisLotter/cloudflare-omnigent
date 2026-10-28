@@ -43,6 +43,8 @@ function harness(start = 1_000_000_000_000) {
     windows,
     target: { ok: true, generation: 3 } as TerminalTarget,
     targetFails: false,
+    /** The controller's answer waits for this first, while set (interleavings, WP3.28). */
+    targetHold: null as Promise<void> | null,
     bridge: null as unknown as TerminalBridge,
     /** The browser end a test keeps (WP3.28). */
     browser: null as FakeSocket | null,
@@ -54,6 +56,7 @@ function harness(start = 1_000_000_000_000) {
         store,
         now: () => h.now,
         target: async () => {
+          if (h.targetHold !== null) await h.targetHold;
           if (h.targetFails) throw new Error("the controller cannot be asked");
           return h.target;
         },
@@ -822,6 +825,50 @@ describe("shells kept on the computer (WP3.28, FH-38)", () => {
     const again = browserOf(await reconnect(h));
     expect(again.closed?.code).toBe(CLOSED_BY_COMPUTER);
     expect(h.ttyd.dials).toBe(1);
+  });
+
+  it("never leaves a browser open and silent, however two upgrades interleave (Codex r2-3)", async () => {
+    for (let turns = 0; turns <= 12; turns += 1) {
+      const h = harness();
+      h.target = KEPT;
+      const first = await h.open();
+      const second = await h.open(OP(2), 1);
+      let releaseDial = () => {};
+      h.ttyd.holds.push(new Promise<void>((resolve) => (releaseDial = resolve)));
+      const a = h.connect(first.capability);
+      await until(() => h.ttyd.dials === 1);
+      let releaseTarget = () => {};
+      h.targetHold = new Promise<void>((resolve) => (releaseTarget = resolve));
+      const b = h.connect(second.capability);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      h.targetHold = null;
+      // A's dial answers, then B's look at the window comes `turns` microtasks later.
+      releaseDial();
+      for (let i = 0; i < turns; i += 1) await Promise.resolve();
+      releaseTarget();
+      const answers = await Promise.all([a, b]);
+      const open = answers
+        .filter((r): r is UpgradeResponse => r instanceof UpgradeResponse)
+        .map((r) => r.client)
+        .filter((c) => c.closed === null);
+      expect(open.length, `turns=${turns}`).toBeLessThanOrEqual(1);
+      for (const client of open) {
+        const shell = h.ttyd.shells.find((x) => x.closed === null);
+        client.send("0ping");
+        expect(shell?.received.at(-1), `turns=${turns}`).toBe("0ping");
+      }
+    }
+  });
+
+  it("judges ttyd's own close by its frame: a 1006 frame is the session's end, no frame a drop", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    // ttyd closes with a 1006 frame when its command exits non-zero (an attach that found
+    // nothing, before the wrapper exited 0 for it): workerd reports it clean.
+    (h.ttyd.shell.peer as FakeSocket).emit("close", { code: 1006, wasClean: true });
+    expect(browser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1 });
   });
 
   it("tells the controller each time an end is recorded, and not otherwise", async () => {
