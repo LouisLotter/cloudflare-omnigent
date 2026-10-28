@@ -1409,6 +1409,11 @@
               "minLength": 1,
               "type": "string"
             },
+            "terminals": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
             "versions": {
               "additionalProperties": false,
               "properties": {
@@ -1492,6 +1497,25 @@
       "required": [
         "type",
         "rc53"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "remaining": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "const": "terminal_end",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "remaining"
       ],
       "type": "object"
     }
