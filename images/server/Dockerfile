@@ -30,7 +30,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=d2e98c9e7bbd885c5c7fc72ba01ec5f0d39bcfd9
+ARG OMNIGENT_COMMIT=72ba29a4f9aed97f08bcd44d3b7d8b2b260b72d6
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
 ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
