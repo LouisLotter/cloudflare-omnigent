@@ -32,3 +32,6 @@ known-first-party = ["cloudflare_omnigent"]
 testpaths = ["tests"]
 # The package is imported from this directory: the uv project is not installed (package = false).
 pythonpath = ["."]
+# A test still running after 120 s dumps every thread's stack (pytest's faulthandler), so a hang
+# shows where it is long before CI's job limit cancels the run silently (PR #32's first run).
+faulthandler_timeout = 120
