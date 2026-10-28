@@ -28,13 +28,16 @@
 // its own, landed late.
 //
 // A deployment that teardown or sweep --yes removes may have been a staging installation's
-// platform Worker (scripts/bootstrap, `plan --staging`). The R2 user API token that the
-// bootstrap made for that installation, named `<deployment>-r2--<installation ID>` with every
-// resource in the staging account, goes with it (scripts/bootstrap/remove.ts). Teardown deletes
-// it once the deployment's record is gone, and resumes that for a deployment an interrupted
-// teardown already removed. Sweep reports every such token whose deployment the registry no
-// longer holds, and deletes them with --yes. A token kept because a bootstrap run holds its
-// installation, or one whose delete failed, is reported, and the command exits 1.
+// platform Worker (scripts/bootstrap, `plan --staging`). The R2 user API tokens that the
+// bootstrap made for that installation go with it (scripts/bootstrap/remove.ts): the ones its
+// state file records and, where the login may list tokens, any named for the deployment
+// (`<deployment>-r2--<installation ID>--<time>`, every resource in the staging account).
+// Teardown deletes them once the deployment's record is gone, and resumes that for a
+// deployment an interrupted teardown already removed. Sweep reports such tokens of every
+// deployment the registry no longer holds, and deletes them with --yes. cf's OAuth login may not
+// delete API tokens (403): a token left so is named, with the one link and click that delete it
+// (it also expires a day after its staging deployments would). A token left, kept because a
+// bootstrap run holds its installation, or whose delete failed makes the command exit 1.
 //
 // A Durable Object binding may name another deployment in script_name if the registry shows it
 // deployed and owned by the same --owner. Anything a Wrangler configuration cannot declare goes
@@ -85,8 +88,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { cfTokenApi } from "../bootstrap/cloud.ts";
-import { removeStagingTokens } from "../bootstrap/remove.ts";
-import { workerLockPath } from "../bootstrap/state.ts";
+import { installationStateFiles, removeStagingTokens } from "../bootstrap/remove.ts";
+import { statePathFor, workerLockPath } from "../bootstrap/state.ts";
 import {
   cliCloud,
   fileStore,
@@ -157,7 +160,12 @@ function context(config: StagingConfig, command: string): Context {
  * registry no longer holds: deleted, or with `apply` false only reported. Returns how many it
  * found. A problem is reported and makes the command exit 1, after the teardown's own result.
  */
-function installationTokens(ctx: Context, named: (d: string) => boolean, apply: boolean): number {
+function installationTokens(
+  ctx: Context,
+  named: (d: string) => boolean,
+  apply: boolean,
+  stateFiles: () => readonly string[],
+): number {
   const holder = `pid ${process.pid}, stg.ts R2 token cleanup`;
   const gone = (deployment: string) =>
     named(deployment) && !ctx.store.load().some((d) => d.name === deployment);
@@ -182,9 +190,11 @@ function installationTokens(ctx: Context, named: (d: string) => boolean, apply: 
       },
       apply,
       log: (message) => console.log(message),
+      stateFiles,
     });
     for (const problem of result.problems) console.error(`stg: ${problem}`);
-    if (result.problems.length > 0) process.exitCode = 1;
+    // Tokens left for the person (named above, with the click) mean the cleanup is not done.
+    if (result.problems.length > 0 || result.left.length > 0) process.exitCode = 1;
     return result.found.length;
   } catch (error) {
     console.error(
@@ -314,14 +324,24 @@ function main(): void {
       // A deployment whose record an interrupted teardown already removed: only its token is left.
       const recorded = ctx.store.load().some((d) => d.name === name);
       if (recorded) teardown(ctx, name);
-      const found = installationTokens(ctx, (d) => d === name, true);
+      const found = installationTokens(
+        ctx,
+        (d) => d === name,
+        true,
+        () => [statePathFor(name)],
+      );
       if (!recorded && found === 0) throw new Error(`no recorded deployment named ${name}`);
       return;
     }
     case "sweep": {
       const ctx = context(loadConfig(), command);
       const failures = sweep(ctx, values.yes);
-      installationTokens(ctx, () => true, values.yes);
+      installationTokens(
+        ctx,
+        () => true,
+        values.yes,
+        () => installationStateFiles(),
+      );
       if (failures.length > 0) throw new Error(`teardown failed for:\n  ${failures.join("\n  ")}`);
       return;
     }
