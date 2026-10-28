@@ -1,18 +1,19 @@
 // The installer's bootstrap script (WP2.4). It runs on the installer's laptop, with the
 // installer's Wrangler login (deploys, secret names) and `cf` login (Workers Logs, the Access
-// application and the deployed version, read-only; and the release, one bulk secrets change),
-// and makes an installation's owner exist before anyone can reach it. One run at a time per
-// account and Worker name: a second one stops at once ("busy").
+// application and the deployed version, read-only; the R2 buckets and the R2 token; and the
+// release, one bulk secrets change), and makes an installation's owner exist before anyone can
+// reach it. One run at a time per account and Worker name: a second one stops at once ("busy").
 //
-//   node scripts/bootstrap/bootstrap.ts plan --hostname <host> --account <id> \
+//   node scripts/bootstrap/bootstrap.ts plan --hostname <host> [--account <id>] \
 //       --owner-email <address> --owner-username <name> \
-//       --replica-url s3://<bucket>/<path> --replica-endpoint https://<account>.r2.cloudflarestorage.com \
+//       --replica-url s3://<bucket>/<path> [--replica-endpoint <url>] \
 //       [--artifacts-url s3://<bucket>[/<prefix>]] [--artifacts-endpoint <url>] \
 //       [--platform-worker cloudflare-omnigent] [--web-worker cloudflare-omnigent-web] [--state <file>]
-//   node scripts/bootstrap/bootstrap.ts buckets [--platform-worker <name> | --state <file>]
 //   node scripts/bootstrap/bootstrap.ts run [--platform-worker <name> | --state <file>]
 //       [--secrets-stdin] [--wait-minutes 30] [--no-verify]
 //   node scripts/bootstrap/bootstrap.ts status [--platform-worker <name> | --state <file>] [--logs]
+//   node scripts/bootstrap/bootstrap.ts buckets [--platform-worker <name> | --state <file>]
+//   node scripts/bootstrap/bootstrap.ts remove-r2-token [--platform-worker <name> | --state <file>] [--yes]
 //
 // For the guarded staging tool instead of an account (cfo-stg-<base>-platform and -web, the
 // account, zone and owner address from the staging tool's config; a file replica, which lives
@@ -20,8 +21,10 @@
 //   node scripts/bootstrap/bootstrap.ts plan --staging <base> --staging-owner <wp> \
 //       --owner-username <name> --replica-url file:///replica [--days 1]
 //
-// `plan` records the installation in a state file (state.ts) and touches nothing at Cloudflare.
-// It generates the installation ID and the owner pin; the owner's address is not kept. With an
+// `plan` records the installation in a state file (state.ts) and changes nothing at Cloudflare.
+// It generates the installation ID and the owner pin; the owner's address is not kept. Without
+// --account it asks cf for the one account the installer's login reaches (several: it names
+// the way to choose). An S3 replica's endpoint defaults to the account's R2 endpoint. With an
 // S3 replica, Omnigent's artifacts (uploaded files, session resources) get a bucket of their
 // own, `<platform Worker>-artifacts` unless --artifacts-url names another, at the replica's
 // endpoint unless --artifacts-endpoint names another: the container's disk is lost at every
@@ -29,22 +32,32 @@
 // (cookie SameSite=lax, the owner's address as the only rule, no bypass, no service token):
 // `run` checks it and never changes it.
 //
-// `buckets` creates the plan's R2 buckets that are missing (the replica's and the artifacts'),
-// with the installer's `cf` login, and changes nothing else. Then make one R2 API token with
-// Object Read & Write on exactly those buckets: `run` asks for its two values once, and sets
-// them for both uses, under their own names (the replica's for Litestream, the artifacts' for
-// Omnigent). A staging installation's buckets come from the staging tool's deployments instead;
-// for it, `buckets` only checks them. `run` refuses to make the first deploy while a bucket is
-// missing.
-//
 // `run` does the rest (machine.ts) and can be repeated at any point, also after a crash: it
-// continues where the last run stopped. It reads the owner's password (and the R2 token's
-// values) only when they must be uploaded: from a JSON object on stdin with --secrets-stdin
-// ({"ownerPassword": …, "replicaAccessKeyId": …, "replicaSecretAccessKey": …}, and optionally
-// "artifactsAccessKeyId" and "artifactsSecretAccessKey" for a second token; without them the
-// replica's serve both buckets), or else from a prompt. Exit status: 0 done; 2 still waiting for the owner to be initialized
-// and durable (run again); 3 released, but the check after the version switch has not passed
-// yet (run again); 1 an error or a refusal.
+// continues where the last run stopped. Before the first deploy it creates the plan's R2
+// buckets that are missing (a staging installation's come from the staging tool, and are only
+// checked), and the installation's R2 token: a user API token with object read and write on
+// exactly those buckets, made with the installer's `cf` login (r2-token.ts). Its key pair goes
+// to the platform Worker for both uses, under their own names (the replica's for Litestream,
+// the artifacts' for Omnigent); its value is never shown or kept, and its ID is recorded so
+// that `remove-r2-token` can delete it. A token made by an earlier run whose pair never reached
+// the Worker is retired the same way. A login that may not make API tokens (403) gets the
+// dashboard step in one sentence and, in a terminal, a prompt for that token's two values.
+// The owner's password is read only when it must be uploaded: from a JSON object on stdin with
+// --secrets-stdin ({"ownerPassword": …}, optionally with an R2 token's values made by hand,
+// "replicaAccessKeyId" and "replicaSecretAccessKey", and "artifactsAccessKeyId" and
+// "artifactsSecretAccessKey" for a second token; given values are used instead of making a
+// token), or else from a prompt. Exit status: 0 done; 2 still waiting for the owner to be
+// initialized and durable (run again); 3 released, but the check after the version switch has
+// not passed yet (run again); 1 an error or a refusal.
+//
+// `buckets` creates (or, for staging, checks) the plan's buckets without deploying; `run` does
+// the same itself. `remove-r2-token` deletes the installation's R2 tokens, a step of removing
+// the installation: it refuses while a Worker with the platform Worker's name exists unless
+// --yes. cf's OAuth login may make API tokens but not delete them (403): then it names each
+// token to delete, with the one link and click, and exits 1; run again once they are deleted,
+// it reads each by its ID and finds them gone. The staging tool's teardown and sweep do the
+// same for a staging installation's tokens, whose state file therefore stays at its default
+// path (--state is refused for one).
 //
 // Afterwards the owner signs in to Omnigent at https://<host> with that username and password
 // (behind Access), and should change the password there.
@@ -57,7 +70,15 @@ import { parseArgs } from "node:util";
 import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
 import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
 import { acquireLock } from "../staging/lock.ts";
-import { accountCloud, bucketExists, ensureBuckets, queryWorkerLogs } from "./cloud.ts";
+import {
+  accountCloud,
+  bucketExists,
+  cfTokenApi,
+  ensureBuckets,
+  queryWorkerLogs,
+  soleAccount,
+  workerInstallation,
+} from "./cloud.ts";
 import { decide, parseLogs } from "./events.ts";
 import {
   BootstrapRefusal,
@@ -65,6 +86,8 @@ import {
   DEFAULT_RUN_OPTIONS,
   runBootstrap,
 } from "./machine.ts";
+import type { S3Credentials } from "./r2-token.ts";
+import { removeInstallationToken, withInstallationLocks } from "./remove.ts";
 import {
   bucketsOf,
   defaultArtifactsUrl,
@@ -72,12 +95,13 @@ import {
   installationProblems,
   newInstallationId,
   passwordProblem,
+  r2Endpoint,
   type SuppliedSecrets,
   type Target,
   usernameProblem,
 } from "./settings.ts";
 import { stagingCloud } from "./staging.ts";
-import { fileStateStore, resourceLockPaths, statePathFor } from "./state.ts";
+import { fileStateStore, resourceLockPaths, stagingStateProblem, statePathFor } from "./state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -135,14 +159,17 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
     email = config.ownerEmail;
   } else {
     target = { kind: "account" };
-    accountId = required("account");
+    // The one account the installer's cf login reaches, unless named (read-only).
+    accountId = text("account") ?? soleAccount(spawnRunner(""));
     hostname = required("hostname");
     email = required("owner-email");
     platformWorker = text("platform-worker") ?? "cloudflare-omnigent";
     webWorker = text("web-worker") ?? "cloudflare-omnigent-web";
   }
-  const endpoint = text("replica-endpoint");
   const replicaUrl = required("replica-url");
+  // An S3 replica in R2: the account's endpoint, unless another is named.
+  const endpoint =
+    text("replica-endpoint") ?? (replicaUrl.startsWith("s3:") ? r2Endpoint(accountId) : undefined);
   // A file replica (staging tests) keeps the artifacts on the container's disk unless named.
   const artifactsUrl =
     text("artifacts-url") ??
@@ -171,6 +198,8 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
   const problems = installationProblems(installation);
   if (problems.length > 0) throw new Error(problems.join("; "));
   const path = text("state") ?? statePathFor(platformWorker);
+  const misplaced = stagingStateProblem(installation, path);
+  if (misplaced !== undefined) throw new Error(misplaced);
   if (existsSync(path)) {
     throw new Error(
       `${path} exists: this installation is planned already; run it, or remove the file by hand`,
@@ -182,11 +211,9 @@ async function plan(values: Record<string, string | boolean | undefined>): Promi
     `planned ${installation.installationId}: ${platformWorker} and ${webWorker} for https://${hostname}; state in ${path}`,
   );
   const buckets = bucketsOf(installation);
-  if (buckets.length > 0) {
-    console.log(
-      `R2 buckets: ${buckets.join(", ")}. Next: bootstrap.ts buckets, then one R2 token with Object Read & Write on exactly these buckets.`,
-    );
-  }
+  console.log(
+    `${buckets.length > 0 ? `R2 buckets: ${buckets.join(", ")}; \`run\` creates them and their token. ` : ""}Next: bootstrap.ts run.`,
+  );
 }
 
 /** The plan's R2 buckets: created when missing in the installer's account, checked in staging. */
@@ -211,9 +238,6 @@ function buckets(path: string): number {
   for (const name of names) {
     console.log(`bootstrap: R2 bucket ${name}: ${created.includes(name) ? "created" : "exists"}`);
   }
-  console.log(
-    "bootstrap: next, one R2 API token with Object Read & Write on exactly these buckets; `run` asks for its two values once.",
-  );
   return 0;
 }
 
@@ -247,10 +271,7 @@ function prompt(question: string): Promise<string> {
   });
 }
 
-async function suppliedSecrets(
-  fromStdin: boolean,
-  needsReplica: boolean,
-): Promise<SuppliedSecrets> {
+async function suppliedSecrets(fromStdin: boolean): Promise<SuppliedSecrets> {
   if (fromStdin) {
     let parsed: unknown;
     try {
@@ -277,13 +298,17 @@ async function suppliedSecrets(
   const problem = passwordProblem(ownerPassword);
   if (problem) throw new Error(problem);
   if ((await prompt("Again: ")) !== ownerPassword) throw new Error("the passwords differ");
-  if (!needsReplica) return { ownerPassword };
-  // One token for the replica's and the artifacts' buckets: its values serve both.
-  const replicaAccessKeyId = await prompt(
-    "The R2 token's access key ID, for the replica's and the artifacts' buckets (not shown): ",
-  );
-  const replicaSecretAccessKey = await prompt("The R2 token's secret access key (not shown): ");
-  return { ownerPassword, replicaAccessKeyId, replicaSecretAccessKey };
+  // The R2 credentials come from the token `run` makes, or from askR2.
+  return { ownerPassword };
+}
+
+/** A hand-made R2 token's two values, from the terminal, after the run showed the step. */
+async function askR2(step: string): Promise<S3Credentials> {
+  if (!process.stdin.isTTY) throw new Error(`${step} Then run again in a terminal.`);
+  const accessKeyId = (await prompt("Its Access Key ID (not shown): ")).trim();
+  const secretAccessKey = (await prompt("Its Secret Access Key (not shown): ")).trim();
+  if (accessKeyId === "" || secretAccessKey === "") throw new Error("both values are needed");
+  return { accessKeyId, secretAccessKey };
 }
 
 async function run(values: Record<string, string | boolean | undefined>, path: string) {
@@ -297,29 +322,36 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       releases.push(acquireLock(lock, 0, holder));
     }
     const installation = store.load().installation;
-    // The first deploy needs the plan's buckets, which the R2 token must cover (G2-DUR-001).
+    const misplaced = stagingStateProblem(installation, path);
+    if (misplaced !== undefined) throw new BootstrapRefusal(misplaced);
+    const runner = spawnRunner(installation.accountId);
+    // The first deploy needs the plan's buckets, which the R2 token covers (G2-DUR-001): created
+    // here when missing; a staging installation's come from the staging tool.
     if (store.load().journal.platformDeployedAt === undefined) {
-      const runner = spawnRunner(installation.accountId);
-      const missing = bucketsOf(installation).filter((name) => !bucketExists(runner, name));
-      if (missing.length > 0) {
-        throw new BootstrapRefusal(
-          `missing R2 buckets: ${missing.join(", ")}. Run bootstrap.ts buckets first, then make the R2 token cover them`,
-        );
+      const names = bucketsOf(installation);
+      if (installation.target.kind === "account") {
+        for (const name of ensureBuckets(runner, names)) {
+          console.log(`bootstrap: created the R2 bucket ${name}`);
+        }
+      } else {
+        const missing = names.filter((name) => !bucketExists(runner, name));
+        if (missing.length > 0) {
+          throw new BootstrapRefusal(
+            `missing R2 buckets: ${missing.join(", ")}; a staging installation's buckets come from the staging tool (a deployment that declares them)`,
+          );
+        }
       }
     }
     // The secrets are read once, before anything else, only if this run will upload them.
     const fromStdin = values["secrets-stdin"] === true;
-    const supplied = fromStdin ? await suppliedSecrets(true, false) : undefined;
+    const supplied = fromStdin ? await suppliedSecrets(true) : undefined;
     let prompted: SuppliedSecrets | undefined;
-    // An R2 token for the replica's bucket, the artifacts' or both.
-    const needsReplica =
-      installation.replica.url.startsWith("s3:") || installation.artifacts !== undefined;
     if (
       !fromStdin &&
       process.stdin.isTTY &&
       store.load().journal.platformDeployedAt === undefined
     ) {
-      prompted = await suppliedSecrets(false, needsReplica);
+      prompted = await suppliedSecrets(false);
     }
     const base = {
       platform: readWranglerConfig(join(WORKER, "wrangler.jsonc"), WORKER).raw,
@@ -345,6 +377,9 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
           }
           return given;
         },
+        r2Tokens: cfTokenApi(runner),
+        // Only a terminal can answer; stdin carries the JSON with --secrets-stdin.
+        ...(!fromStdin && process.stdin.isTTY ? { askR2 } : {}),
         random: (n) => new Uint8Array(randomBytes(n)),
         now: () => Date.now(),
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -374,6 +409,31 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
   } finally {
     for (const release of releases.reverse()) release();
   }
+}
+
+/** Deletes the installation's R2 token: a step of removing the installation. */
+function removeToken(path: string, yes: boolean): number {
+  const store = fileStateStore(path);
+  return withInstallationLocks(
+    store,
+    `pid ${process.pid}, bootstrap remove-r2-token, ${path}`,
+    () => {
+      const plan = store.load().installation;
+      const runner = spawnRunner(plan.accountId);
+      const removal = removeInstallationToken({
+        store,
+        api: cfTokenApi(runner),
+        // Any Worker of that name: one whose identity is unknown (no version serving all of
+        // its traffic) may well be this installation's (Codex WP3.25 r1-2).
+        workerExists: () => workerInstallation(runner, plan.platformWorker).exists,
+        force: yes,
+        now: () => Date.now(),
+        log: (message) => console.log(`bootstrap: ${message}`),
+      });
+      // Not finished while a token is left for the person to delete (named above).
+      return removal.left.length > 0 ? 1 : 0;
+    },
+  );
 }
 
 async function status(path: string, withLogs: boolean): Promise<void> {
@@ -432,6 +492,7 @@ async function main(): Promise<number> {
       "wait-minutes": { type: "string" },
       "no-verify": { type: "boolean" },
       logs: { type: "boolean" },
+      yes: { type: "boolean" },
     },
   });
   const statePath = () =>
@@ -451,8 +512,12 @@ async function main(): Promise<number> {
     case "status":
       await status(statePath(), values.logs === true);
       return 0;
+    case "remove-r2-token":
+      return removeToken(statePath(), values.yes === true);
     default:
-      throw new Error("usage: bootstrap.ts plan|buckets|run|status (see the header comment)");
+      throw new Error(
+        "usage: bootstrap.ts plan|run|status|buckets|remove-r2-token (see the header comment)",
+      );
   }
 }
 
