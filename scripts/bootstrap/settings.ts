@@ -132,6 +132,11 @@ export interface SuppliedSecrets {
   readonly artifactsSecretAccessKey?: string;
 }
 
+/** The account's R2 S3 endpoint, for buckets in its default jurisdiction. */
+export function r2Endpoint(accountId: string): string {
+  return `https://${accountId}.r2.cloudflarestorage.com`;
+}
+
 /** The artifact bucket a plan gets unless the installer names one: `<platform Worker>-artifacts`. */
 export function defaultArtifactsUrl(platformWorker: string): string {
   return `s3://${platformWorker}-artifacts`;

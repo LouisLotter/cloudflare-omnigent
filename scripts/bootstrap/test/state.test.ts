@@ -213,6 +213,34 @@ describe("the state file", () => {
     }
   });
 
+  it("round-trips the R2 token's record, which holds no value (WP3.25)", async () => {
+    const state = await fullState();
+    const path = join(dir, "t.json");
+    for (const r2Token of [
+      { name: "cfo-stg-wp24-platform-r2--x", createStartedAt: "2026-10-28T12:00:00.000Z" },
+      {
+        name: "cfo-stg-wp24-platform-r2--x",
+        id: "cfocanary-token-id",
+        createdAt: "2026-10-28T12:00:01.000Z",
+        expiresOn: "2026-10-30T12:00:00Z",
+      },
+    ]) {
+      const withToken = { ...state, journal: { ...state.journal, r2Token } };
+      fileStateStore(path).save(withToken);
+      expect(fileStateStore(path).load()).toEqual(withToken);
+    }
+    const good = JSON.parse(JSON.stringify({ ...state, journal: { r2Token: { name: "n" } } }));
+    for (const [r2Token, message] of [
+      ["n", /journal.r2Token is not an object/],
+      [{}, /journal.r2Token.name is not text/],
+      [{ name: "n", id: 7 }, /journal.r2Token.id is not text/],
+      [{ name: "n", createdAt: "yesterday" }, /journal.r2Token.createdAt is not a time/],
+      [{ name: "n", expiresOn: 1 }, /journal.r2Token.expiresOn is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal: { r2Token } }))).toThrow(message);
+    }
+  });
+
   it("lives outside the repository, by platform Worker", () => {
     expect(installationsDir({ CFO_INSTALL_DIR: "/x" })).toBe("/x");
     expect(installationsDir({ XDG_CONFIG_HOME: "/cfg" })).toBe(

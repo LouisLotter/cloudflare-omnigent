@@ -11,10 +11,12 @@
 //
 // What it never does: create, change or delete an Access application, policy or service
 // token; send a request to the installation's hostname; create a Worker by a secret change;
-// delete or empty an R2 bucket. The only thing it creates outside the deploys is a missing R2
-// bucket of the plan (`bootstrap.ts buckets`), before the installer makes the R2 token for it.
-// The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`), which fails for
-// a missing Worker, where `wrangler secret bulk` would create a draft one.
+// delete or empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the
+// plan, and the installation's own R2 user API token (r2-token.ts, through `cf user tokens`),
+// which it also rolls or deletes; it never touches another token. A token's value comes back on
+// cf's captured stdout and never leaves this process except as the Worker's secrets, on
+// descriptor 3. The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`),
+// which fails for a missing Worker, where `wrangler secret bulk` would create a draft one.
 
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -34,6 +36,7 @@ import {
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
 import type { BootstrapCloud, WorkerIdentity } from "./machine.ts";
+import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
 
 /** At most this many pages of 100 Workers Logs events per query. */
@@ -163,6 +166,191 @@ export function ensureBuckets(run: Runner, names: readonly string[]): string[] {
     created.push(name);
   }
   return created;
+}
+
+/** At most this many pages of user API tokens are read. */
+const MAX_TOKEN_PAGES = 40;
+const TOKEN_PAGE = 50;
+
+/** Whether cf's failure is Cloudflare's HTTP 403: the login may not do this. */
+export function forbidden(result: CommandResult): boolean {
+  return /\b403 Forbidden\b/.test(result.stderr);
+}
+
+/** Whether cf's failure says the token does not exist (HTTP 404, Cloudflare's error 1003). */
+function tokenMissing(result: CommandResult): boolean {
+  return /\b404 Not Found\b/.test(result.stderr) || /\[1003\]/.test(result.stderr);
+}
+
+/**
+ * A user-token command's JSON answer. Its errors name the command and, masked, cf's first
+ * line of error output; never anything cf printed on stdout, where a token's value would be.
+ * A 403 is TokensUnavailable.
+ */
+function tokenCf(run: Runner, args: readonly string[]): unknown {
+  const result = run("cf", args, { inherit: false });
+  if (result.status !== 0 && forbidden(result)) {
+    throw new TokensUnavailable(
+      `Cloudflare refused \`cf ${args.slice(0, 3).join(" ")}\` (403): this cf login cannot make API tokens`,
+    );
+  }
+  return cfAnswer(result, args);
+}
+
+function text(o: Record<string, unknown>, key: string): string | undefined {
+  const value = o[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** One token of `cf user tokens list`, or undefined for an entry without an ID and a name. */
+export function apiTokenOf(entry: unknown): ApiToken | undefined {
+  if (entry === null || typeof entry !== "object") return undefined;
+  const t = entry as Record<string, unknown>;
+  const id = text(t, "id");
+  const name = typeof t.name === "string" ? t.name : undefined;
+  if (id === undefined || name === undefined) return undefined;
+  const ip = ((t.condition ?? {}) as { request_ip?: { in?: unknown; not_in?: unknown } })
+    .request_ip;
+  const listed = (v: unknown) => Array.isArray(v) && v.length > 0;
+  const policies = (Array.isArray(t.policies) ? t.policies : []).map((entry: unknown) => {
+    const p = (entry ?? {}) as Record<string, unknown>;
+    const groups = Array.isArray(p.permission_groups) ? p.permission_groups : [];
+    const resources = p.resources;
+    return {
+      ...(typeof p.effect === "string" ? { effect: p.effect } : {}),
+      permissionGroups: groups.map((g: unknown) => String((g as { id?: unknown } | null)?.id)),
+      resources:
+        resources !== null && typeof resources === "object" && !Array.isArray(resources)
+          ? (resources as Record<string, unknown>)
+          : {},
+    };
+  });
+  const status = text(t, "status");
+  const expiresOn = text(t, "expires_on");
+  const notBefore = text(t, "not_before");
+  return {
+    id,
+    name,
+    ...(status === undefined ? {} : { status }),
+    ...(expiresOn === undefined ? {} : { expiresOn }),
+    ...(notBefore === undefined ? {} : { notBefore }),
+    ipLimited: listed(ip?.in) || listed(ip?.not_in),
+    policies,
+  };
+}
+
+/**
+ * The installer's user API tokens through `cf user tokens` (WP3.25). Every answer is captured,
+ * never shown; a created or rolled token's value stays in this process. Its arguments carry the
+ * name, the policies and the expiry, none of them secret.
+ */
+export function cfTokenApi(run: Runner): TokenApi {
+  return {
+    permissionGroup: (name) => {
+      const listed = tokenCf(run, [
+        "user",
+        "tokens",
+        "permission-groups",
+        "list",
+        "--name",
+        name,
+        "--scope",
+        R2_BUCKET_SCOPE,
+      ]);
+      const ids = (Array.isArray(listed) ? listed : []).flatMap((entry: unknown) => {
+        const g = (entry ?? {}) as { id?: unknown; name?: unknown; scopes?: unknown };
+        const scoped = Array.isArray(g.scopes) && g.scopes.includes(R2_BUCKET_SCOPE);
+        return g.name === name && scoped && typeof g.id === "string" ? [g.id] : [];
+      });
+      if (ids.length !== 1) {
+        throw new Error(`Cloudflare lists ${ids.length} permission groups named "${name}"`);
+      }
+      return ids[0] as string;
+    },
+    list: () => {
+      const tokens: ApiToken[] = [];
+      for (let page = 1; page <= MAX_TOKEN_PAGES; page++) {
+        const listed = tokenCf(run, [
+          "user",
+          "tokens",
+          "list",
+          "--per-page",
+          String(TOKEN_PAGE),
+          "--page",
+          String(page),
+          "--include-expired",
+        ]);
+        const entries = Array.isArray(listed) ? listed : [];
+        for (const entry of entries) {
+          const token = apiTokenOf(entry);
+          if (token !== undefined) tokens.push(token);
+        }
+        if (entries.length < TOKEN_PAGE) return tokens;
+      }
+      throw new Error(`more than ${MAX_TOKEN_PAGES * TOKEN_PAGE} user API tokens to look through`);
+    },
+    create: (request) => {
+      const answer = tokenCf(run, [
+        "user",
+        "tokens",
+        "create",
+        "--name",
+        request.name,
+        "--policies",
+        JSON.stringify(request.policies),
+        ...(request.expiresOn === undefined ? [] : ["--expires-on", request.expiresOn]),
+      ]) as Record<string, unknown> | null;
+      const id = answer === null || typeof answer !== "object" ? undefined : text(answer, "id");
+      const value =
+        answer === null || typeof answer !== "object" ? undefined : text(answer, "value");
+      if (id === undefined || value === undefined) {
+        throw new Error("cf user tokens create answered without the token's ID and value");
+      }
+      return { id, value };
+    },
+    roll: (id) => {
+      const answer = tokenCf(run, ["user", "tokens", "roll", id, "--force"]);
+      const value =
+        typeof answer === "string"
+          ? answer
+          : answer !== null && typeof answer === "object"
+            ? text(answer as Record<string, unknown>, "value")
+            : undefined;
+      if (value === undefined || value === "") {
+        throw new Error("cf user tokens roll answered without the token's new value");
+      }
+      return value;
+    },
+    remove: (id) => {
+      const args = ["user", "tokens", "delete", id, "--force"];
+      const result = run("cf", args, { inherit: false });
+      if (result.status === 0) return "deleted";
+      if (tokenMissing(result)) return "absent";
+      if (forbidden(result)) {
+        throw new TokensUnavailable(
+          "Cloudflare refused `cf user tokens delete` (403): this cf login cannot delete API tokens",
+        );
+      }
+      throw new Error(`cf user tokens delete failed: ${diagnostic(result.stderr)}`);
+    },
+  };
+}
+
+/** The one account the installer's cf login reaches; refused when there are several. */
+export function soleAccount(run: Runner): string {
+  const listed = cfJson(run, ["accounts", "list"]);
+  const ids = (Array.isArray(listed) ? listed : []).flatMap((entry: unknown) => {
+    const id = (entry as { id?: unknown } | null)?.id;
+    return typeof id === "string" ? [id] : [];
+  });
+  if (ids.length !== 1) {
+    throw new Error(
+      ids.length === 0
+        ? "your cf login reaches no Cloudflare account; run cf auth login"
+        : `your cf login reaches ${ids.length} accounts; choose one with --account (cf accounts list shows them)`,
+    );
+  }
+  return ids[0] as string;
 }
 
 /** Whether cf's failure says the Worker does not exist (Cloudflare's error 10007). */

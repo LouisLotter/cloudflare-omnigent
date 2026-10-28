@@ -14,12 +14,16 @@ import { describe, expect, it } from "vitest";
 import type { CommandResult, RunOptions } from "../../staging/cloud.ts";
 import {
   accountCloud,
+  apiTokenOf,
   bucketExists,
   cfJson,
+  cfTokenApi,
   ensureBuckets,
   queryWorkerLogs,
+  soleAccount,
   workerMissing,
 } from "../cloud.ts";
+import { R2_WRITE_GROUP, r2TokenRequest, TokensUnavailable } from "../r2-token.ts";
 import { INITIALIZED_SECRET, PASSWORD_SECRET, RELEASE_CHANGES } from "../settings.ts";
 import { stagingCloud } from "../staging.ts";
 import {
@@ -120,6 +124,228 @@ describe("the plan's R2 buckets (G2-DUR-001)", () => {
       /could not tell whether R2 bucket cfo-canary-artifacts exists/,
     );
     expect(bucketExists(r2([]).runner, "cfo-canary-artifacts")).toBe(false);
+  });
+});
+
+describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () => {
+  const VALUE = "cfo-canary-r2-token-value-AbCdEf0123456789AbCdEf0123456789AbCd";
+  const ROLLED = "cfo-canary-r2-token-value-rolled-AbCdEf0123456789AbCdEf012345";
+  const FORBIDDEN =
+    "┌ APIError\n│ [9109] Unauthorized to access requested resource\n│ 403 Forbidden · HTTP /user/tokens\n└\n Check your API token permissions";
+  const GROUP = "2".repeat(32);
+  const ID = "3".repeat(32);
+
+  /** Every call's arguments, environment and descriptors, with the value nowhere in them. */
+  function expectNoValue(calls: readonly Call[]): void {
+    for (const call of calls) {
+      const outside = JSON.stringify([call.args, call.options.env ?? {}, call.fd3 ?? ""]);
+      expect(outside).not.toContain(VALUE);
+      expect(outside).not.toContain(ROLLED);
+      expect(call.options.inherit).toBe(false);
+    }
+  }
+
+  it("creates with the name, the policies and the expiry in flags, and returns the value", async () => {
+    const plan = await stagingPlan({ artifacts: { url: "s3://cfo-stg-wp24-artifacts" } });
+    const fake = fakeRunner((call) => {
+      if (call.args[2] === "permission-groups") {
+        return {
+          stdout: JSON.stringify([
+            { id: "9".repeat(32), name: R2_WRITE_GROUP, scopes: ["com.cloudflare.api.account"] },
+            { id: GROUP, name: R2_WRITE_GROUP, scopes: ["com.cloudflare.edge.r2.bucket"] },
+          ]),
+        };
+      }
+      return { stdout: JSON.stringify({ id: ID, name: "x", status: "active", value: VALUE }) };
+    });
+    const api = cfTokenApi(fake.runner);
+    const group = api.permissionGroup(R2_WRITE_GROUP);
+    expect(group).toBe(GROUP);
+    const request = r2TokenRequest(plan, group, Date.UTC(2026, 9, 28));
+    expect(api.create(request)).toEqual({ id: ID, value: VALUE });
+    expect(fake.calls.map((c) => c.args)).toEqual([
+      [
+        "user",
+        "tokens",
+        "permission-groups",
+        "list",
+        "--name",
+        R2_WRITE_GROUP,
+        "--scope",
+        "com.cloudflare.edge.r2.bucket",
+      ],
+      [
+        "user",
+        "tokens",
+        "create",
+        "--name",
+        `cfo-stg-wp24-platform-r2--ins_01hs3f9q2m8z4w7k6t5r1n0ybc`,
+        "--policies",
+        JSON.stringify(request.policies),
+        "--expires-on",
+        "2026-10-30T00:00:00Z",
+      ],
+    ]);
+    expect(fake.calls.every((c) => c.command === "cf")).toBe(true);
+    expectNoValue(fake.calls);
+  });
+
+  it("rolls and deletes without asking, and reads a rolled value either way cf prints it", () => {
+    const answers = [JSON.stringify(ROLLED), JSON.stringify({ value: ROLLED })];
+    const fake = fakeRunner(() => ({ stdout: answers.shift() ?? "{}" }));
+    const api = cfTokenApi(fake.runner);
+    expect(api.roll(ID)).toBe(ROLLED);
+    expect(api.roll(ID)).toBe(ROLLED);
+    expect(api.remove(ID)).toBe("deleted");
+    expect(fake.calls.map((c) => c.args)).toEqual([
+      ["user", "tokens", "roll", ID, "--force"],
+      ["user", "tokens", "roll", ID, "--force"],
+      ["user", "tokens", "delete", ID, "--force"],
+    ]);
+    expectNoValue(fake.calls);
+  });
+
+  it("lists every page, expired tokens included", () => {
+    const page = (n: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        id: `${n}-${i}`,
+        name: `t${n}-${i}`,
+        status: "active",
+        policies: [],
+      }));
+    const fake = fakeRunner((call) => {
+      const n = Number(call.args[call.args.indexOf("--page") + 1]);
+      return { stdout: JSON.stringify(n < 3 ? page(n, 50) : page(n, 7)) };
+    });
+    const tokens = cfTokenApi(fake.runner).list();
+    expect(tokens).toHaveLength(107);
+    expect(fake.calls.map((c) => c.args.join(" "))).toEqual([
+      "user tokens list --per-page 50 --page 1 --include-expired",
+      "user tokens list --per-page 50 --page 2 --include-expired",
+      "user tokens list --per-page 50 --page 3 --include-expired",
+    ]);
+    const endless = fakeRunner(() => ({ stdout: JSON.stringify(page(1, 50)) }));
+    expect(() => cfTokenApi(endless.runner).list()).toThrow(/more than 2000 user API tokens/);
+  });
+
+  it("reads a listed token's status, expiry, address limits and policies", () => {
+    expect(
+      apiTokenOf({
+        id: ID,
+        name: "n",
+        status: "active",
+        expires_on: "2026-11-01T00:00:00Z",
+        not_before: "2026-10-01T00:00:00Z",
+        condition: { request_ip: { in: ["192.0.2.0/24"] } },
+        policies: [
+          {
+            id: "p",
+            effect: "allow",
+            permission_groups: [{ id: GROUP, name: R2_WRITE_GROUP }],
+            resources: { r: "*" },
+          },
+          { permission_groups: "x", resources: ["r"] },
+        ],
+      }),
+    ).toEqual({
+      id: ID,
+      name: "n",
+      status: "active",
+      expiresOn: "2026-11-01T00:00:00Z",
+      notBefore: "2026-10-01T00:00:00Z",
+      ipLimited: true,
+      policies: [
+        { effect: "allow", permissionGroups: [GROUP], resources: { r: "*" } },
+        { permissionGroups: [], resources: {} },
+      ],
+    });
+    expect(apiTokenOf({ id: ID, name: "n", condition: { request_ip: { not_in: [] } } })).toEqual({
+      id: ID,
+      name: "n",
+      ipLimited: false,
+      policies: [],
+    });
+    for (const entry of [null, "x", { id: ID }, { name: "n" }, { id: "", name: "n" }]) {
+      expect(apiTokenOf(entry)).toBeUndefined();
+    }
+    const listed = fakeRunner(() => ({ stdout: JSON.stringify([null, { id: ID, name: "n" }]) }));
+    expect(
+      cfTokenApi(listed.runner)
+        .list()
+        .map((t) => t.id),
+    ).toEqual([ID]);
+  });
+
+  it("turns Cloudflare's 403 into TokensUnavailable, for every call", () => {
+    const fake = fakeRunner(() => ({ status: 1, stderr: FORBIDDEN }));
+    const api = cfTokenApi(fake.runner);
+    expect(() => api.permissionGroup(R2_WRITE_GROUP)).toThrow(TokensUnavailable);
+    expect(() => api.list()).toThrow(TokensUnavailable);
+    expect(() => api.roll(ID)).toThrow(TokensUnavailable);
+    expect(() => api.remove(ID)).toThrow(TokensUnavailable);
+    expect(() => api.create({ name: "n", policies: [] })).toThrow(
+      /Cloudflare refused `cf user tokens create` \(403\): this cf login cannot make API tokens/,
+    );
+  });
+
+  it("deletes a token that is already gone as absent, and reports other failures masked", () => {
+    const gone = fakeRunner(() => ({
+      status: 1,
+      stderr: "┌ APIError\n│ [1003] token not found\n│ 404 Not Found · HTTP /user/tokens/x\n└",
+    }));
+    expect(cfTokenApi(gone.runner).remove(ID)).toBe("absent");
+    const down = fakeRunner(() => ({ status: 1, stderr: `[10000] failed for ${ID}` }));
+    expect(() => cfTokenApi(down.runner).remove(ID)).toThrow(
+      "cf user tokens delete failed: [10000] failed for <id>",
+    );
+  });
+
+  it("never echoes what cf printed, where a value would be, in an error", () => {
+    const halfAnswers = [
+      JSON.stringify({ id: ID }),
+      JSON.stringify({ value: VALUE }),
+      JSON.stringify(null),
+      `not json ${VALUE}`,
+    ];
+    for (const stdout of halfAnswers) {
+      const fake = fakeRunner(() => ({ stdout }));
+      let message = "";
+      try {
+        cfTokenApi(fake.runner).create({ name: "n", policies: [] });
+      } catch (error) {
+        message = String(error);
+      }
+      expect(message).toMatch(/cf user tokens create (answered without|printed something)/);
+      expect(message).not.toContain(VALUE);
+    }
+    for (const stdout of [JSON.stringify(""), JSON.stringify({}), "7"]) {
+      const fake = fakeRunner(() => ({ stdout }));
+      expect(() => cfTokenApi(fake.runner).roll(ID)).toThrow(
+        "cf user tokens roll answered without the token's new value",
+      );
+    }
+    const failing = fakeRunner(() => ({ status: 1, stderr: `boom ${VALUE}` }));
+    expect(() => cfTokenApi(failing.runner).roll(ID)).toThrow(/^cf user tokens roll failed: boom /);
+    expect(() => cfTokenApi(failing.runner).roll(ID)).not.toThrow(VALUE);
+  });
+
+  it("refuses a permission group it cannot find exactly once", () => {
+    for (const listed of [[], [{ id: GROUP, name: R2_WRITE_GROUP, scopes: [] }], {}]) {
+      const fake = fakeRunner(() => ({ stdout: JSON.stringify(listed) }));
+      expect(() => cfTokenApi(fake.runner).permissionGroup(R2_WRITE_GROUP)).toThrow(
+        `Cloudflare lists 0 permission groups named "${R2_WRITE_GROUP}"`,
+      );
+    }
+  });
+
+  it("finds the one account the login reaches, and refuses none or several", () => {
+    const one = fakeRunner(() => ({ stdout: JSON.stringify([{ id: "1".repeat(32), name: "a" }]) }));
+    expect(soleAccount(one.runner)).toBe("1".repeat(32));
+    expect(one.calls[0]?.args).toEqual(["accounts", "list"]);
+    const none = fakeRunner(() => ({ stdout: "[]" }));
+    expect(() => soleAccount(none.runner)).toThrow(/reaches no Cloudflare account/);
+    const two = fakeRunner(() => ({ stdout: JSON.stringify([{ id: "a" }, { id: "b" }, {}]) }));
+    expect(() => soleAccount(two.runner)).toThrow(/reaches 2 accounts; choose one with --account/);
   });
 });
 

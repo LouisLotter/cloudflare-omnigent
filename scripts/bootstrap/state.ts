@@ -69,11 +69,15 @@ function str(o: Record<string, unknown>, key: string, what: string): string {
   return value;
 }
 
-function optionalTime(o: Record<string, unknown>, key: string): string | undefined {
+function optionalTime(
+  o: Record<string, unknown>,
+  key: string,
+  where = "journal",
+): string | undefined {
   const value = o[key];
   if (value === undefined) return undefined;
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
-    throw new Error(`the state file's journal.${key} is not a time`);
+    throw new Error(`the state file's ${where}.${key} is not a time`);
   }
   return value;
 }
@@ -182,6 +186,16 @@ function parseJournal(value: unknown): Journal {
       throw new Error("the state file's released version is not text");
     }
     journal.releasedVersionId = j.releasedVersionId;
+  }
+  if (j.r2Token !== undefined) {
+    const t = object(j.r2Token, "journal.r2Token");
+    const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
+    if (t.id !== undefined) token.id = str(t, "id", "journal.r2Token");
+    for (const key of ["createStartedAt", "createdAt", "expiresOn"] as const) {
+      const time = optionalTime(t, key, "journal.r2Token");
+      if (time !== undefined) token[key] = time;
+    }
+    journal.r2Token = token;
   }
   if (j.accepted !== undefined) {
     const a = object(j.accepted, "journal.accepted");

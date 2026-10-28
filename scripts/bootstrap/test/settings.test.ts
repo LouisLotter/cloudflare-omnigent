@@ -19,6 +19,7 @@ import {
   RELEASE_CHANGES,
   REPLICA_KEY_ID_SECRET,
   REPLICA_SECRET_KEY_SECRET,
+  r2Endpoint,
   renderPlatformConfig,
   renderWebConfig,
   requiredSecretNames,
@@ -366,6 +367,18 @@ describe("the artifact bucket (G2-DUR-001)", () => {
     expect(bucketsOf(plan)).toEqual(["cfo-canary-replica", "cfo-canary-artifacts"]);
     expect(bucketsOf(await stagingPlan())).toEqual([]);
     expect(defaultArtifactsUrl("cloudflare-omnigent")).toBe("s3://cloudflare-omnigent-artifacts");
+    // The replica's endpoint unless named: the account's own R2 endpoint (WP3.25).
+    expect(r2Endpoint("1".repeat(32))).toBe(`https://${"1".repeat(32)}.r2.cloudflarestorage.com`);
+    expect(
+      installationProblems(
+        await accountPlan({
+          replica: {
+            url: "s3://cfo-canary-replica/omnigent",
+            endpoint: r2Endpoint("1".repeat(32)),
+          },
+        }),
+      ),
+    ).toEqual([]);
     expect(
       installationProblems(await accountPlan({ artifacts: { url: defaultArtifactsUrl("x") } })),
     ).toEqual([]);
