@@ -6,9 +6,17 @@
 // and its watchdog replaces it once (a restart of `REPLACE_MS`) when its configuration differs.
 // The server then logs its status without the password until it shows a durable owner, and for
 // `NOTICE_MS` after (G2-SEC-001).
+// The installer's user API tokens (WP3.25) live here too, with the same crash points.
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
+import {
+  type ApiToken,
+  R2_WRITE_GROUP,
+  s3Credentials,
+  type TokenApi,
+  TokensUnavailable,
+} from "../r2-token.ts";
 import {
   type AccessSettings,
   INITIALIZED_SECRET,
@@ -36,8 +44,14 @@ export type ServerTruth = (t: number) => { initialized: boolean; reason: string 
 
 export class Crash extends Error {}
 
+/** The synthetic ID of "Workers R2 Storage Bucket Item Write". */
+export const R2_GROUP_ID = `${"0".repeat(31)}9`;
+
 export interface CrashPoint {
-  /** The call: deployPlatform, deployWeb, updateSecrets, access, secretNames, logs, save. */
+  /**
+   * The call: deployPlatform, deployWeb, updateSecrets, access, secretNames, logs, save, and
+   * the token calls tokenGroup, tokenList, tokenCreate and tokenRemove.
+   */
   readonly call: string;
   /** Which occurrence of it (1 is the first). */
   readonly nth: number;
@@ -91,7 +105,23 @@ export class FakeWorld {
    */
   appliesReleases = true;
   readonly counts = new Map<string, number>();
+  /** The installer's user API tokens, with the value each has now. */
+  readonly tokens = new Map<string, { token: ApiToken; value: string }>();
+  /** Cloudflare answers 403 to every token call: a login that may not make tokens. */
+  tokensForbidden = false;
+  /**
+   * Cloudflare answers 403 to listing and deleting tokens, but lets the login make them: cf's
+   * OAuth login, as found on 28 Oct (WP3.25). The default, as for the owner.
+   */
+  oauthLogin = true;
+  /**
+   * A token request whose client gives up (cf fails with a timeout) while the request itself
+   * takes effect `afterMs` later, as a request left in flight by a stopped run may.
+   */
+  late: { call: "tokenCreate"; nth: number; afterMs: number } | undefined;
+  #landing: { due: number; apply: () => void }[] = [];
   #nextVersion = 1;
+  #nextToken = 1;
 
   readonly plan: Installation;
 
@@ -99,7 +129,16 @@ export class FakeWorld {
     this.plan = plan;
   }
 
+  /** Lands every late request now, however long it would still take. */
+  landLate(): void {
+    for (const { apply } of this.#landing.splice(0)) apply();
+  }
+
   #enter(call: string): number {
+    // Late requests whose time has come land before anything else is seen.
+    const due = this.#landing.filter((l) => l.due <= this.now);
+    this.#landing = this.#landing.filter((l) => l.due > this.now);
+    for (const { apply } of due) apply();
     this.calls.push(call);
     const n = (this.counts.get(call) ?? 0) + 1;
     this.counts.set(call, n);
@@ -229,6 +268,77 @@ export class FakeWorld {
         world.#leave("logs", n);
         return world.logCap === undefined ? events : events.slice(0, world.logCap);
       },
+    };
+  }
+
+  /** A token as another hand (or an earlier run) left it. */
+  addToken(token: Omit<ApiToken, "id" | "ipLimited"> & Partial<ApiToken>): string {
+    const id = token.id ?? this.#tokenId();
+    this.tokens.set(id, {
+      token: { ipLimited: false, ...token, id },
+      value: `cfo-canary-r2-token-value-${id}`,
+    });
+    return id;
+  }
+
+  #tokenId(): string {
+    return `cfocanary${String(this.#nextToken++).padStart(23, "0")}`;
+  }
+
+  /** The S3 key pair the token's current value gives. */
+  pairOf(id: string): { accessKeyId: string; secretAccessKey: string } {
+    const entry = this.tokens.get(id);
+    if (entry === undefined) throw new Error(`no token ${id}`);
+    return s3Credentials(id, entry.value);
+  }
+
+  tokenApi(): TokenApi {
+    const call = <T>(name: string, effect: () => T): T => {
+      const n = this.#enter(name);
+      const managing = name === "tokenList" || name === "tokenRemove";
+      if (this.tokensForbidden || (this.oauthLogin && managing)) {
+        throw new TokensUnavailable("Cloudflare refused (403)");
+      }
+      if (this.late?.call === name && this.late.nth === n) {
+        this.#landing.push({ due: this.now + this.late.afterMs, apply: () => void effect() });
+        this.late = undefined;
+        throw new Error("cf user tokens create failed: timeout");
+      }
+      const result = effect();
+      this.#leave(name, n);
+      return result;
+    };
+    return {
+      permissionGroup: (name) =>
+        call("tokenGroup", () => {
+          if (name !== R2_WRITE_GROUP) throw new Error(`no permission group ${name}`);
+          return R2_GROUP_ID;
+        }),
+      list: () => call("tokenList", () => [...this.tokens.values()].map((t) => t.token)),
+      // An OAuth login may read a token by its ID (28 Oct): 404 once it is gone.
+      get: (id) => call("tokenGet", () => this.tokens.get(id)?.token),
+      create: (request) =>
+        call("tokenCreate", () => {
+          const id = this.#tokenId();
+          const value = `cfo-canary-r2-token-value-${id}-1`;
+          this.tokens.set(id, {
+            token: {
+              id,
+              name: request.name,
+              status: "active",
+              ...(request.expiresOn === undefined ? {} : { expiresOn: request.expiresOn }),
+              ipLimited: false,
+              policies: request.policies.map((p) => ({
+                effect: p.effect,
+                permissionGroups: p.permission_groups.map((g) => g.id),
+                resources: p.resources,
+              })),
+            },
+            value,
+          });
+          return { id, value };
+        }),
+      remove: (id) => call("tokenRemove", () => (this.tokens.delete(id) ? "deleted" : "absent")),
     };
   }
 

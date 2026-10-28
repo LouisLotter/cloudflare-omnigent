@@ -9,6 +9,7 @@ import {
   locksDir,
   parseState,
   resourceLockPaths,
+  stagingStateProblem,
   statePathFor,
   writeAtomic,
 } from "../state.ts";
@@ -211,6 +212,74 @@ describe("the state file", () => {
     ] as const) {
       expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
     }
+  });
+
+  it("round-trips the R2 token's record, which holds no value (WP3.25)", async () => {
+    const state = await fullState();
+    const path = join(dir, "t.json");
+    for (const r2Token of [
+      { name: "cfo-stg-wp24-platform-r2--x", createStartedAt: "2026-10-28T12:00:00.000Z" },
+      {
+        name: "cfo-stg-wp24-platform-r2--x",
+        id: "cfocanary-token-id",
+        createdAt: "2026-10-28T12:00:01.000Z",
+        expiresOn: "2026-10-30T12:00:00Z",
+      },
+    ]) {
+      const withToken = {
+        ...state,
+        journal: {
+          ...state.journal,
+          r2Token,
+          r2TokensToDelete: [
+            { name: "a" },
+            { name: "b", id: "i", expiresOn: "2026-10-30T12:00:00Z" },
+          ],
+        },
+      };
+      fileStateStore(path).save(withToken);
+      expect(fileStateStore(path).load()).toEqual(withToken);
+    }
+    const good = JSON.parse(JSON.stringify({ ...state, journal: { r2Token: { name: "n" } } }));
+    for (const [r2Token, message] of [
+      ["n", /journal.r2Token is not an object/],
+      [{}, /journal.r2Token.name is not text/],
+      [{ name: "n", id: 7 }, /journal.r2Token.id is not text/],
+      [{ name: "n", createdAt: "yesterday" }, /journal.r2Token.createdAt is not a time/],
+      [{ name: "n", expiresOn: 1 }, /journal.r2Token.expiresOn is not a time/],
+      [{ name: "n", createStartedAt: "soon" }, /journal.r2Token.createStartedAt is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal: { r2Token } }))).toThrow(message);
+    }
+    for (const [r2TokensToDelete, message] of [
+      [{}, /journal.r2TokensToDelete is not a list/],
+      [["x"], /journal.r2TokensToDelete entry is not an object/],
+      [[{}], /journal.r2TokensToDelete.name is not text/],
+      [[{ name: "a", id: 1 }], /journal.r2TokensToDelete.id is not text/],
+      [[{ name: "a", expiresOn: "later" }], /journal.r2TokensToDelete.expiresOn is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal: { r2TokensToDelete } }))).toThrow(
+        message,
+      );
+    }
+  });
+
+  it("keeps a staging installation's state where the staging tool finds it (Codex WP3.25 r3-5)", async () => {
+    const staging = await stagingPlan();
+    const home = join(dir, "installations");
+    expect(stagingStateProblem(staging, join(home, "cfo-stg-wp24-platform.json"), home)).toBe(
+      undefined,
+    );
+    expect(stagingStateProblem(staging, join(home, ".", "cfo-stg-wp24-platform.json"), home)).toBe(
+      undefined,
+    );
+    expect(stagingStateProblem(staging, join(dir, "elsewhere.json"), home)).toBe(
+      `a staging installation's state file lives at ${join(home, "cfo-stg-wp24-platform.json")}, where the staging tool finds its R2 tokens; leave out --state`,
+    );
+    // An installation in the installer's own account may keep it anywhere.
+    expect(stagingStateProblem(await accountPlan(), join(dir, "elsewhere.json"), home)).toBe(
+      undefined,
+    );
   });
 
   it("lives outside the repository, by platform Worker", () => {

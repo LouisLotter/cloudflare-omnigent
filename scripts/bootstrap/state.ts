@@ -19,7 +19,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
 import type { BootstrapState, Journal, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
@@ -35,12 +35,38 @@ export function statePathFor(platformWorker: string, dir: string = installations
 }
 
 /**
+ * Why a state file may not be used at this path, or undefined. A staging installation's lives
+ * only at its default path, where the staging tool's teardown and sweep look for its R2 tokens:
+ * a login that may not list tokens leaves no other way to find them (Codex WP3.25 r3-5).
+ */
+export function stagingStateProblem(
+  plan: Pick<Installation, "platformWorker" | "target">,
+  path: string,
+  dir: string = installationsDir(),
+): string | undefined {
+  if (plan.target.kind !== "staging") return undefined;
+  const expected = statePathFor(plan.platformWorker, dir);
+  return resolve(path) === resolve(expected)
+    ? undefined
+    : `a staging installation's state file lives at ${expected}, where the staging tool finds its R2 tokens; leave out --state`;
+}
+
+/**
  * Where the bootstrap's locks live: one place per laptop user, whatever state file or
  * $CFO_INSTALL_DIR a run uses, so that two runs against the same Workers always meet.
  */
 export function locksDir(env: NodeJS.ProcessEnv = process.env): string {
   const config = env.XDG_CONFIG_HOME || join(homedir(), ".config");
   return join(config, "cloudflare-omnigent", "bootstrap-locks");
+}
+
+/** The bootstrap's lock for one Worker, keyed by account and Worker name. */
+export function workerLockPath(
+  accountId: string,
+  worker: string,
+  dir: string = locksDir(),
+): string {
+  return join(dir, `${accountId}.${worker}.lock`);
 }
 
 /**
@@ -52,7 +78,7 @@ export function resourceLockPaths(
   dir: string = locksDir(),
 ): string[] {
   return [plan.platformWorker, plan.webWorker]
-    .map((worker) => join(dir, `${plan.accountId}.${worker}.lock`))
+    .map((worker) => workerLockPath(plan.accountId, worker, dir))
     .sort();
 }
 
@@ -69,11 +95,15 @@ function str(o: Record<string, unknown>, key: string, what: string): string {
   return value;
 }
 
-function optionalTime(o: Record<string, unknown>, key: string): string | undefined {
+function optionalTime(
+  o: Record<string, unknown>,
+  key: string,
+  where = "journal",
+): string | undefined {
   const value = o[key];
   if (value === undefined) return undefined;
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
-    throw new Error(`the state file's journal.${key} is not a time`);
+    throw new Error(`the state file's ${where}.${key} is not a time`);
   }
   return value;
 }
@@ -182,6 +212,31 @@ function parseJournal(value: unknown): Journal {
       throw new Error("the state file's released version is not text");
     }
     journal.releasedVersionId = j.releasedVersionId;
+  }
+  if (j.r2Token !== undefined) {
+    const t = object(j.r2Token, "journal.r2Token");
+    const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
+    if (t.id !== undefined) token.id = str(t, "id", "journal.r2Token");
+    for (const key of ["createStartedAt", "createdAt", "expiresOn"] as const) {
+      const time = optionalTime(t, key, "journal.r2Token");
+      if (time !== undefined) token[key] = time;
+    }
+    journal.r2Token = token;
+  }
+  if (j.r2TokensToDelete !== undefined) {
+    if (!Array.isArray(j.r2TokensToDelete)) {
+      throw new Error("the state file's journal.r2TokensToDelete is not a list");
+    }
+    journal.r2TokensToDelete = j.r2TokensToDelete.map((entry: unknown) => {
+      const t = object(entry, "journal.r2TokensToDelete entry");
+      const token: Record<string, string> = { name: str(t, "name", "journal.r2TokensToDelete") };
+      if (t.id !== undefined) token.id = str(t, "id", "journal.r2TokensToDelete");
+      for (const key of ["expiresOn", "createStartedAt"] as const) {
+        const time = optionalTime(t, key, "journal.r2TokensToDelete");
+        if (time !== undefined) token[key] = time;
+      }
+      return token;
+    });
   }
   if (j.accepted !== undefined) {
     const a = object(j.accepted, "journal.accepted");

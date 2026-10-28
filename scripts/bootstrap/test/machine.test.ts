@@ -7,6 +7,7 @@ import {
   type RunOptions,
   runBootstrap,
 } from "../machine.ts";
+import { r2TokenPrefix, type S3Credentials } from "../r2-token.ts";
 import {
   ARTIFACTS_KEY_ID_SECRET,
   ARTIFACTS_SECRET_KEY_SECRET,
@@ -24,6 +25,7 @@ import {
   type CrashPoint,
   FakeWorld,
   MemoryStore,
+  R2_GROUP_ID,
   REPLACE_MS,
   type ServerTruth,
   SWITCH_MS,
@@ -66,7 +68,20 @@ interface Harness {
   run(options?: Partial<RunOptions>): ReturnType<typeof runBootstrap>;
 }
 
-function harness(plan: Installation, state: BootstrapState = freshState(plan)): Harness {
+/**
+ * How the R2 credentials come: supplied by the installer (the default, as before WP3.25), or
+ * from the token the bootstrap makes, with `ask` standing in for the terminal's prompt.
+ */
+interface R2Mode {
+  readonly tokens: boolean;
+  readonly ask?: (step: string) => Promise<S3Credentials>;
+}
+
+function harness(
+  plan: Installation,
+  state: BootstrapState = freshState(plan),
+  r2: R2Mode = { tokens: false },
+): Harness {
   const world = new FakeWorld(plan);
   const store = new MemoryStore(state);
   const h: Harness = {
@@ -81,12 +96,16 @@ function harness(plan: Installation, state: BootstrapState = freshState(plan)): 
         baseConfigs: BASE,
         secrets: () => {
           h.asked++;
-          return {
-            ownerPassword: OWNER_PASSWORD,
-            replicaAccessKeyId: REPLICA_KEY_ID,
-            replicaSecretAccessKey: REPLICA_SECRET,
-          };
+          return r2.tokens
+            ? { ownerPassword: OWNER_PASSWORD }
+            : {
+                ownerPassword: OWNER_PASSWORD,
+                replicaAccessKeyId: REPLICA_KEY_ID,
+                replicaSecretAccessKey: REPLICA_SECRET,
+              };
         },
+        ...(r2.tokens ? { r2Tokens: world.tokenApi() } : {}),
+        ...(r2.ask === undefined ? {} : { askR2: r2.ask }),
         random: (n) => new Uint8Array(n).fill(0xab),
         now: () => world.now,
         sleep: async (ms) => {
@@ -836,6 +855,443 @@ async function crashThenFinish(
   expect(outcome).toEqual({ kind: "done" });
   return h;
 }
+
+const TOKENS: R2Mode = { tokens: true };
+
+/** The installation's tokens at Cloudflare. */
+function tokensOf(h: Harness) {
+  const prefix = r2TokenPrefix(h.world.plan);
+  return [...h.world.tokens.values()].filter((t) => t.token.name.startsWith(prefix));
+}
+
+/** The Worker's four R2 secrets are the S3 key pair of this token's value. */
+function expectWorkerUses(h: Harness, id: string): void {
+  const pair = h.world.pairOf(id);
+  const secrets = h.world.secretsOf(h.world.plan.platformWorker);
+  expect(secrets?.get(REPLICA_KEY_ID_SECRET)).toBe(pair.accessKeyId);
+  expect(secrets?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(pair.accessKeyId);
+  expect(secrets?.get(REPLICA_SECRET_KEY_SECRET)).toBe(pair.secretAccessKey);
+  expect(secrets?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(pair.secretAccessKey);
+}
+
+/** No token value, and no secret key derived from one, in the journal or the log. */
+function expectNoTokenSecret(h: Harness): void {
+  const kept = `${JSON.stringify(h.store.state)}\n${h.lines.join("\n")}`;
+  for (const [id, { value }] of h.world.tokens) {
+    expect(kept).not.toContain(value);
+    expect(kept).not.toContain(h.world.pairOf(id).secretAccessKey);
+  }
+  expect(kept).not.toContain("cfo-canary-r2-token-value");
+}
+
+/** The token the Worker uses is the journal's current one, and every other is to be deleted. */
+function expectAccounted(h: Harness): void {
+  const current = h.store.state.journal.r2Token;
+  expect(current?.id).toBeDefined();
+  expectWorkerUses(h, String(current?.id));
+  const toDelete = new Set((h.store.state.journal.r2TokensToDelete ?? []).map((t) => t.name));
+  for (const { token } of tokensOf(h)) {
+    if (token.id !== current?.id) expect(toDelete.has(token.name)).toBe(true);
+  }
+}
+
+const DELETE_STEP =
+  /^Cloudflare does not let this cf login delete API tokens, so delete the token named exactly (\S+) by hand: open https:\/\/dash\.cloudflare\.com\/profile\/api-tokens, open the three-dot menu next to it, and choose Delete\.$/;
+
+describe("runBootstrap: the R2 token (WP3.25)", () => {
+  it("makes one token on exactly the installation's buckets, and sets its key pair for both uses", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    expect(await h.run()).toEqual({ kind: "done" });
+    const [made, ...more] = tokensOf(h);
+    expect(more).toEqual([]);
+    expect(made?.token).toEqual({
+      id: made?.token.id,
+      name: `cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z`,
+      status: "active",
+      ipLimited: false,
+      policies: [
+        {
+          effect: "allow",
+          permissionGroups: [R2_GROUP_ID],
+          resources: {
+            [`com.cloudflare.edge.r2.bucket.${"1".repeat(32)}_default_cfo-canary-replica`]: "*",
+            [`com.cloudflare.edge.r2.bucket.${"1".repeat(32)}_default_cfo-canary-artifacts`]: "*",
+          },
+        },
+      ],
+    });
+    // An installation's token does not expire.
+    expect(made?.token.expiresOn).toBeUndefined();
+    expectWorkerUses(h, String(made?.token.id));
+    expect(h.store.state.journal.r2Token).toEqual({
+      name: made?.token.name,
+      id: made?.token.id,
+      createdAt: expect.any(String),
+    });
+    expect(h.store.state.journal.r2TokensToDelete).toBeUndefined();
+    // Made just before the first deploy, once, with no call the OAuth login may not make.
+    const order = h.world.calls.filter((c) => c.startsWith("token") || c === "deployPlatform");
+    expect(order).toEqual(["tokenGroup", "tokenCreate", "deployPlatform"]);
+    expect(h.lines).toContainEqual(expect.stringMatching(/^created the R2 token .*no expiry$/));
+    expectNoTokenSecret(h);
+  });
+
+  it("gives a staging installation's token an expiry a day after the deployments'", async () => {
+    const plan = await stagingPlan({
+      replica: { url: "s3://cfo-stg-wp24-db/omnigent", endpoint: "https://canary.r2.example.test" },
+      artifacts: { url: "s3://cfo-stg-wp24-artifacts" },
+      target: {
+        kind: "staging",
+        owner: "WP2.4",
+        platformSuffix: "wp24-platform",
+        webSuffix: "wp24-web",
+        days: 2,
+      },
+    });
+    const h = harness(plan, freshState(plan), TOKENS);
+    const start = h.world.now;
+    await h.run({ waitMs: 0 });
+    const [made] = tokensOf(h);
+    expect(made?.token.name).toBe(`cfo-stg-wp24-platform-r2--${INSTALLATION}--20261022T120000Z`);
+    // Two days of deployments, and one more: whole seconds, as Cloudflare takes them.
+    expect(made?.token.expiresOn).toBe("2026-10-25T12:00:00Z");
+    expect(Date.parse(String(made?.token.expiresOn))).toBe(start + 3 * 86_400_000);
+    expect(h.store.state.journal.r2Token?.expiresOn).toBe(made?.token.expiresOn);
+  });
+
+  it("reuses the deployed pair: a run while the Worker holds it touches no token", async () => {
+    const plan = await accountPlan();
+    const supplied = harness(plan);
+    await supplied.run();
+    expect(supplied.world.calls.some((c) => c.startsWith("token"))).toBe(false);
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.failAfter = { call: "deployWeb", nth: 1, message: "the web deploy failed" };
+    await expect(h.run()).rejects.toThrow("the web deploy failed");
+    const tokenCalls = h.world.calls.filter((c) => c.startsWith("token")).length;
+    const { platformDeployedAt: _deployed, ...journal } = h.store.state.journal;
+    h.store.state = { ...h.store.state, journal };
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.calls.filter((c) => c.startsWith("token")).length).toBe(tokenCalls);
+    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
+    expect(tokensOf(h)).toHaveLength(1);
+  });
+
+  it("after a deploy that failed, makes a new token and names the old one to delete (OAuth: 403 on delete)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    const [first] = tokensOf(h);
+    h.world.now += 60_000;
+    expect(await h.run()).toEqual({ kind: "done" });
+    // Never rolled: a new token, under a name of its own.
+    const second = tokensOf(h).find((t) => t.token.id !== first?.token.id);
+    expect(second?.token.name).toBe(`cloudflare-omnigent-r2--${INSTALLATION}--20261022T120100Z`);
+    expect(h.world.tokens.get(String(first?.token.id))?.value).toBe(first?.value);
+    expectWorkerUses(h, String(second?.token.id));
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      { name: first?.token.name, id: first?.token.id },
+    ]);
+    const steps = h.lines.filter((l) => DELETE_STEP.test(l));
+    expect(steps).toEqual([expect.stringContaining(String(first?.token.name))]);
+    expect(h.world.calls).toContain("tokenRemove");
+    expectAccounted(h);
+    expectNoTokenSecret(h);
+  });
+
+  it("a retry within the same second: the new token is named apart, and never named to delete (Codex r3-3)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    expect(await h.run()).toEqual({ kind: "done" });
+    const current = String(h.store.state.journal.r2Token?.name);
+    expect(current).toBe(`cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z-2`);
+    const steps = h.lines.filter((l) => DELETE_STEP.test(l));
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).not.toContain(current);
+    expectAccounted(h);
+  });
+
+  it("supplied values for a Worker holding only half a pair retire the token made earlier (Codex r3-4)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    // The first deploy left only the replica's access key ID of the first token.
+    h.world.dropOnDeploy = [
+      REPLICA_SECRET_KEY_SECRET,
+      ARTIFACTS_KEY_ID_SECRET,
+      ARTIFACTS_SECRET_KEY_SECRET,
+    ];
+    await expect(h.run()).rejects.toThrow("lacks");
+    h.world.dropOnDeploy = [];
+    const [first] = tokensOf(h);
+    const ctx = {
+      cloud: h.world.cloud(),
+      store: h.store,
+      baseConfigs: BASE,
+      secrets: () => ({
+        ownerPassword: OWNER_PASSWORD,
+        replicaAccessKeyId: REPLICA_KEY_ID,
+        replicaSecretAccessKey: REPLICA_SECRET,
+      }),
+      r2Tokens: h.world.tokenApi(),
+      random: (n: number) => new Uint8Array(n).fill(0xab),
+      now: () => h.world.now,
+      sleep: async (ms: number) => {
+        h.world.now += Math.max(0, ms);
+      },
+      log: (line: string) => h.lines.push(line),
+    };
+    const { platformDeployedAt: _deployed, ...journal } = h.store.state.journal;
+    h.store.state = { ...h.store.state, journal };
+    expect(await runBootstrap(ctx, OPTIONS)).toEqual({ kind: "done" });
+    // Both pairs are the supplied values; the first token is no longer current.
+    const secrets = h.world.secretsOf(plan.platformWorker);
+    expect(secrets?.get(REPLICA_KEY_ID_SECRET)).toBe(REPLICA_KEY_ID);
+    expect(secrets?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(REPLICA_KEY_ID);
+    expect(h.store.state.journal.r2Token).toBeUndefined();
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      { name: first?.token.name, id: first?.token.id },
+    ]);
+  });
+
+  it("a Worker holding only half a pair gets a new token: the half is replaced whole (Codex r3-4)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.dropOnDeploy = [
+      REPLICA_SECRET_KEY_SECRET,
+      ARTIFACTS_KEY_ID_SECRET,
+      ARTIFACTS_SECRET_KEY_SECRET,
+    ];
+    await expect(h.run()).rejects.toThrow("lacks");
+    h.world.dropOnDeploy = [];
+    h.world.now += 60_000;
+    const { platformDeployedAt: _deployed, ...journal } = h.store.state.journal;
+    h.store.state = { ...h.store.state, journal };
+    expect(await h.run()).toEqual({ kind: "done" });
+    expectAccounted(h);
+    expect(h.store.state.journal.r2TokensToDelete).toHaveLength(1);
+  });
+
+  it("deletes the old token itself where the login may (API Tokens Write)", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.oauthLogin = false;
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(tokensOf(h)).toHaveLength(1);
+    expect(h.store.state.journal.r2TokensToDelete).toBeUndefined();
+    expect(h.lines).toContainEqual(expect.stringMatching(/^deleted the unused R2 token /));
+    expect(h.lines.some((l) => DELETE_STEP.test(l))).toBe(false);
+    expectAccounted(h);
+  });
+
+  it("a create whose answer was lost: named to delete if it exists, or found by name where listing is allowed", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.late = { call: "tokenCreate", nth: 1, afterMs: 120_000 };
+    await expect(h.run()).rejects.toThrow("cf user tokens create failed: timeout");
+    expect(h.store.state.journal.r2Token).toEqual({
+      name: `cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z`,
+      createStartedAt: "2026-10-22T12:00:00.000Z",
+    });
+    h.world.now += 300_000;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      {
+        name: `cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z`,
+        createStartedAt: "2026-10-22T12:00:00.000Z",
+      },
+    ]);
+    expect(h.lines).toContainEqual(
+      expect.stringContaining(
+        `delete the token named exactly cloudflare-omnigent-r2--${INSTALLATION}--20261022T120000Z if it exists (its create was never answered) by hand`,
+      ),
+    );
+    expectAccounted(h);
+    // A login that may list finds it by its name, and deletes it.
+    const listing = harness(plan, freshState(plan), TOKENS);
+    listing.world.oauthLogin = false;
+    listing.world.late = { call: "tokenCreate", nth: 1, afterMs: 120_000 };
+    await expect(listing.run()).rejects.toThrow("timeout");
+    listing.world.now += 300_000;
+    expect(await listing.run()).toEqual({ kind: "done" });
+    expect(tokensOf(listing)).toHaveLength(1);
+    expect(listing.store.state.journal.r2TokensToDelete).toBeUndefined();
+  });
+
+  it("supplied values replace a token made earlier, which is retired", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    const [first] = tokensOf(h);
+    // The installer now gives a hand-made token's values.
+    const ctx = {
+      cloud: h.world.cloud(),
+      store: h.store,
+      baseConfigs: BASE,
+      secrets: () => ({
+        ownerPassword: OWNER_PASSWORD,
+        replicaAccessKeyId: REPLICA_KEY_ID,
+        replicaSecretAccessKey: REPLICA_SECRET,
+      }),
+      r2Tokens: h.world.tokenApi(),
+      random: (n: number) => new Uint8Array(n).fill(0xab),
+      now: () => h.world.now,
+      sleep: async (ms: number) => {
+        h.world.now += Math.max(0, ms);
+      },
+      log: (line: string) => h.lines.push(line),
+    };
+    expect(await runBootstrap(ctx, OPTIONS)).toEqual({ kind: "done" });
+    expect(h.store.state.journal.r2Token).toBeUndefined();
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      { name: first?.token.name, id: first?.token.id },
+    ]);
+    expect(h.world.calls.filter((c) => c === "tokenCreate")).toHaveLength(1);
+    expect(h.lines.some((l) => DELETE_STEP.test(l))).toBe(true);
+  });
+
+  it("falls back to the dashboard step when the login may not make tokens (403)", async () => {
+    const plan = await accountPlan();
+    const asked: string[] = [];
+    const h = harness(plan, freshState(plan), {
+      tokens: true,
+      ask: async (step) => {
+        asked.push(step);
+        return { accessKeyId: REPLICA_KEY_ID, secretAccessKey: REPLICA_SECRET };
+      },
+    });
+    h.world.tokensForbidden = true;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(asked).toEqual([
+      "In the Cloudflare dashboard, open R2 object storage, select Manage next to API Tokens, choose Create User API token, set Permissions to Object Read & Write, apply it to the buckets cfo-canary-replica and cfo-canary-artifacts only, select Create User API token, and copy its Access Key ID and Secret Access Key.",
+    ]);
+    expect(h.lines).toContainEqual(
+      expect.stringContaining(
+        "your cf login may not make API tokens (Cloudflare answered 403 Forbidden), so the R2 token is made by hand. In the Cloudflare dashboard",
+      ),
+    );
+    const secrets = h.world.secretsOf(plan.platformWorker);
+    expect(secrets?.get(REPLICA_SECRET_KEY_SECRET)).toBe(REPLICA_SECRET);
+    expect(secrets?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(REPLICA_SECRET);
+    expect(h.store.state.journal.r2Token).toBeUndefined();
+  });
+
+  it("a create refused (403) leaves nothing in flight, and the old token is still named", async () => {
+    const plan = await accountPlan();
+    const ask = async () => ({ accessKeyId: REPLICA_KEY_ID, secretAccessKey: REPLICA_SECRET });
+    const h = harness(plan, freshState(plan), { tokens: true, ask });
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.run()).rejects.toThrow(Crash);
+    const [first] = tokensOf(h);
+    h.world.before = {
+      call: "tokenCreate",
+      nth: 2,
+      run: () => {
+        h.world.tokensForbidden = true;
+      },
+    };
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.store.state.journal.r2Token).toBeUndefined();
+    expect(h.store.state.journal.r2TokensToDelete).toEqual([
+      { name: first?.token.name, id: first?.token.id },
+    ]);
+    expect(h.lines.filter((l) => DELETE_STEP.test(l))).toHaveLength(1);
+  });
+
+  it("without a terminal, a 403 is a refusal that says what to click, and deploys nothing", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.tokensForbidden = true;
+    const run = h.run();
+    await expect(run).rejects.toThrow(BootstrapRefusal);
+    await expect(run).rejects.toThrow(
+      /403 Forbidden\)\. In the Cloudflare dashboard, .* Then run again with them on stdin \(--secrets-stdin/,
+    );
+    expect(h.world.calls).not.toContain("deployPlatform");
+  });
+
+  it("refuses to make a second token while the Worker holds one pair but lacks the other", async () => {
+    const plan = await accountPlan();
+    const h = harness(plan, freshState(plan), TOKENS);
+    h.world.dropOnDeploy = [ARTIFACTS_SECRET_KEY_SECRET];
+    await expect(h.run()).rejects.toThrow(`lacks ${ARTIFACTS_SECRET_KEY_SECRET}`);
+    h.world.dropOnDeploy = [];
+    await expect(h.run()).rejects.toThrow(
+      /holds .*LITESTREAM_ACCESS_KEY_ID.* but not every R2 credential it needs, so the bootstrap will not make a second token; supply one token's values with --secrets-stdin .*: they replace each incomplete pair whole, and a complete pair is kept/,
+    );
+    expect(h.world.counts.get("tokenCreate")).toBe(1);
+    expect(h.store.state.journal.r2TokensToDelete).toBeUndefined();
+  });
+
+  it("makes no token for a deploy that would be refused", async () => {
+    const plan = await accountPlan();
+    const bad = harness(plan, freshState(plan), TOKENS);
+    const run = async () =>
+      runBootstrap(
+        {
+          cloud: bad.world.cloud(),
+          store: bad.store,
+          baseConfigs: BASE,
+          secrets: () => ({ ownerPassword: "short" }),
+          r2Tokens: bad.world.tokenApi(),
+          random: (n) => new Uint8Array(n).fill(0xab),
+          now: () => bad.world.now,
+          sleep: async () => {},
+          log: () => {},
+        },
+        OPTIONS,
+      );
+    await expect(run()).rejects.toThrow(/at least 8 characters/);
+    expect(bad.world.calls.some((c) => c.startsWith("token"))).toBe(false);
+  });
+});
+
+const TOKEN_CALLS = ["tokenGroup", "tokenList", "tokenCreate", "tokenRemove"];
+const TOKEN_CRASH_POINTS: (CrashPoint | { journal: number })[] = [
+  ...[...TOKEN_CALLS, "deployPlatform", "secretNames"].flatMap((call) =>
+    [1, 2].flatMap((nth) => (["before", "after"] as const).map((when) => ({ call, nth, when }))),
+  ),
+  ...Array.from({ length: 6 }, (_, i) => ({ journal: i + 1 })),
+];
+
+describe("runBootstrap: a crash at any point of the R2 token", () => {
+  it.each(
+    TOKEN_CRASH_POINTS.flatMap((p) =>
+      [true, false].map(
+        (oauth) => [JSON.stringify(p), oauth ? "OAuth" : "API Tokens Write", p, oauth] as const,
+      ),
+    ),
+  )(
+    "%s, %s login: a new run finishes, and every token is in use or recorded to delete",
+    async (_name, _login, point, oauth) => {
+      const plan = await accountPlan();
+      const h = harness(plan, freshState(plan), TOKENS);
+      h.world.oauthLogin = oauth;
+      h.world.truth = timeline(h.world, 2 * 60_000, 2 * 60_000);
+      if ("journal" in point) h.store.crash = { nth: point.journal };
+      else h.world.crash = point;
+      try {
+        await h.run();
+      } catch (error) {
+        if (!(error instanceof Crash)) throw error;
+      }
+      h.world.now += 60_000;
+      let outcome = await h.run();
+      if (outcome.kind !== "done") outcome = await h.run();
+      expect(outcome).toEqual({ kind: "done" });
+      h.world.landLate();
+      expectAccounted(h);
+      if (!oauth) expect(tokensOf(h).length).toBeLessThanOrEqual(2);
+      expect(h.world.released()).toBe(true);
+      expectNoTokenSecret(h);
+    },
+  );
+});
 
 describe("runBootstrap: a crash at any point", () => {
   it.each(CRASH_POINTS.map((p) => [JSON.stringify(p), p] as const))(
