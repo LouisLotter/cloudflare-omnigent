@@ -74,6 +74,16 @@ class CommandServer(ThreadingHTTPServer):
         self.server_name = str(host)
         self.server_port = int(port)
 
+    def server_activate(self) -> None:
+        """Listens non-blocking. ``serve_forever`` accepts only after a poll says a connection is
+        waiting; if it is gone by then (another acceptor of the same socket, or the descriptor
+        number reused under the server), a blocking accept would wait for the next connection,
+        and a shutdown would wait for that for ever (WP3.26: CI's hang, in the test workspace's
+        server). Non-blocking, that accept fails and the loop goes on. Accepted connections
+        stay blocking."""
+        super().server_activate()
+        self.socket.setblocking(False)
+
     def start_in_thread(self) -> threading.Thread:
         thread = threading.Thread(target=self.serve_forever, name="commands", daemon=True)
         thread.start()

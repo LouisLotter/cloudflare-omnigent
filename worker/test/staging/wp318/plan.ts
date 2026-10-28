@@ -136,7 +136,10 @@ export interface Disruption {
   readonly duringPause?: boolean;
 }
 
-const HOST_TUNNEL = /^\/v1\/hosts\/[0-9a-f]{32}\/tunnel$/;
+// The host's ID as Workers Logs has it, or as redact.py leaves it in collected logs ("<hex32>"):
+// opens are keyed by the computer's ID, which redaction keeps (the 28 Oct sitting's first analysis
+// matched no open, so it checked nothing).
+const HOST_TUNNEL = /^\/v1\/hosts\/(?:[0-9a-f]{32}|<hex32>)\/tunnel$/;
 
 interface Open {
   readonly at: number;

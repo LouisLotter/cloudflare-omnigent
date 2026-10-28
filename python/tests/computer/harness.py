@@ -97,10 +97,11 @@ class FakeWorkspace:
                 return
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        # Readiness can go stale before accept (for example, a client reset). Keep the
-        # listener nonblocking so serve_forever can observe shutdown instead of hanging.
-        self.server.socket.setblocking(False)
         self.server.daemon_threads = True
+        # As the CommandServer does (server.py): an accept whose connection is gone by then
+        # fails instead of blocking, so ``shutdown`` cannot wait for ever (CI's hang, WP3.26).
+        self.server.socket.setblocking(False)
+        self.listening = listening_identity(self.server)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/messages"
 
@@ -129,8 +130,40 @@ class FakeWorkspace:
             return [m for m in self.messages if m["type"] == kind]
 
     def close(self) -> None:
+        moved = listening_moved(self.server, self.listening)
+        if moved is not None:
+            abandon(self.server)
+            raise AssertionError(f"the test workspace's {moved}")
         self.server.shutdown()
         self.server.server_close()
+
+
+def listening_identity(server: Any) -> tuple[int, int]:
+    """The listening socket's (device, inode): unique to that socket while it is open."""
+    st = os.fstat(server.fileno())
+    return st.st_dev, st.st_ino
+
+
+def listening_moved(server: Any, identity: tuple[int, int]) -> str | None:
+    """Why the server's descriptor number no longer holds its own listening socket (closed, or
+    reused by something else: some code closed a number it did not own), or None. CI hung once
+    with a server blocked in accept, which fits exactly that (WP3.26); this names it at the
+    test where it happens."""
+    try:
+        now = listening_identity(server)
+    except OSError:
+        return f"listening descriptor {server.fileno()} was closed under the server"
+    if now != identity:
+        return f"listening descriptor {server.fileno()} now holds another file"
+    return None
+
+
+def abandon(server: Any) -> None:
+    """A server whose descriptor number is no longer its own: its loop is asked to stop without
+    waiting for it (it may be blocked on another owner's socket), and its socket object lets go
+    of the number, so neither a shutdown nor a close here acts on what another owner holds."""
+    threading.Thread(target=server.shutdown, daemon=True).start()
+    server.socket.detach()
 
 
 def newer(candidate: dict[str, Any], current: dict[str, Any] | None) -> bool:
@@ -185,6 +218,7 @@ class Rig:
             **kwargs,
         )
         self.server = CommandServer(("127.0.0.1", 0), self.sup)
+        self.listening = listening_identity(self.server)
         self.server.start_in_thread()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1/commands"
 
@@ -279,7 +313,11 @@ class Rig:
         return json.loads((self.layout.log / f"capture-{op}.result.json").read_text())
 
     def close(self) -> None:
+        moved = listening_moved(self.server, self.listening)
         self.sup.stop()
+        if moved is not None:
+            abandon(self.server)
+            raise AssertionError(f"the command server's {moved}")
         self.server.shutdown()
         self.server.server_close()
 

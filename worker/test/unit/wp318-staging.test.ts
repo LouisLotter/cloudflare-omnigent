@@ -174,6 +174,21 @@ describe("the soak's analysis", () => {
     expect(tunnelOpens([{ timestamp: 1, source: "a text line" }]).size).toBe(0);
   });
 
+  it("reads host-tunnel opens from redacted logs too, where the host's ID is <hex32>", () => {
+    // `run.sh collect` redacts the logs (redact.py): the 28 Oct sitting's first analysis matched
+    // no open in them and checked nothing.
+    const redacted = {
+      ...open(T0 + 1),
+      source: { ...(open(0).source as object), path: "/v1/hosts/<hex32>/tunnel" },
+    };
+    expect(tunnelOpens([redacted]).get(A)).toEqual([T0 + 1]);
+    const other = {
+      ...open(T0 + 2),
+      source: { ...(open(0).source as object), path: "/v1/hosts/<uuid>/tunnel" },
+    };
+    expect(tunnelOpens([other]).size).toBe(0);
+  });
+
   it("keeps versions through redaction, so a deploy's record and the logs still match", () => {
     // The M3 sitting's web deploy: redact.py turned every full version ID into "<uuid>".
     const v1 = "3f2a9c1e-7b4d-4e8f-a1c2-5d6e7f809a1b";
