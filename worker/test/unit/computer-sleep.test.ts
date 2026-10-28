@@ -239,7 +239,9 @@ describe("suspend", () => {
     expect(r.lifecycle.context.state).toBe("started_no_host");
     expect(sim.sup?.credentials.get(".claude/.credentials.json")).toBe("claude-login-canary-old");
     expect(r.restoredTo).toBe(r.workspace?.cutAt ?? null);
-  });
+    // A stop, a wake and a restore in the simulation: about 1.4 s alone, over 5 s on a busy CI
+    // runner (PR #32's first run).
+  }, 30_000);
 
   it("offers and honours stopping without saving after three refused sleeps, still publishing credentials (FH-35)", async () => {
     const sim = new ComputerSim();
