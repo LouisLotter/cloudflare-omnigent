@@ -9,6 +9,8 @@ import {
   type ControlCall,
   type ControlResult,
   Generation,
+  type GitHubSetupCall,
+  type GitHubSetupResult,
   HostId,
   type LauncherCall,
   type LauncherResult,
@@ -59,6 +61,18 @@ export interface OmnigentServerCall {
   readonly interfaceVersion: number;
 }
 
+/**
+ * The cron's `ensureStarted` (WP3.36): with the fingerprint of the server environment the
+ * caller's Worker version would start the server with (`environmentFingerprint`, a digest, never
+ * logged). The cron runs on the newest deployed version at once, while the object keeps the
+ * previous version for up to about 5 minutes after a deploy or a secrets change; an object that
+ * finds its own environment differs yields to the newer version (see `ensureStarted`). Optional:
+ * a caller on an older build sends none.
+ */
+export interface EnsureStartedCall extends OmnigentServerCall {
+  readonly environment?: string;
+}
+
 export interface OutagesQuery extends OmnigentServerCall {
   readonly from: Timestamp;
   readonly to: Timestamp;
@@ -94,8 +108,17 @@ export interface OmnigentServerRpc {
    * if none is set, and lets the watchdog start a stopped server now. Nothing else: no health
    * check, and no restart of a server that runs. The watchdog's rules hold, so a server in
    * recovery mode, held after exit 78, or inside DC-37's backoff is not started.
+   *
+   * WP3.36: when the call carries an `environment` fingerprint that differs from the one this
+   * object's own version would start the server with, the object is on an older version than
+   * the cron's (a secrets change or a deploy it has not switched to yet). It then arms its
+   * alarm for now and resets itself (`ctx.abort`), never twice in a row for the same newer
+   * environment and at most once in `VERSION_YIELD_INTERVAL_MS`, so that its next instance runs
+   * the newest version and its watchdog applies the new configuration minutes sooner than the
+   * platform's own switch. The call then fails with the
+   * reset; the cron logs it and carries on.
    */
-  ensureStarted(call: OmnigentServerCall): Promise<void>;
+  ensureStarted(call: EnsureStartedCall): Promise<void>;
   /**
    * The owner's Omnigent password page (WP3.34, `contracts/src/owner-password.ts`), for the web
    * Worker after ingress admitted the pinned owner. `state`: whether the owner still has to choose
@@ -107,6 +130,15 @@ export interface OmnigentServerRpc {
    * method with an RPC error, which the page shows as "try again".
    */
   ownerPassword(call: OwnerPasswordCall): Promise<OwnerPasswordResult>;
+  /**
+   * The GitHub setup page (WP3.36, `contracts/src/github-setup.ts`), for the web Worker after
+   * ingress admitted the pinned owner: whether this version holds the GitHub App's settings, the
+   * running server was started with them, and Omnigent's `/v1/info` lists GitHub linking. Reads
+   * only: one `/v1/info` read while the server answers, never a start or a restart. Added in
+   * version 1, additively, as `ownerPassword` was: an object still on an older build answers
+   * with an RPC error, which the page shows as "still finishing".
+   */
+  githubSetup(call: GitHubSetupCall): Promise<GitHubSetupResult>;
 }
 
 // ---------------------------------------------------------------------------------------------

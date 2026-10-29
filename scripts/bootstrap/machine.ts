@@ -313,7 +313,7 @@ const SETTLED_MS = 10 * 60_000;
 
 /** Reads a Worker's logs between two times, slice by slice, reading settled slices once. */
 export function slicedLogs(
-  ctx: Pick<RunContext, "cloud" | "now">,
+  ctx: { readonly cloud: Pick<BootstrapCloud, "logs">; readonly now: () => number },
   worker: string,
 ): (fromMs: number, toMs: number) => Promise<unknown[]> {
   const settled = new Map<number, unknown[]>();

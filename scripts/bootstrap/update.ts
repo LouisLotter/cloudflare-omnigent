@@ -545,50 +545,74 @@ async function checkUpdate(
     );
     await ctx.sleep(switchAt - ctx.now());
   }
-  const deadline = ctx.now() + options.verifyWaitMs;
   const logsSince = slicedLogs(ctx, plan.platformWorker);
+  const seen = await pollServer<UpdateOutcome>(
+    ctx,
+    { pollMs: options.pollMs, deadline: ctx.now() + options.verifyWaitMs },
+    async () => {
+      // Logs count only while the version serving is positively this update's deploy: its own
+      // version and deploy ID, read together (Codex WP3.35 r2-1, r2-2).
+      const identity = await ctx.cloud.workerInstallation(plan.platformWorker);
+      const which = serving(identity, update(), plan);
+      if (which === "other") {
+        const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = update();
+        replace(rest);
+        return {
+          decided: {
+            kind: "deployed",
+            why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
+          },
+        };
+      }
+      if (which === "ours" && update().platformVersionId === undefined && identity.exists) {
+        // Cloudflare did not say right after the deploy; the version serving now, carrying this
+        // update's deploy ID, is its version.
+        progress({ platformVersionId: String(identity.versionId) });
+      }
+      const result: Verification =
+        which === "unknown"
+          ? {
+              verified: false,
+              why: "Cloudflare does not say yet which version serves the platform Worker",
+            }
+          : verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
+              installationId: plan.installationId,
+              releasedVersionId: update().platformVersionId,
+              releasedAt: since,
+            });
+      if (result.verified) {
+        progress({ verifiedAt: iso(ctx.now()) });
+        ctx.log(
+          "checked: the server restarted on the new version, answers, and shows the owner initialized and durable",
+        );
+        return { decided: { kind: "done" } };
+      }
+      return { why: result.why };
+    },
+  );
+  return "decided" in seen ? seen.decided : { kind: "deployed", why: seen.why };
+}
+
+/**
+ * The installer's wait for the server (WP3.35, WP3.36): `look` reads the platform Worker's
+ * state and logs once per poll, and either decides or says why not yet. Each new reason is
+ * logged once ("waiting: …"); the last one is returned when the deadline would pass before the
+ * next poll. `update` checks its restart with it, and the GitHub step waits for GitHub linking.
+ */
+export async function pollServer<T>(
+  ctx: Pick<UpdateContext, "now" | "sleep" | "log">,
+  options: { readonly pollMs: number; readonly deadline: number },
+  look: () => Promise<{ readonly decided: T } | { readonly why: string }>,
+): Promise<{ readonly decided: T } | { readonly why: string }> {
   let said: string | undefined;
   for (;;) {
-    // Logs count only while the version serving is positively this update's deploy: its own
-    // version and deploy ID, read together (Codex WP3.35 r2-1, r2-2).
-    const identity = await ctx.cloud.workerInstallation(plan.platformWorker);
-    const which = serving(identity, update(), plan);
-    if (which === "other") {
-      const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = update();
-      replace(rest);
-      return {
-        kind: "deployed",
-        why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
-      };
+    const seen = await look();
+    if ("decided" in seen) return seen;
+    if (seen.why !== said) {
+      said = seen.why;
+      ctx.log(`waiting: ${seen.why}`);
     }
-    if (which === "ours" && update().platformVersionId === undefined && identity.exists) {
-      // Cloudflare did not say right after the deploy; the version serving now, carrying this
-      // update's deploy ID, is its version.
-      progress({ platformVersionId: String(identity.versionId) });
-    }
-    const result: Verification =
-      which === "unknown"
-        ? {
-            verified: false,
-            why: "Cloudflare does not say yet which version serves the platform Worker",
-          }
-        : verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
-            installationId: plan.installationId,
-            releasedVersionId: update().platformVersionId,
-            releasedAt: since,
-          });
-    if (result.verified) {
-      progress({ verifiedAt: iso(ctx.now()) });
-      ctx.log(
-        "checked: the server restarted on the new version, answers, and shows the owner initialized and durable",
-      );
-      return { kind: "done" };
-    }
-    if (result.why !== said) {
-      said = result.why;
-      ctx.log(`waiting: ${result.why}`);
-    }
-    if (ctx.now() + options.pollMs > deadline) return { kind: "deployed", why: result.why };
+    if (ctx.now() + options.pollMs > options.deadline) return seen;
     await ctx.sleep(options.pollMs);
   }
 }

@@ -806,8 +806,10 @@ function stopped(
     // already not the current one, the corrected configuration is started (Codex WP2.2 r4-2).
     b.openFor(state, state.lastAnsweredAt === null ? "start_failed" : "container_stopped", now);
     b.update({ exitCode });
-    b.event("config_error", { exitCode });
     const held = ranWith ?? config;
+    // `held`: whether the current configuration is the one held (WP3.36, Codex r1-2). An exit
+    // of a container started with an older one is not: the current one starts at once.
+    b.event("config_error", { exitCode, held: held === config });
     if (held !== config) {
       b.event("config_changed");
       return start({ ...state, heldConfig: null }, now, timing, b, exitCode);

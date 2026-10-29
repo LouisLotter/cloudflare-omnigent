@@ -12,6 +12,8 @@ export const COMPUTERS_PATH = `${PAGES_ROOT}/computers`;
 export const ASSETS_PATH = `${PAGES_ROOT}/assets`;
 /** The owner's Omnigent password: choose it, or reset a forgotten one (WP3.34). */
 export const PASSWORD_PAGE_PATH = `${PAGES_ROOT}/password`;
+/** The GitHub App's setup URL: GitHub sends the owner here after installing it (WP3.36). */
+export const GITHUB_SETUP_PAGE_PATH = `${PAGES_ROOT}/github`;
 
 export function computerPath(id: string): string {
   return `${COMPUTERS_PATH}/${id}`;
@@ -74,15 +76,33 @@ form.password input[readonly] { color: var(--muted); background: var(--bg); }
 @media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
 `;
 
-export function layout(title: string, body: string, scripts: readonly string[] = []): string {
+/** A page that loads `url` (a path on this origin) again after `seconds`, with no script. */
+export interface Refresh {
+  readonly seconds: number;
+  readonly url: string;
+}
+
+export function layout(
+  title: string,
+  body: string,
+  scripts: readonly string[] = [],
+  refresh?: Refresh,
+): string {
   const tags = scripts.map((src) => `<script src="${escapeHtml(src)}" defer></script>`).join("\n");
+  if (refresh !== undefined && (!refresh.url.startsWith("/") || refresh.url.startsWith("//"))) {
+    throw new Error("a page refreshes to a path on its own origin");
+  }
+  const reload =
+    refresh === undefined
+      ? ""
+      : `<meta http-equiv="refresh" content="${Math.max(1, Math.floor(refresh.seconds))};url=${escapeHtml(refresh.url)}">\n`;
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="same-origin">
-<title>${escapeHtml(title)}</title>
+${reload}<title>${escapeHtml(title)}</title>
 <link rel="stylesheet" href="${ASSETS_PATH}/pages.css">
 ${tags}
 </head>

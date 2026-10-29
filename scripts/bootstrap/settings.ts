@@ -487,8 +487,29 @@ export const STAGING_INSTALLATION_VAR = "CFO_STAGING_INSTALLATION";
  * Add a name here when a step starts to depend on a platform feature.
  */
 export const PLATFORM_FEATURES_VAR = "CFO_PLATFORM_FEATURES";
-/** `key-service`: the credential store's key service on platform.internal (WP5.9). */
-export const PLATFORM_FEATURES: readonly string[] = ["key-service"];
+/**
+ * `key-service`: the credential store's key service on platform.internal (WP5.9).
+ * `github-setup`: the server's GitHub linking report on its status line, which the GitHub step
+ * waits for, and the setup page's state (`githubSetup`) (WP3.36); the page itself is the web
+ * Worker's (`WEB_FEATURES`).
+ */
+export const PLATFORM_FEATURES: readonly string[] = ["key-service", "github-setup"];
+
+/**
+ * What the web Worker's code offers that an installer step relies on (WP3.36), as for the
+ * platform Worker: `github-setup`, the GitHub setup page (`/platform/github`), the GitHub App's
+ * setup URL. A plain variable on every web deploy; ingress never reads it.
+ */
+export const WEB_FEATURES_VAR = "CFO_WEB_FEATURES";
+export const WEB_FEATURES: readonly string[] = ["github-setup"];
+
+/** Whether a web Worker's variables (its active version's) say it offers `feature`. */
+export function offersWebFeature(
+  vars: Readonly<Record<string, string>> | undefined,
+  feature: string,
+): boolean {
+  return (vars?.[WEB_FEATURES_VAR] ?? "").split(/\s+/).includes(feature);
+}
 
 /** Whether a platform Worker's variables (its active version's) say it offers `feature`. */
 export function offersPlatformFeature(
@@ -820,6 +841,7 @@ export function renderWebConfig(
     // reads only its own four variables, and answers 503 to everything until they are set.
     vars: {
       [INSTALLATION_ID_VAR]: plan.installationId,
+      [WEB_FEATURES_VAR]: WEB_FEATURES.join(" "),
       ...(access === undefined ? {} : webVars(plan, access)),
     },
   };

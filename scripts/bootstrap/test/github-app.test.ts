@@ -1,17 +1,23 @@
 // The installer's GitHub App step (github-app.ts) with a real local page and a fake browser that
-// does what GitHub does: it loads the page, reads the manifest form, and comes back to the
-// manifest's redirect URL with a code and the form's state. GitHub's API and Cloudflare are fakes.
+// does what GitHub does: it loads the page, reads the manifest form, comes back to the manifest's
+// redirect URL with a code and the form's state, and then follows the progress page until its
+// last answer. GitHub's API and Cloudflare are fakes: a small one for the page and the App, and
+// the bootstrap's simulated Cloudflare (fake-cloud.ts) for the wait for GitHub linking (WP3.36).
 import { describe, expect, it } from "vitest";
 import { KEY_SERVICE_SECRETS, parseRecordKeys } from "../../../worker/src/internal/key-service.ts";
+import { githubAppTag } from "../../../worker/src/server/github-linking.ts";
 import {
   APP_PERMISSIONS,
   appName,
   browserCommand,
   createGitHubApp,
+  DEFAULT_GITHUB_APP_TIMEOUT_MS,
   extraPermissions,
+  finalMessage,
   GITHUB_APP_SECRETS,
   type GitHubAppCloud,
   type GitHubAppOptions,
+  type GitHubAppOutcome,
   type GitHubAppPorts,
   GitHubAppRefusal,
   githubAppChanges,
@@ -19,15 +25,19 @@ import {
   type Manifest,
   manifestAction,
   manifestPage,
+  minutes,
+  page,
   parseConversion,
 } from "../github-app.ts";
-import type { WorkerIdentity } from "../machine.ts";
-import { accountPlan, INSTALLATION } from "./fixtures.ts";
+import { runBootstrap, type WorkerIdentity } from "../machine.ts";
+import { FakeWorld, fakeAppTag, MemoryStore, REPLACE_MS, SWITCH_MS } from "./fake-cloud.ts";
+import { accountPlan, baseConfigs, freshState, INSTALLATION, OWNER_PASSWORD } from "./fixtures.ts";
 
 const CLIENT_SECRET = "cfo-canary-github-client-secret-00000000";
 const PEM = "-----BEGIN RSA PRIVATE KEY-----cfo-canary-pem-----END RSA PRIVATE KEY-----";
 const WEBHOOK = "cfo-canary-webhook-secret";
 const CODE = "cfocanarymanifestcode0";
+const FEATURES = "key-service github-setup";
 
 const conversion = (over: Record<string, unknown> = {}) => ({
   id: 123456,
@@ -42,23 +52,74 @@ const conversion = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/**
+ * A small Cloudflare for the page and the App: one version before the change and one after,
+ * whose watchdog reports (right away, in real time) GitHub linking as `linking` says.
+ */
 class FakeCloud implements GitHubAppCloud {
   names: string[] | null = ["SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET"];
   identity: WorkerIdentity = {
     exists: true,
     installationId: INSTALLATION,
-    vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: "key-service" },
+    vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: FEATURES },
+  };
+  /** The web Worker's (WP3.36: it serves the GitHub setup page). */
+  web: WorkerIdentity = {
+    exists: true,
+    installationId: INSTALLATION,
+    vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_WEB_FEATURES: "github-setup" },
   };
   changes: Record<string, string | null>[] = [];
+  linking: boolean | null = true;
   async secretNames() {
     return this.names;
   }
-  async workerInstallation() {
-    return this.identity;
+  async workerInstallation(worker: string) {
+    return worker.endsWith("-web") ? this.web : this.identity;
   }
   async updateSecrets(_worker: string, changes: Readonly<Record<string, string | null>>) {
     this.changes.push({ ...changes });
     return "sent" as const;
+  }
+  async activeVersion() {
+    return this.changes.length === 0 ? "v1" : "v2";
+  }
+  async logs() {
+    if (this.changes.length === 0) return [];
+    const $workers = {
+      scriptName: "cloudflare-omnigent",
+      scriptVersion: { id: "v2" },
+      eventType: "alarm",
+      entrypoint: "OmnigentServer",
+    };
+    return [
+      {
+        timestamp: Date.now() + 1,
+        $workers,
+        source: {
+          cfo: "bootstrap",
+          event: "status",
+          reason: "durable",
+          bootstrapStatus: {
+            protocolVersion: 1,
+            installationId: INSTALLATION,
+            initialized: true,
+            checkedAt: new Date().toISOString(),
+          },
+          secretPresent: false,
+          configApplied: true,
+          githubApp: fakeAppTag(
+            new Map([
+              [
+                GITHUB_APP_SECRETS.clientId,
+                String(this.changes.at(-1)?.[GITHUB_APP_SECRETS.clientId]),
+              ],
+            ]),
+          ),
+          githubLinking: this.linking,
+        },
+      },
+    ];
   }
 }
 
@@ -67,6 +128,12 @@ interface Visit {
   readonly action: string;
   readonly manifest: Manifest;
   readonly callback?: Response;
+  /** The progress page's answers, in order, the last one its last answer. */
+  readonly progress: readonly {
+    readonly status: number;
+    readonly html: string;
+    readonly location: string | null;
+  }[];
 }
 
 function counter(): (n: number) => Uint8Array {
@@ -77,24 +144,41 @@ function counter(): (n: number) => Uint8Array {
   };
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The browser on the progress page: it loads it again while the page says to refresh. */
+async function follow(statusUrl: string): Promise<Visit["progress"]> {
+  const seen: { status: number; html: string; location: string | null }[] = [];
+  for (let i = 0; i < 2000; i++) {
+    const response = await fetch(statusUrl, { redirect: "manual" });
+    const html = await response.text();
+    seen.push({ status: response.status, html, location: response.headers.get("location") });
+    if (response.status !== 200 || !html.includes('http-equiv="refresh"')) return seen;
+    await sleep(5);
+  }
+  throw new Error("the progress page never ended");
+}
+
 /**
  * Runs the step with a browser that behaves as GitHub would after "Create", unless `click`
- * returns other query values (or null: never comes back).
+ * returns other query values (or null: never comes back). Cloudflare is `cloud`, or `world`'s.
  */
 async function run(
   options: GitHubAppOptions & {
-    cloud?: FakeCloud;
+    cloud?: GitHubAppCloud;
+    world?: FakeWorld;
     github?: () => Response;
     click?: (state: string) => Record<string, string> | null;
   } = {},
 ) {
-  const cloud = options.cloud ?? new FakeCloud();
+  const cloud = options.cloud ?? options.world?.cloud() ?? new FakeCloud();
   const logs: string[] = [];
   const github: { url: string; init: RequestInit }[] = [];
   let resolveVisit: (visit: Visit) => void = () => undefined;
   const visited = new Promise<Visit>((resolve) => {
     resolveVisit = resolve;
   });
+  const world = options.world;
   const ports: GitHubAppPorts = {
     cloud,
     openBrowser: (url) => {
@@ -107,11 +191,16 @@ async function run(
         );
         const state = new URL(action).searchParams.get("state") ?? "";
         const query = options.click ? options.click(state) : { code: CODE, state };
-        if (query === null) return resolveVisit({ page, action, manifest });
+        if (query === null) return resolveVisit({ page, action, manifest, progress: [] });
         const back = new URL(manifest.redirect_url);
         for (const [k, v] of Object.entries(query)) back.searchParams.set(k, v);
         const callback = await fetch(back, { redirect: "manual" });
-        resolveVisit({ page, action, manifest, callback });
+        const location = callback.headers.get("location");
+        const progress =
+          callback.status === 303 && location !== null
+            ? await follow(new URL(location, back).toString())
+            : [];
+        resolveVisit({ page, action, manifest, callback, progress });
       })();
     },
     githubApi: async (url, init) => {
@@ -119,10 +208,20 @@ async function run(
       return options.github ? options.github() : Response.json(conversion(), { status: 201 });
     },
     random: counter(),
+    now: () => (world === undefined ? Date.now() : world.now),
+    sleep: async (ms) => {
+      // The simulated clock jumps; a few real milliseconds let the browser see each step.
+      if (world !== undefined) world.now += Math.max(0, ms);
+      await sleep(Math.min(ms, 10));
+    },
     log: (message) => logs.push(message),
   };
-  const outcome = createGitHubApp(await accountPlan(), ports, {
+  const plan = world?.plan ?? (await accountPlan());
+  const outcome = createGitHubApp(plan, ports, {
     timeoutMs: options.timeoutMs ?? 5_000,
+    expiredPageMs: options.expiredPageMs ?? 0,
+    finalPageMs: options.finalPageMs ?? 2_000,
+    ...(options.linkingWaitMs === undefined ? {} : { linkingWaitMs: options.linkingWaitMs }),
     ...(options.org === undefined ? {} : { org: options.org }),
     ...(options.replace === undefined ? {} : { replace: options.replace }),
   });
@@ -138,6 +237,36 @@ function decode(text: string): string {
     .replaceAll("&amp;", "&");
 }
 
+/** A finished installation on the bootstrap's simulated Cloudflare, a day after its release. */
+async function installedWorld(): Promise<FakeWorld> {
+  const plan = await accountPlan();
+  const world = new FakeWorld(plan);
+  const outcome = await runBootstrap(
+    {
+      cloud: world.cloud(),
+      store: new MemoryStore(freshState(plan)),
+      baseConfigs: baseConfigs(),
+      secrets: () => ({
+        ownerPassword: OWNER_PASSWORD,
+        replicaAccessKeyId: "cfo-canary-replica-key-id",
+        replicaSecretAccessKey: "cfo-canary-replica-secret-key",
+      }),
+      random: (n) => new Uint8Array(n).fill(0xab),
+      now: () => world.now,
+      sleep: async (ms) => {
+        world.now += Math.max(0, ms);
+      },
+      log: () => undefined,
+    },
+    { waitMs: 30 * 60_000, pollMs: 30_000, verify: true, switchMs: 330_000, verifyWaitMs: 600_000 },
+  );
+  expect(outcome).toEqual({ kind: "done" });
+  world.calls.length = 0;
+  world.counts.clear();
+  world.now += 24 * 3600_000;
+  return world;
+}
+
 describe("the manifest", () => {
   it("names the installation's hostname for the callback and setup, with the least permissions", async () => {
     const plan = await accountPlan();
@@ -148,8 +277,8 @@ describe("the manifest", () => {
       description: "Omnigent's GitHub linking for omnigent.example.test (cloudflare-omnigent).",
       redirect_url: "http://127.0.0.1:1234/callback",
       callback_urls: ["https://omnigent.example.test/v1/connections/github/callback"],
-      setup_url: "https://omnigent.example.test/settings/integrations",
-      setup_on_update: false,
+      setup_url: "https://omnigent.example.test/platform/github",
+      setup_on_update: true,
       request_oauth_on_install: false,
       public: false,
       hook_attributes: { url: "https://omnigent.example.test/", active: false },
@@ -274,11 +403,13 @@ describe("the secrets change", () => {
 });
 
 describe("the whole step, with a local page and a browser that behaves as GitHub does", () => {
-  it("creates the App, stores it in one secrets change, and sends the browser on to install it", async () => {
-    const { cloud, logs, github, visited, outcome } = await run();
+  it("creates the App, stores it in one secrets change, and sends the browser on to install it once linking is on", async () => {
+    const fake = new FakeCloud();
+    const { cloud, logs, github, visited, outcome } = await run({ cloud: fake });
     const result = await outcome;
     const visit = await visited;
     expect(result).toEqual({
+      kind: "on",
       slug: "omnigent-01hs3f9q",
       installUrl: "https://github.com/apps/omnigent-01hs3f9q/installations/new",
     });
@@ -296,8 +427,8 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     expect(github[0]?.url).toBe(`https://api.github.com/app-manifests/${CODE}/conversions`);
     expect(github[0]?.init.method).toBe("POST");
     // One change of the Worker's secrets, with the App and the key service's new keys.
-    expect(cloud.changes).toHaveLength(1);
-    expect(Object.keys(cloud.changes[0] ?? {}).sort()).toEqual(
+    expect(fake.changes).toHaveLength(1);
+    expect(Object.keys(fake.changes[0] ?? {}).sort()).toEqual(
       [
         ...Object.values(GITHUB_APP_SECRETS),
         KEY_SERVICE_SECRETS.currentId,
@@ -305,12 +436,16 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
         KEY_SERVICE_SECRETS.recordKeys,
       ].sort(),
     );
-    // The browser goes on to GitHub's install page.
-    expect(visit.callback?.status).toBe(302);
-    expect(visit.callback?.headers.get("location")).toBe(result.installUrl);
-    // Nothing secret was printed.
-    const printed = logs.join("\n");
-    const values = Object.values(cloud.changes[0] ?? {}).filter(
+    // The callback moves the browser on at once to the progress page, which ends on GitHub's
+    // install page, only once linking is on.
+    expect(visit.callback?.status).toBe(303);
+    const last = visit.progress.at(-1);
+    expect(last?.status).toBe(302);
+    expect(last?.location).toBe(result.installUrl);
+    expect(cloud).toBe(fake);
+    // Nothing secret was printed, or shown on any page.
+    const printed = [logs.join("\n"), ...visit.progress.map((p) => p.html)].join("\n");
+    const values = Object.values(fake.changes[0] ?? {}).filter(
       (v): v is string => typeof v === "string" && v.length > 20 && !v.startsWith("https://"),
     );
     for (const secret of [CLIENT_SECRET, PEM, WEBHOOK, CODE, ...values]) {
@@ -327,8 +462,8 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       timeoutMs: 300,
     });
     // The first visit's callback is refused; the outcome then times out with nothing changed.
-    await expect(outcome).rejects.toThrow(/no answer from GitHub in time/);
-    expect(cloud.changes).toEqual([]);
+    await expect(outcome).rejects.toThrow(/no answer from GitHub within 1 second; nothing/);
+    expect((cloud as FakeCloud).changes).toEqual([]);
   });
 
   it("refuses a malformed code", async () => {
@@ -338,7 +473,7 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     });
     expect((await visited).callback?.status).toBe(400);
     await expect(outcome).rejects.toThrow(/no answer/);
-    expect(cloud.changes).toEqual([]);
+    expect((cloud as FakeCloud).changes).toEqual([]);
   });
 
   it("changes nothing when GitHub refuses the conversion or answers nonsense", async () => {
@@ -349,8 +484,11 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     ]) {
       const { cloud, visited, outcome } = await run({ github });
       await expect(outcome).rejects.toThrow(GitHubAppRefusal);
-      expect((await visited).callback?.status).toBe(500);
-      expect(cloud.changes).toEqual([]);
+      const last = (await visited).progress.at(-1);
+      expect(last?.status).toBe(200);
+      expect(last?.html).toContain("The App was not stored");
+      expect(last?.html).not.toContain('http-equiv="refresh"');
+      expect((cloud as FakeCloud).changes).toEqual([]);
     }
   });
 
@@ -372,7 +510,7 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     };
     const { logs, visited, outcome } = await run({ cloud });
     await expect(outcome).rejects.toThrow("cf workers secrets bulk failed");
-    expect((await visited).callback?.status).toBe(500);
+    expect((await visited).progress.at(-1)?.html).toContain("See the installer&#39;s output.");
     expect(logs.join("\n")).toContain(
       "delete it at https://github.com/settings/apps/omnigent-01hs3f9q/advanced",
     );
@@ -408,6 +546,25 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       installationId: INSTALLATION,
       vars: { CFO_PLATFORM_FEATURES: "something-else" },
     };
+    // A release with the key service but from before the GitHub setup page (WP3.36).
+    const keyOnly = new FakeCloud();
+    keyOnly.identity = {
+      exists: true,
+      installationId: INSTALLATION,
+      vars: { CFO_PLATFORM_FEATURES: "key-service" },
+    };
+    // The web Worker: gone, another installation's, or from before the setup page (an update
+    // interrupted between its two deploys; Codex r1-3).
+    const noWeb = new FakeCloud();
+    noWeb.web = { exists: false };
+    const otherWeb = new FakeCloud();
+    otherWeb.web = { exists: true, installationId: "ins_01aaaaaaaaaaaaaaaaaaaaaaaa" };
+    const oldWeb = new FakeCloud();
+    oldWeb.web = {
+      exists: true,
+      installationId: INSTALLATION,
+      vars: { CFO_INSTALLATION_ID: INSTALLATION },
+    };
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
       [other, /is not serving installation/],
@@ -415,6 +572,10 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       [older, /runs a release from before GitHub linking .*bootstrap\.ts update/],
       [unlisted, /runs a release from before GitHub linking/],
       [without, /runs a release from before GitHub linking/],
+      [keyOnly, /runs a release from before the GitHub setup page: .*bootstrap\.ts update/],
+      [noWeb, /cloudflare-omnigent-web is not serving installation/],
+      [otherWeb, /cloudflare-omnigent-web is not serving installation/],
+      [oldWeb, /cloudflare-omnigent-web runs a release from before the GitHub setup page/],
       [linked, /already has a GitHub App/],
       [half, /half of the key service's signing pair/],
     ] as const) {
@@ -426,6 +587,8 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
         },
         githubApi: async () => new Response(null, { status: 500 }),
         random: counter(),
+        now: () => Date.now(),
+        sleep: async () => undefined,
         log: () => undefined,
       });
       await expect(outcome).rejects.toThrow(why);
@@ -472,9 +635,11 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
         },
         githubApi: async () => Response.json(conversion(), { status: 201 }),
         random: counter(),
+        now: () => Date.now(),
+        sleep: async () => undefined,
         log: () => undefined,
       },
-      { timeoutMs: 1_500 },
+      { timeoutMs: 1_500, expiredPageMs: 0 },
     );
     const settled = outcome.catch((error: unknown) => error);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -497,6 +662,314 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     expect(await get("/other", `127.0.0.1:${port}`)).toBe(404);
     expect(await settled).toBeInstanceOf(GitHubAppRefusal);
     expect(cloud.changes).toEqual([]);
+  });
+});
+
+describe("the wait for GitHub linking, on a simulated Cloudflare (WP3.36)", () => {
+  const changedAt = (world: FakeWorld) => world.secretChanges.at(-1)?.at ?? Number.NaN;
+
+  it("sends the browser on only once a server started with the App's settings reports GitHub linking on", async () => {
+    const world = await installedWorld();
+    const changes = world.secretChanges.length;
+    const { logs, visited, outcome } = await run({ world });
+    const result = await outcome;
+    const visit = await visited;
+    expect(result).toMatchObject({ kind: "on", slug: "omnigent-01hs3f9q" });
+    // One secrets change; the step waited out the object's switch and the server's restart.
+    expect(world.secretChanges).toHaveLength(changes + 1);
+    expect(world.now - changedAt(world)).toBeGreaterThanOrEqual(SWITCH_MS + REPLACE_MS);
+    expect(logs.join("\n")).toContain("waiting: the platform has not switched");
+    expect(logs.join("\n")).toContain("waiting: the server is restarting with the App's settings");
+    // The progress page said what happened, reloading itself, and went on only at the end.
+    const pages = visit.progress.slice(0, -1);
+    expect(pages.length).toBeGreaterThan(0);
+    expect(pages.every((p) => p.status === 200 && p.location === null)).toBe(true);
+    expect(pages.every((p) => p.html.includes('http-equiv="refresh"'))).toBe(true);
+    expect(pages.some((p) => p.html.includes("Omnigent&#39;s server is restarting"))).toBe(true);
+    expect(visit.progress.at(-1)).toMatchObject({ status: 302, location: result.installUrl });
+    expect(finalMessage(world.plan, result)).toEqual({
+      exitCode: 0,
+      lines: [
+        "GitHub linking is on at https://omnigent.example.test.",
+        `next, in your browser (it went on by itself): install the App on GitHub, ${result.installUrl}; GitHub then brings you back to Omnigent's Integrations page, https://omnigent.example.test/settings/integrations: click "Connect GitHub" there.`,
+      ],
+    });
+  });
+
+  it("says plainly when the restarted server has GitHub linking off, and sends nobody to install", async () => {
+    const world = await installedWorld();
+    world.githubLinks = () => false;
+    const { visited, outcome } = await run({ world });
+    const result = await outcome;
+    expect(result.kind).toBe("off");
+    const last = (await visited).progress.at(-1);
+    expect(last?.status).toBe(200);
+    expect(last?.html).toContain("GitHub linking is off");
+    expect(last?.html).not.toContain('http-equiv="refresh"');
+    expect(last?.html).not.toContain("installations/new");
+    const words = finalMessage(world.plan, result);
+    expect(words.exitCode).toBe(1);
+    expect(words.lines.join(" ")).toContain("--replace");
+    expect(words.lines.join(" ")).not.toMatch(/\bdone\b/);
+  });
+
+  it("says plainly when the server refuses the App's settings and is held", async () => {
+    const world = await installedWorld();
+    world.refusesSettings = (v) => v.secrets.has(GITHUB_APP_SECRETS.clientId);
+    const { visited, outcome } = await run({ world });
+    const result = await outcome;
+    expect(result.kind).toBe("held");
+    expect((await visited).progress.at(-1)?.html).toContain("does not start with the App");
+    expect(finalMessage(world.plan, result).exitCode).toBe(1);
+    expect(finalMessage(world.plan, result).lines.join(" ")).toContain("exit code 78");
+  });
+
+  it("stops waiting after its time, says what it saw last, and offers the link that still leads somewhere", async () => {
+    const world = await installedWorld();
+    world.appliesReleases = false; // the server is never restarted with the App's settings
+    const { visited, outcome } = await run({ world, linkingWaitMs: 10 * 60_000 });
+    const result = await outcome;
+    expect(result).toMatchObject({
+      kind: "waiting",
+      why: "the platform has not switched the server's object to the App's settings yet",
+    });
+    const last = (await visited).progress.at(-1);
+    expect(last?.html).toContain("GitHub linking is not on yet");
+    expect(last?.html).toContain(`href="${result.installUrl}"`);
+    expect(last?.html).toContain("https://omnigent.example.test/platform/github");
+    expect(finalMessage(world.plan, result).exitCode).toBe(3);
+  });
+
+  it("asks again when a query of Cloudflare fails, and still ends with linking on", async () => {
+    const world = await installedWorld();
+    world.crash = { call: "logs", nth: 2, when: "before" };
+    const { logs, outcome } = await run({ world });
+    expect((await outcome).kind).toBe("on");
+    expect(logs.join("\n")).toContain("waiting: Cloudflare did not answer the query");
+  });
+
+  it("needs no word from Cloudflare about versions: the App's own tag decides (Codex r1-1)", async () => {
+    const world = await installedWorld();
+    world.noVersions = true;
+    const result = await (await run({ world, linkingWaitMs: 10 * 60_000 })).outcome;
+    expect(result.kind).toBe("on");
+  });
+
+  it("logs the same App tag the platform computes", async () => {
+    const id = "Iv23liCanaryClient00";
+    expect(fakeAppTag(new Map([[GITHUB_APP_SECRETS.clientId, id]]))).toBe(await githubAppTag(id));
+    expect(await githubAppTag(" ")).toBeNull();
+  });
+
+  it("on --replace, never takes the old App's server for the new one's", async () => {
+    const world = await installedWorld();
+    // An App stored earlier, and its server restarted with it: still announcing when the
+    // replacement begins, GitHub linking on (with the old App).
+    await world.cloud().updateSecrets(world.plan.platformWorker, {
+      [GITHUB_APP_SECRETS.appId]: "1",
+      [GITHUB_APP_SECRETS.clientId]: "Iv23liOldClient000000",
+      [GITHUB_APP_SECRETS.clientSecret]: "cfo-canary-old-client-secret",
+      [GITHUB_APP_SECRETS.redirectUri]:
+        "https://omnigent.example.test/v1/connections/github/callback",
+      [GITHUB_APP_SECRETS.slug]: "omnigent-old",
+      [KEY_SERVICE_SECRETS.currentId]: "ks-cafe0001",
+      [KEY_SERVICE_SECRETS.current]: "cfo-canary-key-service-signing-key",
+      [KEY_SERVICE_SECRETS.recordKeys]: "cfo-canary-key-service-record-keys",
+    });
+    world.now += SWITCH_MS + REPLACE_MS + 60_000;
+    const changes = world.secretChanges.length;
+    const { outcome } = await run({ world, replace: true });
+    const result = await outcome;
+    expect(result.kind).toBe("on");
+    expect(world.secretChanges).toHaveLength(changes + 1);
+    expect(world.now - changedAt(world)).toBeGreaterThanOrEqual(SWITCH_MS + REPLACE_MS);
+  });
+});
+
+describe("the local page's hour", () => {
+  it("waits an hour by default", () => {
+    expect(DEFAULT_GITHUB_APP_TIMEOUT_MS).toBe(60 * 60_000);
+  });
+
+  it("says, on every request, that the link expired and what to do, and stores nothing from a late callback", async () => {
+    let start = "";
+    let state = "";
+    const cloud = new FakeCloud();
+    const github: string[] = [];
+    const logs: string[] = [];
+    const outcome = createGitHubApp(
+      await accountPlan(),
+      {
+        cloud,
+        openBrowser: (url) => {
+          start = url;
+        },
+        githubApi: async (url) => {
+          github.push(url);
+          return Response.json(conversion(), { status: 201 });
+        },
+        random: counter(),
+        now: () => Date.now(),
+        sleep: async () => undefined,
+        log: (message) => logs.push(message),
+      },
+      { timeoutMs: 300, expiredPageMs: 1_500 },
+    );
+    const settled = outcome.catch((error: unknown) => error);
+    while (start === "") await sleep(5);
+    const html = await (await fetch(start)).text();
+    state =
+      new URL(decode(/action="([^"]+)"/.exec(html)?.[1] ?? "")).searchParams.get("state") ?? "";
+    await sleep(500); // past the hour, inside the expired page's time
+    const origin = new URL(start).origin;
+    for (const path of [new URL(start).pathname, `/callback?code=${CODE}&state=${state}`, "/x"]) {
+      const response = await fetch(`${origin}${path}`, { redirect: "manual" });
+      expect(response.status, path).toBe(410);
+      const text = await response.text();
+      expect(text).toContain("This link has expired");
+      expect(text).toContain("nothing was stored in your installation");
+      expect(text).toContain("bootstrap.ts github-app");
+      expect(text).toContain("Omnigent 01hs3f9q");
+    }
+    expect(logs.join("\n")).toContain("The browser's link says so until");
+    const error = await settled;
+    expect(error).toBeInstanceOf(GitHubAppRefusal);
+    expect((error as Error).message).toBe(
+      "no answer from GitHub within 1 second; nothing was changed. Run the step again",
+    );
+    expect(github).toEqual([]);
+    expect(cloud.changes).toEqual([]);
+    // Then the page is gone.
+    await expect(fetch(start)).rejects.toThrow();
+  });
+});
+
+describe("the progress page", () => {
+  it("says the App is being stored while GitHub's answer is exchanged, and a repeated callback goes back to it", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    const exchanged: string[] = [];
+    let start = "";
+    const cloud = new FakeCloud();
+    const outcome = createGitHubApp(
+      await accountPlan(),
+      {
+        cloud,
+        openBrowser: (url) => {
+          start = url;
+        },
+        githubApi: (url) => {
+          exchanged.push(url);
+          return new Promise<Response>((resolve) => {
+            answer = resolve;
+          });
+        },
+        random: counter(),
+        now: () => Date.now(),
+        sleep: async (ms) => {
+          await sleep(Math.min(ms, 5));
+        },
+        log: () => undefined,
+      },
+      { timeoutMs: 5_000, finalPageMs: 2_000 },
+    );
+    while (start === "") await sleep(5);
+    const html = await (await fetch(start)).text();
+    const manifest = JSON.parse(
+      decode(/name="manifest" value="([^"]+)"/.exec(html)?.[1] ?? "{}"),
+    ) as Manifest;
+    const state =
+      new URL(decode(/action="([^"]+)"/.exec(html)?.[1] ?? "")).searchParams.get("state") ?? "";
+    const back = new URL(manifest.redirect_url);
+    back.searchParams.set("code", CODE);
+    back.searchParams.set("state", state);
+    const first = await fetch(back, { redirect: "manual" });
+    expect(first.status).toBe(303);
+    const status = new URL(first.headers.get("location") ?? "", back).toString();
+    while (exchanged.length === 0) await sleep(5);
+    const storing = await (await fetch(status, { redirect: "manual" })).text();
+    expect(storing).toContain("Storing it in your installation");
+    expect(storing).toContain('http-equiv="refresh"');
+    // The callback once more (a reload): back to the progress page; nothing exchanged twice.
+    const repeat = await fetch(back, { redirect: "manual" });
+    expect(repeat.status).toBe(303);
+    expect(new URL(repeat.headers.get("location") ?? "", back).toString()).toBe(status);
+    answer(Response.json(conversion(), { status: 201 }));
+    const progress = await follow(status);
+    expect(progress.at(-1)?.status).toBe(302);
+    expect(await outcome).toMatchObject({ kind: "on" });
+    expect(exchanged).toHaveLength(1);
+    expect(cloud.changes).toHaveLength(1);
+  });
+
+  it("names the organization's App settings on the expired page", async () => {
+    let start = "";
+    const outcome = createGitHubApp(
+      await accountPlan(),
+      {
+        cloud: new FakeCloud(),
+        openBrowser: (url) => {
+          start = url;
+        },
+        githubApi: async () => Response.json(conversion(), { status: 201 }),
+        random: counter(),
+        now: () => Date.now(),
+        sleep: async () => undefined,
+        log: () => undefined,
+      },
+      { timeoutMs: 100, expiredPageMs: 1_000, org: "cfo-org" },
+    );
+    const settled = outcome.catch((error: unknown) => error);
+    while (start === "") await sleep(5);
+    await sleep(300);
+    const text = await (await fetch(start)).text();
+    expect(text).toContain("https://github.com/organizations/cfo-org/settings/apps");
+    expect(await settled).toBeInstanceOf(GitHubAppRefusal);
+  });
+});
+
+describe("the plain pages", () => {
+  it("say durations in words", () => {
+    expect(minutes(300)).toBe("1 second");
+    expect(minutes(5_000)).toBe("5 seconds");
+    expect(minutes(60_000)).toBe("1 minute");
+    expect(minutes(20 * 60_000)).toBe("20 minutes");
+    expect(minutes(DEFAULT_GITHUB_APP_TIMEOUT_MS)).toBe("an hour");
+  });
+
+  it("escape every value, and reload themselves only when asked", () => {
+    const html = page("<t>", ["a & b", "<script>"], {
+      link: { href: 'https://x.test/?a="b"', label: "<go>" },
+      refreshS: 3,
+    });
+    expect(html).toContain("<title>&lt;t&gt;</title>");
+    expect(html).toContain("<p>a &amp; b</p>");
+    expect(html).toContain("<p>&lt;script&gt;</p>");
+    expect(html).toContain('href="https://x.test/?a=&quot;b&quot;"');
+    expect(html).toContain('<meta http-equiv="refresh" content="3">');
+    expect(page("t", "x")).not.toContain("refresh");
+  });
+
+  it("never names a secret in the words for an outcome", async () => {
+    const plan = await accountPlan();
+    const base = {
+      slug: "omnigent-01hs3f9q",
+      installUrl: "https://github.com/apps/x/installations/new",
+    };
+    const outcomes: GitHubAppOutcome[] = [
+      { kind: "off", ...base },
+      { kind: "held", ...base },
+      { kind: "waiting", why: "w", ...base },
+    ];
+    for (const outcome of outcomes) {
+      const text = finalMessage(plan, outcome, "cfo-org").lines.join(" ");
+      expect(text).toContain(plan.platformWorker);
+      expect(text).not.toContain(CLIENT_SECRET);
+      if (outcome.kind !== "waiting") {
+        expect(text).toContain(
+          "https://github.com/organizations/cfo-org/settings/apps/omnigent-01hs3f9q/advanced",
+        );
+      }
+    }
   });
 });
 

@@ -1,6 +1,12 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { decide, parseLogs, type StatusEvent, verifyRelease } from "../events.ts";
+import {
+  checkGitHubLinking,
+  decide,
+  parseLogs,
+  type StatusEvent,
+  verifyRelease,
+} from "../events.ts";
 import { INSTALLATION } from "./fixtures.ts";
 
 const SCRIPT = "cloudflare-omnigent";
@@ -447,6 +453,147 @@ describe("verifyRelease", () => {
     expect(verifyRelease(logsOf([]), { ...rules, releasedVersionId: undefined })).toMatchObject({
       verified: false,
       why: expect.stringContaining("did not say which version"),
+    });
+  });
+});
+
+describe("checkGitHubLinking (WP3.36)", () => {
+  const SINCE = NOW;
+  /** The tag of the App the step stored, and of an earlier one (--replace). */
+  const APP = "1a2b3c4d5e6f7081";
+  const OLD = "9f8e7d6c5b4a3921";
+  /** A status from a server started with its logging version's configuration. */
+  const github = (
+    at: number,
+    linking: unknown,
+    over: { version?: string; githubApp?: unknown; configApplied?: boolean; id?: string } = {},
+  ) =>
+    event(
+      at,
+      {
+        ...line(at, true, "durable", {
+          secretPresent: false,
+          configApplied: over.configApplied ?? true,
+          ...(over.id === undefined ? {} : { installationId: over.id }),
+        }),
+        githubApp: "githubApp" in over ? over.githubApp : APP,
+        githubLinking: linking,
+      },
+      over.version ?? "v2",
+    );
+  const configError = (
+    at: number,
+    over: { held?: unknown; githubApp?: unknown; entrypoint?: string } = {},
+  ) => {
+    const e = event(at, {
+      cfo: "watchdog",
+      event: "config_error",
+      exitCode: 78,
+      held: "held" in over ? over.held : true,
+      githubApp: "githubApp" in over ? over.githubApp : APP,
+    });
+    return { ...e, $workers: { ...e.$workers, entrypoint: over.entrypoint ?? "OmnigentServer" } };
+  };
+  const changed = (at: number) => event(at, { cfo: "watchdog", event: "config_changed" });
+  const check = (events: unknown[]) =>
+    checkGitHubLinking(parseLogs(events, SCRIPT), {
+      installationId: INSTALLATION,
+      appTag: APP,
+      since: SINCE,
+    });
+
+  it("is on, or off, by the newest status naming this App, after the change, whatever the version", () => {
+    expect(check([github(SINCE + 60_000, true)])).toEqual({ state: "on" });
+    expect(check([github(SINCE + 60_000, false)])).toEqual({ state: "off" });
+    expect(check([github(SINCE + 60_000, false), github(SINCE + 120_000, true)])).toEqual({
+      state: "on",
+    });
+    // Versions do not matter: Cloudflare may name none, or an old one (Codex r1-1).
+    expect(check([github(SINCE + 60_000, true, { version: "" })])).toEqual({ state: "on" });
+  });
+
+  it("never counts a status of another App (an earlier one on --replace, or none), from before the change, of another installation, or not applied", () => {
+    for (const ignored of [
+      github(SINCE + 60_000, true, { githubApp: OLD }),
+      github(SINCE + 60_000, true, { githubApp: null }),
+      github(SINCE + 60_000, true, { githubApp: true }),
+      github(SINCE - 1, true),
+      github(SINCE + 60_000, true, { id: OTHER }),
+      github(SINCE + 60_000, true, { configApplied: false }),
+      github(SINCE + 60_000, false, { githubApp: OLD }),
+    ]) {
+      expect(check([ignored]).state).toBe("waiting");
+    }
+  });
+
+  it("waits while the status does not say", () => {
+    for (const unsaid of [null, "on", 1]) {
+      expect(check([github(SINCE + 60_000, unsaid)])).toMatchObject({
+        state: "waiting",
+        why: expect.stringContaining("does not say whether GitHub linking is on"),
+      });
+    }
+  });
+
+  it("says held only when the watchdog holds a configuration with this App, and nothing newer answered", () => {
+    expect(check([configError(SINCE + 60_000)])).toEqual({ state: "held" });
+    expect(check([github(SINCE + 30_000, true), configError(SINCE + 60_000)])).toEqual({
+      state: "held",
+    });
+    expect(check([configError(SINCE + 30_000), github(SINCE + 60_000, true)])).toEqual({
+      state: "on",
+    });
+    // An older container's exit (the current configuration starts at once), another App's, an
+    // unsaid one, one from before the change, or one not from the object: not evidence (r1-2).
+    for (const ignored of [
+      configError(SINCE + 60_000, { held: false }),
+      configError(SINCE + 60_000, { held: undefined }),
+      configError(SINCE + 60_000, { githubApp: OLD }),
+      configError(SINCE + 60_000, { githubApp: null }),
+      configError(SINCE - 1),
+      configError(SINCE + 60_000, { entrypoint: "ControlDO" }),
+    ]) {
+      expect(check([ignored]).state).toBe("waiting");
+    }
+  });
+
+  it("lets a later word override an earlier verdict, whatever order the lines arrive in (Codex r2-1)", () => {
+    const on = github(SINCE + 60_000, true);
+    for (const later of [
+      github(SINCE + 120_000, true, { githubApp: OLD }), // a rollback to the earlier App
+      github(SINCE + 120_000, true, { githubApp: null }), // the App removed
+      github(SINCE + 120_000, true, { configApplied: false }), // a restart under way
+      changed(SINCE + 120_000), // a replacement begun
+      configError(SINCE + 120_000, { githubApp: OLD }), // another configuration held
+    ]) {
+      expect(check([later, on]).state).toBe("waiting");
+      expect(check([on, later]).state).toBe("waiting");
+    }
+    expect(
+      check([github(SINCE + 60_000, false), github(SINCE + 120_000, true, { githubApp: OLD })]),
+    ).toMatchObject({ state: "waiting", why: expect.stringContaining("without this App") });
+    expect(check([configError(SINCE + 60_000), changed(SINCE + 120_000)])).toMatchObject({
+      state: "waiting",
+      why: expect.stringContaining("restarting"),
+    });
+    // At the same moment, a change outranks a verdict.
+    expect(check([on, changed(SINCE + 60_000)]).state).toBe("waiting");
+    // And fresh evidence after the change decides again.
+    expect(check([on, changed(SINCE + 120_000), github(SINCE + 180_000, true)])).toEqual({
+      state: "on",
+    });
+  });
+
+  it("says whether the watchdog has begun the restart", () => {
+    expect(check([])).toMatchObject({ why: expect.stringContaining("has not switched") });
+    expect(check([changed(SINCE - 1)])).toMatchObject({
+      why: expect.stringContaining("has not switched"),
+    });
+    expect(check([changed(SINCE + 60_000)])).toMatchObject({
+      why: expect.stringContaining("restarting with the App's settings"),
+    });
+    expect(check([github(SINCE + 60_000, false, { configApplied: false })])).toMatchObject({
+      why: expect.stringContaining("restarting with the App's settings"),
     });
   });
 });

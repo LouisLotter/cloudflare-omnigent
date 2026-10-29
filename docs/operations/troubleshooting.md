@@ -38,6 +38,17 @@ The default server pin predates the no-redelivery correction. The separate serve
 
 A saved session's 201 response is distinct from `runner_launch: started|failed|unknown`. An interrupted/unknown tool outcome must stay visible until a matching result or the person's action resolves it. A replacement runner must not automatically replay uncertain external work. Preserve unreconciled transcript files; do not erase them or start a fresh transcript to make a history-outage error disappear. Current fork source includes refusal/preservation changes, with remaining real-replacement and missing-ID/bridge cases to qualify.
 
+## GitHub setup
+
+`bootstrap.ts github-app` stores the installation's GitHub App and then waits until a server started with its settings reports GitHub linking on, before it sends the browser to GitHub's install page. GitHub's "Install" returns to `https://<hostname>/platform/github`, which opens Omnigent's Integrations settings once linking is on.
+
+| What the installer or the setup page says | What it establishes | What to do |
+| --- | --- | --- |
+| The link expired (the local page, after an hour) | Nothing was stored. If "Create GitHub App" was clicked after that, GitHub made an App that the installation does not know. | Delete that App on GitHub (its name begins with "Omnigent" and the installation's tag), and run the step again. |
+| GitHub linking is not on yet (exit 3), or the setup page is still finishing | The App is stored; no server started with it has reported linking on yet, usually because the restart is still under way. | Open `/platform/github`, or install the App: the setup page keeps waiting for 15 minutes and then says what it sees. |
+| GitHub linking is off (exit 1) | A server started with the App's settings answers, but Omnigent does not list GitHub in `/v1/info`'s `enabled_connections`: the image turned linking off, so a setting it needs is missing. | The server's `boot` line says `github_linking: off: incomplete`, and its `config.warning` line names what is missing (both in the platform Worker's Workers Logs). Run the step again with `--replace`, then delete the old App on GitHub. |
+| The server does not start with the App's settings (exit 1), or the setup page says the server cannot start | The server exited 78 with a malformed setting and the watchdog holds it until the configuration changes: Omnigent is down. | The server's `config.error` line names the setting. Run the step again with `--replace` (a new App, freshly stored), then delete the old App on GitHub. |
+
 ## Evidence to collect
 
 Keep source/fork/image identities, affected generation/operation, timestamped phase transitions, error code, save cut/publication/proof metadata and a description of the user action. Avoid full headers, query strings, tokens, login files, terminal output or transcript contents unless necessary and access-controlled. Existing structured logs may provide enough. The [recovery guide](recovery.md) explains the implemented bootstrap observation command and private control-port boundary; the [test guide](../testing.md) separates local checks from account qualification.

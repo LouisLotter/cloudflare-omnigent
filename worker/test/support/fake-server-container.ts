@@ -74,8 +74,8 @@ export class FakeServerContainer implements ServerContainer {
   stopMs: number | null = 0;
   /** The exit code a SIGTERM stop ends with. */
   exitCodeOnStop = 0;
-  /** What `/v1/info` reports. */
-  info = { accounts_enabled: true, needs_setup: true };
+  /** What `/v1/info` reports (WP3.36: `enabled_connections` lists GitHub linking when on). */
+  info: Readonly<Record<string, unknown>> = { accounts_enabled: true, needs_setup: true };
   /** What `/position` reports, or null for a 503. */
   position: ReplicationPosition | null = null;
   /** Called on each `/position` read, before it answers; may change `position`. */

@@ -11,6 +11,8 @@
  * - `ownerPassword` (WP3.34) parses its call with the contract, records it without the password
  *   (`passwordCalls`), and answers `passwordState` for `state` and the next queued `set` outcome,
  *   else "done".
+ * - `githubSetup` (WP3.36) parses its call with the contract, counts it, and answers
+ *   `githubSetupState` (GitHub linking on, by default).
  * - Every RPC call checks its interface version as OmnigentServer does: a newer one is refused
  *   with `unsupported_version`.
  * - `unconfirmedResponse` builds the server image's 424 for a path, in the body shape that
@@ -22,6 +24,8 @@ import {
   DURABILITY_UNCONFIRMED_MESSAGE,
   DURABILITY_UNCONFIRMED_STATUS,
   durabilityBodyShape,
+  GitHubSetupCall,
+  type GitHubSetupResult,
   OutageRecord,
   OwnerPasswordCall,
   type OwnerPasswordResult,
@@ -134,6 +138,29 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
       this.passwordState = { ...this.passwordState, state: "chosen", justSet: true };
     }
     return outcome;
+  }
+
+  /** What `githubSetup` answers (WP3.36). */
+  githubSetupState: GitHubSetupResult = {
+    configured: true,
+    applied: true,
+    server: "answering",
+    linking: "on",
+  };
+  /** How many times `githubSetup` was called. */
+  githubSetupCalls = 0;
+  /** Makes the next `githubSetup` call throw, as an object on an older build does. */
+  failNextGitHubSetupCall = false;
+
+  async githubSetup(raw: GitHubSetupCall): Promise<GitHubSetupResult> {
+    if (this.failNextGitHubSetupCall) {
+      this.failNextGitHubSetupCall = false;
+      throw new TypeError('The RPC receiver does not implement the method "githubSetup".');
+    }
+    const call = GitHubSetupCall.parse(raw);
+    checkVersion(call);
+    this.githubSetupCalls += 1;
+    return this.githubSetupState;
   }
 }
 

@@ -177,7 +177,7 @@ describe("the platform Worker's settings and secrets", () => {
     const plan = await accountPlan();
     expect(platformVars(plan)).toEqual({
       CFO_INSTALLATION_ID: plan.installationId,
-      CFO_PLATFORM_FEATURES: "key-service",
+      CFO_PLATFORM_FEATURES: "key-service github-setup",
       SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL: "https://omnigent.example.test",
       SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
       SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-canary-replica/omnigent",
@@ -202,8 +202,9 @@ describe("the platform Worker's settings and secrets", () => {
       const vars = platformVars(plan);
       expect(vars[PLATFORM_FEATURES_VAR]).toBe(PLATFORM_FEATURES.join(" "));
       expect(offersPlatformFeature(vars, "key-service")).toBe(true);
+      expect(offersPlatformFeature(vars, "github-setup")).toBe(true);
       expect(renderPlatformConfig(BASE.platform, plan).vars).toMatchObject({
-        [PLATFORM_FEATURES_VAR]: "key-service",
+        [PLATFORM_FEATURES_VAR]: "key-service github-setup",
       });
     }
     expect(PLATFORM_FEATURES_VAR.startsWith(SERVER_ENV)).toBe(false);
@@ -570,7 +571,10 @@ describe("rendering the configurations", () => {
     const staging = await stagingPlan();
     const rendered = renderWebConfig(BASE.web, staging, undefined);
     expect(rendered).not.toHaveProperty("routes");
-    expect(rendered.vars).toEqual({ CFO_INSTALLATION_ID: staging.installationId });
+    expect(rendered.vars).toEqual({
+      CFO_INSTALLATION_ID: staging.installationId,
+      CFO_WEB_FEATURES: "github-setup",
+    });
     expect(rendered.durable_objects).toEqual({
       bindings: [
         { name: "OMNIGENT", class_name: "OmnigentServer", script_name: staging.platformWorker },

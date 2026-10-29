@@ -39,8 +39,12 @@
 //
 // `github-app` creates the installation's GitHub App for Omnigent's GitHub linking through
 // GitHub's manifest flow (the owner clicks "Create GitHub App") and stores it, with the key
-// service's keys, in the platform Worker's secrets (github-app.ts, WP5.9). After `run` has
-// deployed the platform Worker.
+// service's keys, in the platform Worker's secrets (github-app.ts, WP5.9). It then waits until a
+// server started with them reports GitHub linking on, and only then sends the browser to
+// GitHub's install page, whose return address is the installation's GitHub setup page (WP3.36).
+// After `run` has deployed the platform Worker. Exit status: 0 GitHub linking on; 3 the App is
+// stored, linking not on yet (the setup page keeps waiting); 1 an error or a refusal, or the App
+// is stored but linking is off or the server does not start with it.
 //
 // For the guarded staging tool instead of an account (cfo-stg-<base>-platform and -web, the
 // account, zone and owner address from the staging tool's config; a file replica, which lives

@@ -86,13 +86,16 @@ So that agents on your cloud computers can clone and push your repositories, giv
 node scripts/bootstrap/bootstrap.ts github-app
 ```
 
-1. Your browser opens on GitHub with the App already filled in. Click **Create GitHub App**. (`--github-org <name>` creates it under an organization instead of your own account.)
-2. The installer stores the App in Cloudflare, without showing any of its secrets, and your browser moves on to GitHub's page that installs the App. Choose the repositories it may reach, and click **Install**.
-3. GitHub brings you back to Omnigent's settings. The server restarts once to pick up the App, which takes a minute or two; then click **Connect GitHub** there and approve on GitHub.
+1. Your browser opens on GitHub with the App already filled in. Click **Create GitHub App**. (`--github-org <name>` creates it under an organization instead of your own account.) The installer waits an hour for this click; if you come back later, the page says the link expired and what to do.
+2. Your browser shows "Setting up GitHub" while the installer stores the App in Cloudflare, without showing any of its secrets, and Omnigent's server restarts once to turn GitHub linking on. This takes a few minutes; the page moves on by itself.
+3. Once the server reports GitHub linking on, your browser moves on to GitHub's page that installs the App. Choose the repositories it may reach, and click **Install**.
+4. GitHub brings you back to your installation, which opens Omnigent's Integrations settings. Click **Connect GitHub** there and approve on GitHub.
+
+The installer ends by saying that GitHub linking is on, with the same two links. If GitHub linking does not come on, both the browser and the installer say so plainly instead: the server restarted with the App but GitHub linking stayed off, the server did not start with the App's settings, or it was not on within 20 minutes. In the last case you can still install the App: GitHub brings you to a page of your installation (`https://<your address>/platform/github`) that waits until GitHub linking is on and then opens Connect GitHub, or says what is wrong. GitHub also brings you there after you change which repositories the App may reach.
 
 From then on, git and gh on your cloud computers act as you on those repositories. The App can read and write repository contents and pull requests, and nothing else. To stop it, use **Disconnect** in Omnigent's settings; a token a computer already received stays valid at GitHub for up to 8 hours. You can also uninstall or delete the App on GitHub at any time.
 
-An installation made before GitHub linking existed needs updating first (below); the command says so, and changes nothing until then.
+An installation made before GitHub linking, or before its setup page, needs updating first (below); the command says so, and changes nothing until then.
 
 ## Updating your installation
 

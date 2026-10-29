@@ -18,6 +18,13 @@
 // running server only once the watchdog has replaced it (G2-SEC-001). For a while after that,
 // the watchdog logs the same line without the password: the proof that the release applied.
 //
+// The same line says which GitHub App the logging version holds (`githubApp`, a tag of its client
+// ID) and whether Omnigent lists GitHub linking (`githubLinking`, WP3.36): the installer's GitHub
+// step waits for its own App's tag from a server started with that configuration
+// (`checkGitHubLinking`). The watchdog's `config_error` line says a server exited with a missing
+// or malformed setting (78), whether that holds the current configuration (`held`) and the App
+// that configuration holds.
+//
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
 // one, a contradictory one, or one that does not parse as the contract is never accepted.
@@ -38,6 +45,30 @@ export interface StatusEvent {
    * from a build that did not say: never proof that a release reached the server.
    */
   readonly configApplied: boolean | undefined;
+  /**
+   * Whether Omnigent's `/v1/info` listed GitHub linking (WP3.36): null when its answer did not
+   * say, undefined from a build that does not report it.
+   */
+  readonly githubLinking?: boolean | null | undefined;
+  /**
+   * The GitHub App the logging version holds (WP3.36): a tag of its client ID
+   * (worker/src/server/github-linking.ts, `githubAppTag`), null for none; undefined: unsaid.
+   */
+  readonly githubApp?: string | null | undefined;
+}
+
+/** The watchdog's `config_error` line: a server exited with a missing or malformed setting. */
+export interface ConfigErrorEvent {
+  readonly loggedAt: number;
+  readonly versionId: string | undefined;
+  /** The current configuration is the one held (Codex WP3.36 r1-2); undefined: unsaid. */
+  readonly held: boolean | undefined;
+  /** The GitHub App the current configuration holds, as on a status line. */
+  readonly githubApp: string | null | undefined;
+}
+
+function appTag(value: unknown): string | null | undefined {
+  return typeof value === "string" || value === null ? value : undefined;
 }
 
 /** Any invocation of the platform Worker, for the check after the release. */
@@ -52,6 +83,10 @@ export interface Invocation {
 export interface ParsedLogs {
   readonly statuses: readonly StatusEvent[];
   readonly invocations: readonly Invocation[];
+  /** The watchdog's `config_error` lines, from the OmnigentServer object (WP3.36). */
+  readonly configErrors: readonly ConfigErrorEvent[];
+  /** When the watchdog said it replaces the server for a changed configuration (WP3.36). */
+  readonly configChanges: readonly number[];
   /**
    * Bootstrap lines that are not the contract, or not from the OmnigentServer object: never
    * accepted, counted for the report.
@@ -98,6 +133,8 @@ export const STATUS_ENTRYPOINT = "OmnigentServer";
 export function parseLogs(events: readonly unknown[], scriptName: string): ParsedLogs {
   const statuses: StatusEvent[] = [];
   const invocations: Invocation[] = [];
+  const configErrors: ConfigErrorEvent[] = [];
+  const configChanges: number[] = [];
   let malformed = 0;
   for (const raw of events) {
     const event = record(raw);
@@ -111,6 +148,27 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
     const entrypoint = typeof workers.entrypoint === "string" ? workers.entrypoint : undefined;
     invocations.push({ loggedAt, versionId, eventType, entrypoint });
     const line = logLine(event.source);
+    if (
+      line?.cfo === "watchdog" &&
+      line.event === "config_changed" &&
+      workers.entrypoint === STATUS_ENTRYPOINT
+    ) {
+      configChanges.push(loggedAt);
+      continue;
+    }
+    if (
+      line?.cfo === "watchdog" &&
+      line.event === "config_error" &&
+      workers.entrypoint === STATUS_ENTRYPOINT
+    ) {
+      configErrors.push({
+        loggedAt,
+        versionId,
+        held: typeof line.held === "boolean" ? line.held : undefined,
+        githubApp: appTag(line.githubApp),
+      });
+      continue;
+    }
     if (line?.cfo !== "bootstrap" || line.event !== "status") continue;
     const status = BootstrapStatus.safeParse(line.bootstrapStatus);
     if (
@@ -128,9 +186,14 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
       reason: typeof line.reason === "string" ? line.reason : undefined,
       secretPresent: typeof line.secretPresent === "boolean" ? line.secretPresent : undefined,
       configApplied: typeof line.configApplied === "boolean" ? line.configApplied : undefined,
+      githubLinking:
+        typeof line.githubLinking === "boolean" || line.githubLinking === null
+          ? line.githubLinking
+          : undefined,
+      githubApp: appTag(line.githubApp),
     });
   }
-  return { statuses, invocations, malformed };
+  return { statuses, invocations, configErrors, configChanges, malformed };
 }
 
 export interface AcceptanceRules {
@@ -325,4 +388,94 @@ export function verifyRelease(
     };
   }
   return { verified: true };
+}
+
+export type GitHubLinkingCheck =
+  /** A server started with the App's settings answers, and Omnigent lists GitHub linking. */
+  | { readonly state: "on" }
+  /** A server started with the App's settings answers, and Omnigent does not list it. */
+  | { readonly state: "off" }
+  /** The server exited with a missing or malformed setting and is held (exit 78). */
+  | { readonly state: "held" }
+  | { readonly state: "waiting"; readonly why: string };
+
+/**
+ * After the GitHub step's secrets change (WP3.36): whether the server runs with the App's
+ * settings and Omnigent lists GitHub linking. The newest word of the object about this
+ * installation since the change (`since`) decides, and only when it is about the App the step
+ * stored, by its tag (`appTag`), never by what Cloudflare says of versions (Codex r1-1):
+ *   - a status from a server started with its logging version's configuration (`configApplied`)
+ *     whose version holds this App: "on" or "off" by Omnigent's own list;
+ *   - the watchdog's `config_error` saying it holds the current configuration (`held`), whose App
+ *     is this one: "held" (Codex r1-2; an older container's exit is no word at all);
+ *   - anything newer than those, which says the server is changing or runs something else (a
+ *     replacement begun, `config_changed`; a status not yet applied; a status or a hold of
+ *     another App, or of none, after a rollback or a later change): not decided, so that a later
+ *     word always overrides an earlier verdict, whatever order the lines arrive in (Codex r2-1).
+ * Nothing from before the change, or of another installation, counts.
+ */
+export function checkGitHubLinking(
+  logs: ParsedLogs,
+  rules: {
+    readonly installationId: string;
+    /** The tag of the App the step stored (`githubAppTag` of its client ID). */
+    readonly appTag: string;
+    readonly since: number;
+  },
+): GitHubLinkingCheck {
+  type Word =
+    | { readonly at: number; readonly kind: "status"; readonly event: StatusEvent }
+    | { readonly at: number; readonly kind: "held"; readonly ours: boolean }
+    | { readonly at: number; readonly kind: "changed" };
+  const words: Word[] = [
+    ...logs.statuses
+      .filter((e) => e.status.installationId === rules.installationId && e.loggedAt >= rules.since)
+      .map((event): Word => ({ at: event.loggedAt, kind: "status", event })),
+    ...logs.configErrors
+      .filter((e) => e.held === true && e.loggedAt >= rules.since)
+      .map((e): Word => ({ at: e.loggedAt, kind: "held", ours: e.githubApp === rules.appTag })),
+    ...logs.configChanges
+      .filter((at) => at >= rules.since)
+      .map((at): Word => ({ at, kind: "changed" })),
+  ];
+  // The newest; among words of the same moment, a change or a hold before a status, so that a
+  // tie never decides in favour of a verdict.
+  const rank = { changed: 0, held: 1, status: 2 } as const;
+  const latest = words.reduce<Word | undefined>(
+    (a, b) =>
+      a === undefined || b.at > a.at || (b.at === a.at && rank[b.kind] < rank[a.kind]) ? b : a,
+    undefined,
+  );
+  const restarting = "the server is restarting with the App's settings (a few minutes)";
+  if (latest === undefined) {
+    return {
+      state: "waiting",
+      why: "the platform has not switched the server's object to the App's settings yet",
+    };
+  }
+  if (latest.kind === "changed") return { state: "waiting", why: restarting };
+  if (latest.kind === "held") {
+    return latest.ours
+      ? { state: "held" }
+      : {
+          state: "waiting",
+          why: "the server holds a configuration without this App (a later change?)",
+        };
+  }
+  const status = latest.event;
+  if (status.githubApp !== rules.appTag) {
+    return status.githubApp === undefined || status.configApplied !== true
+      ? { state: "waiting", why: restarting }
+      : {
+          state: "waiting",
+          why: "the server still runs a configuration without this App (the platform has not switched to the App's settings yet, or a later change replaced them)",
+        };
+  }
+  if (status.configApplied !== true) return { state: "waiting", why: restarting };
+  if (status.githubLinking === true) return { state: "on" };
+  if (status.githubLinking === false) return { state: "off" };
+  return {
+    state: "waiting",
+    why: "the restarted server answers, but its status does not say whether GitHub linking is on",
+  };
 }
