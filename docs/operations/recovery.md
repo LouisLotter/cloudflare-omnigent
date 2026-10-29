@@ -52,6 +52,16 @@ The [entrypoint](../../images/server/cfo_server/entrypoint.py) refuses an initia
 
 A missing bootstrap password on a new installation is also refused by image startup. Initialization must be proved by both account state and replication before bootstrap credentials are removed. `/v1/info` alone does not prove durability. The implemented bootstrap journal/status explains progress; the owner's browser sign-in remains a separate acceptance step.
 
+## Access application
+
+Owner-only Cloudflare Access is the boundary in front of the installation's hostname; the web Worker also checks every Access assertion and pins the owner's address (see [architecture](../architecture.md)).
+
+- **Setting up.** In the installer's own account, `bootstrap.ts run` (and `install`, which runs it) creates the hostname's Access application before anything is deployed, with the installer's `cf` login: self-hosted, on exactly the hostname, one Allow policy whose only rule is the owner's email address, its cookie SameSite=lax, no CORS preflight bypass, no service token, a 24-hour session. The owner's address comes from `--owner-email` and must match the plan's owner pin. It offers the account's login method (all of them when there are several); an account with none gets the one-time PIN method. The state file records the application's name (`<web Worker>--<nonce>`) and ID; the address is not kept.
+- **What it checks.** Before the web Worker's first deploy, the application is read again (by its ID) and must still be owner-only and the only one covering the hostname. An application someone else made on the hostname is used as it is only if it passes the same check; otherwise the run stops with each difference and its fix in the Zero Trust dashboard. The bootstrap never changes, widens or deletes an application it did not create, and never creates an Access bypass or service token.
+- **Interrupted runs.** The create is recorded before it is sent and its ID after the answer. A run that finds an unanswered create adopts the application carrying its name, or waits once for the create to settle (5 minutes from when it was sent) before creating a new one. A create that lands even later leaves two applications on the hostname, and the next check refuses until one is deleted.
+- **What stays manual.** A Zero Trust organization needs a plan choice and a payment method in the dashboard, even for the Free plan: the installer stops with that one step. A `cf` login that may not create Access applications (403) gets the dashboard step in one sentence; the next run checks what the person made.
+- **Removing it.** `bootstrap.ts remove-access` deletes the application the state file records as the installation's, and nothing else. It refuses while a Worker with the web Worker's name exists, unless `--yes`. Where Cloudflare refuses the delete (403), it names the application with the click that deletes it, keeps it recorded and exits 1; run again afterwards to confirm it is gone.
+
 ## Bucket names
 
 An installation's data lives in R2 buckets named when it is planned, and those names never change: a server or computer pointed at another name starts from an empty bucket.

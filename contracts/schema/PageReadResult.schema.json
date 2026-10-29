@@ -357,7 +357,8 @@
                             "expired",
                             "cancelled",
                             "superseded",
-                            "none"
+                            "none",
+                            "unknown"
                           ],
                           "type": "string"
                         },
@@ -371,7 +372,8 @@
                             "expired",
                             "cancelled",
                             "superseded",
-                            "none"
+                            "none",
+                            "unknown"
                           ],
                           "type": "string"
                         }

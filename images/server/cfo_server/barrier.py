@@ -35,9 +35,14 @@ from cfo_server.events import log
 from cfo_server.litestream import ReplicationWaiter, WaitOutcome
 
 #: Tables whose writes are security changes: accounts and passwords, login grants and their
-#: revocation, API tokens, hosts (creation, removal, launch-token re-arming) and schedules.
+#: revocation, API tokens, hosts (creation, removal, launch-token re-arming), schedules, and
+#: the credential store's connections (GitHub linking, WP5.9): linking, relinking (an update
+#: that can replace the linked GitHub identity) and, above all, unlinking, none of which may
+#: come back undone with a restore. A token refresh writes the same columns as a relink, so it
+#: is held too: a git command that needs one (about every 8 hours) waits for the replica, and
+#: while the replica is blocked that one request is answered 424 and the next one succeeds.
 SECURITY_TABLES: frozenset[str] = frozenset(
-    {"users", "device_grants", "account_tokens", "hosts", "scheduled_tasks"}
+    {"users", "device_grants", "account_tokens", "hosts", "scheduled_tasks", "connections"}
 )
 #: Updates that touch only these columns are bookkeeping, not security changes: the login
 #: timestamp and a host's heartbeat. Without this, every browser login would wait for the

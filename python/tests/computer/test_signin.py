@@ -1129,7 +1129,8 @@ def test_counts_helpers(tmp_path: Path):
 
 
 def test_the_status_schema_refuses_alert_text():
-    """The contract itself refuses an alert's text where a kind belongs."""
+    """The exported schema, what a supervisor may send, refuses an alert's text where a kind
+    belongs. (A reader would read it as ``other``: the status is read tolerantly, WP3.29.)"""
     from cfo_computer.contract import Contract
     from harness import REPO
 

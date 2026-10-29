@@ -1,0 +1,118 @@
+{
+  "input": {
+    "type": "computer_status",
+    "status": {
+      "supervisorVersion": "0.9.0",
+      "versions": {
+        "claude": "2.1.311",
+        "codex": "0.164.0",
+        "gh": "2.103.3",
+        "gemini": "1.2.3"
+      },
+      "logins": {
+        "claude": "signed_in",
+        "codex": "rate_limited",
+        "gemini": "signed_in"
+      },
+      "signIn": {
+        "claude": "awaiting_device",
+        "codex": "awaiting_user"
+      },
+      "rc53": true,
+      "hostname": "resolved_via_dns",
+      "disk": {
+        "totalBytes": 21474836480,
+        "freeBytes": 17179869184,
+        "usedBytes": 4294967296
+      },
+      "alerts": [
+        {
+          "kind": "rc53_finding",
+          "count": 3
+        },
+        {
+          "kind": "gpu_lost",
+          "count": 2,
+          "detail": "a future field"
+        },
+        {
+          "kind": "other",
+          "count": 1
+        },
+        {
+          "kind": "disk_slow",
+          "count": 4
+        }
+      ],
+      "captures": [
+        {
+          "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+          "rc53": {
+            "status": 1,
+            "values": 196,
+            "files": 1423,
+            "findings": 14,
+            "incomplete": 0,
+            "skipped": 2
+          },
+          "layerBytes": 1024
+        }
+      ],
+      "terminals": 1,
+      "memory": {
+        "totalBytes": 8589934592,
+        "freeBytes": 4294967296
+      },
+      "gpu": "none"
+    },
+    "statusVersion": 2
+  },
+  "parsed": {
+    "type": "computer_status",
+    "status": {
+      "supervisorVersion": "0.9.0",
+      "versions": {
+        "claude": "2.1.311",
+        "codex": "0.164.0",
+        "gh": "2.103.3"
+      },
+      "logins": {
+        "claude": "signed_in",
+        "codex": "unknown"
+      },
+      "signIn": {
+        "claude": "unknown",
+        "codex": "awaiting_user"
+      },
+      "rc53": true,
+      "hostname": "unknown",
+      "disk": {
+        "totalBytes": 21474836480,
+        "freeBytes": 17179869184
+      },
+      "alerts": [
+        {
+          "kind": "rc53_finding",
+          "count": 3
+        },
+        {
+          "kind": "other",
+          "count": 7
+        }
+      ],
+      "captures": [
+        {
+          "jobOperationId": "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+          "rc53": {
+            "status": 1,
+            "values": 196,
+            "files": 1423,
+            "findings": 14,
+            "incomplete": 0
+          }
+        }
+      ],
+      "terminals": 1
+    }
+  }
+}

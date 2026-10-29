@@ -29,6 +29,9 @@ def test_pinned_versions() -> None:
     assert _run("/usr/local/bin/gh", "--version").split()[2] == "2.103.3"
     assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith("1.7.7")
     assert _run("/usr/bin/tmux", "-V").strip() == "tmux 3.5a"  # WP3.28
+    # Debian's NSS myhostname (WP3.27), pinned: a point release that moves systemd on fails it.
+    version = _run("dpkg-query", "-W", "-f=${Version}", "libnss-myhostname")
+    assert version == "257.13-1~deb13u1"
     assert Path("/usr/local/bin/sandbox-shim").exists()
     assert Path("/usr/bin/tini").exists()
 

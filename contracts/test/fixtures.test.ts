@@ -27,6 +27,9 @@ describe("golden fixtures", () => {
     const invalid = jsonFiles(join(fixturesDir, name, "invalid"));
     // Invalid only by a check the exported JSON Schema cannot express (a cross-field rule).
     const refined = jsonFiles(join(fixturesDir, name, "refined"));
+    // Read tolerantly (WP3.29): `{ input, parsed }`, what a reader of this release yields for an
+    // input no supervisor of this release sends (the exported JSON Schema refuses `input`).
+    const tolerated = jsonFiles(join(fixturesDir, name, "tolerated"));
 
     it(`${name} has at least one valid and one invalid fixture`, () => {
       expect(valid.length).toBeGreaterThan(0);
@@ -50,6 +53,16 @@ describe("golden fixtures", () => {
     for (const file of refined) {
       it(`${name} rejects refined/${file.split("/").pop()}`, () => {
         expect(schema.safeParse(load(file)).success).toBe(false);
+      });
+    }
+
+    for (const file of tolerated) {
+      it(`${name} reads tolerated/${file.split("/").pop()} as its degraded form`, () => {
+        const { input, parsed } = load(file) as { input: unknown; parsed: unknown };
+        expect(parsed).not.toEqual(input);
+        expect(JSON.parse(JSON.stringify(schema.parse(input)))).toEqual(parsed);
+        // The degraded form is itself a valid reply, and round-trips unchanged.
+        expect(JSON.parse(JSON.stringify(schema.parse(parsed)))).toEqual(parsed);
       });
     }
   }

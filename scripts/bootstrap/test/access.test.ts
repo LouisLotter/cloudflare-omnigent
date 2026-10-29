@@ -1,5 +1,14 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { ownerOnlyAccess } from "../access.ts";
+import {
+  addressesIn,
+  coversHostname,
+  isServiceTokenPolicy,
+  ownerOnlyAccess,
+  ownerOnlyAppBody,
+  ownerOnlyProblems,
+  wildcardCovers,
+} from "../access.ts";
 import { OWNER_EMAIL, ownerPin } from "./fixtures.ts";
 
 const HOST = "omnigent.example.test";
@@ -129,5 +138,191 @@ describe("ownerOnlyAccess", () => {
       TEAM,
     ).catch((e: Error) => e.message);
     expect(error).not.toMatch(/@/);
+  });
+});
+
+describe("the shared builder and check (staging tool and bootstrap, WP3.31)", () => {
+  it("builds what it checks: an application from the builder, as Cloudflare answers, passes", () => {
+    fc.assert(
+      fc.property(
+        fc.emailAddress(),
+        fc.domain(),
+        fc.option(fc.uuid(), { nil: undefined }),
+        (email, hostname, idp) => {
+          const body = ownerOnlyAppBody({
+            name: "n",
+            hostname,
+            ownerEmail: email,
+            identityProviderId: idp,
+          });
+          const answered = {
+            ...body,
+            id: "x",
+            aud: "a".repeat(64),
+            options_preflight_bypass: false,
+          };
+          const check = { hostname, isOwner: (e: string) => e === email };
+          expect(ownerOnlyProblems(answered, check)).toEqual([]);
+          expect(addressesIn(answered)).toEqual([email]);
+          expect(coversHostname(answered, hostname)).toBe(true);
+          // Any second address, or any other rule beside the owner's, is refused.
+          const widened = (rule: unknown) => ({
+            ...answered,
+            policies: [{ decision: "allow", include: [{ email: { email } }, rule] }],
+          });
+          for (const rule of [
+            { email: { email: `x${email}` } },
+            { everyone: {} },
+            { email_domain: { domain: hostname } },
+            { any_valid_service_token: {} },
+          ]) {
+            expect(ownerOnlyProblems(widened(rule), check).map((p) => p.aspect)).toEqual(["rules"]);
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("adds the login method and skips the chooser only when one is named", () => {
+    const body = ownerOnlyAppBody({
+      name: "n",
+      hostname: HOST,
+      ownerEmail: OWNER_EMAIL,
+      identityProviderId: "idp-1",
+    });
+    expect(body).toMatchObject({ allowed_idps: ["idp-1"], auto_redirect_to_identity: true });
+    const all = ownerOnlyAppBody({ name: "n", hostname: HOST, ownerEmail: OWNER_EMAIL });
+    expect(all).not.toHaveProperty("allowed_idps");
+    expect(all).not.toHaveProperty("auto_redirect_to_identity");
+    expect(all).toMatchObject({ session_duration: "24h", app_launcher_visible: false });
+  });
+
+  it("covers a hostname through its domain, a destination or a path, never another host", () => {
+    expect(coversHostname(app(), HOST)).toBe(true);
+    expect(coversHostname(app({ domain: `${HOST}/admin` }), HOST)).toBe(true);
+    expect(
+      coversHostname(
+        app({ domain: "other.example.test", destinations: [{ type: "public", uri: HOST }] }),
+        HOST,
+      ),
+    ).toBe(true);
+    expect(
+      coversHostname(
+        app({ domain: "other.example.test", self_hosted_domains: [`${HOST}/x`] }),
+        HOST,
+      ),
+    ).toBe(true);
+    expect(coversHostname(app({ domain: `${HOST}.evil.test` }), HOST)).toBe(false);
+    expect(coversHostname(app({ domain: `x${HOST}` }), HOST)).toBe(false);
+    expect(coversHostname("nothing", HOST)).toBe(false);
+    expect(coversHostname(app({ domain: undefined, destinations: [null, { uri: 7 }] }), HOST)).toBe(
+      false,
+    );
+  });
+
+  it("matches wildcards as Access does: within one label, never across a dot", () => {
+    const covers = (domain: string, host = "omnigent.example.test") =>
+      wildcardCovers({ domain }, host);
+    expect(covers("*.example.test")).toBe(true);
+    expect(covers("*.example.test/admin")).toBe(true);
+    expect(covers("omni*.example.test")).toBe(true);
+    expect(covers("*gent.example.test")).toBe(true);
+    expect(covers("*.*.test")).toBe(true);
+    expect(covers("*.test")).toBe(false);
+    expect(covers("*.omnigent.example.test")).toBe(false);
+    expect(covers("*.other.test")).toBe(false);
+    expect(covers("omnigent.example.test")).toBe(false);
+    expect(covers("o+*.example.test")).toBe(false);
+    expect(covers("*.EXAMPLE.test", "Omnigent.example.test")).toBe(true);
+    expect(coversHostname({ domain: "OMNIGENT.example.test/x" }, "omnigent.example.test")).toBe(
+      true,
+    );
+  });
+
+  it("names each difference once, with its fix, and never an address", () => {
+    const problems = ownerOnlyProblems(
+      app({
+        type: "saas",
+        domain: `${HOST}/x`,
+        aud: undefined,
+        same_site_cookie_attribute: "strict",
+        options_preflight_bypass: true,
+        policies: [
+          { name: "One", decision: "allow", include: [{ everyone: {} }, { everyone: {} }] },
+          { decision: "allow", include: [{ email: { email: "x@example.test" } }] },
+          { name: "", decision: "bypass", include: [] },
+          { decision: "allow" },
+        ],
+      }),
+      { hostname: HOST, isOwner: () => false },
+    );
+    expect(problems.map((p) => [p.aspect, p.why, p.fix])).toEqual([
+      [
+        "application",
+        "is not a self-hosted application",
+        "delete it; a self-hosted application takes its place",
+      ],
+      ["application", `does not cover exactly ${HOST}`, `set its domain to ${HOST}, with no path`],
+      ["aud", "has no AUD tag", "delete it; a new application gets one"],
+      [
+        "cookie",
+        "does not set its cookie to SameSite=lax",
+        "under Settings, Cookie settings, set Same Site Attribute to Lax",
+      ],
+      [
+        "preflight",
+        "bypasses Access for CORS preflight",
+        "under Settings, CORS settings, turn off Bypass options requests to origin",
+      ],
+      [
+        "rules",
+        "admits something other than one email address",
+        'make the only rule of the policy "One" Emails with the owner\'s address',
+      ],
+      [
+        "rules",
+        "admits someone other than the owner",
+        "remove every address but the owner's from that policy",
+      ],
+      [
+        "rules",
+        "has a policy that is not an allow (a bypass or a service token)",
+        "remove that policy",
+      ],
+      ["rules", "has a policy with no rule", "remove that policy"],
+    ]);
+    expect(JSON.stringify(problems)).not.toMatch(/@/);
+    expect(ownerOnlyProblems(null, { hostname: HOST, isOwner: () => true })).toHaveLength(5);
+  });
+
+  it("admits the staging tool's one service token policy only when asked, once", () => {
+    const owner = { decision: "allow", include: [{ email: { email: OWNER_EMAIL } }] };
+    const token = { decision: "non_identity", include: [{ service_token: { token_id: "t" } }] };
+    const check = {
+      hostname: HOST,
+      isOwner: (e: string) => e === OWNER_EMAIL,
+      serviceTokenId: "t",
+    };
+    expect(ownerOnlyProblems(app({ policies: [owner, token] }), check)).toEqual([]);
+    expect(
+      ownerOnlyProblems(app({ policies: [owner, token, token] }), check).map((p) => p.why),
+    ).toEqual(["admits its service token more than once"]);
+    expect(ownerOnlyProblems(app({ policies: [token] }), check).map((p) => p.why)).toEqual([
+      "has no policy that allows the owner",
+    ]);
+    expect(isServiceTokenPolicy(null, "t")).toBe(false);
+  });
+
+  it("explains a refusal with its fixes on the read path too", async () => {
+    const error = await ownerOnlyAccess(
+      [app({ same_site_cookie_attribute: "none" })],
+      HOST,
+      await ownerPin(),
+      TEAM,
+    ).catch((e: Error) => e.message);
+    expect(error).toBe(
+      `the Access application on ${HOST} does not set its cookie to SameSite=lax. To fix it, open https://one.dash.cloudflare.com/, Access, Applications, edit it, and under Settings, Cookie settings, set Same Site Attribute to Lax. The bootstrap never changes or widens an application it did not create; not deploying`,
+    );
   });
 });

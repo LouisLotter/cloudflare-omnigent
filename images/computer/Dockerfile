@@ -114,11 +114,13 @@ RUN apt-get update \
 # its Durable Object's ID (64 hex characters), and Cloudflare mounts /etc/hosts read-only without
 # it, so every sudo warned "unable to resolve host". NSS myhostname answers for the machine's own
 # name, before DNS is asked. Pinned: once Debian's point release moves systemd on, this version
-# leaves the archive and the build fails here; take the new one from
-# `apt-cache policy libnss-myhostname` in the base image.
+# leaves the archive and the build fails here, printing the archive's candidate; take the new
+# version from that message, then update the label below and images/computer/tests/test_image.py.
 ARG LIBNSS_MYHOSTNAME_VERSION=257.13-1~deb13u1
 RUN apt-get update \
- && apt-get install -y --no-install-recommends "libnss-myhostname=${LIBNSS_MYHOSTNAME_VERSION}" \
+ && { apt-get install -y --no-install-recommends "libnss-myhostname=${LIBNSS_MYHOSTNAME_VERSION}" \
+      || { echo "libnss-myhostname ${LIBNSS_MYHOSTNAME_VERSION} is not in the archive; its candidate:" >&2; \
+           apt-cache policy libnss-myhostname >&2; exit 1; }; } \
  && rm -rf /var/lib/apt/lists/* \
  && sed -i -E 's/^hosts:.*$/hosts:          files myhostname dns/' /etc/nsswitch.conf \
  && test "$(grep -E '^hosts:' /etc/nsswitch.conf | tr -s ' \t' ' ')" = "hosts: files myhostname dns" \
@@ -253,7 +255,8 @@ LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare
       cloudflare-omnigent.claude-code="2.1.311" \
       cloudflare-omnigent.codex="0.164.0" \
       cloudflare-omnigent.gh="2.103.3" \
-      cloudflare-omnigent.tmux="3.5a"
+      cloudflare-omnigent.tmux="3.5a" \
+      cloudflare-omnigent.libnss-myhostname="257.13-1~deb13u1"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through
 # the container port by the computer's WorkspaceDO.
 EXPOSE 8090 7681

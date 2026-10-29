@@ -48,6 +48,27 @@ OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "prefe
         ),
         ("UPDATE hosts SET token_hash=?, token_expires_at=? WHERE hosts.host_id = ?", 1, "hosts"),
         ("DELETE FROM hosts WHERE hosts.workspace_id = ? AND hosts.host_id = ?", 1, "hosts"),
+        # The credential store's connections (WP5.9): linking, relinking, a token refresh (the
+        # same columns as a relink, Codex WP5.9 r1-1) and unlinking are all marked.
+        (
+            "INSERT INTO connections (workspace_id, user_id, provider, account_id, secret_enc, "
+            "metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            1,
+            "connections",
+        ),
+        (
+            "DELETE FROM connections WHERE connections.workspace_id = ? AND "
+            "connections.user_id = ? AND connections.provider = ?",
+            1,
+            "connections",
+        ),
+        (
+            "UPDATE connections SET secret_enc=?, metadata_json=?, updated_at=? WHERE "
+            "connections.workspace_id = ? AND connections.user_id = ?",
+            1,
+            "connections",
+        ),
+        ("UPDATE connections SET user_id=? WHERE connections.user_id = ?", 1, "connections"),
         # Bookkeeping only.
         ("UPDATE users SET last_login_at=? WHERE users.id = ?", 1, None),
         ("UPDATE hosts SET updated_at=? WHERE hosts.host_id = ?", 1, None),

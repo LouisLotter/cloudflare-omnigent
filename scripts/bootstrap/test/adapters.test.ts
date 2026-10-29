@@ -13,10 +13,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandResult, RunOptions } from "../../staging/cloud.ts";
 import { acquireLock } from "../../staging/lock.ts";
+import { AccessUnavailable } from "../access-app.ts";
 import {
   accountCloud,
   apiTokenOf,
   bucketExists,
+  cfAccessApi,
   cfJson,
   cfTokenApi,
   ensureBuckets,
@@ -373,6 +375,161 @@ describe("cfTokenApi: the installer's user API tokens through cf (WP3.25)", () =
     expect(() => soleAccount(none.runner)).toThrow(/reaches no Cloudflare account/);
     const two = fakeRunner(() => ({ stdout: JSON.stringify([{ id: "a" }, { id: "b" }, {}]) }));
     expect(() => soleAccount(two.runner)).toThrow(/reaches 2 accounts; choose one with --account/);
+  });
+});
+
+describe("cfAccessApi: Access in the installer's account through cf (WP3.31)", () => {
+  const FORBIDDEN =
+    "┌ APIError\n│ [10000] Authentication error\n│ 403 Forbidden · HTTP /access/apps\n└";
+  const MISSING = "┌ APIError\n│ [11021] access.api.error.not_found\n│ 404 Not Found · HTTP\n└";
+  const ID = "0f0e0d0c-0b0a-4009-8807-060504030201";
+
+  it("reads the team domain, and tells an account without a Zero Trust organization", () => {
+    const answers: Partial<CommandResult>[] = [
+      { stdout: JSON.stringify({ result: { auth_domain: "team.cloudflareaccess.com" } }) },
+      { status: 1, stderr: "┌ APIError\n│ [9999] not found\n│ 404 Not Found · HTTP\n└" },
+      { stdout: JSON.stringify({ result: { name: "x" } }) },
+      { status: 1, stderr: "network unreachable owner-canary@example.test" },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfAccessApi(fake.runner);
+    expect(api.teamDomain()).toBe("team.cloudflareaccess.com");
+    expect(api.teamDomain()).toBeUndefined();
+    // An answer without a team domain is uncertainty, never "no organization" (Codex r1-4).
+    expect(() => api.teamDomain()).toThrow("answered without a team domain");
+    expect(() => api.teamDomain()).toThrow(
+      "cf zero-trust organization get failed: network unreachable <email>",
+    );
+    expect(fake.calls.map((c) => c.args)).toEqual(
+      Array.from({ length: 4 }, () => ["zero-trust", "organization", "get"]),
+    );
+    expect(fake.calls.every((c) => c.command === "cf" && c.options.inherit === false)).toBe(true);
+  });
+
+  it("lists every application in the account page by page, never a filtered listing (Codex r1-1)", () => {
+    const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `app-${i}` }));
+    const answers = [page(100), page(3)];
+    const fake = fakeRunner(() => ({ stdout: JSON.stringify(answers.shift() ?? []) }));
+    expect(cfAccessApi(fake.runner).apps()).toHaveLength(103);
+    expect(fake.calls.map((c) => c.args)).toEqual(
+      [1, 2].map((n) => [
+        "zero-trust",
+        "access",
+        "applications",
+        "list",
+        "--per-page",
+        "100",
+        "--page",
+        String(n),
+      ]),
+    );
+    expect(fake.calls.some((c) => c.args.includes("--domain") || c.args.includes("--exact"))).toBe(
+      false,
+    );
+    const endless = fakeRunner(() => ({ stdout: JSON.stringify(page(100)) }));
+    expect(() => cfAccessApi(endless.runner).apps()).toThrow(
+      /more than 2000 Access applications in the account: too many to check/,
+    );
+    const odd = fakeRunner(() => ({ stdout: JSON.stringify({ result: { not: "a list" } }) }));
+    expect(() => cfAccessApi(odd.runner).apps()).toThrow(/answered no list/);
+  });
+
+  it("reads one application by its ID: gone (404), refused (403) or broken are told apart", () => {
+    const answers: Partial<CommandResult>[] = [
+      { stdout: JSON.stringify({ result: { id: ID, name: "x" } }) },
+      { status: 1, stderr: MISSING },
+      { status: 1, stderr: FORBIDDEN },
+      { stdout: JSON.stringify({ result: null }) },
+      { status: 1, stderr: "timeout" },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfAccessApi(fake.runner);
+    expect(api.app(ID)).toEqual({ id: ID, name: "x" });
+    expect(api.app(ID)).toBeUndefined();
+    expect(() => api.app(ID)).toThrow(AccessUnavailable);
+    expect(() => api.app(ID)).toThrow(/answered without an application/);
+    expect(() => api.app(ID)).toThrow(/cf zero-trust access applications failed: timeout/);
+    expect(fake.calls[0]?.args).toEqual(["zero-trust", "access", "applications", "get", ID]);
+  });
+
+  it("creates an application with its body as the one flag, and returns the new ID", () => {
+    const body = { type: "self_hosted", name: "cloudflare-omnigent-web--0a1b2c3d" };
+    const answers: Partial<CommandResult>[] = [
+      { stdout: JSON.stringify({ result: { id: ID } }) },
+      { status: 1, stderr: FORBIDDEN },
+      { stdout: JSON.stringify({ result: {} }) },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfAccessApi(fake.runner);
+    expect(api.create(body)).toBe(ID);
+    expect(fake.calls[0]?.args).toEqual([
+      "zero-trust",
+      "access",
+      "applications",
+      "create",
+      "--body",
+      JSON.stringify(body),
+    ]);
+    expect(() => api.create(body)).toThrow(AccessUnavailable);
+    expect(() => api.create(body)).toThrow(/answered without an ID/);
+  });
+
+  it("lists the login methods and adds the one-time PIN method", () => {
+    const answers: Partial<CommandResult>[] = [
+      {
+        stdout: JSON.stringify([
+          { id: "idp-1", type: "onetimepin", name: "One-time PIN" },
+          { id: 7, type: "github" },
+          null,
+        ]),
+      },
+      { stdout: JSON.stringify({ result: { id: "idp-2" } }) },
+      { status: 1, stderr: FORBIDDEN },
+      { status: 1, stderr: FORBIDDEN },
+      { stdout: JSON.stringify({ result: {} }) },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfAccessApi(fake.runner);
+    expect(api.identityProviders()).toEqual([{ id: "idp-1", type: "onetimepin" }]);
+    expect(api.createOneTimePin()).toBe("idp-2");
+    expect(fake.calls.map((c) => c.args)).toEqual([
+      ["zero-trust", "identity-providers", "list", "--per-page", "100"],
+      [
+        "zero-trust",
+        "identity-providers",
+        "create",
+        "--body",
+        JSON.stringify({ name: "One-time PIN", type: "onetimepin", config: {} }),
+      ],
+    ]);
+    expect(() => api.identityProviders()).toThrow(AccessUnavailable);
+    expect(() => api.createOneTimePin()).toThrow(AccessUnavailable);
+    expect(() => api.createOneTimePin()).toThrow(/answered without an ID/);
+  });
+
+  it("deletes an application without asking: deleted, absent, refused or failed", () => {
+    const answers: Partial<CommandResult>[] = [
+      {},
+      { status: 1, stderr: MISSING },
+      { status: 1, stderr: FORBIDDEN },
+      { status: 1, stderr: "timeout" },
+    ];
+    const fake = fakeRunner(() => answers.shift() ?? {});
+    const api = cfAccessApi(fake.runner);
+    expect(api.remove(ID)).toBe("deleted");
+    expect(api.remove(ID)).toBe("absent");
+    expect(() => api.remove(ID)).toThrow(AccessUnavailable);
+    expect(() => api.remove(ID)).toThrow(
+      "cf zero-trust access applications delete failed: timeout",
+    );
+    expect(fake.calls[0]?.args).toEqual([
+      "zero-trust",
+      "access",
+      "applications",
+      "delete",
+      ID,
+      "--force",
+    ]);
   });
 });
 

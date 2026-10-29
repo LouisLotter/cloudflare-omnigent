@@ -1,6 +1,6 @@
 # 0007 — Compatible releases and recovery
 
-Status: accepted design, amended 27 October 2026 (the server's scheduling policy, below). Initial contracts and server safeguards exist; the full release/recovery matrix remains to qualify.
+Status: accepted design, amended 27 October 2026 (the server's scheduling policy, below) and 29 October 2026 (tolerant status readers). Initial contracts and server safeguards exist; the full release/recovery matrix remains to qualify.
 
 ## Context
 
@@ -10,7 +10,7 @@ Deploying the Worker and rolling its containers are separate steps. A new Worker
 
 Release an identified assembly: platform/web revisions, fork commits, server/computer image digests, exact CLI/SDK/Litestream versions, protocol/schema/policy versions and evidence for that combination. A pin is reproducibility input, not qualification. Image source identity must be inspectable; claiming a fix requires checking the packaged code and exercising the affected behavior. Do not replace pins with “latest.”
 
-Keep supervisor, launcher, manifest, intercept-props and cross-Worker interfaces versioned. Reject unsupported versions before effects. Cross-Worker additions are additive, tolerate unknown fields at the defined RPC boundary and ship platform support before web consumers. This does not relax strict payload schemas elsewhere. Once a second protocol version exists, support current and previous where the compatibility contract requires it; version-one constants do not already prove that future compatibility.
+Keep supervisor, launcher, manifest, intercept-props and cross-Worker interfaces versioned. Reject unsupported versions before effects. Cross-Worker additions are additive, tolerate unknown fields at the defined RPC boundary and ship platform support before web consumers. This does not relax strict payload schemas elsewhere, with one exception (29 October 2026): the supervisor's informational `computer_status` reply, whose readers drop fields they do not know and read enum values they do not know as "can't tell", so an older WorkspaceDO after a rollback still reads a newer computer's status ([compatibility](../compatibility.md)). Once a second protocol version exists, support current and previous where the compatibility contract requires it; version-one constants do not already prove that future compatibility.
 
 Keep container beta APIs behind adapters. The server and the computers use the `durable_object` scheduling policy, under which a deploy never replaces a running container: each start names the image the Worker version maps, and the size. A computer takes an image update at its next clean start. The server takes it through one controlled restart: its watchdog fingerprints the environment, image and size each start uses, and replaces an answering server once, gracefully, when the current version would start it with another fingerprint (an outage with the cause `config_changed`). A release that changes none of the three restarts nothing. Test new Worker/old computer, new Worker/old server and new server/old computers. A managed-host-changing fork rebase must rerun persistent-host behavior tests.
 

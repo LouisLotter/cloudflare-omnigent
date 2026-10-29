@@ -78,16 +78,36 @@ def pinned_feature_flags() -> Any:
     return resolve_feature_flags({})
 
 
-def github_linking(database_url: str) -> tuple[Any, Any]:
-    """Omnigent's GitHub linking (D22): ``(github_config, github_store)``.
+def github_linking(config: image_config.ServerImageConfig, database_url: str) -> tuple[Any, Any]:
+    """Omnigent's GitHub linking (D22, WP5.9): ``(github_config, github_store)``, or
+    ``(None, None)`` while it is off.
 
-    Off in this version of the image. WP3.14 sets the installation's GitHub App client ID,
-    client secret and redirect URI from Worker secrets here, and selects core change 19's
-    key-service cipher for the credential store. The entrypoint removes the
-    ``OMNIGENT_GITHUB_APP_*`` and ``OMNIGENT_CREDENTIAL_*`` variables until then.
+    Built the way Omnigent's own Docker entrypoint builds it, from the app's environment, which
+    :func:`cfo_server.config.app_environment` restricted to the installation's GitHub App and the
+    platform Worker's key service, with ``OMNIGENT_CREDENTIAL_CIPHER=http``. Then checked: the
+    App Omnigent read is the one the image checked, it carries no private key, and the store's
+    cipher is core change 19's key service, never another backend. Anything else stops the app:
+    tokens are never stored under a cipher the platform did not choose.
     """
-    del database_url
-    return None, None
+    if not config.github.enabled:
+        return None, None
+    from omnigent.connections.github import GithubConnectionStore
+    from omnigent.server.github_app import GitHubAppConfig
+    from omnigent.stores.credential_store import build_secret_cipher
+    from omnigent.stores.credential_store.http_cipher import HttpSecretCipher
+
+    github_config = GitHubAppConfig.from_env()
+    if (
+        github_config is None
+        or github_config.client_id != config.github.client_id
+        or github_config.redirect_uri != config.github.redirect_uri
+        or github_config.private_key is not None
+    ):
+        raise RuntimeError("Omnigent did not read the GitHub App the image configured")
+    cipher = build_secret_cipher()
+    if not isinstance(cipher, HttpSecretCipher):
+        raise RuntimeError("the credential store's cipher is not the platform's key service")
+    return github_config, GithubConnectionStore(database_url, cipher)
 
 
 def build_app(
@@ -173,7 +193,7 @@ def build_app(
         # The image pins accounts mode; anything else is a broken environment.
         raise RuntimeError("accounts mode did not resolve; refusing to start without it")
 
-    github_config, github_store = github_linking(database_url)
+    github_config, github_store = github_linking(config, database_url)
     # The launcher's own durability fence reads the same Litestream position as the barriers.
     sandbox_config = sandbox_deployment(
         config,

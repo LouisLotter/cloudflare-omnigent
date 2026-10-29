@@ -139,13 +139,14 @@ async function signatureValid(
 /** How long a body may take to arrive; a slow body cannot stretch the signature's window. */
 export const MAX_LAUNCHER_BODY_MS = 10_000;
 
-const SLOW = Symbol("slow");
+/** `readBounded`'s answer for a body that took longer than its deadline. */
+export const SLOW = Symbol("slow");
 
 /**
  * Reads at most `limit` bytes of a body within `deadlineMs`: null when it is larger, `SLOW` when
  * it takes longer.
  */
-async function readBounded(
+export async function readBounded(
   request: Request,
   limit: number,
   deadlineMs: number,

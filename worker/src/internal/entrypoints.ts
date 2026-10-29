@@ -2,7 +2,8 @@
 // container interception (design, "Internal bridges"): each wires the Worker's bindings to a
 // pure handler and does nothing else.
 //   - `PlatformInternal`: `platform.internal`, the server container's only intercept: the
-//     launcher API (`platform-api.ts`). Core change 19's key service (WP3.14) joins it there.
+//     launcher API (`platform-api.ts`) under `/launcher/`, and core change 19's key service for
+//     Omnigent's credential store (`key-service.ts`) under `/key-service/v1/` (WP5.9).
 //   - `OmnigentRoute`: `omnigent.internal`, a computer's live connection (`omnigent-route.ts`).
 //   - `ComputerApi`: `computer.internal`, a computer's supervisor (`computer-api.ts`).
 // Props are trusted: only the Durable Object that owns a container registers its intercepts.
@@ -32,6 +33,12 @@ import {
   workspaceObjectName,
 } from "../shared/rpc.ts";
 import { COMPUTER_API_LIMITS, handleSupervisorMessage, INBOUND_RETRY } from "./computer-api.ts";
+import {
+  handleKeyServiceRequest,
+  KEY_SERVICE_BASE_PATH,
+  keyServiceError,
+  keyServiceKeysFrom,
+} from "./key-service.ts";
 import {
   type ComputerIdentity,
   handleComputerRequest,
@@ -100,16 +107,32 @@ function workspace(env: InternalEnv, computerId: string): WorkspaceStub {
   return env.WORKSPACE.getByName(workspaceObjectName(computerId as ComputerId));
 }
 
+/** Whether a `platform.internal` path is the key service's rather than the launcher API's. */
+function isKeyServicePath(pathname: string): boolean {
+  return pathname === KEY_SERVICE_BASE_PATH || pathname.startsWith(`${KEY_SERVICE_BASE_PATH}/`);
+}
+
 /** `platform.internal`. Its props say who registered it: only OmnigentServer does. */
 export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInternalProps> {
   override async fetch(request: Request): Promise<Response> {
+    const pathname = new URL(request.url).pathname;
+    const keyService = isKeyServicePath(pathname);
     if (!isServerProps(this.ctx.props)) {
-      logEvent("launcher_api", "refused", {
-        path: new URL(request.url).pathname.slice(0, 64),
+      logEvent(keyService ? "key_service" : "launcher_api", "refused", {
+        path: pathname.slice(0, 64),
         status: 503,
         refused: "props",
       });
-      return launcherError("unavailable", "This platform service is not available.");
+      return keyService
+        ? keyServiceError("unavailable")
+        : launcherError("unavailable", "This platform service is not available.");
+    }
+    if (keyService) {
+      return handleKeyServiceRequest(request, {
+        keys: keyServiceKeysFrom(this.env as unknown as Record<string, unknown>),
+        nowSeconds: () => Math.floor(Date.now() / 1000),
+        log: (event, fields) => logEvent("key_service", event, fields),
+      });
     }
     const env = internalEnv(this.env);
     return handleLauncherRequest(request, {

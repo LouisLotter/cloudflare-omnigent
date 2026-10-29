@@ -6,7 +6,7 @@ The maintained product image sources are [server/Dockerfile](server/Dockerfile) 
 
 The image builds Omnigent from a pinned fork commit, adds Litestream 0.5.17 and [cfo_server](server/cfo_server/), then restores/checks the database before starting the application. Initialized installations with an unusable replica/database/owner state enter recovery mode rather than first-visitor setup. The app wires response/transcript durability barriers and deployment-managed settings through supported Omnigent interfaces.
 
-The integrated server registers the [Cloudflare launcher](server/cfo_server/launcher.py) from [python/cloudflare_omnigent](../python/cloudflare_omnigent/sandbox/), [disables native GitHub linking](server/cfo_server/app.py) and relies on an [unavailable private platform bridge](../worker/src/server/platform-internal.ts). Do not describe the server image as a complete cloud-computer or connected-account product.
+The integrated server registers the [Cloudflare launcher](server/cfo_server/launcher.py) from [python/cloudflare_omnigent](../python/cloudflare_omnigent/sandbox/), [enables Omnigent's GitHub linking](server/cfo_server/app.py) when the installation's GitHub App and the key service's keys are set, and relies on the platform Worker's private bridge, [`platform.internal`](../worker/src/server/platform-internal.ts), for the launcher API and the credential store's key service, neither yet run on Cloudflare. Do not describe the server image as a complete cloud-computer or connected-account product.
 
 | Dockerfile target / test location | Purpose and prerequisite |
 |---|---|

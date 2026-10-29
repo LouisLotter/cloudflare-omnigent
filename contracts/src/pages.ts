@@ -12,6 +12,7 @@ import {
   SignInService,
   SignInState,
   SignInUserCode,
+  StatusSignInState,
   SupervisorAlertKind,
 } from "./computer-protocol.ts";
 import { ComputerId, Generation, OperationId, Timestamp } from "./ids.ts";
@@ -322,7 +323,7 @@ export const ComputerStatusView = z.looseObject({
         gh: CliVersion.nullable(),
       }),
       logins: z.looseObject({ claude: CliLoginStatus, codex: CliLoginStatus }),
-      signIn: z.looseObject({ claude: SignInState, codex: SignInState }),
+      signIn: z.looseObject({ claude: StatusSignInState, codex: StatusSignInState }),
       rc53: z.boolean(),
       hostname: HostnameState,
       disk: z
