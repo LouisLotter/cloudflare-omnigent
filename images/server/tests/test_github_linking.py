@@ -365,7 +365,10 @@ def test_the_app_links_github_through_the_key_service(tmp_path: Path) -> None:
                 "/auth/login", json={"username": OWNER, "password": OWNER_PASSWORD}
             )
             assert signed_in.status_code == 200
-            assert client.post("/v1/connections/github/disconnect").status_code == 200
+            # Unlinking is a security write: answered only once the replica holds it.
+            unlinked = client.post("/v1/connections/github/disconnect")
+            assert unlinked.status_code == 200
+            assert unlinked.headers["x-cfo-durability"] == "confirmed"
             client.cookies.clear()
             after = client.get(route, headers={"X-Omnigent-Host-Token": launch}).json()
             assert after == {"connected": False}
