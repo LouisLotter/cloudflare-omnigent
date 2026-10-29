@@ -10,11 +10,18 @@
 //     as `SERVER_ENV_<NAME>` (WP2.2 forwards them as `<NAME>`; WP2.3's image reads them);
 //   - the platform Worker's secrets: Omnigent's cookie secret, the replica's credentials, the
 //     artifact bucket's credentials (the same R2 token's values may serve both, under their own
-//     names), the pre-provisioned owner's password, and `CFO_INSTALLATION_INITIALIZED`. The last one is not
+//     names), the pre-provisioned owner's password, the launcher's signing key and its ID, and
+//     `CFO_INSTALLATION_INITIALIZED`. The last one is not
 //     secret, but held as a Worker secret so that the bootstrap can flip it and delete the
 //     password in one atomic change (one bulk secrets request), one platform release (R-27), and
 //     so that no later deploy of the plain configuration can reset it (Wrangler deletes
 //     variables a configuration leaves out; it never deletes secrets);
+//   - the owner's password (WP3.34): by default a random 256-bit value that nobody sees, chosen
+//     and forgotten by the run, so that the owner exists from the server's first start but nobody
+//     can sign in as them; then `CFO_OWNER_PASSWORD_ON_PAGE=true` (held as a secret for the same
+//     reason as the flag above, and never forwarded to the server), and the owner chooses the
+//     password on the site's password page. One the person typed (--password-prompt) or supplied
+//     (--secrets-stdin) is uploaded instead, without the marker;
 //   - the web Worker's variables: ingress's team domain, AUD, hostname and owner pin (WP2.1).
 
 import { InstallationId } from "../../contracts/src/index.ts";
@@ -41,6 +48,18 @@ export const REPLICA_SECRET_KEY_SECRET = `${SERVER_ENV}LITESTREAM_SECRET_ACCESS_
  */
 export const ARTIFACTS_KEY_ID_SECRET = `${SERVER_ENV}AWS_ACCESS_KEY_ID`;
 export const ARTIFACTS_SECRET_KEY_SECRET = `${SERVER_ENV}AWS_SECRET_ACCESS_KEY`;
+/**
+ * The owner chooses the password on the site (WP3.34): "true" when the uploaded password is the
+ * run's own random one. Not a `SERVER_ENV_` name: OmnigentServer reads it, the server never does.
+ */
+export const OWNER_PASSWORD_ON_PAGE_SECRET = "CFO_OWNER_PASSWORD_ON_PAGE";
+/**
+ * The launcher's signing key and its ID (WP3.3, WP3.6): the server's Cloudflare launcher signs
+ * with them, and the platform Worker verifies with the same secrets. Without them the server
+ * cannot start a cloud computer. Made by the run when the Worker holds neither.
+ */
+export const LAUNCHER_KEY_SECRET = `${SERVER_ENV}CFO_LAUNCHER_SIGNING_KEY`;
+export const LAUNCHER_KEY_ID_SECRET = `${SERVER_ENV}CFO_LAUNCHER_SIGNING_KEY_ID`;
 /** R2's region for the S3 API. */
 export const R2_REGION = "auto";
 
@@ -504,6 +523,8 @@ export function requiredSecretNames(plan: Installation): string[] {
     COOKIE_SECRET,
     INITIALIZED_SECRET,
     PASSWORD_SECRET,
+    LAUNCHER_KEY_SECRET,
+    LAUNCHER_KEY_ID_SECRET,
     ...(needsReplicaCredentials(plan) ? [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET] : []),
     ...(needsArtifactCredentials(plan)
       ? [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET]
@@ -511,19 +532,41 @@ export function requiredSecretNames(plan: Installation): string[] {
   ];
 }
 
+/** What the run makes itself, never shown or kept: see `generatedSecrets` in machine.ts. */
+export interface GeneratedSecrets {
+  readonly cookieSecret: string;
+  /** The owner's password when the installer chose none: random, known to nobody. */
+  readonly ownerPassword: string;
+  readonly launcherKey: string;
+  readonly launcherKeyId: string;
+}
+
+/** The launcher's key pair, when the Worker lacks either half: a pair is replaced whole. */
+export function launcherKeyToAdd(
+  present: ReadonlySet<string>,
+  generated: Pick<GeneratedSecrets, "launcherKey" | "launcherKeyId">,
+): Record<string, string> {
+  if (present.has(LAUNCHER_KEY_SECRET) && present.has(LAUNCHER_KEY_ID_SECRET)) return {};
+  return {
+    [LAUNCHER_KEY_SECRET]: generated.launcherKey,
+    [LAUNCHER_KEY_ID_SECRET]: generated.launcherKeyId,
+  };
+}
+
 /**
  * The secrets the first platform deploy must add: each required one the Worker does not hold
  * yet. An existing secret is never overwritten: a cookie secret kept keeps sessions, and an
- * `INITIALIZED` already set is never reset. The one exception is half of an R2 key pair: a pair
- * is one credential, so an incomplete pair is replaced whole, never completed with another
- * key's half. `generated` supplies the cookie secret, and `supplied` the installer's values; a
- * missing value is an error naming it, never its value.
+ * `INITIALIZED` already set is never reset. The one exception is half of a key pair (R2's, the
+ * launcher's): a pair is one credential, so an incomplete pair is replaced whole, never completed
+ * with another key's half. `generated` supplies what the run makes itself, and `supplied` the
+ * installer's values; a missing value is an error naming it, never its value. The owner's
+ * password is the installer's when given, else the run's random one with the page marker.
  */
 export function secretsToAdd(
   plan: Installation,
   present: ReadonlySet<string>,
   supplied: SuppliedSecrets,
-  generated: { readonly cookieSecret: string },
+  generated: GeneratedSecrets,
 ): Record<string, string> {
   const add: Record<string, string> = {};
   const need = (name: string, value: string | undefined, what: string) => {
@@ -535,11 +578,18 @@ export function secretsToAdd(
   need(INITIALIZED_SECRET, "false", "the initialized flag");
   if (!present.has(PASSWORD_SECRET)) {
     const password = supplied.ownerPassword;
-    const problem =
-      password === undefined ? "the owner's password is needed" : passwordProblem(password);
-    if (problem) throw new Error(problem);
-    add[PASSWORD_SECRET] = password as string;
+    if (password === undefined) {
+      const problem = passwordProblem(generated.ownerPassword);
+      if (problem) throw new Error(`the generated password: ${problem}`);
+      add[PASSWORD_SECRET] = generated.ownerPassword;
+      add[OWNER_PASSWORD_ON_PAGE_SECRET] = "true";
+    } else {
+      const problem = passwordProblem(password);
+      if (problem) throw new Error(problem);
+      add[PASSWORD_SECRET] = password;
+    }
   }
+  Object.assign(add, launcherKeyToAdd(present, generated));
   const needPair = (
     pair: readonly (readonly [name: string, value: string | undefined, what: string])[],
   ) => {
@@ -597,6 +647,10 @@ export function containerEnvProblems(
     "OMNIGENT_ACCOUNTS_BASE_URL",
     "OMNIGENT_ACCOUNTS_COOKIE_SECRET",
     "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME",
+    // Without the launcher's key the server cannot start a cloud computer (found on the owner's
+    // first real install, 29 Oct: the installer never set it).
+    "CFO_LAUNCHER_SIGNING_KEY",
+    "CFO_LAUNCHER_SIGNING_KEY_ID",
     ...(needsReplicaCredentials(plan)
       ? ["LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"]
       : []),

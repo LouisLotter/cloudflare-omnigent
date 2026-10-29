@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { InstallationId } from "../../../contracts/src/index.ts";
+import { serverContainerEnv } from "../../../worker/src/server/server-env.ts";
 import { declaredResources, withStagingNames } from "../../staging/guard.ts";
 import {
   ARTIFACTS_KEY_ID_SECRET,
@@ -12,7 +13,11 @@ import {
   defaultArtifactsUrl,
   INITIALIZED_SECRET,
   installationProblems,
+  LAUNCHER_KEY_ID_SECRET,
+  LAUNCHER_KEY_SECRET,
+  launcherKeyToAdd,
   newInstallationId,
+  OWNER_PASSWORD_ON_PAGE_SECRET,
   PASSWORD_SECRET,
   passwordProblem,
   planConflicts,
@@ -34,6 +39,13 @@ import { accountPlan, baseConfigs, OWNER_EMAIL, OWNER_PASSWORD, stagingPlan } fr
 const BASE = baseConfigs();
 const ACCESS = { teamDomain: "team.cloudflareaccess.com", aud: "a".repeat(64) };
 const COOKIE = "c".repeat(64);
+/** What the run makes itself (synthetic). */
+const GEN = {
+  cookieSecret: COOKIE,
+  ownerPassword: "cfo-canary-generated-owner-password-0000000",
+  launcherKey: "cfo-canary-launcher-key-generated-0000000000000000000000000000000",
+  launcherKeyId: "k-20261029",
+};
 const SUPPLIED = {
   ownerPassword: OWNER_PASSWORD,
   replicaAccessKeyId: "cfo-canary-key-id",
@@ -188,11 +200,13 @@ describe("the platform Worker's settings and secrets", () => {
 
   it("adds every missing secret, the initialized flag as false", async () => {
     const plan = await accountPlan();
-    const add = secretsToAdd(plan, new Set(), SUPPLIED, { cookieSecret: COOKIE });
+    const add = secretsToAdd(plan, new Set(), SUPPLIED, GEN);
     expect(add).toEqual({
       [COOKIE_SECRET]: COOKIE,
       [INITIALIZED_SECRET]: "false",
       [PASSWORD_SECRET]: OWNER_PASSWORD,
+      [LAUNCHER_KEY_SECRET]: GEN.launcherKey,
+      [LAUNCHER_KEY_ID_SECRET]: GEN.launcherKeyId,
       [REPLICA_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
       [REPLICA_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
       // One R2 token for both buckets: its values, set again under the artifacts' own names.
@@ -214,7 +228,7 @@ describe("the platform Worker's settings and secrets", () => {
         artifactsAccessKeyId: "cfo-canary-artifacts-id",
         artifactsSecretAccessKey: "cfo-canary-artifacts-secret",
       },
-      { cookieSecret: COOKIE },
+      GEN,
     );
     expect(add[ARTIFACTS_KEY_ID_SECRET]).toBe("cfo-canary-artifacts-id");
     expect(add[ARTIFACTS_SECRET_KEY_SECRET]).toBe("cfo-canary-artifacts-secret");
@@ -222,17 +236,17 @@ describe("the platform Worker's settings and secrets", () => {
     // A Worker holding a whole pair keeps it; an incomplete pair is replaced whole, never
     // completed with another key's half (Codex WP3.25 r1-5).
     const present = new Set(requiredSecretNames(plan).filter((n) => n !== ARTIFACTS_KEY_ID_SECRET));
-    expect(secretsToAdd(plan, present, SUPPLIED, { cookieSecret: COOKIE })).toEqual({
+    expect(secretsToAdd(plan, present, SUPPLIED, GEN)).toEqual({
       [ARTIFACTS_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
       [ARTIFACTS_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
     });
-    expect(() =>
-      secretsToAdd(plan, present, { ownerPassword: OWNER_PASSWORD }, { cookieSecret: COOKIE }),
-    ).toThrow(`the artifact bucket's access key ID is needed (${ARTIFACTS_KEY_ID_SECRET})`);
+    expect(() => secretsToAdd(plan, present, { ownerPassword: OWNER_PASSWORD }, GEN)).toThrow(
+      `the artifact bucket's access key ID is needed (${ARTIFACTS_KEY_ID_SECRET})`,
+    );
     const halfReplica = new Set(
       requiredSecretNames(plan).filter((n) => n !== REPLICA_SECRET_KEY_SECRET),
     );
-    expect(secretsToAdd(plan, halfReplica, SUPPLIED, { cookieSecret: COOKIE })).toEqual({
+    expect(secretsToAdd(plan, halfReplica, SUPPLIED, GEN)).toEqual({
       [REPLICA_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
       [REPLICA_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
     });
@@ -241,28 +255,80 @@ describe("the platform Worker's settings and secrets", () => {
   it("never overwrites a secret the Worker holds", async () => {
     const plan = await accountPlan();
     const present = new Set(requiredSecretNames(plan));
-    expect(secretsToAdd(plan, present, {}, { cookieSecret: COOKIE })).toEqual({});
+    expect(secretsToAdd(plan, present, {}, GEN)).toEqual({});
     // An installation that holds the flag keeps it, whatever its value.
-    const add = secretsToAdd(plan, new Set([INITIALIZED_SECRET]), SUPPLIED, {
-      cookieSecret: COOKIE,
-    });
+    const add = secretsToAdd(plan, new Set([INITIALIZED_SECRET]), SUPPLIED, GEN);
     expect(add).not.toHaveProperty(INITIALIZED_SECRET);
+  });
+
+  it("uploads the run's own password with the page marker when the installer chose none (WP3.34)", async () => {
+    const plan = await accountPlan();
+    const { ownerPassword: _none, ...withoutPassword } = SUPPLIED;
+    const add = secretsToAdd(plan, new Set(), withoutPassword, GEN);
+    expect(add[PASSWORD_SECRET]).toBe(GEN.ownerPassword);
+    expect(add[OWNER_PASSWORD_ON_PAGE_SECRET]).toBe("true");
+    expect(OWNER_PASSWORD_ON_PAGE_SECRET.startsWith("SERVER_ENV_")).toBe(false);
+    // A chosen one: no marker.
+    expect(secretsToAdd(plan, new Set(), SUPPLIED, GEN)).not.toHaveProperty(
+      OWNER_PASSWORD_ON_PAGE_SECRET,
+    );
+    // Uploaded once: a Worker that holds a password gets neither again.
+    const held = secretsToAdd(plan, new Set([PASSWORD_SECRET]), withoutPassword, GEN);
+    expect(held).not.toHaveProperty(PASSWORD_SECRET);
+    expect(held).not.toHaveProperty(OWNER_PASSWORD_ON_PAGE_SECRET);
+    // The marker never reaches the server, and changes nothing it starts with.
+    const vars = platformVars(plan);
+    expect(containerEnvProblems(vars, add, plan)).toEqual([]);
+    expect(Object.keys(serverContainerEnv({ ...vars, ...add }).vars)).not.toContain(
+      "CFO_OWNER_PASSWORD_ON_PAGE",
+    );
+    expect(() =>
+      secretsToAdd(plan, new Set(), withoutPassword, { ...GEN, ownerPassword: "short" }),
+    ).toThrow(/the generated password/);
+  });
+
+  it("adds the launcher's key pair when the Worker lacks either half, and only then", async () => {
+    const plan = await accountPlan();
+    expect(launcherKeyToAdd(new Set(), GEN)).toEqual({
+      [LAUNCHER_KEY_SECRET]: GEN.launcherKey,
+      [LAUNCHER_KEY_ID_SECRET]: GEN.launcherKeyId,
+    });
+    expect(launcherKeyToAdd(new Set([LAUNCHER_KEY_ID_SECRET]), GEN)).toEqual({
+      [LAUNCHER_KEY_SECRET]: GEN.launcherKey,
+      [LAUNCHER_KEY_ID_SECRET]: GEN.launcherKeyId,
+    });
+    expect(launcherKeyToAdd(new Set([LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET]), GEN)).toEqual(
+      {},
+    );
+    // The server must have it: an installation without it cannot start a cloud computer.
+    const vars = platformVars(plan);
+    const all = secretsToAdd(plan, new Set(), SUPPLIED, GEN);
+    const { [LAUNCHER_KEY_SECRET]: _key, ...withoutKey } = all;
+    expect(containerEnvProblems(vars, withoutKey, plan)).toEqual([
+      "CFO_LAUNCHER_SIGNING_KEY would be missing",
+    ]);
   });
 
   it("needs the replica's credentials only for an S3 replica", async () => {
     const staging = await stagingPlan();
     expect(
-      Object.keys(
-        secretsToAdd(
-          staging,
-          new Set(),
-          { ownerPassword: OWNER_PASSWORD },
-          { cookieSecret: COOKIE },
-        ),
-      ).sort(),
-    ).toEqual([COOKIE_SECRET, INITIALIZED_SECRET, PASSWORD_SECRET].sort());
+      Object.keys(secretsToAdd(staging, new Set(), { ownerPassword: OWNER_PASSWORD }, GEN)).sort(),
+    ).toEqual(
+      [
+        COOKIE_SECRET,
+        INITIALIZED_SECRET,
+        PASSWORD_SECRET,
+        LAUNCHER_KEY_SECRET,
+        LAUNCHER_KEY_ID_SECRET,
+      ].sort(),
+    );
     expect(() =>
-      secretsToAdd(staging, new Set(), { ownerPassword: OWNER_PASSWORD }, { cookieSecret: "" }),
+      secretsToAdd(
+        staging,
+        new Set(),
+        { ownerPassword: OWNER_PASSWORD },
+        { ...GEN, cookieSecret: "" },
+      ),
     ).toThrow(`a cookie secret is needed (${COOKIE_SECRET})`);
   });
 
@@ -274,7 +340,7 @@ describe("the platform Worker's settings and secrets", () => {
   it("checks what the server container would receive (WP2.2's serverContainerEnv)", async () => {
     const plan = await accountPlan();
     const vars = platformVars(plan);
-    const secrets = secretsToAdd(plan, new Set(), SUPPLIED, { cookieSecret: COOKIE });
+    const secrets = secretsToAdd(plan, new Set(), SUPPLIED, GEN);
     expect(containerEnvProblems(vars, secrets, plan)).toEqual([]);
     const { [REPLICA_KEY_ID_SECRET]: _gone, ...withoutKey } = secrets;
     expect(containerEnvProblems(vars, withoutKey, plan)).toEqual([
@@ -292,11 +358,7 @@ describe("the platform Worker's settings and secrets", () => {
     const { SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS: _switch, ...withoutSwitch } =
       platformVars(staging);
     expect(
-      containerEnvProblems(
-        withoutSwitch,
-        secretsToAdd(staging, new Set(), SUPPLIED, { cookieSecret: COOKIE }),
-        staging,
-      ),
+      containerEnvProblems(withoutSwitch, secretsToAdd(staging, new Set(), SUPPLIED, GEN), staging),
     ).toEqual(["CFO_ALLOW_LOCAL_ARTIFACTS would be missing"]);
     expect(containerEnvProblems({ ...vars, "SERVER_ENV_BAD-NAME": "x" }, secrets, plan)).toEqual([
       "SERVER_ENV_BAD-NAME would not reach the server: invalid name",

@@ -26,6 +26,7 @@ import {
   WorkspaceManifest,
 } from "./manifests.ts";
 import { OutageRecord } from "./outage.ts";
+import { OwnerPasswordCall, OwnerPasswordResult } from "./owner-password.ts";
 import {
   PageFrontCall,
   PageFrontResult,
@@ -47,6 +48,7 @@ export * from "./launcher.ts";
 export * from "./lifecycle.ts";
 export * from "./manifests.ts";
 export * from "./outage.ts";
+export * from "./owner-password.ts";
 export * from "./pages.ts";
 export * from "./replication.ts";
 export * from "./setup-cards.ts";
@@ -72,6 +74,8 @@ export const wireSchemas = {
   LauncherResult,
   LayerIndex,
   OutageRecord,
+  OwnerPasswordCall,
+  OwnerPasswordResult,
   PagesCall,
   PagesResult,
   PageFrontCall,

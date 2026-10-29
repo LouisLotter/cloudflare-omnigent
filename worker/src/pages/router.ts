@@ -13,6 +13,8 @@
 //   POST /platform/computers/{id}/sign-in         start a sign-in, relay the pasted code, cancel
 //   GET  /platform/computers/{id}/status          the computer's status (JSON)
 //   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check, or keep-awake, on or off
+//   GET  /platform/password                       the owner's Omnigent password: choose or reset (WP3.34)
+//   POST /platform/password                       set it, guarded, then a 303
 //   GET  /platform/assets/{name}                  the pages' own scripts and styles
 
 import type { PageOwner } from "@cfo/contracts";
@@ -31,6 +33,12 @@ import {
 import { COMPUTERS_PATH, PAGES_ROOT } from "./html.ts";
 import { securityHeaders } from "./http.ts";
 import { signInChange, signInRead, stagingChange, statusRead } from "./owner-actions.ts";
+import {
+  bindingsPasswordBackend,
+  type PasswordBackend,
+  passwordChange,
+  passwordPage,
+} from "./password.ts";
 import { setupPage, stateJson, terminalChange, terminalUpgrade } from "./setup.ts";
 
 /** One asset: its body and content type. */
@@ -41,6 +49,8 @@ export interface Asset {
 
 export interface PlatformDeps {
   readonly backend?: PagesBackend;
+  /** OmnigentServer's password interface (WP3.34); the OMNIGENT binding's by default. */
+  readonly password?: PasswordBackend;
   /** The assets by name: web.ts loads `assets.ts`, a runtime module, on first use. */
   readonly assets: () => Promise<Readonly<Record<string, Asset>>>;
   readonly now?: () => number;
@@ -104,6 +114,14 @@ export async function routePlatform(
           },
         }),
       );
+    }
+    if (parts[0] === "password" && parts.length === 1) {
+      const password = deps.password ?? bindingsPasswordBackend(env);
+      if (read) return head(request, await passwordPage(password, owner, url, log));
+      if (request.method === "POST") {
+        return passwordChange(password, owner, request, admitted.origin, log);
+      }
+      return methodNotAllowed("GET, HEAD, POST");
     }
     if (parts[0] !== "computers") return head(request, notFoundPage());
     if (parts.length === 1) {

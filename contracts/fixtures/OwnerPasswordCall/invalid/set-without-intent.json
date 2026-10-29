@@ -1,0 +1,9 @@
+{
+  "action": "set",
+  "interfaceVersion": 1,
+  "owner": {
+    "sub": "7f3c2a10-5e44-4b1e-9a2d-0c8b6e1f4d21",
+    "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "password": "synthetic-fixture-password"
+}

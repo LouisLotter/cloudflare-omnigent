@@ -25,6 +25,11 @@ export interface PlatformVars {
    * Worker's own `cfo-stg-` name (WP3.23): it offers the setup page's RC-53 switch.
    */
   readonly CFO_STAGING_INSTALLATION?: string;
+  /**
+   * Set to `true`, as a Worker secret, by an installer that chose no owner password (WP3.34): the
+   * owner chooses it on the password page. Not forwarded to the server (no `SERVER_ENV_` prefix).
+   */
+  readonly CFO_OWNER_PASSWORD_ON_PAGE?: string;
   /** The launcher's previous signing key and its ID, set only during a rotation (WP3.3). */
   readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS?: string;
   readonly CFO_LAUNCHER_SIGNING_KEY_PREVIOUS_ID?: string;

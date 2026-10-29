@@ -1,6 +1,6 @@
 # Installing Omnigent in your Cloudflare account
 
-This guide sets up one personal installation of Omnigent in your own Cloudflare account, with one command. The installer does everything it can by itself; what is left for you is what only you can do: pay for or choose a plan, sign in, and keep your password.
+This guide sets up one personal installation of Omnigent in your own Cloudflare account, with one command. The installer does everything it can by itself; what is left for you is what only you can do: pay for or choose a plan, sign in, and choose your password.
 
 The project is not production-qualified yet (see the [README](../README.md)). Expect rough edges, and keep anything important elsewhere too.
 
@@ -21,8 +21,7 @@ On your computer (Linux; macOS is not supported yet: the installer's locks need 
 
 - Git, [Node.js](https://nodejs.org/) 26 and pnpm 11.15.1;
 - [Docker](https://docs.docker.com/get-docker/), running: the first install builds the server's and the cloud computers' images on your computer, which takes a while and several gigabytes of disk;
-- Cloudflare's `cf` command, version 1.0.0-beta.18;
-- a clipboard tool, so that the installer can hand you the password without showing it: `wl-copy` (Wayland), or `xclip` or `xsel` (X11).
+- Cloudflare's `cf` command, version 1.0.0-beta.18.
 
 ```bash
 git clone https://github.com/LouisLotter/cloudflare-omnigent.git
@@ -59,18 +58,29 @@ What it does, in order:
 2. **Plans the installation** and keeps the plan on your computer (in `~/.config/cloudflare-omnigent/installations/`). It holds no password or key.
 3. **Creates the storage buckets** in R2, empty.
 4. **Puts Cloudflare Access in front of the address**, before anything can be reached there: an application that lets in your email address only. If your account has no login method for Access, it adds the one-time PIN method, which emails you a code. If an Access application already covers the address, the installer uses it only if it lets in you alone, and otherwise stops and says what to change; it never changes or widens an application it did not make.
-5. **Makes your Omnigent password** and puts it on your clipboard, without showing it. Paste it into your password manager, then press Enter. Without a clipboard tool it asks you to type a password twice instead (`--password-prompt` does that on purpose).
-6. **Makes the storage key** that only the server receives, and **deploys** the two parts of the installation. The first deploy builds the images, so it is the slow part.
-7. **Waits** until the server has created your account and stored it safely, then removes the password from Cloudflare and checks that the server restarted without it. This usually takes 10 to 20 minutes after the deploy.
+5. **Creates your Omnigent account without a usable password.** It gives the server a random starting password that nobody ever sees, not even the installer, so the account exists from the start but nobody can sign in as you until you choose your password on the site (below). If you would rather type a password here, add `--password-prompt`: it asks twice, without showing it.
+6. **Makes the storage key** and the **cloud computers' signing key**, which only the server and the installation receive, and **deploys** the two parts of the installation. The first deploy builds the images, so it is the slow part.
+7. **Waits** until the server has created your account and stored it safely, then removes the starting password from Cloudflare and checks that the server restarted without it. This usually takes 10 to 20 minutes after the deploy.
 
-When it ends with `bootstrap: done`, the installation is ready. If it stops early (a missing step, a slow Cloudflare, your laptop going to sleep), run the same command again: it carries on where it stopped. Exit status 2 or 3 means "not finished yet, run it again".
+When it ends with `bootstrap: done`, the installation is ready, and it prints the one link to open. If it stops early (a missing step, a slow Cloudflare, your laptop going to sleep), run the same command again: it carries on where it stopped. Exit status 2 or 3 means "not finished yet, run it again".
 
-## Your first sign-in
+## Your first visit: choose your password
 
 1. Open `https://<your address>`. Cloudflare Access asks who you are first: with the one-time PIN method, enter your email address and then the code it emails you. With the application the installer makes, Access remembers you for 24 hours.
-2. Omnigent then shows its own sign-in. Use your username and the password from your password manager. You may change the password in Omnigent; keep the new one in your password manager too.
+2. The page **Choose your Omnigent password** opens by itself. Your username is shown; type a password twice (at least 8 characters) and choose **Set my password**. Your browser's password manager can suggest one and save it.
+3. Choose **Sign in to Omnigent**, and sign in with your username and the new password.
 
-Anyone else who opens the address stops at Access and never reaches Omnigent.
+If you typed a password at install (`--password-prompt`), step 2 is skipped: Omnigent's own sign-in comes straight after Access.
+
+Anyone else who opens the address stops at Access and never reaches Omnigent or this page.
+
+## Forgot your password?
+
+Open `https://<your address>/platform/password` (also linked as "Omnigent password" at the top of the cloud-computers pages). After Access, it offers **Reset your Omnigent password**: choose a new one the same way. A reset signs you out of Omnigent everywhere, in every browser and on every device, so that anyone who might have had the old password is out too; your cloud computers keep running. Only you can reach this page: Access lets in your address alone, and the installation checks it again.
+
+## Updating
+
+To move an installation to a newer version, update your copy of the repository (`git pull`, with no changes of your own in it) and run the same `install` command again. On a finished installation it deploys the new version of both parts and adds anything the installation is missing, such as the cloud computers' signing key; your data, your password and your sign-ins stay. The server restarts once, within about 10 minutes. With uncommitted changes in your copy, the installer says so and does not update.
 
 ## GitHub, for your cloud computers (optional)
 

@@ -13,6 +13,8 @@ import {
   type LauncherCall,
   type LauncherResult,
   type OutageRecord,
+  type OwnerPasswordCall,
+  type OwnerPasswordResult,
   type PageFrontCall,
   type PageFrontResult,
   type PageReadCall,
@@ -94,6 +96,17 @@ export interface OmnigentServerRpc {
    * recovery mode, held after exit 78, or inside DC-37's backoff is not started.
    */
   ensureStarted(call: OmnigentServerCall): Promise<void>;
+  /**
+   * The owner's Omnigent password page (WP3.34, `contracts/src/owner-password.ts`), for the web
+   * Worker after ingress admitted the pinned owner. `state`: whether the owner still has to choose
+   * a password, the owner's username and the session's request-intent token. `set`: the intent
+   * token and the attempts limit, then the signed platform call to the server; "done" only once
+   * the server's barrier confirmed the change durable. Added in version 1, additively: the version
+   * is not raised, because the forwarding header carries it too and an object still on an older
+   * build would refuse every forwarded request until it switches. An older object answers this
+   * method with an RPC error, which the page shows as "try again".
+   */
+  ownerPassword(call: OwnerPasswordCall): Promise<OwnerPasswordResult>;
 }
 
 // ---------------------------------------------------------------------------------------------

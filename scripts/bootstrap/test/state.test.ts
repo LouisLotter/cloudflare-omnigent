@@ -11,6 +11,7 @@ import {
   resourceLockPaths,
   stagingStateProblem,
   statePathFor,
+  stateVersionFor,
   writeAtomic,
 } from "../state.ts";
 import { accountPlan, INSTALLATION, stagingPlan } from "./fixtures.ts";
@@ -87,7 +88,7 @@ describe("the state file", () => {
     const cases: [unknown, RegExp][] = [
       ["not json {", /not JSON/],
       [[], /top level is not an object/],
-      [{ ...good, stateVersion: 3 }, /unknown version/],
+      [{ ...good, stateVersion: 4 }, /unknown version/],
       [{ ...good, stateVersion: "1" }, /unknown version/],
       // D33: version 2 records the bucket tag, and only version 2 does.
       [{ ...good, stateVersion: 2 }, /version 2 plan records no bucket tag/],
@@ -227,6 +228,59 @@ describe("the state file", () => {
     ] as const) {
       expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
     }
+  });
+
+  it("round-trips whose password was uploaded and the code deployed (WP3.34, Codex r1-1)", async () => {
+    const state = await fullState();
+    const path = join(dir, "code.json");
+    const withCode = {
+      ...state,
+      journal: {
+        ...state.journal,
+        ownerPassword: "page",
+        platformCode: "a".repeat(40),
+        webCode: "b".repeat(40),
+        updatedAt: "2026-10-29T12:00:00.000Z",
+      },
+    } as BootstrapState;
+    fileStateStore(path).save(withCode);
+    // Version 3: a journal with these fields (stateVersionFor, Codex r2-1).
+    expect(fileStateStore(path).load()).toEqual({ ...withCode, stateVersion: 3 });
+    const good = JSON.parse(JSON.stringify(withCode));
+    for (const [journal, message] of [
+      [{ ...good.journal, ownerPassword: "owner" }, /neither page nor installer/],
+      [{ ...good.journal, platformCode: "main" }, /journal.platformCode is not a commit ID/],
+      [{ ...good.journal, webCode: 40 }, /journal.webCode is not a commit ID/],
+      [{ ...good.journal, updatedAt: "yesterday" }, /journal.updatedAt is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
+  });
+
+  it("writes a journal with WP3.34's fields as version 3, which earlier bootstraps refuse (Codex r2-1)", async () => {
+    // A bootstrap from before WP3.34 accepts versions 1 and 2 only ("unknown version"
+    // otherwise), so it can never read such a journal and save it without these fields.
+    const state = await fullState();
+    for (const plan of [state.installation, { ...state.installation, bucketTag: "01hs3f9q" }]) {
+      const path = join(dir, `v3-${plan.bucketTag ?? "untagged"}.json`);
+      const store = fileStateStore(path);
+      store.save({ ...state, installation: plan, journal: { ...state.journal } });
+      expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(plan.bucketTag ? 2 : 1);
+      const recorded = { ...state.journal, platformCode: "a".repeat(40) };
+      store.save({ ...state, installation: plan, journal: recorded });
+      expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(3);
+      expect(store.load()).toMatchObject({ stateVersion: 3, journal: recorded });
+    }
+    for (const key of ["ownerPassword", "webCode", "updatedAt"]) {
+      const value =
+        key === "ownerPassword"
+          ? "page"
+          : key === "webCode"
+            ? "b".repeat(40)
+            : "2026-10-29T12:00:00.000Z";
+      expect(stateVersionFor({}, { [key]: value })).toBe(3);
+    }
+    expect(stateVersionFor({}, { ownerPasswordGivenAt: "2026-10-29T12:00:00.000Z" })).toBe(1);
   });
 
   it("round-trips the R2 token's record, which holds no value (WP3.25)", async () => {

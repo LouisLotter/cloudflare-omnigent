@@ -6,6 +6,11 @@
 
 import type { WebEnv } from "./env.ts";
 import { type Admitted, withIngress } from "./ingress/index.ts";
+import {
+  bindingsPasswordBackend,
+  type FirstVisitMemo,
+  firstVisitRedirect,
+} from "./pages/password.ts";
 import { isPlatformPath, routePlatform } from "./pages/router.ts";
 import { proxyToOmnigent } from "./server/proxy.ts";
 
@@ -14,19 +19,30 @@ async function loadPageAssets() {
   return (await import("./pages/assets.ts")).ASSETS;
 }
 
+/** This isolate's memory of the owner's password (WP3.34): once chosen, it stops asking. */
+const firstVisit: FirstVisitMemo = { chosen: false };
+
 /**
  * Routes an admitted request. `/platform/` is the platform pages' (WP3.5) and never reaches
- * Omnigent; everything else is Omnigent's, through the forwarding path.
+ * Omnigent; everything else is Omnigent's, through the forwarding path, except a page load while
+ * the owner still has to choose a password, which goes to the password page (WP3.34).
  */
-export function routeAdmitted(
+export async function routeAdmitted(
   admitted: Admitted,
   env: WebEnv,
   _ctx: ExecutionContext,
 ): Promise<Response> {
-  if (isPlatformPath(new URL(admitted.request.url).pathname)) {
+  const path = new URL(admitted.request.url).pathname;
+  if (isPlatformPath(path)) {
     return routePlatform(admitted, env, { assets: loadPageAssets });
   }
-  return proxyToOmnigent(admitted, env);
+  const redirect = await firstVisitRedirect(
+    admitted,
+    bindingsPasswordBackend(env),
+    firstVisit,
+    (fields) => console.log(JSON.stringify({ ...fields, path: path.slice(0, 256) })),
+  );
+  return redirect ?? proxyToOmnigent(admitted, env);
 }
 
 export default {

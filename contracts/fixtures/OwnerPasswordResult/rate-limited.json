@@ -1,0 +1,1 @@
+{ "action": "set", "outcome": "refused", "reason": "rate_limited", "retryAfterSeconds": 540 }

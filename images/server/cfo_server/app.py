@@ -11,8 +11,9 @@ Run by the entrypoint as ``python -m cfo_server.app``, once Litestream is replic
    itself with what the platform adds: static sharing values (Omnigent's sharing settings
    become authoritative, D4), the launcher registration through ``sandbox_config``, the
    pinned release features, and the transcript barrier (``durability_barrier``);
-4. adds the response barrier as the outermost middleware, and serves the app the way that
-   module's ``main`` does.
+4. adds the owner's password handler (``POST /_cfo/owner-password``, WP3.34) outside Omnigent's
+   own middleware, and the response barrier outside it as the outermost middleware, and serves
+   the app the way that module's ``main`` does.
 
 It never replaces an Omnigent module attribute. The coupling to the Docker entrypoint's
 helpers and to ``build_app``'s wiring is pinned by ``tests/test_coupling.py``: a fork bump that
@@ -39,6 +40,7 @@ from cfo_server.dbcheck import has_owner
 from cfo_server.events import log
 from cfo_server.launcher import litestream_durability_wait, sandbox_deployment
 from cfo_server.litestream import ReplicationWaiter
+from cfo_server.owner_password import OwnerPasswordMiddleware, owner_username
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -230,6 +232,20 @@ def build_app(
         default_public_sessions=config.sharing.default_public_sessions,
         feature_flags=pinned_feature_flags(),
         durability_barrier=make_transcript_barrier(waiter, config.transcript_barrier_timeout_s),
+    )
+    # The owner's password, set by the platform (WP3.34): outside everything create_app added, so
+    # no Omnigent middleware sees the request, and inside the barrier, which holds its answer
+    # until the change is replicated. Keyed by the cookie secret the image was given (the image's
+    # configuration requires one), and only for the owner the installation names.
+    from omnigent.server.passwords import hash_password
+
+    app.add_middleware(
+        OwnerPasswordMiddleware,
+        cookie_secret=os.environ.get("OMNIGENT_ACCOUNTS_COOKIE_SECRET") or None,
+        username=owner_username(),
+        account_store=account_store,
+        auth_provider=auth_provider,
+        hash_password=hash_password,
     )
     # Outermost user middleware: added last, so it wraps everything create_app added.
     app.add_middleware(

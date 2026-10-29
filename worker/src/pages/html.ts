@@ -10,6 +10,8 @@ export const OMNIGENT_COMPUTERS_PATH = "/settings/computers";
 export const PAGES_ROOT = "/platform";
 export const COMPUTERS_PATH = `${PAGES_ROOT}/computers`;
 export const ASSETS_PATH = `${PAGES_ROOT}/assets`;
+/** The owner's Omnigent password: choose it, or reset a forgotten one (WP3.34). */
+export const PASSWORD_PAGE_PATH = `${PAGES_ROOT}/password`;
 
 export function computerPath(id: string): string {
   return `${COMPUTERS_PATH}/${id}`;
@@ -63,6 +65,11 @@ dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; }
   padding: 12px; margin-top: 8px; }
 #terminal { height: 420px; background: #000; border-radius: 6px; padding: 4px; overflow: hidden; }
 #terminal[hidden] { display: none; }
+form.password { display: grid; gap: 12px; max-width: 440px; margin-top: 16px; }
+form.password label { display: grid; gap: 4px; font-weight: 600; }
+form.password input { font: inherit; font-weight: 400; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+form.password input[readonly] { color: var(--muted); background: var(--bg); }
 .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); }
 @media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
 `;
@@ -83,6 +90,7 @@ ${tags}
 <header class="top">
   <strong>Cloud computers</strong>
   <a href="${COMPUTERS_PATH}">All computers</a>
+  <a href="${PASSWORD_PAGE_PATH}">Omnigent password</a>
   <a href="/">Back to Omnigent</a>
 </header>
 <main>

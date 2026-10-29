@@ -1,8 +1,11 @@
+import { spawnSync } from "node:child_process";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   BootstrapRefusal,
   type BootstrapState,
+  codeVersionFrom,
+  doneMessage,
   type RunContext,
   type RunOptions,
   runBootstrap,
@@ -14,6 +17,9 @@ import {
   COOKIE_SECRET,
   INITIALIZED_SECRET,
   type Installation,
+  LAUNCHER_KEY_ID_SECRET,
+  LAUNCHER_KEY_SECRET,
+  OWNER_PASSWORD_ON_PAGE_SECRET,
   PASSWORD_SECRET,
   RELEASE_CHANGES,
   REPLICA_KEY_ID_SECRET,
@@ -77,6 +83,10 @@ interface Harness {
 interface R2Mode {
   readonly tokens: boolean;
   readonly ask?: (step: string) => Promise<S3Credentials>;
+  /** WP3.34: the installer gives no password (the default now, `page`), or types one. */
+  readonly password?: "page" | "typed";
+  /** WP3.34: the checkout's version, when known. */
+  readonly code?: () => string | undefined;
 }
 
 function harness(
@@ -100,14 +110,16 @@ function harness(
         secrets: (need) => {
           h.asked++;
           h.needs.push(need.password);
+          const password = r2.password === "page" ? {} : { ownerPassword: OWNER_PASSWORD };
           return r2.tokens
-            ? { ownerPassword: OWNER_PASSWORD }
+            ? password
             : {
-                ownerPassword: OWNER_PASSWORD,
+                ...password,
                 replicaAccessKeyId: REPLICA_KEY_ID,
                 replicaSecretAccessKey: REPLICA_SECRET,
               };
         },
+        ...(r2.code?.() === undefined ? {} : { codeVersion: r2.code() as string }),
         ...(r2.tokens ? { r2Tokens: world.tokenApi() } : {}),
         ...(r2.ask === undefined ? {} : { askR2: r2.ask }),
         random: (n) => new Uint8Array(n).fill(0xab),
@@ -164,12 +176,17 @@ describe("runBootstrap: the whole bootstrap", () => {
         COOKIE_SECRET,
         INITIALIZED_SECRET,
         PASSWORD_SECRET,
+        LAUNCHER_KEY_SECRET,
+        LAUNCHER_KEY_ID_SECRET,
         REPLICA_KEY_ID_SECRET,
         REPLICA_SECRET_KEY_SECRET,
         ARTIFACTS_KEY_ID_SECRET,
         ARTIFACTS_SECRET_KEY_SECRET,
       ].sort(),
     );
+    // The launcher's key (found missing on the owner's first real install): made by the run.
+    expect(first?.get(LAUNCHER_KEY_SECRET)).toMatch(/^[A-Za-z0-9_-]{64}$/);
+    expect(first?.get(LAUNCHER_KEY_ID_SECRET)).toMatch(/^k-\d{8}$/);
     // The installer gave one R2 token: its values serve both buckets, under their own names.
     expect(first?.get(ARTIFACTS_KEY_ID_SECRET)).toBe(first?.get(REPLICA_KEY_ID_SECRET));
     expect(first?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(first?.get(REPLICA_SECRET_KEY_SECRET));
@@ -841,7 +858,11 @@ describe("runBootstrap: refusals", () => {
         sleep: async () => {},
         log: () => {},
       });
-    await expect(run({})).rejects.toThrow("the owner's password is needed");
+    // No password from the installer is the default now (WP3.34): the R2 values are what is
+    // missing.
+    await expect(run({})).rejects.toThrow(
+      `the replica's access key ID is needed (${REPLICA_KEY_ID_SECRET})`,
+    );
     await expect(run({ ownerPassword: "short" })).rejects.toThrow(/at least 8 characters/);
     await expect(run({ ownerPassword: OWNER_PASSWORD })).rejects.toThrow(
       `the replica's access key ID is needed (${REPLICA_KEY_ID_SECRET})`,
@@ -1429,5 +1450,235 @@ describe("runBootstrap: properties", () => {
       ),
       { numRuns: 150 },
     );
+  });
+});
+
+describe("runBootstrap: the owner's password on the site, and updates (WP3.34)", () => {
+  /** A finished installation, the installer having given no password. */
+  async function finished(code?: () => string | undefined): Promise<Harness> {
+    const h = harness(await accountPlan(), undefined, {
+      tokens: false,
+      password: "page",
+      ...(code === undefined ? {} : { code }),
+    });
+    h.world.truth = timeline(h.world, 3 * 60_000, 3 * 60_000);
+    expect(await h.run()).toEqual({ kind: "done" });
+    return h;
+  }
+
+  it("uploads a password nobody chose or sees, with the page marker, and nothing else changes", async () => {
+    const h = await finished();
+    const versions = h.world.versions.get(h.world.plan.platformWorker) ?? [];
+    const first = versions[0]?.secrets;
+    const generated = first?.get(PASSWORD_SECRET) ?? "";
+    // 32 random bytes (the harness's are 0xab), base64url: not the installer's, never shown.
+    expect(generated).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(generated).not.toBe(OWNER_PASSWORD);
+    expect(first?.get(OWNER_PASSWORD_ON_PAGE_SECRET)).toBe("true");
+    expect(h.needs).toEqual([true]);
+    expect(h.store.state.journal.ownerPassword).toBe("page");
+    expect(h.store.state.journal.ownerPasswordGivenAt).toBeUndefined();
+    expect(JSON.stringify(h.store.state)).not.toContain(generated);
+    expect(h.lines.join("\n")).not.toContain(generated);
+    expect(h.lines.join("\n")).toContain(OWNER_PASSWORD_ON_PAGE_SECRET);
+    // The release deletes the password as before; the marker stays for OmnigentServer.
+    const last = versions.at(-1)?.secrets;
+    expect(last?.has(PASSWORD_SECRET)).toBe(false);
+    expect(last?.get(OWNER_PASSWORD_ON_PAGE_SECRET)).toBe("true");
+    expect(last?.get(INITIALIZED_SECRET)).toBe("true");
+    expectNeverReAdded(h);
+  });
+
+  it("uploads the typed password without the marker", async () => {
+    const h = harness(await accountPlan(), undefined, { tokens: false, password: "typed" });
+    h.world.truth = timeline(h.world, 3 * 60_000, 3 * 60_000);
+    expect(await h.run()).toEqual({ kind: "done" });
+    const first = h.world.versions.get(h.world.plan.platformWorker)?.[0]?.secrets;
+    expect(first?.get(PASSWORD_SECRET)).toBe(OWNER_PASSWORD);
+    expect(first?.has(OWNER_PASSWORD_ON_PAGE_SECRET)).toBe(false);
+    expect(h.store.state.journal.ownerPassword).toBe("installer");
+  });
+
+  it("makes a fresh random password for each deploy it sends, and keeps none", async () => {
+    const plan = await accountPlan();
+    const passwords = new Set<string>();
+    for (const fill of [0x11, 0x22]) {
+      const world = new FakeWorld(plan);
+      await expect(
+        runBootstrap(
+          {
+            cloud: world.cloud(),
+            store: new MemoryStore(freshState(plan)),
+            baseConfigs: BASE,
+            secrets: () => ({
+              replicaAccessKeyId: REPLICA_KEY_ID,
+              replicaSecretAccessKey: REPLICA_SECRET,
+            }),
+            random: (n) => new Uint8Array(n).fill(fill),
+            now: () => world.now,
+            sleep: async () => {},
+            log: () => {},
+          },
+          { ...OPTIONS, waitMs: 0 },
+        ),
+      ).resolves.toMatchObject({ kind: "waiting" });
+      passwords.add(
+        world.versions.get(plan.platformWorker)?.[0]?.secrets.get(PASSWORD_SECRET) ?? "",
+      );
+    }
+    expect(passwords.size).toBe(2);
+  });
+
+  it("re-run with the same code: nothing deployed again", async () => {
+    const h = await finished(() => "1".repeat(40));
+    expect(h.store.state.journal.platformCode).toBe("1".repeat(40));
+    expect(h.store.state.journal.webCode).toBe("1".repeat(40));
+    const calls = h.world.calls.length;
+    expect(await h.run()).toEqual({ kind: "done" });
+    const later = h.world.calls.slice(calls);
+    expect(later).not.toContain("deployPlatform");
+    expect(later).not.toContain("deployWeb");
+    expect(later).not.toContain("updateSecrets");
+  });
+
+  it("re-run from newer code: both Workers deployed again, no secret replaced", async () => {
+    let code = "1".repeat(40);
+    const h = await finished(() => code);
+    const worker = h.world.plan.platformWorker;
+    const before = new Map(h.world.secretsOf(worker));
+    code = "2".repeat(40);
+    expect(await h.run()).toEqual({ kind: "done", updated: true });
+    expect(h.world.secretsOf(worker)).toEqual(before);
+    expect(h.store.state.journal.platformCode).toBe(code);
+    expect(h.store.state.journal.webCode).toBe(code);
+    expect(h.store.state.journal.updatedAt).toEqual(expect.any(String));
+    expect(h.world.versions.get(h.world.plan.webWorker)).toHaveLength(2);
+    expect(h.lines.some((line) => line.startsWith(`updating the platform Worker ${worker}`))).toBe(
+      true,
+    );
+    // Once updated, a run with the same code changes nothing.
+    const calls = h.world.calls.length;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.calls.slice(calls)).not.toContain("deployPlatform");
+  });
+
+  it("never deploys code of unknown version over a finished installation", async () => {
+    let code: string | undefined = "1".repeat(40);
+    const h = await finished(() => code);
+    code = undefined;
+    const calls = h.world.calls.length;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.calls.slice(calls)).not.toContain("deployPlatform");
+  });
+
+  it("an installation from before (no launcher key, no recorded code) gets both, once", async () => {
+    const h = await finished();
+    const worker = h.world.plan.platformWorker;
+    // As the owner's first install was: no launcher key, and a journal that records no code.
+    const held = h.world.latest(worker)?.secrets as Map<string, string>;
+    held.delete(LAUNCHER_KEY_SECRET);
+    held.delete(LAUNCHER_KEY_ID_SECRET);
+    const keep = new Map(held);
+    // From a clean, newer checkout: one platform deploy carries the code and the key.
+    const ctxRun = () =>
+      runBootstrap(
+        {
+          cloud: h.world.cloud(),
+          store: h.store,
+          baseConfigs: BASE,
+          secrets: () => {
+            throw new Error("no secret is asked for");
+          },
+          codeVersion: "3".repeat(40),
+          random: (n) => new Uint8Array(n).fill(0xcd),
+          now: () => h.world.now,
+          sleep: async () => {},
+          log: (line) => h.lines.push(line),
+        },
+        OPTIONS,
+      );
+    expect(await ctxRun()).toEqual({ kind: "done", updated: true });
+    const after = h.world.secretsOf(worker);
+    expect(after?.get(LAUNCHER_KEY_SECRET)).toMatch(/^[A-Za-z0-9_-]{64}$/);
+    expect(after?.get(LAUNCHER_KEY_ID_SECRET)).toMatch(/^k-\d{8}$/);
+    for (const [name, value] of keep) expect(after?.get(name)).toBe(value);
+    expect(after?.has(PASSWORD_SECRET)).toBe(false);
+    expect(h.lines.join("\n")).not.toContain(after?.get(LAUNCHER_KEY_SECRET) ?? "-");
+    // The key is never replaced once there.
+    const key = after?.get(LAUNCHER_KEY_SECRET);
+    expect(await ctxRun()).toEqual({ kind: "done" });
+    expect(h.world.secretsOf(worker)?.get(LAUNCHER_KEY_SECRET)).toBe(key);
+  });
+
+  it("without new code, a missing launcher key is added in one secrets change", async () => {
+    const h = await finished();
+    const worker = h.world.plan.platformWorker;
+    const held = h.world.latest(worker)?.secrets as Map<string, string>;
+    held.delete(LAUNCHER_KEY_ID_SECRET); // half a pair: replaced whole
+    const changes = h.world.secretChanges.length;
+    expect(await h.run()).toEqual({ kind: "done", updated: true });
+    const change = h.world.secretChanges.slice(changes);
+    expect(change).toHaveLength(1);
+    expect(Object.keys(change[0]?.changes ?? {}).sort()).toEqual(
+      [LAUNCHER_KEY_ID_SECRET, LAUNCHER_KEY_SECRET].sort(),
+    );
+    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(1);
+  });
+
+  it("refuses to update over a Worker that is not this installation's", async () => {
+    let code = "1".repeat(40);
+    const h = await finished(() => code);
+    const configs = h.world.configs.get(h.world.plan.platformWorker) ?? [];
+    const last = configs.at(-1) as { vars: Record<string, unknown> };
+    configs.push({ ...last, vars: { ...last.vars, CFO_INSTALLATION_ID: "ins_someoneelse" } });
+    code = "2".repeat(40);
+    await expect(h.run()).rejects.toThrow(BootstrapRefusal);
+  });
+
+  it("ends with the one link to open, and the reset page", async () => {
+    const plan = await accountPlan();
+    expect(doneMessage(plan, true)).toBe(
+      "bootstrap: done. Open https://omnigent.example.test: Cloudflare Access asks you to sign in, then the page that opens asks you to choose your Omnigent password (your username: owner). If you ever forget the password: https://omnigent.example.test/platform/password",
+    );
+    expect(doneMessage(plan, false)).toContain("with the password you chose");
+    expect(doneMessage(plan, false)).toContain("/platform/password");
+  });
+
+  it("knows the code only for a clean checkout, a deployment script included (Codex r1-2)", () => {
+    const commit = "c".repeat(40);
+    const git =
+      (answers: Record<string, { status: number | null; stdout: string }>) => (args: string[]) =>
+        answers[args[0] as string] ?? { status: 1, stdout: "" };
+    const clean = {
+      "rev-parse": { status: 0, stdout: `${commit}\n` },
+      status: { status: 0, stdout: "" },
+    };
+    expect(codeVersionFrom(git(clean))).toBe(commit);
+    const calls: string[][] = [];
+    codeVersionFrom((args) => {
+      calls.push(args);
+      return clean[args[0] as "status"] ?? { status: 1, stdout: "" };
+    });
+    // The whole checkout: no pathspec that could leave out the bootstrap's own scripts.
+    expect(calls[1]).toEqual(["status", "--porcelain", "--untracked-files=normal"]);
+    for (const dirty of [" M scripts/bootstrap/settings.ts\n", "?? worker/src/new.ts\n"]) {
+      expect(
+        codeVersionFrom(git({ ...clean, status: { status: 0, stdout: dirty } })),
+      ).toBeUndefined();
+    }
+    expect(codeVersionFrom(git({ ...clean, status: { status: 128, stdout: "" } }))).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, "rev-parse": { status: 128, stdout: "" } })),
+    ).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, "rev-parse": { status: 0, stdout: "HEAD\n" } })),
+    ).toBeUndefined();
+    // git that cannot start at all, as spawnSync answers it (Codex r2-2).
+    const missing = spawnSync("cfo-wp334-no-such-git", ["status"], { encoding: "utf8" });
+    expect(missing.status).toBeNull();
+    expect(codeVersionFrom(() => missing)).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, status: { status: 0, stdout: undefined as never } })),
+    ).toBeUndefined();
   });
 });

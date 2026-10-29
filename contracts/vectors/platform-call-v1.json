@@ -1,0 +1,30 @@
+{
+  "description": "The platform call's HMAC envelope (owner-password.ts). The key is HMAC-SHA256 of PLATFORM_CALL_KEY_LABEL under the UTF-8 bytes of `cookieSecret`; synthetic values for these vectors only.",
+  "cookieSecret": "synthetic-cookie-secret-for-test-vectors-only-0001",
+  "keyLabel": "cfo-platform-call-key/v1",
+  "keyHex": "623bfa177167d6eb4de7a11284825e098b39bf7d5990a4b0533d4cf503fccfff",
+  "cases": [
+    {
+      "method": "POST",
+      "path": "/_cfo/owner-password",
+      "timestamp": 1792407600,
+      "body": "{\"password\":\"synthetic-vector-password-1\",\"nonce\":\"5f0c6e2a9b4d4c1e8a7f3b2d1c0e9f8a\"}",
+      "stringToSign": "cfo-platform-call/v1\nPOST\n/_cfo/owner-password\n1792407600\n9a9f7742af28d28ca17e25bb788bf94ee7116e438f07e318ef78fe7b64a8db17",
+      "headers": {
+        "x-cfo-call-timestamp": "1792407600",
+        "x-cfo-call-signature": "4e3861dd19e16d61b490dfbce54943b60888d2f1e1535ececf3ed85e2899e741"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/_cfo/owner-password",
+      "timestamp": 1792407661,
+      "body": "{\"password\":\"pässwörd mit Ümlauten 🔑\",\"nonce\":\"00000000000000000000000000000001\"}",
+      "stringToSign": "cfo-platform-call/v1\nPOST\n/_cfo/owner-password\n1792407661\nef81b42e0ee9da34133f7c47dc230e06272c52514539abb8e4ee0c5ff2283488",
+      "headers": {
+        "x-cfo-call-timestamp": "1792407661",
+        "x-cfo-call-signature": "8f31f05a3107d0c6e7926855cf13c99b603cf14e2b77366eeebed040f433e794"
+      }
+    }
+  ]
+}
