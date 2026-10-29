@@ -14,6 +14,11 @@
 //   node scripts/bootstrap/bootstrap.ts status [--platform-worker <name> | --state <file>] [--logs]
 //   node scripts/bootstrap/bootstrap.ts buckets [--platform-worker <name> | --state <file>]
 //   node scripts/bootstrap/bootstrap.ts remove-r2-token [--platform-worker <name> | --state <file>] [--yes]
+//   node scripts/bootstrap/bootstrap.ts github-app [--platform-worker <name> | --state <file>]
+//       [--github-org <org>] [--replace] [--no-open]
+//     Creates the installation's GitHub App for Omnigent's GitHub linking through GitHub's manifest
+//     flow (the owner clicks "Create GitHub App") and stores it, with the key service's keys, in
+//     the platform Worker's secrets (github-app.ts). After `run` has deployed the platform Worker.
 //
 // For the guarded staging tool instead of an account (cfo-stg-<base>-platform and -web, the
 // account, zone and owner address from the staging tool's config; a file replica, which lives
@@ -89,6 +94,7 @@ import {
   workerInstallation,
 } from "./cloud.ts";
 import { decide, parseLogs } from "./events.ts";
+import { githubAppCommand } from "./github-app-command.ts";
 import {
   BootstrapRefusal,
   type BootstrapState,
@@ -510,6 +516,9 @@ async function main(): Promise<number> {
       "no-verify": { type: "boolean" },
       logs: { type: "boolean" },
       yes: { type: "boolean" },
+      "github-org": { type: "string" },
+      replace: { type: "boolean" },
+      "no-open": { type: "boolean" },
     },
   });
   const statePath = () =>
@@ -531,9 +540,16 @@ async function main(): Promise<number> {
       return 0;
     case "remove-r2-token":
       return removeToken(statePath(), values.yes === true);
+    case "github-app":
+      return githubAppCommand(statePath(), {
+        root: ROOT,
+        ...(values["github-org"] === undefined ? {} : { org: values["github-org"] }),
+        replace: values.replace === true,
+        noOpen: values["no-open"] === true,
+      });
     default:
       throw new Error(
-        "usage: bootstrap.ts plan|run|status|buckets|remove-r2-token (see the header comment)",
+        "usage: bootstrap.ts plan|run|status|buckets|remove-r2-token|github-app (see the header comment)",
       );
   }
 }
