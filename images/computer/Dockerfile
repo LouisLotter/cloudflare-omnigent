@@ -96,8 +96,8 @@ ARG PIP_PIN
 RUN printf '%s\n' "${CERTIFI_PIN}" "${PIP_PIN}" > /tmp/trust-pins.txt \
  && uv pip install --no-cache-dir --no-deps --require-hashes -r /tmp/trust-pins.txt
 
-# ── The computer's runtime ───────────────────────────────────────────────────────────────
-FROM ${PYTHON_IMAGE} AS runtime
+# ── The computer's runtime, up to the CLIs (shared with the cli-digests stage) ─────────────
+FROM ${PYTHON_IMAGE} AS runtime-base
 # IS_SANDBOX: kept from Omnigent's host image; Claude Code consults it (RC-53 runs with it).
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -135,6 +135,22 @@ COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
+# ── The CLIs' tree digests for a version bump (scripts/tool-versions; not in the image) ────
+#   docker build -f images/computer/Dockerfile --target cli-digests \
+#     --build-arg CLAUDE_CODE_VERSION=… --build-arg CODEX_VERSION=… --output type=local,dest=DIR .
+# writes DIR/cli-digests.env. The same script as the runtime's install below, in the same stage
+# underneath, so the digests it records are the ones the image build then checks.
+FROM runtime-base AS cli-digests-record
+ARG CLAUDE_CODE_VERSION
+ARG CODEX_VERSION
+RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
+    sh /cfo-build/install_clis.sh record /cli-digests.env
+
+FROM scratch AS cli-digests
+COPY --from=cli-digests-record /cli-digests.env /
+
+# ── The computer's runtime ───────────────────────────────────────────────────────────────
+FROM runtime-base AS runtime
 # Claude Code and Codex exactly as published. Raised from the versions the fork's native-harness
 # work was tested with (2.1.302 and 0.163.0) for the eMudhra key compromise: Claude Code
 # 2.1.302 accepts a certificate forged through emSign ECC Root CA - G3, and Codex 0.164.0 is the
@@ -144,34 +160,21 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # Sign-in commands, status output, login-file paths and write patterns are as before; Codex
 # 0.164.0 adds two fields to ~/.codex/auth.json, which the platform copies as opaque bytes.
 # Nothing of the build's home is kept.
-# No unverified code runs: npm extracts both packages without running scripts, the extracted
-# trees must match the digests below (every file's path and SHA-256, every symbolic link's
-# target), and only then does Claude Code's own postinstall (install.cjs, which links its native
-# binary over bin/claude.exe) run, after which the tree is checked again. Codex has no scripts.
-# The digests were recorded identically from independent installs; after a version bump, take
-# the new values from the failing build's message.
+# No unverified code runs (images/computer/install_clis.sh): npm extracts both packages without
+# running scripts, the extracted trees must match the digests below (every file's path and
+# SHA-256, every symbolic link's target), and only then does Claude Code's own postinstall
+# (install.cjs, which links its native binary over bin/claude.exe) run, after which the tree is
+# checked again. Codex has no scripts. A daily workflow proposes version bumps
+# (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
+# above, from an install whose registry signatures (and Codex's provenance) it has checked, and
+# this build then checks them in an independent install.
 ARG CLAUDE_CODE_VERSION=2.1.311
 ARG CODEX_VERSION=0.164.0
 ARG CLAUDE_CODE_TREE_SHA256=b3530205566c212f20930da7fbffde8a2d4637534ca8464c7493193b58bef659
 ARG CLAUDE_CODE_INSTALLED_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
 ARG CODEX_TREE_SHA256=6aa96e445074fc22662979ee4db20c58c71f63b7c56e12f02c2d11cb11b09170
-RUN npm install -g --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
- && npm cache clean --force \
- && tree() ( cd /usr/local/lib/node_modules \
-      && { find "$1" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; \
-           find "$1" -type l -printf '%p -> %l\n' | LC_ALL=C sort; } | sha256sum | cut -d' ' -f1 ) \
- && check() { got=$(tree "$1") && [ "${got}" = "$2" ] \
-      || { echo "$1: installed tree ${got}, expected $2" >&2; return 1; }; } \
- && check @anthropic-ai/claude-code "${CLAUDE_CODE_TREE_SHA256}" \
- && check @openai/codex "${CODEX_TREE_SHA256}" \
- && (cd /usr/local/lib/node_modules/@anthropic-ai/claude-code && node install.cjs) \
- && check @anthropic-ai/claude-code "${CLAUDE_CODE_INSTALLED_SHA256}" \
- && test "$(readlink /usr/local/bin/claude)" = "../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe" \
- && test "$(readlink /usr/local/bin/codex)" = "../lib/node_modules/@openai/codex/bin/codex.js" \
- && test "$(claude --version | cut -d' ' -f1)" = "${CLAUDE_CODE_VERSION}" \
- && test "$(codex --version 2>/dev/null | tail -1)" = "codex-cli ${CODEX_VERSION}" \
- && rm -rf /root/.claude /root/.claude.json /root/.codex /root/.npm /tmp/*
+RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
+    sh /cfo-build/install_clis.sh check
 
 # gh, checked: the fork's own pin since 3d7f7d08c, a release built with Go 1.27.3, whose
 # crypto/x509 refuses chains through the compromised eMudhra keys.
@@ -252,9 +255,9 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
       cloudflare-omnigent.omnigent-commit="3d7f7d08c99344a5835516e059d5c15b8b78f37f" \
-      cloudflare-omnigent.claude-code="2.1.311" \
-      cloudflare-omnigent.codex="0.164.0" \
-      cloudflare-omnigent.gh="2.103.3" \
+      cloudflare-omnigent.claude-code="${CLAUDE_CODE_VERSION}" \
+      cloudflare-omnigent.codex="${CODEX_VERSION}" \
+      cloudflare-omnigent.gh="${GH_VERSION}" \
       cloudflare-omnigent.tmux="3.5a" \
       cloudflare-omnigent.libnss-myhostname="257.13-1~deb13u1"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through

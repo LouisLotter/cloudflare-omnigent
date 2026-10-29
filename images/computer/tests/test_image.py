@@ -11,23 +11,37 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+#: The image's Dockerfile, whose build arguments pin the CLIs (the daily tool version check,
+#: scripts/tool-versions, changes only those arguments).
+DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
 
 
 def _run(*argv: str) -> str:
     return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
 
 
+def _pin(name: str) -> str:
+    """The default of the Dockerfile's one ``ARG name=…`` line."""
+    values = re.findall(rf"^ARG {name}=(\S+)$", DOCKERFILE.read_text(), re.MULTILINE)
+    assert len(values) == 1, (name, values)
+    return values[0]
+
+
 def test_pinned_versions() -> None:
-    # The real CLIs (the test variant puts its fakes first on PATH).
-    assert _run("/usr/local/bin/claude", "--version").split()[0] == "2.1.311"
-    assert _run("/usr/local/bin/codex", "--version").strip().splitlines()[-1] == "codex-cli 0.164.0"
+    # The real CLIs (the test variant puts its fakes first on PATH), at the Dockerfile's pins.
+    claude, codex = _pin("CLAUDE_CODE_VERSION"), _pin("CODEX_VERSION")
+    assert _run("/usr/local/bin/claude", "--version").split()[0] == claude
+    codex_line = _run("/usr/local/bin/codex", "--version").strip().splitlines()[-1]
+    assert codex_line == f"codex-cli {codex}"
     assert "0.19.0.dev0" in _run("/opt/venv/bin/omnigent", "--version")
-    assert _run("/usr/local/bin/gh", "--version").split()[2] == "2.103.3"
-    assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith("1.7.7")
+    assert _run("/usr/local/bin/gh", "--version").split()[2] == _pin("GH_VERSION")
+    assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith(_pin("TTYD_VERSION"))
     assert _run("/usr/bin/tmux", "-V").strip() == "tmux 3.5a"  # WP3.28
     # Debian's NSS myhostname (WP3.27), pinned: a point release that moves systemd on fails it.
     version = _run("dpkg-query", "-W", "-f=${Version}", "libnss-myhostname")
