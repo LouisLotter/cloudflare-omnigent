@@ -8,7 +8,8 @@ const pure = { lines: 90, branches: 90, functions: 90, statements: 90 };
 const io = { lines: 85, branches: 75, functions: 80, statements: 85 };
 
 // Tests for the repository tools in scripts/: the canary scanner, the staging tool, the
-// bootstrap script and the restore drill's staging harness Worker (its pure parts).
+// bootstrap script, the daily tool version check and the restore drill's staging harness
+// Worker (its pure parts).
 export default defineConfig({
   root: import.meta.dirname,
   // Keep Vite's cache in the root node_modules rather than creating scripts/node_modules.
@@ -19,6 +20,7 @@ export default defineConfig({
       "test/**/*.test.ts",
       "staging/**/*.test.ts",
       "bootstrap/**/*.test.ts",
+      "tool-versions/**/*.test.ts",
       "restore-drill/staging/**/*.test.ts",
     ],
     environment: "node",
@@ -28,6 +30,7 @@ export default defineConfig({
         "*.ts",
         "staging/*.ts",
         "bootstrap/*.ts",
+        "tool-versions/*.ts",
         "restore-drill/staging/src/plan.ts",
         "restore-drill/staging/src/controls.ts",
       ],
@@ -39,6 +42,9 @@ export default defineConfig({
         "staging/stg.ts",
         "bootstrap/bootstrap.ts",
         "bootstrap/github-app-command.ts",
+        // The tool version check's command: arguments, Docker and the real fetch, git and gh.
+        // The workflow's runs exercise it; its local runs are recorded for WP3.37.
+        "tool-versions/tool-versions.ts",
       ],
       reportsDirectory: "../coverage/scripts",
       thresholds: {
@@ -63,6 +69,13 @@ export default defineConfig({
         "bootstrap/remove.ts": io,
         "bootstrap/cloud.ts": io,
         "bootstrap/staging.ts": io,
+        "tool-versions/dockerfile.ts": pure,
+        "tool-versions/pins.ts": pure,
+        "tool-versions/sources.ts": pure,
+        "tool-versions/check.ts": pure,
+        "tool-versions/apply.ts": pure,
+        // It runs git: a real repository made by the test does that, with a fake gh.
+        "tool-versions/propose.ts": io,
         "restore-drill/staging/src/plan.ts": pure,
         "restore-drill/staging/src/controls.ts": pure,
       },

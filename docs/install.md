@@ -113,6 +113,7 @@ It deploys the new release to both parts of your installation, with the same nam
 - If it stops early, run it again: it carries on where it stopped. Exit status 3 means "deployed, not checked yet, run it again"; that run only checks.
 - Run it when nothing is new, and it says the installation is up to date.
 - Running the `install` command again does the same on a finished installation.
+- New versions of the tools on your cloud computers (Claude Code, Codex, gh and others) come the same way: a daily check proposes them to the project as one pull request, and once it is merged, `update` brings them to your installation. Each computer picks up the new image the next time it starts or wakes. The tools never update themselves on a computer. See [keeping the pinned tools current](compatibility.md#keeping-the-pinned-tools-current).
 
 ## When something needs you
 
