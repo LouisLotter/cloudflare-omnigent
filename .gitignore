@@ -37,6 +37,7 @@ build/
 .cfo-bootstrap.*.jsonc
 # Wrangler configurations the password page's local end-to-end run renders (WP3.34)
 .password-e2e-*.json
+.github-setup-e2e-*.json
 
 # Process documents: reviews (including the Codex active review), plans, the tracker and
 # evidence live outside this repository and are never committed. These are the paths the
