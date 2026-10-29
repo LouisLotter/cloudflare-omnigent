@@ -175,6 +175,11 @@ export interface Journal {
   readonly accessApp?: RecordedAccessApp;
   /** The one-time PIN login method, when the bootstrap added it to an account that had none. */
   readonly accessLoginMethod?: RecordedLoginMethod;
+  /**
+   * When the installer last gave the owner's password for an upload: a later run that must ask
+   * again knows that one never reached the Worker. Never the password.
+   */
+  readonly ownerPasswordGivenAt?: string;
 }
 
 export interface BootstrapState {
@@ -200,10 +205,12 @@ export interface RunContext {
   };
   /**
    * The installer's secrets; called only when one of them must be uploaded, and told whether
-   * the owner's password is among them (the CLI then generates it, or asks for it).
+   * the owner's password is among them (the CLI then generates it, or asks for it), and
+   * whether an earlier run's password never reached the Worker (`again`).
    */
   readonly secrets: (need: {
     readonly password: boolean;
+    readonly again: boolean;
   }) => SuppliedSecrets | Promise<SuppliedSecrets>;
   /**
    * The installer's user API tokens, through their `cf` login: the R2 credentials are made
@@ -447,9 +454,16 @@ export async function runBootstrap(
     const present = secrets ?? new Set<string>();
     const lacksR2 = r2SecretNames(plan).some((name) => !present.has(name));
     const needsInstaller = !present.has(PASSWORD_SECRET) || lacksR2;
+    const needsPassword = !present.has(PASSWORD_SECRET);
     const given = needsInstaller
-      ? await ctx.secrets({ password: !present.has(PASSWORD_SECRET) })
+      ? await ctx.secrets({
+          password: needsPassword,
+          again: needsPassword && state.journal.ownerPasswordGivenAt !== undefined,
+        })
       : {};
+    if (needsPassword && given.ownerPassword !== undefined) {
+      record({ ownerPasswordGivenAt: iso(ctx.now()) });
+    }
     // The bootstrap makes the R2 token itself unless the installer gave one's values. Without
     // the installer's token API, missing values are named as any missing secret is.
     const makesToken = lacksR2 && ctx.r2Tokens !== undefined && !suppliesR2(plan, given);

@@ -489,8 +489,8 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
               choose: values["password-prompt"] === true,
               hostname: installation.hostname,
               username: installation.ownerUsername,
-              // An earlier run started the first deploy, and its password never arrived.
-              replaces: store.load().journal.platformDeployStartedAt !== undefined,
+              // An earlier run gave a password, which never reached the Worker.
+              replaces: need.again,
             }),
           };
         },

@@ -181,6 +181,7 @@ function parseJournal(value: unknown): Journal {
     "releaseStartedAt",
     "releasedAt",
     "verifiedAt",
+    "ownerPasswordGivenAt",
   ] as const;
   const journal: Record<string, unknown> = {};
   for (const key of times) {
