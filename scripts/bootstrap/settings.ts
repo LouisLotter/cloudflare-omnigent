@@ -22,12 +22,17 @@
 //     reason as the flag above, and never forwarded to the server), and the owner chooses the
 //     password on the site's password page. One the person typed (--password-prompt) or supplied
 //     (--secrets-stdin) is uploaded instead, without the marker;
+//   - the credential store's keys (WP5.10, made at install, as `github-app` made them before):
+//     the key service's signing pair, which the server signs with and the Worker verifies with,
+//     and its record keys, a Worker-only secret; and Omnigent's MCP OAuth state secret. So
+//     Omnigent can store logins (GitHub's, an MCP service's) without anything else configured;
 //   - the web Worker's variables: ingress's team domain, AUD, hostname and owner pin (WP2.1).
 
 import { InstallationId } from "../../contracts/src/index.ts";
 import { issuerFor } from "../../worker/src/ingress/access.ts";
 import { parseHostnames } from "../../worker/src/ingress/hosts.ts";
 import { parseOwnerPin } from "../../worker/src/ingress/owner.ts";
+import { KEY_SERVICE_SECRETS, recordKeysSecret } from "../../worker/src/internal/key-service.ts";
 import { serverContainerEnv } from "../../worker/src/server/server-env.ts";
 
 export const SERVER_ENV = "SERVER_ENV_";
@@ -60,6 +65,19 @@ export const OWNER_PASSWORD_ON_PAGE_SECRET = "CFO_OWNER_PASSWORD_ON_PAGE";
  */
 export const LAUNCHER_KEY_SECRET = `${SERVER_ENV}CFO_LAUNCHER_SIGNING_KEY`;
 export const LAUNCHER_KEY_ID_SECRET = `${SERVER_ENV}CFO_LAUNCHER_SIGNING_KEY_ID`;
+/**
+ * The credential store's key service (WP5.9's, made at install since WP5.10): the signing pair
+ * the server receives (Omnigent's `OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY` and `_ID`), and the
+ * record keys only the Worker holds. Without them Omnigent stores no login.
+ */
+export const KEY_SERVICE_KEY_SECRET = KEY_SERVICE_SECRETS.current;
+export const KEY_SERVICE_KEY_ID_SECRET = KEY_SERVICE_SECRETS.currentId;
+export const RECORD_KEYS_SECRET = KEY_SERVICE_SECRETS.recordKeys;
+/**
+ * The key Omnigent signs its MCP OAuth state with (its own name, at least 32 characters; WP5.10).
+ * Kept across changes: a new one only makes a sign-in under way fail.
+ */
+export const MCP_STATE_SECRET = `${SERVER_ENV}OMNIGENT_MCP_OAUTH_STATE_SECRET`;
 /** R2's region for the S3 API. */
 export const R2_REGION = "auto";
 
@@ -492,8 +510,10 @@ export const PLATFORM_FEATURES_VAR = "CFO_PLATFORM_FEATURES";
  * `github-setup`: the server's GitHub linking report on its status line, which the GitHub step
  * waits for, and the setup page's state (`githubSetup`) (WP3.36); the page itself is the web
  * Worker's (`WEB_FEATURES`).
+ * `mcp-services`: the server's MCP report on its status line (`mcpRegistry`, `mcpRevision`),
+ * which the `services` step waits for, and an image that ships the MCP manifests (WP5.10).
  */
-export const PLATFORM_FEATURES: readonly string[] = ["key-service", "github-setup"];
+export const PLATFORM_FEATURES: readonly string[] = ["key-service", "github-setup", "mcp-services"];
 
 /**
  * What the web Worker's code offers that an installer step relies on (WP3.36), as for the
@@ -574,12 +594,21 @@ export function requiredSecretNames(plan: Installation): string[] {
     PASSWORD_SECRET,
     LAUNCHER_KEY_SECRET,
     LAUNCHER_KEY_ID_SECRET,
+    ...CREDENTIAL_STORE_SECRETS,
     ...(needsReplicaCredentials(plan) ? [REPLICA_KEY_ID_SECRET, REPLICA_SECRET_KEY_SECRET] : []),
     ...(needsArtifactCredentials(plan)
       ? [ARTIFACTS_KEY_ID_SECRET, ARTIFACTS_SECRET_KEY_SECRET]
       : []),
   ];
 }
+
+/** The credential store's secrets every installation holds since WP5.10. */
+export const CREDENTIAL_STORE_SECRETS: readonly string[] = [
+  KEY_SERVICE_KEY_SECRET,
+  KEY_SERVICE_KEY_ID_SECRET,
+  RECORD_KEYS_SECRET,
+  MCP_STATE_SECRET,
+];
 
 /** What the run makes itself, never shown or kept: see `generatedSecrets` in machine.ts. */
 export interface GeneratedSecrets {
@@ -588,6 +617,44 @@ export interface GeneratedSecrets {
   readonly ownerPassword: string;
   readonly launcherKey: string;
   readonly launcherKeyId: string;
+  /** The key service's signing key (32 random bytes, hex) and its ID (`ks-<8 hex>`). */
+  readonly keyServiceKey: string;
+  readonly keyServiceKeyId: string;
+  /** The record keys' first root key: 32 random bytes. */
+  readonly recordKeysRoot: Uint8Array;
+  /** Omnigent's MCP OAuth state secret: 32 random bytes, hex. */
+  readonly mcpStateSecret: string;
+}
+
+/**
+ * The credential store's secrets the Worker lacks (WP5.10), never replacing one: the key
+ * service's signing pair where it holds neither half, its record keys (key ID
+ * `<installation ID>.records`, as `github-app` makes them) and the MCP state secret. Half a
+ * signing pair is left as it is here; `run` replaces it whole (`secretsToAdd`) and `update`
+ * refuses it. Existing record keys are never replaced: records sealed under them would no longer
+ * open.
+ */
+export function credentialStoreToAdd(
+  plan: Pick<Installation, "installationId">,
+  present: ReadonlySet<string>,
+  generated: Pick<
+    GeneratedSecrets,
+    "keyServiceKey" | "keyServiceKeyId" | "recordKeysRoot" | "mcpStateSecret"
+  >,
+): Record<string, string> {
+  const add: Record<string, string> = {};
+  if (!present.has(KEY_SERVICE_KEY_SECRET) && !present.has(KEY_SERVICE_KEY_ID_SECRET)) {
+    add[KEY_SERVICE_KEY_ID_SECRET] = generated.keyServiceKeyId;
+    add[KEY_SERVICE_KEY_SECRET] = generated.keyServiceKey;
+  }
+  if (!present.has(RECORD_KEYS_SECRET)) {
+    add[RECORD_KEYS_SECRET] = recordKeysSecret(
+      `${plan.installationId}.records`,
+      generated.recordKeysRoot,
+    );
+  }
+  if (!present.has(MCP_STATE_SECRET)) add[MCP_STATE_SECRET] = generated.mcpStateSecret;
+  return add;
 }
 
 /** The launcher's key pair, when the Worker lacks either half: a pair is replaced whole. */
@@ -639,6 +706,24 @@ export function secretsToAdd(
     }
   }
   Object.assign(add, launcherKeyToAdd(present, generated));
+  // The key service's signing pair is one credential too: half of it is replaced whole here,
+  // before the first deploy, when nothing can have been sealed or signed with it yet.
+  const keyServiceHalf =
+    present.has(KEY_SERVICE_KEY_SECRET) !== present.has(KEY_SERVICE_KEY_ID_SECRET);
+  Object.assign(
+    add,
+    credentialStoreToAdd(
+      plan,
+      keyServiceHalf
+        ? new Set(
+            [...present].filter(
+              (n) => n !== KEY_SERVICE_KEY_SECRET && n !== KEY_SERVICE_KEY_ID_SECRET,
+            ),
+          )
+        : present,
+      generated,
+    ),
+  );
   const needPair = (
     pair: readonly (readonly [name: string, value: string | undefined, what: string])[],
   ) => {
@@ -700,6 +785,11 @@ export function containerEnvProblems(
     // first real install, 29 Oct: the installer never set it).
     "CFO_LAUNCHER_SIGNING_KEY",
     "CFO_LAUNCHER_SIGNING_KEY_ID",
+    // The credential store's key service and the MCP state secret (WP5.10): without them the
+    // server stores no login.
+    "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY",
+    "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY_ID",
+    "OMNIGENT_MCP_OAUTH_STATE_SECRET",
     ...(needsReplicaCredentials(plan)
       ? ["LITESTREAM_ACCESS_KEY_ID", "LITESTREAM_SECRET_ACCESS_KEY"]
       : []),

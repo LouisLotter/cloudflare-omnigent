@@ -215,14 +215,39 @@ export interface Journal {
   readonly updatedAt?: string;
   /** The last update (update.ts): its code, each step's intent and outcome, and its check. */
   readonly update?: UpdateRecord;
+  /** The MCP services this installation turned on (WP5.10, services.ts). */
+  readonly mcpServices?: McpServicesRecord;
+}
+
+/**
+ * The MCP services, as `bootstrap.ts services` last changed them (WP5.10). IDs, a revision and
+ * times; never a secret (a Worker's secrets cannot be read back, so this is the installer's
+ * record of the list it wrote).
+ */
+export interface McpServicesRecord {
+  /** The services on: the list the last change that was sent wrote. */
+  readonly on: readonly string[];
+  /** That change's revision (`CFO_MCP_REVISION`). */
+  readonly revision?: string;
+  readonly changedAt?: string;
+  /** When a server started with that revision answered, and whether Omnigent listed MCP. */
+  readonly confirmedAt?: string;
+  readonly registry?: boolean;
+  /** A change begun but not confirmed sent: its list and revision. */
+  readonly pending?: {
+    readonly on: readonly string[];
+    readonly revision: string;
+    readonly startedAt: string;
+  };
 }
 
 export interface BootstrapState {
   /**
    * 2 when the plan records its bucket tag (D33), 1 for a plan from before it, 3 once the journal
-   * records WP3.34's fields, 4 once it records an update (state.ts, stateVersionFor).
+   * records WP3.34's fields, 4 once it records an update, 5 once it records the MCP services
+   * (state.ts, stateVersionFor).
    */
-  readonly stateVersion: 1 | 2 | 3 | 4;
+  readonly stateVersion: 1 | 2 | 3 | 4 | 5;
   readonly installation: Installation;
   readonly journal: Journal;
 }
@@ -361,7 +386,9 @@ function base64Url(bytes: Uint8Array): string {
  * What the run makes itself, in memory only: the cookie secret; the owner's password when the
  * installer chose none (32 random bytes: nobody ever sees it, so nobody can sign in as the owner
  * until they choose theirs on the site); the launcher's signing key (48 random bytes) and an ID
- * naming its day (`k-YYYYMMDD`, UTC). Never logged, never in the journal.
+ * naming its day (`k-YYYYMMDD`, UTC); the credential store's key service signing key (32 random
+ * bytes) and ID, its first record key (32 random bytes) and Omnigent's MCP OAuth state secret
+ * (32 random bytes) (WP5.10). Never logged, never in the journal.
  */
 export function generatedSecrets(ctx: Pick<RunContext, "random" | "now">): GeneratedSecrets {
   return {
@@ -369,6 +396,10 @@ export function generatedSecrets(ctx: Pick<RunContext, "random" | "now">): Gener
     ownerPassword: base64Url(ctx.random(32)),
     launcherKey: base64Url(ctx.random(48)),
     launcherKeyId: `k-${new Date(ctx.now()).toISOString().slice(0, 10).replaceAll("-", "")}`,
+    keyServiceKey: hex(ctx.random(32)),
+    keyServiceKeyId: `ks-${hex(ctx.random(4))}`,
+    recordKeysRoot: ctx.random(32),
+    mcpStateSecret: hex(ctx.random(32)),
   };
 }
 

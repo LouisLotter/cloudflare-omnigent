@@ -24,6 +24,16 @@
 //       [--github-org <org>] [--replace] [--no-open]
 //   node scripts/bootstrap/bootstrap.ts update [--platform-worker <name> | --state <file>]
 //       [--owner-email <address>] [--no-verify]
+//   node scripts/bootstrap/bootstrap.ts services [add <id> [--origin <url>] [--replace] |
+//       remove <id>] [--platform-worker <name> | --state <file>]
+//
+// `services` turns on or off the MCP services the server image ships (WP5.10, services.ts and
+// services-command.ts): Omnigent's own MCP registry, whose Settings → MCP page then connects the
+// owner's accounts. Without an action it lists them. `add` asks, in the terminal, for what the
+// service's manifest asks (its address, unless --origin gives it; an OAuth client's ID and
+// secret, never shown), stores it with the list in one secrets change, and waits until a server
+// started with the change answers. Exit status: 0 ready (or the list); 3 stored, not confirmed
+// yet; 1 an error or a refusal, or the server is held or Omnigent lists no MCP.
 //
 // `update` moves a finished installation to the release in this checkout (WP3.35,
 // update-command.ts and update.ts): from a clean checkout, it adds any secret the release needs
@@ -162,6 +172,8 @@ import {
   removeInstallationToken,
   withInstallationLocks,
 } from "./remove.ts";
+import { servicesListing } from "./services.ts";
+import { servicesCommand, shippedManifests } from "./services-command.ts";
 import {
   bucketsOf,
   installationProblems,
@@ -634,6 +646,11 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   const { installation, journal } = fileStateStore(path).load();
   const { ownerPin: _pin, ...shown } = installation;
   console.log(JSON.stringify({ installation: shown, journal }, null, 2));
+  // The MCP services (WP5.10), as this state file records the list it wrote.
+  console.log("MCP services:");
+  for (const line of servicesListing(shippedManifests(ROOT), journal.mcpServices)) {
+    console.log(`  ${line}`);
+  }
   if (!withLogs) return;
   // The watchdog's statuses of the last 15 minutes, read-only: no secret is in them.
   const now = Date.now();
@@ -646,7 +663,7 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   const logs = parseLogs(events, installation.platformWorker);
   for (const e of [...logs.statuses].sort((a, b) => a.loggedAt - b.loggedAt)) {
     console.log(
-      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"}`,
+      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"}`,
     );
   }
   if (journal.releasedAt !== undefined) {
@@ -665,8 +682,9 @@ async function status(path: string, withLogs: boolean): Promise<void> {
 
 async function main(): Promise<number> {
   const [command, ...rest] = process.argv.slice(2);
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: rest,
+    allowPositionals: true,
     options: {
       hostname: { type: "string" },
       account: { type: "string" },
@@ -692,8 +710,16 @@ async function main(): Promise<number> {
       "github-org": { type: "string" },
       replace: { type: "boolean" },
       "no-open": { type: "boolean" },
+      origin: { type: "string" },
     },
   });
+  // Only `services` takes words after the command (its action and the service).
+  if (command !== "services" && positionals.length > 0) {
+    throw new Error(`unexpected argument: ${positionals[0]}`);
+  }
+  if (command === "services" && positionals.length > 2) {
+    throw new Error(`unexpected argument: ${positionals[2]}`);
+  }
   const statePath = () =>
     values.state ??
     statePathFor(
@@ -730,9 +756,17 @@ async function main(): Promise<number> {
         replace: values.replace === true,
         noOpen: values["no-open"] === true,
       });
+    case "services":
+      return servicesCommand(statePath(), {
+        root: ROOT,
+        ...(positionals[0] === undefined ? {} : { action: positionals[0] }),
+        ...(positionals[1] === undefined ? {} : { id: positionals[1] }),
+        ...(values.origin === undefined ? {} : { origin: values.origin }),
+        replace: values.replace === true,
+      });
     default:
       throw new Error(
-        "usage: bootstrap.ts install|plan|run|update|status|buckets|remove-r2-token|remove-access|github-app (see the header comment)",
+        "usage: bootstrap.ts install|plan|run|update|status|buckets|remove-r2-token|remove-access|github-app|services (see the header comment)",
       );
   }
 }

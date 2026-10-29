@@ -13,7 +13,8 @@
 // names (stateVersionFor). A journal that records what WP3.34 added (whose password was
 // uploaded, the code each Worker was deployed from) is written as version 3, tagged or not, so a
 // bootstrap from before WP3.34 refuses it ("unknown version") rather than drop those fields
-// (Codex WP3.34 r2-1).
+// (Codex WP3.34 r2-1). One that records the MCP services (WP5.10) is version 5, for the same
+// reason.
 
 import {
   closeSync,
@@ -29,7 +30,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
-import type { BootstrapState, Journal, StateStore } from "./machine.ts";
+import type { BootstrapState, Journal, McpServicesRecord, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
 import type { UpdateRecord } from "./update.ts";
 
@@ -241,6 +242,7 @@ function parseJournal(value: unknown): Journal {
     journal.releasedVersionId = j.releasedVersionId;
   }
   if (j.update !== undefined) journal.update = parseUpdate(j.update);
+  if (j.mcpServices !== undefined) journal.mcpServices = parseMcpServices(j.mcpServices);
   if (j.r2Token !== undefined) {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
@@ -341,6 +343,50 @@ function parseUpdate(value: unknown): UpdateRecord {
   return update as unknown as UpdateRecord;
 }
 
+const SERVICE_ID = /^[a-z][a-z0-9-]{0,39}$/;
+const REVISION = /^[0-9a-f]{16,64}$/;
+
+function serviceList(value: unknown, where: string): string[] {
+  if (!Array.isArray(value) || !value.every((v) => typeof v === "string" && SERVICE_ID.test(v))) {
+    throw new Error(`the state file's ${where} is not a list of service IDs`);
+  }
+  return [...value];
+}
+
+/** The MCP services' record (WP5.10, services.ts). IDs, a revision and times; never a secret. */
+function parseMcpServices(value: unknown): McpServicesRecord {
+  const where = "journal.mcpServices";
+  const m = object(value, where);
+  const record: Record<string, unknown> = { on: serviceList(m.on, `${where}.on`) };
+  for (const key of ["changedAt", "confirmedAt"] as const) {
+    const time = optionalTime(m, key, where);
+    if (time !== undefined) record[key] = time;
+  }
+  if (m.revision !== undefined) {
+    const revision = str(m, "revision", where);
+    if (!REVISION.test(revision))
+      throw new Error(`the state file's ${where}.revision is malformed`);
+    record.revision = revision;
+  }
+  if (m.registry !== undefined) {
+    if (typeof m.registry !== "boolean") {
+      throw new Error(`the state file's ${where}.registry is not true or false`);
+    }
+    record.registry = m.registry;
+  }
+  if (m.pending !== undefined) {
+    const pendingWhere = `${where}.pending`;
+    const pending = object(m.pending, pendingWhere);
+    const revision = str(pending, "revision", pendingWhere);
+    const startedAt = optionalTime(pending, "startedAt", pendingWhere);
+    if (!REVISION.test(revision) || startedAt === undefined) {
+      throw new Error(`the state file's ${pendingWhere} is malformed`);
+    }
+    record.pending = { on: serviceList(pending.on, `${pendingWhere}.on`), revision, startedAt };
+  }
+  return record as unknown as McpServicesRecord;
+}
+
 /**
  * The state file's format for a plan and its journal. Version 2 records the plan's bucket tag
  * (D33); version 1, from before it, records none, so its buckets keep their untagged names. A
@@ -350,12 +396,14 @@ function parseUpdate(value: unknown): UpdateRecord {
  * bootstrap from before WP3.34 refuses it rather than drop them (Codex WP3.34 r2-1). Version 4
  * is either, with a journal that records an update (WP3.35, `bootstrap.ts update`), for the same
  * reason: a bootstrap from before it would drop the record of an unfinished update and take the
- * installation for up to date.
+ * installation for up to date. Version 5 is either, with a journal that records the MCP services
+ * (WP5.10, `bootstrap.ts services`): a bootstrap from before it would drop which services are on.
  */
 export function stateVersionFor(
   plan: Pick<Installation, "bucketTag">,
   journal: Readonly<Record<string, unknown>> = {},
-): 1 | 2 | 3 | 4 {
+): 1 | 2 | 3 | 4 | 5 {
+  if ((journal as Partial<Journal>).mcpServices !== undefined) return 5;
   // The last update's record (WP3.35), which a bootstrap from before it would drop.
   if ((journal as Partial<Journal>).update !== undefined) return 4;
   if (WP334_JOURNAL_FIELDS.some((key) => journal[key] !== undefined)) return 3;
@@ -371,14 +419,15 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (![1, 2, 3, 4].includes(o.stateVersion as number)) {
+  if (![1, 2, 3, 4, 5].includes(o.stateVersion as number)) {
     throw new Error("the state file has an unknown version");
   }
   const installation = parseInstallation(o.installation);
-  // Versions 3 and 4 hold a plan with or without a tag; 1 and 2 as their plans say.
+  // Versions 3 to 5 hold a plan with or without a tag; 1 and 2 as their plans say.
   if (
     o.stateVersion !== 3 &&
     o.stateVersion !== 4 &&
+    o.stateVersion !== 5 &&
     stateVersionFor(installation) !== o.stateVersion
   ) {
     throw new Error(

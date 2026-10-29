@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   checkGitHubLinking,
+  checkMcpServices,
   decide,
   parseLogs,
   type StatusEvent,
@@ -594,6 +595,105 @@ describe("checkGitHubLinking (WP3.36)", () => {
     });
     expect(check([github(SINCE + 60_000, false, { configApplied: false })])).toMatchObject({
       why: expect.stringContaining("restarting with the App's settings"),
+    });
+  });
+});
+
+describe("checkMcpServices (WP5.10)", () => {
+  const SINCE = NOW;
+  /** The revision the step stored, and an earlier one. */
+  const REV = "0a".repeat(16);
+  const OLD = "0b".repeat(16);
+  const mcp = (
+    at: number,
+    registry: unknown,
+    over: { mcpRevision?: unknown; configApplied?: boolean; id?: string } = {},
+  ) =>
+    event(
+      at,
+      {
+        ...line(at, true, "durable", {
+          secretPresent: false,
+          configApplied: over.configApplied ?? true,
+          ...(over.id === undefined ? {} : { installationId: over.id }),
+        }),
+        mcpRevision: "mcpRevision" in over ? over.mcpRevision : REV,
+        mcpRegistry: registry,
+      },
+      "v2",
+    );
+  const configError = (at: number, over: { held?: unknown; mcpRevision?: unknown } = {}) =>
+    event(at, {
+      cfo: "watchdog",
+      event: "config_error",
+      exitCode: 78,
+      held: "held" in over ? over.held : true,
+      mcpRevision: "mcpRevision" in over ? over.mcpRevision : REV,
+    });
+  const changed = (at: number) => event(at, { cfo: "watchdog", event: "config_changed" });
+  const check = (events: unknown[]) =>
+    checkMcpServices(parseLogs(events, SCRIPT), {
+      installationId: INSTALLATION,
+      revision: REV,
+      since: SINCE,
+    });
+
+  it("reads the fields from a status line and a held configuration", () => {
+    const logs = parseLogs([mcp(SINCE + 1, true), configError(SINCE + 2)], SCRIPT);
+    expect(logs.statuses[0]).toMatchObject({ mcpRegistry: true, mcpRevision: REV });
+    expect(logs.configErrors[0]).toMatchObject({ held: true, mcpRevision: REV });
+    const unsaid = parseLogs([mcp(SINCE + 1, "yes", { mcpRevision: 7 })], SCRIPT);
+    expect(unsaid.statuses[0]).toMatchObject({ mcpRegistry: undefined, mcpRevision: undefined });
+  });
+
+  it("is applied by the newest status naming this revision, with what Omnigent lists", () => {
+    expect(check([mcp(SINCE + 60_000, true)])).toEqual({ state: "applied", registry: true });
+    expect(check([mcp(SINCE + 60_000, false)])).toEqual({ state: "applied", registry: false });
+    expect(check([mcp(SINCE + 60_000, false), mcp(SINCE + 120_000, true)])).toEqual({
+      state: "applied",
+      registry: true,
+    });
+  });
+
+  it("never counts another revision, none, before the change, another installation, or not applied", () => {
+    for (const ignored of [
+      mcp(SINCE + 60_000, true, { mcpRevision: OLD }),
+      mcp(SINCE + 60_000, true, { mcpRevision: null }),
+      mcp(SINCE + 60_000, true, { mcpRevision: undefined }),
+      mcp(SINCE - 1, true),
+      mcp(SINCE + 60_000, true, { id: OTHER }),
+      mcp(SINCE + 60_000, true, { configApplied: false }),
+    ]) {
+      expect(check([ignored]).state).toBe("waiting");
+    }
+    expect(check([mcp(SINCE + 60_000, null)])).toMatchObject({
+      state: "waiting",
+      why: expect.stringContaining("does not say whether Omnigent lists MCP"),
+    });
+  });
+
+  it("says held only for this revision, and lets a later word override any verdict", () => {
+    expect(check([configError(SINCE + 60_000)])).toEqual({ state: "held" });
+    expect(check([configError(SINCE + 60_000, { mcpRevision: OLD })]).state).toBe("waiting");
+    expect(check([configError(SINCE + 60_000, { held: false })]).state).toBe("waiting");
+    expect(check([configError(SINCE + 30_000), mcp(SINCE + 60_000, true)]).state).toBe("applied");
+    const applied = mcp(SINCE + 60_000, true);
+    for (const later of [
+      mcp(SINCE + 120_000, true, { mcpRevision: OLD }),
+      mcp(SINCE + 120_000, true, { configApplied: false }),
+      changed(SINCE + 120_000),
+      configError(SINCE + 120_000, { mcpRevision: OLD }),
+    ]) {
+      expect(check([later, applied]).state).toBe("waiting");
+      expect(check([applied, later]).state).toBe("waiting");
+    }
+    expect(check([applied, changed(SINCE + 60_000)]).state).toBe("waiting");
+    expect(check([])).toMatchObject({ why: expect.stringContaining("has not switched") });
+    expect(check([changed(SINCE + 60_000)])).toMatchObject({
+      why: expect.stringContaining("restarting with the new MCP settings"),
+    });
+    expect(check([mcp(SINCE + 60_000, true, { mcpRevision: OLD })])).toMatchObject({
+      why: expect.stringContaining("still runs other MCP settings"),
     });
   });
 });

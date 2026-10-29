@@ -13,9 +13,9 @@
 //      clean checkout's commit (machine.ts, codeVersionFrom): code of unknown version is never
 //      deployed over an installation;
 //   2. reads the platform Worker's secret names (never a value) and makes what this release needs
-//      that it lacks (`secretsToEnsure`: the cookie secret, and WP3.34's launcher signing key,
-//      each pair whole), with `run`'s own generator; what only a person can give is refused, by
-//      name;
+//      that it lacks (`secretsToEnsure`: the cookie secret, WP3.34's launcher signing key, and
+//      WP5.10's credential store keys and MCP state secret, each pair whole), with `run`'s own
+//      generator; what only a person can give is refused, by name;
 //   3. when the checkout's code is not what the journal records for both Workers (or an update to
 //      it is unfinished, or a secret is missing), deploys the platform Worker from this checkout
 //      with the plan's own configuration (the same names, the plan's buckets with its D33 tag or
@@ -73,12 +73,15 @@ import {
   accessProblems,
   COOKIE_SECRET,
   containerEnvProblems,
+  credentialStoreToAdd,
   DEPLOY_ID_VAR,
   type GeneratedSecrets,
   INITIALIZED_SECRET,
   INSTALLATION_ID_VAR,
   type Installation,
   installationProblems,
+  KEY_SERVICE_KEY_ID_SECRET,
+  KEY_SERVICE_KEY_SECRET,
   LAUNCHER_KEY_ID_SECRET,
   LAUNCHER_KEY_SECRET,
   launcherKeyToAdd,
@@ -178,6 +181,7 @@ function hex(bytes: Uint8Array): string {
  * (`requiredAfterRelease`).
  */
 export function secretsToEnsure(
+  plan: Pick<Installation, "installationId">,
   present: ReadonlySet<string>,
   generated: GeneratedSecrets,
 ): Record<string, string> {
@@ -187,11 +191,16 @@ export function secretsToEnsure(
   if (LAUNCHER_PAIR.every((name) => !present.has(name))) {
     Object.assign(add, launcherKeyToAdd(present, generated));
   }
+  // The credential store's keys and the MCP state secret (WP5.10), so that MCP services work
+  // without GitHub; an installation that ran `github-app` keeps the keys it made.
+  Object.assign(add, credentialStoreToAdd(plan, present, generated));
   return add;
 }
 
 /** The launcher's signing pair (WP3.34): one credential, set whole or not at all. */
 const LAUNCHER_PAIR = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET] as const;
+/** The key service's signing pair (WP5.10): the same rule. */
+const KEY_SERVICE_PAIR = [KEY_SERVICE_KEY_SECRET, KEY_SERVICE_KEY_ID_SECRET] as const;
 
 /** The secrets a finished installation holds: `run`'s required ones, the password long gone. */
 export function requiredAfterRelease(plan: Installation): string[] {
@@ -295,14 +304,19 @@ export async function runUpdate(
 
   // 2. What this release needs that the Worker lacks: made here, or refused by name. Half a
   // pair is never completed or replaced: the half held may be in use (Codex WP3.35 r1-1).
-  const halves = LAUNCHER_PAIR.filter((name) => present.has(name));
-  if (halves.length === 1) {
-    const missing = LAUNCHER_PAIR.filter((name) => !present.has(name));
-    throw new BootstrapRefusal(
-      `${plan.platformWorker} holds ${halves.join("")} but not ${missing.join("")}, half of the launcher's signing pair, and the update replaces no secret: delete the half it holds (Cloudflare dashboard, the Worker's Settings, Variables and Secrets) and run again, and the update adds a new pair${nothing}`,
-    );
+  for (const [pair, what] of [
+    [LAUNCHER_PAIR, "the launcher's signing pair"],
+    [KEY_SERVICE_PAIR, "the key service's signing pair"],
+  ] as const) {
+    const halves = pair.filter((name) => present.has(name));
+    if (halves.length === 1) {
+      const missing = pair.filter((name) => !present.has(name));
+      throw new BootstrapRefusal(
+        `${plan.platformWorker} holds ${halves.join("")} but not ${missing.join("")}, half of ${what}, and the update replaces no secret: delete the half it holds (Cloudflare dashboard, the Worker's Settings, Variables and Secrets) and run again, and the update adds a new pair${nothing}`,
+      );
+    }
   }
-  const add = secretsToEnsure(present, generatedSecrets(ctx));
+  const add = secretsToEnsure(plan, present, generatedSecrets(ctx));
   const adding = Object.keys(add).sort();
   const lacking = requiredAfterRelease(plan).filter((n) => !present.has(n) && !(n in add));
   if (lacking.length > 0) {

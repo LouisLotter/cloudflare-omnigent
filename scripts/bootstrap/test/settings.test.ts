@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { InstallationId } from "../../../contracts/src/index.ts";
+import { recordKeysSecret } from "../../../worker/src/internal/key-service.ts";
 import { serverContainerEnv } from "../../../worker/src/server/server-env.ts";
 import { declaredResources, withStagingNames } from "../../staging/guard.ts";
 import {
@@ -9,14 +10,19 @@ import {
   accessProblems,
   bucketsOf,
   COOKIE_SECRET,
+  CREDENTIAL_STORE_SECRETS,
   containerEnvProblems,
+  credentialStoreToAdd,
   DEPLOY_ID_VAR,
   defaultArtifactsUrl,
   INITIALIZED_SECRET,
   installationProblems,
+  KEY_SERVICE_KEY_ID_SECRET,
+  KEY_SERVICE_KEY_SECRET,
   LAUNCHER_KEY_ID_SECRET,
   LAUNCHER_KEY_SECRET,
   launcherKeyToAdd,
+  MCP_STATE_SECRET,
   newInstallationId,
   OWNER_PASSWORD_ON_PAGE_SECRET,
   offersPlatformFeature,
@@ -26,6 +32,7 @@ import {
   passwordProblem,
   planConflicts,
   platformVars,
+  RECORD_KEYS_SECRET,
   RELEASE_CHANGES,
   REPLICA_KEY_ID_SECRET,
   REPLICA_SECRET_KEY_SECRET,
@@ -50,6 +57,10 @@ const GEN = {
   ownerPassword: "cfo-canary-generated-owner-password-0000000",
   launcherKey: "cfo-canary-launcher-key-generated-0000000000000000000000000000000",
   launcherKeyId: "k-20261029",
+  keyServiceKey: "cfo-canary-key-service-signing-key-000000000000000000000000000000",
+  keyServiceKeyId: "ks-0a0b0c0d",
+  recordKeysRoot: new Uint8Array(32).fill(7),
+  mcpStateSecret: "cfo-canary-mcp-oauth-state-secret-00000000000000000000000000000000",
 };
 const SUPPLIED = {
   ownerPassword: OWNER_PASSWORD,
@@ -177,7 +188,7 @@ describe("the platform Worker's settings and secrets", () => {
     const plan = await accountPlan();
     expect(platformVars(plan)).toEqual({
       CFO_INSTALLATION_ID: plan.installationId,
-      CFO_PLATFORM_FEATURES: "key-service github-setup",
+      CFO_PLATFORM_FEATURES: "key-service github-setup mcp-services",
       SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL: "https://omnigent.example.test",
       SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
       SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-canary-replica/omnigent",
@@ -204,7 +215,7 @@ describe("the platform Worker's settings and secrets", () => {
       expect(offersPlatformFeature(vars, "key-service")).toBe(true);
       expect(offersPlatformFeature(vars, "github-setup")).toBe(true);
       expect(renderPlatformConfig(BASE.platform, plan).vars).toMatchObject({
-        [PLATFORM_FEATURES_VAR]: "key-service github-setup",
+        [PLATFORM_FEATURES_VAR]: "key-service github-setup mcp-services",
       });
     }
     expect(PLATFORM_FEATURES_VAR.startsWith(SERVER_ENV)).toBe(false);
@@ -236,6 +247,11 @@ describe("the platform Worker's settings and secrets", () => {
       [PASSWORD_SECRET]: OWNER_PASSWORD,
       [LAUNCHER_KEY_SECRET]: GEN.launcherKey,
       [LAUNCHER_KEY_ID_SECRET]: GEN.launcherKeyId,
+      // The credential store's keys and the MCP state secret (WP5.10).
+      [KEY_SERVICE_KEY_SECRET]: GEN.keyServiceKey,
+      [KEY_SERVICE_KEY_ID_SECRET]: GEN.keyServiceKeyId,
+      [RECORD_KEYS_SECRET]: recordKeysSecret(`${plan.installationId}.records`, GEN.recordKeysRoot),
+      [MCP_STATE_SECRET]: GEN.mcpStateSecret,
       [REPLICA_KEY_ID_SECRET]: SUPPLIED.replicaAccessKeyId,
       [REPLICA_SECRET_KEY_SECRET]: SUPPLIED.replicaSecretAccessKey,
       // One R2 token for both buckets: its values, set again under the artifacts' own names.
@@ -338,6 +354,41 @@ describe("the platform Worker's settings and secrets", () => {
     ]);
   });
 
+  it("adds the credential store's keys and the MCP state secret, replacing none (WP5.10)", async () => {
+    const plan = await accountPlan();
+    const all = credentialStoreToAdd(plan, new Set(), GEN);
+    expect(Object.keys(all).sort()).toEqual([...CREDENTIAL_STORE_SECRETS].sort());
+    expect(KEY_SERVICE_KEY_SECRET).toBe("SERVER_ENV_OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY");
+    expect(MCP_STATE_SECRET).toBe("SERVER_ENV_OMNIGENT_MCP_OAUTH_STATE_SECRET");
+    // The record keys never reach the server: a Worker-only name.
+    expect(RECORD_KEYS_SECRET.startsWith("SERVER_ENV_")).toBe(false);
+    expect(JSON.parse(all[RECORD_KEYS_SECRET] ?? "")).toMatchObject({
+      keyId: `${plan.installationId}.records`,
+      current: 1,
+    });
+    // Held ones are kept: a github-app run's keys stay, and so do sealed records' keys.
+    expect(credentialStoreToAdd(plan, new Set(CREDENTIAL_STORE_SECRETS), GEN)).toEqual({});
+    expect(
+      Object.keys(credentialStoreToAdd(plan, new Set([RECORD_KEYS_SECRET]), GEN)).sort(),
+    ).toEqual([KEY_SERVICE_KEY_ID_SECRET, KEY_SERVICE_KEY_SECRET, MCP_STATE_SECRET].sort());
+    // Half a signing pair: left here (update refuses it) ...
+    expect(credentialStoreToAdd(plan, new Set([KEY_SERVICE_KEY_SECRET]), GEN)).not.toHaveProperty(
+      KEY_SERVICE_KEY_ID_SECRET,
+    );
+    // ... and replaced whole by the first deploy, before anything signed with it.
+    const first = secretsToAdd(plan, new Set([KEY_SERVICE_KEY_ID_SECRET]), SUPPLIED, GEN);
+    expect(first[KEY_SERVICE_KEY_ID_SECRET]).toBe(GEN.keyServiceKeyId);
+    expect(first[KEY_SERVICE_KEY_SECRET]).toBe(GEN.keyServiceKey);
+    // The server needs the pair and the state secret.
+    const vars = platformVars(plan);
+    const secrets = secretsToAdd(plan, new Set(), SUPPLIED, GEN);
+    const { [MCP_STATE_SECRET]: _state, [KEY_SERVICE_KEY_SECRET]: _key, ...without } = secrets;
+    expect(containerEnvProblems(vars, without, plan)).toEqual([
+      "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY would be missing",
+      "OMNIGENT_MCP_OAUTH_STATE_SECRET would be missing",
+    ]);
+  });
+
   it("needs the replica's credentials only for an S3 replica", async () => {
     const staging = await stagingPlan();
     expect(
@@ -349,6 +400,7 @@ describe("the platform Worker's settings and secrets", () => {
         PASSWORD_SECRET,
         LAUNCHER_KEY_SECRET,
         LAUNCHER_KEY_ID_SECRET,
+        ...CREDENTIAL_STORE_SECRETS,
       ].sort(),
     );
     expect(() =>

@@ -20,12 +20,18 @@ import {
 import {
   bucketTagOf,
   COOKIE_SECRET,
+  CREDENTIAL_STORE_SECRETS,
+  credentialStoreToAdd,
   DEPLOY_ID_VAR,
   INITIALIZED_SECRET,
   type Installation,
+  KEY_SERVICE_KEY_ID_SECRET,
+  KEY_SERVICE_KEY_SECRET,
   LAUNCHER_KEY_ID_SECRET,
   LAUNCHER_KEY_SECRET,
+  MCP_STATE_SECRET,
   PASSWORD_SECRET,
+  RECORD_KEYS_SECRET,
   REPLICA_KEY_ID_SECRET,
 } from "../settings.ts";
 import { fileStateStore, parseState } from "../state.ts";
@@ -536,6 +542,50 @@ describe("runUpdate: refusals, before anything is deployed", () => {
     }
   });
 
+  it("half of the key service's signing pair: never completed or replaced (WP5.10)", async () => {
+    const plan = await accountPlan();
+    for (const [held, gone] of [
+      [KEY_SERVICE_KEY_SECRET, KEY_SERVICE_KEY_ID_SECRET],
+      [KEY_SERVICE_KEY_ID_SECRET, KEY_SERVICE_KEY_SECRET],
+    ] as const) {
+      const h = await installed(plan);
+      await h.world.cloud().updateSecrets(plan.platformWorker, { [gone]: null });
+      const value = h.world.secretsOf(plan.platformWorker)?.get(held);
+      await refused(h, new RegExp(`holds ${held} but not ${gone}, half of the key service's`));
+      expect(h.world.secretsOf(plan.platformWorker)?.get(held)).toBe(value);
+    }
+  });
+
+  it("an installation from before WP5.10 gets the credential store's keys, once", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    await h.world
+      .cloud()
+      .updateSecrets(
+        plan.platformWorker,
+        Object.fromEntries(CREDENTIAL_STORE_SECRETS.map((name) => [name, null])),
+      );
+    h.world.now += 3600_000;
+    expect(await h.update()).toEqual({ kind: "done" });
+    const after = platformSecrets(h);
+    expect(after.get(KEY_SERVICE_KEY_SECRET)).toMatch(/^[0-9a-f]{64}$/);
+    expect(after.get(MCP_STATE_SECRET)).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(after.get(RECORD_KEYS_SECRET) ?? "")).toMatchObject({
+      keyId: `${plan.installationId}.records`,
+    });
+    expect(journalOf(h).update?.addedSecrets).toEqual([...CREDENTIAL_STORE_SECRETS].sort());
+    for (const name of CREDENTIAL_STORE_SECRETS) {
+      const value = after.get(name) ?? "";
+      expect(h.lines.join("\n")).not.toContain(value);
+      expect(JSON.stringify(h.store.load())).not.toContain(value);
+    }
+    // Kept from then on: a later update replaces none of them.
+    expect(await h.update(CODE_B)).toEqual({ kind: "done" });
+    for (const name of CREDENTIAL_STORE_SECRETS) {
+      expect(platformSecrets(h).get(name)).toBe(after.get(name));
+    }
+  });
+
   it("a release the server would not start with", async () => {
     const plan = await accountPlan();
     const h = await installed(plan);
@@ -937,20 +987,32 @@ describe("the update's secrets step", () => {
       random: (n) => new Uint8Array(n).fill(1),
       now: () => Date.UTC(2026, 9, 30),
     });
-    const all = new Set([COOKIE_SECRET, LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET]);
-    expect(secretsToEnsure(all, made)).toEqual({});
-    expect(secretsToEnsure(new Set(), made)).toEqual({
+    const plan = await accountPlan();
+    const all = new Set([
+      COOKIE_SECRET,
+      LAUNCHER_KEY_SECRET,
+      LAUNCHER_KEY_ID_SECRET,
+      ...CREDENTIAL_STORE_SECRETS,
+    ]);
+    expect(secretsToEnsure(plan, all, made)).toEqual({});
+    const store = credentialStoreToAdd(plan, new Set(), made);
+    expect(secretsToEnsure(plan, new Set(), made)).toEqual({
       [COOKIE_SECRET]: made.cookieSecret,
       [LAUNCHER_KEY_SECRET]: made.launcherKey,
       [LAUNCHER_KEY_ID_SECRET]: "k-20261030",
+      // WP5.10: an installation from before it gets the credential store's keys.
+      ...store,
     });
+    expect(Object.keys(store).sort()).toEqual([...CREDENTIAL_STORE_SECRETS].sort());
     // Half a pair is never completed or replaced here (runUpdate refuses it); the cookie
     // secret held is kept.
-    expect(secretsToEnsure(new Set([COOKIE_SECRET, LAUNCHER_KEY_ID_SECRET]), made)).toEqual({});
-    expect(secretsToEnsure(new Set([LAUNCHER_KEY_SECRET]), made)).toEqual({
+    const held = new Set(CREDENTIAL_STORE_SECRETS);
+    expect(
+      secretsToEnsure(plan, new Set([...held, COOKIE_SECRET, LAUNCHER_KEY_ID_SECRET]), made),
+    ).toEqual({});
+    expect(secretsToEnsure(plan, new Set([...held, LAUNCHER_KEY_SECRET]), made)).toEqual({
       [COOKIE_SECRET]: made.cookieSecret,
     });
-    const plan = await accountPlan();
     expect(requiredAfterRelease(plan)).not.toContain(PASSWORD_SECRET);
     expect(requiredAfterRelease(plan)).toContain(INITIALIZED_SECRET);
     expect(requiredAfterRelease(plan)).toContain(LAUNCHER_KEY_SECRET);
