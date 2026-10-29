@@ -750,7 +750,8 @@ function mergeAlerts<A extends { kind: string; count: number }>(alerts: A[]): A[
  * - a string it does not know in an enum field becomes that field's "can't tell" value:
  *   `unknown` for the logins, the sign-in states and the hostname, `other` for an alert's kind.
  * From this release on, a supervisor may add a status field or enum value, and an older reader
- * still parses its status; a newer reader parses an older supervisor's.
+ * still parses its status. A newer reader parses an older supervisor's as long as every field
+ * added after that supervisor is optional here (as `terminals` is): a required one would refuse it.
  *
  * Everything else stays strict: types, required fields, bounds and the versions' format. Removing
  * or retyping a field is still a breaking change. The exported JSON Schema shows what a parse
