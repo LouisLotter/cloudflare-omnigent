@@ -72,6 +72,8 @@ import {
   INITIALIZED_SECRET,
   type Installation,
   installationProblems,
+  LAUNCHER_KEY_ID_SECRET,
+  LAUNCHER_KEY_SECRET,
   launcherKeyToAdd,
   PASSWORD_SECRET,
   platformVars,
@@ -162,7 +164,7 @@ function hex(bytes: Uint8Array): string {
 /**
  * The installation's secrets this release needs that the platform Worker lacks, and that the
  * installer makes itself (`run`'s generator, machine.ts generatedSecrets): set only where the name
- * is missing, never replacing one, a pair replaced whole. The update's "ensure the installation's
+ * is missing, never replacing one, a pair only where both halves are. The update's "ensure the installation's
  * secrets" step: the cookie secret, which `run` makes at the first deploy, and the launcher's
  * signing key (WP3.34), which installations made before it lack. A secret a later release adds to
  * `run` belongs here too; until it is here, an installation that lacks it is refused by name
@@ -174,8 +176,15 @@ export function secretsToEnsure(
 ): Record<string, string> {
   const add: Record<string, string> = {};
   if (!present.has(COOKIE_SECRET)) add[COOKIE_SECRET] = generated.cookieSecret;
-  return { ...add, ...launcherKeyToAdd(present, generated) };
+  // Only where the Worker holds neither half (runUpdate refuses half a pair).
+  if (LAUNCHER_PAIR.every((name) => !present.has(name))) {
+    Object.assign(add, launcherKeyToAdd(present, generated));
+  }
+  return add;
 }
+
+/** The launcher's signing pair (WP3.34): one credential, set whole or not at all. */
+const LAUNCHER_PAIR = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET] as const;
 
 /** The secrets a finished installation holds: `run`'s required ones, the password long gone. */
 export function requiredAfterRelease(plan: Installation): string[] {
@@ -276,7 +285,15 @@ export async function runUpdate(
   const platformHeld = await ours(plan.platformWorker);
   await ours(plan.webWorker);
 
-  // 2. What this release needs that the Worker lacks: made here, or refused by name.
+  // 2. What this release needs that the Worker lacks: made here, or refused by name. Half a
+  // pair is never completed or replaced: the half held may be in use (Codex WP3.35 r1-1).
+  const halves = LAUNCHER_PAIR.filter((name) => present.has(name));
+  if (halves.length === 1) {
+    const missing = LAUNCHER_PAIR.filter((name) => !present.has(name));
+    throw new BootstrapRefusal(
+      `${plan.platformWorker} holds ${halves.join("")} but not ${missing.join("")}, half of the launcher's signing pair, and the update replaces no secret: delete the half it holds (Cloudflare dashboard, the Worker's Settings, Variables and Secrets) and run again, and the update adds a new pair${nothing}`,
+    );
+  }
   const add = secretsToEnsure(present, generatedSecrets(ctx));
   const adding = Object.keys(add).sort();
   const lacking = requiredAfterRelease(plan).filter((n) => !present.has(n) && !(n in add));
@@ -295,15 +312,14 @@ export async function runUpdate(
     throw new BootstrapRefusal(`the server would not start: ${envProblems.join("; ")}${nothing}`);
   }
 
-  // 3. Nothing to do, a new update, or the rest of an unfinished one to this code.
+  // 3. Nothing to do, a new update, or the rest of an unfinished one to this code. Up to date
+  // only when the last update is this code's and checked, or none was ever made (the install's
+  // own release check covered its code): an unchecked update that a later, unfinished one
+  // replaced in the journal is deployed and checked again (Codex WP3.35 r1-2).
   const last = journal.update;
   const resuming = last?.code === code && last.verifiedAt === undefined;
-  if (
-    !resuming &&
-    adding.length === 0 &&
-    journal.platformCode === code &&
-    journal.webCode === code
-  ) {
+  const checked = last === undefined || (last.code === code && last.verifiedAt !== undefined);
+  if (checked && adding.length === 0 && journal.platformCode === code && journal.webCode === code) {
     ctx.log(`https://${plan.hostname} already runs this checkout's version (${shortCode(code)})`);
     return { kind: "current" };
   }
@@ -402,7 +418,13 @@ export async function runUpdate(
 
   // 6. The switch, the server's restart on the new configuration, and its owner.
   if (!options.verify) return { kind: "deployed", why: "the check after the update was skipped" };
-  return checkUpdate(ctx, () => state, progress, options);
+  return checkUpdate(
+    ctx,
+    () => state,
+    progress,
+    (update) => record({ update }),
+    options,
+  );
 }
 
 /**
@@ -460,15 +482,11 @@ async function checkUpdate(
   ctx: UpdateContext,
   state: () => { readonly journal: Journal; readonly installation: Installation },
   progress: (change: Partial<UpdateRecord>) => void,
+  replace: (update: UpdateRecord) => void,
   options: UpdateOptions,
 ): Promise<UpdateOutcome> {
   const plan = state().installation;
   const update = (): UpdateRecord => state().journal.update as UpdateRecord;
-  if (update().platformVersionId === undefined) {
-    // Cloudflare did not say right after the deploy: the version serving now carries it too.
-    const versionId = await ctx.cloud.activeVersion(plan.platformWorker);
-    if (versionId !== undefined) progress({ platformVersionId: versionId });
-  }
   const since = Date.parse(String(update().platformDeployStartedAt));
   const switchAt = Date.parse(String(update().platformDeployedAt)) + options.switchMs;
   if (ctx.now() < switchAt) {
@@ -476,6 +494,32 @@ async function checkUpdate(
       "waiting for the platform objects to switch to the new version and the server to restart on it (about 5 to 10 minutes)",
     );
     await ctx.sleep(switchAt - ctx.now());
+  }
+  // The version to check: the one serving now, if it carries this update's deploy ID. A secrets
+  // change since (github-app, by hand) makes a newer version with the same variables, and the
+  // objects may skip the update's own; it is checked instead, never a version of another
+  // deploy (Codex WP3.35 r1-3). Cloudflare not saying right after the deploy is covered too.
+  const identity = await ctx.cloud.workerInstallation(plan.platformWorker);
+  const serving = await ctx.cloud.activeVersion(plan.platformWorker);
+  const carried = identity.exists ? identity.vars?.[DEPLOY_ID_VAR] : undefined;
+  if (identity.exists && identity.vars !== undefined && carried !== update().deployId) {
+    // Another deploy replaced this update's version before it was checked: deployed again by
+    // the next run, with its own restart to check.
+    const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = update();
+    replace(rest);
+    return {
+      kind: "deployed",
+      why: "another deploy replaced this update's platform version before it was checked; run update again, and it deploys again",
+    };
+  }
+  const recorded = update().platformVersionId;
+  if (serving !== undefined && serving !== recorded && (carried !== undefined || !recorded)) {
+    progress({ platformVersionId: serving });
+    if (recorded !== undefined) {
+      ctx.log(
+        "the platform Worker's secrets changed after the deploy: checking the newer version, which carries this update",
+      );
+    }
   }
   const deadline = ctx.now() + options.verifyWaitMs;
   const logsSince = slicedLogs(ctx, plan.platformWorker);

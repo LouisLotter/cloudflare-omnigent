@@ -1620,7 +1620,10 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     const h = await finished(() => code);
     const worker = h.world.plan.platformWorker;
     const held = h.world.latest(worker)?.secrets as Map<string, string>;
-    held.delete(LAUNCHER_KEY_ID_SECRET); // half a pair: replaced whole
+    held.delete(LAUNCHER_KEY_ID_SECRET);
+    // Half a pair is never completed or replaced (Codex WP3.35 r1-1): refused, by name.
+    await expect(h.run()).rejects.toThrow(/half of the launcher's signing pair/);
+    held.delete(LAUNCHER_KEY_SECRET);
     const changes = h.world.secretChanges.length;
     expect(await h.run()).toEqual({ kind: "done", updated: true });
     // One path for every update: a deploy of the same code, carrying the pair (update.ts).

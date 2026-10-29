@@ -520,6 +520,20 @@ describe("runUpdate: refusals, before anything is deployed", () => {
     );
   });
 
+  it("half of the launcher's signing pair: never completed or replaced (Codex r1-1)", async () => {
+    const plan = await accountPlan();
+    for (const [held, gone] of [
+      [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET],
+      [LAUNCHER_KEY_ID_SECRET, LAUNCHER_KEY_SECRET],
+    ] as const) {
+      const h = await installed(plan);
+      await h.world.cloud().updateSecrets(plan.platformWorker, { [gone]: null });
+      const value = h.world.secretsOf(plan.platformWorker)?.get(held);
+      await refused(h, new RegExp(`holds ${held} but not ${gone}, half of the launcher's`));
+      expect(h.world.secretsOf(plan.platformWorker)?.get(held)).toBe(value);
+    }
+  });
+
   it("a release the server would not start with", async () => {
     const plan = await accountPlan();
     const h = await installed(plan);
@@ -688,6 +702,61 @@ describe("runUpdate: the wait for the switch and the check", () => {
     expect(count(h, "deployWeb")).toBe(1);
   });
 
+  it("an unchecked update replaced in the journal by an unfinished one is deployed and checked again (Codex r1-2)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
+    h.world.crash = { call: "deployPlatform", nth: 2, when: "before" };
+    await expect(h.update(CODE_B)).rejects.toThrow(Crash);
+    expect(journalOf(h)).toMatchObject({ platformCode: CODE_A, webCode: CODE_A });
+    expect(journalOf(h).update?.code).toBe(CODE_B);
+    // Back on A's checkout: A was never checked, so it is not "up to date".
+    expect(await h.update(CODE_A)).toEqual({ kind: "done" });
+    expect(count(h, "deployPlatform")).toBe(3);
+    expect(journalOf(h).update).toMatchObject({ code: CODE_A, verifiedAt: expect.any(String) });
+    expect(await h.update(CODE_A)).toEqual({ kind: "current" });
+  });
+
+  it("checks the newer version a secrets change made after the deploy, which carries the update (Codex r1-3)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
+    const deployed = journalOf(h).update?.platformVersionId;
+    // As github-app does, before the objects switch: one secrets change, a newer version.
+    await h.world.cloud().updateSecrets(plan.platformWorker, LATER_SECRETS);
+    const newer = h.world.latest(plan.platformWorker)?.id;
+    expect(newer).not.toBe(deployed);
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(journalOf(h).update?.platformVersionId).toBe(newer);
+    expect(h.lines).toContain(
+      "the platform Worker's secrets changed after the deploy: checking the newer version, which carries this update",
+    );
+    expect(count(h, "deployPlatform")).toBe(1);
+  });
+
+  it("deploys again when another deploy replaced the update's version before its check (Codex r1-3)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
+    // Someone deploys the platform Worker again, with another configuration.
+    const last = lastConfig(h, plan.platformWorker);
+    await h.world
+      .cloud()
+      .deployPlatform(
+        plan,
+        { ...last, vars: { ...(last.vars as object), [DEPLOY_ID_VAR]: "ffffffffffffffff" } },
+        {},
+      );
+    expect(await h.update()).toEqual({
+      kind: "deployed",
+      why: "another deploy replaced this update's platform version before it was checked; run update again, and it deploys again",
+    });
+    expect(journalOf(h).update?.platformDeployedAt).toBeUndefined();
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(count(h, "deployPlatform")).toBe(3);
+    expect(count(h, "deployWeb")).toBe(1);
+  });
+
   it("an unfinished update to other code is replaced by the update to this code", async () => {
     const plan = await accountPlan();
     const h = await installed(plan);
@@ -703,13 +772,14 @@ describe("runUpdate: the wait for the switch and the check", () => {
 
 // Every call an update makes, each occurrence, before and after its effect, and every journal
 // write: one update calls secretNames twice (before and after the platform deploy),
-// workerInstallation three times (each Worker, and the web Worker again before its deploy),
-// activeVersion twice (after each deploy), and reads Workers Logs at least three times.
+// workerInstallation four times (each Worker, the web Worker again before its deploy, and the
+// platform Worker before the check), activeVersion three times (after each deploy, and before the
+// check), and reads Workers Logs at least three times.
 const CALLS: readonly (readonly [string, number])[] = [
   ["secretNames", 2],
-  ["workerInstallation", 3],
+  ["workerInstallation", 4],
   ["deployPlatform", 1],
-  ["activeVersion", 2],
+  ["activeVersion", 3],
   ["access", 1],
   ["deployWeb", 1],
   ["logs", 3],
@@ -802,10 +872,11 @@ describe("the update's secrets step", () => {
       [LAUNCHER_KEY_SECRET]: made.launcherKey,
       [LAUNCHER_KEY_ID_SECRET]: "k-20261030",
     });
-    // Half a pair is replaced whole; the cookie secret held is kept.
-    expect(secretsToEnsure(new Set([COOKIE_SECRET, LAUNCHER_KEY_ID_SECRET]), made)).toEqual({
-      [LAUNCHER_KEY_SECRET]: made.launcherKey,
-      [LAUNCHER_KEY_ID_SECRET]: "k-20261030",
+    // Half a pair is never completed or replaced here (runUpdate refuses it); the cookie
+    // secret held is kept.
+    expect(secretsToEnsure(new Set([COOKIE_SECRET, LAUNCHER_KEY_ID_SECRET]), made)).toEqual({});
+    expect(secretsToEnsure(new Set([LAUNCHER_KEY_SECRET]), made)).toEqual({
+      [COOKIE_SECRET]: made.cookieSecret,
     });
     const plan = await accountPlan();
     expect(requiredAfterRelease(plan)).not.toContain(PASSWORD_SECRET);

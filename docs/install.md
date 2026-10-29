@@ -96,10 +96,11 @@ An installation made before GitHub linking existed needs updating first (below);
 
 ## Updating your installation
 
-When a new release comes out, get it and run one command, in the folder you installed from:
+When a new release comes out, get it, with the tools it pins, and run the update, in the folder you installed from:
 
 ```bash
 git pull
+pnpm install --frozen-lockfile
 node scripts/bootstrap/bootstrap.ts update
 ```
 
