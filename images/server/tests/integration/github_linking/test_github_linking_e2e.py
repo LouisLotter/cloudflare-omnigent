@@ -534,9 +534,10 @@ def _scan(stack: Stack, container: str, roots: list[str]) -> dict[str, list[list
     return json.loads(done.stdout.strip().splitlines()[-1])
 
 
-#: Watches every process's argv while git and gh run, for the run's tokens in every form; a
-#: planted canary in one process's argv proves it sees them (Codex WP5.9 r1: a scan after the
-#: commands exit could not). Forks into the background; stops when the stop file appears.
+#: Samples every process's argv every 2 ms while git and gh run, for the run's tokens in every
+#: form; a planted canary in one process's argv proves it sees them (Codex WP5.9 r1: a scan after
+#: the commands exit could not). Sampling, not tracing: a process shorter than a sample can slip
+#: by. Forks into the background, says when its first round is done, and stops at the stop file.
 ARGV_WATCH = r"""
 import base64, json, os, sys, time, urllib.parse
 given = json.loads(sys.stdin.read())
@@ -554,6 +555,8 @@ for name, value in given["secrets"].items():
 hits, me, rounds = {}, str(os.getpid()), 0
 while not os.path.exists(given["stop"]):
     rounds += 1
+    if rounds == 2:
+        open(given["ready"], "w").close()
     for pid in os.listdir("/proc"):
         if not pid.isdigit() or pid == me:
             continue
@@ -721,9 +724,20 @@ def test_connect_clone_and_unlink_through_the_key_service_and_the_broker(stack: 
                     "planted canary": planted,
                 },
                 "stop": "/var/cfo-e2e-argv.stop",
+                "ready": "/var/cfo-e2e-argv.ready",
                 "out": "/var/cfo-e2e-argv.json",
             }
         ),
+    )
+    _until(
+        "the argv watcher",
+        lambda: (
+            stack.computer(
+                computer, "test", "-e", "/var/cfo-e2e-argv.ready", user="root", check=False
+            ).returncode
+            == 0
+        ),
+        timeout=30,
     )
     clone = stack.computer(
         computer,
@@ -758,7 +772,7 @@ def test_connect_clone_and_unlink_through_the_key_service_and_the_broker(stack: 
     assert gh.returncode == 0, gh.stderr[-2000:]
     assert json.loads(gh.stdout)["login"] == LOGIN
 
-    # The watcher saw every argv while git and gh ran: only the planted canary.
+    # The watcher, sampling every argv while git and gh ran, found only the planted canary.
     stack.computer(computer, "sh", "-c", "sleep 1", "cfo-e2e", planted, user="root")
     stack.computer(computer, "touch", "/var/cfo-e2e-argv.stop", user="root")
     watched = _until(
