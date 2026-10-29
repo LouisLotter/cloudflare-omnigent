@@ -131,6 +131,12 @@ export const OwnerPasswordResult = z.discriminatedUnion("action", [
     /** The owner's Omnigent username, or null when the installation names none. */
     username: OwnerUsername.nullable(),
     intentToken: IntentToken,
+    /**
+     * This Access session set the password, confirmed durable, in the last few minutes: the page's
+     * "done" is shown only then, never on a URL's word alone (Codex WP3.34 r1-3). Absent from an
+     * object on an older build: false.
+     */
+    justSet: z.boolean().optional(),
   }),
   SetOwnerPasswordResult,
 ]);

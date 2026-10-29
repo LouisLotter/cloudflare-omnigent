@@ -97,7 +97,7 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
   }
 
   /** What `ownerPassword`'s `state` answers, apart from the intent token. */
-  passwordState: { state: "unchosen" | "chosen"; username: string | null } = {
+  passwordState: { state: "unchosen" | "chosen"; username: string | null; justSet?: boolean } = {
     state: "unchosen",
     username: "owner",
   };
@@ -131,7 +131,7 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
     }
     const outcome = this.setOutcomes.shift() ?? { action: "set", outcome: "done" };
     if (outcome.action === "set" && outcome.outcome === "done") {
-      this.passwordState = { ...this.passwordState, state: "chosen" };
+      this.passwordState = { ...this.passwordState, state: "chosen", justSet: true };
     }
     return outcome;
   }
