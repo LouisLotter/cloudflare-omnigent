@@ -361,6 +361,18 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return this.controller.identity(call);
   }
 
+  /**
+   * Staging only (WP3.33): the container killed at once, as a crash would (the controller's
+   * `stagingKill`). Called only by the staging harness's soak module (`run.sh computer-kill`), so
+   * it is not part of `WorkspaceRpc`. Refused on production, from the staging tool's variable as
+   * the RC-53 and keep-awake switches are (`stagingChecks`), before anything happens.
+   */
+  stagingKill(call: {
+    readonly interfaceVersion: number;
+  }): ReturnType<WorkspaceController["stagingKill"]> {
+    return this.controller.stagingKill(call);
+  }
+
   override async alarm(): Promise<void> {
     if (this.#front !== null) await this.#front.beforeAlarm();
     if (this.#controller !== null) await this.#controller.alarm();

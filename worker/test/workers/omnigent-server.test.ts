@@ -525,7 +525,14 @@ describe("OmnigentServer: always on", () => {
     await evictDurableObject(stub); // a new instance, as a version switch makes
     await nextCheck(stub);
     await nextCheck(stub);
-    expect(events("watchdog").filter((e) => e.event === "first_alarm")).toHaveLength(2);
+    const firsts = events("watchdog").filter((e) => e.event === "first_alarm");
+    expect(firsts).toHaveLength(2);
+    // Each carries its instance's ID, as its `instance_started` line does (WP3.33).
+    const started = events("watchdog")
+      .filter((e) => e.event === "instance_started")
+      .map((e) => e.instanceId);
+    for (const first of firsts) expect(started).toContain(first.instanceId);
+    expect(firsts[0]?.instanceId).not.toBe(firsts[1]?.instanceId);
   });
 
   it("starts over from damaged state rather than stop watching", async () => {
@@ -990,6 +997,15 @@ describe("OmnigentServer: native forwarding", () => {
       headers: { upgrade: "websocket", "sec-websocket-protocol": "omnigent.v1" },
     });
     expect(response.status).toBe(101);
+    // The upgrade line names the instance that passed it on (WP3.33).
+    const upgrade = events("server").find((e) => e.event === "upgrade");
+    expect(upgrade).toMatchObject({ path: "/v1/sessions/updates" });
+    expect(upgrade?.instanceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(
+      events("watchdog")
+        .filter((e) => e.event === "instance_started")
+        .map((e) => e.instanceId),
+    ).toContain(upgrade?.instanceId);
     expect([...response.headers.keys()].sort()).toEqual(["sec-websocket-protocol"]);
     expect(response.headers.get("sec-websocket-protocol")).toBe("omnigent.v1");
     const socket = defined(response.webSocket, "a WebSocket");

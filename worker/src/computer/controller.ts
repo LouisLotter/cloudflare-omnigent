@@ -708,6 +708,8 @@ export class WorkspaceController {
               nextAt: now + delay,
               startedAt: null,
             };
+            // A start Cloudflare refused, retried (DC-37): the wake table counts them (WP3.33).
+            this.#log("start_retry", { generation, refusals: d.start.refusals, delayMs: delay });
           }
           break;
         case "fence_start":
@@ -794,8 +796,11 @@ export class WorkspaceController {
           break;
         }
         case "confirm_stop":
-          if (d.stop !== null && d.stop.confirmedAt === null)
+          if (d.stop !== null && d.stop.confirmedAt === null) {
             d.stop = { ...d.stop, confirmedAt: now };
+            // The start-after-stop gap is measured from here (WP3.33's wake table).
+            this.#log("stop_confirmed", { generation: d.stop.generation, reason: d.stop.reason });
+          }
           if (d.stop?.reason === "sleep") d.refusedSleeps = 0;
           break;
         case "release_reservation":
@@ -2334,6 +2339,33 @@ export class WorkspaceController {
     );
   }
 
+  /**
+   * Staging only (WP3.33, the G3 sitting's step K): kills the computer's container at once, as a
+   * crash or platform maintenance would. The runtime's `destroy()` (SIGKILL) through the port, with
+   * no stop intent, no save and no lock: nothing is written, so the runner finds the container
+   * gone at its next pass and records an unexpected stop, as for a real crash. Refused on
+   * production (WorkspaceDO sets `stagingChecks` only from the staging tool's variable) before
+   * anything happens, and refused when no container runs.
+   */
+  async stagingKill(call: { readonly interfaceVersion: number }): Promise<
+    | { readonly outcome: "killed"; readonly generation: number; readonly hostId: string | null }
+    | {
+        readonly outcome: "refused";
+        readonly reason: "not_staging" | "no_container" | "not_running";
+      }
+  > {
+    checkInterface(call.interfaceVersion);
+    if (this.#d.stagingChecks !== true) return { outcome: "refused", reason: "not_staging" };
+    const port = this.#d.port;
+    if (port === null) return { outcome: "refused", reason: "no_container" };
+    const r = this.#load();
+    if (r === null || !port.running) return { outcome: "refused", reason: "not_running" };
+    const generation = r.lifecycle.generation;
+    this.#log("staging_kill", { generation, state: r.lifecycle.context.state });
+    await port.destroy("staging kill: a crash, with no stop intent (WP3.33)");
+    return { outcome: "killed", generation, hostId: r.hostId };
+  }
+
   /** The supervisor's metrics: fresh enough from memory, or asked for now. */
   async #supervisorStatus(
     r: ComputerRecord,
@@ -2789,6 +2821,9 @@ export class WorkspaceController {
         }),
       );
       if (instance === null) return true;
+      // Every `start()` attempt, where a wake's time is measured from (WP3.33), including one
+      // Cloudflare refuses at once by throwing (Codex WP3.33 r1-5).
+      this.#log("container_start", { generation, refusals: start.refusals, size: instance });
       try {
         port.start({
           instance,
@@ -2988,7 +3023,11 @@ export class WorkspaceController {
       token: token.data.token,
       hostConfig: params.hostConfig,
     });
-    this.#log("start_delivered", { attempt: params.attempt, outcome: reply.outcome });
+    this.#log("start_delivered", {
+      generation: r.lifecycle.generation,
+      attempt: params.attempt,
+      outcome: reply.outcome,
+    });
     await finish((d) => {
       if (reply.outcome === "taken") this.#step(d, "start_taken", {});
       else if (reply.outcome === "declined") this.#step(d, "start_not_taken", {});
