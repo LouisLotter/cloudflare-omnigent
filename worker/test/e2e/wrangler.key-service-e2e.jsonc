@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // The GitHub-linking end-to-end test only (WP5.9): the platform Worker's PlatformInternal
+  // entrypoint under `wrangler dev`, serving the key service. Never deployed. Its secrets come
+  // from the test's own --env-file (synthetic values).
+  "name": "cfo-wp59-key-service-e2e",
+  "main": "key-service-e2e.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false
+}
