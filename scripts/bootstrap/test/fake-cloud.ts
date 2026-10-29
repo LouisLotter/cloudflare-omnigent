@@ -6,7 +6,9 @@
 // `SERVER_ENV_` variables): a new version adopts it, and its watchdog replaces it once (a restart
 // of `REPLACE_MS`) when its configuration differs.
 // The server then logs its status without the password until it shows a durable owner, and for
-// `NOTICE_MS` after (G2-SEC-001).
+// `NOTICE_MS` after (G2-SEC-001). Each status line says whether the version holds a GitHub App
+// and whether Omnigent lists GitHub linking (WP3.36); a server whose settings it refuses exits
+// 78, logs no status, and the watchdog logs `config_error` once.
 // The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
 // Access in the installer's account (WP3.31): the organization, the applications and the login
 // methods, as cf answers for them.
@@ -37,6 +39,8 @@ export const CHECK_MS = 60_000;
 export const REPLACE_MS = 90_000;
 /** How long a server started with a new configuration logs its status (APPLIED_NOTICE_MS). */
 export const NOTICE_MS = 15 * 60_000;
+/** The GitHub App's client ID as the platform Worker holds it (github-app.ts). */
+const GITHUB_CLIENT_ID = "SERVER_ENV_OMNIGENT_GITHUB_APP_CLIENT_ID";
 
 export interface Version {
   readonly id: string;
@@ -112,6 +116,15 @@ export class FakeWorld {
    * a build without G2-SEC-001: a release never reaches the running server.
    */
   appliesReleases = true;
+  /**
+   * Whether Omnigent lists GitHub linking on a server started with a version's configuration
+   * (WP3.36): by default, when the version holds the GitHub App's client ID.
+   */
+  githubLinks: (v: Version) => boolean | null = (v) => v.secrets.has(GITHUB_CLIENT_ID);
+  /** Whether a server started with a version's configuration exits 78 and is held. */
+  refusesSettings: (v: Version) => boolean = () => false;
+  /** Whether status lines carry the GitHub fields; false models a build from before WP3.36. */
+  reportsGitHub = true;
   readonly counts = new Map<string, number>();
   /** The installer's user API tokens, with the value each has now. */
   readonly tokens = new Map<string, { token: ApiToken; value: string }>();
@@ -455,6 +468,7 @@ export class FakeWorld {
     // (OmnigentServer's, Codex r1-2 and r2-2).
     const durableSince = new Map<number, number>();
     let wasDurable = false;
+    const refused = new Set<number>();
     for (let t = startAt; t <= Math.min(toMs, this.now); t += CHECK_MS) {
       const running = this.containerAt(worker, t);
       const truth = this.truth(t);
@@ -485,6 +499,22 @@ export class FakeWorld {
       // The status comes only from a server that answers with this version's configuration:
       // one being replaced, or one an older build never replaced, logs none.
       const container = this.containerAt(worker, t);
+      if (
+        container !== undefined &&
+        t >= container.since &&
+        this.refusesSettings(container.version)
+      ) {
+        // Exit 78: the watchdog says so once and holds the server; no status follows.
+        if (!refused.has(container.since)) {
+          refused.add(container.since);
+          events.push({
+            timestamp: t,
+            $workers,
+            source: { cfo: "watchdog", event: "config_error", exitCode: 78 },
+          });
+        }
+        continue;
+      }
       const applied =
         container !== undefined && t >= container.since && sameConfig(container.version, version);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
@@ -507,6 +537,12 @@ export class FakeWorld {
           },
           secretPresent,
           ...(this.appliesReleases ? { configApplied: true } : {}),
+          ...(this.reportsGitHub
+            ? {
+                githubApp: version.secrets.has(GITHUB_CLIENT_ID),
+                githubLinking: this.githubLinks(version),
+              }
+            : {}),
         },
       });
     }

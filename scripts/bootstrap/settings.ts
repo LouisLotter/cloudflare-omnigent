@@ -487,8 +487,13 @@ export const STAGING_INSTALLATION_VAR = "CFO_STAGING_INSTALLATION";
  * Add a name here when a step starts to depend on a platform feature.
  */
 export const PLATFORM_FEATURES_VAR = "CFO_PLATFORM_FEATURES";
-/** `key-service`: the credential store's key service on platform.internal (WP5.9). */
-export const PLATFORM_FEATURES: readonly string[] = ["key-service"];
+/**
+ * `key-service`: the credential store's key service on platform.internal (WP5.9).
+ * `github-setup`: the GitHub setup page (`/platform/github`), the GitHub App's setup URL, and
+ * the server's GitHub linking report on its status line, which the GitHub step waits for
+ * (WP3.36).
+ */
+export const PLATFORM_FEATURES: readonly string[] = ["key-service", "github-setup"];
 
 /** Whether a platform Worker's variables (its active version's) say it offers `feature`. */
 export function offersPlatformFeature(

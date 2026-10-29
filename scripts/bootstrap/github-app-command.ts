@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readWranglerConfig } from "../staging/cloud.ts";
 import { acquireLock } from "../staging/lock.ts";
 import { accountCloud } from "./cloud.ts";
-import { browserCommand, createGitHubApp, GitHubAppRefusal } from "./github-app.ts";
+import { browserCommand, createGitHubApp, finalMessage, GitHubAppRefusal } from "./github-app.ts";
 import { stagingCloud } from "./staging.ts";
 import { fileStateStore, resourceLockPaths, stagingStateProblem } from "./state.ts";
 
@@ -34,7 +34,11 @@ function openInBrowser(url: string): void {
   }
 }
 
-/** Runs the step for the installation in the state file at `path`. Exit status 0, or throws. */
+/**
+ * Runs the step for the installation in the state file at `path`. Exit status 0 (GitHub linking
+ * on), 3 (the App is stored, linking not on yet) or 1 (stored, but linking is off or the server
+ * is held), or throws (nothing was changed, or storing failed).
+ */
 export async function githubAppCommand(
   path: string,
   options: GitHubAppCommandOptions,
@@ -57,13 +61,15 @@ export async function githubAppCommand(
             base: { web: readWranglerConfig(join(worker, "wrangler.web.jsonc"), worker).raw },
           })
         : accountCloud(installation, { workerDir: worker });
-    const created = await createGitHubApp(
+    const outcome = await createGitHubApp(
       installation,
       {
         cloud,
         openBrowser: options.noOpen ? () => undefined : openInBrowser,
         githubApi: (url, init) => fetch(url, init),
         random: (n) => new Uint8Array(randomBytes(n)),
+        now: () => Date.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         log: (message) => console.log(`bootstrap: ${message}`),
       },
       {
@@ -71,8 +77,9 @@ export async function githubAppCommand(
         replace: options.replace,
       },
     );
-    console.log(`bootstrap: GitHub App ${created.slug} is ready to install.`);
-    return 0;
+    const last = finalMessage(installation, outcome, options.org);
+    for (const line of last.lines) console.log(`bootstrap: ${line}`);
+    return last.exitCode;
   } finally {
     for (const release of releases.reverse()) release();
   }
