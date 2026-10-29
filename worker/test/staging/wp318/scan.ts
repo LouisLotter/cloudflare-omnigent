@@ -77,35 +77,76 @@ function holdsValue(text: string, values: ExactValues): boolean {
 }
 
 /**
- * A path segment as printed: a key only if it looks like a field name (an identifier of at most
- * 40 characters, with no token shape and no configured value in it), else `<key>`. A key that
- * held a value must never reach the report through the path of what is under it.
+ * The longest run of token characters a printed word may have. Every credential the scan knows is
+ * far longer (40 to 100-odd), while the platform's own words are short; so a long run is never
+ * printed, whatever surrounds it (Codex WP3.33 r2-1: `token_` before a key hid it from the
+ * shapes, whose look-behinds need a boundary).
  */
-export function segment(key: string, values: ExactValues = []): string {
-  return /^[$A-Za-z_][A-Za-z0-9_]{0,39}$/.test(key) && !holdsValue(key, values) ? key : "<key>";
+const MAX_WORD = 24;
+
+function hasLongWord(text: string): boolean {
+  return new RegExp(`[A-Za-z0-9_-]{${MAX_WORD + 1},}`).test(text);
 }
 
 /**
- * A logged string as the report may print it (Codex WP3.33 r1-1): only if it has the field's
- * expected form (when one is given) and holds no token shape or configured value; else a
- * placeholder. Every string the report prints passes through here or `segment`.
+ * A path segment as printed: a key only if it looks like a field name (an identifier with no
+ * run longer than MAX_WORD, no token shape and no configured value in it), else `<key>`. A key
+ * that held a value must never reach the report through the path of what is under it.
+ */
+export function segment(key: string, values: ExactValues = []): string {
+  return /^[$A-Za-z_][A-Za-z0-9_]*$/.test(key) && !hasLongWord(key) && !holdsValue(key, values)
+    ? key
+    : "<key>";
+}
+
+/** An event's name as code logs it: snake case of short words, holding no value. */
+function eventName(value: unknown, values: ExactValues): string | null {
+  return typeof value === "string" &&
+    /^[a-z]{1,16}(?:_[a-z0-9]{1,16}){0,5}$/.test(value) &&
+    !holdsValue(value, values)
+    ? value
+    : null;
+}
+
+/**
+ * A logged string as the report may print it (Codex WP3.33 r1-1, r2-1): only if it holds no
+ * token shape, no configured value and no long run, and has the field's form (when one is
+ * given); else a placeholder. Checked on the whole value, before anything is cut. Every string
+ * the report prints passes through here, `segment` or `eventName`.
  */
 export function printable(value: unknown, values: ExactValues, form?: RegExp): string | null {
   if (typeof value !== "string") return null;
   if (holdsValue(value, values)) return "<withheld>";
   if (form !== undefined && !form.test(value)) return "<unexpected>";
+  if (hasLongWord(value)) return "<withheld>";
   return value.slice(0, 120);
 }
 
-/** The forms of the fields the report prints. */
+/** The forms of the fields the report prints. The two IDs are short enough to pass MAX_WORD. */
 const FORMS = {
   instanceId: /^[0-9a-f]{16}$/,
-  computerId: /^cmp_[0-9a-hjkmnp-tv-z]{26}$/,
-  className: /^[A-Za-z]{1,40}$/,
-  version: /^[0-9a-f-]{1,13}$/,
+  className: /^[A-Za-z]{1,24}$/,
   // A reason is the platform's own words: letters, digits, spaces and a little punctuation.
   reason: /^[A-Za-z0-9 _.,:;()'/-]{0,120}$/,
 } as const;
+
+const COMPUTER_ID = /^cmp_[0-9a-hjkmnp-tv-z]{26}$/;
+/** A Workers version ID, whole (a UUID) or as the soak's records cut it (13 characters). */
+const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/;
+
+/** A computer ID (30 characters, one run longer than MAX_WORD): checked by its own form. */
+function printableComputer(value: unknown, values: ExactValues): string | null {
+  if (typeof value !== "string") return null;
+  if (holdsValue(value, values)) return "<withheld>";
+  return COMPUTER_ID.test(value) ? value : "<unexpected>";
+}
+
+/** A version, checked whole (Codex WP3.33 r2-2), then cut to the 13 characters the soak keeps. */
+function printableVersion(value: unknown, values: ExactValues): string | null {
+  if (typeof value !== "string") return null;
+  if (holdsValue(value, values)) return "<withheld>";
+  return VERSION.test(value) ? value.slice(0, 13) : "<unexpected>";
+}
 
 /** Every string in a JSON value, with its path (keys too: a key could hold a value). */
 function* strings(
@@ -156,13 +197,13 @@ function timeOf(event: Json): number | null {
   return typeof e?.timestamp === "number" ? e.timestamp : null;
 }
 
+/** The event's version ID as logged, whole: `printableVersion` checks it before cutting it. */
 function versionOf(event: Json): unknown {
   const e = event as {
     version?: unknown;
     $workers?: { scriptVersion?: { id?: unknown } };
   } | null;
-  const id = e?.version ?? e?.$workers?.scriptVersion?.id;
-  return typeof id === "string" ? id.slice(0, 13) : null;
+  return e?.version ?? e?.$workers?.scriptVersion?.id ?? null;
 }
 
 const TERMINAL_COUNTED = ["terminal_reattached", "terminal_taken_over", "terminal_session_gone"];
@@ -251,10 +292,7 @@ export function scanLines(
     }
     const source = sourceOf(event);
     // The event's name, as code logs it: anything else is not printed.
-    const name =
-      typeof source?.event === "string" && segment(source.event, values) !== "<key>"
-        ? source.event
-        : null;
+    const name = eventName(source?.event, values);
     for (const { path, text: s } of strings(event, "", values)) {
       for (const hit of tokenHits(s)) {
         tokens[hit.kind] = (tokens[hit.kind] ?? 0) + 1;
@@ -269,8 +307,8 @@ export function scanLines(
         at: timeOf(event),
         class: printable(source.class, values, FORMS.className),
         instanceId: printable(source.instanceId, values, FORMS.instanceId),
-        computerId: printable(source.computerId, values, FORMS.computerId),
-        version: printable(versionOf(event), values, FORMS.version),
+        computerId: printableComputer(source.computerId, values),
+        version: printableVersion(versionOf(event), values),
       });
     }
     if (name.startsWith("terminal_") || name === "page_change_refused") {

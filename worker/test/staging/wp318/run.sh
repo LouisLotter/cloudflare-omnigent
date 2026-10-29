@@ -585,6 +585,8 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     logged teardown-list node "$root/scripts/staging/stg.ts" list
     logged sweep node "$root/scripts/staging/stg.ts" sweep
     rm -f "${secrets:?}" "${launcher:?}" "${install_dir:?}/${platform:?}.json"
+    # The lead's limit (`run.sh limit`) belongs to this installation: never to the next one.
+    rm -f "${out:?}/limit" "${out:?}/last-command.json"
     rm -rf "${out:?}/layers"
     # Lock files stay: deleting one would let two holders coexist (scripts/staging/lock.ts).
     ;;

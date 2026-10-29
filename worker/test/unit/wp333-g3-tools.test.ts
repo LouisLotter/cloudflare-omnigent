@@ -794,8 +794,11 @@ describe("run.sh scan's token pass", () => {
   });
 
   it("lists terminal events with their close codes and instances, per window, and every instance start", () => {
-    const wsLine = (at: number, source: Record<string, unknown>, version = "3f2a9c1e-7b4d-4e8f") =>
-      JSON.stringify({ timestamp: at, $workers: { scriptVersion: { id: version } }, source });
+    const wsLine = (
+      at: number,
+      source: Record<string, unknown>,
+      version = "3f2a9c1e-7b4d-4e8f-a1c2-5d6e7f809a1b",
+    ) => JSON.stringify({ timestamp: at, $workers: { scriptVersion: { id: version } }, source });
     const lines = [
       wsLine(T, {
         cfo: "workspace",
@@ -984,14 +987,47 @@ describe("run.sh scan's token pass", () => {
         at: T,
         class: "<withheld>",
         instanceId: "<withheld>",
-        // Not the field's form (a token cut short, or glued to a prefix): never printed either.
+        // Glued to a prefix, a token is not the field's form: never printed either.
         computerId: "<unexpected>",
-        version: "<unexpected>",
+        version: "<withheld>",
       },
     ]);
     expect(report.tokenPositions.map((p) => p.path)).toContain("source.<key>.<key>");
     const printed = JSON.stringify(report);
     for (const value of [...Object.values(tok), exact]) expect(printed).not.toContain(value);
+  });
+
+  it("prints no part of a value hidden behind a prefix, or cut to a version's length (Codex r2)", () => {
+    const exact = "0123456789abcdef0123456789abcdef";
+    const raw = (source: Record<string, unknown>, version: unknown) =>
+      JSON.stringify({ timestamp: T, $workers: { scriptVersion: { id: version } }, source });
+    const report = scanLines(
+      "w",
+      [
+        raw(
+          { event: "terminal_stream_ended", window: 1, reason: `token_${tok.openai}` },
+          "3f2a9c1e-7b4d",
+        ),
+        raw({ event: "terminal_detached", reason: `x-${tok.github}y` }, "3f2a9c1e-7b4d"),
+        raw(
+          { event: "instance_started", class: "OmnigentServer", instanceId: "c".repeat(16) },
+          tok.hex64,
+        ),
+        raw({ event: "instance_started", class: "ControlDO", instanceId: "d".repeat(16) }, exact),
+        raw({ event: `ok_${"a1".repeat(10)}`, [`k_${"b2".repeat(13)}`]: tok.claude }, "x"),
+      ],
+      [{ label: "r2", value: exact }],
+    );
+    expect(report.events.map((e) => e.reason)).toEqual(["<withheld>", "<withheld>"]);
+    expect(report.instances.map((i) => i.version)).toEqual(["<withheld>", "<withheld>"]);
+    expect(report.tokenPositions.at(-1)).toMatchObject({ event: null, path: "source.<key>" });
+    const printed = JSON.stringify(report);
+    // No run of 13 characters of any value: neither the value nor a prefix of it.
+    for (const value of [tok.openai, tok.github, tok.hex64, tok.claude, exact]) {
+      for (let i = 0; i + 13 <= value.length; i += 1) {
+        expect(printed).not.toContain(value.slice(i, i + 13));
+      }
+    }
   });
 
   it("reads --value-file arguments: a label and a file's first line", () => {
