@@ -62,7 +62,7 @@ export async function githubAppCommand(
       {
         cloud,
         openBrowser: options.noOpen ? () => undefined : openInBrowser,
-        fetch: (url, init) => fetch(url, init),
+        githubApi: (url, init) => fetch(url, init),
         random: (n) => new Uint8Array(randomBytes(n)),
         log: (message) => console.log(`bootstrap: ${message}`),
       },

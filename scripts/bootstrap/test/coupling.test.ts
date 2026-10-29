@@ -178,6 +178,8 @@ describe("the bootstrap never talks to the installation, Access or service token
       "bootstrap.ts",
       "cloud.ts",
       "events.ts",
+      "github-app-command.ts",
+      "github-app.ts",
       "machine.ts",
       "r2-token.ts",
       "remove.ts",
@@ -187,8 +189,27 @@ describe("the bootstrap never talks to the installation, Access or service token
     ]);
   });
 
-  it.each(sources)("%s sends no request of its own and calls no setup", (_file, text) => {
-    const code = text.replace(/^\s*\/\/.*$/gm, "");
+  // The GitHub App step (WP5.9) talks to GitHub alone: one request, to GitHub's manifest
+  // conversion on api.github.com, and a page on 127.0.0.1 for the person's own browser
+  // (node:http's server, which sends nothing). Those uses, and only those, are allowed.
+  const githubOnly: Readonly<Record<string, readonly RegExp[]>> = {
+    "github-app.ts": [/import \{ createServer, [^}]*\} from "node:http";/g],
+    "github-app-command.ts": [/githubApi: \(url, init\) => fetch\(url, init\)/g],
+  };
+
+  it("lets the GitHub App step reach GitHub's API and nothing else", () => {
+    const text = Object.fromEntries(sources)["github-app.ts"] ?? "";
+    expect(text).toContain('const GITHUB_API = "https://api.github.com";');
+    // Its one request: GitHub's manifest conversion.
+    expect(text.match(/ports\.githubApi\(/g)).toHaveLength(1);
+    expect(text).toMatch(/ports\.githubApi\(\s*`\$\{GITHUB_API\}\/app-manifests\//);
+  });
+
+  it.each(sources)("%s sends no request of its own and calls no setup", (file, text) => {
+    const code = (githubOnly[file] ?? []).reduce(
+      (rest, pattern) => rest.replace(pattern, ""),
+      text.replace(/^\s*\/\/.*$/gm, ""),
+    );
     expect(code).not.toMatch(/\bfetch\(/);
     expect(code).not.toMatch(/auth\/setup/);
     expect(code).not.toMatch(/node:https?\b|undici|XMLHttpRequest|WebSocket/);

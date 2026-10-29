@@ -80,8 +80,8 @@ export interface GitHubAppPorts {
   readonly cloud: GitHubAppCloud;
   /** Opens a URL in the person's browser. The URL never holds a secret. */
   openBrowser(url: string): void;
-  /** Reaches GitHub's API (the manifest conversion). */
-  fetch(url: string, init: RequestInit): Promise<Response>;
+  /** Reaches GitHub's API, and only that: the manifest conversion. */
+  githubApi(url: string, init: RequestInit): Promise<Response>;
   random(bytes: number): Uint8Array;
   log(message: string): void;
 }
@@ -395,7 +395,7 @@ export async function createGitHubApp(
     });
     const callback = await Promise.race([arrived, timeout]);
     try {
-      const answer = await ports.fetch(
+      const answer = await ports.githubApi(
         `${GITHUB_API}/app-manifests/${encodeURIComponent(callback.code)}/conversions`,
         {
           method: "POST",

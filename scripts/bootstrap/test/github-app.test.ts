@@ -110,7 +110,7 @@ async function run(
         resolveVisit({ page, action, manifest, callback });
       })();
     },
-    fetch: async (url, init) => {
+    githubApi: async (url, init) => {
       github.push({ url, init });
       return options.github ? options.github() : Response.json(conversion(), { status: 201 });
     },
@@ -382,7 +382,7 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
         openBrowser: () => {
           opened = true;
         },
-        fetch: async () => new Response(null, { status: 500 }),
+        githubApi: async () => new Response(null, { status: 500 }),
         random: counter(),
         log: () => undefined,
       });
@@ -428,7 +428,7 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
           port = Number(u.port);
           pagePath = u.pathname;
         },
-        fetch: async () => Response.json(conversion(), { status: 201 }),
+        githubApi: async () => Response.json(conversion(), { status: 201 }),
         random: counter(),
         log: () => undefined,
       },
