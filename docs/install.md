@@ -17,12 +17,12 @@ In your Cloudflare account:
 
 You do not have to check these yourself: the installer reads your account before it writes anything, and tells you what is missing, each with its link. If it cannot read something, it says "could not check" and carries on.
 
-On your computer (Linux; macOS should work but is not tested yet):
+On your computer (Linux; macOS is not supported yet: the installer's locks need `flock` from util-linux, and macOS has no memory-backed directory for the moment a secret is handed to Wrangler):
 
 - Git, [Node.js](https://nodejs.org/) 26 and pnpm 11.15.1;
 - [Docker](https://docs.docker.com/get-docker/), running: the first install builds the server's and the cloud computers' images on your computer, which takes a while and several gigabytes of disk;
 - Cloudflare's `cf` command, version 1.0.0-beta.18;
-- a clipboard tool, so that the installer can hand you the password without showing it: `wl-copy` (Wayland) or `xclip` or `xsel` (X11) on Linux; macOS has `pbcopy` already.
+- a clipboard tool, so that the installer can hand you the password without showing it: `wl-copy` (Wayland), or `xclip` or `xsel` (X11).
 
 ```bash
 git clone https://github.com/LouisLotter/cloudflare-omnigent.git

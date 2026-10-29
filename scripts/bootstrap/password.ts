@@ -3,8 +3,11 @@
 // X11, pbcopy on macOS), as the staging harness's `run.sh password` does. The person stores it in
 // their password manager and presses Enter; only then does the run go on to upload it.
 //
-// The password is never printed, logged, put in argv or the environment, or written to disk: it
-// reaches the clipboard tool on its stdin only, and the platform Worker as a secret (machine.ts).
+// The password is never printed, logged, put in argv or the environment, or written to a named
+// file: it reaches the clipboard tool on its stdin only, and Wrangler as every uploaded secret
+// does (staging/cloud.ts, withSecretsDescriptor): an unlinked file in a memory-backed directory
+// on Linux (the runtime directory, else /dev/shm), the temporary directory only where neither
+// exists (Codex WP3.31 r1-5).
 // The clipboard tool is started with nothing but stdin, so a tool that stays in the background
 // to serve the clipboard (wl-copy, xclip, xsel) holds none of the bootstrap's locks.
 //

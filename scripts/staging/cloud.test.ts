@@ -326,6 +326,21 @@ describe("secrets for an upload", () => {
   const secretDirs = () =>
     readdirSync(secretsBase()).filter((name) => name.startsWith("cfo-stg-secrets-"));
 
+  it("live in memory where there is a place for it: the runtime directory, then /dev/shm (Codex WP3.31 r1-5)", () => {
+    const dirs =
+      (...have: string[]) =>
+      (path: string) =>
+        have.includes(path);
+    expect(secretsBase({ XDG_RUNTIME_DIR: "/run/user/7" }, dirs("/run/user/7", "/dev/shm"))).toBe(
+      "/run/user/7",
+    );
+    expect(secretsBase({ XDG_RUNTIME_DIR: "/run/user/7" }, dirs("/dev/shm"))).toBe("/dev/shm");
+    expect(secretsBase({ XDG_RUNTIME_DIR: "" }, dirs("/dev/shm"))).toBe("/dev/shm");
+    expect(secretsBase({}, dirs())).toBe(tmpdir());
+    // The real check: a missing path is not a directory.
+    expect(secretsBase({ XDG_RUNTIME_DIR: join(scratch, "missing") })).toBe(secretsBase({}));
+  });
+
   it("reach Wrangler only as descriptor 3, a file without a name, and never argv", () => {
     const before = secretDirs();
     let seen:

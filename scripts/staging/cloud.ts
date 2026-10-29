@@ -13,6 +13,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -372,13 +373,26 @@ export function credentialsOf(answer: unknown): ServiceTokenCredentials {
 }
 
 /**
- * Where the secrets file lives for the instant before it is unlinked: the user's runtime
- * directory, which is private and in memory on most Linux systems, or else the system's
- * temporary directory.
+ * Where the secrets file lives, unlinked, while a child reads it: a directory in memory where
+ * there is one, so that no secret reaches a disk (Codex WP3.31 r1-5). The user's runtime
+ * directory (a private tmpfs on most Linux systems), else Linux's shared memory (/dev/shm,
+ * tmpfs; the file's own directory is private), else the system's temporary directory, which
+ * may be on disk (macOS).
  */
-export function secretsBase(): string {
-  const runtime = process.env.XDG_RUNTIME_DIR;
-  return runtime !== undefined && runtime !== "" && existsSync(runtime) ? runtime : tmpdir();
+export function secretsBase(
+  env: NodeJS.ProcessEnv = process.env,
+  isDirectory: (path: string) => boolean = (path) => {
+    try {
+      return statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  },
+): string {
+  const runtime = env.XDG_RUNTIME_DIR;
+  if (runtime !== undefined && runtime !== "" && isDirectory(runtime)) return runtime;
+  if (isDirectory("/dev/shm")) return "/dev/shm";
+  return tmpdir();
 }
 
 const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";
