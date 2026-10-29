@@ -50,3 +50,26 @@ def test_valid_fixture(name: str, path: Path) -> None:
 @pytest.mark.parametrize(("name", "path"), _cases(valid=False), ids=lambda v: getattr(v, "name", v))
 def test_invalid_fixture(name: str, path: Path) -> None:
     assert list(_validator(name).iter_errors(json.loads(path.read_text()))), f"{path} should fail"
+
+
+def _tolerated() -> list[tuple[str, Path]]:
+    return [
+        (name, path)
+        for name in _schemas()
+        for path in sorted((FIXTURE_DIR / name / "tolerated").glob("*.json"))
+    ]
+
+
+def test_there_are_tolerated_fixtures() -> None:
+    assert _tolerated(), "no tolerated fixtures found"
+
+
+@pytest.mark.parametrize(("name", "path"), _tolerated(), ids=lambda v: getattr(v, "name", v))
+def test_tolerated_fixture(name: str, path: Path) -> None:
+    """A tolerated input (WP3.29) is what no writer of this release sends, so the exported schema,
+    which shows what a parse yields, refuses it; the reader's degraded form is valid."""
+    case = json.loads(path.read_text())
+    assert set(case) == {"input", "parsed"}
+    assert list(_validator(name).iter_errors(case["input"])), f"{path}: a writer never sends it"
+    errors = list(_validator(name).iter_errors(case["parsed"]))
+    assert not errors, [e.message for e in errors]

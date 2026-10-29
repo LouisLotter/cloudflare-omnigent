@@ -4,7 +4,7 @@ This directory is a uv-managed **reference test project** that also holds the so
 
 | Test | What it checks |
 |---|---|
-| [test_contracts.py](tests/test_contracts.py) | Exported draft-2020-12 JSON Schemas, valid fixtures and `invalid/` fixtures, with format checking |
+| [test_contracts.py](tests/test_contracts.py) | Exported draft-2020-12 JSON Schemas, valid fixtures and `invalid/` fixtures, with format checking; `tolerated/` fixtures' inputs fail the schema and their degraded forms pass |
 | [test_contract_vectors.py](tests/test_contract_vectors.py) | Independent reference calculations for signing, tree-index hashes and checkpoint-policy vectors |
 | [sandbox/](tests/sandbox/) | The Cloudflare launcher: its protocol against the fixtures, schemas, vectors and `launcher.ts` tables; each method against a [fake launcher API](tests/sandbox/fake_platform.py) over real loopback HTTP; one absolute deadline per HTTP attempt; and, where the fork's Omnigent is importable, the adapter, the registration and Omnigent's persistent-host flow (skipped otherwise) |
 

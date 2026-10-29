@@ -6,7 +6,7 @@ The versioned wire and behavior authority shared by the Workers and their contai
 |---|---|
 | [src/](src/) | TypeScript/zod runtime schemas and cross-field refinements; [index.ts](src/index.ts) registers exported wire schemas |
 | [schema/](schema/) | Committed JSON Schema projection generated from the runtime schemas |
-| [fixtures/](fixtures/) | Valid examples, `invalid/` shape failures and `refined/` cases rejected by runtime cross-field rules that export cannot fully express |
+| [fixtures/](fixtures/) | Valid examples, `invalid/` shape failures, `refined/` cases rejected by runtime cross-field rules that export cannot fully express, and `tolerated/` cases: `{ input, parsed }`, an input no writer of this release sends (the exported schema refuses it) and what a tolerant reader yields from it (the supervisor's `computer_status` reply; see [compatibility](../docs/compatibility.md)) |
 | [vectors/](vectors/) | Cross-language signing, tree-digest and checkpoint-policy cases |
 | [test/](test/) | Actual schema parsing, round trips, refinements and property checks |
 
