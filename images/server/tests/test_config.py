@@ -130,6 +130,7 @@ def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
             "AWS_ACCESS_KEY_ID": "synthetic-artifacts-id",
             "DATABASE_URL": "postgresql://elsewhere",
             "OMNIGENT_AUTH_PROVIDER": "accounts",
+            "OMNIGENT_RUNNER_DISCONNECT_GRACE_S": "90",
         }
     )
     config = load(env)
@@ -140,6 +141,7 @@ def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
     assert app_env["OMNIGENT_AUTH_PROVIDER"] == "accounts"
     assert app_env["DATABASE_URL"] == "sqlite:////data/omnigent.db"
     assert app_env["OMNIGENT_DEFAULT_PUBLIC_SESSIONS"] == "off"
+    assert app_env["OMNIGENT_RUNNER_DISCONNECT_GRACE_S"] == "150"
     for removed in (
         "OMNIGENT_HARNESS_INSTALL_ENABLED",
         "OMNIGENT_DATABRICKS_CLIENT_ID",
