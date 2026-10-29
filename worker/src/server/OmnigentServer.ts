@@ -23,6 +23,9 @@
 //     unaccepted under a bare 101 that carries at most the subprotocol.
 //   - `platform.internal` is intercepted for this container only, before every start and in
 //     every new instance, with versioned props.
+//   - The owner's password page (WP3.34, `ownerPassword`): the page's state and intent token, and
+//     the signed platform call that sets the password (`owner-password.ts`). Forwarding never
+//     passes on a path under `/_cfo/`, the platform calls' own, whoever sent it.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.
@@ -31,12 +34,18 @@ import { DurableObject } from "cloudflare:workers";
 import {
   type BootstrapStatus,
   BootstrapStatus as BootstrapStatusSchema,
+  isPlatformCallPath,
   OutageId,
   OutageRecord,
+  OWNER_PASSWORD_CALL_PATH,
+  OwnerPasswordCall,
+  type OwnerPasswordResult,
   outageOverlaps,
+  type PageOwner,
   REPLICATION_POSITION_PATH,
   REPLICATION_POSITION_PORT,
   type ReplicationHealth,
+  signPlatformCall,
   Timestamp,
 } from "@cfo/contracts";
 import { z } from "zod";
@@ -61,6 +70,17 @@ import {
   serverImageOf,
 } from "./container-port.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
+import {
+  constantTimeEqual,
+  cookieSecretOf,
+  decideAttempt,
+  intentText,
+  outcomeOf,
+  ownerUsernameOf,
+  PLATFORM_CALL_TIMEOUT_MS,
+  passwordState,
+  UNAVAILABLE,
+} from "./owner-password.ts";
 import {
   PLATFORM_INTERNAL_HOST,
   PLATFORM_INTERNAL_PROPS_VERSION,
@@ -225,6 +245,12 @@ export const APPLIED_NOTICE_MS = 15 * 60_000;
 const START_TIMING_KEY = "start_timing";
 const BOOTSTRAP_STATUS_KEY = "bootstrap_status";
 const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
+/** The password page's intent secret: 32 random bytes, hex (WP3.34). Never logged or returned. */
+const PASSWORD_INTENT_SECRET_KEY = "owner_password_intent_secret";
+/** When a password chosen on the page was last confirmed durable, in milliseconds. */
+const PASSWORD_CHOSEN_KEY = "owner_password_chosen";
+/** The times of the latest attempts that reached the server (WP3.34's limit). */
+const PASSWORD_ATTEMPTS_KEY = "owner_password_attempts";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -266,6 +292,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
   #checks: Promise<void> = Promise.resolve();
+  /** Serialises the password page's changes: one platform call at a time (WP3.34). */
+  #passwordChanges: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
@@ -329,6 +357,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
             "The call's interface version is newer.",
             false,
           );
+    }
+    if (isPlatformCallPath(new URL(request.url).pathname)) {
+      // The platform calls' paths (WP3.34): only this object calls them, never on anyone's behalf.
+      logEvent("server", "forward_refused", { reason: "platform_path" });
+      return errorResponse(404, "not_found", "Not found.", false);
     }
     const container = this.#container;
     if (container === null) {
@@ -1004,5 +1037,169 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // A running server is the watchdog's to judge at its own pace: nothing more here. A stopped
     // one gets a check now, through the same queue as the alarm, so the two never race.
     if (this.#container?.running === false) await this.#check();
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The owner's password page (WP3.34)
+
+  async ownerPassword(raw: OwnerPasswordCall): Promise<OwnerPasswordResult> {
+    this.#checkCall(raw);
+    const parsed = OwnerPasswordCall.safeParse(raw);
+    // The issues are not logged: they could quote the password.
+    if (!parsed.success) throw platformError("bad_request", "invalid owner password call");
+    const call = parsed.data;
+    const env = this.env as unknown as Record<string, unknown>;
+    if (call.action === "state") {
+      return {
+        action: "state",
+        state: passwordState(env, this.#passwordChosenAt()),
+        username: ownerUsernameOf(env),
+        intentToken: await this.#passwordIntent(call.owner),
+      };
+    }
+    const run = this.#passwordChanges.then(() => this.#setOwnerPassword(call));
+    this.#passwordChanges = run.catch(() => undefined);
+    return run;
+  }
+
+  async #setOwnerPassword(
+    call: Extract<OwnerPasswordCall, { action: "set" }>,
+  ): Promise<OwnerPasswordResult> {
+    const result = await this.#trySetOwnerPassword(call);
+    logEvent("server", "owner_password", {
+      outcome: result.action === "set" ? result.outcome : "state",
+      ...(result.action === "set" && result.outcome === "refused" ? { reason: result.reason } : {}),
+    });
+    return result;
+  }
+
+  async #trySetOwnerPassword(
+    call: Extract<OwnerPasswordCall, { action: "set" }>,
+  ): Promise<OwnerPasswordResult> {
+    if (!constantTimeEqual(await this.#passwordIntent(call.owner), call.intent)) {
+      return { action: "set", outcome: "refused", reason: "intent" };
+    }
+    const env = this.env as unknown as Record<string, unknown>;
+    const cookieSecret = cookieSecretOf(env);
+    if (cookieSecret === null || ownerUsernameOf(env) === null) {
+      return { action: "set", outcome: "refused", reason: "not_configured" };
+    }
+    // As a forwarded request would: never into a stopping, held or recovering server, and a
+    // starting one is waited for, briefly.
+    const container = this.#container;
+    if (container === null) return UNAVAILABLE;
+    const state = this.#loadState();
+    if (state.phase === "held") return { action: "set", outcome: "failed" };
+    if (this.#stopping || state.phase === "stopping" || state.recoverySince !== null) {
+      return UNAVAILABLE;
+    }
+    if (!this.#ready && !(await this.#waitUntilReady(container))) return UNAVAILABLE;
+    if (this.#stopping || this.#loadState().phase === "stopping") return UNAVAILABLE;
+    // The limit, recorded before the call (persist before effect).
+    const decision = decideAttempt(this.#passwordAttempts(), this.now());
+    this.#putServerState(PASSWORD_ATTEMPTS_KEY, decision.attempts);
+    if (!decision.allowed) {
+      return {
+        action: "set",
+        outcome: "refused",
+        reason: "rate_limited",
+        retryAfterSeconds: decision.retryAfterSeconds,
+      };
+    }
+    const nonce = [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const body = new TextEncoder().encode(JSON.stringify({ password: call.password, nonce }));
+    // Signed with the real clock: the server compares the timestamp with its own.
+    const headers = await signPlatformCall({
+      cookieSecret,
+      method: "POST",
+      path: OWNER_PASSWORD_CALL_PATH,
+      timestamp: Math.floor(Date.now() / 1000),
+      body,
+    });
+    let response: Response;
+    // A timer cleared once the call settles, so no deadline outlives it.
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), PLATFORM_CALL_TIMEOUT_MS);
+    try {
+      response = await container.fetch(
+        OMNIGENT_PORT,
+        new Request(`http://omnigent${OWNER_PASSWORD_CALL_PATH}`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body,
+          signal: abort.signal,
+        }),
+      );
+      await response.body?.cancel();
+    } catch (error) {
+      // Not reached, or the answer was lost: either way the page says "try again", and setting
+      // the same password again is harmless.
+      this.#ready = false;
+      logEvent("server", "owner_password_error", {
+        reached: !isNotListeningError(error),
+        error: describeError(error),
+      });
+      return UNAVAILABLE;
+    } finally {
+      clearTimeout(deadline);
+    }
+    this.#answeredAt = Date.now();
+    const result = outcomeOf(response.status, response.headers.get("x-cfo-durability"));
+    if (result.action === "set" && result.outcome === "done") {
+      this.#putServerState(PASSWORD_CHOSEN_KEY, this.now());
+    } else if (result.action === "set" && result.outcome === "failed") {
+      logEvent("server", "owner_password_status", { status: response.status });
+    }
+    return result;
+  }
+
+  /** The page's request-intent token for this owner's Access session. */
+  async #passwordIntent(owner: PageOwner): Promise<string> {
+    const stored = this.#serverState(PASSWORD_INTENT_SECRET_KEY);
+    let hex = typeof stored === "string" ? stored : "";
+    if (!/^[0-9a-f]{64}$/.test(hex)) {
+      hex = [...crypto.getRandomValues(new Uint8Array(32))]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      this.#putServerState(PASSWORD_INTENT_SECRET_KEY, hex);
+    }
+    const raw = new Uint8Array(32);
+    for (let i = 0; i < 32; i += 1) raw[i] = Number.parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      raw,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(intentText(owner)));
+    return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  #passwordChosenAt(): number | null {
+    const value = this.#serverState(PASSWORD_CHOSEN_KEY);
+    return Millis.safeParse(value).success ? (value as number) : null;
+  }
+
+  #passwordAttempts(): number[] {
+    const parsed = z.array(Millis).max(100).safeParse(this.#serverState(PASSWORD_ATTEMPTS_KEY));
+    return parsed.success ? parsed.data : [];
+  }
+
+  #serverState(key: string): unknown {
+    const row = this.ctx.storage.sql
+      .exec<{ value: string }>("SELECT value FROM server_state WHERE key = ?", key)
+      .toArray()[0];
+    return row === undefined ? undefined : parseJson(row.value);
+  }
+
+  #putServerState(key: string, value: unknown): void {
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO server_state (key, value) VALUES (?, ?)",
+      key,
+      JSON.stringify(value),
+    );
   }
 }
