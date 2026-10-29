@@ -2821,6 +2821,9 @@ export class WorkspaceController {
         }),
       );
       if (instance === null) return true;
+      // Every `start()` attempt, where a wake's time is measured from (WP3.33), including one
+      // Cloudflare refuses at once by throwing (Codex WP3.33 r1-5).
+      this.#log("container_start", { generation, refusals: start.refusals, size: instance });
       try {
         port.start({
           instance,
@@ -2829,8 +2832,6 @@ export class WorkspaceController {
             [COMPUTER_START_ENV.generation]: String(generation),
           },
         });
-        // The container's `start()`, where a wake's time is measured from (WP3.33).
-        this.#log("container_start", { generation, refusals: start.refusals, size: instance });
       } catch (error) {
         if (!isStartRefusedError(error)) {
           this.#log("start_threw", { generation, error: describe(error) });

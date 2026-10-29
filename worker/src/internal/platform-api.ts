@@ -411,6 +411,7 @@ export async function handleLauncherRequest(
   request: Request,
   deps: LauncherDeps,
 ): Promise<Response> {
+  const started = Date.now();
   const path = new URL(request.url).pathname.slice(0, 64);
   let checked: Checked;
   try {
@@ -427,13 +428,15 @@ export async function handleLauncherRequest(
     return checked.response;
   }
   const response = await dispatch(checked.request, deps);
-  // The computer, where the call names one: `run.sh wakes` times each computer's wake from its
-  // `resume` (WP3.33). A computer ID names no secret.
+  // The computer, where the call names one, and the call's length (the line is written when it
+  // ends): `run.sh wakes` times each computer's wake from the start of its `resume` (WP3.33). A
+  // computer ID names no secret.
   const computer = "computerId" in checked.request ? checked.request.computerId : undefined;
   deps.log("call", {
     operation: checked.request.operation,
     path,
     status: response.status,
+    ms: Date.now() - started,
     ...(computer === undefined ? {} : { computerId: computer }),
   });
   return response;

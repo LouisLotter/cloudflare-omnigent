@@ -22,6 +22,7 @@ import {
   newCommandId,
   parseCommand,
   type RunOutcome,
+  resetOutcome,
   resultFor,
   resultKey,
   runCommands,
@@ -29,7 +30,7 @@ import {
   type SoakStatus,
 } from "../staging/wp318/commands.ts";
 import { instanceCounts, instanceStarts, type Planned } from "../staging/wp318/instances.ts";
-import { controlOnVersion, LIMIT_VAR, limitSetting, withLimit } from "../staging/wp318/limit.ts";
+import { LIMIT_VAR, limitHolds, limitSetting, withLimit } from "../staging/wp318/limit.ts";
 import type { LogLine } from "../staging/wp318/plan.ts";
 import { scanLines, TOKEN_SHAPES, tokenHits, valuesFrom } from "../staging/wp318/scan.ts";
 import { soakPlatformConfig } from "../staging/wp318/soak-config.ts";
@@ -179,6 +180,32 @@ describe("whether a command may run", () => {
       reason: "unknown_computer",
     });
   });
+
+  it("lets the read-only limits command run during a soak", () => {
+    const limits: SoakCommand = { ...command("server-reset"), command: "limits" };
+    expect(decide(limits, { now: T, soak: running, computers: null })).toEqual({ run: true });
+  });
+});
+
+describe("a forced reset's outcome", () => {
+  const reason = "soak command cmd-20261029T120000Z-00000001";
+  it("is the reset only when the call ends with the reset's own message", () => {
+    expect(resetOutcome(reason, { ok: false, error: new Error(reason) })).toEqual({
+      outcome: "ok",
+      detail: "reset",
+    });
+    expect(resetOutcome(reason, { ok: false, error: reason })).toEqual({
+      outcome: "ok",
+      detail: "reset",
+    });
+    const lost = resetOutcome(reason, { ok: false, error: new Error("Network connection lost.") });
+    expect(lost).toMatchObject({ outcome: "failed", reason: "error" });
+    expect(String(lost.detail)).toContain("Network connection lost.");
+    expect(resetOutcome(reason, { ok: true })).toEqual({
+      outcome: "failed",
+      reason: "no_reset_seen",
+    });
+  });
 });
 
 /** A results bucket, a soak run's claim table and its effects, in memory. */
@@ -300,6 +327,36 @@ describe("the soak run's command runner", () => {
     const [a, b] = await Promise.all([first, second]);
     expect(h.ran.map((c) => c.id)).toEqual([id]);
     expect([...a, ...b].map((r) => r.id)).toEqual([id]);
+  });
+
+  it("decides just before the effect: a soak started, or ten minutes passed, while the computers were read (Codex r1-2)", async () => {
+    let soak: SoakStatus | null = null;
+    const h = harness();
+    h.ports = {
+      ...h.ports,
+      soak: async () => soak,
+      computers: async () => {
+        soak = { runId: "soak-1", ended: false };
+        return [A, B];
+      },
+    };
+    const kill = put(h, "computer-kill", A, 1);
+    const [refused] = await runCommands(h.ports);
+    expect(refused).toMatchObject({ id: kill, outcome: "refused", reason: "soak_running" });
+    expect(h.ran).toEqual([]);
+    const g = harness();
+    g.ports = {
+      ...g.ports,
+      computers: async () => {
+        g.advance(COMMAND_MAX_AGE_MS);
+        return [A];
+      },
+    };
+    put(g, "workspace-reset", A, 2);
+    const [late] = await runCommands(g.ports);
+    expect(late).toMatchObject({ outcome: "refused", reason: "stale" });
+    expect(late?.startedAt).toBe(T + 30 * S + COMMAND_MAX_AGE_MS);
+    expect(g.ran).toEqual([]);
   });
 
   it("publishes an outcome again, without running, when an earlier pass stopped before removing the object", async () => {
@@ -570,6 +627,42 @@ describe("run.sh wakes", () => {
     });
     expect(describeWakes({ wakes, refused: [] })[0]).toContain("(from the grant)");
   });
+
+  it("takes the latest earlier generation's stop, whatever its kind (Codex r1-4)", () => {
+    const lines: LogLine[] = [
+      ws(T + 90 * S, "staging_kill", { generation: 1 }),
+      ws(T + 100 * S, "unexpected_stop", { generation: 1 }),
+      ws(T + 150 * S, "container_start", { generation: 2, refusals: 0 }),
+      ws(T + 200 * S, "stop_confirmed", { generation: 2, reason: "sleep" }),
+      line(T + 201 * S, { cfo: "control", event: "released", computerId: A, generation: 2 }),
+      ws(T + 300 * S, "container_start", { generation: 3, refusals: 0 }),
+    ];
+    const third = wakeTable(lines).wakes.find((w) => w.generation === 3);
+    expect(third).toMatchObject({
+      stopBefore: { kind: "stop_confirmed", at: T + 200 * S },
+      killAt: null,
+      ms: { stopToStart: 100 * S },
+    });
+  });
+
+  it("times Omnigent's resume from its start, as the line logged at its end gives its length (Codex r1-6)", () => {
+    const lines: LogLine[] = [
+      line(T + 3 * S, {
+        cfo: "launcher_api",
+        event: "call",
+        operation: "resume",
+        status: 200,
+        computerId: A,
+        ms: 2_500,
+      }),
+      line(T + S, { cfo: "control", event: "reserve_granted", computerId: A, generation: 1 }),
+      ws(T + 2 * S, "container_start", { generation: 1, refusals: 0 }),
+      route(T + 40 * S, `/v1/hosts/${HOST_A}/tunnel`, 1),
+      route(T + 45 * S, "/v1/runners/runner_token_0123/tunnel", 1),
+    ];
+    const [wake] = wakeTable(lines).wakes;
+    expect(wake).toMatchObject({ resumeAt: T + 0.5 * S, ms: { resumeToRunner: 44.5 * S } });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -836,6 +929,71 @@ describe("run.sh scan's token pass", () => {
     ]);
   });
 
+  it("prints no value from any field: reasons, instance fields, keys, the worker's name (Codex r1-1)", () => {
+    const exact = "r2-key-0123456789";
+    const raw = (source: Record<string, unknown>, version: unknown = "3f2a9c1e-7b4d-4e8f") =>
+      JSON.stringify({ timestamp: T, $workers: { scriptVersion: { id: version } }, source });
+    const report = scanLines(
+      `w-${tok.hex64}`,
+      [
+        raw({
+          cfo: "workspace",
+          event: "terminal_stream_ended",
+          window: 1,
+          reason: `closed ${tok.claude}`,
+          code: "4003",
+          clean: "yes",
+          instanceId: tok.urlsafe,
+        }),
+        raw({
+          cfo: "workspace",
+          event: "terminal_detached",
+          reason: `x ${exact}`,
+          instanceId: "aaaa000000000001",
+        }),
+        raw({ cfo: "workspace", event: "terminal_bridged", reason: "a <script> tag" }),
+        raw(
+          {
+            cfo: "workspace",
+            event: "instance_started",
+            class: tok.github,
+            instanceId: tok.hex64,
+            computerId: `cmp_${tok.openai}`,
+          },
+          tok.jwt,
+        ),
+        raw({ event: "x", [exact]: { [`k${exact}`]: tok.hex64 } }),
+      ],
+      [{ label: "r2", value: exact }],
+    );
+    expect(report.worker).toBe("<withheld>");
+    expect(report.events[0]).toEqual({
+      at: T,
+      event: "terminal_stream_ended",
+      window: 1,
+      reason: "<withheld>",
+      instanceId: "<withheld>",
+    });
+    expect(report.events[1]).toMatchObject({
+      reason: "<withheld>",
+      instanceId: "aaaa000000000001",
+    });
+    expect(report.events[2]).toMatchObject({ reason: "<unexpected>" });
+    expect(report.instances).toEqual([
+      {
+        at: T,
+        class: "<withheld>",
+        instanceId: "<withheld>",
+        // Not the field's form (a token cut short, or glued to a prefix): never printed either.
+        computerId: "<unexpected>",
+        version: "<unexpected>",
+      },
+    ]);
+    expect(report.tokenPositions.map((p) => p.path)).toContain("source.<key>.<key>");
+    const printed = JSON.stringify(report);
+    for (const value of [...Object.values(tok), exact]) expect(printed).not.toContain(value);
+  });
+
   it("reads --value-file arguments: a label and a file's first line", () => {
     const files: Record<string, string> = { "/x/id": "0123456789abcdef\n", "/x/empty": "\n" };
     const read = (path: string) => files[path] ?? "";
@@ -972,12 +1130,21 @@ describe("run.sh limit", () => {
     });
   });
 
-  it("holds once a ControlDO instance runs the deployed version", () => {
-    const control = (at: number, version: string, event = "instance_started") =>
-      line(at, { cfo: "control", event, class: "ControlDO", instanceId: "c", boots: 2 }, version);
-    const lines = [control(T + 2, "v2"), control(T, "v1"), control(T + 1, "v2", "reserve_granted")];
-    expect(controlOnVersion(lines, "v2")?.timestamp).toBe(T + 2);
-    expect(controlOnVersion(lines, "v3")).toBeNull();
+  it("holds once ControlDO answers the read-only limits command with it", () => {
+    const answer = (maxAwakeComputers: unknown, outcome = "ok", command = "limits") => ({
+      id: "cmd-20261029T120000Z-00000001",
+      command,
+      outcome,
+      detail: { maxAwakeComputers, maxInstanceSize: "standard-4" },
+    });
+    expect(limitHolds(answer(1), "1")).toBe(true);
+    expect(limitHolds(answer(2), "1")).toBe(false);
+    expect(limitHolds(answer("1"), "1")).toBe(false);
+    expect(limitHolds(answer(2), "default")).toBe(true);
+    expect(limitHolds(answer(1, "failed"), "1")).toBe(false);
+    expect(limitHolds(answer(1, "ok", "server-reset"), "1")).toBe(false);
+    expect(limitHolds(null, "1")).toBe(false);
+    expect(() => limitHolds(answer(1), "x")).toThrow(/CFO_MAX_AWAKE_COMPUTERS/);
   });
 });
 
@@ -1034,6 +1201,7 @@ describe("run.sh's G3 verbs without an account", () => {
       ["workspace-reset", A],
       ["server-reset"],
       ["soak-start"],
+      ["limits"],
     ]) {
       const result = run(...args, "--dry-run");
       expect([args[0], result.status, result.stderr]).toEqual([args[0], 0, ""]);

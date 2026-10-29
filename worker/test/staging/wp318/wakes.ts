@@ -136,7 +136,12 @@ export function wakeTable(lines: readonly LogLine[]): {
     ...of("control", "released").map((e) => ({ e, kind: "released" as const })),
   ];
   const kills = of("workspace", "staging_kill");
-  const resumes = of("launcher_api", "call").filter((e) => e.s.operation === "resume");
+  // A launcher call is logged when it ends, with its length (`ms`, since WP3.33): the call began
+  // `ms` earlier (Codex WP3.33 r1-6). Older lines have no length.
+  const resumes = of("launcher_api", "call")
+    .filter((e) => e.s.operation === "resume")
+    .map((e) => ({ at: e.at - (num(e.s.ms) ?? 0), s: e.s }))
+    .sort((a, b) => a.at - b.at);
   // A `start_delivered` from before WP3.33 has no generation: it belongs to the computer's wake
   // that precedes it.
   const unnumbered = of("workspace", "start_delivered").filter((e) => num(e.s.generation) === null);
@@ -186,7 +191,11 @@ export function wakeTable(lines: readonly LogLine[]): {
         generation: num(e.s.generation) as number,
         reason: str(e.s.reason) ?? (kind === "unexpected_stop" ? "unexpected" : null),
       }));
-    const stopped = before.filter((b) => b.kind !== "released").at(-1) ?? before.at(-1) ?? null;
+    // The latest earlier generation's stop (Codex WP3.33 r1-4), by generation, not by kind;
+    // within it, WorkspaceDO's own record before ControlDO's release.
+    const latest = Math.max(Number.NEGATIVE_INFINITY, ...before.map((b) => b.generation));
+    const ofLatest = before.filter((b) => b.generation === latest);
+    const stopped = ofLatest.filter((b) => b.kind !== "released").at(-1) ?? ofLatest.at(-1) ?? null;
     const stopBefore =
       stopped === null ? null : { at: stopped.at, kind: stopped.kind, reason: stopped.reason };
     const kill =

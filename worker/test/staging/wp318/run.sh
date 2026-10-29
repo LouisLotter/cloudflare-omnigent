@@ -73,8 +73,8 @@
 # command object into the results bucket with the lead's `cf` login; the soak module's cron runs it
 # once, within about a minute, and records its outcome, which run.sh waits for (3 minutes at
 # most) and prints. Each is refused while a soak run is active (but soak-start), and when it is
-# more than 10 minutes old when the cron first sees it. `--dry-run` prints the object and writes
-# nothing.
+# more than 10 minutes old when it would run. The soak run runs them, and its own start, one at a
+# time. `--dry-run` prints the object and writes nothing.
 #   run.sh computer-kill <computer ID> [--dry-run]
 #                        step K: WorkspaceDO's `stagingKill`, the computer's container killed at
 #                        once (SIGKILL), with no stop intent and no save, as a crash would; refused
@@ -86,12 +86,16 @@
 #   run.sh soak-start [--dry-run]
 #                        T6: the soak run started (T0 = then), instead of the owner's Start click;
 #                        then `run.sh campaign`
+#   run.sh limits [--dry-run]
+#                        read-only: the limits ControlDO answers with now (runs during a soak too)
 #   run.sh limit <n | default> [--dry-run]
 #                        B6: CFO_MAX_AWAKE_COMPUTERS for the installation, checked with ControlDO's
 #                        own rule, kept in $WP318_DIR/limit for every later platform deploy, and
 #                        deployed once through the staging tool (no server restart: not a
-#                        SERVER_ENV_ value); waits (10 minutes at most) for ControlDO to run the
-#                        deployed version. `default` leaves the variable out again
+#                        SERVER_ENV_ value; OmnigentServer's version switch drops and reconnects
+#                        the hosts, as any platform deploy); then asks ControlDO for its limits
+#                        (the read-only `limits` command) until it answers with the new one (15
+#                        minutes at most). `default` leaves the variable out again
 #   run.sh wakes [--file <logs.jsonl>] [<from ms> [<to ms>]]
 #                        the wake-time table (wakes.ts): per wake, Omnigent's resume, ControlDO's
 #                        grant, the container's start() and DC-37's retries, the restore, the host
@@ -258,7 +262,7 @@ command_once() { # command, [computer], [--dry-run]: one of the soak module's on
     status=${PIPESTATUS[1]}
     set -e
     if [ "$status" -ne 3 ]; then
-      printf '%s\n' "$result" | "${redact[@]}" >>"$out/commands.jsonl"
+      printf '%s\n' "$result" | "${redact[@]}" | tee "$out/last-command.json" >>"$out/commands.jsonl"
       return "$status"
     fi
     [ "$(now_ms)" -lt "$deadline" ] || {
@@ -495,7 +499,7 @@ print(json.dumps({
     [ -n "${2:-}" ] && [ "${2:-}" != "--dry-run" ] || { echo "run.sh $1 <computer ID> [--dry-run]" >&2; exit 2; }
     command_once "$@"
     ;;
-  server-reset|soak-start)
+  server-reset|soak-start|limits)
     command_once "$@"
     ;;
   limit)
@@ -516,15 +520,16 @@ print(json.dumps({
     deploy_at limit "$since" "$out/sitting-deploys.jsonl"
     record="$(tail -n 1 "$out/sitting-deploys.jsonl")"
     echo "$record"
-    version="$(printf '%s' "$record" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["version"] if d["status"] == 0 else "")')"
-    [ -n "$version" ] || { echo "run.sh: the deploy failed or printed no version" >&2; exit 1; }
-    # ControlDO reads the limit from its environment: it holds once ControlDO runs this version.
-    deadline=$(( $(now_ms) + 600000 ))
+    deployed="$(printf '%s' "$record" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+    [ "$deployed" = 0 ] || { echo "run.sh: the deploy failed; the limit is kept for the next deploy" >&2; exit 1; }
+    # ControlDO reads the limit from its environment, so it answers with the new one once it runs
+    # the deployed version: asked with the read-only `limits` command until it does.
+    deadline=$(( $(now_ms) + 900000 ))
     while true; do
-      if node "$here/logs.ts" "$platform" "$since" "$(now_ms)" | node "$here/limit.ts" applied "$version"; then
+      if command_once limits && node "$here/limit.ts" holds "$value" <"$out/last-command.json"; then
         break
       fi
-      [ "$(now_ms)" -lt "$deadline" ] || { echo "run.sh: ControlDO did not run version $version within 10 minutes" >&2; exit 1; }
+      [ "$(now_ms)" -lt "$deadline" ] || { echo "run.sh: ControlDO did not answer with the limit within 15 minutes" >&2; exit 1; }
       sleep 30
     done
     ;;

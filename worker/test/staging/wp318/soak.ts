@@ -9,8 +9,8 @@
 //     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
 //     object's version switch.
 //   - the G3 sitting's one-shot commands (WP3.33, commands.ts): `computer-kill`, `workspace-reset`,
-//     `server-reset` and `soak-start`, which run.sh writes into the results bucket and the cron
-//     hands to SoakRun, which runs each once and records its outcome. The kill is WorkspaceDO's
+//     `server-reset`, `soak-start` and the read-only `limits`, which run.sh writes into the results
+//     bucket and the cron hands to SoakRun, which runs each once and records its outcome. The kill is WorkspaceDO's
 //     production `stagingKill`, refused unless the bootstrap marked the installation as staging;
 //   - `OmnigentServer.m3Replace`: the M3 sitting's forced server replacement (WP3.19, lead only),
 //     G2's `replace-2` step (../g2/steps.ts) on the production object: the container destroyed,
@@ -39,6 +39,7 @@ import {
   COMMANDS_LOG_KEY,
   type CommandResult,
   type RunOutcome,
+  resetOutcome,
   resultKey,
   runCommands,
   type SoakCommand,
@@ -126,8 +127,24 @@ export class SoakRun extends DurableObject<SoakEnv> {
     return this.#state();
   }
 
-  /** The owner's Start click: T0 is now. A started run is never restarted. */
-  async start(): Promise<SoakState> {
+  /**
+   * The lead's commands and the soak's start run one at a time (Codex WP3.33 r1-2): a command is
+   * decided and run with no soak starting in between, whichever path starts it.
+   */
+  #queue: Promise<unknown> = Promise.resolve();
+
+  #serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#queue.then(fn, fn);
+    this.#queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** The owner's Start click (or `run.sh soak-start`): T0 is now. Never restarted. */
+  start(): Promise<SoakState> {
+    return this.#serial(() => this.#start());
+  }
+
+  async #start(): Promise<SoakState> {
     const existing = await this.#state();
     if (existing !== null) return existing;
     const t0 = Date.now();
@@ -205,9 +222,14 @@ export class SoakRun extends DurableObject<SoakEnv> {
   /**
    * Each cron minute: the lead's one-shot commands (WP3.33, commands.ts). Each is claimed in this
    * object's storage before it runs, in one SQL statement, so two passes at once (the cron firing
-   * twice) never both run it. Returns how many outcomes this pass recorded.
+   * twice) never both run it, and passes run one at a time with the soak's start. Returns how
+   * many outcomes this pass recorded.
    */
-  async commands(): Promise<number> {
+  commands(): Promise<number> {
+    return this.#serial(() => this.#commands());
+  }
+
+  async #commands(): Promise<number> {
     const sql = this.ctx.storage.sql;
     sql.exec(
       `CREATE TABLE IF NOT EXISTS soak_commands (
@@ -280,32 +302,38 @@ export class SoakRun extends DurableObject<SoakEnv> {
   /** One command's effect (decided and claimed by `runCommands`). */
   async #run(command: SoakCommand): Promise<RunOutcome> {
     const reason = `soak command ${command.id}`;
-    // A forced reset ends the callee's invocation (ctx.abort), so its call usually rejects with
-    // the reset's own message: recorded as it came.
+    // A forced reset ends the callee's invocation (ctx.abort): its call rejects with the reset's
+    // own message, which is the outcome looked for (resetOutcome).
     const reset = (call: Promise<void>) =>
       call.then(
-        () => "no error",
-        (error: unknown) => String(error).slice(0, 120),
+        () => resetOutcome(reason, { ok: true }),
+        (error: unknown) => resetOutcome(reason, { ok: false, error }),
       );
     switch (command.command) {
       case "soak-start": {
-        const state = await this.start();
+        const state = await this.#start();
         return { outcome: "ok", detail: { runId: state.runId, t0: state.t0 } };
       }
+      case "limits": {
+        // Read-only: the limits ControlDO answers with now, from its own environment.
+        const control = this.env.CONTROL.getByName(CONTROL_OBJECT_NAME) as unknown as {
+          control(
+            call: unknown,
+          ): Promise<{ maxAwakeComputers?: unknown; maxInstanceSize?: unknown }>;
+        };
+        const limits = await control.control({ method: "limits", interfaceVersion: 1 });
+        return {
+          outcome: "ok",
+          detail: {
+            maxAwakeComputers: limits.maxAwakeComputers ?? null,
+            maxInstanceSize: limits.maxInstanceSize ?? null,
+          },
+        };
+      }
       case "server-reset":
-        return {
-          outcome: "ok",
-          detail: await reset(
-            this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).stagingReset(reason),
-          ),
-        };
+        return reset(this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).stagingReset(reason));
       case "workspace-reset":
-        return {
-          outcome: "ok",
-          detail: await reset(
-            this.env.WORKSPACE.getByName(command.computerId ?? "").stagingReset(reason),
-          ),
-        };
+        return reset(this.env.WORKSPACE.getByName(command.computerId ?? "").stagingReset(reason));
       case "computer-kill": {
         const killed = await this.env.WORKSPACE.getByName(command.computerId ?? "").stagingKill({
           interfaceVersion: WORKSPACE_INTERFACE_VERSION,

@@ -1,8 +1,8 @@
 // The G3 sitting's one-shot harness commands (WP3.33), pure parts and the laptop's CLI. Test
 // tooling only, never shipped.
 //
-// The lead runs `run.sh computer-kill <computer>`, `workspace-reset <computer>`, `server-reset` or
-// `soak-start`. run.sh writes a command object into the staging results bucket (the bucket the
+// The lead runs `run.sh computer-kill <computer>`, `workspace-reset <computer>`, `server-reset`,
+// `soak-start`, or (read-only, for `run.sh limit`) `limits`. run.sh writes a command object into the staging results bucket (the bucket the
 // soak run already writes, `<platform Worker>-results`), under `soak/commands/<id>.json`, with the
 // lead's own `cf` login. The soak module's cron (soak.ts, every minute) hands the objects to its
 // SoakRun object, which runs each one once (`runCommands` below) and records the outcome:
@@ -11,9 +11,11 @@
 //   - as `soak/command-results/<id>.json`, which run.sh waits for, and in `soak/commands.json`,
 //     every outcome so far, which `run.sh collect` keeps for the analysis;
 //   - as a `soak/command` log line with its name, computer and outcome.
-// Every command but `soak-start` is refused while a soak run is active, so the soak's analysis
-// sees only its scheduled disruptions. A command older than 10 minutes when first seen (written
-// while the soak module was not deployed, say) is refused, never run late.
+// Every command but `soak-start` and the read-only `limits` is refused while a soak run is active,
+// so the soak's analysis sees only its scheduled disruptions; SoakRun runs the commands and the
+// soak's start one at a time, and decides each command just before its effect (Codex WP3.33
+// r1-2). A command older than 10 minutes when it would run (written while the soak module was not
+// deployed, say) is refused, never run late.
 //
 //   node worker/test/staging/wp318/commands.ts make <command> [computer ID]
 //       prints the object's key, then its body (one line each); refuses a bad command or ID
@@ -28,11 +30,14 @@ export const SOAK_COMMANDS = [
   "workspace-reset",
   "server-reset",
   "soak-start",
+  "limits",
 ] as const;
 export type SoakCommandName = (typeof SOAK_COMMANDS)[number];
 
 /** The commands that act on one computer. */
 const ON_A_COMPUTER: ReadonlySet<string> = new Set(["computer-kill", "workspace-reset"]);
+/** The commands that change nothing, and so may run during a soak. */
+const READ_ONLY: ReadonlySet<string> = new Set(["limits"]);
 
 export const COMMAND_PREFIX = "soak/commands/";
 export const RESULT_PREFIX = "soak/command-results/";
@@ -188,7 +193,7 @@ export function decide(
   }
   if (command.command === "soak-start") {
     if (context.soak !== null) return { run: false, reason: "already_started" };
-  } else if (context.soak !== null && !context.soak.ended) {
+  } else if (!READ_ONLY.has(command.command) && context.soak !== null && !context.soak.ended) {
     return { run: false, reason: "soak_running" };
   }
   if (
@@ -335,12 +340,14 @@ export async function runCommands(ports: CommandPorts): Promise<CommandResult[]>
     }
     const command = parsed.command;
     let outcome: RunOutcome;
+    let startedAt = now;
     try {
-      const decision = decide(command, {
-        now,
-        soak: await ports.soak(),
-        computers: command.computerId === null ? null : await ports.computers(),
-      });
+      // The computers first: the soak's state and the time are read last, just before the effect
+      // (Codex WP3.33 r1-2), and SoakRun lets no soak start in between.
+      const computers = command.computerId === null ? null : await ports.computers();
+      const soak = await ports.soak();
+      startedAt = ports.now();
+      const decision = decide(command, { now: startedAt, soak, computers });
       outcome = decision.run
         ? await ports.run(command)
         : { outcome: "refused", reason: decision.reason };
@@ -357,12 +364,30 @@ export async function runCommands(ports: CommandPorts): Promise<CommandResult[]>
         reason: outcome.reason ?? null,
         detail: outcome.detail ?? null,
         issuedAt: command.issuedAt,
-        startedAt: now,
+        startedAt,
         endedAt: ports.now(),
       },
       true,
     );
   }
+}
+
+/**
+ * A forced reset's outcome (Codex WP3.33 r1-3). `stagingReset(reason)` ends the callee's
+ * invocation with `ctx.abort(reason)`, so its caller sees exactly `Error: <reason>` (as on
+ * 28 Oct). That is the reset; any other rejection (a lost connection, an unknown method before a
+ * version switch) may not have reached the object: failed, never retried; and an answer with no
+ * error means no reset was seen.
+ */
+export function resetOutcome(
+  reason: string,
+  settled: { readonly ok: true } | { readonly ok: false; readonly error: unknown },
+): RunOutcome {
+  if (settled.ok) return { outcome: "failed", reason: "no_reset_seen" };
+  const message = settled.error instanceof Error ? settled.error.message : String(settled.error);
+  return message === reason
+    ? { outcome: "ok", detail: "reset" }
+    : { outcome: "failed", reason: "error", detail: short(settled.error) };
 }
 
 /** The outcome in `text` if it is command `id`'s, else null (no object yet, or an error body). */

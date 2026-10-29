@@ -7,18 +7,16 @@
 // WP318_MAX_AWAKE, so that every platform deploy of the sitting renders it (soakPlatformConfig),
 // and deploys the platform Worker once through the staging tool. It is not a `SERVER_ENV_`
 // variable, so the server's configuration and image are unchanged: no `config_changed` restart.
-// ControlDO reads it from its environment, so the new limit holds once ControlDO runs the
-// deployed version, which run.sh waits for.
+// ControlDO reads it from its environment, so it holds once ControlDO answers with it: run.sh
+// asks with the soak module's read-only `limits` command until it does.
 //
 //   node worker/test/staging/wp318/limit.ts check <n | default>
 //       ControlDO's own rule (parseLimits): prints the setting, exit 2 if ControlDO would refuse it
-//   node worker/test/staging/wp318/logs.ts cfo-stg-wp318-platform <since> <now> |
-//     node worker/test/staging/wp318/limit.ts applied <version>
-//       exit 0 once a ControlDO instance runs that version (13 characters), 3 while none does
+//   node worker/test/staging/wp318/limit.ts holds <n | default> < <a `limits` command's outcome>
+//       exit 0 if ControlDO answered with that limit, 3 if not (yet)
 
 import { readFileSync } from "node:fs";
-import { parseLimits } from "../../../src/control/limits.ts";
-import { type LogLine, sourceOf } from "./plan.ts";
+import { DEFAULT_LIMITS, parseLimits } from "../../../src/control/limits.ts";
 
 /** The variable run.sh passes the lead's limit in (unset: the installation's default). */
 export const LIMIT_ENV = "WP318_MAX_AWAKE";
@@ -45,21 +43,13 @@ export function withLimit(
   return limit === null ? rest : { ...rest, [LIMIT_VAR]: limit };
 }
 
-/** ControlDO's first `instance_started` on `version`, or null: the new limit holds from then. */
-export function controlOnVersion(lines: readonly LogLine[], version: string): LogLine | null {
-  return (
-    [...lines]
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .find((line) => {
-        const s = sourceOf(line);
-        return (
-          line.version === version &&
-          s?.cfo === "control" &&
-          s.event === "instance_started" &&
-          s.class === "ControlDO"
-        );
-      }) ?? null
-  );
+/** Whether a `limits` command's outcome shows ControlDO answering with the lead's limit. */
+export function limitHolds(outcome: unknown, value: string): boolean {
+  const limit = limitSetting(value);
+  const expected = limit === null ? DEFAULT_LIMITS.maxAwakeComputers : Number(limit);
+  const o = outcome as { outcome?: unknown; command?: unknown; detail?: unknown } | null;
+  const detail = o?.detail as { maxAwakeComputers?: unknown } | null | undefined;
+  return o?.outcome === "ok" && o.command === "limits" && detail?.maxAwakeComputers === expected;
 }
 
 function main(argv: readonly string[]): number {
@@ -74,20 +64,18 @@ function main(argv: readonly string[]): number {
       return 2;
     }
   }
-  if (verb === "applied" && value !== undefined) {
-    const lines = readFileSync(0, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as LogLine);
-    const found = controlOnVersion(lines, value);
-    console.log(
-      JSON.stringify(
-        found === null ? { applied: false } : { applied: true, at: new Date(found.timestamp) },
-      ),
-    );
-    return found === null ? 3 : 0;
+  if (verb === "holds" && value !== undefined) {
+    let outcome: unknown = null;
+    try {
+      outcome = JSON.parse(readFileSync(0, "utf8")) as unknown;
+    } catch {
+      // no outcome
+    }
+    const holds = limitHolds(outcome, value);
+    console.log(JSON.stringify({ holds }));
+    return holds ? 0 : 3;
   }
-  console.error("limit.ts check <n | default> | applied <version>");
+  console.error("limit.ts check <n | default> | holds <n | default>");
   return 2;
 }
 

@@ -62,22 +62,62 @@ export function tokenHits(text: string): { readonly kind: string; readonly index
   return spans.sort((a, b) => a.start - b.start).map((s) => ({ kind: s.kind, index: s.start }));
 }
 
-/**
- * A path segment as printed: a key only if it looks like a field name (an identifier of at most
- * 40 characters with no token shape in it), else `<key>`. A key that held a value must never
- * reach the report through the path of what is under it.
- */
-export function segment(key: string): string {
-  return /^[$A-Za-z_][A-Za-z0-9_]{0,39}$/.test(key) && tokenHits(key).length === 0 ? key : "<key>";
+/** Exact values to count (never printed), by label. */
+export type ExactValues = readonly { readonly label: string; readonly value: string }[];
+
+/** Exact values shorter than this are not looked for: they would match by chance. */
+const MIN_VALUE_LENGTH = 8;
+
+/** Whether a string holds a token shape or a configured exact value. */
+function holdsValue(text: string, values: ExactValues): boolean {
+  return (
+    tokenHits(text).length > 0 ||
+    values.some((v) => v.value.length >= MIN_VALUE_LENGTH && text.includes(v.value))
+  );
 }
 
+/**
+ * A path segment as printed: a key only if it looks like a field name (an identifier of at most
+ * 40 characters, with no token shape and no configured value in it), else `<key>`. A key that
+ * held a value must never reach the report through the path of what is under it.
+ */
+export function segment(key: string, values: ExactValues = []): string {
+  return /^[$A-Za-z_][A-Za-z0-9_]{0,39}$/.test(key) && !holdsValue(key, values) ? key : "<key>";
+}
+
+/**
+ * A logged string as the report may print it (Codex WP3.33 r1-1): only if it has the field's
+ * expected form (when one is given) and holds no token shape or configured value; else a
+ * placeholder. Every string the report prints passes through here or `segment`.
+ */
+export function printable(value: unknown, values: ExactValues, form?: RegExp): string | null {
+  if (typeof value !== "string") return null;
+  if (holdsValue(value, values)) return "<withheld>";
+  if (form !== undefined && !form.test(value)) return "<unexpected>";
+  return value.slice(0, 120);
+}
+
+/** The forms of the fields the report prints. */
+const FORMS = {
+  instanceId: /^[0-9a-f]{16}$/,
+  computerId: /^cmp_[0-9a-hjkmnp-tv-z]{26}$/,
+  className: /^[A-Za-z]{1,40}$/,
+  version: /^[0-9a-f-]{1,13}$/,
+  // A reason is the platform's own words: letters, digits, spaces and a little punctuation.
+  reason: /^[A-Za-z0-9 _.,:;()'/-]{0,120}$/,
+} as const;
+
 /** Every string in a JSON value, with its path (keys too: a key could hold a value). */
-function* strings(value: Json, path: string): Generator<{ path: string; text: string }> {
+function* strings(
+  value: Json,
+  path: string,
+  values: ExactValues,
+): Generator<{ path: string; text: string }> {
   if (typeof value === "string") {
     // Workers Logs may keep a structured line as a string: read inside it too.
     if (value.startsWith("{")) {
       try {
-        yield* strings(JSON.parse(value) as Json, `${path}{}`);
+        yield* strings(JSON.parse(value) as Json, `${path}{}`, values);
         return;
       } catch {
         // a plain string
@@ -85,11 +125,12 @@ function* strings(value: Json, path: string): Generator<{ path: string; text: st
     }
     yield { path, text: value };
   } else if (Array.isArray(value)) {
-    for (const [i, item] of value.entries()) yield* strings(item, `${path}[${i}]`);
+    for (const [i, item] of value.entries()) yield* strings(item, `${path}[${i}]`, values);
   } else if (typeof value === "object" && value !== null) {
     for (const [key, item] of Object.entries(value)) {
       yield { path: `${path}.<key>`, text: key };
-      yield* strings(item, path === "" ? segment(key) : `${path}.${segment(key)}`);
+      const next = segment(key, values);
+      yield* strings(item, path === "" ? next : `${path}.${next}`, values);
     }
   }
 }
@@ -115,7 +156,7 @@ function timeOf(event: Json): number | null {
   return typeof e?.timestamp === "number" ? e.timestamp : null;
 }
 
-function versionOf(event: Json): string | null {
+function versionOf(event: Json): unknown {
   const e = event as {
     version?: unknown;
     $workers?: { scriptVersion?: { id?: unknown } };
@@ -169,7 +210,7 @@ export const MAX_POSITIONS = 200;
 export function scanLines(
   worker: string,
   lines: Iterable<string>,
-  values: readonly { readonly label: string; readonly value: string }[] = [],
+  values: ExactValues = [],
 ): ScanReport {
   const tokens: Record<string, number> = Object.fromEntries(
     [...TOKEN_SHAPES.map((s) => s.kind), ...values.map((v) => `value:${v.label}`)].map((k) => [
@@ -191,7 +232,9 @@ export function scanLines(
     capabilityHits += text.split("cfo-capability.").length - 1;
     for (const { label, value } of values) {
       const key = `value:${label}`;
-      if (value.length >= 8) tokens[key] = (tokens[key] ?? 0) + text.split(value).length - 1;
+      if (value.length >= MIN_VALUE_LENGTH) {
+        tokens[key] = (tokens[key] ?? 0) + text.split(value).length - 1;
+      }
     }
     let event: Json;
     try {
@@ -209,8 +252,10 @@ export function scanLines(
     const source = sourceOf(event);
     // The event's name, as code logs it: anything else is not printed.
     const name =
-      typeof source?.event === "string" && segment(source.event) !== "<key>" ? source.event : null;
-    for (const { path, text: s } of strings(event, "")) {
+      typeof source?.event === "string" && segment(source.event, values) !== "<key>"
+        ? source.event
+        : null;
+    for (const { path, text: s } of strings(event, "", values)) {
       for (const hit of tokenHits(s)) {
         tokens[hit.kind] = (tokens[hit.kind] ?? 0) + 1;
         if (positions.length < MAX_POSITIONS) {
@@ -222,24 +267,26 @@ export function scanLines(
     if (name === "instance_started") {
       instances.push({
         at: timeOf(event),
-        class: typeof source.class === "string" ? source.class : null,
-        instanceId: typeof source.instanceId === "string" ? source.instanceId : null,
-        computerId: typeof source.computerId === "string" ? source.computerId : null,
-        version: versionOf(event),
+        class: printable(source.class, values, FORMS.className),
+        instanceId: printable(source.instanceId, values, FORMS.instanceId),
+        computerId: printable(source.computerId, values, FORMS.computerId),
+        version: printable(versionOf(event), values, FORMS.version),
       });
     }
     if (name.startsWith("terminal_") || name === "page_change_refused") {
+      // Numbers and booleans as they are; strings only through `printable`.
       const picked: Record<string, unknown> = { at: timeOf(event), event: name };
-      for (const key of [
-        "reason",
-        "window",
-        "code",
-        "computerCode",
-        "clean",
-        "computerClean",
-        "instanceId",
-      ]) {
-        if (source[key] !== undefined) picked[key] = source[key];
+      for (const key of ["window", "code", "computerCode"]) {
+        if (typeof source[key] === "number") picked[key] = source[key];
+      }
+      for (const key of ["clean", "computerClean"]) {
+        if (typeof source[key] === "boolean") picked[key] = source[key];
+      }
+      if (source.reason !== undefined) {
+        picked.reason = printable(source.reason, values, FORMS.reason);
+      }
+      if (source.instanceId !== undefined) {
+        picked.instanceId = printable(source.instanceId, values, FORMS.instanceId);
       }
       events.push(picked);
     }
@@ -248,7 +295,7 @@ export function scanLines(
   // Terminal windows: by computer (through each line's instance) and window number.
   const computerOf = new Map(
     instances
-      .filter((i) => i.class === "WorkspaceDO" && i.instanceId !== null)
+      .filter((i) => i.class === "WorkspaceDO" && FORMS.instanceId.test(i.instanceId ?? ""))
       .map((i) => [i.instanceId as string, i.computerId]),
   );
   const windows = new Map<string, ScanReport["terminal"]["windows"][number]>();
@@ -260,7 +307,8 @@ export function scanLines(
     const name = String(e.event);
     if (!name.startsWith("terminal_")) continue;
     if (TERMINAL_COUNTED.includes(name)) bump(totals, name);
-    const instanceId = typeof e.instanceId === "string" ? e.instanceId : null;
+    const instanceId =
+      typeof e.instanceId === "string" && FORMS.instanceId.test(e.instanceId) ? e.instanceId : null;
     const computerId = instanceId === null ? null : (computerOf.get(instanceId) ?? null);
     const window = typeof e.window === "number" ? e.window : null;
     const key = `${computerId ?? "?"}/${window ?? "-"}`;
@@ -281,7 +329,7 @@ export function scanLines(
     windows.set(key, w);
   }
   return {
-    worker,
+    worker: printable(worker, values) ?? "",
     lines: count,
     unreadable,
     canaryHits,

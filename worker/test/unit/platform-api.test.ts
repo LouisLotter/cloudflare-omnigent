@@ -441,7 +441,13 @@ describe("dispatch", () => {
     // Logged with its computer, so the wake-time table can time each computer's wake (WP3.33).
     expect(h.logs.at(-1)).toEqual({
       event: "call",
-      fields: { operation: "resume", path: "/launcher/resume", status: 200, computerId: COMPUTER },
+      fields: {
+        operation: "resume",
+        path: "/launcher/resume",
+        status: 200,
+        ms: expect.any(Number),
+        computerId: COMPUTER,
+      },
     });
   });
 
@@ -450,7 +456,12 @@ describe("dispatch", () => {
     await handleLauncherRequest(await signed(call({ operation: "prepare" })), h.deps);
     expect(h.logs.at(-1)).toEqual({
       event: "call",
-      fields: { operation: "prepare", path: "/launcher/prepare", status: 200 },
+      fields: {
+        operation: "prepare",
+        path: "/launcher/prepare",
+        status: 200,
+        ms: expect.any(Number),
+      },
     });
   });
 

@@ -133,6 +133,18 @@ describe("the wake table's lines (WP3.33)", () => {
     ]);
   });
 
+  it("logs a start Cloudflare refuses at once by throwing, as every attempt is (Codex r1-5)", async () => {
+    const sim = new ComputerSim();
+    await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+    sim.computer.startThrows = 2;
+    await sim.call(sim.client.resumeRequest());
+    await sim.advance(120_000);
+    expect(sim.computer.starts).toHaveLength(3);
+    expect(events(sim, "container_start").map((f) => f.refusals)).toEqual([0, 1, 2]);
+    expect(events(sim, "start_retry")).toHaveLength(2);
+    expect(events(sim, "start_threw")).toEqual([]);
+  });
+
   it("logs a confirmed stop with its generation and reason, once", async () => {
     const sim = new ComputerSim();
     await sim.running();
