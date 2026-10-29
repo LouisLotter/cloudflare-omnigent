@@ -120,16 +120,23 @@ export interface Manifest {
   readonly default_events: readonly string[];
 }
 
-/** The App's name: short, and the installation's, so two installations never collide. */
-export function appName(installationId: string): string {
-  return `Omnigent ${bucketTagOf(installationId)}`.slice(0, MAX_APP_NAME);
+/**
+ * The App's name: short, the installation's, and with a suffix of its own, since GitHub App
+ * names are unique across GitHub and an earlier attempt may have left an App behind.
+ */
+export function appName(installationId: string, suffix: string): string {
+  return `Omnigent ${bucketTagOf(installationId)} ${suffix}`.slice(0, MAX_APP_NAME);
 }
 
 /** The manifest GitHub registers: callback and setup on the installation's hostname. */
-export function githubAppManifest(plan: Installation, redirectUrl: string): Manifest {
+export function githubAppManifest(
+  plan: Installation,
+  redirectUrl: string,
+  suffix: string,
+): Manifest {
   const origin = `https://${plan.hostname}`;
   return {
-    name: appName(plan.installationId),
+    name: appName(plan.installationId, suffix),
     url: origin,
     description: `Omnigent's GitHub linking for ${plan.hostname} (cloudflare-omnigent).`,
     redirect_url: redirectUrl,
@@ -292,6 +299,12 @@ async function preflight(
       `${plan.platformWorker} already has a GitHub App. To make a new one, run again with --replace (then delete the old App on GitHub)`,
     );
   }
+  // Checked here too, so no App is created on GitHub that could not be stored.
+  if (present.has(KEY_SERVICE_SECRETS.currentId) !== present.has(KEY_SERVICE_SECRETS.current)) {
+    throw new GitHubAppRefusal(
+      `${plan.platformWorker} holds only half of the key service's signing pair (${KEY_SERVICE_SECRETS.currentId}, ${KEY_SERVICE_SECRETS.current}); nothing was changed`,
+    );
+  }
   return present;
 }
 
@@ -320,6 +333,7 @@ export async function createGitHubApp(
   const present = await preflight(plan, ports.cloud, options.replace === true);
   const state = hex(ports.random(32));
   const pagePath = `/${hex(ports.random(16))}`;
+  const suffix = hex(ports.random(2));
   const action = manifestAction(state, options.org);
 
   let deliver: (callback: Callback) => void = () => undefined;
@@ -347,7 +361,7 @@ export async function createGitHubApp(
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     if (request.method === "GET" && url.pathname === pagePath && !served) {
       served = true;
-      const manifest = githubAppManifest(plan, `http://127.0.0.1:${port}/callback`);
+      const manifest = githubAppManifest(plan, `http://127.0.0.1:${port}/callback`, suffix);
       return reply(200, manifestPage(action, manifest));
     }
     if (request.method === "GET" && url.pathname === "/callback" && !done) {
@@ -424,7 +438,15 @@ export async function createGitHubApp(
         ports.log(`warning: GitHub granted more than asked for: ${extra.join(", ")}`);
       }
       const changes = githubAppChanges(plan, app, present, ports.random);
-      await ports.cloud.updateSecrets(plan.platformWorker, changes);
+      try {
+        await ports.cloud.updateSecrets(plan.platformWorker, changes);
+      } catch (error) {
+        // The App exists on GitHub but is not stored: say where to delete it, then fail.
+        ports.log(
+          `GitHub App ${app.slug} was created but could not be stored in ${plan.platformWorker}; delete it at ${GITHUB}/settings/apps/${app.slug}/advanced and run the step again`,
+        );
+        throw error;
+      }
       const installUrl = `${GITHUB}/apps/${app.slug}/installations/new`;
       callback.finish({ installUrl });
       ports.log(

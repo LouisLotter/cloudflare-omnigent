@@ -137,9 +137,9 @@ function decode(text: string): string {
 describe("the manifest", () => {
   it("names the installation's hostname for the callback and setup, with the least permissions", async () => {
     const plan = await accountPlan();
-    const manifest = githubAppManifest(plan, "http://127.0.0.1:1234/callback");
+    const manifest = githubAppManifest(plan, "http://127.0.0.1:1234/callback", "0a1b");
     expect(manifest).toEqual({
-      name: "Omnigent 01hs3f9q",
+      name: "Omnigent 01hs3f9q 0a1b",
       url: "https://omnigent.example.test",
       description: "Omnigent's GitHub linking for omnigent.example.test (cloudflare-omnigent).",
       redirect_url: "http://127.0.0.1:1234/callback",
@@ -152,7 +152,7 @@ describe("the manifest", () => {
       default_permissions: { contents: "write", metadata: "read", pull_requests: "write" },
       default_events: [],
     });
-    expect(appName(INSTALLATION).length).toBeLessThanOrEqual(34);
+    expect(appName(INSTALLATION, "ffff").length).toBeLessThanOrEqual(34);
   });
 
   it("posts to the person's account or an organization, and refuses a bad organization name", () => {
@@ -169,7 +169,7 @@ describe("the manifest", () => {
     const plan = await accountPlan({ hostname: 'x"><script>alert(1)</script>.example.test' });
     const html = manifestPage(
       manifestAction("s"),
-      githubAppManifest(plan, "http://127.0.0.1:1/callback"),
+      githubAppManifest(plan, "http://127.0.0.1:1/callback", "0000"),
     );
     expect(html).not.toContain("<script>alert");
     expect(html.match(/<script>/g)).toHaveLength(1);
@@ -361,6 +361,19 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     expect(logs.join("\n")).toContain("administration: write");
   });
 
+  it("names the App to delete when it cannot be stored", async () => {
+    const cloud = new FakeCloud();
+    cloud.updateSecrets = async () => {
+      throw new Error("cf workers secrets bulk failed");
+    };
+    const { logs, visited, outcome } = await run({ cloud });
+    await expect(outcome).rejects.toThrow("cf workers secrets bulk failed");
+    expect((await visited).callback?.status).toBe(500);
+    expect(logs.join("\n")).toContain(
+      "delete it at https://github.com/settings/apps/omnigent-01hs3f9q/advanced",
+    );
+  });
+
   it("refuses before showing anything: no Worker, another installation's, or an App already there", async () => {
     const missing = new FakeCloud();
     missing.names = null;
@@ -370,11 +383,14 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     unknown.identity = { exists: true, installationId: undefined };
     const linked = new FakeCloud();
     linked.names = [GITHUB_APP_SECRETS.clientId];
+    const half = new FakeCloud();
+    half.names = [KEY_SERVICE_SECRETS.current];
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
       [other, /is not serving installation/],
       [unknown, /is not serving installation/],
       [linked, /already has a GitHub App/],
+      [half, /half of the key service's signing pair/],
     ] as const) {
       let opened = false;
       const outcome = createGitHubApp(await accountPlan(), {
