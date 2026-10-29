@@ -33,14 +33,14 @@
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
 ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:cb33f7f771ecec2ef1225cf39b159591a040391bd73e4c01f00fdfc4c47611d2
-ARG NODE_IMAGE=node:22-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
+ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
 ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
 # uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
-ARG UV_PIN="uv==0.12.10 --hash=sha256:f7d6248ad9f2d282fea795f248da8fa666ab382df50d8385bd98e01049440a0c --hash=sha256:a34e1be296e6e30fdbfee9b84a45d082ce7df4dd4e588ebcfc44249505c10f02"
+ARG UV_PIN="uv==0.13.6 --hash=sha256:22759b8895e1103578de6fb4cd27e94b4399d021023378d29f01333717751fba --hash=sha256:d1efed1d15102ffdbf5e0fd49a440643dda2d921a2ad856792ae42ccd43c253f"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -168,11 +168,11 @@ FROM runtime-base AS runtime
 # (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
 # above, from an install whose registry signatures (and Codex's provenance) it has checked, and
 # this build then checks them in an independent install.
-ARG CLAUDE_CODE_VERSION=2.1.311
-ARG CODEX_VERSION=0.164.0
-ARG CLAUDE_CODE_TREE_SHA256=b3530205566c212f20930da7fbffde8a2d4637534ca8464c7493193b58bef659
-ARG CLAUDE_CODE_INSTALLED_SHA256=e11f79605c8334fc76bcb23a008af5f9f5a411944d3cc995ba694050dac4160e
-ARG CODEX_TREE_SHA256=6aa96e445074fc22662979ee4db20c58c71f63b7c56e12f02c2d11cb11b09170
+ARG CLAUDE_CODE_VERSION=2.1.312
+ARG CODEX_VERSION=0.165.0
+ARG CLAUDE_CODE_TREE_SHA256=f00906ff0780be1e70d7621eb613940cd414ef1e793267ed0ec44d7fcd4378da
+ARG CLAUDE_CODE_INSTALLED_SHA256=e26ada69f224f6dec551ab1f8e3fb312d4d34bca4296df091438eed789ac2c3b
+ARG CODEX_TREE_SHA256=2ec784a4081832034cbbd34813cfdde73a6d99b9b91942ffba1b25e3a33869e7
 RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
     sh /cfo-build/install_clis.sh check
 
