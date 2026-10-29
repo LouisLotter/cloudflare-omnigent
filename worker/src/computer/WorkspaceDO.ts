@@ -214,7 +214,9 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-      log: (event, fields) => logEvent("workspace", event, fields),
+      // The instance's ID on every terminal line (WP3.27's `instance_started`), for FH-38.
+      log: (event, fields) =>
+        logEvent("workspace", event, { ...fields, instanceId: controller.instanceId }),
       // A shell's end is owed to the supervisor (WP3.28): the runner sends it at once, not at its
       // next heartbeat. Deferred, since the bridge may record one inside a controller transition.
       endRecorded: () => queueMicrotask(() => controller.terminalEndOwed()),

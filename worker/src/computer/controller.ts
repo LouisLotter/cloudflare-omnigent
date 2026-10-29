@@ -1083,6 +1083,12 @@ export class WorkspaceController {
   // -------------------------------------------------------------------------------------------
   // Instance lifecycle.
 
+  /**
+   * This instance's random identity (WP3.27), logged once as `instance_started` and carried by
+   * the setup terminal's lines (WP3.28), so a reset between a stream and its reconnect shows.
+   */
+  readonly instanceId = newInstanceId();
+
   /** Every new instance: re-arm the inactivity timeout and intercepts, and carry on (FH-36). */
   async boot(): Promise<void> {
     await this.#exclusive(() => {
@@ -1092,7 +1098,7 @@ export class WorkspaceController {
       // wake-ups are measured, not inferred.
       this.#log("instance_started", {
         class: "WorkspaceDO",
-        instanceId: newInstanceId(),
+        instanceId: this.instanceId,
         generation: r?.lifecycle.generation ?? null,
         state: r?.lifecycle.context.state ?? null,
       });

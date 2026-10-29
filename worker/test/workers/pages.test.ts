@@ -557,11 +557,31 @@ describe("shells kept on the computer (WP3.28, FH-38)", () => {
       { mode: "new", window: 1 },
       { mode: "attach", window: 1 },
     ]);
-    const lines = log.mock.calls.map(([line]) => String(line));
-    // A new instance served the reconnect: it reattached, and never bridged a new shell.
-    const events = lines.flatMap((l) => /"event":"(terminal_[a-z_]+)"/.exec(l)?.[1] ?? []);
-    expect(events.filter((e) => e === "terminal_bridged")).toHaveLength(1);
-    expect(events.at(-1)).toBe("terminal_reattached");
+    const lines = log.mock.calls
+      .map(([line]) => {
+        try {
+          return JSON.parse(String(line)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((l): l is Record<string, unknown> => l !== null);
+    // A new instance served the reconnect: it reattached, and never bridged a new shell. Each
+    // terminal line carries its instance's ID, the one its `instance_started` names (WP3.27).
+    const terminal = lines.filter((l) => String(l.event).startsWith("terminal_"));
+    expect(terminal.filter((l) => l.event === "terminal_bridged")).toHaveLength(1);
+    const bridged = terminal.find((l) => l.event === "terminal_bridged");
+    const reattached = terminal.at(-1);
+    expect(reattached?.event).toBe("terminal_reattached");
+    expect(bridged?.instanceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(reattached?.instanceId).not.toBe(bridged?.instanceId);
+    const started = new Set(
+      lines
+        .filter((l) => l.event === "instance_started" && l.class === "WorkspaceDO")
+        .map((l) => l.instanceId),
+    );
+    expect(started.has(bridged?.instanceId)).toBe(true);
+    expect(started.has(reattached?.instanceId)).toBe(true);
     second.socket.close(1000);
   });
 
