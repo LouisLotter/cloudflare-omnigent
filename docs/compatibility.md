@@ -13,6 +13,8 @@ The [server Dockerfile](../images/server/Dockerfile) pins source/base inputs and
 
 The computer image pins the same fork commit as the server's default, so a computer's host and the server are built from one source; the selected assembly must still qualify them together.
 
+**The runner disconnect grace (29 October 2026).** The server image sets `OMNIGENT_RUNNER_DISCONNECT_GRACE_S=150`, replacing any value from the environment. Upstream's default is the 90 s runner liveness lease. A computer's tunnel may drop while a save pauses it, and its reconnect is allowed 100 s, so a dropped runner gets 150 s before Omnigent fails its session. The setting is server-side only, and the liveness lease stays 90 s. A reported runner crash, an intentional stop, a removal and the sleep path don't wait for it. The cost is that a computer lost with no crash report fails its sessions up to 60 s later than upstream would. Tested in the image against the pinned fork; not yet measured on staging.
+
 **Certificate trust (27 October 2026).** After the October 2026 compromise of eight eMudhra intermediate CA keys, a client that trusts emSign ECC Root CA - G3 or Sectigo's AAA Certificate Services (through its cross-signs) can be shown a forged certificate for any host. Both images now refuse those chains:
 
 - Each build fails unless Debian's `ca-certificates` is at least `20250419+deb13u1` (trixie, under both runtime stages; the pinned `python:3.12-slim` digest already carries it) and no bundle the image ships holds either root: the system bundle, certifi's, or pip's vendored copy ([trust check](../images/trust/trust_check.py)). The server build also fails unless botocore verifies with certifi's bundle: botocore's fallback still holds AAA Certificate Services.
