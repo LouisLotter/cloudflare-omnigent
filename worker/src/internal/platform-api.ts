@@ -427,10 +427,14 @@ export async function handleLauncherRequest(
     return checked.response;
   }
   const response = await dispatch(checked.request, deps);
+  // The computer, where the call names one: `run.sh wakes` times each computer's wake from its
+  // `resume` (WP3.33). A computer ID names no secret.
+  const computer = "computerId" in checked.request ? checked.request.computerId : undefined;
   deps.log("call", {
     operation: checked.request.operation,
     path,
     status: response.status,
+    ...(computer === undefined ? {} : { computerId: computer }),
   });
   return response;
 }

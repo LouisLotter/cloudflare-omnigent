@@ -438,6 +438,20 @@ describe("dispatch", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ operation: "resume", outcome: "starting" });
     expect(h.workspaces.get(COMPUTER)?.launcherCalls.map((c) => c.operation)).toEqual(["resume"]);
+    // Logged with its computer, so the wake-time table can time each computer's wake (WP3.33).
+    expect(h.logs.at(-1)).toEqual({
+      event: "call",
+      fields: { operation: "resume", path: "/launcher/resume", status: 200, computerId: COMPUTER },
+    });
+  });
+
+  it("logs a call that names no computer without one", async () => {
+    const h = harness();
+    await handleLauncherRequest(await signed(call({ operation: "prepare" })), h.deps);
+    expect(h.logs.at(-1)).toEqual({
+      event: "call",
+      fields: { operation: "prepare", path: "/launcher/prepare", status: 200 },
+    });
   });
 
   it("maps refusals to the contract's statuses: gone 410, at_capacity 429, conflict 409", async () => {
