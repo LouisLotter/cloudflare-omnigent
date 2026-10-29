@@ -1,5 +1,12 @@
 // Pure rules for staging resources. Every mutation the staging tool performs goes through these.
 
+import {
+  ACCESS_SAME_SITE,
+  isServiceTokenPolicy,
+  ownerOnlyAppBody,
+  ownerOnlyProblems,
+} from "../bootstrap/access.ts";
+
 export const STAGING_PREFIX = "cfo-stg-";
 const SUFFIX = /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/;
 
@@ -1061,9 +1068,12 @@ export function sameIngress(
 }
 
 /**
- * Refuses an Access application that would let anyone but the owner through. With
- * `serviceTokenId`, the application may also hold one policy that admits exactly that token
- * (isServiceTokenPolicy); callers pass it only for the deployment's own recorded token.
+ * Refuses an Access application that would let anyone but the owner through: the shared check
+ * (bootstrap/access.ts, ownerOnlyProblems), which the bootstrap uses too, apart from the cookie
+ * (assertSameSite; an older tool's application is rewritten first) and the AUD tag, which the
+ * staging tool does not read. With `serviceTokenId`, the application may also hold one policy
+ * that admits exactly that token (isServiceTokenPolicy); callers pass it only for the
+ * deployment's own recorded token.
  */
 export function assertOwnerOnly(
   app: AccessApp,
@@ -1071,24 +1081,12 @@ export function assertOwnerOnly(
   ownerEmail: string,
   serviceTokenId?: string,
 ): void {
-  const ownerOnly = (rule: unknown) =>
-    JSON.stringify(rule) === JSON.stringify({ email: { email: ownerEmail } });
-  type Policy = NonNullable<AccessApp["policies"]>[number];
-  const ownerPolicy = (p: Policy) =>
-    p.decision === "allow" &&
-    p.include !== undefined &&
-    p.include.length > 0 &&
-    p.include.every(ownerOnly);
-  const tokenPolicy = (p: Policy) =>
-    serviceTokenId !== undefined && isServiceTokenPolicy(p, serviceTokenId);
-  const policies = app.policies ?? [];
-  const ok =
-    app.type === "self_hosted" &&
-    app.domain === hostname &&
-    policies.some(ownerPolicy) &&
-    policies.every((p) => ownerPolicy(p) || tokenPolicy(p)) &&
-    policies.filter(tokenPolicy).length <= 1;
-  if (!ok) {
+  const problems = ownerOnlyProblems(app, {
+    hostname,
+    isOwner: (email) => email === ownerEmail,
+    serviceTokenId,
+  }).filter((p) => p.aspect !== "cookie" && p.aspect !== "aud");
+  if (problems.length > 0) {
     throw new Error(`the Access application for ${hostname} is not owner-only; not deploying`);
   }
 }
@@ -1099,16 +1097,7 @@ export function assertOwnerOnly(
  * without an identity, and only on a hostname the deployment's manifest names. assertOwnerOnly
  * accepts it only when given that token's ID, and at most once.
  */
-export function isServiceTokenPolicy(
-  policy: NonNullable<AccessApp["policies"]>[number],
-  serviceTokenId: string,
-): boolean {
-  return (
-    policy.decision === "non_identity" &&
-    JSON.stringify(policy.include) ===
-      JSON.stringify([{ service_token: { token_id: serviceTokenId } }])
-  );
-}
+export { isServiceTokenPolicy };
 
 /** How long the staging service token lasts: one day, enough for X1's preflight and run. */
 export const SERVICE_TOKEN_DURATION = "24h";
@@ -1118,7 +1107,7 @@ export const SERVICE_TOKEN_DURATION = "24h";
  * D9). Left unset, Access sends SameSite=None, and cross-site requests from a signed-in browser
  * reach the Worker carrying the cookie (spike S6).
  */
-export const ACCESS_SAME_SITE = "lax";
+export { ACCESS_SAME_SITE };
 
 /** Refuses an Access application whose cookie is not SameSite=lax. */
 export function assertSameSite(app: AccessApp, hostname: string): void {
@@ -1129,7 +1118,7 @@ export function assertSameSite(app: AccessApp, hostname: string): void {
   }
 }
 
-/** Owner-only Access application for one staging hostname. */
+/** Owner-only Access application for one staging hostname: the shared builder's. */
 export function accessAppBody(
   name: string,
   hostname: string,
@@ -1140,33 +1129,13 @@ export function accessAppBody(
   // The application is named after the hostname's first label, with its create nonce.
   if (!hostname.includes(".") || !namedFor(name, appNameFor(hostname)))
     throw new Error("hostname does not belong to this resource");
-  return {
-    type: "self_hosted",
+  return ownerOnlyAppBody({
     name,
-    domain: hostname,
-    session_duration: "24h",
-    app_launcher_visible: false,
-    same_site_cookie_attribute: ACCESS_SAME_SITE,
-    ...(config.identityProviderId
-      ? { allowed_idps: [config.identityProviderId], auto_redirect_to_identity: true }
-      : {}),
-    policies: [
-      {
-        name: "Allow owner",
-        decision: "allow",
-        include: [{ email: { email: config.ownerEmail } }],
-      },
-      ...(serviceTokenId !== undefined
-        ? [
-            {
-              name: "Allow the staging service token",
-              decision: "non_identity",
-              include: [{ service_token: { token_id: serviceTokenId } }],
-            },
-          ]
-        : []),
-    ],
-  };
+    hostname,
+    ownerEmail: config.ownerEmail,
+    identityProviderId: config.identityProviderId,
+    serviceTokenId,
+  });
 }
 
 /**
