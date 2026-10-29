@@ -78,10 +78,6 @@ Anyone else who opens the address stops at Access and never reaches Omnigent or 
 
 Open `https://<your address>/platform/password` (also linked as "Omnigent password" at the top of the cloud-computers pages). After Access, it offers **Reset your Omnigent password**: choose a new one the same way. A reset signs you out of Omnigent everywhere, in every browser and on every device, so that anyone who might have had the old password is out too; your cloud computers keep running. Only you can reach this page: Access lets in your address alone, and the installation checks it again.
 
-## Updating
-
-To move an installation to a newer version, update your copy of the repository (`git pull`, with no changes of your own in it) and run the same `install` command again. On a finished installation it deploys the new version of both parts and adds anything the installation is missing, such as the cloud computers' signing key; your data, your password and your sign-ins stay. The server restarts once, within about 10 minutes. With uncommitted changes in your copy, the installer says so and does not update.
-
 ## GitHub, for your cloud computers (optional)
 
 So that agents on your cloud computers can clone and push your repositories, give the installation its own GitHub App. Once the installation is ready, run:
@@ -95,6 +91,24 @@ node scripts/bootstrap/bootstrap.ts github-app
 3. GitHub brings you back to Omnigent's settings. The server restarts once to pick up the App, which takes a minute or two; then click **Connect GitHub** there and approve on GitHub.
 
 From then on, git and gh on your cloud computers act as you on those repositories. The App can read and write repository contents and pull requests, and nothing else. To stop it, use **Disconnect** in Omnigent's settings; a token a computer already received stays valid at GitHub for up to 8 hours. You can also uninstall or delete the App on GitHub at any time.
+
+An installation made before GitHub linking existed needs updating first (below); the command says so, and changes nothing until then.
+
+## Updating your installation
+
+When a new release comes out, get it and run one command, in the folder you installed from:
+
+```bash
+git pull
+node scripts/bootstrap/bootstrap.ts update
+```
+
+It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers and that your account is still there and stored safely, and ends with the link to open.
+
+- With changes of your own in the folder (anything `git status` shows), it stops and says so: it only deploys a release exactly as published.
+- If it stops early, run it again: it carries on where it stopped. Exit status 3 means "deployed, not checked yet, run it again"; that run only checks.
+- Run it when nothing is new, and it says the installation is up to date.
+- Running the `install` command again does the same on a finished installation.
 
 ## When something needs you
 

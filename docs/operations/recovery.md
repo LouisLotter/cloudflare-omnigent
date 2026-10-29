@@ -70,7 +70,7 @@ An installation's data lives in R2 buckets named when it is planned, and those n
 - **Given names.** `--replica-url` and `--artifacts-url` name other buckets, kept exactly as given. The checkpoint bucket is always the platform Worker's own.
 - **Length.** R2 allows 63 characters. A platform Worker name that would make a longer bucket name is refused at `plan` (with the checked-in configuration, at most 42 characters), never shortened.
 - **Recorded, never derived again.** The plan records the replica's and the artifacts' URLs and the tag, and every later run and deploy names the buckets from it.
-- **Installations planned before the tag** keep their untagged names (`<platform Worker>-artifacts`, `<platform Worker>-checkpoints`, and the replica they were given). Their state files stay at version 1. A plan with a tag is written as version 2, which an older bootstrap refuses rather than read without the tag. Renaming or moving an existing installation's buckets is not supported.
+- **Installations planned before the tag** keep their untagged names (`<platform Worker>-artifacts`, `<platform Worker>-checkpoints`, and the replica they were given). Their state files stay at version 1. A plan with a tag is written as version 2, which an older bootstrap refuses rather than read without the tag. Once its journal records the code each Worker runs, a state file is written as version 3, and once it records an update (`bootstrap.ts update`) as version 4, tagged or not: an older bootstrap refuses each rather than drop those records. Renaming or moving an existing installation's buckets is not supported.
 
 ## Uploaded files
 
