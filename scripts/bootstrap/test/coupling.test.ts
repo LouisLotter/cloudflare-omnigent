@@ -11,7 +11,9 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { signingKeysFrom } from "../../../worker/src/internal/platform-api.ts";
 import { serverContainerEnv } from "../../../worker/src/server/server-env.ts";
+import { generatedSecrets } from "../machine.ts";
 import {
   type Installation,
   installationProblems,
@@ -21,6 +23,32 @@ import {
   secretsToAdd,
 } from "../settings.ts";
 import { accountPlan, OWNER_PASSWORD, ROOT, stagingPlan } from "./fixtures.ts";
+
+/** What a run makes itself, with fixed bytes. */
+const GENERATED = generatedSecrets({
+  random: (n) => new Uint8Array(n).fill(0x5a),
+  now: () => Date.parse("2026-10-29T12:00:00Z"),
+});
+
+/** The server image's Cloudflare launcher's own reading of its key (python/…/settings.py). */
+function launcherReads(env: Record<string, string>): Record<string, unknown> {
+  const code = [
+    "import json, sys",
+    `sys.path.insert(0, ${JSON.stringify(join(ROOT, "python"))})`,
+    "from cloudflare_omnigent.sandbox.settings import LauncherConfigError, settings_from_env",
+    "try:",
+    "    s = settings_from_env(json.load(sys.stdin))",
+    "    print(json.dumps(None if s is None else {'keyId': s.signing_key_id, 'bytes': len(s.signing_key)}))",
+    "except LauncherConfigError as e:",
+    "    print(json.dumps({'error': str(e)}))",
+  ].join("\n");
+  const child = spawnSync("python3", ["-I", "-c", code], {
+    input: JSON.stringify(env),
+    encoding: "utf8",
+  });
+  if (child.status !== 0) throw new Error(`python3 failed: ${child.stderr}`);
+  return JSON.parse(child.stdout) as Record<string, unknown>;
+}
 
 const python = spawnSync("python3", ["--version"]).status === 0;
 
@@ -74,7 +102,7 @@ describe.skipIf(!python)(
       "%s: a new installation before the release, an initialized one after",
       async (_name, make) => {
         const plan = await make();
-        const before = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+        const before = secretsToAdd(plan, new Set(), supplied, GENERATED);
         expect(imageReads(containerEnv(plan, before))).toEqual({
           initialized: false,
           bootstrap: true,
@@ -98,16 +126,38 @@ describe.skipIf(!python)(
       },
     );
 
+    it("a fresh install's launcher key is one the server's launcher and the Worker both accept", async () => {
+      // Found on the owner's first real install (29 Oct): the installer never set it, so no
+      // computer could start. The run makes it now; the launcher signs with what the server
+      // receives, and the platform Worker verifies with the same secrets.
+      for (const plan of [await accountPlan(), await stagingPlan()]) {
+        const secrets = {
+          ...secretsToAdd(plan, new Set(), supplied, GENERATED),
+          ...RELEASE_CHANGES,
+        };
+        const env = containerEnv(plan, secrets);
+        expect(launcherReads(env)).toEqual({ keyId: "k-20261029", bytes: 64 });
+        const worker = Object.fromEntries(
+          Object.entries({ ...platformVars(plan), ...secrets }).filter(([, v]) => v !== null),
+        );
+        const keys = signingKeysFrom(worker);
+        expect(keys?.current.id).toBe("k-20261029");
+        expect(keys?.previous).toBeNull();
+      }
+      // Without it, the launcher is simply not configured: the server starts no computer.
+      expect(launcherReads({})).toBeNull();
+    });
+
     it("an installation without its artifact bucket is refused by the image (G2-DUR-001)", async () => {
       const plan = await accountPlan();
-      const secrets = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+      const secrets = secretsToAdd(plan, new Set(), supplied, GENERATED);
       const released = { ...secrets, ...RELEASE_CHANGES };
       const { OMNIGENT_ARTIFACT_URI: _uri, ...env } = containerEnv(plan, released);
       expect(imageReads(env).error).toMatch(/^OMNIGENT_ARTIFACT_URI is required/);
       // The staging test switch is the bootstrap's only way to the container's disk.
       const staging = await stagingPlan();
       const stagingSecrets = secretsToAdd(staging, new Set(), supplied, {
-        cookieSecret: "d".repeat(64),
+        ...GENERATED,
       });
       const { CFO_ALLOW_LOCAL_ARTIFACTS: _switch, ...noSwitch } = containerEnv(
         staging,
@@ -140,7 +190,7 @@ describe.skipIf(!python)(
       for (const url of corpus) {
         const plan = await accountPlan({ artifacts: { url } });
         const bootstrapOk = installationProblems(plan).length === 0;
-        const secrets = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+        const secrets = secretsToAdd(plan, new Set(), supplied, GENERATED);
         const read = imageReads(containerEnv(plan, secrets));
         if (bootstrapOk) expect(read, url).toMatchObject({ artifacts: url });
         expect(bootstrapOk, url).toBe(
@@ -159,7 +209,7 @@ describe.skipIf(!python)(
 
     it("an account installation without the file-replica switch refuses a file replica", async () => {
       const plan = await stagingPlan();
-      const secrets = secretsToAdd(plan, new Set(), supplied, { cookieSecret: "d".repeat(64) });
+      const secrets = secretsToAdd(plan, new Set(), supplied, GENERATED);
       const { CFO_ALLOW_FILE_REPLICA: _switch, ...env } = containerEnv(plan, secrets);
       expect(imageReads(env)).toEqual({
         error: "a file:// replica is for tests only (CFO_ALLOW_FILE_REPLICA)",

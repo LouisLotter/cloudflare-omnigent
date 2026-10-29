@@ -4,7 +4,10 @@
 // In order, each run:
 //   1. deploys the platform Worker with the installation's variables, adding only the secrets it
 //      does not hold yet: the cookie secret, `INITIALIZED=false`, the owner's password, the
-//      replica's credentials and the artifact bucket's (one Worker version, `--secrets-file`).
+//      launcher's signing key and its ID, the replica's credentials and the artifact bucket's
+//      (one Worker version, `--secrets-file`). The owner's password is the installer's when they
+//      typed or supplied one; otherwise (WP3.34) it is 32 random bytes nobody sees, with the
+//      marker `CFO_OWNER_PASSWORD_ON_PAGE`, and the owner chooses theirs on the site.
 //      The R2 credentials come from the installation's own user API token, which the run makes
 //      with the installer's `cf` login just before this deploy (r2-token.ts), unless the
 //      installer supplied a token's values. A token made earlier whose pair never reached the
@@ -26,7 +29,13 @@
 //      OmnigentServer object runs it and no longer reports the password, and that the release
 //      is applied: the watchdog replaced the server (one controlled restart), and the server
 //      started with the released configuration reports a durable owner (G2-SEC-001). Until
-//      then the outcome is "released", not yet applied, and a later run checks again.
+//      then the outcome is "released", not yet applied, and a later run checks again;
+//   7. updates a finished installation (WP3.34): when the code this run deploys (`codeVersion`, a
+//      clean checkout's commit) is not the code the journal records as deployed, it deploys the
+//      platform Worker again, adding only a missing launcher key (read by name, never by value),
+//      then the web Worker; code of unknown version is never deployed over a finished
+//      installation. Without new code, a missing launcher key is added in one secrets change.
+//      The server restarts once either way, through the watchdog's existing replacement.
 //
 // Crash safety. The journal in the state file is written before each effect and after it.
 // A run re-reads the platform Worker's secret names first, so a step whose effect landed
@@ -79,11 +88,16 @@ import {
   ARTIFACTS_SECRET_KEY_SECRET,
   accessProblems,
   containerEnvProblems,
+  type GeneratedSecrets,
   INITIALIZED_SECRET,
   type Installation,
   installationProblems,
+  LAUNCHER_KEY_ID_SECRET,
+  LAUNCHER_KEY_SECRET,
+  launcherKeyToAdd,
   needsArtifactCredentials,
   needsReplicaCredentials,
+  OWNER_PASSWORD_ON_PAGE_SECRET,
   PASSWORD_SECRET,
   platformVars,
   RELEASE_CHANGES,
@@ -180,6 +194,17 @@ export interface Journal {
    * again knows that one never reached the Worker. Never the password.
    */
   readonly ownerPasswordGivenAt?: string;
+  /**
+   * Whose password the deploy uploaded (WP3.34): `page` when it was the run's own random one and
+   * the owner chooses theirs on the site; `installer` when the person typed or supplied it.
+   * Absent on a journal from before WP3.34: the installer's.
+   */
+  readonly ownerPassword?: "page" | "installer";
+  /** The code each Worker was last deployed from (`RunContext.codeVersion`), when known. */
+  readonly platformCode?: string;
+  readonly webCode?: string;
+  /** When the last update (step 7) finished deploying. */
+  readonly updatedAt?: string;
 }
 
 export interface BootstrapState {
@@ -230,6 +255,11 @@ export interface RunContext {
   readonly accessApi?: AccessApi;
   /** The owner's address, given to this run: only to create the Access application. */
   readonly ownerEmail?: string;
+  /**
+   * The code this run deploys: the checkout's commit when its tree is clean, else undefined
+   * (unknown: a finished installation is not updated to it).
+   */
+  readonly codeVersion?: string;
   readonly random: (bytes: number) => Uint8Array;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
@@ -291,8 +321,8 @@ function slicedLogs(
 }
 
 export type Outcome =
-  /** Released and checked after the version switch. */
-  | { readonly kind: "done" }
+  /** Released and checked after the version switch; `updated` when step 7 deployed again. */
+  | { readonly kind: "done"; readonly updated?: true }
   /** Released; the check after the switch has not passed yet (run again to check). */
   | { readonly kind: "released"; readonly why: string }
   /** The owner is not initialized and durable yet; the password stays. Run again to continue. */
@@ -302,6 +332,28 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function base64Url(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+/**
+ * What the run makes itself, in memory only: the cookie secret; the owner's password when the
+ * installer chose none (32 random bytes: nobody ever sees it, so nobody can sign in as the owner
+ * until they choose theirs on the site); the launcher's signing key (48 random bytes) and an ID
+ * naming its day (`k-YYYYMMDD`, UTC). Never logged, never in the journal.
+ */
+export function generatedSecrets(ctx: Pick<RunContext, "random" | "now">): GeneratedSecrets {
+  return {
+    cookieSecret: hex(ctx.random(32)),
+    ownerPassword: base64Url(ctx.random(32)),
+    launcherKey: base64Url(ctx.random(48)),
+    launcherKeyId: `k-${new Date(ctx.now()).toISOString().slice(0, 10).replaceAll("-", "")}`,
+  };
 }
 
 function seenOf(event: StatusEvent): SeenStatus {
@@ -409,6 +461,17 @@ export async function runBootstrap(
     return listed === null ? null : new Set(listed);
   };
 
+  // A Worker that exists is this installation's only if it says so itself: every Worker the
+  // bootstrap deploys carries the installation's ID. The journal alone is no proof: a step
+  // recorded as started may never have run, and the name taken meanwhile (Codex WP2.4 r2-1).
+  const ours = async (worker: string) => {
+    const identity = await ctx.cloud.workerInstallation(worker);
+    if (identity.exists && identity.installationId !== plan.installationId) {
+      throw new BootstrapRefusal(
+        `a Worker named ${worker} exists and is not this installation's; choose another name`,
+      );
+    }
+  };
   let secrets = await names();
   // A release recorded, or shown by the Worker, is final: nothing below may undo it.
   if (state.journal.releaseStartedAt !== undefined && state.journal.releasedAt === undefined) {
@@ -418,7 +481,8 @@ export async function runBootstrap(
     }
   }
   if (state.journal.releasedAt !== undefined) {
-    return verifyAfterRelease(ctx, () => state, options, record);
+    const verified = await verifyAfterRelease(ctx, () => state, options, record);
+    return verified.kind === "done" ? update(secrets) : verified;
   }
   if (secrets?.has(INITIALIZED_SECRET) && !secrets.has(PASSWORD_SECRET)) {
     throw new BootstrapRefusal(
@@ -432,17 +496,6 @@ export async function runBootstrap(
       `${plan.platformWorker} was deployed by this plan but no longer exists; plan a new installation`,
     );
   }
-  // A Worker that exists is this installation's only if it says so itself: every Worker the
-  // bootstrap deploys carries the installation's ID. The journal alone is no proof: a step
-  // recorded as started may never have run, and the name taken meanwhile (Codex WP2.4 r2-1).
-  const ours = async (worker: string) => {
-    const identity = await ctx.cloud.workerInstallation(worker);
-    if (identity.exists && identity.installationId !== plan.installationId) {
-      throw new BootstrapRefusal(
-        `a Worker named ${worker} exists and is not this installation's; choose another name`,
-      );
-    }
-  };
   await ours(plan.platformWorker);
   if (state.journal.webDeployedAt === undefined) await ours(plan.webWorker);
   // In the installer's own account, Access first: a hostname that cannot have its owner-only
@@ -467,7 +520,7 @@ export async function runBootstrap(
     // The bootstrap makes the R2 token itself unless the installer gave one's values. Without
     // the installer's token API, missing values are named as any missing secret is.
     const makesToken = lacksR2 && ctx.r2Tokens !== undefined && !suppliesR2(plan, given);
-    const cookie = { cookieSecret: hex(ctx.random(32)) };
+    const generated = generatedSecrets(ctx);
     const config = renderPlatformConfig(ctx.baseConfigs.platform, plan);
     // Every check first, with stand-ins for present secrets and for a token not made yet, so
     // that a token is made only for a deploy that will be sent.
@@ -475,7 +528,7 @@ export async function runBootstrap(
       plan,
       present,
       makesToken ? { ...given, ...r2Supplied(STAND_IN_PAIR) } : given,
-      cookie,
+      generated,
     );
     const standIns = Object.fromEntries([...present].map((name) => [name, "present"]));
     const envProblems = containerEnvProblems(platformVars(plan), { ...standIns, ...preview }, plan);
@@ -492,7 +545,7 @@ export async function runBootstrap(
               await r2Credentials(ctx, tokenContext(ctx.r2Tokens as TokenApi), present),
             ),
           },
-          cookie,
+          generated,
         )
       : preview;
     if (lacksR2 && !makesToken && ctx.r2Tokens !== undefined && !holdsWholePair(present)) {
@@ -508,7 +561,12 @@ export async function runBootstrap(
         throw new BootstrapRefusal(`the server would not start: ${final.join("; ")}`);
       }
     }
-    record({ platformDeployStartedAt: state.journal.platformDeployStartedAt ?? iso(ctx.now()) });
+    record({
+      platformDeployStartedAt: state.journal.platformDeployStartedAt ?? iso(ctx.now()),
+      ...(add[PASSWORD_SECRET] === undefined
+        ? {}
+        : { ownerPassword: add[OWNER_PASSWORD_ON_PAGE_SECRET] === "true" ? "page" : "installer" }),
+    });
     ctx.log(
       `deploying the platform Worker ${plan.platformWorker}${
         Object.keys(add).length > 0 ? ` with ${Object.keys(add).sort().join(", ")}` : ""
@@ -522,7 +580,10 @@ export async function runBootstrap(
         `after the deploy, ${plan.platformWorker} ${secrets === null ? "does not exist" : `lacks ${missing.join(", ")}`}; run again`,
       );
     }
-    record({ platformDeployedAt: iso(ctx.now()) });
+    record({
+      platformDeployedAt: iso(ctx.now()),
+      ...(ctx.codeVersion === undefined ? {} : { platformCode: ctx.codeVersion }),
+    });
   }
 
   // 2. Access, read and checked just before (and created first in the installer's account, as
@@ -542,7 +603,10 @@ export async function runBootstrap(
     const config = renderWebConfig(ctx.baseConfigs.web, plan, access);
     ctx.log(`deploying the web Worker ${plan.webWorker} for https://${plan.hostname}`);
     await ctx.cloud.deployWeb(plan, config);
-    record({ webDeployedAt: iso(ctx.now()) });
+    record({
+      webDeployedAt: iso(ctx.now()),
+      ...(ctx.codeVersion === undefined ? {} : { webCode: ctx.codeVersion }),
+    });
   }
 
   // 4. The watchdog's status in Workers Logs; 5. the release, sent only while that status is
@@ -590,7 +654,71 @@ export async function runBootstrap(
     ...(releasedVersionId === undefined ? {} : { releasedVersionId }),
   });
   ctx.log("released: the bootstrap password is gone and the installation is marked initialized");
-  return verifyAfterRelease(ctx, () => state, options, record);
+  const verified = await verifyAfterRelease(ctx, () => state, options, record);
+  return verified.kind === "done" ? update(secrets) : verified;
+
+  /**
+   * 7. A finished installation: deploys this run's code where the journal records other code (or
+   * none), and adds the launcher's key where the Worker lacks it. Nothing else changes: no secret
+   * the Worker holds is replaced, and the password is never uploaded again. Code of unknown
+   * version (uncommitted changes, no git) is never deployed over a finished installation.
+   */
+  async function update(present: ReadonlySet<string> | null): Promise<Outcome> {
+    const journal = state.journal;
+    const code = ctx.codeVersion;
+    const stale = code !== undefined && (journal.platformCode !== code || journal.webCode !== code);
+    const listed = present ?? (await names());
+    if (listed === null) throw new Error(`${plan.platformWorker} no longer exists`);
+    const add = launcherKeyToAdd(listed, generatedSecrets(ctx));
+    const adding = Object.keys(add).sort();
+    if (!stale && adding.length === 0) return { kind: "done" };
+    await ours(plan.platformWorker);
+    const standIns = Object.fromEntries([...listed].map((name) => [name, "present"]));
+    const problems = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
+    if (problems.length > 0) {
+      throw new BootstrapRefusal(`the server would not start: ${problems.join("; ")}`);
+    }
+    if (stale) {
+      await ours(plan.webWorker);
+      ctx.log(
+        `updating the platform Worker ${plan.platformWorker} to this checkout${
+          adding.length > 0 ? `, with ${adding.join(", ")}` : ""
+        }: the server restarts once on it, within about 10 minutes`,
+      );
+      await ctx.cloud.deployPlatform(
+        plan,
+        renderPlatformConfig(ctx.baseConfigs.platform, plan),
+        add,
+      );
+    } else {
+      ctx.log(
+        `adding ${adding.join(", ")} to ${plan.platformWorker}: the server restarts once with it, within about 10 minutes`,
+      );
+      await ctx.cloud.updateSecrets(plan.platformWorker, add);
+    }
+    const after = await names();
+    const missing = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET].filter((n) => !after?.has(n));
+    if (after === null || missing.length > 0) {
+      throw new Error(
+        `after the update, ${plan.platformWorker} ${after === null ? "does not exist" : `lacks ${missing.join(", ")}`}; run again`,
+      );
+    }
+    if (stale) {
+      record({ platformCode: code });
+      const found = await ownerAccess();
+      const accessIssues = accessProblems(plan, found);
+      if (accessIssues.length > 0) {
+        throw new BootstrapRefusal(`Access is not ready: ${accessIssues.join("; ")}`);
+      }
+      const access = { ...found, checkedAt: iso(ctx.now()) };
+      record({ access });
+      ctx.log(`updating the web Worker ${plan.webWorker} for https://${plan.hostname}`);
+      await ctx.cloud.deployWeb(plan, renderWebConfig(ctx.baseConfigs.web, plan, access));
+      record({ webCode: code });
+    }
+    record({ updatedAt: iso(ctx.now()) });
+    return { kind: "done", updated: true };
+  }
 }
 
 /** The R2 secrets an installation holds: the replica's pair, the artifacts' pair, or both. */
@@ -763,4 +891,16 @@ async function verifyAfterRelease(
     if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };
     await ctx.sleep(options.pollMs);
   }
+}
+
+/** The one link to open once the installation is ready, and the reset page's. */
+export function doneMessage(
+  installation: { readonly hostname: string; readonly ownerUsername: string },
+  onPage: boolean,
+): string {
+  const site = `https://${installation.hostname}`;
+  const next = onPage
+    ? `Cloudflare Access asks you to sign in, then the page that opens asks you to choose your Omnigent password (your username: ${installation.ownerUsername})`
+    : `Cloudflare Access asks you to sign in, then Omnigent, as ${installation.ownerUsername}, with the password you chose`;
+  return `bootstrap: done. Open ${site}: ${next}. If you ever forget the password: ${site}/platform/password`;
 }

@@ -79,16 +79,22 @@
 // that `remove-r2-token` can delete it. A token made by an earlier run whose pair never reached
 // the Worker is retired the same way. A login that may not make API tokens (403) gets the
 // dashboard step in one sentence and, in a terminal, a prompt for that token's two values.
-// The owner's password is made only when it must be uploaded (password.ts): generated, put on
-// the clipboard (wl-copy, xclip or xsel, pbcopy), never shown, and the run waits for Enter while
-// the person stores it in their password manager. Without a clipboard tool, or with
-// --password-prompt, it is typed twice instead. With --secrets-stdin it comes from a JSON object
-// on stdin ({"ownerPassword": …}, optionally with an R2 token's values made by hand,
-// "replicaAccessKeyId" and "replicaSecretAccessKey", and "artifactsAccessKeyId" and
-// "artifactsSecretAccessKey" for a second token; given values are used instead of making a
-// token). Exit status: 0 done; 2 still waiting for the owner to be
+// The owner's password (WP3.34): by default the run asks for none. It uploads a random one
+// nobody ever sees, so the owner's account exists from the server's first start but nobody can
+// sign in as them, and the owner chooses theirs on the site after Access: a first visit to
+// https://<host> goes to the password page, which is also the "forgot password" page
+// (https://<host>/platform/password). With --password-prompt it is typed twice here instead;
+// with --secrets-stdin it may come from a JSON object on stdin ({"ownerPassword": …}, optionally
+// with an R2 token's values made by hand, "replicaAccessKeyId" and "replicaSecretAccessKey", and
+// "artifactsAccessKeyId" and "artifactsSecretAccessKey" for a second token; given values are used
+// instead of making a token). The launcher's signing key is made by the run too, when the
+// platform Worker holds none. Exit status: 0 done; 2 still waiting for the owner to be
 // initialized and durable (run again); 3 released, but the check after the version switch has
 // not passed yet (run again); 1 an error or a refusal.
+//
+// Run again on a finished installation, from a newer clean checkout, `install` and `run` update
+// it: both Workers are deployed again with this checkout's code, adding only a missing launcher
+// key (machine.ts, step 7). The server restarts once on the new version.
 //
 // `buckets` creates (or, for staging, checks) the plan's buckets without deploying; `run` does
 // the same itself. `remove-r2-token` deletes the installation's R2 tokens, a step of removing
@@ -102,9 +108,10 @@
 // Worker's name exists unless --yes, and names the application with its click where Cloudflare
 // refuses the delete (403).
 //
-// Afterwards the owner opens https://<host>: Access asks for the owner's sign-in first, then
-// Omnigent for the username and the password from the password manager.
+// Afterwards the owner opens https://<host>: Access asks for the owner's sign-in first, then the
+// password page (or, with a password chosen at install, Omnigent's own sign-in).
 
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -130,9 +137,10 @@ import {
   BootstrapRefusal,
   type BootstrapState,
   DEFAULT_RUN_OPTIONS,
+  doneMessage,
   runBootstrap,
 } from "./machine.ts";
-import { clipboardTool, copyToClipboard, ownerPassword, type PasswordIo } from "./password.ts";
+import { type PasswordIo, promptOwnerPassword } from "./password.ts";
 import { preflight, preflightReport } from "./preflight.ts";
 import type { S3Credentials } from "./r2-token.ts";
 import {
@@ -461,19 +469,21 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       }
     }
     // Secrets on stdin are read once, before anything else. Otherwise the owner's password is
-    // made only when the deploy needs it: generated onto the clipboard, or typed (password.ts).
+    // asked for only with --password-prompt, when the deploy needs it (password.ts); by default
+    // the run uploads a random one and the owner chooses theirs on the site (WP3.34).
     const fromStdin = values["secrets-stdin"] === true;
+    const choose = values["password-prompt"] === true;
+    if (fromStdin && choose) throw new Error("use --secrets-stdin or --password-prompt, not both");
+    if (choose && process.stdin.isTTY !== true) {
+      throw new Error(
+        "--password-prompt needs a terminal; without it, the owner chooses the password on the site",
+      );
+    }
     const supplied = fromStdin ? suppliedSecrets() : undefined;
     const passwordIo: PasswordIo = {
       isTTY: process.stdin.isTTY === true,
       prompt,
-      confirm: async (question) => {
-        await prompt(question);
-      },
       say: (line) => console.log(`bootstrap: ${line}`),
-      clipboard: clipboardTool(),
-      copy: copyToClipboard,
-      random: (n) => new Uint8Array(randomBytes(n)),
     };
     const ownerEmail = values["owner-email"];
     const base = {
@@ -484,6 +494,12 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       installation.target.kind === "staging"
         ? stagingCloud(installation, { root: ROOT, base })
         : accountCloud(installation, { workerDir: WORKER });
+    const code = codeVersion();
+    if (code === undefined) {
+      console.log(
+        "bootstrap: this checkout has uncommitted changes (or git cannot say which commit it is), so a finished installation is not updated to it; commit them, or run from a clean checkout, to update",
+      );
+    }
     const waitMinutes = Number(values["wait-minutes"] ?? "30");
     if (!(waitMinutes >= 0)) throw new Error("--wait-minutes must be a number of minutes");
     const outcome = await runBootstrap(
@@ -493,16 +509,12 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
         baseConfigs: base,
         secrets: async (need) => {
           if (supplied !== undefined) return supplied;
-          // The R2 credentials come from the token `run` makes, or from askR2.
-          if (!need.password) return {};
+          // The R2 credentials come from the token `run` makes, or from askR2; the owner's
+          // password from the prompt only when asked for, else the run's random one.
+          if (!need.password || !choose) return {};
           return {
-            ownerPassword: await ownerPassword(passwordIo, {
-              choose: values["password-prompt"] === true,
-              hostname: installation.hostname,
-              username: installation.ownerUsername,
-              // An earlier run gave a password, which never reached the Worker.
-              replaces: need.again,
-            }),
+            // An earlier run took a password, which never reached the Worker.
+            ownerPassword: await promptOwnerPassword(passwordIo, { replaces: need.again }),
           };
         },
         r2Tokens: cfTokenApi(runner),
@@ -511,6 +523,7 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
         ...(typeof ownerEmail === "string" && ownerEmail !== "" ? { ownerEmail } : {}),
         // Only a terminal can answer; stdin carries the JSON with --secrets-stdin.
         ...(!fromStdin && process.stdin.isTTY ? { askR2 } : {}),
+        ...(code === undefined ? {} : { codeVersion: code }),
         random: (n) => new Uint8Array(randomBytes(n)),
         now: () => Date.now(),
         sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -523,23 +536,51 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
       },
     );
     switch (outcome.kind) {
-      case "done":
-        console.log(
-          `bootstrap: done. Open https://${installation.hostname}: Access asks the owner to sign in first, then Omnigent, as ${installation.ownerUsername}, with the password from your password manager.`,
-        );
+      case "done": {
+        const journal = store.load().journal;
+        if (outcome.updated) {
+          console.log(
+            "bootstrap: updated to this checkout's version; the server restarts once on it within about 10 minutes.",
+          );
+        }
+        console.log(doneMessage(installation, journal.ownerPassword === "page"));
         return 0;
+      }
       case "released":
         console.log(`bootstrap: released; not checked yet: ${outcome.why}. Run again to check.`);
         return 3;
       case "waiting":
-        console.log(
-          `bootstrap: still waiting: ${outcome.why}. The password stays; run again to continue.`,
-        );
+        console.log(`bootstrap: still waiting: ${outcome.why}. Run again to continue.`);
         return 2;
     }
   } finally {
     for (const release of releases.reverse()) release();
   }
+}
+
+/**
+ * The code this checkout deploys: its commit, when git can say and nothing the Workers or the
+ * images are built from has changed since; else undefined (unknown: no update to it).
+ */
+function codeVersion(): string | undefined {
+  const git = (args: string[]) =>
+    spawnSync("git", ["-C", ROOT, ...args], { encoding: "utf8", timeout: 10_000 });
+  const head = git(["rev-parse", "--verify", "HEAD"]);
+  if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) return undefined;
+  const dirty = git([
+    "status",
+    "--porcelain",
+    "--untracked-files=normal",
+    "--",
+    "worker",
+    "contracts",
+    "images",
+    "python",
+    "package.json",
+    "pnpm-lock.yaml",
+  ]);
+  if (dirty.status !== 0 || dirty.stdout.trim() !== "") return undefined;
+  return head.stdout.trim();
 }
 
 /** Deletes the installation's R2 token: a step of removing the installation. */

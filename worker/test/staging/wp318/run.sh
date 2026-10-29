@@ -8,8 +8,8 @@
 #   run.sh bucket        deploy the buckets' holder (cfo-stg-wp318-r2: buckets cfo-stg-wp318-r2-db
 #                        and cfo-stg-wp318-r2-artifacts), plan the installation (owner "owner",
 #                        replica s3://cfo-stg-wp318-r2-db/omnigent, artifacts
-#                        s3://cfo-stg-wp318-r2-artifacts), check the buckets, and generate the
-#                        owner's Omnigent password into $WP318_DIR (mode 600)
+#                        s3://cfo-stg-wp318-r2-artifacts) and check the buckets. No password: the
+#                        owner chooses it on the installation's password page (WP3.34)
 #   run.sh token         [owner] paste one R2 token's two values (not echoed; one token for both
 #                        buckets); or `run.sh token --create`: the owner's own `cf` login creates
 #                        that token itself (a user API token, "Workers R2 Storage Bucket Item
@@ -18,7 +18,8 @@
 #                        and teardown deletes it. Either way it starts the bootstrap in the
 #                        background ($WP318_DIR/bootstrap.log),
 #                        which sets them for the replica and for the artifacts under their own
-#                        names, deploys both Workers with the server and computer images, waits
+#                        names, makes the launcher's signing key and a password nobody sees
+#                        (WP3.34), deploys both Workers with the server and computer images, waits
 #                        for the durable owner, releases, and verifies that the watchdog's
 #                        controlled restart (`config_changed`) applied the release; a push the
 #                        registry times out on, or a deploy whose version went live before its
@@ -26,8 +27,9 @@
 #                        deploy again), is retried with the same values (3 attempts)
 #   run.sh follow        wait for the bootstrap to end
 #   run.sh resume        run the bootstrap again (no secret needed once its first deploy is done)
-#   run.sh launcher-key  generate the launcher's signing key, set it on the platform Worker, then
-#                        wait for the watchdog's `config_changed` restart that applies it
+#   run.sh launcher-key  only for an installation from before WP3.34, whose bootstrap did not make
+#                        the launcher's signing key: generate it, set it on the platform Worker,
+#                        then wait for the watchdog's `config_changed` restart that applies it
 #   run.sh applied <since ms>
 #                        wait (25 minutes at most) for a `config_changed` restart after <since>
 #   run.sh soak-deploy   deploy the platform Worker with the soak module (soak.ts): the
@@ -43,7 +45,8 @@
 #                        start-to-ready times (restarts.json): #1 the bootstrap's release, #2 the
 #                        launcher's key
 #   run.sh web-deploy    deploy the web Worker once, now (WP3.5's FH-38 check before the soak)
-#   run.sh password      [owner] the owner's generated Omnigent password, onto the clipboard
+#   run.sh password      [owner] the link to the password page, where the owner chooses (or
+#                        resets) the Omnigent password after Access (WP3.34)
 #   run.sh hostile <computer ID>
 #                        WP3.5's hostile page for the owner's browser (http://127.0.0.1:8088/)
 #   run.sh campaign      after the owner's Start click: the web and platform deploys at their
@@ -67,7 +70,7 @@
 # with spikes/x1/scripts/redact.py (account, zone, owner address) before it leaves the laptop.
 # Push images one at a time: run no other staging deploy while the bootstrap pushes its images.
 set -euo pipefail
-# This script handles credentials (the owner's R2 token, the generated owner password, the
+# This script handles credentials (the owner's R2 token, and for an older installation the
 # launcher's key): never trace it, even when started with `bash -x`.
 set +x
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -82,6 +85,7 @@ owner=WP3.18
 days=2
 replica_bucket=cfo-stg-wp318-r2-db
 artifacts_bucket=cfo-stg-wp318-r2-artifacts
+# From before WP3.34; teardown still removes one left behind.
 secrets="$out/owner-secrets.json"
 launcher="$out/launcher-secrets.json"
 bootstrap=(node "$root/scripts/bootstrap/bootstrap.ts")
@@ -214,13 +218,10 @@ case "${1:-}" in
       --artifacts-url "s3://$artifacts_bucket" \
       --replica-endpoint "https://$(account).r2.cloudflarestorage.com" --days "$days"
     logged buckets "${bootstrap[@]}" buckets --staging wp318
-    if [ ! -f "$secrets" ]; then
-      (umask 077; python3 -I -c 'import json,secrets; print(json.dumps({"ownerPassword": "cfo-stg-" + secrets.token_urlsafe(18)}))' >"$secrets")
-    fi
     echo "Ready for the owner's R2 token: buckets $replica_bucket and $artifacts_bucket."
     ;;
   token)
-    [ -f "$secrets" ] || { echo "run.sh bucket first"; exit 2; }
+    [ -f "$install_dir/$platform.json" ] || { echo "run.sh bucket first"; exit 2; }
     if [ "${2:-}" = "--create" ]; then
       echo "Creating the R2 token with your cf login (buckets $replica_bucket, $artifacts_bucket; not shown)"
       pair="$(create_r2_token)" || { echo "run.sh: no token created; see $out/token-create.err" >&2; exit 1; }
@@ -237,7 +238,9 @@ case "${1:-}" in
     now_ms >"$out/token-at"
     # The values go from this shell's builtin printf, through a pipe, to Python, and from it to
     # the bootstrap's stdin: never on a command line, in an environment or in a file. The
-    # bootstrap sets them for the replica and, as the artifacts' default, for the artifacts.
+    # bootstrap sets them for the replica and, as the artifacts' default, for the artifacts. No
+    # owner password: the bootstrap uploads one nobody sees, and the owner chooses theirs on the
+    # password page (`run.sh password`), as on a real installation (WP3.34).
     printf '%s\n%s\n' "$key_id" "$key_secret" | python3 -I -c '
 import json, sys
 key_id = sys.stdin.readline().strip()
@@ -245,10 +248,9 @@ key_secret = sys.stdin.readline().strip()
 if not key_id or not key_secret:
     sys.exit("both values are needed")
 print(json.dumps({
-    "ownerPassword": json.load(open(sys.argv[1]))["ownerPassword"],
     "replicaAccessKeyId": key_id,
     "replicaSecretAccessKey": key_secret,
-}))' "$secrets" | setsid nohup bash -c '
+}))' | setsid nohup bash -c '
       # The values stay in this unexported variable, so that a push the registry times out on
       # ("timeout awaiting response headers") is retried without the owner: at most 3 attempts.
       given="$(cat)"
@@ -353,14 +355,9 @@ print(json.dumps({
     tail -n 1 "$out/sitting-deploys.jsonl"
     ;;
   password)
-    # Onto the owner's clipboard where there is one (nothing to copy by hand); printed otherwise.
-    if command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1; then
-      python3 -I -c 'import json,sys; sys.stdout.write(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets" |
-        { if command -v wl-copy >/dev/null 2>&1; then wl-copy; else xclip -selection clipboard; fi; }
-      echo "The owner's Omnigent password is on your clipboard: paste it into Omnigent's sign-in page."
-    else
-      python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["ownerPassword"])' "$secrets"
-    fi
+    # The same page as a real installation's (WP3.34): Access first, then the owner chooses the
+    # password there (a first visit to the site goes there by itself), or resets it later.
+    echo "Open https://$web.$(zone)/platform/password: after Access, choose the owner's Omnigent password there (username: owner)."
     ;;
   hostile)
     computer="${2:?run.sh hostile <computer ID>}"
