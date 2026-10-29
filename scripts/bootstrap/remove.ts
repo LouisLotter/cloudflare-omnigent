@@ -13,11 +13,18 @@
 // cf's OAuth login may not delete API tokens (403). A token Cloudflare does not let it delete is
 // never left silently: it stays in the state file's tokens to delete, and the output names it
 // exactly, with the one link and the one click that delete it (manualDeletion).
+//
+// Also `bootstrap.ts remove-access` (WP3.31): it deletes the hostname's Access application only
+// when the state file records it as this installation's (the bootstrap created it), never one
+// someone else made; it refuses while a Worker with the web Worker's name exists, unless --yes.
+// A delete Cloudflare refuses (403) names the application, with the click that deletes it.
 
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { InstallationId } from "../../contracts/src/index.ts";
 import { acquireLock } from "../staging/lock.ts";
+import { ZERO_TRUST_DASHBOARD } from "./access.ts";
+import { type AccessApi, AccessUnavailable } from "./access-app.ts";
 import type { BootstrapState, StateStore } from "./machine.ts";
 import {
   type ApiToken,
@@ -115,6 +122,86 @@ export function removeInstallationToken(options: RemoveTokenOptions): Removal {
   const named = [...result.left, ...result.unconfirmed];
   if (named.length > 0) options.log(`${manualDeletion(named)}${stillCovers(plan, named.length)}`);
   return { deleted: result.deleted.length, left: result.left, unconfirmed: result.unconfirmed };
+}
+
+export interface RemoveAccessOptions {
+  readonly store: StateStore;
+  readonly api: AccessApi;
+  /** Whether a Worker with the web Worker's name exists, whichever installation it is. */
+  readonly webWorkerExists: () => boolean;
+  /** Delete it even so (the installer said --yes). */
+  readonly force: boolean;
+  readonly log: (message: string) => void;
+}
+
+/**
+ * Deletes the Access application this installation created, as the state file records it.
+ * Returns the name of the application left for the person to delete, if any.
+ */
+export function removeInstallationAccess(options: RemoveAccessOptions): string | undefined {
+  const state = options.store.load();
+  const plan = state.installation;
+  const recorded = state.journal.accessApp;
+  if (recorded === undefined) {
+    options.log(
+      `no Access application is recorded as this installation's: nothing to delete (one the bootstrap did not create is left alone)`,
+    );
+    return undefined;
+  }
+  if (!options.force && options.webWorkerExists()) {
+    throw new Error(
+      `a Worker named ${plan.webWorker} still exists, and the Access application "${recorded.name}" keeps everyone but the owner away from it; remove the installation's Workers first, or pass --yes`,
+    );
+  }
+  // A create never answered: what it made carries its name.
+  const id =
+    recorded.id ??
+    (
+      options.api
+        .appsOn(plan.hostname)
+        .find((a) => (a as { name?: unknown } | null)?.name === recorded.name) as
+        | { id?: unknown }
+        | undefined
+    )?.id;
+  const forget = () => {
+    const { accessApp: _app, ...journal } = options.store.load().journal;
+    options.store.save({ ...options.store.load(), journal });
+  };
+  if (typeof id !== "string") {
+    options.log(
+      `the Access application "${recorded.name}" was never seen after its create, and is not there now: nothing to delete`,
+    );
+    forget();
+    return undefined;
+  }
+  try {
+    const removed = options.api.remove(id);
+    forget();
+    options.log(
+      removed === "deleted"
+        ? `deleted the Access application "${recorded.name}" on ${plan.hostname}`
+        : `the Access application "${recorded.name}" was already gone`,
+    );
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof AccessUnavailable)) throw error;
+    // A person may have deleted it already: then it reads as gone.
+    let gone = false;
+    try {
+      gone = options.api.app(id) === undefined;
+    } catch (readError) {
+      if (!(readError instanceof AccessUnavailable)) throw readError;
+    }
+    if (gone) {
+      forget();
+      options.log(`the Access application "${recorded.name}" is gone`);
+      return undefined;
+    }
+    options.log(
+      `Cloudflare does not let this cf login delete Access applications, so delete the one named exactly "${recorded.name}" by hand: open ${ZERO_TRUST_DASHBOARD}, Access, Applications, open it, and choose Delete. Then run this again to check.`,
+    );
+    return recorded.name;
+  }
 }
 
 /**
