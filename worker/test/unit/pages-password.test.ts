@@ -356,6 +356,80 @@ describe("the first visit", () => {
   });
 });
 
+describe("unusual answers and forms", () => {
+  it("treats an answer of the wrong kind as no answer", async () => {
+    const odd = {
+      ownerPassword: async (): Promise<OwnerPasswordResult> => ({
+        action: "set",
+        outcome: "done",
+      }),
+    };
+    const page = await routePlatform(admitted(PASSWORD_PATH), {} as WebEnv, {
+      password: odd,
+      assets: async () => ({}),
+      log: (fields) => logged.push(fields),
+    });
+    expect(page.status).toBe(503);
+    expect(logged).toContainEqual({ event: "password_page_unavailable", error: "Error" });
+    const stateForSet = {
+      ownerPassword: async (): Promise<OwnerPasswordResult> => ({
+        action: "state",
+        state: "chosen",
+        username: "owner",
+        intentToken: "7".repeat(64),
+      }),
+    };
+    const change = await routePlatform(
+      admitted(PASSWORD_PATH, {
+        method: "POST",
+        headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(good()).toString(),
+      }),
+      {} as WebEnv,
+      { password: stateForSet, assets: async () => ({}), log: () => undefined },
+    );
+    expect(change.headers.get("location")).toBe(`${PASSWORD_PATH}?result=failed`);
+  });
+
+  it("names a thrown non-error by its type only", async () => {
+    const throwing = {
+      ownerPassword: async (): Promise<OwnerPasswordResult> => {
+        throw "a string";
+      },
+    };
+    const memo: FirstVisitMemo = { chosen: false };
+    await firstVisitRedirect(
+      admitted("/", { headers: { "sec-fetch-mode": "navigate" } }),
+      throwing,
+      memo,
+      (fields) => logged.push(fields),
+    );
+    expect(logged).toEqual([{ event: "first_visit_unknown", error: "string" }]);
+  });
+
+  it("shows the done page without a username when the installation names none", async () => {
+    server.passwordState = { state: "chosen", username: null };
+    const html = await (await visit(`${PASSWORD_PATH}?result=done`)).text();
+    expect(html).toContain("Sign in to Omnigent with your new password.");
+  });
+
+  it.each<[string, Record<string, string>, number | string]>([
+    ["no intent", { password: PASSWORD, confirm: PASSWORD }, `${PASSWORD_PATH}?result=intent`],
+    ["no password", { intent: "7".repeat(64), confirm: PASSWORD }, 400],
+    ["no confirmation", { intent: "7".repeat(64), password: PASSWORD }, 400],
+  ])("handles a form with %s", async (_, fields, expected) => {
+    const response = await post(fields);
+    if (typeof expected === "number") expect(response.status).toBe(expected);
+    else expect(response.headers.get("location")).toBe(expected);
+    expect(sets()).toEqual([]);
+  });
+
+  it("never treats an inherited property as an outcome word", async () => {
+    const html = await (await visit(`${PASSWORD_PATH}?result=toString`)).text();
+    expect(html).not.toContain("data-notice=");
+  });
+});
+
 describe("the binding", () => {
   it("calls the one OmnigentServer object, and refuses an answer outside the contract", async () => {
     const names: string[] = [];

@@ -56,7 +56,7 @@ type Tone = "ok" | "info" | "warn" | "danger";
 type State = Extract<OwnerPasswordResult, { action: "state" }>;
 
 /** The outcomes `?result=` may name, and what the page says for each. */
-const RESULTS: Readonly<Record<string, { readonly tone: Tone; readonly text: string }>> = {
+const RESULTS = {
   unconfirmed: {
     tone: "warn",
     text: "The change could not be confirmed yet. Wait a minute, then set your password again, so that it is kept.",
@@ -75,7 +75,18 @@ const RESULTS: Readonly<Record<string, { readonly tone: Tone; readonly text: str
     tone: "danger",
     text: "The password could not be changed. Try again; if it keeps failing, the installation needs a look.",
   },
-};
+} as const satisfies Readonly<Record<string, { readonly tone: Tone; readonly text: string }>>;
+
+type ResultWord = keyof typeof RESULTS;
+
+function resultOf(word: string | null): ResultWord | null {
+  return word !== null && Object.hasOwn(RESULTS, word) ? (word as ResultWord) : null;
+}
+
+/** An error's name for a log line, never its message (which could quote a request). */
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
 
 const PROBLEMS = {
   mismatch: "The two passwords differ. Type the same password twice.",
@@ -115,7 +126,7 @@ function formPage(state: State, problem: string | null, status = 200): Response 
   const username = state.username;
   const body =
     username === null
-      ? `<h1>${title}</h1>${notice("danger", "not_configured", RESULTS.not_configured?.text ?? "")}`
+      ? `<h1>${title}</h1>${notice("danger", "not_configured", RESULTS.not_configured.text)}`
       : `<h1>${title}</h1>
 <p>${escapeHtml(intro)}</p>
 ${problem === null ? "" : notice("warn", "problem", problem)}
@@ -157,18 +168,19 @@ export async function passwordPage(
   try {
     state = await readState(backend, owner);
   } catch (error) {
-    log({ event: "password_page_unavailable", error: error instanceof Error ? error.name : "?" });
+    log({ event: "password_page_unavailable", error: errorName(error) });
     return unavailablePage();
   }
-  const result = url.searchParams.get("result");
-  if (result === "done") return donePage(state);
-  const shown = result === null ? undefined : RESULTS[result];
+  const word = url.searchParams.get("result");
+  if (word === "done") return donePage(state);
+  const result = resultOf(word);
   const page = formPage(state, null);
-  if (shown === undefined) return page;
+  if (result === null) return page;
   // The outcome above the form, which stays for another try.
+  const shown = RESULTS[result];
   const html = (await page.text()).replace(
     "<form ",
-    `${notice(shown.tone, result ?? "", shown.text)}\n<form `,
+    `${notice(shown.tone, result, shown.text)}\n<form `,
   );
   return htmlResponse(html);
 }
@@ -219,7 +231,7 @@ export async function passwordChange(
     });
   } catch (error) {
     // An object still on an older build, or a lost call: nothing to show but "try again".
-    log({ event: "password_change_error", error: error instanceof Error ? error.name : "?" });
+    log({ event: "password_change_error", error: errorName(error) });
     return seeOther(`${PASSWORD_PATH}?result=unavailable`);
   }
   if (result.action !== "set") return seeOther(`${PASSWORD_PATH}?result=failed`);
@@ -263,7 +275,7 @@ export async function firstVisitRedirect(
     }
     return seeOther(PASSWORD_PATH);
   } catch (error) {
-    log({ event: "first_visit_unknown", error: error instanceof Error ? error.name : "?" });
+    log({ event: "first_visit_unknown", error: errorName(error) });
     return null;
   }
 }

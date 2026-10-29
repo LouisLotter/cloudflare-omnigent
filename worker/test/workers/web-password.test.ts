@@ -19,7 +19,7 @@ import type { WebEnv } from "../../src/env.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import { PASSWORD_PATH } from "../../src/pages/password.ts";
 import { OMNIGENT_SERVER_OBJECT_NAME } from "../../src/shared/rpc.ts";
-import web from "../../src/web.ts";
+import web, { routeAdmitted } from "../../src/web.ts";
 import {
   AUD,
   claims,
@@ -170,6 +170,23 @@ describe("web Worker: the password page behind Access (in this order)", () => {
     expect(api.status).toBe(200);
     expect(await api.json()).toMatchObject({ accounts_enabled: true });
     expect(fake.forwarded().map((r) => new URL(r.url).pathname)).toEqual([]);
+  });
+
+  it("forwards a page load as usual, and logs it, when OmnigentServer cannot say", async () => {
+    // An admission whose session ID OmnigentServer's contract refuses: the call fails.
+    const response = await routeAdmitted(
+      {
+        ok: true,
+        request: new Request(`${ORIGIN}/`, { headers: navigation }),
+        origin: ORIGIN,
+        identity: { sub: "sub", sessionId: "not-a-session", issuedAt: 1, expiresAt: 2 },
+      },
+      ingressEnv,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+    expect(logs.some((line) => line.includes('"event":"first_visit_unknown"'))).toBe(true);
   });
 
   it("refuses a change from another origin or a stale page, and sets nothing", async () => {
