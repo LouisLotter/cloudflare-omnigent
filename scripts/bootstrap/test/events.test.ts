@@ -557,6 +557,33 @@ describe("checkGitHubLinking (WP3.36)", () => {
     }
   });
 
+  it("lets a later word override an earlier verdict, whatever order the lines arrive in (Codex r2-1)", () => {
+    const on = github(SINCE + 60_000, true);
+    for (const later of [
+      github(SINCE + 120_000, true, { githubApp: OLD }), // a rollback to the earlier App
+      github(SINCE + 120_000, true, { githubApp: null }), // the App removed
+      github(SINCE + 120_000, true, { configApplied: false }), // a restart under way
+      changed(SINCE + 120_000), // a replacement begun
+      configError(SINCE + 120_000, { githubApp: OLD }), // another configuration held
+    ]) {
+      expect(check([later, on]).state).toBe("waiting");
+      expect(check([on, later]).state).toBe("waiting");
+    }
+    expect(
+      check([github(SINCE + 60_000, false), github(SINCE + 120_000, true, { githubApp: OLD })]),
+    ).toMatchObject({ state: "waiting", why: expect.stringContaining("without this App") });
+    expect(check([configError(SINCE + 60_000), changed(SINCE + 120_000)])).toMatchObject({
+      state: "waiting",
+      why: expect.stringContaining("restarting"),
+    });
+    // At the same moment, a change outranks a verdict.
+    expect(check([on, changed(SINCE + 60_000)]).state).toBe("waiting");
+    // And fresh evidence after the change decides again.
+    expect(check([on, changed(SINCE + 120_000), github(SINCE + 180_000, true)])).toEqual({
+      state: "on",
+    });
+  });
+
   it("says whether the watchdog has begun the restart", () => {
     expect(check([])).toMatchObject({ why: expect.stringContaining("has not switched") });
     expect(check([changed(SINCE - 1)])).toMatchObject({

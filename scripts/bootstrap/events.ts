@@ -401,14 +401,18 @@ export type GitHubLinkingCheck =
 
 /**
  * After the GitHub step's secrets change (WP3.36): whether the server runs with the App's
- * settings and Omnigent lists GitHub linking. The evidence is bound to the App the step just
- * stored, by its tag (`appTag`), never to what Cloudflare says of versions (Codex r1-1): a status
- * logged at or after `since` (the change) from a server started with its logging version's
- * configuration (`configApplied`) where that version holds this App; or the watchdog's
- * `config_error` saying that a configuration holding this App is held (`held`), whichever is
- * newer. A status from another App (an earlier one, on --replace), from before the change or of
- * another installation is never evidence either way, nor is a `config_error` of a container that
- * ran an older configuration (Codex r1-2).
+ * settings and Omnigent lists GitHub linking. The newest word of the object about this
+ * installation since the change (`since`) decides, and only when it is about the App the step
+ * stored, by its tag (`appTag`), never by what Cloudflare says of versions (Codex r1-1):
+ *   - a status from a server started with its logging version's configuration (`configApplied`)
+ *     whose version holds this App: "on" or "off" by Omnigent's own list;
+ *   - the watchdog's `config_error` saying it holds the current configuration (`held`), whose App
+ *     is this one: "held" (Codex r1-2; an older container's exit is no word at all);
+ *   - anything newer than those, which says the server is changing or runs something else (a
+ *     replacement begun, `config_changed`; a status not yet applied; a status or a hold of
+ *     another App, or of none, after a rollback or a later change): not decided, so that a later
+ *     word always overrides an earlier verdict, whatever order the lines arrive in (Codex r2-1).
+ * Nothing from before the change, or of another installation, counts.
  */
 export function checkGitHubLinking(
   logs: ParsedLogs,
@@ -419,35 +423,59 @@ export function checkGitHubLinking(
     readonly since: number;
   },
 ): GitHubLinkingCheck {
-  const applied = logs.statuses.filter(
-    (e) =>
-      e.status.installationId === rules.installationId &&
-      e.loggedAt >= rules.since &&
-      e.configApplied === true &&
-      e.githubApp === rules.appTag,
+  type Word =
+    | { readonly at: number; readonly kind: "status"; readonly event: StatusEvent }
+    | { readonly at: number; readonly kind: "held"; readonly ours: boolean }
+    | { readonly at: number; readonly kind: "changed" };
+  const words: Word[] = [
+    ...logs.statuses
+      .filter((e) => e.status.installationId === rules.installationId && e.loggedAt >= rules.since)
+      .map((event): Word => ({ at: event.loggedAt, kind: "status", event })),
+    ...logs.configErrors
+      .filter((e) => e.held === true && e.loggedAt >= rules.since)
+      .map((e): Word => ({ at: e.loggedAt, kind: "held", ours: e.githubApp === rules.appTag })),
+    ...logs.configChanges
+      .filter((at) => at >= rules.since)
+      .map((at): Word => ({ at, kind: "changed" })),
+  ];
+  // The newest; among words of the same moment, a change or a hold before a status, so that a
+  // tie never decides in favour of a verdict.
+  const rank = { changed: 0, held: 1, status: 2 } as const;
+  const latest = words.reduce<Word | undefined>(
+    (a, b) =>
+      a === undefined || b.at > a.at || (b.at === a.at && rank[b.kind] < rank[a.kind]) ? b : a,
+    undefined,
   );
-  const latest = newest(applied);
-  const held = logs.configErrors
-    .filter((e) => e.held === true && e.githubApp === rules.appTag && e.loggedAt >= rules.since)
-    .reduce((at, e) => Math.max(at, e.loggedAt), Number.NEGATIVE_INFINITY);
-  if (held > (latest?.loggedAt ?? Number.NEGATIVE_INFINITY)) return { state: "held" };
-  if (latest !== undefined) {
-    if (latest.githubLinking === true) return { state: "on" };
-    if (latest.githubLinking === false) return { state: "off" };
+  const restarting = "the server is restarting with the App's settings (a few minutes)";
+  if (latest === undefined) {
     return {
       state: "waiting",
-      why: "the restarted server answers, but its status does not say whether GitHub linking is on",
+      why: "the platform has not switched the server's object to the App's settings yet",
     };
   }
-  // Only for the words: the watchdog said, since the change, that it replaces the server for a
-  // changed configuration, or a version holding this App already logs.
-  const restarting =
-    logs.configChanges.some((at) => at >= rules.since) ||
-    logs.statuses.some((e) => e.loggedAt >= rules.since && e.githubApp === rules.appTag);
+  if (latest.kind === "changed") return { state: "waiting", why: restarting };
+  if (latest.kind === "held") {
+    return latest.ours
+      ? { state: "held" }
+      : {
+          state: "waiting",
+          why: "the server holds a configuration without this App (a later change?)",
+        };
+  }
+  const status = latest.event;
+  if (status.githubApp !== rules.appTag) {
+    return status.githubApp === undefined || status.configApplied !== true
+      ? { state: "waiting", why: restarting }
+      : {
+          state: "waiting",
+          why: "the server still runs a configuration without this App (the platform has not switched to the App's settings yet, or a later change replaced them)",
+        };
+  }
+  if (status.configApplied !== true) return { state: "waiting", why: restarting };
+  if (status.githubLinking === true) return { state: "on" };
+  if (status.githubLinking === false) return { state: "off" };
   return {
     state: "waiting",
-    why: restarting
-      ? "the server is restarting with the App's settings (a few minutes)"
-      : "the platform has not switched the server's object to the App's settings yet",
+    why: "the restarted server answers, but its status does not say whether GitHub linking is on",
   };
 }

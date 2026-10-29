@@ -1094,17 +1094,17 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
    * environment differs from this version's, this instance arms its alarm for now and resets
    * itself, so that the next instance runs the newest version and its first check applies the
    * new configuration. Every step of the watchdog is persisted before its effect and a new
-   * instance adopts the running container, as after any reset. At most once for each newer
-   * environment and once in `VERSION_YIELD_INTERVAL_MS`; a call without a fingerprint (an older
-   * cron) changes nothing.
+   * instance adopts the running container, as after any reset. Never twice in a row for the same
+   * newer environment, and at most once in `VERSION_YIELD_INTERVAL_MS`; a call without a
+   * fingerprint (an older cron) changes nothing.
    */
   async #yieldToNewerVersion(environment: unknown): Promise<void> {
     if (typeof environment !== "string" || !/^[0-9a-f]{32}$/.test(environment)) return;
     const own = await environmentFingerprint(this.env as unknown as Record<string, unknown>);
     if (environment === own) return;
-    // At most once for each newer environment, and once in the interval: an object the platform
-    // keeps on its version on purpose (a gradual deployment) resets once, not every few minutes
-    // (Codex r1, the yield).
+    // Never twice in a row for the same newer environment, and at most once in the interval: an
+    // object the platform keeps on its version on purpose (a gradual deployment) resets once, not
+    // every few minutes (Codex r1 and r2, the yield).
     const last = z
       .object({ at: Millis, environment: z.string().max(64) })
       .safeParse(this.#serverState(VERSION_YIELD_KEY));

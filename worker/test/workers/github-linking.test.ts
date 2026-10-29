@@ -6,8 +6,8 @@
 //   - `githubSetup`, the GitHub setup page's state, through a secrets change: the object on the
 //     old version, the new version before and after the watchdog's restart, a held, a recovering
 //     and a starting server, and no container;
-//   - the cron's yield: an object on an older version than the cron's resets itself, once for
-//     each newer environment and once in `VERSION_YIELD_INTERVAL_MS`, and its next instance
+//   - the cron's yield: an object on an older version than the cron's resets itself, never twice
+//     in a row for the same newer environment and at most once in `VERSION_YIELD_INTERVAL_MS`, and its next instance
 //     applies the new configuration;
 //   - a configuration error names the App of the configuration it holds.
 import {
