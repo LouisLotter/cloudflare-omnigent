@@ -33,13 +33,18 @@
 //      bootstrap password, and shows the owner initialized and durable. Every platform deploy of
 //      an update carries its own `DEPLOY_ID_VAR`, which reaches the server: the configuration
 //      changes, so the watchdog restarts the server once and its status lines are the proof.
+//      Logs count only while the version serving is positively the update's own (its version
+//      and deploy ID, from one read, `serving`); while Cloudflare does not say, nothing is
+//      decided. A newer version (a secrets change, another deploy) means the update is deployed
+//      again, with a restart of its own to check, never that another version is checked.
 //
 // Crash safety. The journal's `update` records each step's intent before its effect and its
 // outcome after. A run that finds an unfinished update to the same code continues it: a platform
 // deploy whose confirmation was not recorded is sent again (with a new deploy ID, so that its own
 // restart proves it), a web deploy likewise; a confirmed deploy is never repeated, and a later run
-// only checks. The secrets are recomputed from the names each time, so none is added twice. A
-// run whose update to this code finished and checked, with nothing missing, deploys nothing.
+// only checks (or, if a newer version serves since, deploys again). The secrets are recomputed
+// from the names each time, so none is added twice. A run whose update to this code finished and
+// checked, with nothing missing, deploys nothing.
 //
 // Never: a secret value in the journal or the log, a secret replaced or deleted, the bootstrap
 // password, a request to the installation, a Worker deployed over one this plan did not create.
@@ -50,7 +55,7 @@ import {
   AccessRefusal,
   ensureOwnerAccess,
 } from "./access-app.ts";
-import { parseLogs, verifyRelease } from "./events.ts";
+import { parseLogs, type Verification, verifyRelease } from "./events.ts";
 // machine.ts's step 7 calls runUpdate, and this module uses machine.ts's refusal, generator and
 // log reader: a cycle between the two modules, which neither uses at load time.
 import {
@@ -61,6 +66,7 @@ import {
   type RunContext,
   type StateStore,
   slicedLogs,
+  type WorkerIdentity,
 } from "./machine.ts";
 import {
   type AccessSettings,
@@ -70,6 +76,7 @@ import {
   DEPLOY_ID_VAR,
   type GeneratedSecrets,
   INITIALIZED_SECRET,
+  INSTALLATION_ID_VAR,
   type Installation,
   installationProblems,
   LAUNCHER_KEY_ID_SECRET,
@@ -255,7 +262,7 @@ export async function runUpdate(
   }
   // Each Worker must say itself that it is this installation's: an update never deploys over a
   // Worker this plan did not create, and never creates one that is gone.
-  const ours = async (worker: string): Promise<Readonly<Record<string, string>>> => {
+  const ours = async (worker: string): Promise<ServingIdentity> => {
     const identity = await ctx.cloud.workerInstallation(worker);
     if (!identity.exists) {
       throw new BootstrapRefusal(
@@ -267,7 +274,7 @@ export async function runUpdate(
         `the Worker named ${worker} is not this installation's (its active version does not carry this installation's ID)${nothing}`,
       );
     }
-    return identity.vars ?? {};
+    return identity;
   };
   // Wrangler's deploy sets exactly the configuration's variables and deletes the others (never a
   // secret): a variable this release no longer sets, or one set by hand, is named before it goes.
@@ -282,7 +289,8 @@ export async function runUpdate(
       );
     }
   };
-  const platformHeld = await ours(plan.platformWorker);
+  const platformIdentity = await ours(plan.platformWorker);
+  const platformHeld = platformIdentity.vars ?? {};
   await ours(plan.webWorker);
 
   // 2. What this release needs that the Worker lacks: made here, or refused by name. Half a
@@ -332,8 +340,24 @@ export async function runUpdate(
     );
   }
 
+  // A confirmed deploy whose version no longer serves (a secrets change or another deploy since,
+  // before the check) can never be checked: its own restart may be long over, and the version
+  // serving may not restart the server at all. The update is deployed again, with a new deploy
+  // ID and so a restart of its own to check (Codex WP3.35 r1-3, r2-1..3).
+  if (
+    resuming &&
+    current().platformDeployedAt !== undefined &&
+    serving(platformIdentity, current(), plan) === "other"
+  ) {
+    const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = current();
+    record({ update: rest });
+    ctx.log(
+      "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy): deploying the update again, so that its own restart can be checked",
+    );
+  }
+
   // 4. The platform Worker, once per update; again only if its confirmation was not recorded,
-  // or if a secret it needs went missing since.
+  // if a secret it needs went missing since, or if its version no longer serves (above).
   if (current().platformDeployedAt === undefined || adding.length > 0) {
     const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = current();
     const deployId = hex(ctx.random(8));
@@ -401,7 +425,7 @@ export async function runUpdate(
     }
     const access = { ...found, checkedAt: iso(ctx.now()) };
     record({ access });
-    const webHeld = await ours(plan.webWorker);
+    const webHeld = (await ours(plan.webWorker)).vars ?? {};
     const webConfig = renderWebConfig(ctx.baseConfigs.web, plan, found);
     progress({ webDeployStartedAt: iso(ctx.now()) });
     removes(plan.webWorker, webHeld, webConfig);
@@ -472,6 +496,32 @@ async function ownerAccess(
   }
 }
 
+/** What `workerInstallation` says of a Worker that exists. */
+type ServingIdentity = Extract<WorkerIdentity, { readonly exists: true }>;
+
+/**
+ * Whether the version serving all of the platform Worker's traffic is this update's deploy: its
+ * variables carry the update's deploy ID, and it is the version recorded right after the deploy
+ * (or none was recorded). Its version and variables come from one read, so they belong together.
+ * "unknown" when Cloudflare names no version, or lists its variables without the installation's
+ * own: nothing is decided on that.
+ */
+export function serving(
+  identity: WorkerIdentity,
+  update: UpdateRecord,
+  plan: Pick<Installation, "installationId">,
+): "ours" | "other" | "unknown" {
+  if (!identity.exists || identity.versionId === undefined || identity.vars === undefined) {
+    return "unknown";
+  }
+  if (identity.vars[INSTALLATION_ID_VAR] !== plan.installationId) return "unknown";
+  const recorded = update.platformVersionId;
+  return identity.vars[DEPLOY_ID_VAR] === update.deployId &&
+    (recorded === undefined || recorded === identity.versionId)
+    ? "ours"
+    : "other";
+}
+
 /**
  * After the deploys: the platform objects switch to the new version (about 300 s), the watchdog
  * finds the server started with another configuration and replaces it once, and the server
@@ -495,42 +545,38 @@ async function checkUpdate(
     );
     await ctx.sleep(switchAt - ctx.now());
   }
-  // The version to check: the one serving now, if it carries this update's deploy ID. A secrets
-  // change since (github-app, by hand) makes a newer version with the same variables, and the
-  // objects may skip the update's own; it is checked instead, never a version of another
-  // deploy (Codex WP3.35 r1-3). Cloudflare not saying right after the deploy is covered too.
-  const identity = await ctx.cloud.workerInstallation(plan.platformWorker);
-  const serving = await ctx.cloud.activeVersion(plan.platformWorker);
-  const carried = identity.exists ? identity.vars?.[DEPLOY_ID_VAR] : undefined;
-  if (identity.exists && identity.vars !== undefined && carried !== update().deployId) {
-    // Another deploy replaced this update's version before it was checked: deployed again by
-    // the next run, with its own restart to check.
-    const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = update();
-    replace(rest);
-    return {
-      kind: "deployed",
-      why: "another deploy replaced this update's platform version before it was checked; run update again, and it deploys again",
-    };
-  }
-  const recorded = update().platformVersionId;
-  if (serving !== undefined && serving !== recorded && (carried !== undefined || !recorded)) {
-    progress({ platformVersionId: serving });
-    if (recorded !== undefined) {
-      ctx.log(
-        "the platform Worker's secrets changed after the deploy: checking the newer version, which carries this update",
-      );
-    }
-  }
   const deadline = ctx.now() + options.verifyWaitMs;
   const logsSince = slicedLogs(ctx, plan.platformWorker);
   let said: string | undefined;
   for (;;) {
-    const events = await logsSince(since, ctx.now());
-    const result = verifyRelease(parseLogs(events, plan.platformWorker), {
-      installationId: plan.installationId,
-      releasedVersionId: update().platformVersionId,
-      releasedAt: since,
-    });
+    // Logs count only while the version serving is positively this update's deploy: its own
+    // version and deploy ID, read together (Codex WP3.35 r2-1, r2-2).
+    const identity = await ctx.cloud.workerInstallation(plan.platformWorker);
+    const which = serving(identity, update(), plan);
+    if (which === "other") {
+      const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = update();
+      replace(rest);
+      return {
+        kind: "deployed",
+        why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
+      };
+    }
+    if (which === "ours" && update().platformVersionId === undefined && identity.exists) {
+      // Cloudflare did not say right after the deploy; the version serving now, carrying this
+      // update's deploy ID, is its version.
+      progress({ platformVersionId: String(identity.versionId) });
+    }
+    const result: Verification =
+      which === "unknown"
+        ? {
+            verified: false,
+            why: "Cloudflare does not say yet which version serves the platform Worker",
+          }
+        : verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
+            installationId: plan.installationId,
+            releasedVersionId: update().platformVersionId,
+            releasedAt: since,
+          });
     if (result.verified) {
       progress({ verifiedAt: iso(ctx.now()) });
       ctx.log(

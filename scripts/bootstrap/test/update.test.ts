@@ -15,6 +15,7 @@ import {
   type RunOptions,
   runBootstrap,
   type StateStore,
+  type WorkerIdentity,
 } from "../machine.ts";
 import {
   bucketTagOf,
@@ -32,6 +33,7 @@ import {
   requiredAfterRelease,
   runUpdate,
   secretsToEnsure,
+  serving,
   shortCode,
   type UpdateContext,
   type UpdateOptions,
@@ -663,9 +665,10 @@ describe("runUpdate: the wait for the switch and the check", () => {
       nth: 1,
       run: () => {
         h.world.noVersions = true;
+        // Cloudflare names it again by the check's first look (the fourth identity read).
         h.world.before = {
-          call: "activeVersion",
-          nth: 3,
+          call: "workerInstallation",
+          nth: 4,
           run: () => {
             h.world.noVersions = false;
           },
@@ -682,10 +685,13 @@ describe("runUpdate: the wait for the switch and the check", () => {
     const noVersion = await installed(plan);
     noVersion.world.noVersions = true;
     const outcome = await noVersion.update();
+    // Nothing is decided without knowing which version serves (Codex r2-2): never checked.
     expect(outcome).toEqual({
       kind: "deployed",
-      why: "Cloudflare did not say which version the release deployed",
+      why: "Cloudflare does not say yet which version serves the platform Worker",
     });
+    expect(journalOf(noVersion).update?.verifiedAt).toBeUndefined();
+    expect(count(noVersion, "logs")).toBe(0);
   });
 
   it("can skip the check, and check on the next run without deploying again", async () => {
@@ -717,21 +723,36 @@ describe("runUpdate: the wait for the switch and the check", () => {
     expect(await h.update(CODE_A)).toEqual({ kind: "current" });
   });
 
-  it("checks the newer version a secrets change made after the deploy, which carries the update (Codex r1-3)", async () => {
+  it("deploys again when a secrets change made a newer version before the check (Codex r1-3, r2-3)", async () => {
     const plan = await accountPlan();
     const h = await installed(plan);
     expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
     const deployed = journalOf(h).update?.platformVersionId;
     // As github-app does, before the objects switch: one secrets change, a newer version.
     await h.world.cloud().updateSecrets(plan.platformWorker, LATER_SECRETS);
-    const newer = h.world.latest(plan.platformWorker)?.id;
-    expect(newer).not.toBe(deployed);
+    expect(h.world.latest(plan.platformWorker)?.id).not.toBe(deployed);
     expect(await h.update()).toEqual({ kind: "done" });
-    expect(journalOf(h).update?.platformVersionId).toBe(newer);
     expect(h.lines).toContain(
-      "the platform Worker's secrets changed after the deploy: checking the newer version, which carries this update",
+      "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy): deploying the update again, so that its own restart can be checked",
     );
-    expect(count(h, "deployPlatform")).toBe(1);
+    expect(count(h, "deployPlatform")).toBe(2);
+    expect(journalOf(h).update?.platformVersionId).toBe(h.world.latest(plan.platformWorker)?.id);
+    for (const [name, value] of Object.entries(LATER_SECRETS)) {
+      expect(h.world.secretsOf(plan.platformWorker)?.get(name)).toBe(value);
+    }
+  });
+
+  it("a secret written again unchanged an hour later never strands the check (Codex r2-3)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
+    h.world.now += 3600_000;
+    const cookie = h.world.secretsOf(plan.platformWorker)?.get(COOKIE_SECRET) as string;
+    // The same value: a newer version whose server configuration is unchanged.
+    await h.world.cloud().updateSecrets(plan.platformWorker, { [COOKIE_SECRET]: cookie });
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(count(h, "deployPlatform")).toBe(2);
+    expect(h.world.secretsOf(plan.platformWorker)?.get(COOKIE_SECRET)).toBe(cookie);
   });
 
   it("deploys again when another deploy replaced the update's version before its check (Codex r1-3)", async () => {
@@ -747,14 +768,30 @@ describe("runUpdate: the wait for the switch and the check", () => {
         { ...last, vars: { ...(last.vars as object), [DEPLOY_ID_VAR]: "ffffffffffffffff" } },
         {},
       );
-    expect(await h.update()).toEqual({
-      kind: "deployed",
-      why: "another deploy replaced this update's platform version before it was checked; run update again, and it deploys again",
-    });
-    expect(journalOf(h).update?.platformDeployedAt).toBeUndefined();
     expect(await h.update()).toEqual({ kind: "done" });
     expect(count(h, "deployPlatform")).toBe(3);
     expect(count(h, "deployWeb")).toBe(1);
+  });
+
+  it("a newer version during the wait: not checked, and the next run deploys again (Codex r2-1)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    // A secrets change lands between the deploys and the check's first look.
+    h.world.before = {
+      call: "workerInstallation",
+      nth: 4,
+      run: () => void h.world.cloud().updateSecrets(plan.platformWorker, LATER_SECRETS),
+    };
+    const outcome = await h.update();
+    expect(outcome).toEqual({
+      kind: "deployed",
+      why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
+    });
+    expect(journalOf(h).update?.platformDeployedAt).toBeUndefined();
+    expect(journalOf(h).update?.verifiedAt).toBeUndefined();
+    expect(count(h, "logs")).toBe(0);
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(count(h, "deployPlatform")).toBe(2);
   });
 
   it("an unfinished update to other code is replaced by the update to this code", async () => {
@@ -772,14 +809,14 @@ describe("runUpdate: the wait for the switch and the check", () => {
 
 // Every call an update makes, each occurrence, before and after its effect, and every journal
 // write: one update calls secretNames twice (before and after the platform deploy),
-// workerInstallation four times (each Worker, the web Worker again before its deploy, and the
-// platform Worker before the check), activeVersion three times (after each deploy, and before the
-// check), and reads Workers Logs at least three times.
+// workerInstallation at least four times (each Worker, the web Worker again before its deploy,
+// and the platform Worker at each look of the check), activeVersion twice (after each deploy),
+// and reads Workers Logs at least three times.
 const CALLS: readonly (readonly [string, number])[] = [
   ["secretNames", 2],
   ["workerInstallation", 4],
   ["deployPlatform", 1],
-  ["activeVersion", 3],
+  ["activeVersion", 2],
   ["access", 1],
   ["deployWeb", 1],
   ["logs", 3],
@@ -857,6 +894,41 @@ describe("runUpdate: a crash at any point", () => {
       expect(journal).toMatchObject({ platformCode: CODE_A, webCode: CODE_A });
     },
   );
+});
+
+describe("which version serves: the update's own, another, or unknown (Codex r2-1, r2-2)", () => {
+  it("decides only on one read naming the version and its variables", async () => {
+    const plan = await accountPlan();
+    const update = {
+      code: CODE_A,
+      startedAt: "2026-10-30T09:00:00.000Z",
+      deployId: "0102030405060708",
+      platformVersionId: "v9",
+    };
+    const vars = { CFO_INSTALLATION_ID: plan.installationId, [DEPLOY_ID_VAR]: "0102030405060708" };
+    type Serving = Extract<WorkerIdentity, { readonly exists: true }>;
+    const at = (over: Partial<Serving> = {}): Serving => ({
+      exists: true,
+      installationId: plan.installationId,
+      versionId: "v9",
+      vars,
+      ...over,
+    });
+    expect(serving(at(), update, plan)).toBe("ours");
+    expect(serving(at({ versionId: "v10" }), update, plan)).toBe("other");
+    expect(serving(at({ vars: { ...vars, [DEPLOY_ID_VAR]: "ff" } }), update, plan)).toBe("other");
+    const { [DEPLOY_ID_VAR]: _id, ...noId } = vars;
+    expect(serving(at({ vars: noId }), update, plan)).toBe("other");
+    // Not recorded right after the deploy: its deploy ID is enough.
+    const { platformVersionId: _v, ...unrecorded } = update;
+    expect(serving(at({ versionId: "v10" }), unrecorded, plan)).toBe("ours");
+    // Unknown: nothing decided.
+    expect(serving({ exists: false }, update, plan)).toBe("unknown");
+    expect(serving({ exists: true, installationId: undefined }, update, plan)).toBe("unknown");
+    const { versionId: _n, ...unnamed } = at();
+    expect(serving(unnamed, update, plan)).toBe("unknown");
+    expect(serving(at({ vars: {} }), update, plan)).toBe("unknown");
+  });
 });
 
 describe("the update's secrets step", () => {

@@ -116,7 +116,11 @@ export async function updateCommand(
     const open = `Open https://${installation.hostname}`;
     if (outcome.kind === "deployed") {
       ports.log(
-        `updated, but not checked yet: ${outcome.why}. Run bootstrap.ts update again to check; it deploys nothing again. ${open}`,
+        `updated, but not checked yet: ${outcome.why}. ${
+          store.load().journal.update?.platformDeployedAt === undefined
+            ? "Run bootstrap.ts update again."
+            : "Run bootstrap.ts update again to check; it deploys nothing again."
+        } ${open}`,
       );
       return 3;
     }

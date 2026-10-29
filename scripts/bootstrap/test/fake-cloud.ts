@@ -253,9 +253,11 @@ export class FakeWorld {
         world.#leave("workerInstallation", n);
         if (!exists) return { exists: false };
         const id = vars.CFO_INSTALLATION_ID;
+        const versionId = world.noVersions ? undefined : world.latest(worker)?.id;
         return {
           exists: true,
           installationId: typeof id === "string" ? id : undefined,
+          ...(versionId === undefined ? {} : { versionId }),
           vars: { ...vars },
         };
       },
@@ -522,9 +524,16 @@ function sameSecrets(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, stri
   return a.size === b.size && [...a].every(([name, value]) => b.get(name) === value);
 }
 
-/** Whether a server started with one version's configuration runs another's (the fingerprint). */
+/**
+ * Whether a server started with one version's configuration runs another's (the fingerprint):
+ * the secrets and variables that reach the server, `SERVER_ENV_` ones only, as in production.
+ */
 function sameConfig(a: Version, b: Version): boolean {
-  return sameSecrets(a.secrets, b.secrets) && a.serverVars === b.serverVars;
+  return sameSecrets(serverSecrets(a), serverSecrets(b)) && a.serverVars === b.serverVars;
+}
+
+function serverSecrets(v: Version): Map<string, string> {
+  return new Map([...v.secrets].filter(([name]) => name.startsWith("SERVER_ENV_")));
 }
 
 /** The `SERVER_ENV_` variables of a deployed configuration, as one text. */

@@ -394,7 +394,7 @@ export function workerInstallation(run: Runner, worker: string): WorkerIdentity 
       vars[binding.name] = binding.text;
     }
   }
-  return { exists: true, installationId: vars[INSTALLATION_ID_VAR], vars };
+  return { exists: true, installationId: vars[INSTALLATION_ID_VAR], versionId: version, vars };
 }
 
 function activeVersionOf(listing: unknown): string | undefined {

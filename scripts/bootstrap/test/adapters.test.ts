@@ -779,12 +779,14 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     expect(await cloud.workerInstallation("w")).toEqual({
       exists: true,
       installationId: plan.installationId,
+      versionId: "v7",
       vars: { CFO_INSTALLATION_ID: plan.installationId, CFO_PLATFORM_FEATURES: "key-service" },
     });
     expect(calls[1]?.args).toEqual(["workers", "versions", "get", "--worker-id", "w", "v7"]);
     expect(await cloud.workerInstallation("w")).toEqual({
       exists: true,
       installationId: undefined,
+      versionId: "v7",
       vars: {},
     });
     expect(await cloud.workerInstallation("w")).toEqual({ exists: false });

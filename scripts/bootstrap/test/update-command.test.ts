@@ -118,6 +118,25 @@ describe("updateCommand", () => {
     expect(world.calls.filter((c) => c === "deployPlatform")).toHaveLength(1);
   });
 
+  it("says a run deploys again when the update's version no longer serves", async () => {
+    const plan = await accountPlan();
+    const { world, path, lines, ports } = await finished(plan);
+    expect(await updateCommand(path, { root: ROOT, verify: false }, ports())).toBe(3);
+    // A secrets change between the check's start and its first look (the third identity read:
+    // each Worker's, then the check's).
+    world.counts.clear();
+    world.before = {
+      call: "workerInstallation",
+      nth: 3,
+      run: () => void world.cloud().updateSecrets(plan.platformWorker, { SERVER_ENV_X: "y" }),
+    };
+    expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(3);
+    expect(lines.at(-1)).toMatch(
+      /it deploys the update again\. Run bootstrap\.ts update again\. Open/,
+    );
+    expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
+  });
+
   it("passes Access in the installer's account and the owner's address on", async () => {
     const plan = await accountPlan();
     const { world, path, ports } = await finished(plan);

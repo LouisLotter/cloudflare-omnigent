@@ -155,6 +155,8 @@ export type WorkerIdentity =
   | {
       readonly exists: true;
       readonly installationId: string | undefined;
+      /** The version serving all of its traffic, whose variables `vars` are (WP3.35). */
+      readonly versionId?: string;
       /** The active version's plain-text variables, when Cloudflare listed them (WP3.35). */
       readonly vars?: Readonly<Record<string, string>>;
     };
