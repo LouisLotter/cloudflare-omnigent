@@ -195,6 +195,7 @@ COPY images/server/tests/ /opt/cfo/tests/
 COPY images/trust/ /opt/cfo/trust/
 COPY images/server/Dockerfile /opt/cfo/Dockerfile
 COPY contracts/schema/ /opt/cfo/contracts/schema/
+COPY contracts/vectors/platform-call-v1.json /opt/cfo/contracts/vectors/
 ENV CFO_TEST_LITESTREAM_BIN=/usr/local/bin/litestream \
     CFO_REPO_ROOT=/opt/cfo
 WORKDIR /opt/cfo

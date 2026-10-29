@@ -6,5 +6,6 @@
 !images/trust/
 !images/server/Dockerfile
 !contracts/schema/
+!contracts/vectors/
 **/__pycache__/
 **/*.pyc
