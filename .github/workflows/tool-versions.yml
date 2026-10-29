@@ -1,0 +1,125 @@
+# The daily tool version check (scripts/tool-versions).
+#
+# Finds newer releases of the tools the images pin: Claude Code, Codex, gh and ttyd in the
+# computer image; the python:3.12-slim and node:22-slim base images (new digests bring Debian's
+# security fixes); certifi, pip and uv, in both images. When any are found it opens one pull
+# request that bumps their versions and checksums, on the branch automation/tool-versions, or
+# updates that pull request if it is open, and runs CI on it. The owner merges it; then
+# `node scripts/bootstrap/bootstrap.ts update` deploys it, and each cloud computer takes the new
+# image at its next start or wake. The CLIs never update themselves on a computer.
+#
+# Every checksum is computed here, from the publisher's own data, never taken from the pull
+# request: npm's integrity values, registry signatures and Codex's provenance (checked with
+# `npm audit signatures`), then the CLIs' installed trees, recorded by the computer Dockerfile's
+# own install stage (cli-digests); the checksum files on gh's and ttyd's releases; PyPI's file
+# hashes; Docker Hub's index digests. The image builds in CI then check every one again.
+# There is no minimum release age: the owner decided against a cooldown (20 Oct 2026).
+#
+# Least privilege. Nothing here references a secret. Two jobs:
+#   check    contents: read. Runs the third-party code a check needs (npm's install and
+#            `claude --version` inside a Docker build) with a read-only token, which it passes
+#            only to api.github.com, for the rate limit. Its result is data: the bump, as JSON.
+#   propose  contents, pull-requests and actions: write. Runs only this repository's code from
+#            main, on the bump it parses and checks field by field, and git and gh.
+# Only `schedule` and `workflow_dispatch` trigger it, on main only; never a pull request.
+#
+# CI on the bump: a push or pull request made with GITHUB_TOKEN starts no `push` or
+# `pull_request` run (a bot's pull request gets one only after a person approves it), but a
+# `workflow_dispatch` event always does. So `propose` dispatches ci.yml on the branch; its checks
+# attach to the branch's head commit, which is the pull request's.
+#
+# The repository must allow GitHub Actions to create pull requests (Settings, Actions, General,
+# Workflow permissions), once:
+#   gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow \
+#     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+#
+# As ci.yml: every action is pinned to a full commit SHA (the comment names its release), and
+# nothing deploys.
+
+name: Tool versions
+
+on:
+  schedule:
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Find and check updates and show them in the run's summary; push nothing
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: tool-versions
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Find newer releases and compute their pins
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # A cold build of the computer image's stages under the CLIs, when they change.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      bump: ${{ steps.check.outputs.bump }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The tool runs on Node's built-in TypeScript support; no dependencies are installed.
+      - name: Set up Node.js (version from .node-version)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Find newer releases and compute their pins
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/tool-versions/tool-versions.ts check --out "$RUNNER_TEMP/bump.json"
+          echo "bump=$(jq -c . "$RUNNER_TEMP/bump.json")" >>"$GITHUB_OUTPUT"
+
+  propose:
+    name: Open or update the pull request, and run CI on it
+    needs: check
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # push automation/tool-versions
+      pull-requests: write # open, edit or close its pull request
+      actions: write # dispatch ci.yml on that branch
+    steps:
+      # The full history, to tell the workflow's own commits on the branch from a person's.
+      # The token stays in the checkout's git configuration for the push.
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js (version from .node-version)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      # The bump arrives through the environment, never in the script's text.
+      - name: Write the bump, commit, push, and open or update the pull request
+        env:
+          BUMP: ${{ needs.check.outputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' "$BUMP" >"$RUNNER_TEMP/bump.json"
+          node scripts/tool-versions/tool-versions.ts propose "$RUNNER_TEMP/bump.json" \
+            --body-file "$RUNNER_TEMP/body.md"

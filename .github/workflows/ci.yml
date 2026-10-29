@@ -4,7 +4,10 @@
 # the owner's laptop only (implementation plan, "Environment decisions"). Nothing here references
 # a secret, the token can only read the repository, and the trigger is `pull_request`, never
 # `pull_request_target`, so code from a fork runs without any privileges. Every action is pinned
-# to a full commit SHA; the comment names the release that SHA belongs to.
+# to a full commit SHA; the comment names the release that SHA belongs to. `workflow_dispatch`
+# runs it on a branch: the daily tool version check (tool-versions.yml) dispatches it on its
+# bump branch, because a pull request opened with GITHUB_TOKEN starts no `pull_request` run
+# without a person's approval. A dispatched run has the same read-only token.
 #
 # Jobs:
 #   node    Biome lint; typecheck, including `wrangler types --check`; the Vitest suites
@@ -21,6 +24,9 @@
 #           found, 2 a usage error, and 3 an incomplete scan (undecodable data, an unreadable
 #           file, or a path with no files), which is never treated as clean.
 #   images  Build the server, test and fork-tests targets; run credential-free image tests.
+#   computer-image
+#           Build the computer image's computer and test targets (the CLIs' installed trees
+#           checked against their pinned digests); run its in-image suite.
 #
 # Still to come, as the work packages that need them land: deterministic simulation tests (M3)
 # and Stryker mutation thresholds (75%) for the state machines and the schedule cache.
@@ -31,6 +37,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -202,3 +209,28 @@ jobs:
 
       - name: Run the fork's Stop tests against the image's Omnigent
         run: docker run --rm --network none cfo-server:ci-fork-tests
+
+  computer-image:
+    name: Computer image (build, in-image suite)
+    runs-on: ubuntu-24.04
+    # Initial cold-build budget, as the server image's.
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The default target (Wrangler's) and the test variant. The build checks every pin: the
+      # CLIs' installed trees against their digests, the downloads against their checksums.
+      - name: Build the computer target
+        run: docker build --platform linux/amd64 -f images/computer/Dockerfile --target computer -t cfo-computer:ci .
+
+      - name: Build the image's test target
+        run: docker build --platform linux/amd64 -f images/computer/Dockerfile --target test -t cfo-computer:ci-test .
+
+      # The image's CMD: the supervisor's suite and the image-only tests, as root, under a
+      # 64-character hostname as on Cloudflare. No network and no --privileged: the cgroup-freezer
+      # cases need --privileged and skip here (docs/testing.md).
+      - name: Run the image's in-image suite
+        run: docker run --rm --network none --hostname "$(openssl rand -hex 32)" cfo-computer:ci-test
