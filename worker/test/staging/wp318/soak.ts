@@ -8,6 +8,10 @@
 //     the production cron; its events go to Workers Logs and the results bucket. Around each
 //     platform deploy it has OmnigentServer log a heartbeat every 5 s, which brackets that
 //     object's version switch.
+//   - the G3 sitting's one-shot commands (WP3.33, commands.ts): `computer-kill`, `workspace-reset`,
+//     `server-reset` and `soak-start`, which run.sh writes into the results bucket and the cron
+//     hands to SoakRun, which runs each once and records its outcome. The kill is WorkspaceDO's
+//     production `stagingKill`, refused unless the bootstrap marked the installation as staging;
 //   - `OmnigentServer.m3Replace`: the M3 sitting's forced server replacement (WP3.19, lead only),
 //     G2's `replace-2` step (../g2/steps.ts) on the production object: the container destroyed,
 //     the production watchdog's start under the `durable_object` policy, timed to the new boot's
@@ -30,6 +34,15 @@ import { OmnigentServer as PlatformOmnigentServer } from "../../../src/server/Om
 import { logEvent } from "../../../src/server/responses.ts";
 import { CONTROL_OBJECT_NAME, OMNIGENT_SERVER_OBJECT_NAME } from "../../../src/shared/rpc.ts";
 import { StepRunner, type StepSummary, log as stepLog } from "../g2/object.ts";
+import {
+  COMMAND_PREFIX,
+  COMMANDS_LOG_KEY,
+  type CommandResult,
+  type RunOutcome,
+  resultKey,
+  runCommands,
+  type SoakCommand,
+} from "./commands.ts";
 import { dueEvents, nextHeartbeat, SOAK_SCHEDULE, type SoakEventKind } from "./plan.ts";
 
 export { ControlDO } from "../../../src/control/ControlDO.ts";
@@ -189,6 +202,125 @@ export class SoakRun extends DurableObject<SoakEnv> {
     await this.#save({ ...state, done, events, ended });
   }
 
+  /**
+   * Each cron minute: the lead's one-shot commands (WP3.33, commands.ts). Each is claimed in this
+   * object's storage before it runs, in one SQL statement, so two passes at once (the cron firing
+   * twice) never both run it. Returns how many outcomes this pass recorded.
+   */
+  async commands(): Promise<number> {
+    const sql = this.ctx.storage.sql;
+    sql.exec(
+      `CREATE TABLE IF NOT EXISTS soak_commands (
+         id TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL, result TEXT)`,
+    );
+    const results = this.env.RESULTS;
+    const recorded = await runCommands({
+      now: () => Date.now(),
+      list: async () => {
+        const listed = await results.list({ prefix: COMMAND_PREFIX, limit: 100 });
+        return listed.objects.map((o) => o.key);
+      },
+      read: async (key) => (await results.get(key))?.text() ?? null,
+      remove: (key) => results.delete(key),
+      claim: (id, at) => {
+        const inserted = sql
+          .exec(
+            "INSERT INTO soak_commands (id, claimed_at) VALUES (?, ?) ON CONFLICT (id) DO NOTHING RETURNING id",
+            id,
+            at,
+          )
+          .toArray();
+        if (inserted.length > 0) return { fresh: true };
+        const row = sql
+          .exec<{ claimed_at: number; result: string | null }>(
+            "SELECT claimed_at, result FROM soak_commands WHERE id = ?",
+            id,
+          )
+          .one();
+        return {
+          fresh: false,
+          claimedAt: row.claimed_at,
+          result: row.result === null ? null : (JSON.parse(row.result) as CommandResult),
+        };
+      },
+      record: (result) => {
+        sql.exec(
+          "UPDATE soak_commands SET result = ? WHERE id = ?",
+          JSON.stringify(result),
+          result.id,
+        );
+      },
+      publish: async (result) => {
+        await results.put(resultKey(result.id), JSON.stringify(result));
+        const all = sql
+          .exec<{ result: string }>(
+            "SELECT result FROM soak_commands WHERE result IS NOT NULL ORDER BY claimed_at, id",
+          )
+          .toArray()
+          .map((r) => JSON.parse(r.result) as unknown);
+        await results.put(COMMANDS_LOG_KEY, JSON.stringify(all));
+      },
+      soak: async () => {
+        const state = await this.#state();
+        return state === null ? null : { runId: state.runId, ended: state.ended };
+      },
+      computers: async () => {
+        const control = this.env.CONTROL.getByName(CONTROL_OBJECT_NAME) as unknown as {
+          control(call: unknown): Promise<{ computers?: { computerId: string }[] }>;
+        };
+        const listed = await control.control({ method: "list_computers", interfaceVersion: 1 });
+        return (listed.computers ?? []).map((c) => c.computerId);
+      },
+      run: (command) => this.#run(command),
+      log: (event, fields) => logEvent("soak", event, fields),
+    });
+    return recorded.length;
+  }
+
+  /** One command's effect (decided and claimed by `runCommands`). */
+  async #run(command: SoakCommand): Promise<RunOutcome> {
+    const reason = `soak command ${command.id}`;
+    // A forced reset ends the callee's invocation (ctx.abort), so its call usually rejects with
+    // the reset's own message: recorded as it came.
+    const reset = (call: Promise<void>) =>
+      call.then(
+        () => "no error",
+        (error: unknown) => String(error).slice(0, 120),
+      );
+    switch (command.command) {
+      case "soak-start": {
+        const state = await this.start();
+        return { outcome: "ok", detail: { runId: state.runId, t0: state.t0 } };
+      }
+      case "server-reset":
+        return {
+          outcome: "ok",
+          detail: await reset(
+            this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).stagingReset(reason),
+          ),
+        };
+      case "workspace-reset":
+        return {
+          outcome: "ok",
+          detail: await reset(
+            this.env.WORKSPACE.getByName(command.computerId ?? "").stagingReset(reason),
+          ),
+        };
+      case "computer-kill": {
+        const killed = await this.env.WORKSPACE.getByName(command.computerId ?? "").stagingKill({
+          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+        });
+        if (killed.outcome !== "killed") return { outcome: "refused", reason: killed.reason };
+        // The host ID's first 8 characters only: enough to see it unchanged after the wake
+        // (RC-10), and not the 32-hex form the redaction masks.
+        return {
+          outcome: "ok",
+          detail: { generation: killed.generation, host: killed.hostId?.slice(0, 8) ?? null },
+        };
+      }
+    }
+  }
+
   async #resetComputers(): Promise<string[]> {
     const control = this.env.CONTROL.getByName(CONTROL_OBJECT_NAME) as unknown as {
       control(call: unknown): Promise<{ computers?: { computerId: string }[] }>;
@@ -297,6 +429,16 @@ export default {
     await production.scheduled?.(controller, env, ctx);
     const soak = env as unknown as SoakEnv;
     ctx.waitUntil(soak.SOAK.getByName("soak").tick());
+    // The lead's one-shot commands (WP3.33): each runs once, within a minute.
+    ctx.waitUntil(
+      soak.SOAK.getByName("soak")
+        .commands()
+        .then(
+          () => undefined,
+          (error: unknown) =>
+            logEvent("soak", "commands_failed", { error: String(error).slice(0, 200) }),
+        ),
+    );
     if (soak.M3_STEP === "replace") ctx.waitUntil(replaceBeforeTheSoak(soak));
   },
 } satisfies ExportedHandler<Env>;

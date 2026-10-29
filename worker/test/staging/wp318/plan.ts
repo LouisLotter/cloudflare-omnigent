@@ -385,7 +385,8 @@ export interface ConfigRestart {
   readonly durationMs: number | null;
 }
 
-function sourceOf(line: LogLine): Readonly<Record<string, unknown>> | null {
+/** A line's parsed log fields: its `source`, parsed if Workers Logs kept it as a string. */
+export function sourceOf(line: LogLine): Readonly<Record<string, unknown>> | null {
   if (typeof line.source === "object" && line.source !== null) return line.source;
   if (typeof line.source !== "string") return null;
   try {

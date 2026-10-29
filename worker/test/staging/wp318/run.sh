@@ -52,8 +52,14 @@
 #                        each host's tunnel opens from the sitting's start (presence.jsonl)
 #   run.sh analyze       the RC-26 reconnect table and verdict.json (a `config_changed` restart
 #                        during the soak fails it)
-#   run.sh scan          WP3.5's log checks over the sitting, both Workers: no terminal canary
-#                        and no capability in any line; the terminal's and the pages' events
+#   run.sh scan [--file <logs.jsonl>]
+#                        the log checks over the sitting, both Workers (scan.ts), counts and
+#                        positions only: WP3.5's terminal canary and capability; WP3.33's token
+#                        shapes over every field of every event (Claude, OpenAI and GitHub tokens,
+#                        JWTs, 64-hex R2 secret keys, 43-character launch and runner tokens) and
+#                        the R2 token's own ID; the terminal's and the pages' events with their
+#                        close codes (4001, 4002, 4003, 1006 …) and instance IDs, per window; and
+#                        every `instance_started`. `--file`: the same over collected logs instead
 #   run.sh layers <computer ID>
 #                        download the computer's workspace layers for the RC-53 laptop scan
 #   run.sh status [minutes]
@@ -62,6 +68,37 @@
 #                        computer's latest (names, versions, outcomes, reasons and counts only)
 #   run.sh teardown      tear everything down (web first, platform, the holder), sweep, and
 #                        remove the local secrets and the installation's state file
+#
+# The G3 sitting's lead-run tools (WP3.33). The first four are one-shot commands: run.sh writes a
+# command object into the results bucket with the lead's `cf` login; the soak module's cron runs it
+# once, within about a minute, and records its outcome, which run.sh waits for (3 minutes at
+# most) and prints. Each is refused while a soak run is active (but soak-start), and when it is
+# more than 10 minutes old when the cron first sees it. `--dry-run` prints the object and writes
+# nothing.
+#   run.sh computer-kill <computer ID> [--dry-run]
+#                        step K: WorkspaceDO's `stagingKill`, the computer's container killed at
+#                        once (SIGKILL), with no stop intent and no save, as a crash would; refused
+#                        unless the bootstrap marked the installation as staging
+#   run.sh workspace-reset <computer ID> [--dry-run]
+#                        T1: the computer's WorkspaceDO reset (ctx.abort); its container runs on
+#   run.sh server-reset [--dry-run]
+#                        OmnigentServer reset (ctx.abort), as the soak's own server_reset
+#   run.sh soak-start [--dry-run]
+#                        T6: the soak run started (T0 = then), instead of the owner's Start click;
+#                        then `run.sh campaign`
+#   run.sh limit <n | default> [--dry-run]
+#                        B6: CFO_MAX_AWAKE_COMPUTERS for the installation, checked with ControlDO's
+#                        own rule, kept in $WP318_DIR/limit for every later platform deploy, and
+#                        deployed once through the staging tool (no server restart: not a
+#                        SERVER_ENV_ value); waits (10 minutes at most) for ControlDO to run the
+#                        deployed version. `default` leaves the variable out again
+#   run.sh wakes [--file <logs.jsonl>] [<from ms> [<to ms>]]
+#                        the wake-time table (wakes.ts): per wake, Omnigent's resume, ControlDO's
+#                        grant, the container's start() and DC-37's retries, the restore, the host
+#                        connected and the first turn dispatched, with the start-after-stop gap
+#                        and any staging kill before it; and every wake refused at the limit.
+#                        Default window: from `bucket` to now. `--file`: kept logs (28 Oct's
+#                        run-*/logs.jsonl are redacted: no host prefix, and timed from the grant)
 #
 # Output goes to $WP318_DIR (default $HOME/.pt/wp318/staging), outside the repository, redacted
 # with spikes/x1/scripts/redact.py (account, zone, owner address) before it leaves the laptop.
@@ -87,6 +124,11 @@ launcher="$out/launcher-secrets.json"
 bootstrap=(node "$root/scripts/bootstrap/bootstrap.ts")
 mkdir -p "$out/deploys"
 chmod 700 "$out"
+# The lead's limit of awake computers (`run.sh limit`), rendered by every platform deploy.
+if [ -s "$out/limit" ]; then
+  WP318_MAX_AWAKE="$(cat "$out/limit")"
+  export WP318_MAX_AWAKE
+fi
 
 now_ms() { date +%s%3N; }
 
@@ -181,27 +223,50 @@ deploy_at() { # kind, at (ms)[, record file]: wait until then, deploy, record it
     "$kind" "$build" "$start" "$end" "$status" "$version" >>"$record"
 }
 
-scan_worker() { # worker, from, to: WP3.5's log checks, counts and event names only
-  node "$here/logs.ts" "$1" "$2" "$3" | python3 -I -c '
-import json, sys
-canary = capability = 0
-events = []
-for line in sys.stdin:
-    canary += line.count("cfo-canary-wp35-terminal")
-    capability += line.count("cfo-capability.")
-    try:
-        event = json.loads(line)
-        source = event.get("source")
-        if isinstance(source, str):
-            source = json.loads(source)
-    except ValueError:
-        continue
-    name = source.get("event") if isinstance(source, dict) else None
-    if isinstance(name, str) and (name.startswith("terminal_") or name == "page_change_refused"):
-        events.append({"at": event.get("timestamp"), "event": name,
-                       "reason": source.get("reason"), "window": source.get("window")})
-print(json.dumps({"worker": sys.argv[1], "canaryHits": canary, "capabilityHits": capability,
-                  "events": events}))' "$1"
+scan_worker() { # worker, from, to: the log checks (scan.ts), counts and positions only
+  local values=()
+  # The R2 token's ID (its S3 access key ID; `token --create` keeps it for teardown): counted if
+  # it appears in any line. The secret half has the 64-hex shape scan.ts counts anyway.
+  if [ -s "$out/r2-token-id" ]; then values=(--value-file "r2_access_key_id=$out/r2-token-id"); fi
+  node "$here/logs.ts" "$1" "$2" "$3" --raw | node "$here/scan.ts" "$1" "${values[@]}"
+}
+
+command_once() { # command, [computer], [--dry-run]: one of the soak module's one-shot commands
+  local verb="$1" computer="" dry=0 made key body id deadline result
+  shift
+  for arg in "$@"; do
+    case "$arg" in --dry-run) dry=1 ;; *) computer="$arg" ;; esac
+  done
+  made="$(node "$here/commands.ts" make "$verb" ${computer:+"$computer"})" || exit 2
+  key="${made%%$'\n'*}"
+  body="${made#*$'\n'}"
+  if [ "$dry" = 1 ]; then
+    echo "dry run: would write $key into $platform-results:"
+    echo "$body"
+    return 0
+  fi
+  id="$(basename "$key" .json)"
+  CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects put "$key" --bucket-name "$platform-results" \
+    --content-type application/json --body "$body" >/dev/null
+  echo "$verb ${computer:+$computer }written ($id); the soak module's cron runs it within about a minute"
+  deadline=$(( $(now_ms) + 180000 ))
+  while true; do
+    result="$(r2_get "soak/command-results/$id.json" 2>/dev/null || true)"
+    # commands.ts show: exit 0 ran, 1 refused or failed, 3 no outcome for this command yet.
+    set +e
+    printf '%s\n' "$result" | node "$here/commands.ts" show "$id" | "${redact[@]}"
+    status=${PIPESTATUS[1]}
+    set -e
+    if [ "$status" -ne 3 ]; then
+      printf '%s\n' "$result" | "${redact[@]}" >>"$out/commands.jsonl"
+      return "$status"
+    fi
+    [ "$(now_ms)" -lt "$deadline" ] || {
+      echo "run.sh: no outcome within 3 minutes (is the soak module deployed? run.sh soak-deploy); a command older than 10 minutes is refused, never run late" >&2
+      return 1
+    }
+    sleep 15
+  done
 }
 
 case "${1:-}" in
@@ -393,6 +458,10 @@ print(json.dumps({
     run_dir="$out/run-$t0"
     mkdir -p "$run_dir"
     r2_get soak/current.json >"$run_dir/events.json"
+    # The lead's one-shot commands' outcomes (WP3.33): the analysis counts their resets as planned.
+    r2_get soak/commands.json 2>/dev/null | "${redact[@]}" >"$run_dir/commands.json" ||
+      echo "[]" >"$run_dir/commands.json"
+    [ -s "$run_dir/commands.json" ] || echo "[]" >"$run_dir/commands.json"
     cp "$out/deploys.jsonl" "$run_dir/deploys.jsonl" 2>/dev/null || : >"$run_dir/deploys.jsonl"
     node "$here/logs.ts" "$platform" "$(( t0 - 600000 ))" "$(( t0 + 3 * 3600000 + 600000 ))" |
       "${redact[@]}" >"$run_dir/logs.jsonl"
@@ -412,10 +481,64 @@ print(json.dumps({
     node "$here/analyze.ts" "$out/run-$t0" | tee "$out/run-$t0/analysis.txt"
     ;;
   scan)
+    if [ "${2:-}" = "--file" ]; then
+      file="${3:?run.sh scan --file <logs.jsonl>}"
+      node "$here/scan.ts" "$(basename "$file")" <"$file" | "${redact[@]}" | tee "$out/scan-file.jsonl"
+      exit 0
+    fi
     from="$(cat "$out/t0")"
     to=$(now_ms)
     for worker in "$platform" "$web"; do scan_worker "$worker" "$from" "$to"; done |
       "${redact[@]}" | tee "$out/scan.jsonl"
+    ;;
+  computer-kill|workspace-reset)
+    [ -n "${2:-}" ] && [ "${2:-}" != "--dry-run" ] || { echo "run.sh $1 <computer ID> [--dry-run]" >&2; exit 2; }
+    command_once "$@"
+    ;;
+  server-reset|soak-start)
+    command_once "$@"
+    ;;
+  limit)
+    value="${2:?run.sh limit <n | default> [--dry-run]}"
+    node "$here/limit.ts" check "$value" || exit 2
+    if [ "${3:-}" = "--dry-run" ]; then
+      echo "dry run: nothing kept or deployed"
+      exit 0
+    fi
+    if [ "$value" = default ]; then
+      rm -f "$out/limit"
+      unset WP318_MAX_AWAKE
+    else
+      echo "$value" >"$out/limit"
+      export WP318_MAX_AWAKE="$value"
+    fi
+    since=$(now_ms)
+    deploy_at limit "$since" "$out/sitting-deploys.jsonl"
+    record="$(tail -n 1 "$out/sitting-deploys.jsonl")"
+    echo "$record"
+    version="$(printf '%s' "$record" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["version"] if d["status"] == 0 else "")')"
+    [ -n "$version" ] || { echo "run.sh: the deploy failed or printed no version" >&2; exit 1; }
+    # ControlDO reads the limit from its environment: it holds once ControlDO runs this version.
+    deadline=$(( $(now_ms) + 600000 ))
+    while true; do
+      if node "$here/logs.ts" "$platform" "$since" "$(now_ms)" | node "$here/limit.ts" applied "$version"; then
+        break
+      fi
+      [ "$(now_ms)" -lt "$deadline" ] || { echo "run.sh: ControlDO did not run version $version within 10 minutes" >&2; exit 1; }
+      sleep 30
+    done
+    ;;
+  wakes)
+    shift
+    if [ "${1:-}" = "--file" ]; then
+      file="${2:?run.sh wakes --file <logs.jsonl>}"
+      node "$here/wakes.ts" <"$file" | "${redact[@]}" | tee "$out/wakes-file.txt"
+      exit 0
+    fi
+    from="${1:-$(cat "$out/t0")}"
+    to="${2:-$(now_ms)}"
+    node "$here/logs.ts" "$platform" "$from" "$to" | node "$here/wakes.ts" | "${redact[@]}" |
+      tee "$out/wakes.txt"
     ;;
   status)
     minutes="${2:-60}"

@@ -4,7 +4,8 @@
 //   node worker/test/staging/wp318/soak-config.ts platform <build stamp>
 //       the bootstrap's platform configuration (scripts/bootstrap/settings.ts) with soak.ts as
 //       main, the SOAK binding (migration v4) and the RESULTS bucket added; each call is a new
-//       version (WP318_BUILD), with identical images
+//       version (WP318_BUILD), with identical images. With WP318_MAX_AWAKE set (`run.sh limit`,
+//       WP3.33), CFO_MAX_AWAKE_COMPUTERS is rendered with that value (limit.ts)
 //   node worker/test/staging/wp318/soak-config.ts web
 //       the bootstrap's web configuration again, with ingress's variables: a new version
 //   node worker/test/staging/wp318/soak-config.ts check
@@ -24,6 +25,7 @@ import { readAccess, withRenderedConfig } from "../../../../scripts/bootstrap/cl
 import { renderPlatformConfig, renderWebConfig } from "../../../../scripts/bootstrap/settings.ts";
 import { parseState, statePathFor } from "../../../../scripts/bootstrap/state.ts";
 import { readWranglerConfig, spawnRunner } from "../../../../scripts/staging/cloud.ts";
+import { LIMIT_ENV, limitSetting, withLimit } from "./limit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -32,7 +34,15 @@ const PLATFORM = "cfo-stg-wp318-platform";
 
 type Raw = Record<string, unknown>;
 
-export function soakPlatformConfig(rendered: Readonly<Raw>, build: string): Raw {
+/**
+ * The soak's platform configuration. `limit`: CFO_MAX_AWAKE_COMPUTERS as `run.sh limit` set it
+ * (limit.ts), or null for the installation's default.
+ */
+export function soakPlatformConfig(
+  rendered: Readonly<Raw>,
+  build: string,
+  limit: string | null = null,
+): Raw {
   const objects = (rendered.durable_objects as { bindings: unknown[] }).bindings;
   const migrations = rendered.migrations as { tag: string }[];
   return {
@@ -47,7 +57,7 @@ export function soakPlatformConfig(rendered: Readonly<Raw>, build: string): Raw 
       ...((rendered.r2_buckets as unknown[]) ?? []),
       { binding: "RESULTS", bucket_name: `${String(rendered.name)}-results` },
     ],
-    vars: { ...(rendered.vars as Raw), WP318_BUILD: build },
+    vars: withLimit({ ...(rendered.vars as Raw), WP318_BUILD: build }, limit),
   };
 }
 
@@ -98,9 +108,11 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "platform" || command === "check") {
+    const lead = process.env[LIMIT_ENV];
     const config = soakPlatformConfig(
       renderPlatformConfig(base("wrangler.jsonc"), installation),
       build ?? "check",
+      lead === undefined || lead === "" ? null : limitSetting(lead),
     );
     if (command === "check") console.log(masked(config));
     else deploy(config, target.platformSuffix, target.owner, target.days);
