@@ -57,6 +57,9 @@ export default defineConfig({
         "bootstrap/state.ts": pure,
         "bootstrap/r2-token.ts": pure,
         "bootstrap/github-app.ts": pure,
+        "bootstrap/update.ts": pure,
+        // It runs git for the checkout's version: a real repository made by the test does that.
+        "bootstrap/update-command.ts": io,
         "bootstrap/remove.ts": io,
         "bootstrap/cloud.ts": io,
         "bootstrap/staging.ts": io,
