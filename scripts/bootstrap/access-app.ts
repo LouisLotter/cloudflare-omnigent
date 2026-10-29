@@ -327,6 +327,17 @@ async function loginMethod(ctx: EnsureAccessContext): Promise<string | undefined
     return undefined;
   }
   const { app, loginMethod: earlier } = ctx.recorded();
+  // An add an earlier run started and never saw answered may still land: wait it out once, as
+  // for an application, before adding another (Codex WP3.31 r1, question).
+  const sent = Date.parse(earlier?.id === undefined ? (earlier?.createStartedAt ?? "") : "");
+  const wait = Number.isFinite(sent) ? sent + ACCESS_SETTLE_MS - ctx.now() : 0;
+  if (methods.length === 0 && wait > 0) {
+    ctx.log(
+      `an interrupted run may still add the one-time PIN login method; checking again in ${Math.ceil(wait / 1000)}s`,
+    );
+    await ctx.sleep(wait);
+    methods = ctx.api.identityProviders();
+  }
   const write = (loginMethod: RecordedLoginMethod | undefined) =>
     ctx.record({
       ...(app === undefined ? {} : { app }),

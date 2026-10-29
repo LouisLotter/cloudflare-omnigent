@@ -247,6 +247,33 @@ describe("ensureOwnerAccess: the hostname has no Access application", () => {
   });
 });
 
+describe("ensureOwnerAccess: an add of the login method left in flight", () => {
+  it("waits out the settle time once before adding the one-time PIN method again", async () => {
+    const u = await unit();
+    u.world.loginMethods = [];
+    u.records = { loginMethod: { createStartedAt: new Date(u.world.now - 60_000).toISOString() } };
+    // It lands during the wait: no second add.
+    u.world.before = {
+      call: "loginList",
+      nth: 2,
+      run: () => {
+        u.world.loginMethods = [{ id: "idp-late", type: "onetimepin" }];
+      },
+    };
+    await u.ensure();
+    expect(u.slept).toEqual([ACCESS_SETTLE_MS - 60_000]);
+    expect(u.world.calls).not.toContain("loginCreate");
+    expect(u.records.loginMethod).toEqual({ id: "idp-late", createdAt: expect.any(String) });
+    // Nothing landed: added after the wait.
+    const none = await unit();
+    none.world.loginMethods = [];
+    none.records = { loginMethod: { createStartedAt: new Date(none.world.now).toISOString() } };
+    await none.ensure();
+    expect(none.slept).toEqual([ACCESS_SETTLE_MS]);
+    expect(none.world.calls.filter((c) => c === "loginCreate")).toHaveLength(1);
+  });
+});
+
 describe("ensureOwnerAccess: an application someone else made", () => {
   it("uses a matching owner-only application as it is, without recording or changing it", async () => {
     const u = await unit();
