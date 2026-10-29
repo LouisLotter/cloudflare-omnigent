@@ -34,14 +34,16 @@ export default defineConfig({
         "restore-drill/staging/src/plan.ts",
         "restore-drill/staging/src/controls.ts",
       ],
-      // stg.ts, bootstrap.ts and github-app-command.ts only parse arguments and wire the ports
-      // together; the live staging runs recorded for WP0.4 and WP2.4 exercise the first two.
+      // stg.ts, bootstrap.ts, github-app-command.ts and services-command.ts only parse arguments
+      // and wire the ports together; the live staging runs recorded for WP0.4 and WP2.4 exercise
+      // the first two.
       exclude: [
         "**/*.test.ts",
         "vitest.config.ts",
         "staging/stg.ts",
         "bootstrap/bootstrap.ts",
         "bootstrap/github-app-command.ts",
+        "bootstrap/services-command.ts",
         // The tool version check's command: arguments, Docker and the real fetch, git and gh.
         // The workflow's runs exercise it; its local runs are recorded for WP3.37.
         "tool-versions/tool-versions.ts",
@@ -63,6 +65,7 @@ export default defineConfig({
         "bootstrap/state.ts": pure,
         "bootstrap/r2-token.ts": pure,
         "bootstrap/github-app.ts": pure,
+        "bootstrap/services.ts": pure,
         "bootstrap/update.ts": pure,
         // It runs git for the checkout's version: a real repository made by the test does that.
         "bootstrap/update-command.ts": io,
