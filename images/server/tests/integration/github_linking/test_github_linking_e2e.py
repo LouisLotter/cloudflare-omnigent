@@ -534,6 +534,42 @@ def _scan(stack: Stack, container: str, roots: list[str]) -> dict[str, list[list
     return json.loads(done.stdout.strip().splitlines()[-1])
 
 
+#: Watches every process's argv while git and gh run, for the run's tokens in every form; a
+#: planted canary in one process's argv proves it sees them (Codex WP5.9 r1: a scan after the
+#: commands exit could not). Forks into the background; stops when the stop file appears.
+ARGV_WATCH = r"""
+import base64, json, os, sys, time, urllib.parse
+given = json.loads(sys.stdin.read())
+if os.fork():
+    sys.exit(0)
+os.setsid()
+null = os.open(os.devnull, os.O_RDWR)
+for fd in (0, 1, 2):
+    os.dup2(null, fd)
+forms = {}
+for name, value in given["secrets"].items():
+    for form in (value, base64.b64encode(value.encode()).decode(), urllib.parse.quote(value),
+                 base64.b64encode(f"x-access-token:{value}".encode()).decode()):
+        forms[form.encode()] = name
+hits, me, rounds = {}, str(os.getpid()), 0
+while not os.path.exists(given["stop"]):
+    rounds += 1
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or pid == me:
+            continue
+        try:
+            data = open(f"/proc/{pid}/cmdline", "rb").read()
+        except OSError:
+            continue
+        for form, name in forms.items():
+            if form in data:
+                program = data.split(b"\0")[0].decode(errors="replace")
+                hits.setdefault(name, os.path.basename(program))
+    time.sleep(0.002)
+with open(given["out"], "w") as out:
+    json.dump({"hits": hits, "rounds": rounds}, out)
+"""
+
 START_HOST = r"""
 import json, subprocess, sys
 from pathlib import Path
@@ -668,6 +704,27 @@ def test_connect_clone_and_unlink_through_the_key_service_and_the_broker(stack: 
             computer, "sh", "-c", "ls /tmp/omnigent-1000/credentials-*.sock", check=False
         ).stdout.strip(),
     )
+    planted = f"cfo-e2e-planted-{secrets.token_hex(12)}"
+    _docker(
+        "exec",
+        "-i",
+        computer,
+        "python3",
+        "-I",
+        "-c",
+        ARGV_WATCH,
+        input=json.dumps(
+            {
+                "secrets": {
+                    **values.tokens(),
+                    "launch token": values.launch,
+                    "planted canary": planted,
+                },
+                "stop": "/var/cfo-e2e-argv.stop",
+                "out": "/var/cfo-e2e-argv.json",
+            }
+        ),
+    )
     clone = stack.computer(
         computer,
         "git",
@@ -700,6 +757,22 @@ def test_connect_clone_and_unlink_through_the_key_service_and_the_broker(stack: 
     )
     assert gh.returncode == 0, gh.stderr[-2000:]
     assert json.loads(gh.stdout)["login"] == LOGIN
+
+    # The watcher saw every argv while git and gh ran: only the planted canary.
+    stack.computer(computer, "sh", "-c", "sleep 1", "cfo-e2e", planted, user="root")
+    stack.computer(computer, "touch", "/var/cfo-e2e-argv.stop", user="root")
+    watched = _until(
+        "the argv watcher's result",
+        lambda: (
+            stack.computer(
+                computer, "cat", "/var/cfo-e2e-argv.json", user="root", check=False
+            ).stdout
+        ),
+        timeout=30,
+    )
+    argv = json.loads(watched)
+    assert argv["hits"] == {"planted canary": "sh"}, argv
+    assert argv["rounds"] > 10, argv
 
     # ── No token on the computer's disk, in ~/.gitconfig, gh's configuration or any argv. ──
     gitconfig = stack.computer(computer, "cat", f"{HOME}/.gitconfig").stdout

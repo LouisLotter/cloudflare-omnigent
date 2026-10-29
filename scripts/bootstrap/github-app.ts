@@ -163,6 +163,13 @@ export function manifestAction(state: string, org?: string): string {
   return `${base}?state=${encodeURIComponent(state)}`;
 }
 
+/** The App's settings on GitHub: under the person's account, or the organization's. */
+export function appSettingsUrl(slug: string, org?: string): string {
+  return org === undefined
+    ? `${GITHUB}/settings/apps/${slug}`
+    : `${GITHUB}/organizations/${org}/settings/apps/${slug}`;
+}
+
 function escapeHtml(text: string): string {
   return text
     .replaceAll("&", "&amp;")
@@ -443,7 +450,7 @@ export async function createGitHubApp(
       } catch (error) {
         // The App exists on GitHub but is not stored: say where to delete it, then fail.
         ports.log(
-          `GitHub App ${app.slug} was created but could not be stored in ${plan.platformWorker}; delete it at ${GITHUB}/settings/apps/${app.slug}/advanced and run the step again`,
+          `GitHub App ${app.slug} was created but could not be stored in ${plan.platformWorker}; delete it at ${appSettingsUrl(app.slug, options.org)}/advanced and run the step again`,
         );
         throw error;
       }

@@ -372,6 +372,14 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     expect(logs.join("\n")).toContain(
       "delete it at https://github.com/settings/apps/omnigent-01hs3f9q/advanced",
     );
+    // Under an organization, the organization's settings (Codex WP5.9 r1, optional).
+    const orgCloud = new FakeCloud();
+    orgCloud.updateSecrets = cloud.updateSecrets;
+    const forOrg = await run({ cloud: orgCloud, org: "cfo-org" });
+    await expect(forOrg.outcome).rejects.toThrow("cf workers secrets bulk failed");
+    expect(forOrg.logs.join("\n")).toContain(
+      "delete it at https://github.com/organizations/cfo-org/settings/apps/omnigent-01hs3f9q/advanced",
+    );
   });
 
   it("refuses before showing anything: no Worker, another installation's, or an App already there", async () => {

@@ -379,3 +379,61 @@ def test_the_app_without_linking_offers_no_github(tmp_path: Path) -> None:
     with serve_app(tmp_path) as h:
         assert getattr(h.app.state, "github_store", None) is None
         assert "github" not in h.client.get("/v1/info").json()["enabled_connections"]
+
+
+@requires_omnigent
+def test_every_write_omnigents_store_makes_to_a_link_is_held_by_the_barrier(
+    tmp_path: Path,
+) -> None:
+    """Linking, relinking (another GitHub identity), a token refresh and unlinking, as the real
+    store issues them: each is a security write the response barrier holds (Codex WP5.9 r1-1)."""
+    from omnigent.server.github_app import GitHubTokenSet
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    from cfo_server.barrier import classify
+
+    seen: list[tuple[str, int]] = []
+
+    def record(conn, cursor, statement, params, context, executemany) -> None:  # noqa: ANN001
+        del conn, params, context, executemany
+        if "connections" in statement.lower():
+            seen.append((statement, cursor.rowcount))
+
+    def tokens(n: int) -> GitHubTokenSet:
+        return GitHubTokenSet(
+            access_token=f"cfo-test-ghu-{n}",
+            refresh_token=f"cfo-test-ghr-{n}",
+            expires_at=int(time.time()) + 3600,
+            refresh_token_expires_at=None,
+            scopes="",
+        )
+
+    stub = KeyServiceStub(SIGNING_KEY, SIGNING_KEY_ID)
+    with stub.serve() as url:
+        overrides = linking_env(
+            OMNIGENT_CREDENTIAL_HTTP_URL=url, CFO_ALLOW_LOOPBACK_KEY_SERVICE="1"
+        )
+        with serve_app(tmp_path, overrides) as h:
+            store = h.app.state.github_store
+            event.listen(Engine, "after_cursor_execute", record)
+            try:
+                store.upsert(OWNER, github_login="first", github_user_id=1, tokens=tokens(1))
+                store.upsert(OWNER, github_login="second", github_user_id=2, tokens=tokens(2))
+                store.update_tokens(OWNER, tokens(3))
+                assert (
+                    h.client.post(
+                        "/auth/login", json={"username": OWNER, "password": OWNER_PASSWORD}
+                    ).status_code
+                    == 200
+                )
+                assert h.client.post("/v1/connections/github/disconnect").status_code == 200
+            finally:
+                event.remove(Engine, "after_cursor_execute", record)
+    writes = [
+        (s.split()[0].upper(), classify(s, n))
+        for s, n in seen
+        if s.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+    ]
+    assert [verb for verb, _ in writes] == ["INSERT", "UPDATE", "UPDATE", "DELETE"], writes
+    assert all(table == "connections" for _, table in writes), writes

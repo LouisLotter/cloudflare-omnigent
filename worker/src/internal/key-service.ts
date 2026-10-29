@@ -334,17 +334,33 @@ export function recordKeysSecret(keyId: string, root: Uint8Array): string {
   return JSON.stringify({ keyId, current: 1, versions: { "1": base64url(root) } });
 }
 
+/** Python's whitespace (`str.isspace`), which `str.strip()` removes from both ends. */
+const PYTHON_SPACE =
+  "[\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]";
+const PYTHON_STRIP = new RegExp(`^${PYTHON_SPACE}+|${PYTHON_SPACE}+$`, "g");
+
+/**
+ * A setting as Omnigent reads it: `os.environ.get(name, "").strip()` (http_cipher.py), so a
+ * secret pasted with a trailing newline signs and verifies alike on both sides.
+ */
+export function pythonStrip(text: string): string {
+  return text.replace(PYTHON_STRIP, "");
+}
+
 /**
  * The key service's keys from the Worker's secrets, or null when any of them is missing or
- * malformed (the service then refuses every call: fail closed). Each signing secret must be at
- * least MIN_SIGNING_KEY_BYTES bytes; a previous key with the current key's ID is refused.
+ * malformed (the service then refuses every call: fail closed). The signing pairs are trimmed
+ * as Omnigent trims its own copy (Codex WP5.9 r1-2). Each signing secret must be at least
+ * MIN_SIGNING_KEY_BYTES bytes; a previous key with the current key's ID is refused.
  */
 export function keyServiceKeysFrom(vars: Readonly<Record<string, unknown>>): KeyServiceKeys | null {
   const key = (idName: string, secretName: string): SigningKey | null | undefined => {
-    const id = vars[idName];
-    const secret = vars[secretName];
-    if (id === undefined && secret === undefined) return undefined;
-    if (typeof id !== "string" || typeof secret !== "string") return null;
+    const rawId = vars[idName];
+    const rawSecret = vars[secretName];
+    if (rawId === undefined && rawSecret === undefined) return undefined;
+    if (typeof rawId !== "string" || typeof rawSecret !== "string") return null;
+    const id = pythonStrip(rawId);
+    const secret = pythonStrip(rawSecret);
     if (!SigningKeyId.safeParse(id).success) return null;
     const bytes = encoder.encode(secret);
     if (bytes.byteLength < MIN_SIGNING_KEY_BYTES) return null;

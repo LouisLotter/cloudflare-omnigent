@@ -23,6 +23,7 @@ import {
   MAX_KEY_SERVICE_BODY_BYTES,
   openRecord,
   parseRecordKeys,
+  pythonStrip,
   recordKeysSecret,
   sealRecord,
   signKeyServiceRequest,
@@ -565,6 +566,35 @@ describe("keys", () => {
       }),
     );
     expect(rotating?.signing.previous?.id).toBe("ks-previous");
+  });
+
+  it("trims the signing pairs as Omnigent trims its own copy (Codex WP5.9 r1-2)", async () => {
+    const keys = keyServiceKeysFrom(
+      vars({
+        [KEY_SERVICE_SECRETS.currentId]: " ks-current\n",
+        [KEY_SERVICE_SECRETS.current]: `\t${SIGNING}\r\n`,
+        [KEY_SERVICE_SECRETS.previousId]: "ks-previous\u00a0",
+        [KEY_SERVICE_SECRETS.previous]: `\u3000${SIGNING}-old\x1f`,
+      }),
+    ) as KeyServiceKeys;
+    expect(keys.signing.current.id).toBe("ks-current");
+    expect(keys.signing.previous?.id).toBe("ks-previous");
+    // Signed with the trimmed values, as Python's `os.environ.get(name, "").strip()` reads them.
+    for (const [key, keyId] of [
+      [SIGNING, "ks-current"],
+      [`${SIGNING}-old`, "ks-previous"],
+    ] as const) {
+      const response = await handleKeyServiceRequest(
+        await signed("encrypt", { context: CONTEXT, plaintext: "x" }, { key, keyId }),
+        deps(keys),
+      );
+      expect(response.status, keyId).toBe(200);
+    }
+    // Python's whitespace exactly (str.isspace), and nothing else, at either end.
+    const space =
+      "\t\n\v\f\r\x1c\x1d\x1e\x1f \x85\xa0\u1680\u2000\u200a\u2028\u2029\u202f\u205f\u3000";
+    expect(pythonStrip(`${space}a b${space}`)).toBe("a b");
+    expect(pythonStrip("\ufeffa\u200b")).toBe("\ufeffa\u200b");
   });
 
   it("fails closed on any missing or malformed secret", () => {

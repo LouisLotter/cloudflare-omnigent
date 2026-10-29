@@ -36,20 +36,20 @@ from cfo_server.litestream import ReplicationWaiter, WaitOutcome
 
 #: Tables whose writes are security changes: accounts and passwords, login grants and their
 #: revocation, API tokens, hosts (creation, removal, launch-token re-arming), schedules, and
-#: the credential store's connections (GitHub linking, WP5.9): linking and, above all,
-#: unlinking, which must not come back with a restore.
+#: the credential store's connections (GitHub linking, WP5.9): linking, relinking (an update
+#: that can replace the linked GitHub identity) and, above all, unlinking, none of which may
+#: come back undone with a restore. A token refresh writes the same columns as a relink, so it
+#: is held too: a git command that needs one (about every 8 hours) waits for the replica, and
+#: while the replica is blocked that one request is answered 424 and the next one succeeds.
 SECURITY_TABLES: frozenset[str] = frozenset(
     {"users", "device_grants", "account_tokens", "hosts", "scheduled_tasks", "connections"}
 )
 #: Updates that touch only these columns are bookkeeping, not security changes: the login
-#: timestamp, a host's heartbeat, and a connection's token refresh (a new token set for the same
-#: link, written while a computer waits for git's credential). Without this, every browser login,
-#: and every git command that needed a refresh, would wait for the replica and fail while it is
-#: blocked. A refresh lost to a restore costs a reconnect, not a revocation.
+#: timestamp and a host's heartbeat. Without this, every browser login would wait for the
+#: replica and fail while it is blocked.
 IGNORED_UPDATE_COLUMNS: dict[str, frozenset[str]] = {
     "users": frozenset({"last_login_at"}),
     "hosts": frozenset({"updated_at"}),
-    "connections": frozenset({"secret_enc", "metadata_json", "updated_at"}),
 }
 
 UNCONFIRMED_STATUS = 424
