@@ -9,7 +9,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["cfo_server"]
-known-local-folder = ["conftest", "fake_litestream", "sharing_variants"]
+known-local-folder = ["conftest", "fake_litestream", "key_service_stub", "sharing_variants"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
