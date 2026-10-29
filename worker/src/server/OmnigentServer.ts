@@ -26,6 +26,11 @@
 //   - The owner's password page (WP3.34, `ownerPassword`): the page's state and intent token, and
 //     the signed platform call that sets the password (`owner-password.ts`). Forwarding never
 //     passes on a path under `/_cfo/`, the platform calls' own, whoever sent it.
+//   - GitHub linking (WP3.36): the status line says whether Omnigent's `/v1/info` lists GitHub
+//     (`githubLinking`), which the installer's GitHub step waits for, and `githubSetup` gives the
+//     GitHub setup page the same answer, read on demand. An object still on an older version
+//     than the cron's yields to it (`ensureStarted`), so a secrets change reaches the server
+//     minutes sooner than the platform's own switch.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.
@@ -34,6 +39,8 @@ import { DurableObject } from "cloudflare:workers";
 import {
   type BootstrapStatus,
   BootstrapStatus as BootstrapStatusSchema,
+  GitHubSetupCall,
+  type GitHubSetupResult,
   isPlatformCallPath,
   OutageId,
   OutageRecord,
@@ -53,6 +60,7 @@ import type { PlatformEnv } from "../env.ts";
 import { platformError } from "../shared/errors.ts";
 import { newInstanceId } from "../shared/instance.ts";
 import {
+  type EnsureStartedCall,
   FORWARD_VERSION_HEADER,
   OMNIGENT_SERVER_INTERFACE_VERSION,
   type OmnigentServerCall,
@@ -69,6 +77,7 @@ import {
   serverContainerOf,
   serverImageOf,
 } from "./container-port.ts";
+import { githubAppConfigured, githubLinkingOf } from "./github-linking.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
 import {
   constantTimeEqual,
@@ -93,6 +102,7 @@ import { SERVER_MIGRATIONS } from "./schema.ts";
 import {
   bootstrapSecretPresent,
   configFingerprint,
+  environmentFingerprint,
   SERVER_INSTANCE,
   serverContainerEnv,
   serverDeadlines,
@@ -254,6 +264,15 @@ const PASSWORD_CHOSEN_KEY = "owner_password_chosen";
 const PASSWORD_DONE_KEY = "owner_password_done";
 /** The times of the latest attempts that reached the server (WP3.34's limit). */
 const PASSWORD_ATTEMPTS_KEY = "owner_password_attempts";
+/** When this object last yielded to a newer version of the Worker (WP3.36), in milliseconds. */
+const VERSION_YIELD_KEY = "version_yield";
+/**
+ * At most one yield to a newer version in this time (WP3.36). A reset costs little (the
+ * container keeps running, and every socket through the object would drop at the platform's own
+ * switch a few minutes later anyway), but nothing may make the object reset itself repeatedly:
+ * during a gradual deployment, for one, an object can stay on an older version on purpose.
+ */
+export const VERSION_YIELD_INTERVAL_MS = 10 * 60_000;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -941,6 +960,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         bootstrapStatus: check.status,
         secretPresent,
         configApplied,
+        // WP3.36: whether this version holds the GitHub App's settings (names only), and whether
+        // Omnigent lists GitHub linking (null: its answer did not say). The installer's GitHub
+        // step waits for both from a server started with this version's configuration.
+        githubApp: githubAppConfigured(this.env as unknown as Record<string, unknown>),
+        githubLinking: githubLinkingOf(info),
       });
     }
   }
@@ -1036,8 +1060,9 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     return judgeReplication(status, this.now());
   }
 
-  async ensureStarted(call: OmnigentServerCall): Promise<void> {
+  async ensureStarted(call: EnsureStartedCall): Promise<void> {
     this.#checkCall(call);
+    await this.#yieldToNewerVersion(call.environment);
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(this.now());
       logEvent("watchdog", "alarm_rearmed");
@@ -1045,6 +1070,72 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // A running server is the watchdog's to judge at its own pace: nothing more here. A stopped
     // one gets a check now, through the same queue as the alarm, so the two never race.
     if (this.#container?.running === false) await this.#check();
+  }
+
+  /**
+   * WP3.36: the cron runs on the newest version at once; this object keeps the version it runs
+   * for up to about 5 minutes after a deploy or a secrets change (spike S2: 300 s), and only then
+   * would its watchdog see the new configuration and replace the server. When the cron's server
+   * environment differs from this version's, this instance arms its alarm for now and resets
+   * itself, so that the next instance runs the newest version and its first check applies the
+   * new configuration. Every step of the watchdog is persisted before its effect and a new
+   * instance adopts the running container, as after any reset. At most once in
+   * `VERSION_YIELD_INTERVAL_MS`; a call without a fingerprint (an older cron) changes nothing.
+   */
+  async #yieldToNewerVersion(environment: unknown): Promise<void> {
+    if (typeof environment !== "string" || !/^[0-9a-f]{32}$/.test(environment)) return;
+    const own = await environmentFingerprint(this.env as unknown as Record<string, unknown>);
+    if (environment === own) return;
+    const last = Millis.safeParse(this.#serverState(VERSION_YIELD_KEY));
+    if (last.success && this.now() - last.data < VERSION_YIELD_INTERVAL_MS) return;
+    this.#putServerState(VERSION_YIELD_KEY, this.now());
+    await this.ctx.storage.setAlarm(this.now());
+    await this.ctx.storage.sync();
+    logEvent("watchdog", "version_yield", { instanceId: this.#instanceId });
+    this.resetSelf("a newer version of the platform Worker is deployed");
+  }
+
+  /** Resets this instance (`ctx.abort`): the next request or alarm gets a new one. */
+  protected resetSelf(reason: string): never {
+    this.ctx.abort(reason);
+    throw new Error(reason);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The GitHub setup page (WP3.36)
+
+  async githubSetup(raw: GitHubSetupCall): Promise<GitHubSetupResult> {
+    this.#checkCall(raw);
+    if (!GitHubSetupCall.safeParse(raw).success) {
+      throw platformError("bad_request", "invalid GitHub setup call");
+    }
+    const env = this.env as unknown as Record<string, unknown>;
+    const configured = githubAppConfigured(env);
+    const container = this.#container;
+    if (container === null) {
+      return { configured, applied: false, server: "unavailable", linking: "unknown" };
+    }
+    const applied = this.#startConfig() === (await startFingerprint(env, this.#image));
+    const quiet = (server: GitHubSetupResult["server"]): GitHubSetupResult => ({
+      configured,
+      applied,
+      server,
+      linking: "unknown",
+    });
+    const state = this.#loadState();
+    if (state.phase === "held") return quiet("held");
+    if (state.recoverySince !== null) return quiet("recovery");
+    // As a forwarded request: nothing is read from a server being stopped, started or retried.
+    if (this.#stopping || state.phase !== "idle" || !container.running) return quiet("starting");
+    const info = await this.#read(container, OMNIGENT_PORT, "/v1/info");
+    if (info === null) return quiet("starting");
+    const linking = githubLinkingOf(info);
+    return {
+      configured,
+      applied,
+      server: "answering",
+      linking: linking === null ? "unknown" : linking ? "on" : "off",
+    };
   }
 
   // -------------------------------------------------------------------------------------------

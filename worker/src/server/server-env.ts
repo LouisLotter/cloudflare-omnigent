@@ -209,3 +209,16 @@ export function startFingerprint(
 ): Promise<string> {
   return configFingerprint(serverContainerEnv(env).vars, { image, instance: SERVER_INSTANCE });
 }
+
+/**
+ * The fingerprint of the server environment alone (no image): what the platform Worker's cron
+ * sends OmnigentServer with `ensureStarted` (WP3.36). The cron runs on the newest deployed
+ * version at once, and has no `images` map of its own, so the two compare environments only.
+ * A digest, never logged.
+ */
+export function environmentFingerprint(env: Readonly<Record<string, unknown>>): Promise<string> {
+  return configFingerprint(serverContainerEnv(env).vars, {
+    image: null,
+    instance: SERVER_INSTANCE,
+  });
+}

@@ -3,6 +3,8 @@ import { ControlDO } from "./control/ControlDO.ts";
 import { DirectoryBackupGateway } from "./egress/backups.ts";
 import { ComputerApi, OmnigentRoute, PlatformInternal } from "./internal/entrypoints.ts";
 import { OmnigentServer } from "./server/OmnigentServer.ts";
+import { describeError, logEvent } from "./server/responses.ts";
+import { environmentFingerprint } from "./server/server-env.ts";
 import { OMNIGENT_SERVER_INTERFACE_VERSION, OMNIGENT_SERVER_OBJECT_NAME } from "./shared/rpc.ts";
 
 // The platform Worker (AR-17): every Durable Object and container class, the private virtual
@@ -36,12 +38,21 @@ export default {
   /**
    * The cron trigger (wrangler.jsonc, every minute): the always-on backstop and the first start
    * after an installation. It makes sure the watchdog's alarm is armed and a stopped server is
-   * started, and does nothing else (OmnigentServer.ensureStarted).
+   * started, and does nothing else (OmnigentServer.ensureStarted). It runs on the newest
+   * deployed version, so it also tells the object which server environment that version holds:
+   * an object still on an older version yields to it (WP3.36), and the call then fails with the
+   * object's reset, which is logged here.
    */
   async scheduled(_controller, env, ctx): Promise<void> {
     ctx.waitUntil(
-      env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).ensureStarted({
-        interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
+      (async () => {
+        const environment = await environmentFingerprint(env as unknown as Record<string, unknown>);
+        await env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME).ensureStarted({
+          interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
+          environment,
+        });
+      })().catch((error: unknown) => {
+        logEvent("cron", "ensure_started_error", { error: describeError(error) });
       }),
     );
   },
