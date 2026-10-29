@@ -31,9 +31,15 @@ export default defineConfig({
         "restore-drill/staging/src/plan.ts",
         "restore-drill/staging/src/controls.ts",
       ],
-      // stg.ts and bootstrap.ts only parse arguments and wire the ports together; the live
-      // staging runs recorded for WP0.4 and WP2.4 exercise them.
-      exclude: ["**/*.test.ts", "vitest.config.ts", "staging/stg.ts", "bootstrap/bootstrap.ts"],
+      // stg.ts, bootstrap.ts and github-app-command.ts only parse arguments and wire the ports
+      // together; the live staging runs recorded for WP0.4 and WP2.4 exercise the first two.
+      exclude: [
+        "**/*.test.ts",
+        "vitest.config.ts",
+        "staging/stg.ts",
+        "bootstrap/bootstrap.ts",
+        "bootstrap/github-app-command.ts",
+      ],
       reportsDirectory: "../coverage/scripts",
       thresholds: {
         "staging/guard.ts": pure,
@@ -51,6 +57,7 @@ export default defineConfig({
         "bootstrap/machine.ts": pure,
         "bootstrap/state.ts": pure,
         "bootstrap/r2-token.ts": pure,
+        "bootstrap/github-app.ts": pure,
         "bootstrap/remove.ts": io,
         "bootstrap/cloud.ts": io,
         "bootstrap/staging.ts": io,

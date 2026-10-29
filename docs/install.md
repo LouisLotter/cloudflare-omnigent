@@ -72,6 +72,20 @@ When it ends with `bootstrap: done`, the installation is ready. If it stops earl
 
 Anyone else who opens the address stops at Access and never reaches Omnigent.
 
+## GitHub, for your cloud computers (optional)
+
+So that agents on your cloud computers can clone and push your repositories, give the installation its own GitHub App. Once the installation is ready, run:
+
+```bash
+node scripts/bootstrap/bootstrap.ts github-app
+```
+
+1. Your browser opens on GitHub with the App already filled in. Click **Create GitHub App**. (`--github-org <name>` creates it under an organization instead of your own account.)
+2. The installer stores the App in Cloudflare, without showing any of its secrets, and your browser moves on to GitHub's page that installs the App. Choose the repositories it may reach, and click **Install**.
+3. GitHub brings you back to Omnigent's settings. The server restarts once to pick up the App, which takes a minute or two; then click **Connect GitHub** there and approve on GitHub.
+
+From then on, git and gh on your cloud computers act as you on those repositories. The App can read and write repository contents and pull requests, and nothing else. To stop it, use **Disconnect** in Omnigent's settings; a token a computer already received stays valid at GitHub for up to 8 hours. You can also uninstall or delete the App on GitHub at any time.
+
 ## When something needs you
 
 The installer stops with one sentence saying what to do, and the command to run again, when:

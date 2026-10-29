@@ -1,8 +1,8 @@
 // `platform.internal`, the virtual host only the server container reaches (design: "Internal
 // bridges"). OmnigentServer registers the `PlatformInternal` entrypoint for it before every start
 // and in every new instance; no other container gets it. The entrypoint, which serves the
-// launcher API with its HMAC checks, is in `internal/entrypoints.ts` (WP3.3); core change 19's
-// key service (WP3.14) joins it there. These are the registration's constants.
+// launcher API (WP3.3) and core change 19's key service (WP5.9), each with its own HMAC checks,
+// is in `internal/entrypoints.ts`. These are the registration's constants.
 
 export { PLATFORM_INTERNAL_HOST } from "@cfo/contracts";
 

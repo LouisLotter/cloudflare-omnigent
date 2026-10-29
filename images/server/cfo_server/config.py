@@ -19,8 +19,16 @@ Some settings are pinned by the image and cannot be changed by the environment a
 accounts mode, the release-feature set (``OMNIGENT_FEATURES``, which must never contain
 ``harness_install``), default-public sessions off, the database and data paths, and the
 managed-sandbox reaper. Variables that would select integrations the image does not wire
-(Databricks, the credential-store ciphers) are removed from the app's environment; the GitHub
-App and the key-service cipher arrive with WP3.14.
+(Databricks, AWS KMS, Vault) are removed from the app's environment.
+
+**GitHub linking** (D22, WP5.9) is Omnigent's own, with its credential store encrypted by the
+platform Worker's key service on ``platform.internal`` (core change 19). It is on when, and only
+when, the GitHub App's client ID, client secret and redirect URI and the key service's signing
+key and key ID are all set (:func:`parse_github_linking`). Then exactly those settings, the
+App's optional ID and slug, and the key service's URL reach the app, with the credential cipher
+pinned to ``http``; nothing else under ``OMNIGENT_GITHUB_APP_`` or ``OMNIGENT_CREDENTIAL_``
+does. The App's private key in particular never does: Omnigent's linking does not use it, and it
+would let the server act as the App on every repository the App is installed on.
 """
 
 from __future__ import annotations
@@ -68,16 +76,52 @@ SENDER_ACK_TIMEOUT_S = 5.0
 #: Omnigent's minimum password length at login (``accounts_auth._MIN_PASSWORD_LENGTH``).
 MIN_PASSWORD_LENGTH = 8
 
-#: Environment variables the image removes before starting Omnigent. They would select
-#: integrations this image does not wire: Databricks Connect and the credential-store ciphers
-#: (AWS KMS, Vault, the HTTP key service). WP3.14 adds the key-service cipher for GitHub
-#: linking through :func:`cfo_server.app.github_linking`.
+#: Environment variables the image removes before starting Omnigent: Databricks Connect, the
+#: credential-store ciphers (AWS KMS, Vault, the HTTP key service) and the GitHub App. GitHub
+#: linking adds back only :data:`GITHUB_APP_ENV` and :data:`KEY_SERVICE_ENV`, when it is on.
 SCRUBBED_ENV_PREFIXES: tuple[str, ...] = (
     "OMNIGENT_DATABRICKS_",
     "OMNIGENT_CREDENTIAL_",
     "OMNIGENT_GITHUB_APP_",
     "VAULT_",
 )
+#: GitHub linking's required App settings: Omnigent's ``GitHubAppConfig.from_env`` names.
+GITHUB_APP_REQUIRED: tuple[str, ...] = (
+    "OMNIGENT_GITHUB_APP_CLIENT_ID",
+    "OMNIGENT_GITHUB_APP_CLIENT_SECRET",
+    "OMNIGENT_GITHUB_APP_REDIRECT_URI",
+)
+#: Every App setting that reaches the app: the required ones, the App's numeric ID and its slug
+#: (Omnigent's "Install" link). Not the private key or its path.
+GITHUB_APP_ENV: tuple[str, ...] = (
+    *GITHUB_APP_REQUIRED,
+    "OMNIGENT_GITHUB_APP_ID",
+    "OMNIGENT_GITHUB_APP_SLUG",
+)
+#: The key service's settings (core change 19's ``http`` cipher), as Omnigent names them.
+KEY_SERVICE_URL_ENV = "OMNIGENT_CREDENTIAL_HTTP_URL"
+KEY_SERVICE_SIGNING_KEY_ENV = "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY"
+KEY_SERVICE_SIGNING_KEY_ID_ENV = "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY_ID"
+KEY_SERVICE_ENV: tuple[str, ...] = (
+    KEY_SERVICE_URL_ENV,
+    KEY_SERVICE_SIGNING_KEY_ENV,
+    KEY_SERVICE_SIGNING_KEY_ID_ENV,
+)
+#: Omnigent's cipher selector, pinned to the key service while GitHub linking is on.
+CREDENTIAL_CIPHER_ENV = "OMNIGENT_CREDENTIAL_CIPHER"
+CREDENTIAL_CIPHER = "http"
+#: The platform Worker's key service, on the server container's private intercept.
+KEY_SERVICE_HOST = "platform.internal"
+DEFAULT_KEY_SERVICE_URL = f"http://{KEY_SERVICE_HOST}/key-service/v1"
+#: Omnigent's GitHub callback, on the installation's own origin.
+GITHUB_CALLBACK_PATH = "/v1/connections/github/callback"
+#: Omnigent's limits for the signing key (``http_cipher.MIN_SIGNING_KEY_BYTES``, ``_KEY_ID_RE``).
+MIN_KEY_SERVICE_SIGNING_KEY_BYTES = 32
+_KEY_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+#: GitHub's identifiers: a client ID (``Iv1.…``, ``Iv23…``), an App ID and an App slug.
+_GITHUB_CLIENT_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_GITHUB_APP_ID = re.compile(r"[0-9]{1,20}")
+_GITHUB_SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 #: How long Omnigent waits for a dropped runner to reconnect before failing its session
 #: (``OMNIGENT_RUNNER_DISCONNECT_GRACE_S``; its default is the 90 s liveness lease). A computer's
 #: tunnel may drop while a capture pauses it, and RC-21 allows such a reconnect 100 s, so the
@@ -179,6 +223,22 @@ class ArtifactSettings:
 
 
 @dataclass(frozen=True)
+class GitHubLinking:
+    """Omnigent's GitHub linking (D22): on only with the App and the key service both set.
+
+    Secret values are not kept here: :func:`app_environment` copies them from the environment.
+    """
+
+    enabled: bool = False
+    #: Why it is off, for the start's log (names only); ``None`` when on.
+    off_reason: str | None = "not configured"
+    client_id: str | None = None
+    redirect_uri: str | None = None
+    key_service_url: str | None = None
+    signing_key_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ServerImageConfig:
     """Everything the entrypoint and the app read from the environment."""
 
@@ -206,6 +266,8 @@ class ServerImageConfig:
     #: Whether the bootstrap owner's username and password are set, so Omnigent creates the
     #: owner on a database without one instead of offering first-visitor setup.
     bootstrap_credentials: bool = False
+    #: Omnigent's GitHub linking and its key service (D22, WP5.9).
+    github: GitHubLinking = field(default_factory=GitHubLinking)
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -353,6 +415,112 @@ def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:
     )
 
 
+def _key_service_url(env: Mapping[str, str]) -> str:
+    """The key service's base URL: ``platform.internal`` by default, and only there.
+
+    Plaintext credentials travel in its request and reply bodies, so it must stay on the server
+    container's private intercept. ``CFO_ALLOW_LOOPBACK_KEY_SERVICE`` also allows a loopback host,
+    for tests only. Errors never repeat the value.
+    """
+    url = _get(env, KEY_SERVICE_URL_ENV) or DEFAULT_KEY_SERVICE_URL
+    parts = _split(url, KEY_SERVICE_URL_ENV)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ConfigError(f"{KEY_SERVICE_URL_ENV} must be an http or https URL with a host")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise ConfigError(
+            f"{KEY_SERVICE_URL_ENV} must not carry credentials, a query or a fragment"
+        )
+    if parts.port == 0:
+        raise ConfigError(f"{KEY_SERVICE_URL_ENV} must not use port 0")
+    allowed = {KEY_SERVICE_HOST}
+    if parse_bool(env, "CFO_ALLOW_LOOPBACK_KEY_SERVICE", False):
+        allowed |= {"127.0.0.1", "localhost", "::1"}
+    if parts.hostname.lower() not in allowed:
+        raise ConfigError(
+            f"{KEY_SERVICE_URL_ENV} must name the platform's key service on {KEY_SERVICE_HOST}"
+        )
+    return url.rstrip("/")
+
+
+def _secret_value(env: Mapping[str, str], name: str, *, max_length: int = 4096) -> None:
+    """A secret's value: printable, without whitespace inside. Errors never repeat it."""
+    value = _get(env, name) or ""
+    if len(value) > max_length or any(ch.isspace() or not ch.isprintable() for ch in value):
+        raise ConfigError(f"{name} is malformed")
+
+
+def parse_github_linking(
+    env: Mapping[str, str], base_origin: str, warnings: list[str]
+) -> GitHubLinking:
+    """Omnigent's GitHub linking (D22): on when, and only when, the App and the key service are
+    both fully set.
+
+    - None of the App's required settings: off, quietly.
+    - Some of them, or the App without the key service: off, with a warning that names what is
+      missing (never a value). A half-configured optional feature does not stop the server.
+    - All of them: every value is checked, and a malformed one stops the start (exit 78), as
+      every other malformed setting does. The redirect URI must be Omnigent's callback on this
+      installation's own origin, and the key service must be on ``platform.internal``.
+    """
+    app_set = [name for name in GITHUB_APP_REQUIRED if _get(env, name) is not None]
+    service_set = [
+        name
+        for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
+        if _get(env, name) is not None
+    ]
+    if not app_set:
+        return GitHubLinking(off_reason="not configured")
+    missing = [name for name in GITHUB_APP_REQUIRED if name not in app_set] + [
+        name
+        for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
+        if name not in service_set
+    ]
+    if missing:
+        warnings.append(f"GitHub linking is off: {', '.join(missing)} not set")
+        return GitHubLinking(off_reason="incomplete")
+
+    client_id = _get(env, "OMNIGENT_GITHUB_APP_CLIENT_ID") or ""
+    if not _GITHUB_CLIENT_ID.fullmatch(client_id):
+        raise ConfigError("OMNIGENT_GITHUB_APP_CLIENT_ID is not a GitHub App client ID")
+    _secret_value(env, "OMNIGENT_GITHUB_APP_CLIENT_SECRET", max_length=256)
+    redirect_uri = _get(env, "OMNIGENT_GITHUB_APP_REDIRECT_URI") or ""
+    # Omnigent serves under its base path, when one is set (``OMNIGENT_WEB_BASE_PATH``).
+    base_path = (_get(env, "OMNIGENT_WEB_BASE_PATH") or "").strip("/")
+    expected = f"{base_origin}{'/' + base_path if base_path else ''}{GITHUB_CALLBACK_PATH}"
+    if redirect_uri != expected:
+        raise ConfigError(
+            "OMNIGENT_GITHUB_APP_REDIRECT_URI must be Omnigent's GitHub callback on "
+            f"OMNIGENT_ACCOUNTS_BASE_URL's origin: {expected}"
+        )
+    app_id = _get(env, "OMNIGENT_GITHUB_APP_ID")
+    if app_id is not None and not _GITHUB_APP_ID.fullmatch(app_id):
+        raise ConfigError("OMNIGENT_GITHUB_APP_ID must be the App's numeric ID")
+    slug = _get(env, "OMNIGENT_GITHUB_APP_SLUG")
+    if slug is not None and not _GITHUB_SLUG.fullmatch(slug):
+        raise ConfigError("OMNIGENT_GITHUB_APP_SLUG must be the App's slug")
+
+    signing_key = _get(env, KEY_SERVICE_SIGNING_KEY_ENV) or ""
+    if len(signing_key.encode("utf-8")) < MIN_KEY_SERVICE_SIGNING_KEY_BYTES:
+        raise ConfigError(
+            f"{KEY_SERVICE_SIGNING_KEY_ENV} must be at least "
+            f"{MIN_KEY_SERVICE_SIGNING_KEY_BYTES} bytes"
+        )
+    _secret_value(env, KEY_SERVICE_SIGNING_KEY_ENV)
+    signing_key_id = _get(env, KEY_SERVICE_SIGNING_KEY_ID_ENV) or ""
+    if not _KEY_ID.fullmatch(signing_key_id):
+        raise ConfigError(
+            f"{KEY_SERVICE_SIGNING_KEY_ID_ENV} must be 1-128 letters, digits, '.', '_' or '-'"
+        )
+    return GitHubLinking(
+        enabled=True,
+        off_reason=None,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        key_service_url=_key_service_url(env),
+        signing_key_id=signing_key_id,
+    )
+
+
 def parse_artifacts(
     env: Mapping[str, str], replica: ReplicaSettings | None, warnings: list[str]
 ) -> ArtifactSettings:
@@ -460,8 +628,9 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
     features = _get(env, "OMNIGENT_FEATURES")
     if features is not None:
         warnings.append(f"OMNIGENT_FEATURES={features!r} ignored: the image pins every feature off")
+    github = parse_github_linking(env, base_origin, warnings)
     for name in sorted(env):
-        if name.startswith(SCRUBBED_ENV_PREFIXES):
+        if name.startswith(SCRUBBED_ENV_PREFIXES) and name not in _linking_env(github):
             warnings.append(f"{name} removed: this image does not wire that integration")
 
     sandbox_server_url = _get(env, "CFO_SANDBOX_SERVER_URL") or "http://omnigent.internal"
@@ -495,8 +664,16 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
         litestream_ready_timeout_s=parse_seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60.0),
         installation_id=installation_id,
         bootstrap_credentials=bootstrap_password is not None,
+        github=github,
         warnings=tuple(warnings),
     )
+
+
+def _linking_env(github: GitHubLinking) -> frozenset[str]:
+    """The scrubbed-prefix variables GitHub linking passes to the app: none while it is off."""
+    if not github.enabled:
+        return frozenset()
+    return frozenset((*GITHUB_APP_ENV, *KEY_SERVICE_ENV, CREDENTIAL_CIPHER_ENV))
 
 
 def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[str, str]:
@@ -511,6 +688,21 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
         if not k.startswith(SCRUBBED_ENV_PREFIXES) and k not in REMOVED_APP_ENV
     }
     out.update(PINNED_ENV)
+    if config.github.enabled:
+        # Exactly the App's settings Omnigent reads, the key service's, and the pinned cipher.
+        for name in GITHUB_APP_ENV:
+            value = _get(env, name)
+            if value is not None:
+                out[name] = value
+        out[KEY_SERVICE_URL_ENV] = config.github.key_service_url or DEFAULT_KEY_SERVICE_URL
+        for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV):
+            out[name] = _get(env, name) or ""
+        out[CREDENTIAL_CIPHER_ENV] = CREDENTIAL_CIPHER
+        # The key service is reached directly, never through a proxy (httpx honours these).
+        for name in ("NO_PROXY", "no_proxy"):
+            hosts = [h for h in out.get(name, "").split(",") if h.strip()]
+            if KEY_SERVICE_HOST not in hosts:
+                out[name] = ",".join([*hosts, KEY_SERVICE_HOST])
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
         for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():

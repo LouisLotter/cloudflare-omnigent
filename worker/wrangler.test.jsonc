@@ -43,7 +43,12 @@
     "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY_ID": "k-test-current",
     "SERVER_ENV_CFO_LAUNCHER_SIGNING_KEY": "cfo-canary-launcher-key-current-0000000000",
     "CFO_LAUNCHER_SIGNING_KEY_PREVIOUS_ID": "k-test-previous",
-    "CFO_LAUNCHER_SIGNING_KEY_PREVIOUS": "cfo-canary-launcher-key-previous-000000000"
+    "CFO_LAUNCHER_SIGNING_KEY_PREVIOUS": "cfo-canary-launcher-key-previous-000000000",
+    // The credential store's key service (WP5.9): the server's signing pair, and the Worker-only
+    // record keys (32 bytes of 0x11, unpadded base64url), which no container receives.
+    "SERVER_ENV_OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY_ID": "ks-test-current",
+    "SERVER_ENV_OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY": "cfo-canary-key-service-signing-0000000000",
+    "CFO_KEY_SERVICE_RECORD_KEYS": "{\"keyId\":\"ins_01hs3f9q2m8z4w7k6t5r1n0ybc.records\",\"current\":1,\"versions\":{\"1\":\"ERERERERERERERERERERERERERERERERERERERERERE\"}}"
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ControlDO"] },
