@@ -44,7 +44,11 @@ const conversion = (over: Record<string, unknown> = {}) => ({
 
 class FakeCloud implements GitHubAppCloud {
   names: string[] | null = ["SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET"];
-  identity: WorkerIdentity = { exists: true, installationId: INSTALLATION };
+  identity: WorkerIdentity = {
+    exists: true,
+    installationId: INSTALLATION,
+    vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: "key-service" },
+  };
   changes: Record<string, string | null>[] = [];
   async secretNames() {
     return this.names;
@@ -382,7 +386,7 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     );
   });
 
-  it("refuses before showing anything: no Worker, another installation's, or an App already there", async () => {
+  it("refuses before showing anything: no Worker, another installation's, an older release, or an App already there", async () => {
     const missing = new FakeCloud();
     missing.names = null;
     const other = new FakeCloud();
@@ -393,10 +397,24 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
     linked.names = [GITHUB_APP_SECRETS.clientId];
     const half = new FakeCloud();
     half.names = [KEY_SERVICE_SECRETS.current];
+    // A release from before the key service (WP3.35): no feature list, or one without it.
+    const older = new FakeCloud();
+    older.identity = { exists: true, installationId: INSTALLATION, vars: {} };
+    const unlisted = new FakeCloud();
+    unlisted.identity = { exists: true, installationId: INSTALLATION };
+    const without = new FakeCloud();
+    without.identity = {
+      exists: true,
+      installationId: INSTALLATION,
+      vars: { CFO_PLATFORM_FEATURES: "something-else" },
+    };
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
       [other, /is not serving installation/],
       [unknown, /is not serving installation/],
+      [older, /runs a release from before GitHub linking .*bootstrap\.ts update/],
+      [unlisted, /runs a release from before GitHub linking/],
+      [without, /runs a release from before GitHub linking/],
       [linked, /already has a GitHub App/],
       [half, /half of the key service's signing pair/],
     ] as const) {
