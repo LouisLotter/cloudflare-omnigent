@@ -244,6 +244,26 @@ function parseJournal(value: unknown): Journal {
       return token;
     });
   }
+  if (j.accessApp !== undefined) {
+    const a = object(j.accessApp, "journal.accessApp");
+    const app: Record<string, string> = { name: str(a, "name", "journal.accessApp") };
+    if (a.id !== undefined) app.id = str(a, "id", "journal.accessApp");
+    for (const key of ["createStartedAt", "createdAt"] as const) {
+      const time = optionalTime(a, key, "journal.accessApp");
+      if (time !== undefined) app[key] = time;
+    }
+    journal.accessApp = app;
+  }
+  if (j.accessLoginMethod !== undefined) {
+    const m = object(j.accessLoginMethod, "journal.accessLoginMethod");
+    const method: Record<string, string> = {};
+    if (m.id !== undefined) method.id = str(m, "id", "journal.accessLoginMethod");
+    for (const key of ["createStartedAt", "createdAt"] as const) {
+      const time = optionalTime(m, key, "journal.accessLoginMethod");
+      if (time !== undefined) method[key] = time;
+    }
+    journal.accessLoginMethod = method;
+  }
   if (j.accepted !== undefined) {
     const a = object(j.accepted, "journal.accepted");
     const status = BootstrapStatus.safeParse(a.status);

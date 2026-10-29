@@ -9,12 +9,15 @@
 // which hold no secret, are written next to the checked-in ones under a name unique to the run,
 // mode 0600, and removed after the deploy.
 //
-// What it never does: create, change or delete an Access application, policy or service
-// token; send a request to the installation's hostname; create a Worker by a secret change;
-// delete or empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the
-// plan, and the installation's own R2 user API tokens (r2-token.ts, through `cf user tokens`),
-// which it also deletes where Cloudflare allows, and reads by ID to see whether a person has
-// deleted one; it never touches another token. A token's value comes back on
+// What it never does: change an Access application, create or change a policy or service token;
+// send a request to the installation's hostname; create a Worker by a secret change; delete or
+// empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the plan; the
+// installation's own R2 user API tokens (r2-token.ts, through `cf user tokens`), which it also
+// deletes where Cloudflare allows, and reads by ID to see whether a person has deleted one; it
+// never touches another token; and, in the installer's own account (cfAccessApi, WP3.31), the
+// hostname's owner-only Access application when the hostname has none, and the one-time PIN
+// login method when the account has no login method (access-app.ts). Removal deletes only the
+// application the state file records as the bootstrap's. A token's value comes back on
 // cf's captured stdout and never leaves this process except as the Worker's secrets, on
 // descriptor 3. The release goes through `cf workers secrets bulk` (`PATCH …/secrets-bulk`),
 // which fails for a missing Worker, where `wrangler secret bulk` would create a draft one.
@@ -36,6 +39,7 @@ import {
   wranglerCli,
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
+import { type AccessApi, AccessUnavailable, type IdentityProvider } from "./access-app.ts";
 import type { BootstrapCloud, WorkerIdentity } from "./machine.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
@@ -491,5 +495,139 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
     updateSecrets: async (worker, changes, notAfter) => bulkSecrets(run, worker, changes, notAfter),
     activeVersion: async (worker) => activeVersion(run, worker),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
+  };
+}
+
+/** Whether cf's failure says the Access application does not exist (404, Access's 11021). */
+function accessAppMissing(result: CommandResult): boolean {
+  return /\[11021\]/.test(result.stderr) || /\b404 Not Found\b/.test(result.stderr);
+}
+
+/** An Access command's JSON answer; a 403 is AccessUnavailable. */
+function accessCf(run: Runner, args: readonly string[]): unknown {
+  const result = run("cf", args, { inherit: false });
+  if (result.status !== 0 && forbidden(result)) {
+    throw new AccessUnavailable(
+      `Cloudflare refused \`cf ${args.slice(0, 4).join(" ")}\` (403): this cf login may not do that`,
+    );
+  }
+  return cfAnswer(result, args);
+}
+
+/** At most this many pages of 100 Access applications are read for one hostname. */
+const MAX_ACCESS_PAGES = 10;
+
+/**
+ * Access in the installer's own account through their `cf` login (WP3.25's OAuth login holds
+ * `access-app.write` and `access-idp.write`). Creates only what access-app.ts asks for: an
+ * owner-only application, the one-time PIN login method; deletes only for removal. Answers are
+ * captured, never shown; errors carry cf's first line of error output, masked.
+ */
+export function cfAccessApi(run: Runner): AccessApi {
+  return {
+    teamDomain: () => {
+      const args = ["zero-trust", "organization", "get"];
+      const result = run("cf", args, { inherit: false });
+      // No organization: Cloudflare answers 404, or an organization without a domain.
+      if (result.status !== 0 && /\b404 Not Found\b/.test(result.stderr)) return undefined;
+      const org = cfAnswer(result, args) as { auth_domain?: unknown } | null;
+      const domain = org?.auth_domain;
+      return typeof domain === "string" && domain !== "" ? domain : undefined;
+    },
+    appsOn: (hostname) => {
+      const apps: unknown[] = [];
+      for (let page = 1; page <= MAX_ACCESS_PAGES; page++) {
+        const listed = accessCf(run, [
+          "zero-trust",
+          "access",
+          "applications",
+          "list",
+          "--domain",
+          hostname,
+          "--exact",
+          "--per-page",
+          "100",
+          "--page",
+          String(page),
+        ]);
+        const entries = Array.isArray(listed) ? listed : [];
+        apps.push(...entries);
+        if (entries.length < 100) return apps;
+      }
+      throw new Error(
+        `more than ${MAX_ACCESS_PAGES * 100} Access applications listed for ${hostname}`,
+      );
+    },
+    app: (id) => {
+      const args = ["zero-trust", "access", "applications", "get", id];
+      const result = run("cf", args, { inherit: false });
+      if (result.status !== 0 && accessAppMissing(result)) return undefined;
+      if (result.status !== 0 && forbidden(result)) {
+        throw new AccessUnavailable(
+          "Cloudflare refused `cf zero-trust access applications get` (403)",
+        );
+      }
+      const app = cfAnswer(result, args);
+      if (app === null || typeof app !== "object") {
+        throw new Error("cf zero-trust access applications get answered without an application");
+      }
+      return app;
+    },
+    create: (body) => {
+      const answer = accessCf(run, [
+        "zero-trust",
+        "access",
+        "applications",
+        "create",
+        "--body",
+        JSON.stringify(body),
+      ]) as { id?: unknown } | null;
+      if (typeof answer?.id !== "string" || answer.id === "") {
+        throw new Error("cf zero-trust access applications create answered without an ID");
+      }
+      return answer.id;
+    },
+    identityProviders: () => {
+      const listed = accessCf(run, [
+        "zero-trust",
+        "identity-providers",
+        "list",
+        "--per-page",
+        "100",
+      ]);
+      return (Array.isArray(listed) ? listed : []).flatMap((entry: unknown): IdentityProvider[] => {
+        const p = (entry ?? {}) as { id?: unknown; type?: unknown };
+        return typeof p.id === "string" && typeof p.type === "string"
+          ? [{ id: p.id, type: p.type }]
+          : [];
+      });
+    },
+    createOneTimePin: () => {
+      const answer = accessCf(run, [
+        "zero-trust",
+        "identity-providers",
+        "create",
+        "--body",
+        JSON.stringify({ name: "One-time PIN", type: "onetimepin", config: {} }),
+      ]) as { id?: unknown } | null;
+      if (typeof answer?.id !== "string" || answer.id === "") {
+        throw new Error("cf zero-trust identity-providers create answered without an ID");
+      }
+      return answer.id;
+    },
+    remove: (id) => {
+      const args = ["zero-trust", "access", "applications", "delete", id, "--force"];
+      const result = run("cf", args, { inherit: false });
+      if (result.status === 0) return "deleted";
+      if (accessAppMissing(result)) return "absent";
+      if (forbidden(result)) {
+        throw new AccessUnavailable(
+          "Cloudflare refused `cf zero-trust access applications delete` (403)",
+        );
+      }
+      throw new Error(
+        `cf zero-trust access applications delete failed: ${diagnostic(result.stderr)}`,
+      );
+    },
   };
 }
