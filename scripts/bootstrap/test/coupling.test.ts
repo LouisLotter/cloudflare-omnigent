@@ -182,6 +182,8 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "cloud.ts",
       "events.ts",
       "machine.ts",
+      "password.ts",
+      "preflight.ts",
       "r2-token.ts",
       "remove.ts",
       "settings.ts",
@@ -241,7 +243,7 @@ describe("the bootstrap never talks to the installation, changes Access or makes
     expect(cloud.match(/"applications",\s*"create"/g)).toHaveLength(1);
     const app = sources.find(([f]) => f === "access-app.ts")?.[1] ?? "";
     expect(app.match(/api\.create\(/g)).toHaveLength(1);
-    expect(app).toMatch(/api\.create\(ownerOnlyAppBody\(/);
+    expect(app).toMatch(/api\.create\(\s*ownerOnlyAppBody\(/);
     expect(app).not.toMatch(/api\.remove\(/);
   });
 });

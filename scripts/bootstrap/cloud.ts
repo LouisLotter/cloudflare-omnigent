@@ -41,6 +41,7 @@ import {
 import { ownerOnlyAccess } from "./access.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "./access-app.ts";
 import type { BootstrapCloud, WorkerIdentity } from "./machine.ts";
+import type { PreflightApi } from "./preflight.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
 
@@ -629,5 +630,33 @@ export function cfAccessApi(run: Runner): AccessApi {
         `cf zero-trust access applications delete failed: ${diagnostic(result.stderr)}`,
       );
     },
+  };
+}
+
+/**
+ * The preflight's reads (preflight.ts) through the installer's `cf` login: subscriptions, R2,
+ * zones and the Zero Trust organization. Read-only; errors carry cf's first line, masked.
+ */
+export function cfPreflightApi(run: Runner): PreflightApi {
+  return {
+    subscriptions: () => {
+      const listed = cfJson(run, ["accounts", "subscriptions", "get"]);
+      if (!Array.isArray(listed)) throw new Error("cf accounts subscriptions get answered no list");
+      return listed;
+    },
+    r2Enabled: () => {
+      const args = ["r2", "buckets", "list", "--per-page", "1"];
+      const result = run("cf", args, { inherit: false });
+      if (result.status === 0) return true;
+      // "Please enable R2 through the Cloudflare Dashboard."
+      if (/\[10042\]/.test(result.stderr)) return false;
+      throw new Error(`cf r2 buckets list failed: ${diagnostic(result.stderr)}`);
+    },
+    // cf 1.0.0-beta.18 ignores dotted filters such as --account.id: the caller filters.
+    zones: (name) => {
+      const listed = cfJson(run, ["zones", "list", "--name", name]);
+      return Array.isArray(listed) ? listed : [];
+    },
+    teamDomain: () => cfAccessApi(run).teamDomain(),
   };
 }

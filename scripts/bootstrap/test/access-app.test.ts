@@ -368,6 +368,77 @@ describe("ensureOwnerAccess: the application it created, later", () => {
   });
 });
 
+describe("ensureOwnerAccess: Cloudflare misbehaving", () => {
+  it("stops when the application is not there right after its create, and keeps it recorded", async () => {
+    const u = await unit();
+    u.world.before = { call: "accessGet", nth: 1, run: () => u.world.accessApps.clear() };
+    await expect(u.ensure()).rejects.toThrow(
+      'the Access application "cloudflare-omnigent-web--0a1b2c3d" is not there after its create; run again',
+    );
+    expect(u.records.app?.id).toBeDefined();
+    // The next run finds it gone and creates it again.
+    await u.ensure();
+    expect(u.world.accessApps.size).toBe(1);
+  });
+
+  it("an intent without a readable start time is resolved at once, never waited on", async () => {
+    const u = await unit();
+    u.records = { app: { name: "cloudflare-omnigent-web--99999999" } };
+    await u.ensure();
+    expect(u.slept).toEqual([]);
+    expect(u.records.app?.name).toBe("cloudflare-omnigent-web--0a1b2c3d");
+  });
+
+  it("never names an unnamed application by anything but that", async () => {
+    const u = await unit();
+    u.world.addAccessApp(theirs({ name: undefined, type: "saas" }));
+    await expect(u.ensure()).rejects.toThrow(/the Access application "unnamed" on/);
+  });
+
+  it("passes on errors that are not refusals: a failed listing, a failed create", async () => {
+    const u = await unit();
+    const api = u.world.accessApi();
+    await expect(
+      u.ensure({
+        api: {
+          ...api,
+          identityProviders: () => {
+            throw new Error("cf zero-trust identity-providers failed: timeout");
+          },
+        },
+      }),
+    ).rejects.toThrow(/timeout/);
+    await expect(
+      u.ensure({
+        api: {
+          ...api,
+          create: () => {
+            throw new Error("cf zero-trust access applications failed: timeout");
+          },
+        },
+      }),
+    ).rejects.toThrow(/timeout/);
+    // A create that failed otherwise may still land: its intent stays.
+    expect(u.records.app?.createStartedAt).toBeDefined();
+    const login = await unit();
+    login.world.loginMethods = [];
+    const loginApi = login.world.accessApi();
+    await expect(
+      login.ensure({
+        api: {
+          ...loginApi,
+          createOneTimePin: () => {
+            throw new Error("cf zero-trust identity-providers failed: timeout");
+          },
+        },
+      }),
+    ).rejects.toThrow(/timeout/);
+    await expect(
+      (await unit()).ensure({ plan: { ...(await accountPlan()), ownerPin: "broken" } }),
+    ).rejects.toThrow("the plan's owner pin is malformed");
+  });
+});
+
 describe("ensureOwnerAccess: a create whose answer was lost", () => {
   it("adopts the application that landed, by the create's name, without waiting", async () => {
     const u = await unit();

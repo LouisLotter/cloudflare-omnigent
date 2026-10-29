@@ -198,8 +198,13 @@ export interface RunContext {
     readonly platform: Readonly<Record<string, unknown>>;
     readonly web: Readonly<Record<string, unknown>>;
   };
-  /** The installer's secrets; called only when one of them must be uploaded. */
-  readonly secrets: () => SuppliedSecrets;
+  /**
+   * The installer's secrets; called only when one of them must be uploaded, and told whether
+   * the owner's password is among them (the CLI then generates it, or asks for it).
+   */
+  readonly secrets: (need: {
+    readonly password: boolean;
+  }) => SuppliedSecrets | Promise<SuppliedSecrets>;
   /**
    * The installer's user API tokens, through their `cf` login: the R2 credentials are made
    * with it when the installer supplied none. Without it, they must be supplied.
@@ -442,7 +447,9 @@ export async function runBootstrap(
     const present = secrets ?? new Set<string>();
     const lacksR2 = r2SecretNames(plan).some((name) => !present.has(name));
     const needsInstaller = !present.has(PASSWORD_SECRET) || lacksR2;
-    const given = needsInstaller ? ctx.secrets() : {};
+    const given = needsInstaller
+      ? await ctx.secrets({ password: !present.has(PASSWORD_SECRET) })
+      : {};
     // The bootstrap makes the R2 token itself unless the installer gave one's values. Without
     // the installer's token API, missing values are named as any missing secret is.
     const makesToken = lacksR2 && ctx.r2Tokens !== undefined && !suppliesR2(plan, given);

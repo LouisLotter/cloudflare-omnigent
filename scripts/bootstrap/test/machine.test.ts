@@ -65,6 +65,8 @@ interface Harness {
   readonly store: MemoryStore;
   readonly lines: string[];
   asked: number;
+  /** For each read of the installer's secrets: whether the owner's password was needed. */
+  readonly needs: boolean[];
   run(options?: Partial<RunOptions>): ReturnType<typeof runBootstrap>;
 }
 
@@ -89,13 +91,15 @@ function harness(
     store,
     lines: [],
     asked: 0,
+    needs: [],
     run: (options = {}) => {
       const ctx: RunContext = {
         cloud: world.cloud(),
         store,
         baseConfigs: BASE,
-        secrets: () => {
+        secrets: (need) => {
           h.asked++;
+          h.needs.push(need.password);
           return r2.tokens
             ? { ownerPassword: OWNER_PASSWORD }
             : {
@@ -663,8 +667,10 @@ describe("runBootstrap: Cloudflare misbehaving", () => {
     expect(h.asked).toBe(1);
     h.world.dropOnDeploy = [];
     expect(await h.run()).toEqual({ kind: "done" });
-    // The password and the replica's pair are held: only the artifacts' half was missing.
+    // The password and the replica's pair are held: only the artifacts' half was missing, so
+    // the second read says the password is not needed (nothing is generated or asked for).
     expect(h.asked).toBe(2);
+    expect(h.needs).toEqual([true, false]);
     expect(h.world.secretsOf(h.world.plan.platformWorker)?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(
       REPLICA_SECRET,
     );
