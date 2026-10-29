@@ -312,14 +312,11 @@ export class FakeWorld {
       this.#leave(name, n);
       return result;
     };
-    // cf's --domain … --exact: the applications on exactly the hostname, any path.
-    const on = (app: Record<string, unknown>, host: string) =>
-      typeof app.domain === "string" && (app.domain === host || app.domain.startsWith(`${host}/`));
     return {
       teamDomain: () => call("accessOrg", false, () => this.teamDomain),
-      appsOn: (host) =>
+      apps: () =>
         call("accessList", false, () =>
-          [...this.accessApps.values()].filter((a) => on(a, host)).map((a) => structuredClone(a)),
+          [...this.accessApps.values()].map((a) => structuredClone(a)),
         ),
       app: (id) => call("accessGet", false, () => structuredClone(this.accessApps.get(id))),
       create: (body) =>

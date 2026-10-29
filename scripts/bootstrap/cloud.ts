@@ -515,8 +515,8 @@ function accessCf(run: Runner, args: readonly string[]): unknown {
   return cfAnswer(result, args);
 }
 
-/** At most this many pages of 100 Access applications are read for one hostname. */
-const MAX_ACCESS_PAGES = 10;
+/** At most this many pages of 100 Access applications are read. */
+const MAX_ACCESS_PAGES = 20;
 
 /**
  * Access in the installer's own account through their `cf` login (WP3.25's OAuth login holds
@@ -535,7 +535,9 @@ export function cfAccessApi(run: Runner): AccessApi {
       const domain = org?.auth_domain;
       return typeof domain === "string" && domain !== "" ? domain : undefined;
     },
-    appsOn: (hostname) => {
+    // Every application, filtered by the caller: cf's --domain filter with --exact matches the
+    // string exactly, and would miss one on a path of the hostname or behind a wildcard.
+    apps: () => {
       const apps: unknown[] = [];
       for (let page = 1; page <= MAX_ACCESS_PAGES; page++) {
         const listed = accessCf(run, [
@@ -543,20 +545,19 @@ export function cfAccessApi(run: Runner): AccessApi {
           "access",
           "applications",
           "list",
-          "--domain",
-          hostname,
-          "--exact",
           "--per-page",
           "100",
           "--page",
           String(page),
         ]);
-        const entries = Array.isArray(listed) ? listed : [];
-        apps.push(...entries);
-        if (entries.length < 100) return apps;
+        if (!Array.isArray(listed)) {
+          throw new Error("cf zero-trust access applications list answered no list");
+        }
+        apps.push(...listed);
+        if (listed.length < 100) return apps;
       }
       throw new Error(
-        `more than ${MAX_ACCESS_PAGES * 100} Access applications listed for ${hostname}`,
+        `more than ${MAX_ACCESS_PAGES * 100} Access applications in the account: too many to check`,
       );
     },
     app: (id) => {

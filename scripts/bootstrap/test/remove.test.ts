@@ -410,12 +410,13 @@ describe("remove-access: the Access application this installation created (WP3.3
       },
     });
     const lines: string[] = [];
-    const remove = (o: { exists?: boolean; force?: boolean } = {}) =>
+    const remove = (o: { exists?: boolean; force?: boolean; now?: number } = {}) =>
       removeInstallationAccess({
         store,
         api: world.accessApi(),
         webWorkerExists: () => o.exists ?? false,
         force: o.force ?? false,
+        now: () => o.now ?? Date.parse("2026-10-29T13:00:00.000Z"),
         log: (line) => lines.push(line),
       });
     return { world, store, lines, remove, id, theirs, name };
@@ -465,6 +466,14 @@ describe("remove-access: the Access application this installation created (WP3.3
     expect(c.world.accessApps.has(c.id)).toBe(false);
     const none = await created(false);
     none.world.accessApps.delete(none.id);
+    // Within the settle time it may still land: kept, and named (Codex r1-2).
+    const sent = Date.parse("2026-10-29T12:00:00.000Z");
+    expect(none.remove({ now: sent + 60_000 })).toBe(none.name);
+    expect(none.store.state.journal.accessApp?.createStartedAt).toBeDefined();
+    expect(none.lines).toEqual([
+      `the Access application "${none.name}" was being created when a run stopped, and may still appear until 2026-10-29T12:05:00.000Z: run this again after that`,
+    ]);
+    none.lines.length = 0;
     expect(none.remove()).toBeUndefined();
     expect(none.lines).toEqual([
       `the Access application "${none.name}" was never seen after its create, and is not there now: nothing to delete`,
@@ -486,6 +495,7 @@ describe("remove-access: the Access application this installation created (WP3.3
         api: world.accessApi(),
         webWorkerExists: () => true,
         force: false,
+        now: () => 0,
         log: (line) => lines.push(line),
       }),
     ).toBeUndefined();
@@ -493,4 +503,30 @@ describe("remove-access: the Access application this installation created (WP3.3
     expect(world.calls).toEqual([]);
     expect(lines[0]).toMatch(/^no Access application is recorded as this installation's/);
   });
+});
+
+it("remove-access deletes a late create that landed within the settle time, by its name", async () => {
+  const plan = await accountPlan();
+  const world = new FakeWorld(plan);
+  const name = "cloudflare-omnigent-web--0a1b2c3d";
+  const store = new MemoryStore({
+    stateVersion: 1,
+    installation: plan,
+    journal: { accessApp: { name, createStartedAt: new Date(world.now).toISOString() } },
+  });
+  const options = {
+    store,
+    api: world.accessApi(),
+    webWorkerExists: () => false,
+    force: false,
+    now: () => world.now,
+    log: () => {},
+  };
+  expect(removeInstallationAccess(options)).toBe(name);
+  // It lands; the next removal finds it by its name and deletes it.
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  world.now += 60_000;
+  expect(removeInstallationAccess(options)).toBeUndefined();
+  expect(world.accessApps.size).toBe(0);
+  expect(store.state.journal.accessApp).toBeUndefined();
 });

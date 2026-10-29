@@ -314,6 +314,57 @@ describe("ensureOwnerAccess: an application someone else made", () => {
   });
 });
 
+describe("ensureOwnerAccess: what covers the hostname, from every application (Codex r1-1)", () => {
+  it("refuses a bypass on a path of the hostname beside an owner-only application", async () => {
+    const u = await unit();
+    u.world.addAccessApp(theirs());
+    u.world.addAccessApp({
+      type: "self_hosted",
+      name: "admin bypass",
+      domain: `${HOST}/admin`,
+      policies: [{ decision: "bypass", include: [{ everyone: {} }] }],
+    });
+    await expect(u.ensure()).rejects.toThrow(
+      `2 Access applications cover ${HOST} ("my omnigent", "admin bypass")`,
+    );
+    // Beside the application this installation created, too.
+    const ours = await unit();
+    await ours.ensure();
+    ours.world.addAccessApp({
+      type: "self_hosted",
+      name: "admin bypass",
+      domain: "elsewhere.example.test",
+      destinations: [{ type: "public", uri: `${HOST}/admin` }],
+      policies: [{ decision: "bypass", include: [{ everyone: {} }] }],
+    });
+    await expect(ours.ensure()).rejects.toThrow(
+      /another covers omnigent\.example\.test \("admin bypass"\)/,
+    );
+  });
+
+  it("ignores other hostnames, and names a wildcard that also covers it without refusing", async () => {
+    const u = await unit();
+    u.world.addAccessApp(theirs({ name: "other", domain: "other.example.test" }));
+    u.world.addAccessApp(theirs({ name: "suffix", domain: `x${HOST}` }));
+    u.world.addAccessApp(theirs({ name: "deeper", domain: `*.${HOST}` }));
+    u.world.addAccessApp({ type: "self_hosted", name: "catch-all", domain: "*.example.test" });
+    await u.ensure();
+    expect(u.world.accessApps.size).toBe(5);
+    expect(u.lines.at(-1)).toBe(
+      `"catch-all" also covers ${HOST} through a wildcard; if Access applies it to a path instead of this installation's application, the owner is kept out there (no one else is let in)`,
+    );
+    // Someone else's owner-only application, with the same note.
+    const theirsToo = await unit();
+    theirsToo.world.addAccessApp(theirs());
+    theirsToo.world.addAccessApp({ type: "self_hosted", name: "a", domain: "omni*.example.test" });
+    theirsToo.world.addAccessApp({ type: "self_hosted", name: "b", domain: "*.example.test/x" });
+    await theirsToo.ensure({ ownerEmail: undefined });
+    expect(theirsToo.lines.at(-1)).toMatch(
+      /^"a", "b" also cover omnigent\.example\.test through a wildcard/,
+    );
+  });
+});
+
 describe("ensureOwnerAccess: the application it created, later", () => {
   it("creates it again when a person deleted it (the web Worker is not deployed yet)", async () => {
     const u = await unit();

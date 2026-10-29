@@ -225,18 +225,49 @@ export function ownerOnlyProblems(app: unknown, check: OwnerOnlyCheck): AccessPr
   return problems;
 }
 
-/** Whether `app` covers `hostname`: on its domain, or one of its destinations, with any path. */
-export function coversHostname(app: unknown, hostname: string): boolean {
+/** Every name an application protects: its domain, its self-hosted domains, its destinations. */
+function namesOf(app: unknown): string[] {
   const a = record(app);
-  if (a === undefined) return false;
+  if (a === undefined) return [];
   const names: unknown[] = [
     a.domain,
     ...(Array.isArray(a.self_hosted_domains) ? a.self_hosted_domains : []),
     ...(Array.isArray(a.destinations) ? a.destinations.map((d: unknown) => record(d)?.uri) : []),
   ];
-  return names.some(
-    (name) => typeof name === "string" && (name === hostname || name.startsWith(`${hostname}/`)),
-  );
+  return names.flatMap((name) => (typeof name === "string" && name !== "" ? [name] : []));
+}
+
+/** A name's host, lower case: what comes before its path. */
+function hostOf(name: string): string {
+  return (name.split("/")[0] ?? "").toLowerCase();
+}
+
+/**
+ * Whether `app` covers exactly `hostname`, at its root or at a path under it: on its domain or
+ * on one of its destinations. Such an application decides for the hostname, or for part of it
+ * (Access applies the more specific path first).
+ */
+export function coversHostname(app: unknown, hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return namesOf(app).some((name) => hostOf(name) === host);
+}
+
+/**
+ * Whether one of `app`'s names covers `hostname` only through a wildcard in its host, as Access
+ * matches them: a `*` matches within one label, never across a dot (Access, "Application
+ * paths"). The web Worker admits only sign-ins through the hostname's own application (its AUD),
+ * so such an application can keep the owner out, but never let anyone else in.
+ */
+export function wildcardCovers(app: unknown, hostname: string): boolean {
+  const labels = hostname.toLowerCase().split(".");
+  return namesOf(app).some((name) => {
+    const pattern = hostOf(name).split(".");
+    if (!hostOf(name).includes("*") || pattern.length !== labels.length) return false;
+    return pattern.every((label, i) => {
+      const regex = label.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^.]*");
+      return new RegExp(`^${regex}$`).test(labels[i] ?? "");
+    });
+  });
 }
 
 /** A refusal's text: what differs, and how to fix it, in the Zero Trust dashboard. */

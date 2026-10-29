@@ -7,6 +7,7 @@ import {
   ownerOnlyAccess,
   ownerOnlyAppBody,
   ownerOnlyProblems,
+  wildcardCovers,
 } from "../access.ts";
 import { OWNER_EMAIL, ownerPin } from "./fixtures.ts";
 
@@ -217,6 +218,25 @@ describe("the shared builder and check (staging tool and bootstrap, WP3.31)", ()
     expect(coversHostname("nothing", HOST)).toBe(false);
     expect(coversHostname(app({ domain: undefined, destinations: [null, { uri: 7 }] }), HOST)).toBe(
       false,
+    );
+  });
+
+  it("matches wildcards as Access does: within one label, never across a dot", () => {
+    const covers = (domain: string, host = "omnigent.example.test") =>
+      wildcardCovers({ domain }, host);
+    expect(covers("*.example.test")).toBe(true);
+    expect(covers("*.example.test/admin")).toBe(true);
+    expect(covers("omni*.example.test")).toBe(true);
+    expect(covers("*gent.example.test")).toBe(true);
+    expect(covers("*.*.test")).toBe(true);
+    expect(covers("*.test")).toBe(false);
+    expect(covers("*.omnigent.example.test")).toBe(false);
+    expect(covers("*.other.test")).toBe(false);
+    expect(covers("omnigent.example.test")).toBe(false);
+    expect(covers("o+*.example.test")).toBe(false);
+    expect(covers("*.EXAMPLE.test", "Omnigent.example.test")).toBe(true);
+    expect(coversHostname({ domain: "OMNIGENT.example.test/x" }, "omnigent.example.test")).toBe(
+      true,
     );
   });
 

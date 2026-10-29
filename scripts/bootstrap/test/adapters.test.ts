@@ -405,30 +405,32 @@ describe("cfAccessApi: Access in the installer's account through cf (WP3.31)", (
     expect(fake.calls.every((c) => c.command === "cf" && c.options.inherit === false)).toBe(true);
   });
 
-  it("lists the hostname's applications page by page", () => {
+  it("lists every application in the account page by page, never a filtered listing (Codex r1-1)", () => {
     const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `app-${i}` }));
     const answers = [page(100), page(3)];
     const fake = fakeRunner(() => ({ stdout: JSON.stringify(answers.shift() ?? []) }));
-    expect(cfAccessApi(fake.runner).appsOn("omnigent.example.test")).toHaveLength(103);
+    expect(cfAccessApi(fake.runner).apps()).toHaveLength(103);
     expect(fake.calls.map((c) => c.args)).toEqual(
       [1, 2].map((n) => [
         "zero-trust",
         "access",
         "applications",
         "list",
-        "--domain",
-        "omnigent.example.test",
-        "--exact",
         "--per-page",
         "100",
         "--page",
         String(n),
       ]),
     );
-    const endless = fakeRunner(() => ({ stdout: JSON.stringify(page(100)) }));
-    expect(() => cfAccessApi(endless.runner).appsOn("omnigent.example.test")).toThrow(
-      /more than 1000 Access applications/,
+    expect(fake.calls.some((c) => c.args.includes("--domain") || c.args.includes("--exact"))).toBe(
+      false,
     );
+    const endless = fakeRunner(() => ({ stdout: JSON.stringify(page(100)) }));
+    expect(() => cfAccessApi(endless.runner).apps()).toThrow(
+      /more than 2000 Access applications in the account: too many to check/,
+    );
+    const odd = fakeRunner(() => ({ stdout: JSON.stringify({ result: { not: "a list" } }) }));
+    expect(() => cfAccessApi(odd.runner).apps()).toThrow(/answered no list/);
   });
 
   it("reads one application by its ID: gone (404), refused (403) or broken are told apart", () => {

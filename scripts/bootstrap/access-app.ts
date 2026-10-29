@@ -33,6 +33,7 @@ import {
   ownerOnlyAppBody,
   ownerOnlyProblems,
   pinCheck,
+  wildcardCovers,
   ZERO_TRUST_DASHBOARD,
 } from "./access.ts";
 import type { AccessSettings, Installation } from "./settings.ts";
@@ -47,8 +48,11 @@ export interface IdentityProvider {
 export interface AccessApi {
   /** The Zero Trust organization's team domain, or undefined when the account has none. */
   teamDomain(): string | undefined;
-  /** The Access applications Cloudflare lists for the hostname, as listed. */
-  appsOn(hostname: string): unknown[];
+  /**
+   * Every Access application in the account, as listed: a filtered listing (`--domain …
+   * --exact`) misses one on a path of the hostname or behind a wildcard (Codex WP3.31 r1-1).
+   */
+  apps(): unknown[];
   /** One application by its ID, or undefined when it does not exist. */
   app(id: string): unknown;
   /** Creates an application and returns its ID. A refusal (403) is AccessUnavailable. */
@@ -147,7 +151,18 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
   if (pin === undefined) throw new Error("the plan's owner pin is malformed");
   const teamDomain = api.teamDomain();
   if (teamDomain === undefined) throw new AccessRefusal(noOrganizationStep());
-  const covering = () => api.appsOn(host).filter((app) => coversHostname(app, host));
+  const covering = () => api.apps().filter((app) => coversHostname(app, host));
+  // Applications that reach the hostname only through a wildcard are named, never refused: the
+  // web Worker admits only sign-ins through the hostname's own application (its AUD), so they
+  // can keep the owner out on some paths but cannot let anyone else in.
+  const noteWildcards = (all: readonly unknown[]) => {
+    const wild = all.filter((a) => wildcardCovers(a, host) && !coversHostname(a, host));
+    if (wild.length > 0) {
+      ctx.log(
+        `${quoted(wild)} also ${wild.length === 1 ? "covers" : "cover"} ${host} through a wildcard; if Access applies ${wild.length === 1 ? "it" : "them"} to a path instead of this installation's application, the owner is kept out there (no one else is let in)`,
+      );
+    }
+  };
   const setApp = (app: RecordedAccessApp | undefined) => {
     const { loginMethod } = ctx.recorded();
     ctx.record({
@@ -172,12 +187,16 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
         ),
       );
     }
-    const others = covering().filter((a) => field(a, "id") !== recorded.id);
+    const all = api.apps();
+    const others = all
+      .filter((a) => coversHostname(a, host))
+      .filter((a) => field(a, "id") !== recorded.id);
     if (others.length > 0) {
       throw new AccessRefusal(
         `besides this installation's Access application "${recorded.name}", ${others.length === 1 ? "another covers" : `${others.length} others cover`} ${host} (${quoted(others)}) and could decide instead of it: delete ${others.length === 1 ? "it" : "them"} in ${ZERO_TRUST_DASHBOARD}, Access, Applications, then run again`,
       );
     }
+    noteWildcards(all);
     return settings(app);
   };
 
@@ -227,7 +246,8 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
   }
 
   // 3. Nothing of this installation's: someone else's application, used only as it is.
-  const listed = covering();
+  const all = api.apps();
+  const listed = all.filter((app) => coversHostname(app, host));
   if (listed.length > 1) {
     throw new AccessRefusal(
       `${listed.length} Access applications cover ${host} (${quoted(listed)}), which the bootstrap did not create: keep exactly one, owner-only, or delete them all and run again, and the bootstrap creates it (${ZERO_TRUST_DASHBOARD}, Access, Applications)`,
@@ -248,6 +268,7 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
     ctx.log(
       `using the owner-only Access application ${quoted([theirs])} already on ${host}; the bootstrap did not create it and leaves it alone`,
     );
+    noteWildcards(all);
     return settings(theirs);
   }
 

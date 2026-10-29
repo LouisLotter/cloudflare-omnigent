@@ -571,6 +571,7 @@ function removeAccess(path: string, yes: boolean): number {
         // Any Worker of that name, whichever installation it says it is.
         webWorkerExists: () => workerInstallation(runner, plan.webWorker).exists,
         force: yes,
+        now: () => Date.now(),
         log: (message) => console.log(`bootstrap: ${message}`),
       });
       return left === undefined ? 0 : 1;

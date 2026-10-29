@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { InstallationId } from "../../contracts/src/index.ts";
 import { acquireLock } from "../staging/lock.ts";
 import { ZERO_TRUST_DASHBOARD } from "./access.ts";
-import { type AccessApi, AccessUnavailable } from "./access-app.ts";
+import { ACCESS_SETTLE_MS, type AccessApi, AccessUnavailable } from "./access-app.ts";
 import type { BootstrapState, StateStore } from "./machine.ts";
 import {
   type ApiToken,
@@ -131,6 +131,7 @@ export interface RemoveAccessOptions {
   readonly webWorkerExists: () => boolean;
   /** Delete it even so (the installer said --yes). */
   readonly force: boolean;
+  readonly now: () => number;
   readonly log: (message: string) => void;
 }
 
@@ -153,13 +154,12 @@ export function removeInstallationAccess(options: RemoveAccessOptions): string |
       `a Worker named ${plan.webWorker} still exists, and the Access application "${recorded.name}" keeps everyone but the owner away from it; remove the installation's Workers first, or pass --yes`,
     );
   }
-  // A create never answered: what it made carries its name.
+  // A create never answered: what it made carries its name, and may still land until the settle
+  // time has passed since it was sent (Codex WP3.31 r1-2).
   const id =
     recorded.id ??
     (
-      options.api
-        .appsOn(plan.hostname)
-        .find((a) => (a as { name?: unknown } | null)?.name === recorded.name) as
+      options.api.apps().find((a) => (a as { name?: unknown } | null)?.name === recorded.name) as
         | { id?: unknown }
         | undefined
     )?.id;
@@ -168,6 +168,13 @@ export function removeInstallationAccess(options: RemoveAccessOptions): string |
     options.store.save({ ...options.store.load(), journal });
   };
   if (typeof id !== "string") {
+    const sent = Date.parse(recorded.createStartedAt ?? "");
+    if (Number.isFinite(sent) && options.now() - sent < ACCESS_SETTLE_MS) {
+      options.log(
+        `the Access application "${recorded.name}" was being created when a run stopped, and may still appear until ${new Date(sent + ACCESS_SETTLE_MS).toISOString()}: run this again after that`,
+      );
+      return recorded.name;
+    }
     options.log(
       `the Access application "${recorded.name}" was never seen after its create, and is not there now: nothing to delete`,
     );
