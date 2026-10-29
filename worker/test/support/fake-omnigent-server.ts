@@ -8,6 +8,9 @@
  * - `outages` returns the records a test added that overlap the range, oldest first, by the
  *   contract's own `outageOverlaps` rule, so the fake and WP2.2 cannot disagree on it.
  * - `bootstrapStatus` returns what a test set, null by default; `ensureStarted` counts calls.
+ * - `ownerPassword` (WP3.34) parses its call with the contract, records it without the password
+ *   (`passwordCalls`), and answers `passwordState` for `state` and the next queued `set` outcome,
+ *   else "done".
  * - Every RPC call checks its interface version as OmnigentServer does: a newer one is refused
  *   with `unsupported_version`.
  * - `unconfirmedResponse` builds the server image's 424 for a path, in the body shape that
@@ -20,6 +23,8 @@ import {
   DURABILITY_UNCONFIRMED_STATUS,
   durabilityBodyShape,
   OutageRecord,
+  OwnerPasswordCall,
+  type OwnerPasswordResult,
   outageOverlaps,
   type ReplicationHealth,
 } from "@cfo/contracts";
@@ -89,6 +94,46 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
   async ensureStarted(call: OmnigentServerCall): Promise<void> {
     checkVersion(call);
     this.ensured += 1;
+  }
+
+  /** What `ownerPassword`'s `state` answers, apart from the intent token. */
+  passwordState: { state: "unchosen" | "chosen"; username: string | null } = {
+    state: "unchosen",
+    username: "owner",
+  };
+  /** The intent token `state` gives and `set` expects. */
+  intentToken = "7".repeat(64);
+  /** Each call's action, owner session and password length: never the password itself. */
+  readonly passwordCalls: { action: string; sessionId: string; passwordLength?: number }[] = [];
+  /** The answers for the next `set` calls, in order; then "done". */
+  readonly setOutcomes: OwnerPasswordResult[] = [];
+  /** Makes the next `ownerPassword` call throw, as an object on an older build does. */
+  failNextPasswordCall = false;
+
+  async ownerPassword(raw: OwnerPasswordCall): Promise<OwnerPasswordResult> {
+    if (this.failNextPasswordCall) {
+      this.failNextPasswordCall = false;
+      throw new TypeError('The RPC receiver does not implement the method "ownerPassword".');
+    }
+    const call = OwnerPasswordCall.parse(raw);
+    checkVersion(call);
+    if (call.action === "state") {
+      this.passwordCalls.push({ action: "state", sessionId: call.owner.sessionId });
+      return { action: "state", ...this.passwordState, intentToken: this.intentToken };
+    }
+    this.passwordCalls.push({
+      action: "set",
+      sessionId: call.owner.sessionId,
+      passwordLength: [...call.password].length,
+    });
+    if (call.intent !== this.intentToken) {
+      return { action: "set", outcome: "refused", reason: "intent" };
+    }
+    const outcome = this.setOutcomes.shift() ?? { action: "set", outcome: "done" };
+    if (outcome.action === "set" && outcome.outcome === "done") {
+      this.passwordState = { ...this.passwordState, state: "chosen" };
+    }
+    return outcome;
   }
 }
 
