@@ -7,7 +7,8 @@
 // Each of them is a payment, a purchase or a plan choice, so nothing here creates anything: a
 // missing one gets one sentence and one dashboard link. What cf cannot read is "could not
 // check", and the plan goes on: the preflight never stops on uncertainty, only on something
-// Cloudflare says is missing.
+// Cloudflare says is missing. An answer of an unexpected shape is uncertainty too (Codex WP3.31
+// r1-4): "missing" needs a well-formed answer that lacks the thing.
 
 import { noOrganizationStep } from "./access-app.ts";
 
@@ -43,11 +44,14 @@ function why(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A subscription's plan, by its rate plan's ID or its product's name. */
+/** A subscription's plan, by its rate plan's ID or its product's name; throws if it has neither. */
 function planOf(subscription: unknown): { plan: string; state: string } {
   const s = record(subscription);
   const ratePlan = record(s?.rate_plan)?.id;
   const product = record(s?.product)?.name;
+  if (typeof ratePlan !== "string" && typeof product !== "string") {
+    throw new Error("a subscription in Cloudflare's answer names no plan");
+  }
   return {
     plan: `${typeof ratePlan === "string" ? ratePlan : ""} ${typeof product === "string" ? product : ""}`,
     state: typeof s?.state === "string" ? s.state : "",
@@ -59,13 +63,13 @@ const ENDED = /^(cancell?ed|expired|failed)$/i;
 
 function workersPlan(api: PreflightApi): PreflightItem {
   const item = "the Workers Paid plan";
-  let subscriptions: unknown[];
+  let plans: { plan: string; state: string }[];
   try {
-    subscriptions = api.subscriptions();
+    plans = api.subscriptions().map(planOf);
   } catch (error) {
     return { item, state: "unknown", text: why(error) };
   }
-  const paid = subscriptions.map(planOf).filter(({ plan, state }) => {
+  const paid = plans.filter(({ plan, state }) => {
     const workers = /workers/i.test(plan) && !/\bworkers_free\b/i.test(plan);
     return workers && !ENDED.test(state);
   });
@@ -108,6 +112,9 @@ function zone(api: PreflightApi, accountId: string, hostname: string): Preflight
       found = api.zones(name).filter((z) => record(z)?.name === name);
     } catch (error) {
       return { item, state: "unknown", text: why(error) };
+    }
+    if (found.some((z) => typeof record(record(z)?.account)?.id !== "string")) {
+      return { item, state: "unknown", text: `Cloudflare's answer for ${name} names no account` };
     }
     const here = found.find((z) => record(record(z)?.account)?.id === accountId);
     if (here === undefined) {

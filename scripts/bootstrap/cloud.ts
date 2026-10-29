@@ -529,11 +529,15 @@ export function cfAccessApi(run: Runner): AccessApi {
     teamDomain: () => {
       const args = ["zero-trust", "organization", "get"];
       const result = run("cf", args, { inherit: false });
-      // No organization: Cloudflare answers 404, or an organization without a domain.
+      // No organization: Cloudflare answers 404. Any other answer without a team domain is
+      // uncertainty, never "none" (Codex WP3.31 r1-4).
       if (result.status !== 0 && /\b404 Not Found\b/.test(result.stderr)) return undefined;
       const org = cfAnswer(result, args) as { auth_domain?: unknown } | null;
       const domain = org?.auth_domain;
-      return typeof domain === "string" && domain !== "" ? domain : undefined;
+      if (typeof domain !== "string" || domain === "") {
+        throw new Error("cf zero-trust organization get answered without a team domain");
+      }
+      return domain;
     },
     // Every application, filtered by the caller: cf's --domain filter with --exact matches the
     // string exactly, and would miss one on a path of the hostname or behind a wildcard.
@@ -656,7 +660,8 @@ export function cfPreflightApi(run: Runner): PreflightApi {
     // cf 1.0.0-beta.18 ignores dotted filters such as --account.id: the caller filters.
     zones: (name) => {
       const listed = cfJson(run, ["zones", "list", "--name", name]);
-      return Array.isArray(listed) ? listed : [];
+      if (!Array.isArray(listed)) throw new Error("cf zones list answered no list");
+      return listed;
     },
     teamDomain: () => cfAccessApi(run).teamDomain(),
   };

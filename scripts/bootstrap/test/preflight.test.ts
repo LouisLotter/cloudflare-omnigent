@@ -114,9 +114,34 @@ describe("preflight", () => {
       "present",
     ],
     ["no subscription at all", [], "missing"],
-    ["malformed entries", [null, "x", { rate_plan: 7 }], "missing"],
+    ["malformed entries", [null, "x", { rate_plan: 7 }], "unknown"],
+    [
+      "one malformed entry beside a free plan",
+      [sub("workers_free", "prod_workers"), {}],
+      "unknown",
+    ],
   ])("Workers: %s", (_name, subscriptions, state) => {
     expect(states(account({ subscriptions: () => subscriptions }))[0]).toBe(state);
+  });
+
+  it("reads a malformed answer as could not check, never missing (Codex r1-4)", () => {
+    const report = preflightReport(
+      preflight(
+        account({
+          subscriptions: () => [{ state: "Paid" }],
+          zones: (name) => (name === "example.test" ? [{ name, status: "active" }] : []),
+        }),
+        ACCOUNT,
+        HOST,
+      ),
+    );
+    expect(report.ready).toBe(true);
+    expect(report.lines[0]).toBe(
+      "could not check the Workers Paid plan (a subscription in Cloudflare's answer names no plan); going on",
+    );
+    expect(report.lines[2]).toBe(
+      `could not check the domain of ${HOST} (Cloudflare's answer for example.test names no account); going on`,
+    );
   });
 
   it("finds the zone by the longest suffix in this account, and tells a pending or foreign one", () => {
@@ -205,6 +230,6 @@ describe("cfPreflightApi: read-only through cf", () => {
     expect(() => api.r2Enabled()).toThrow("cf r2 buckets list failed: 403 Forbidden <email>");
     const odd = fake(() => ({ stdout: JSON.stringify({ result: { not: "a list" } }) })).api;
     expect(() => odd.subscriptions()).toThrow(/answered no list/);
-    expect(odd.zones("example.test")).toEqual([]);
+    expect(() => odd.zones("example.test")).toThrow("cf zones list answered no list");
   });
 });

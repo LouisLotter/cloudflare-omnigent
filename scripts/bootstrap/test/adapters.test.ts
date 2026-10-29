@@ -395,7 +395,8 @@ describe("cfAccessApi: Access in the installer's account through cf (WP3.31)", (
     const api = cfAccessApi(fake.runner);
     expect(api.teamDomain()).toBe("team.cloudflareaccess.com");
     expect(api.teamDomain()).toBeUndefined();
-    expect(api.teamDomain()).toBeUndefined();
+    // An answer without a team domain is uncertainty, never "no organization" (Codex r1-4).
+    expect(() => api.teamDomain()).toThrow("answered without a team domain");
     expect(() => api.teamDomain()).toThrow(
       "cf zero-trust organization get failed: network unreachable <email>",
     );
