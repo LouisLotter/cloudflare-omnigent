@@ -47,9 +47,10 @@ function why(error: unknown): string {
 /** A subscription's plan, by its rate plan's ID or its product's name; throws if it has neither. */
 function planOf(subscription: unknown): { plan: string; state: string } {
   const s = record(subscription);
-  const ratePlan = record(s?.rate_plan)?.id;
-  const product = record(s?.product)?.name;
-  if (typeof ratePlan !== "string" && typeof product !== "string") {
+  const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+  const ratePlan = text(record(s?.rate_plan)?.id);
+  const product = text(record(s?.product)?.name);
+  if (ratePlan === undefined && product === undefined) {
     throw new Error("a subscription in Cloudflare's answer names no plan");
   }
   return {
@@ -107,15 +108,23 @@ function zone(api: PreflightApi, accountId: string, hostname: string): Preflight
   const item = `the domain of ${hostname}`;
   let elsewhere: string | undefined;
   for (const name of zoneCandidates(hostname)) {
-    let found: unknown[];
+    let listed: unknown[];
     try {
-      found = api.zones(name).filter((z) => record(z)?.name === name);
+      listed = api.zones(name);
     } catch (error) {
       return { item, state: "unknown", text: why(error) };
     }
-    if (found.some((z) => typeof record(record(z)?.account)?.id !== "string")) {
-      return { item, state: "unknown", text: `Cloudflare's answer for ${name} names no account` };
+    // Every zone in the answer must have a name, a status and an account: one without them is
+    // uncertainty, never "missing" (Codex WP3.31 r2-3).
+    const filled = (v: unknown) => typeof v === "string" && v !== "";
+    const malformed = listed.some((z) => {
+      const zone = record(z);
+      return !filled(zone?.name) || !filled(zone?.status) || !filled(record(zone?.account)?.id);
+    });
+    if (malformed) {
+      return { item, state: "unknown", text: `Cloudflare's answer for ${name} is incomplete` };
     }
+    const found = listed.filter((z) => record(z)?.name === name);
     const here = found.find((z) => record(record(z)?.account)?.id === accountId);
     if (here === undefined) {
       if (found.length > 0) elsewhere ??= name;

@@ -530,3 +530,35 @@ it("remove-access deletes a late create that landed within the settle time, by i
   expect(world.accessApps.size).toBe(0);
   expect(store.state.journal.accessApp).toBeUndefined();
 });
+
+it("remove-access never deletes a same-name application elsewhere, nor guesses between two (Codex r2-1)", async () => {
+  const plan = await accountPlan();
+  const world = new FakeWorld(plan);
+  const name = "cloudflare-omnigent-web--0a1b2c3d";
+  const elsewhere = world.addAccessApp(
+    ownerOnlyAppBody({ name, hostname: "other.example.test", ownerEmail: "x" }),
+  );
+  const journal = { accessApp: { name, createStartedAt: "2026-10-29T12:00:00.000Z" } };
+  const store = new MemoryStore({ stateVersion: 1, installation: plan, journal });
+  const lines: string[] = [];
+  const options = {
+    store,
+    api: world.accessApi(),
+    webWorkerExists: () => false,
+    force: false,
+    now: () => Date.parse("2026-10-29T13:00:00.000Z"),
+    log: (line: string) => lines.push(line),
+  };
+  // Settled, and not on the hostname: never ours; forgotten, and the other one kept.
+  expect(removeInstallationAccess(options)).toBeUndefined();
+  expect(world.accessApps.has(elsewhere)).toBe(true);
+  expect(world.calls).not.toContain("accessRemove");
+  // Two on the hostname with the create's name: neither is deleted, and the record stays.
+  store.state = { stateVersion: 1, installation: plan, journal };
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  expect(removeInstallationAccess(options)).toBe(name);
+  expect(world.accessApps.size).toBe(3);
+  expect(store.state.journal.accessApp).toEqual(journal.accessApp);
+  expect(lines.at(-1)).toMatch(/^2 Access applications on omnigent\.example\.test are named/);
+});

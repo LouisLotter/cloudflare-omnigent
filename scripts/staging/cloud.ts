@@ -13,6 +13,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statfsSync,
   statSync,
   writeFileSync,
   writeSync,
@@ -372,26 +373,37 @@ export function credentialsOf(answer: unknown): ServiceTokenCredentials {
   return { id: field("id"), clientId: field("client_id"), clientSecret: field("client_secret") };
 }
 
+/** Linux's filesystem types that live in memory: tmpfs and ramfs (statfs(2)'s f_type). */
+const MEMORY_FILESYSTEMS = new Set([0x01021994, 0x858458f6]);
+
+/** Whether `path` is a directory on a filesystem that lives in memory (Linux; never on macOS). */
+export function inMemoryDirectory(path: string): boolean {
+  try {
+    return (
+      statSync(path).isDirectory() &&
+      process.platform === "linux" &&
+      MEMORY_FILESYSTEMS.has(Number(statfsSync(path).type))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Where the secrets file lives, unlinked, while a child reads it: a directory in memory where
- * there is one, so that no secret reaches a disk (Codex WP3.31 r1-5). The user's runtime
- * directory (a private tmpfs on most Linux systems), else Linux's shared memory (/dev/shm,
- * tmpfs; the file's own directory is private), else the system's temporary directory, which
- * may be on disk (macOS).
+ * Where the secrets file lives, unlinked, while a child reads it: a directory whose filesystem
+ * lives in memory, so that no secret reaches a disk (Codex WP3.31 r1-5, r2-2). The user's
+ * runtime directory (a private tmpfs on most Linux systems), else Linux's shared memory
+ * (/dev/shm; the file's own directory is private), each only if it is checked to be in memory;
+ * else the system's temporary directory, which may be on disk (macOS, or a Linux without
+ * either).
  */
 export function secretsBase(
   env: NodeJS.ProcessEnv = process.env,
-  isDirectory: (path: string) => boolean = (path) => {
-    try {
-      return statSync(path).isDirectory();
-    } catch {
-      return false;
-    }
-  },
+  inMemory: (path: string) => boolean = inMemoryDirectory,
 ): string {
   const runtime = env.XDG_RUNTIME_DIR;
-  if (runtime !== undefined && runtime !== "" && isDirectory(runtime)) return runtime;
-  if (isDirectory("/dev/shm")) return "/dev/shm";
+  if (runtime !== undefined && runtime !== "" && inMemory(runtime)) return runtime;
+  if (inMemory("/dev/shm")) return "/dev/shm";
   return tmpdir();
 }
 

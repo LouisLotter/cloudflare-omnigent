@@ -23,7 +23,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { InstallationId } from "../../contracts/src/index.ts";
 import { acquireLock } from "../staging/lock.ts";
-import { ZERO_TRUST_DASHBOARD } from "./access.ts";
+import { coversHostname, ZERO_TRUST_DASHBOARD } from "./access.ts";
 import { ACCESS_SETTLE_MS, type AccessApi, AccessUnavailable } from "./access-app.ts";
 import type { BootstrapState, StateStore } from "./machine.ts";
 import {
@@ -154,15 +154,26 @@ export function removeInstallationAccess(options: RemoveAccessOptions): string |
       `a Worker named ${plan.webWorker} still exists, and the Access application "${recorded.name}" keeps everyone but the owner away from it; remove the installation's Workers first, or pass --yes`,
     );
   }
-  // A create never answered: what it made carries its name, and may still land until the settle
-  // time has passed since it was sent (Codex WP3.31 r1-2).
-  const id =
-    recorded.id ??
-    (
-      options.api.apps().find((a) => (a as { name?: unknown } | null)?.name === recorded.name) as
-        | { id?: unknown }
-        | undefined
-    )?.id;
+  // A create never answered: what it made carries its name, on the hostname, and may still land
+  // until the settle time has passed since it was sent (Codex WP3.31 r1-2). An application of
+  // that name elsewhere is not it; two on the hostname are not told apart (r2-1).
+  const made =
+    recorded.id === undefined
+      ? options.api
+          .apps()
+          .filter(
+            (a) =>
+              (a as { name?: unknown } | null)?.name === recorded.name &&
+              coversHostname(a, plan.hostname),
+          )
+      : [];
+  if (made.length > 1) {
+    options.log(
+      `${made.length} Access applications on ${plan.hostname} are named "${recorded.name}", which only one create of this installation used; nothing was deleted: delete all but one in ${ZERO_TRUST_DASHBOARD}, Access, Applications, then run this again`,
+    );
+    return recorded.name;
+  }
+  const id = recorded.id ?? (made[0] as { id?: unknown } | undefined)?.id;
   const forget = () => {
     const { accessApp: _app, ...journal } = options.store.load().journal;
     options.store.save({ ...options.store.load(), journal });

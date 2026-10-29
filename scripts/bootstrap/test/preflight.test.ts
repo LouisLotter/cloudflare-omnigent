@@ -140,8 +140,27 @@ describe("preflight", () => {
       "could not check the Workers Paid plan (a subscription in Cloudflare's answer names no plan); going on",
     );
     expect(report.lines[2]).toBe(
-      `could not check the domain of ${HOST} (Cloudflare's answer for example.test names no account); going on`,
+      `could not check the domain of ${HOST} (Cloudflare's answer for example.test is incomplete); going on`,
     );
+  });
+
+  it.each([
+    ["an empty plan ID", { subscriptions: () => [sub("", "")] }, 0],
+    [
+      "a zone without its name",
+      { zones: () => [{ status: "active", account: { id: ACCOUNT } }] },
+      2,
+    ],
+    ["a zone without its status", { zones: () => [{ name: HOST, account: { id: ACCOUNT } }] }, 2],
+    [
+      "an empty account ID",
+      { zones: () => [{ name: HOST, status: "active", account: { id: "" } }] },
+      2,
+    ],
+  ] as const)("reads %s as could not check (Codex r2-3)", (_name, overrides, index) => {
+    const items = preflight(account(overrides as Partial<PreflightApi>), ACCOUNT, HOST);
+    expect(items[index]?.state).toBe("unknown");
+    expect(preflightReport(items).ready).toBe(true);
   });
 
   it("finds the zone by the longest suffix in this account, and tells a pending or foreign one", () => {
