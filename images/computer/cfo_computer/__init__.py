@@ -7,8 +7,8 @@ pipeline, host lifecycle and credential publication are not yet assembled into a
 Standard library only: it runs on the image's system Python, apart from Omnigent's environment.
 """
 
-SUPERVISOR_VERSION = "0.2.0"
+SUPERVISOR_VERSION = "0.3.0"
 #: What this supervisor can do beyond protocol 1's first commands (named in its ``hello``).
-SUPERVISOR_FEATURES = ("sign_in", "computer_status", "staging_check")
+SUPERVISOR_FEATURES = ("sign_in", "computer_status", "staging_check", "terminal_sessions")
 SUPERVISOR_PROTOCOL_VERSION = 1
 SUPPORTED_PROTOCOL_VERSIONS = (1,)

@@ -205,6 +205,8 @@ class Rig:
         self.contract = Contract(contracts / "schema")
         self.workspace = workspace
         api = ComputerApi(workspace.url, self.contract, timeout=5) if workspace else None
+        # The setup terminal's tmux socket (WP3.28): the test's own, never the user's /tmp one.
+        kwargs.setdefault("terminal_socket", root / "tmux" / "cfo-terminal")
         self.sup = Supervisor(
             computer_id=self.computer_id,
             generation=generation,

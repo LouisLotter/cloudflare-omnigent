@@ -127,6 +127,13 @@ async function commands(): Promise<unknown[]> {
   sup.write("work/a.txt", "3");
   await sim.call(sim.client.checkpointRequest());
   await sim.advance(5 * 60_000);
+  // WP3.28: a setup-terminal shell's end, and (below) a stop's capture that ends every session.
+  sim.terminal.pending = {
+    window: 1,
+    generation: sim.record().lifecycle.generation,
+    op: "op_00000000000000000000000009",
+  };
+  await sim.advance(sim.timing.heartbeatMs);
   sup.runnerProcesses = 0;
   await sim.call(sim.client.suspendRequest());
   await sim.advance(30_000);
@@ -184,7 +191,14 @@ async function commands(): Promise<unknown[]> {
         ? { ...(raw as object), code: "synthetic-code-0000#synthetic-state-0000" }
         : raw;
     const c = body as Record<string, unknown>;
-    const shape = [c.type, c.kind, c.outcome, c.bundle === null, c.manifest === null].join("/");
+    const shape = [
+      c.type,
+      c.kind,
+      c.outcome,
+      c.bundle === null,
+      c.manifest === null,
+      c.endTerminals,
+    ].join("/");
     if (!seen.has(shape)) seen.set(shape, body);
   }
   return [...seen.values()];
@@ -211,6 +225,7 @@ describe("the commands WorkspaceDO sends", () => {
         "staging_check",
         "start_host",
         "status",
+        "terminal_end",
       ].sort(),
     );
     if (process.env.CFO_UPDATE_CORPUS === "1") {

@@ -92,6 +92,11 @@ export interface FrontController {
     readonly service: SignInService;
     readonly attempt: number;
   }[];
+  /**
+   * Whether this generation's supervisor keeps the setup terminal's shells in sessions that
+   * outlive their streams (WP3.28, `terminal_sessions`). Absent or unknown: no.
+   */
+  terminalShellsKept?(): boolean;
 }
 
 export interface PageFrontDeps {
@@ -140,7 +145,7 @@ export function signOutRunning(state: ComputerPageState): boolean {
 }
 
 /** Whether the computer can have a terminal, from the controller's page state. */
-export function terminalTarget(state: ComputerPageState): TerminalTarget {
+export function terminalTarget(state: ComputerPageState, keepsShells = false): TerminalTarget {
   if (state.removal.state !== "none") return { ok: false, reason: "not_offered" };
   // A stop being prepared, or a sign-out job at any of its steps (Codex r1-1, r2-1); or a page
   // sign-in whose CLI is not yet confirmed stopped, so a manual sign-in never races it (WP3.23).
@@ -152,7 +157,7 @@ export function terminalTarget(state: ComputerPageState): TerminalTarget {
     return { ok: false, reason: "busy" };
   }
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
-  return { ok: true, generation: state.generation };
+  return { ok: true, generation: state.generation, keepsShells };
 }
 
 /** A 32-hex launcher operation ID derived from a page operation ID, so a repeat maps to it. */
@@ -236,7 +241,8 @@ export class PageFront {
 
   /** The computer as the terminal sees it: for `TerminalBridge`'s `target`. */
   async target(): Promise<TerminalTarget> {
-    return terminalTarget(await this.#state());
+    const state = await this.#state();
+    return terminalTarget(state, this.#d.controller.terminalShellsKept?.() === true);
   }
 
   /** WorkspaceDO's `pages` RPC. */

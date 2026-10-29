@@ -16,7 +16,8 @@
 #     "latest"; no Databricks, GitHub App or credential-key configuration.
 #   - gh at the fork's pin, behind core change 17's broker wrapper at /opt/venv/bin/gh.
 #   - The Sandbox SDK's helper for DirectoryBackup (sandbox-shim), the same version as the SDK.
-#   - ttyd for the setup page's terminal.
+#   - ttyd for the setup page's terminal, and tmux (Debian's, version checked) keeping each
+#     terminal window's shell alive across a dropped stream (WP3.28).
 #   - The supervisor (cfo_computer, standard library only) as the container's main process
 #     under tini, and the contract assets it reads: the exported JSON Schemas and checkpoint
 #     policy version 1.
@@ -190,6 +191,12 @@ RUN curl -fsSL -o /usr/local/bin/ttyd \
       "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" \
  && echo "${TTYD_SHA256}  /usr/local/bin/ttyd" | sha256sum -c - \
  && chmod 0755 /usr/local/bin/ttyd
+# tmux behind ttyd keeps each terminal window's shell (WP3.28; cfo_computer/terminal_shell.py and
+# its terminal-tmux.conf). It is Debian's package from the base layer above (trixie: 3.5a-3); this
+# pins the upstream release the terminal was tested with, so a base image that changes it fails
+# here until the terminal is tested again.
+ARG TMUX_VERSION=3.5a
+RUN test "$(tmux -V)" = "tmux ${TMUX_VERSION}"
 
 COPY --from=sandbox /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 COPY --from=builder /opt/venv /opt/venv
@@ -245,7 +252,8 @@ LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare
       cloudflare-omnigent.omnigent-commit="3d7f7d08c99344a5835516e059d5c15b8b78f37f" \
       cloudflare-omnigent.claude-code="2.1.311" \
       cloudflare-omnigent.codex="0.164.0" \
-      cloudflare-omnigent.gh="2.103.3"
+      cloudflare-omnigent.gh="2.103.3" \
+      cloudflare-omnigent.tmux="3.5a"
 # 8090: the supervisor's command port; 7681: the setup terminal. Both reached only through
 # the container port by the computer's WorkspaceDO.
 EXPOSE 8090 7681

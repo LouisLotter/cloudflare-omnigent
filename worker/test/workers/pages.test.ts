@@ -2,7 +2,7 @@
 // the real WorkspaceDO (page front, controller, terminal bridge) → a simulated computer whose
 // terminal port runs a fake ttyd. Ingress (WP2.1) is replaced by a fabricated admission; its own
 // tests cover it, and one test here drives web.ts's handler to show the pages sit behind it.
-import { createExecutionContext, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type ComputerId,
@@ -60,21 +60,48 @@ const webEnv = {
 let serial = 0;
 let server: FakeServerContainer;
 
-/** ttyd on the computer's terminal port: echoes each input frame back as output. */
+const PID_QUESTION = new TextEncoder().encode("0echo $$\r");
+
+/**
+ * ttyd on the computer's terminal port, with the shells kept per window as tmux keeps them
+ * (WP3.28): `new` starts or joins the window's session, `attach` joins it or ends the stream at
+ * once (the wrapper exits), and no arguments is an older WorkspaceDO's dial (a new shell). Each
+ * input frame is echoed back; `0echo $$\r` is answered with the session's number instead.
+ */
 function installTtyd(computer: SimulatedComputer) {
   const shells: WebSocket[] = [];
-  computer.terminal = () => {
+  const dialled: { mode: string | null; window: number | null }[] = [];
+  let legacy = 1000;
+  computer.terminal = (request) => {
+    const args = new URL(request.url).searchParams.getAll("arg");
+    const mode = args[0] ?? null;
+    const window = args[1] === undefined ? null : Number(args[1]);
+    dialled.push({ mode, window });
     const pair = new WebSocketPair();
     const shell = pair[1];
     shell.accept();
     shell.binaryType = "arraybuffer";
+    const sessions = computer.terminalSessions;
+    const session =
+      mode === "new" && window !== null
+        ? sessions.open(window)
+        : mode === "attach" && window !== null
+          ? sessions.attach(window)
+          : { id: legacy++ };
+    if (session === null) {
+      // The wrapper exits before ttyd reads anything: the stream ends at once.
+      setTimeout(() => shell.close(1000, ""), 5);
+    }
     shell.addEventListener("message", (event) => {
       const data = new Uint8Array(event.data as ArrayBuffer);
-      if (data[0] === 0x30) {
-        const out = new Uint8Array(data.length);
-        out.set(data);
-        shell.send(out);
+      if (data[0] !== 0x30 || session === null) return;
+      if (data.length === PID_QUESTION.length && data.every((b, i) => b === PID_QUESTION[i])) {
+        shell.send(new TextEncoder().encode(`0pid=${session.id};`));
+        return;
       }
+      const out = new Uint8Array(data.length);
+      out.set(data);
+      shell.send(out);
     });
     shells.push(shell);
     return new Response(null, {
@@ -83,7 +110,36 @@ function installTtyd(computer: SimulatedComputer) {
       headers: { "sec-websocket-protocol": "tty" },
     });
   };
-  return shells;
+  return Object.assign(shells, { dialled });
+}
+
+/** The shell's number, as `echo $$` would print it. */
+async function pidOf(browser: ReturnType<typeof connectBrowser>): Promise<number> {
+  const before = browser.received.length;
+  browser.socket.send(PID_QUESTION);
+  await until(() => browser.received.length > before);
+  const text = new TextDecoder().decode(browser.received.at(-1) as ArrayBuffer);
+  const match = /pid=(\d+);/.exec(text);
+  if (!match?.[1]) throw new Error(`no pid in ${text}`);
+  return Number(match[1]);
+}
+
+/** Resets the computer's WorkspaceDO, as a platform shutdown or a deploy's switch does. */
+async function reset(stub: Stub): Promise<void> {
+  await runInDurableObject(stub, (_instance, state) => {
+    try {
+      state.abort("test restart");
+    } catch {
+      // abort() throws in the current request by design
+    }
+  }).catch(() => undefined);
+}
+
+/** The commands the computer's supervisor received, by type, in order. */
+function commandsOf(computer: SimulatedComputer): string[] {
+  return computer.requests
+    .filter((r) => r.body.startsWith("{"))
+    .map((r) => (JSON.parse(r.body) as { type?: string }).type ?? "");
 }
 
 async function settle(stub: Stub, computer: SimulatedComputer): Promise<void> {
@@ -471,5 +527,189 @@ describe("the bridged terminal (R-29, RC-24)", () => {
       mode: "open",
     });
     expect(again).toEqual({ action: "open_terminal", outcome: "refused", reason: "busy" });
+  });
+});
+
+describe("shells kept on the computer (WP3.28, FH-38)", () => {
+  async function reconnect(path: string, window: number, n: number) {
+    const fresh = (await terminalPost(path, {
+      op: OP(n),
+      intent: await intentOf(path),
+      mode: "reconnect",
+      window,
+    })) as { outcome: string; capability: string };
+    expect(fresh.outcome).toBe("accepted");
+    return upgrade(path, fresh.capability);
+  }
+
+  it("a reset between the drop and the reconnect finds the same shell", async () => {
+    const { path, stub, shells } = await running();
+    const log = vi.spyOn(console, "log");
+    const opened = await open(path);
+    const first = connectBrowser(await upgrade(path, opened.capability));
+    const pid = await pidOf(first);
+    first.socket.close(1001, "page reloaded");
+    await first.closed;
+    await reset(stub);
+    const second = connectBrowser(await reconnect(path, opened.window, 30));
+    expect(await pidOf(second)).toBe(pid);
+    expect(shells.dialled).toEqual([
+      { mode: "new", window: 1 },
+      { mode: "attach", window: 1 },
+    ]);
+    const lines = log.mock.calls
+      .map(([line]) => {
+        try {
+          return JSON.parse(String(line)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((l): l is Record<string, unknown> => l !== null);
+    // A new instance served the reconnect: it reattached, and never bridged a new shell. Each
+    // terminal line carries its instance's ID, the one its `instance_started` names (WP3.27).
+    const terminal = lines.filter((l) => String(l.event).startsWith("terminal_"));
+    expect(terminal.filter((l) => l.event === "terminal_bridged")).toHaveLength(1);
+    const bridged = terminal.find((l) => l.event === "terminal_bridged");
+    const reattached = terminal.at(-1);
+    expect(reattached?.event).toBe("terminal_reattached");
+    expect(bridged?.instanceId).toMatch(/^[0-9a-f]{16}$/);
+    expect(reattached?.instanceId).not.toBe(bridged?.instanceId);
+    const started = new Set(
+      lines
+        .filter((l) => l.event === "instance_started" && l.class === "WorkspaceDO")
+        .map((l) => l.instanceId),
+    );
+    expect(started.has(bridged?.instanceId)).toBe(true);
+    expect(started.has(reattached?.instanceId)).toBe(true);
+    second.socket.close(1000);
+  });
+
+  it("a reconnect while the old stream still looks attached takes it over (27 Oct)", async () => {
+    const { path, shells } = await running();
+    const opened = await open(path);
+    const old = connectBrowser(await upgrade(path, opened.capability));
+    const pid = await pidOf(old);
+    const fresh = connectBrowser(await reconnect(path, opened.window, 31));
+    const event = await old.closed;
+    expect(event.code).toBe(4001);
+    expect(event.reason).toContain("opened again");
+    expect(await pidOf(fresh)).toBe(pid);
+    expect(shells).toHaveLength(1);
+    fresh.socket.close(1000);
+  });
+
+  it("refuses a reconnect whose shell is gone with 4002, and starts no shell in its place", async () => {
+    const { path, stub, shells, computer } = await running();
+    const opened = await open(path);
+    const first = connectBrowser(await upgrade(path, opened.capability));
+    await pidOf(first);
+    first.socket.close(1001);
+    await first.closed;
+    await reset(stub);
+    computer.terminalSessions.endAll(); // the reaper ended it meanwhile
+    const again = connectBrowser(await reconnect(path, opened.window, 32));
+    expect((await again.closed).code).toBe(4002);
+    expect(computer.terminalSessions.sessions.size).toBe(0);
+    expect(shells.dialled.at(-1)).toEqual({ mode: "attach", window: 1 });
+  });
+
+  it("with a supervisor whose ttyd ends the shell with its stream, refuses that reconnect undialled", async () => {
+    const { path, stub, shells } = await running({ terminalSessions: false });
+    const opened = await open(path);
+    const first = connectBrowser(await upgrade(path, opened.capability));
+    first.socket.close(1001);
+    await first.closed;
+    await reset(stub);
+    const again = connectBrowser(await reconnect(path, opened.window, 33));
+    const event = await again.closed;
+    expect(event.code).toBe(4002);
+    expect(event.reason).toContain("session on the computer ended");
+    expect(shells).toHaveLength(1);
+  });
+
+  type Ctx = Awaited<ReturnType<typeof running>>;
+  const post = async (ctx: Ctx, action: string, n: number): Promise<void> => {
+    const response = await route(`${ctx.path}/do/${action}`, {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ op: OP(n), intent: await intentOf(ctx.path) }).toString(),
+    });
+    expect(response.status).toBe(303);
+  };
+  it.each([
+    [
+      "the owner's close",
+      async (ctx: Ctx): Promise<void> =>
+        void (await terminalPost(ctx.path, {
+          op: OP(40),
+          intent: await intentOf(ctx.path),
+          mode: "close",
+        })),
+    ],
+    ["a new window", async (ctx: Ctx): Promise<void> => void (await open(ctx.path, 41))],
+    ["a sign-out", (ctx: Ctx): Promise<void> => post(ctx, "sign-out", 42)],
+    ["a restart", (ctx: Ctx): Promise<void> => post(ctx, "restart", 43)],
+    [
+      "a removal by Omnigent",
+      async (ctx: Ctx): Promise<void> =>
+        void (await ctx.client.send(ctx.client.terminateRequest())),
+    ],
+    [
+      "a sign-in from the page",
+      async (ctx: Ctx): Promise<void> => {
+        const html = await (await route(ctx.path)).text();
+        const generation = /data-generation="([0-9]+)"/.exec(html)?.[1];
+        const response = await route(`${ctx.path}/sign-in`, {
+          method: "POST",
+          headers: { origin: ORIGIN, "content-type": "application/json" },
+          body: JSON.stringify({
+            op: OP(44),
+            intent: await intentOf(ctx.path),
+            mode: "start",
+            service: "codex",
+            generation: Number(generation),
+          }),
+        });
+        expect(response.status).toBe(200);
+      },
+    ],
+  ] as const)(
+    "%s ends the window's shell on the computer, with terminal_end first",
+    async (_name, step) => {
+      const ctx = await running();
+      const { path, stub, computer } = ctx;
+      const browser = connectBrowser(await upgrade(path, (await open(path)).capability));
+      await pidOf(browser);
+      expect(computer.terminalSessions.sessions.has(1)).toBe(true);
+      const before = commandsOf(computer).length;
+      await step(ctx);
+      expect((await browser.closed).code).toBe(4001);
+      await settle(stub, computer);
+      expect(computer.terminalSessions.sessions.has(1)).toBe(false);
+      const after = commandsOf(computer).slice(before);
+      // Ended by WorkspaceDO's terminal_end, before any credential-sensitive command the runner
+      // sends. A page sign-in's start goes on the request path: the supervisor ends every session
+      // itself before the CLI's spawn, and the terminal_end follows.
+      expect(after).toContain("terminal_end");
+      const end = after.indexOf("terminal_end");
+      for (const type of ["sign_out", "credential_snapshot", "capture"]) {
+        if (after.includes(type)) expect(end).toBeLessThan(after.indexOf(type));
+      }
+    },
+  );
+
+  it("the window's deadline ends its shell on the computer", async () => {
+    const timing = testComputers.terminalTiming as { checkMs?: number | undefined };
+    const { path, stub, computer } = await running();
+    const browser = connectBrowser(await upgrade(path, (await open(path)).capability));
+    await pidOf(browser);
+    testComputers.advance(31 * 60_000);
+    expect((await browser.closed).code).toBe(4001);
+    expect(timing).toBeDefined();
+    await runDurableObjectAlarm(stub);
+    await settle(stub, computer);
+    expect(commandsOf(computer)).toContain("terminal_end");
+    expect(computer.terminalSessions.sessions.size).toBe(0);
   });
 });

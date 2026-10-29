@@ -90,8 +90,20 @@ const envelope = {
  * `computer_status` and `staging_check`. A supervisor whose `hello` names none of them is an
  * older one: the setup page then offers the terminal for signing in. The list is free text on the
  * wire, so a newer supervisor may name more without being refused.
+ *
+ * `terminal_sessions` (WP3.28): the setup terminal keeps each window's shell in a session on the
+ * computer, which outlives a dropped stream; ttyd takes `?arg=new&arg=<window>` for a window's
+ * first stream and `?arg=attach&arg=<window>` for every later one (an `attach` with no session
+ * ends the stream). The supervisor takes `terminal_end` and a capture's `endTerminals`, and
+ * counts the sessions in `computer_status`. Without it, ttyd ends the shell with its stream, so
+ * WorkspaceDO never sends those, and refuses a reconnect that would need the old shell.
  */
-export const SUPERVISOR_FEATURES = ["sign_in", "computer_status", "staging_check"] as const;
+export const SUPERVISOR_FEATURES = [
+  "sign_in",
+  "computer_status",
+  "staging_check",
+  "terminal_sessions",
+] as const;
 export type SupervisorFeature = (typeof SUPERVISOR_FEATURES)[number];
 
 /** First message of each generation, once the supervisor runs. Idempotent per generation. */
@@ -289,6 +301,11 @@ const capture = {
   layerId: LayerId,
   policyVersion: z.number().int().min(1),
   lease: PauseLease,
+  /**
+   * A stop's final capture (WP3.28): the supervisor ends every setup-terminal session first.
+   * Sent only to a supervisor with the `terminal_sessions` feature.
+   */
+  endTerminals: z.literal(true).optional(),
 };
 export const CaptureCommand = z.discriminatedUnion("kind", [
   z.strictObject({ ...capture, kind: z.literal("base"), parent: z.null() }),
@@ -330,7 +347,8 @@ export const StatusCommand = z.strictObject({ type: z.literal("status"), ...enve
  * the copy lock, and send it as a `credential_checkpoint` whatever changed, then reply with its
  * order. WorkspaceDO stops only once its pointer holds that order or newer from this generation
  * (lifecycle step 7). Idempotent by operation ID: a repeat returns the same order and takes no
- * second snapshot.
+ * second snapshot. A supervisor with `terminal_sessions` ends every setup-terminal session first
+ * (the barrier also ends a sign-out).
  */
 export const CredentialSnapshotCommand = z.strictObject({
   type: z.literal("credential_snapshot"),
@@ -338,7 +356,8 @@ export const CredentialSnapshotCommand = z.strictObject({
 });
 
 /** Ask the CLIs to sign out (`claude auth logout`, `codex logout`); the watcher then publishes
- * the tombstones. Idempotent: signing out again changes nothing. */
+ * the tombstones. Idempotent: signing out again changes nothing. A supervisor with
+ * `terminal_sessions` ends every setup-terminal session first. */
 export const SignOutCommand = z.strictObject({ type: z.literal("sign_out"), ...envelope });
 
 // Sign-in from the setup page (WP3.23; design, Signing in, D31). The supervisor runs the
@@ -485,7 +504,8 @@ const signIn = { ...envelope, service: SignInService, attempt: SignInAttempt };
  * Start attempt `attempt` for `service`: ends the service's running attempt first, then spawns
  * the CLI's login. Idempotent by attempt: a repeat answers the attempt's state; an attempt at or
  * below the fence that is not the running one is `superseded`. Answers at once with `starting`;
- * the link follows in `sign_in_status`.
+ * the link follows in `sign_in_status`. A supervisor with `terminal_sessions` ends every
+ * setup-terminal session before it spawns a new attempt's CLI.
  */
 export const SignInStartCommand = z.strictObject({ type: z.literal("sign_in_start"), ...signIn });
 
@@ -523,6 +543,23 @@ export const StagingCheckCommand = z.strictObject({
   rc53: z.boolean(),
 });
 
+/** A setup-terminal window's number: increasing per computer, never reused (WP3.5). */
+export const TerminalWindowNumber = z.number().int().min(1).max(999_999_999);
+
+/**
+ * End the setup terminal's sessions on the computer for every window up to `window` (WP3.28,
+ * `terminal_sessions`). WorkspaceDO records one, in the same storage transaction, whenever a
+ * window closes or its stream ends for good (its deadline, a new window, a removal, a stop, a
+ * sign-out, a page sign-in, the owner's close, a stream that ended) and sends it until answered.
+ * A delayed one never reaches a newer window. Idempotent by operation ID; an ended session stays
+ * ended. While a capture pauses the computer it is refused as `unavailable` (retryable).
+ */
+export const TerminalEndCommand = z.strictObject({
+  type: z.literal("terminal_end"),
+  ...envelope,
+  window: TerminalWindowNumber,
+});
+
 export const WorkspaceCommand = z.discriminatedUnion("type", [
   InstallCredentialsCommand,
   RestoreWorkspaceCommand,
@@ -539,6 +576,7 @@ export const WorkspaceCommand = z.discriminatedUnion("type", [
   SignInStatusCommand,
   ComputerStatusCommand,
   StagingCheckCommand,
+  TerminalEndCommand,
 ]);
 export type WorkspaceCommand = z.infer<typeof WorkspaceCommand>;
 
@@ -689,6 +727,11 @@ export const SupervisorStatus = z.strictObject({
   alerts: z.array(z.strictObject({ kind: SupervisorAlertKind, count: StatusCount })).max(32),
   /** The latest captures' RC-53 counts, by capture operation, newest last. */
   captures: z.array(z.strictObject({ jobOperationId: OperationId, rc53: Rc53Counts })).max(8),
+  /**
+   * The setup terminal's sessions alive on the computer (WP3.28, `terminal_sessions`); absent
+   * from an older supervisor, or when they could not be counted now.
+   */
+  terminals: StatusCount.optional(),
 });
 export type SupervisorStatus = z.infer<typeof SupervisorStatus>;
 
@@ -726,6 +769,8 @@ export const WorkspaceCommandReply = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("sign_in_status"), view: SignInView }),
   z.strictObject({ type: z.literal("computer_status"), status: SupervisorStatus }),
   z.strictObject({ type: z.literal("staging_check"), rc53: z.boolean() }),
+  /** The terminal sessions still alive, for later windows. */
+  z.strictObject({ type: z.literal("terminal_end"), remaining: StatusCount }),
 ]);
 export type WorkspaceCommandReply = z.infer<typeof WorkspaceCommandReply>;
 
@@ -761,6 +806,7 @@ export const COMPUTER_API_MESSAGES = {
   sign_in_status: { direction: "to_supervisor", idempotency: "read_only" },
   computer_status: { direction: "to_supervisor", idempotency: "read_only" },
   staging_check: { direction: "to_supervisor", idempotency: "operation_id" },
+  terminal_end: { direction: "to_supervisor", idempotency: "operation_id" },
 } as const satisfies Record<
   SupervisorMessage["type"] | WorkspaceCommand["type"],
   {

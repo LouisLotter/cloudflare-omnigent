@@ -65,7 +65,10 @@ def under_container_init() -> bool:
 
 
 def terminal_argv(port: int = TERMINAL_PORT) -> list[str]:
-    """ttyd for the setup page's terminal: one writable client at a time, a login shell."""
+    """ttyd for the setup page's terminal: one writable client at a time. Its command is the
+    terminal-session wrapper (WP3.28), given the WebSocket URL's ``arg``s, which only WorkspaceDO
+    builds: ``new``/``attach`` and the window. Each window's login shell runs in a tmux session
+    that outlives its stream (``terminal_shell.py``)."""
     return [
         "/usr/local/bin/ttyd",
         "--port",
@@ -73,8 +76,11 @@ def terminal_argv(port: int = TERMINAL_PORT) -> list[str]:
         "--writable",
         "--max-clients",
         "1",
-        "bash",
-        "-l",
+        "--url-arg",
+        "/usr/local/bin/python3",
+        "-I",
+        "-m",
+        "cfo_computer.terminal_shell",
     ]
 
 
