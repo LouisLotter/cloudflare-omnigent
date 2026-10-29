@@ -262,6 +262,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #interceptPending = false;
   /** This instance has run its first alarm (and logged it). */
   #alarmed = false;
+  /**
+   * This instance's random identity (WP3.27), on its `instance_started`, `upgrade` and
+   * `first_alarm` lines (WP3.33), so a reconnect is tied to the instance that answered it.
+   */
+  readonly #instanceId = newInstanceId();
 
   #readyWait: Promise<boolean> | null = null;
   /** Serialises watchdog checks: one step at a time, whether the alarm or a request ran it. */
@@ -274,7 +279,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // Every new instance says so (WP3.27): resets, evictions and version switches are measured.
     logEvent("watchdog", "instance_started", {
       class: "OmnigentServer",
-      instanceId: newInstanceId(),
+      instanceId: this.#instanceId,
       containerRunning: this.#container?.running ?? null,
     });
     void ctx.blockConcurrencyWhile(async () => {
@@ -399,7 +404,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#answeredAt = Date.now();
     const socket = response.webSocket;
     if (socket) {
-      logEvent("server", "upgrade", { path: url.pathname });
+      logEvent("server", "upgrade", { path: url.pathname, instanceId: this.#instanceId });
       // Never accepted here: the container's socket goes back as it came, under a bare 101.
       return new Response(null, {
         status: 101,
@@ -447,7 +452,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       // headers, WP2.6), it is the record that this version's object runs its watchdog, which
       // the bootstrap's check after the release looks for (WP2.4).
       this.#alarmed = true;
-      logEvent("watchdog", "first_alarm");
+      logEvent("watchdog", "first_alarm", { instanceId: this.#instanceId });
     }
     await this.#check();
   }
