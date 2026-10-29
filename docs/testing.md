@@ -128,6 +128,20 @@ CFO_IT_IMAGE=cfo-computer:dev uv run --no-project --with pytest==9.1.1 pytest -p
 
 **Signing in from the page.** The supervisor's parser reads the pinned CLIs' own login output. [`images/computer/fakes/login_transcripts.json`](../images/computer/fakes/login_transcripts.json) holds that output, chunk by chunk, with every link parameter and code replaced by a placeholder. It was captured with Claude Code 2.1.311 and Codex 0.164.0 in a throwaway home: the prompts by running each login up to its prompt and killing it, the rest by running the real CLIs against local fake providers (a throwaway CA for Anthropic's hosts, and Codex's issuer override). No real sign-in happened. On a terminal, the fake CLIs replay those transcripts with synthetic canary values, take Claude's code from the pty, and fail on request (a crash, unknown output, a link on another host, a network failure, a denial). The repository's suite runs the actual supervisor against them: success, a wrong or incomplete code, expiry, cancel, unknown output, a crash, a restart, the fence, and a sign-out ending an attempt. It then scans the supervisor's files, logs, alerts and journal, the CLIs' files, the status and a capture's staged layer for the planted values. After a CLI version bump, capture the transcripts again the same way, never completing a sign-in, and check that the parser still reads them.
 
+## GitHub linking end to end — local Docker
+
+[`images/server/tests/integration/github_linking/`](../images/server/tests/integration/github_linking/) runs Omnigent's GitHub linking across every boundary but GitHub's own: the platform Worker's real `PlatformInternal` entrypoint under `wrangler dev` (workerd, in a Node container named `platform.internal` on the test's network; [`worker/test/e2e/key-service-e2e.ts`](../worker/test/e2e/key-service-e2e.ts)), the server image's final target, the computer image with the real `omnigent host` started as its supervisor starts it, and a fake `github.com` and `api.github.com` with a certificate from the test's own authority. It connects GitHub as the owner, checks that the database and a restore of its replica hold only ciphertext, clones and calls `gh api` on the computer through the host's credential broker, scans the computer's disk and every argv for the tokens, unlinks, and checks the computer gets no new token; a second computer's host, whose startup probe cannot reach the server, is scanned too. The launch token is minted directly in Omnigent's host store.
+
+```bash
+docker build -f images/server/Dockerfile -t cfo-wp59-server:runtime .
+docker build -f images/computer/Dockerfile -t cfo-wp59-computer:runtime .
+pnpm install
+uv run --no-project --with pytest==9.1.1 --with httpx==0.28.1 --with cryptography==46.0.3 \
+  pytest -p no:cacheprovider images/server/tests/integration/github_linking
+```
+
+Every value is generated for the run. It creates and removes `cfo-wp59-e2e-*` containers and a network; `CFO_E2E_TMP` chooses its temporary directory and `CFO_E2E_KEEP=1` keeps it, with each container's log. It is a local qualification only: the intercept, Access in front of the callback and a real GitHub App remain staging work.
+
 ## Certificate trust checks
 
 Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.

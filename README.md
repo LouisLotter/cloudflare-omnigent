@@ -8,7 +8,7 @@ A Cloudflare deployment layer for [Omnigent](https://github.com/omnigent-ai/omni
 |---|---|
 | Server base | Integrated source for owner-only ingress, two Worker configurations, server lifecycle/recovery, SQLite replication with Litestream, durability barriers, bootstrap and restore-drill tools. Production qualification remains incomplete. |
 | Cloud computers | Version-one contracts and the Cloudflare launcher (Omnigent's provider plugin, registered by the server image) are integrated. Controller, private routes and supervisor remain separate partial drafts; there is no qualified end-to-end computer assembly. |
-| Connected accounts | Platform connection service and connector runtimes are planned. Main disables native GitHub linking. |
+| Connected accounts | Platform connection service and connector runtimes are planned. Omnigent's own GitHub linking is wired (the installation's GitHub App, made by the installer, and the platform Worker's key service), tested locally, not yet on Cloudflare. |
 
 Main registers the [Cloudflare launcher](python/cloudflare_omnigent/sandbox/), but its [private platform bridge](worker/src/server/platform-internal.ts) still returns unavailable and no deployment sets the launcher's signing key, so no physical computer effect can happen yet. The presence of fork capabilities, contracts or the launcher does not make cloud computers usable.
 
