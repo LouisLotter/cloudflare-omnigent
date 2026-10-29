@@ -103,7 +103,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { makeOwnerPin, parseOwnerPin } from "../../worker/src/ingress/owner.ts";
+import { makeOwnerPin } from "../../worker/src/ingress/owner.ts";
 import { readWranglerConfig, spawnRunner } from "../staging/cloud.ts";
 import { acquireLock } from "../staging/lock.ts";
 import {
@@ -136,6 +136,7 @@ import {
   bucketsOf,
   installationProblems,
   newInstallationId,
+  planConflicts,
   planInstallation,
   platformBucketNames,
   type SuppliedSecrets,
@@ -311,19 +312,21 @@ async function install(values: Record<string, string | boolean | undefined>, pat
   }
   // Planned already: the same installation, whose run continues where it stopped.
   const planned = fileStateStore(path).load().installation;
-  const differs = [
-    planned.hostname !== given("hostname") && "the hostname",
-    planned.ownerUsername !== given("owner-username") && "the owner's username",
-    given("account") !== undefined && planned.accountId !== given("account") && "the account",
-    given("web-worker") !== undefined &&
-      planned.webWorker !== given("web-worker") &&
-      "the web Worker",
-    !(await parseOwnerPin(planned.ownerPin)?.matches(String(given("owner-email")))) &&
-      "the owner's address",
-  ].filter((d): d is string => d !== false);
+  const differs = await planConflicts(planned, {
+    hostname: String(given("hostname")),
+    ownerEmail: String(given("owner-email")),
+    ownerUsername: String(given("owner-username")),
+    accountId: given("account"),
+    platformWorker: given("platform-worker"),
+    webWorker: given("web-worker"),
+    replicaUrl: given("replica-url"),
+    replicaEndpoint: given("replica-endpoint"),
+    artifactsUrl: given("artifacts-url"),
+    artifactsEndpoint: given("artifacts-endpoint"),
+  });
   if (differs.length > 0) {
     throw new BootstrapRefusal(
-      `${path} holds another installation (${differs.join(", ")} ${differs.length === 1 ? "differs" : "differ"}): continue it with bootstrap.ts run, or install this one under other Worker names (--platform-worker, --web-worker)`,
+      `${path} holds another installation (${differs.join(", ")} ${differs.length === 1 ? "differs" : "differ"} from what was given): continue it with bootstrap.ts run, or install this one under other Worker names (--platform-worker, --web-worker) and its own state file`,
     );
   }
   console.log(`bootstrap: ${planned.installationId} is planned already (${path}); continuing it`);
