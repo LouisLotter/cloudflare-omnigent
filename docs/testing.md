@@ -142,6 +142,18 @@ uv run --no-project --with pytest==9.1.1 --with httpx==0.28.1 --with cryptograph
 
 Every value is generated for the run. It creates and removes `cfo-wp59-e2e-*` containers and a network; `CFO_E2E_TMP` chooses its temporary directory and `CFO_E2E_KEEP=1` keeps it, with each container's log. It is a local qualification only: the intercept, Access in front of the callback and a real GitHub App remain staging work.
 
+## GitHub setup flow end to end — local Docker
+
+[`worker/test/e2e/github-setup-e2e.ts`](../worker/test/e2e/github-setup-e2e.ts) runs the installer's real GitHub step (`createGitHubApp`: its local page, its progress page and its wait for GitHub linking) against the production web Worker and OmnigentServer under `wrangler dev`, whose watchdog starts and, after the step's secrets change, replaces the server image's real container through Docker ([`github-setup-platform-e2e.ts`](../worker/test/e2e/github-setup-platform-e2e.ts)). GitHub is a scripted browser that does what GitHub does, and the conversion's answer; the secrets change restarts `wrangler dev` with the new settings, as a new version; Workers Logs are the platform Worker's own lines, labelled with the version that printed them; Access is a local stand-in for the team's keys. It checks the setup page's refusals (no Access, a stranger, a foreign origin, `/_cfo/`, another hostname), that the progress page goes on to GitHub's install page only once the restarted server reports GitHub linking on, that GitHub's return to the setup URL opens Omnigent's Integrations page, that an expired local page says so and stores nothing, and scans every log and page for the run's secrets.
+
+```bash
+docker build -f images/server/Dockerfile --target server -t cfo-wp336-server:runtime .
+pnpm install
+node worker/test/e2e/github-setup-e2e.ts
+```
+
+It creates and removes a `cfo-wp336-e2e-server` container; `CFO_E2E_DIR` chooses its directory (default `~/.pt/wp336-e2e`). The object's version switch on Cloudflare (and its yield to a newer version), real Workers Logs, a real GitHub App and Access remain staging work.
+
 ## Certificate trust checks
 
 Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.
