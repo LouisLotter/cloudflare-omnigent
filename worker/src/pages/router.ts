@@ -15,6 +15,8 @@
 //   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check, or keep-awake, on or off
 //   GET  /platform/password                       the owner's Omnigent password: choose or reset (WP3.34)
 //   POST /platform/password                       set it, guarded, then a 303
+//   GET  /platform/github                         GitHub's return after installing the App: waits
+//                                                 for GitHub linking, then Integrations (WP3.36)
 //   GET  /platform/assets/{name}                  the pages' own scripts and styles
 
 import type { PageOwner } from "@cfo/contracts";
@@ -30,6 +32,7 @@ import {
   performAction,
   refusedPage,
 } from "./computers.ts";
+import { bindingsGitHubSetupBackend, type GitHubSetupBackend, githubSetupPage } from "./github.ts";
 import { COMPUTERS_PATH, PAGES_ROOT } from "./html.ts";
 import { securityHeaders } from "./http.ts";
 import { signInChange, signInRead, stagingChange, statusRead } from "./owner-actions.ts";
@@ -51,6 +54,8 @@ export interface PlatformDeps {
   readonly backend?: PagesBackend;
   /** OmnigentServer's password interface (WP3.34); the OMNIGENT binding's by default. */
   readonly password?: PasswordBackend;
+  /** OmnigentServer's GitHub setup interface (WP3.36); the OMNIGENT binding's by default. */
+  readonly github?: GitHubSetupBackend;
   /** The assets by name: web.ts loads `assets.ts`, a runtime module, on first use. */
   readonly assets: () => Promise<Readonly<Record<string, Asset>>>;
   readonly now?: () => number;
@@ -122,6 +127,11 @@ export async function routePlatform(
         return passwordChange(password, owner, request, admitted.origin, log);
       }
       return methodNotAllowed("GET, HEAD, POST");
+    }
+    if (parts[0] === "github" && parts.length === 1) {
+      if (!read) return methodNotAllowed("GET, HEAD");
+      const github = deps.github ?? bindingsGitHubSetupBackend(env);
+      return head(request, await githubSetupPage(github, url, now(), log));
     }
     if (parts[0] !== "computers") return head(request, notFoundPage());
     if (parts.length === 1) {
