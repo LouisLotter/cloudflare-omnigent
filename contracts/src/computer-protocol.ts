@@ -705,28 +705,89 @@ export const HostnameState = z.enum(["resolved", "unresolved", "mapped", "unmapp
 export type HostnameState = z.infer<typeof HostnameState>;
 
 /**
+ * A sign-in state as the status reports it: `SignInState`, or `unknown` when a newer supervisor
+ * names a state this release does not know (WP3.29). Sign-in's own messages keep `SignInState`.
+ */
+export const StatusSignInState = z.enum([...SignInState.options, "unknown"]);
+export type StatusSignInState = z.infer<typeof StatusSignInState>;
+
+/**
+ * An enum field of an informational reply, read tolerantly (WP3.29): a string this release does
+ * not know becomes `fallback`, the field's "can't tell" value. Any other type, and a missing
+ * field, are still refused. The exported JSON Schema shows the enum itself: what a parse yields.
+ */
+function tolerantEnum<E extends z.ZodEnum>(values: E, fallback: z.output<E>) {
+  const known: ReadonlySet<unknown> = new Set(values.options);
+  return z.preprocess((v) => (typeof v === "string" && !known.has(v) ? fallback : v), values);
+}
+
+/** Alerts by kind, one entry per kind: unknown kinds read as `other` are added together. */
+function mergeAlerts<A extends { kind: string; count: number }>(alerts: A[]): A[] {
+  const merged = new Map<string, A>();
+  for (const alert of alerts) {
+    const seen = merged.get(alert.kind);
+    merged.set(
+      alert.kind,
+      seen === undefined
+        ? alert
+        : { ...seen, count: Math.min(seen.count + alert.count, Number.MAX_SAFE_INTEGER) },
+    );
+  }
+  return [...merged.values()];
+}
+
+/**
  * The supervisor's part of the computer's status (WP3.23): names, normalized versions, enum
  * states and bounded counts only. No path under the CLIs' homes beyond the declared names, no
  * environment, no file contents, no alert text, no capture result whole.
+ *
+ * Read tolerantly (WP3.29). After a platform rollback, an older WorkspaceDO meets a newer
+ * supervisor until that computer next stops. This reply is informational: it changes no state,
+ * so refusing it whole for one name the reader does not know would only blank the status panel
+ * and back off the status log. So a reader degrades instead of refusing:
+ * - a field it does not know, at any depth, is dropped: never passed on, so no text from the
+ *   computer leaves through one;
+ * - a string it does not know in an enum field becomes that field's "can't tell" value:
+ *   `unknown` for the logins, the sign-in states and the hostname, `other` for an alert's kind.
+ * From this release on, a supervisor may add a status field or enum value, and an older reader
+ * still parses its status; a newer reader parses an older supervisor's.
+ *
+ * Everything else stays strict: types, required fields, bounds and the versions' format. Removing
+ * or retyping a field is still a breaking change. The exported JSON Schema shows what a parse
+ * yields, which is exactly what a supervisor of this release sends: its own outbound check stays
+ * strict. Commands, the other replies, reports, credentials, captures and sign-in stay strict
+ * (`z.strictObject`): they carry or change state, and a receiver that does not understand a field
+ * there must refuse the message rather than act without it.
  */
-export const SupervisorStatus = z.strictObject({
+export const SupervisorStatus = z.object({
   supervisorVersion: z.string().min(1).max(64),
-  versions: z.strictObject({
+  versions: z.object({
     claude: CliVersion.nullable(),
     codex: CliVersion.nullable(),
     gh: CliVersion.nullable(),
   }),
-  logins: z.strictObject({ claude: CliLoginStatus, codex: CliLoginStatus }),
-  signIn: z.strictObject({ claude: SignInState, codex: SignInState }),
+  logins: z.object({
+    claude: tolerantEnum(CliLoginStatus, "unknown"),
+    codex: tolerantEnum(CliLoginStatus, "unknown"),
+  }),
+  signIn: z.object({
+    claude: tolerantEnum(StatusSignInState, "unknown"),
+    codex: tolerantEnum(StatusSignInState, "unknown"),
+  }),
   /** RC-53's save check is on (`/var/cfo/rc53/enabled` exists). */
   rc53: z.boolean(),
   /** Whether the container's hostname resolves (`sudo` warns otherwise). */
-  hostname: HostnameState,
+  hostname: tolerantEnum(HostnameState, "unknown"),
   /** The home directory's filesystem. */
-  disk: z.strictObject({ totalBytes: StatusCount, freeBytes: StatusCount }).nullable(),
-  alerts: z.array(z.strictObject({ kind: SupervisorAlertKind, count: StatusCount })).max(32),
+  disk: z.object({ totalBytes: StatusCount, freeBytes: StatusCount }).nullable(),
+  alerts: z
+    .array(z.object({ kind: tolerantEnum(SupervisorAlertKind, "other"), count: StatusCount }))
+    .max(32)
+    .overwrite(mergeAlerts),
   /** The latest captures' RC-53 counts, by capture operation, newest last. */
-  captures: z.array(z.strictObject({ jobOperationId: OperationId, rc53: Rc53Counts })).max(8),
+  captures: z
+    .array(z.object({ jobOperationId: OperationId, rc53: z.object(Rc53Counts.shape) }))
+    .max(8),
   /**
    * The setup terminal's sessions alive on the computer (WP3.28, `terminal_sessions`); absent
    * from an older supervisor, or when they could not be counted now.
@@ -767,7 +828,8 @@ export const WorkspaceCommandReply = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("sign_in_input"), view: SignInView }),
   z.strictObject({ type: z.literal("sign_in_cancel"), view: SignInView }),
   z.strictObject({ type: z.literal("sign_in_status"), view: SignInView }),
-  z.strictObject({ type: z.literal("computer_status"), status: SupervisorStatus }),
+  /** Read tolerantly, as `SupervisorStatus` says: a field it does not know is dropped. */
+  z.object({ type: z.literal("computer_status"), status: SupervisorStatus }),
   z.strictObject({ type: z.literal("staging_check"), rc53: z.boolean() }),
   /** The terminal sessions still alive, for later windows. */
   z.strictObject({ type: z.literal("terminal_end"), remaining: StatusCount }),
