@@ -121,6 +121,19 @@ def test_the_socket_is_the_persons_own() -> None:
     )
 
 
+def test_a_test_socket_named_cfo_terminal_never_claims_a_computers_server(tmp_path: Path) -> None:
+    """On a developer's machine the host's /proc also lists the computer containers' processes,
+    under the same uid. A test's backstop on `<tmp>/cfo-terminal` once matched a running image
+    test's `-L cfo-terminal` server by name and killed it (the 1006 seen on 28 Oct)."""
+    container_server = P.Proc(
+        4242, 1, "S", "tmux: server", 1, 1000, ["tmux", "-L", "cfo-terminal", "new-session"]
+    )
+    test_sessions = T.TerminalSessions(uid=1000, socket=tmp_path / "cfo-terminal")
+    assert test_sessions._server_pids({4242: container_server}) == []
+    real = T.TerminalSessions(uid=1000)
+    assert real._server_pids({4242: container_server}) == [4242]
+
+
 def test_tmux_processes_have_their_own_kind() -> None:
     def proc(comm: str, *argv: str) -> P.Proc:
         return P.Proc(10, 1, "S", comm, 1, 1000, list(argv))
