@@ -75,6 +75,7 @@ import {
   cookieSecretOf,
   decideAttempt,
   intentText,
+  justSet,
   outcomeOf,
   ownerUsernameOf,
   PLATFORM_CALL_TIMEOUT_MS,
@@ -249,6 +250,8 @@ const BOOTSTRAP_TARGET_KEY = "bootstrap_target";
 const PASSWORD_INTENT_SECRET_KEY = "owner_password_intent_secret";
 /** When a password chosen on the page was last confirmed durable, in milliseconds. */
 const PASSWORD_CHOSEN_KEY = "owner_password_chosen";
+/** The Access session that made that change, and when: the page's "done" is for it alone. */
+const PASSWORD_DONE_KEY = "owner_password_done";
 /** The times of the latest attempts that reached the server (WP3.34's limit). */
 const PASSWORD_ATTEMPTS_KEY = "owner_password_attempts";
 
@@ -1060,6 +1063,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         state: passwordState(env, this.#passwordChosenAt()),
         username: ownerUsernameOf(env),
         intentToken: await this.#passwordIntent(call.owner),
+        justSet: justSet(this.#passwordDone(), call.owner.sessionId, this.now()),
       };
     }
     const run = this.#passwordChanges.then(() => this.#setOwnerPassword(call));
@@ -1153,7 +1157,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     this.#answeredAt = Date.now();
     const result = outcomeOf(response.status, response.headers.get("x-cfo-durability"));
     if (result.action === "set" && result.outcome === "done") {
-      this.#putServerState(PASSWORD_CHOSEN_KEY, this.now());
+      this.ctx.storage.transactionSync(() => {
+        this.#putServerState(PASSWORD_CHOSEN_KEY, this.now());
+        this.#putServerState(PASSWORD_DONE_KEY, {
+          sessionId: call.owner.sessionId,
+          at: this.now(),
+        });
+      });
     } else if (result.action === "set" && result.outcome === "failed") {
       logEvent("server", "owner_password_status", { status: response.status });
     }
@@ -1186,6 +1196,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #passwordChosenAt(): number | null {
     const value = this.#serverState(PASSWORD_CHOSEN_KEY);
     return Millis.safeParse(value).success ? (value as number) : null;
+  }
+
+  #passwordDone(): { sessionId: string; at: number } | null {
+    const parsed = z
+      .object({ sessionId: z.string().max(128), at: Millis })
+      .safeParse(this.#serverState(PASSWORD_DONE_KEY));
+    return parsed.success ? parsed.data : null;
   }
 
   #passwordAttempts(): number[] {

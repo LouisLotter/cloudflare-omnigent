@@ -172,7 +172,9 @@ export async function passwordPage(
     return unavailablePage();
   }
   const word = url.searchParams.get("result");
-  if (word === "done") return donePage(state);
+  // "Done" only when OmnigentServer says this session's change was confirmed, never on the URL's
+  // word alone (Codex WP3.34 r1-3); otherwise the form, with no outcome.
+  if (word === "done" && state.justSet === true) return donePage(state);
   const result = resultOf(word);
   const page = formPage(state, null);
   if (result === null) return page;

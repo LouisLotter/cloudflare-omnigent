@@ -170,9 +170,11 @@ describe("OmnigentServer: setting the owner's password", () => {
     expect(calls[0]?.body.password).toBe(PASSWORD);
     expect(calls[0]?.body.nonce).toMatch(/^[0-9a-f]{32}$/);
     expect(passwordCalls(fake)[0]?.port).toBe(8000);
-    expect((await state(stub)).state).toBe("chosen");
+    expect(await state(stub)).toMatchObject({ state: "chosen", justSet: true });
+    // "Done" is this session's alone (Codex r1-3).
+    expect((await state(stub, OTHER_SESSION)).justSet).toBe(false);
     await evictDurableObject(stub);
-    expect((await state(stub)).state).toBe("chosen");
+    expect(await state(stub)).toMatchObject({ state: "chosen", justSet: true });
     // A second change: a fresh nonce, so a fresh signature.
     expect(await set(stub, "synthetic-second-password")).toMatchObject({ outcome: "done" });
     expect(calls[1]?.body.nonce).not.toBe(calls[0]?.body.nonce);
@@ -202,7 +204,7 @@ describe("OmnigentServer: setting the owner's password", () => {
     const { stub, answers } = await server({ CFO_OWNER_PASSWORD_ON_PAGE: "true" });
     answers.push(answer);
     expect(await set(stub)).toMatchObject({ action: "set", outcome });
-    expect((await state(stub)).state).toBe("unchosen");
+    expect(await state(stub)).toMatchObject({ state: "unchosen", justSet: false });
   });
 
   it("refuses another session's intent token, a wrong one, and sends nothing", async () => {
@@ -243,6 +245,28 @@ describe("OmnigentServer: setting the owner's password", () => {
     expect(passwordCalls(fake)).toHaveLength(MAX_ATTEMPTS);
     testServers.clock.advance(ATTEMPT_WINDOW_MS);
     expect(await set(stub)).toMatchObject({ outcome: "done" });
+  });
+
+  it("lets no more than the limit through when the attempts arrive at once", async () => {
+    const { stub, fake } = await server();
+    const token = (await state(stub)).intentToken;
+    const results = await Promise.all(
+      Array.from({ length: MAX_ATTEMPTS + 3 }, () =>
+        stub.ownerPassword({
+          action: "set",
+          interfaceVersion: v,
+          owner: OWNER,
+          intent: token,
+          password: PASSWORD,
+        }),
+      ),
+    );
+    const outcomes = results
+      .map((r) => OwnerPasswordResult.parse(r))
+      .map((r) => (r.action === "set" ? r.outcome : "state"));
+    expect(outcomes.filter((o) => o === "done")).toHaveLength(MAX_ATTEMPTS);
+    expect(outcomes.filter((o) => o === "refused")).toHaveLength(3);
+    expect(passwordCalls(fake)).toHaveLength(MAX_ATTEMPTS);
   });
 
   it("does not count a refusal before the server", async () => {

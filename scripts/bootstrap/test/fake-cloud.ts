@@ -26,6 +26,7 @@ import {
   type Installation,
   PASSWORD_SECRET,
 } from "../settings.ts";
+import { parseState } from "../state.ts";
 
 export const SWITCH_MS = 300_000;
 /** From the platform's first deploy to the server's first answer (the cron starts it). */
@@ -525,8 +526,9 @@ export class MemoryStore implements StateStore {
     this.state = state;
   }
 
+  /** Through the production parser, as the state file is read: a field it drops is lost here too. */
   load(): BootstrapState {
-    return structuredClone(this.state);
+    return parseState(JSON.stringify(this.state));
   }
 
   save(state: BootstrapState): void {

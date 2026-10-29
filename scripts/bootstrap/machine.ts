@@ -904,3 +904,24 @@ export function doneMessage(
     : `Cloudflare Access asks you to sign in, then Omnigent, as ${installation.ownerUsername}, with the password you chose`;
   return `bootstrap: done. Open ${site}: ${next}. If you ever forget the password: ${site}/platform/password`;
 }
+
+/** What `codeVersionFrom` needs of git: one command's status and output. */
+export type GitRunner = (args: string[]) => {
+  readonly status: number | null;
+  readonly stdout: string;
+};
+
+/**
+ * The code a checkout deploys: its commit, when git can say and nothing in the checkout differs
+ * from it (no change, staged or not, and no untracked file outside .gitignore, anywhere: the
+ * deploy reads the Workers, the images and the bootstrap's own rendering of their configuration);
+ * else undefined, unknown, and a finished installation is not updated to it (Codex WP3.34 r1-2).
+ */
+export function codeVersionFrom(git: GitRunner): string | undefined {
+  const head = git(["rev-parse", "--verify", "HEAD"]);
+  const commit = head.stdout.trim();
+  if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(commit)) return undefined;
+  const status = git(["status", "--porcelain", "--untracked-files=normal"]);
+  if (status.status !== 0 || status.stdout.trim() !== "") return undefined;
+  return commit;
+}

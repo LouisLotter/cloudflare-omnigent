@@ -182,6 +182,7 @@ function parseJournal(value: unknown): Journal {
     "releasedAt",
     "verifiedAt",
     "ownerPasswordGivenAt",
+    "updatedAt",
   ] as const;
   const journal: Record<string, unknown> = {};
   for (const key of times) {
@@ -213,6 +214,21 @@ function parseJournal(value: unknown): Journal {
       ...(n.versionId === undefined ? {} : { versionId: n.versionId }),
       ...(n.reason === undefined ? {} : { reason: n.reason }),
     };
+  }
+  // WP3.34: whose password the first deploy uploaded, and the code each Worker was deployed from.
+  if (j.ownerPassword !== undefined) {
+    if (j.ownerPassword !== "page" && j.ownerPassword !== "installer") {
+      throw new Error("the state file's journal.ownerPassword is neither page nor installer");
+    }
+    journal.ownerPassword = j.ownerPassword;
+  }
+  for (const key of ["platformCode", "webCode"] as const) {
+    const code = j[key];
+    if (code === undefined) continue;
+    if (typeof code !== "string" || !/^[0-9a-f]{40}$/.test(code)) {
+      throw new Error(`the state file's journal.${key} is not a commit ID`);
+    }
+    journal[key] = code;
   }
   if (j.releasedVersionId !== undefined) {
     if (typeof j.releasedVersionId !== "string") {

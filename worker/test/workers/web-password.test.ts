@@ -108,10 +108,11 @@ async function visit(
   path: string,
   init: RequestInit = {},
   who: "owner" | "stranger" | "nobody" = "owner",
+  session: string = assertion,
 ): Promise<Response> {
   const headers = new Headers(init.headers);
   if (who !== "nobody") {
-    headers.set("cf-access-jwt-assertion", who === "owner" ? assertion : stranger);
+    headers.set("cf-access-jwt-assertion", who === "owner" ? session : stranger);
   }
   const response = await web.fetch(
     new Request(`${ORIGIN}${path}`, { ...init, headers, redirect: "manual" }),
@@ -242,6 +243,13 @@ describe("web Worker: the password page behind Access (in this order)", () => {
     expect(platformCalls).toEqual([{ password: PASSWORD, valid: true }]);
     const page = await (await visit(`${PASSWORD_PATH}?result=done`)).text();
     expect(page).toContain("Your Omnigent password is set");
+    // Another Access session of the owner's sees the form, not "done" (Codex r1-3).
+    const now = Math.floor(Date.now() / 1000);
+    const other = await sign(key, claims(now, { exp: now + 3600, iat: now - 5 }));
+    const elsewhere = await (
+      await visit(`${PASSWORD_PATH}?result=done`, {}, "owner", other)
+    ).text();
+    expect(elsewhere).not.toContain("is set");
     expect(page).toContain("<strong>owner-canary</strong>");
     // Chosen: page loads now reach Omnigent, and the page is the reset.
     const home = await visit("/", { headers: navigation });

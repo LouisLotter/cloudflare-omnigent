@@ -108,8 +108,20 @@ describe("GET /platform/password", () => {
     expect(html).not.toContain("<form");
   });
 
-  it("shows the done page with the way to sign in", async () => {
-    server.passwordState = { state: "chosen", username: "owner" };
+  it("shows the done page with the way to sign in, only to the session that just set it", async () => {
+    // A URL's word alone shows the form, never "done" (Codex r1-3).
+    for (const passwordState of [
+      { state: "unchosen" as const, username: "owner" },
+      { state: "chosen" as const, username: "owner" },
+      { state: "chosen" as const, username: "owner", justSet: false },
+    ]) {
+      server.passwordState = passwordState;
+      const html = await (await visit(`${PASSWORD_PATH}?result=done`)).text();
+      expect(html).not.toContain("is set");
+      expect(html).not.toContain("data-notice=");
+      expect(html).toContain("<form");
+    }
+    server.passwordState = { state: "chosen", username: "owner", justSet: true };
     const response = await visit(`${PASSWORD_PATH}?result=done`);
     expectPageHeaders(response);
     const html = await response.text();
@@ -408,7 +420,7 @@ describe("unusual answers and forms", () => {
   });
 
   it("shows the done page without a username when the installation names none", async () => {
-    server.passwordState = { state: "chosen", username: null };
+    server.passwordState = { state: "chosen", username: null, justSet: true };
     const html = await (await visit(`${PASSWORD_PATH}?result=done`)).text();
     expect(html).toContain("Sign in to Omnigent with your new password.");
   });

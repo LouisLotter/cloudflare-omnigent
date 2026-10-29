@@ -26,6 +26,8 @@ export const COOKIE_SECRET_VAR = "SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET";
 export const OWNER_USERNAME_VAR = "SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME";
 
 export const ATTEMPT_WINDOW_MS = 10 * 60_000;
+/** How long after a confirmed change its Access session's page shows "done". */
+export const JUST_SET_MS = 10 * 60_000;
 export const MAX_ATTEMPTS = 6;
 /** One platform call: the server's hashing and its barrier's wait (10 s by default), and margin. */
 export const PLATFORM_CALL_TIMEOUT_MS = 30_000;
@@ -120,3 +122,17 @@ export const UNAVAILABLE: SetResult = {
   outcome: "unavailable",
   retryAfterSeconds: UNAVAILABLE_RETRY_S,
 };
+
+/**
+ * Whether this Access session set the password, confirmed durable, within JUST_SET_MS: the
+ * page shows "done" only then (Codex WP3.34 r1-3).
+ */
+export function justSet(
+  done: { readonly sessionId: string; readonly at: number } | null,
+  sessionId: string,
+  now: number,
+): boolean {
+  return (
+    done !== null && done.sessionId === sessionId && done.at <= now && now - done.at < JUST_SET_MS
+  );
+}

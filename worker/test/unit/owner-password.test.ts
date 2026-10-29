@@ -9,6 +9,8 @@ import {
   cookieSecretOf,
   decideAttempt,
   intentText,
+  JUST_SET_MS,
+  justSet,
   MAX_ATTEMPTS,
   OWNER_PASSWORD_ON_PAGE_VAR,
   OWNER_USERNAME_VAR,
@@ -136,5 +138,18 @@ describe("the answer to the platform call", () => {
       outcome: "unavailable",
       retryAfterSeconds: UNAVAILABLE_RETRY_S,
     });
+  });
+});
+
+describe("the session that just set it", () => {
+  const now = 50_000_000;
+  const done = { sessionId: "a".repeat(64), at: now - 1000 };
+
+  it("is told done for a while, and no other session ever", () => {
+    expect(justSet(done, "a".repeat(64), now)).toBe(true);
+    expect(justSet(done, "b".repeat(64), now)).toBe(false);
+    expect(justSet(done, "a".repeat(64), done.at + JUST_SET_MS)).toBe(false);
+    expect(justSet(done, "a".repeat(64), done.at - 1)).toBe(false);
+    expect(justSet(null, "a".repeat(64), now)).toBe(false);
   });
 });

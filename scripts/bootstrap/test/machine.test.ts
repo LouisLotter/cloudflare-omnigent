@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BootstrapRefusal,
   type BootstrapState,
+  codeVersionFrom,
   doneMessage,
   type RunContext,
   type RunOptions,
@@ -1640,5 +1641,36 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     );
     expect(doneMessage(plan, false)).toContain("with the password you chose");
     expect(doneMessage(plan, false)).toContain("/platform/password");
+  });
+
+  it("knows the code only for a clean checkout, a deployment script included (Codex r1-2)", () => {
+    const commit = "c".repeat(40);
+    const git =
+      (answers: Record<string, { status: number | null; stdout: string }>) => (args: string[]) =>
+        answers[args[0] as string] ?? { status: 1, stdout: "" };
+    const clean = {
+      "rev-parse": { status: 0, stdout: `${commit}\n` },
+      status: { status: 0, stdout: "" },
+    };
+    expect(codeVersionFrom(git(clean))).toBe(commit);
+    const calls: string[][] = [];
+    codeVersionFrom((args) => {
+      calls.push(args);
+      return clean[args[0] as "status"] ?? { status: 1, stdout: "" };
+    });
+    // The whole checkout: no pathspec that could leave out the bootstrap's own scripts.
+    expect(calls[1]).toEqual(["status", "--porcelain", "--untracked-files=normal"]);
+    for (const dirty of [" M scripts/bootstrap/settings.ts\n", "?? worker/src/new.ts\n"]) {
+      expect(
+        codeVersionFrom(git({ ...clean, status: { status: 0, stdout: dirty } })),
+      ).toBeUndefined();
+    }
+    expect(codeVersionFrom(git({ ...clean, status: { status: 128, stdout: "" } }))).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, "rev-parse": { status: 128, stdout: "" } })),
+    ).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, "rev-parse": { status: 0, stdout: "HEAD\n" } })),
+    ).toBeUndefined();
   });
 });

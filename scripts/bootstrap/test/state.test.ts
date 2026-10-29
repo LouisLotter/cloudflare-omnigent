@@ -229,6 +229,32 @@ describe("the state file", () => {
     }
   });
 
+  it("round-trips whose password was uploaded and the code deployed (WP3.34, Codex r1-1)", async () => {
+    const state = await fullState();
+    const path = join(dir, "code.json");
+    const withCode = {
+      ...state,
+      journal: {
+        ...state.journal,
+        ownerPassword: "page",
+        platformCode: "a".repeat(40),
+        webCode: "b".repeat(40),
+        updatedAt: "2026-10-29T12:00:00.000Z",
+      },
+    } as BootstrapState;
+    fileStateStore(path).save(withCode);
+    expect(fileStateStore(path).load()).toEqual(withCode);
+    const good = JSON.parse(JSON.stringify(withCode));
+    for (const [journal, message] of [
+      [{ ...good.journal, ownerPassword: "owner" }, /neither page nor installer/],
+      [{ ...good.journal, platformCode: "main" }, /journal.platformCode is not a commit ID/],
+      [{ ...good.journal, webCode: 40 }, /journal.webCode is not a commit ID/],
+      [{ ...good.journal, updatedAt: "yesterday" }, /journal.updatedAt is not a time/],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
+  });
+
   it("round-trips the R2 token's record, which holds no value (WP3.25)", async () => {
     const state = await fullState();
     const path = join(dir, "t.json");

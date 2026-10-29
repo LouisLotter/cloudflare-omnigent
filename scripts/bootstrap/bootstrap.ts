@@ -136,6 +136,7 @@ import { githubAppCommand } from "./github-app-command.ts";
 import {
   BootstrapRefusal,
   type BootstrapState,
+  codeVersionFrom,
   DEFAULT_RUN_OPTIONS,
   doneMessage,
   runBootstrap,
@@ -558,29 +559,11 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
   }
 }
 
-/**
- * The code this checkout deploys: its commit, when git can say and nothing the Workers or the
- * images are built from has changed since; else undefined (unknown: no update to it).
- */
+/** The code this checkout deploys (machine.ts, codeVersionFrom), read with git. */
 function codeVersion(): string | undefined {
-  const git = (args: string[]) =>
-    spawnSync("git", ["-C", ROOT, ...args], { encoding: "utf8", timeout: 10_000 });
-  const head = git(["rev-parse", "--verify", "HEAD"]);
-  if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) return undefined;
-  const dirty = git([
-    "status",
-    "--porcelain",
-    "--untracked-files=normal",
-    "--",
-    "worker",
-    "contracts",
-    "images",
-    "python",
-    "package.json",
-    "pnpm-lock.yaml",
-  ]);
-  if (dirty.status !== 0 || dirty.stdout.trim() !== "") return undefined;
-  return head.stdout.trim();
+  return codeVersionFrom((args) =>
+    spawnSync("git", ["-C", ROOT, ...args], { encoding: "utf8", timeout: 10_000 }),
+  );
 }
 
 /** Deletes the installation's R2 token: a step of removing the installation. */
