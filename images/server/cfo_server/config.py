@@ -78,8 +78,14 @@ SCRUBBED_ENV_PREFIXES: tuple[str, ...] = (
     "OMNIGENT_GITHUB_APP_",
     "VAULT_",
 )
+#: How long Omnigent waits for a dropped runner to reconnect before failing its session
+#: (``OMNIGENT_RUNNER_DISCONNECT_GRACE_S``; its default is the 90 s liveness lease). A computer's
+#: tunnel may drop while a capture pauses it, and RC-21 allows such a reconnect 100 s, so the
+#: design's timing budget sets 150 s (core change 12).
+RUNNER_DISCONNECT_GRACE_S = "150"
 #: Variables the image sets itself; a value from the environment is replaced.
 PINNED_ENV: Mapping[str, str] = {
+    "OMNIGENT_RUNNER_DISCONNECT_GRACE_S": RUNNER_DISCONNECT_GRACE_S,
     "OMNIGENT_AUTH_PROVIDER": "accounts",
     "OMNIGENT_AUTH_ENABLED": "1",
     "OMNIGENT_ACCOUNTS_AUTO_OPEN": "0",

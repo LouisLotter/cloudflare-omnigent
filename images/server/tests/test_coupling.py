@@ -103,6 +103,22 @@ def test_create_app_accepts_every_keyword_the_image_passes() -> None:
 
 
 @requires_omnigent
+def test_omnigent_takes_the_pinned_runner_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Omnigent ignores, with only a warning, a value outside its lease and its ceiling.
+    from omnigent.server.routes._sessions import common
+
+    name = common.RUNNER_DISCONNECT_GRACE_ENV_VAR
+    monkeypatch.setenv(name, image_config.PINNED_ENV[name])
+    common.resolve_runner_disconnect_grace_s.cache_clear()
+    try:
+        grace = common.resolve_runner_disconnect_grace_s()
+    finally:
+        common.resolve_runner_disconnect_grace_s.cache_clear()
+    assert grace == float(image_config.RUNNER_DISCONNECT_GRACE_S)
+    assert grace > 100  # RC-21's bound for a reconnect that overlaps a capture pause
+
+
+@requires_omnigent
 def test_durability_hook_is_the_one_core_change_14_documents() -> None:
     from omnigent.server import durability
 
