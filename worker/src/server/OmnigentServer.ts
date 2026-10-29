@@ -31,6 +31,9 @@
 //     GitHub setup page the same answer, read on demand. An object still on an older version
 //     than the cron's yields to it (`ensureStarted`), so a secrets change reaches the server
 //     minutes sooner than the platform's own switch.
+//   - Omnigent's MCP registry (WP5.10): the same line says whether `/v1/info` lists `mcp`
+//     (`mcpRegistry`) and which revision of the installation's MCP choices the version holds
+//     (`mcpRevision`), which the installer's `services` step waits for.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.
@@ -79,6 +82,7 @@ import {
 } from "./container-port.ts";
 import { githubAppConfigured, githubAppTagOf, githubLinkingOf } from "./github-linking.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
+import { mcpRegistryOf, mcpRevisionOf } from "./mcp-services.ts";
 import {
   constantTimeEqual,
   cookieSecretOf,
@@ -724,7 +728,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       switch (effect.type) {
         case "event":
           // A configuration error names the GitHub App the held configuration holds (WP3.36,
-          // Codex r1-2): the installer's evidence that its own App's settings are held.
+          // Codex r1-2), and the revision of its MCP choices (WP5.10): the installer's evidence
+          // that the settings it stored are the ones held.
           logEvent(
             "watchdog",
             effect.name,
@@ -732,6 +737,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
               ? {
                   ...effect.fields,
                   githubApp: await githubAppTagOf(this.env as unknown as Record<string, unknown>),
+                  mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
                 }
               : effect.fields,
           );
@@ -980,6 +986,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         // configuration, and for its own App's tag (Codex r1-1).
         githubApp: await githubAppTagOf(this.env as unknown as Record<string, unknown>),
         githubLinking: githubLinkingOf(info),
+        // WP5.10: the revision of the MCP choices this version holds (null for none), and whether
+        // Omnigent lists its MCP registry (null: its answer did not say). The installer's
+        // `services` step waits for its own revision from a server started with this version's
+        // configuration.
+        mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
+        mcpRegistry: mcpRegistryOf(info),
       });
     }
   }
