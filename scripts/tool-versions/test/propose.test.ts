@@ -254,6 +254,29 @@ describe("propose", () => {
     expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.166.0"))));
   });
 
+  it("never lets a pull request's body name an older bump than its branch holds", () => {
+    run(bumpFor("0.165.0"));
+    // The edit fails: nothing is pushed, and the next run does both.
+    gh.fail["pr edit"] = "HTTP 502";
+    const head = branchHead();
+    expect(() => run(bumpFor("0.166.0"))).toThrow(/pr edit .* failed/);
+    expect(branchHead()).toBe(head);
+    expect(run(bumpFor("0.166.0"))).toMatchObject({ kind: "updated" });
+    expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.166.0"))));
+    // The push fails after the edit: the body already names the new bump, so closing the pull
+    // request then declines the bump it describes.
+    before = { match: "HEAD:refs/heads/", act: personPushes };
+    expect(() => run(bumpFor("0.167.0"))).toThrow(/git push .* failed/);
+    expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.167.0"))));
+  });
+
+  it("puts right an open pull request whose body names another bump", () => {
+    run(bumpFor("0.165.0"));
+    (gh.prs[0] as FakePr).body = "an older body";
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "unchanged" });
+    expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.165.0"))));
+  });
+
   it("does not reopen a bump the owner closed unmerged, even with its branch deleted", () => {
     run(bumpFor("0.165.0"));
     (gh.prs[0] as FakePr).state = "closed";

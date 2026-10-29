@@ -6,7 +6,7 @@
 // person's fix on top): the run stops and says so.
 //
 // Each bump has an identity (bumpId), kept in its commit's trailer and in its pull request's
-// body. That makes every run safe to repeat:
+// body, which is updated before the branch is pushed. That makes every run safe to repeat:
 //   - the branch already holds this bump and its pull request is open: nothing is pushed, and
 //     CI is dispatched only if no dispatched CI run exists for the branch's head commit;
 //   - the branch holds it but no pull request is open: one is opened, unless the owner closed
@@ -250,6 +250,8 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
 
   if (remote !== "" && previous === id) {
     if (open !== undefined) {
+      // A body that names another bump (an earlier run failed part way) is put right.
+      if (!open.body.includes(marker(id))) edit(run, input, open);
       const ci = !ciDispatched(run, input, remote);
       if (ci) dispatchCi(run, input);
       return { kind: "unchanged", pr: open.url, ci };
@@ -278,17 +280,23 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
     "--",
     ...input.files,
   ]);
+  // An open pull request names the new bump before the branch changes, so its body never
+  // describes an older bump than its branch holds, even if the push then fails.
+  if (open !== undefined) edit(run, input, open);
   must(run, "git", ["push", `--force-with-lease=${ref}:${remote}`, "origin", `HEAD:${ref}`]);
   if (open === undefined) return create(run, input);
+  dispatchCi(run, input);
+  return { kind: "updated", pr: open.url, ci: true };
+}
+
+function edit(run: Runner, input: ProposeInput, pr: Pr): void {
   must(run, "gh", [
     "pr",
     "edit",
-    String(open.number),
+    String(pr.number),
     "--title",
     input.title,
     "--body-file",
     input.bodyFile,
   ]);
-  dispatchCi(run, input);
-  return { kind: "updated", pr: open.url, ci: true };
 }

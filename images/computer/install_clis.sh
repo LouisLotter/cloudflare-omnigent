@@ -4,6 +4,9 @@
 #
 #   sh install_clis.sh check              the image: every digest must match its build argument
 #   sh install_clis.sh record OUT_FILE    the cli-digests stage: write the digests to OUT_FILE
+#   sh install_clis.sh compare AUDITED GLOBAL
+#       record's comparison alone (its tests): AUDITED is a project's node_modules, GLOBAL a
+#       global node_modules directory
 #
 # Both read CLAUDE_CODE_VERSION and CODEX_VERSION; `check` also reads CLAUDE_CODE_TREE_SHA256,
 # CLAUDE_CODE_INSTALLED_SHA256 and CODEX_TREE_SHA256. `record` is how a version bump gets its
@@ -19,22 +22,45 @@
 # `record` first installs the same versions into a throwaway project and checks the npm
 # registry's signatures over them, and Codex's provenance attestations, with `npm audit
 # signatures` (which does not support global packages). Before anything from the packages runs,
-# the global install must hold exactly the audited packages, file for file: each CLI and its
-# linux-x64 part (the native binary), and nothing else. It also writes the integrity values npm
-# checked the audited packages against, which the tool compares with the registry metadata it
-# reads itself.
+# each CLI's global tree must be exactly the audited package plus its linux-x64 part (the native
+# binary): every file and symbolic link, and nothing else. It also writes the integrity values
+# npm checked the audited packages against, which the tool compares with the registry metadata
+# it reads itself.
 set -eu  # each check on its own line: set -e ignores a failure inside an && list
 MODE=${1:-}
 case "$MODE" in
   check) ;;
   record) OUT=${2:?record needs an output file} ;;
-  *) echo "usage: install_clis.sh check | record OUT_FILE" >&2; exit 2 ;;
+  compare) ;;
+  *) echo "usage: install_clis.sh check | record OUT_FILE | compare AUDITED GLOBAL" >&2; exit 2 ;;
 esac
-: "${CLAUDE_CODE_VERSION:?}" "${CODEX_VERSION:?}"
 REGISTRY=https://registry.npmjs.org/
 LIB=/usr/local/lib/node_modules
 CLAUDE=@anthropic-ai/claude-code
 CODEX=@openai/codex
+
+# Every file (its SHA-256) and symbolic link (its target) under a directory, by path, with the
+# directory written as PREFIX: one line each, as tree() lists them.
+listing() ( cd "$1" \
+  && { find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum; \
+       find . -type l -printf '%p -> %l\n'; } | sed "s#\./#$2/#" )
+# A CLI's global tree ($2/$3) must be exactly the audited package and its linux-x64 part, both
+# from the audited project's node_modules ($1), where npm puts them side by side.
+as_audited() {
+  test -f "$1/$3/package.json" && test -f "$1/$3-linux-x64/package.json" \
+    && test ! -e "$1/$3/node_modules" && test ! -e "$1/$3-linux-x64/node_modules" \
+    || { echo "$1: not the audited layout of $3" >&2; exit 1; }
+  want=$( { listing "$1/$3" "$3"; listing "$1/$3-linux-x64" "$3/node_modules/$3-linux-x64"; } \
+    | LC_ALL=C sort | sha256sum)
+  got=$(listing "$2/$3" "$3" | LC_ALL=C sort | sha256sum)
+  test "$got" = "$want" || { echo "$2/$3 is not the audited $3 and its linux-x64 part" >&2; exit 1; }
+}
+if [ "$MODE" = compare ]; then
+  as_audited "${2:?}" "${3:?}" "$CLAUDE"
+  as_audited "$2" "$3" "$CODEX"
+  exit 0
+fi
+: "${CLAUDE_CODE_VERSION:?}" "${CODEX_VERSION:?}"
 
 if [ "$MODE" = record ]; then
   AUDIT=$(mktemp -d)
@@ -50,27 +76,8 @@ npm install -g --ignore-scripts --no-audit --no-fund --registry="$REGISTRY" \
 npm cache clean --force
 
 if [ "$MODE" = record ]; then
-  # One package's own files (its nested node_modules left out), digested as tree() does.
-  pkgtree() ( cd "$1" \
-    && { find . -path ./node_modules -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; \
-         find . -path ./node_modules -prune -o -type l -printf '%p -> %l\n' | LC_ALL=C sort; } \
-    | sha256sum | cut -d' ' -f1 )
-  same() {
-    want=$(pkgtree "$1")
-    got=$(pkgtree "$2")
-    test "$got" = "$want" || { echo "$2 is not the audited $1" >&2; exit 1; }
-  }
-  # The packages npm installed inside a global package: names, sorted.
-  nested() ( cd "$1/node_modules" && for d in */ @*/*/; do
-      if [ -f "${d}package.json" ]; then echo "${d%/}"; fi
-    done | LC_ALL=C sort )
-  A=$AUDIT/node_modules
-  same "$A/$CLAUDE" "$LIB/$CLAUDE"
-  same "$A/$CLAUDE-linux-x64" "$LIB/$CLAUDE/node_modules/$CLAUDE-linux-x64"
-  same "$A/$CODEX" "$LIB/$CODEX"
-  same "$A/$CODEX-linux-x64" "$LIB/$CODEX/node_modules/$CODEX-linux-x64"
-  test "$(nested "$LIB/$CLAUDE")" = "$CLAUDE-linux-x64"
-  test "$(nested "$LIB/$CODEX")" = "$CODEX-linux-x64"
+  as_audited "$AUDIT/node_modules" "$LIB" "$CLAUDE"
+  as_audited "$AUDIT/node_modules" "$LIB" "$CODEX"
   integrity() { node -p "require('$AUDIT/package-lock.json').packages['node_modules/$1'].integrity"; }
   {
     echo "CLAUDE_CODE_INTEGRITY=$(integrity "$CLAUDE")"
