@@ -46,6 +46,17 @@ export const DIGEST_ARGS = [
   "CODEX_TREE_SHA256",
 ] as const;
 export type CliDigests = Record<(typeof DIGEST_ARGS)[number], string>;
+/** The integrity values npm checked the audited packages against (install_clis.sh, record). */
+export const INTEGRITY_KEYS = [
+  "CLAUDE_CODE_INTEGRITY",
+  "CLAUDE_CODE_LINUX_X64_INTEGRITY",
+  "CODEX_INTEGRITY",
+  "CODEX_LINUX_X64_INTEGRITY",
+] as const;
+export interface CliRecord {
+  readonly digests: CliDigests;
+  readonly integrity: Record<(typeof INTEGRITY_KEYS)[number], string>;
+}
 /** What the cli-digests stage is built from: the CLIs and everything in the stage under them. */
 export const DIGEST_INPUTS = [
   "CLAUDE_CODE_VERSION",
@@ -57,18 +68,19 @@ export const DIGEST_INPUTS = [
 
 export interface CheckPorts extends SourcePorts {
   /** Builds the computer Dockerfile's cli-digests stage with these build arguments. */
-  readonly recordCliDigests: (args: Readonly<Record<string, string>>) => Promise<CliDigests>;
+  readonly recordCliDigests: (args: Readonly<Record<string, string>>) => Promise<CliRecord>;
   readonly log: (message: string) => void;
 }
 
 /**
- * The cli-digests stage's output (install_clis.sh, record mode): exactly the three digests and
- * the two versions, each once. Throws on anything else, or on versions other than requested.
+ * The cli-digests stage's output (install_clis.sh, record mode): exactly the three digests, the
+ * four integrity values and the two versions, each once. Throws on anything else, or on
+ * versions other than requested.
  */
-export function parseCliDigests(
+export function parseCliRecord(
   text: string,
   versions: { readonly claudeCode: string; readonly codex: string },
-): CliDigests {
+): CliRecord {
   const seen = new Map<string, string>();
   for (const line of text.split("\n")) {
     if (line === "") continue;
@@ -76,7 +88,7 @@ export function parseCliDigests(
     if (!m || seen.has(m[1] as string)) throw new Error(`cli digests: unexpected line ${line}`);
     seen.set(m[1] as string, m[2] as string);
   }
-  const want = [...DIGEST_ARGS, "CLAUDE_CODE_VERSION", "CODEX_VERSION"];
+  const want = [...DIGEST_ARGS, ...INTEGRITY_KEYS, "CLAUDE_CODE_VERSION", "CODEX_VERSION"];
   if (seen.size !== want.length || want.some((k) => !seen.has(k))) {
     throw new Error(`cli digests: expected ${want.join(", ")}`);
   }
@@ -86,13 +98,53 @@ export function parseCliDigests(
   if (seen.get("CODEX_VERSION") !== versions.codex) {
     throw new Error("cli digests: recorded for another Codex version");
   }
-  const out = {} as CliDigests;
+  const digests = {} as CliDigests;
   for (const k of DIGEST_ARGS) {
     const v = seen.get(k) as string;
     if (!SHA256.test(v)) throw new Error(`cli digests: ${k} is not a SHA-256`);
-    out[k] = v;
+    digests[k] = v;
   }
-  return out;
+  const integrity = {} as CliRecord["integrity"];
+  for (const k of INTEGRITY_KEYS) {
+    const v = seen.get(k) as string;
+    if (!SRI_SHA512.test(v)) throw new Error(`cli digests: ${k} is not a SHA-512 integrity value`);
+    integrity[k] = v;
+  }
+  return { digests, integrity };
+}
+
+/**
+ * The registry's integrity values for the recorded versions, read here, independently of the
+ * Docker build: the audited install must have been checked against exactly these.
+ */
+async function checkIntegrity(
+  ports: SourcePorts,
+  versions: { readonly claudeCode: string; readonly codex: string },
+  recorded: CliRecord["integrity"],
+): Promise<void> {
+  const [claude, codex] = await Promise.all([
+    npmVersion(ports, "@anthropic-ai/claude-code", versions.claudeCode),
+    npmVersion(ports, "@openai/codex", versions.codex),
+  ]);
+  const parts = await Promise.all(
+    [claude, codex].map((v) => {
+      if (v.linuxX64 === undefined) throw new Error("no linux-x64 package");
+      return npmVersion(ports, v.linuxX64.name, v.linuxX64.version);
+    }),
+  );
+  const registry: CliRecord["integrity"] = {
+    CLAUDE_CODE_INTEGRITY: claude.integrity,
+    CLAUDE_CODE_LINUX_X64_INTEGRITY: (parts[0] as NpmVersion).integrity,
+    CODEX_INTEGRITY: codex.integrity,
+    CODEX_LINUX_X64_INTEGRITY: (parts[1] as NpmVersion).integrity,
+  };
+  for (const k of INTEGRITY_KEYS) {
+    if (recorded[k] !== registry[k]) {
+      throw new Error(
+        `${k}: the audited install's ${recorded[k]} is not the registry's ${registry[k]}`,
+      );
+    }
+  }
 }
 
 /** Release notes for a version of each CLI the image installs from npm. */
@@ -111,6 +163,7 @@ interface Found {
 const NOTHING: Found = { args: {} };
 
 type Pins = Record<ArgName, string>;
+const SRI_SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/;
 
 /** The version to compute pins for: the current one when reproducing, else a newer release. */
 function target(
@@ -379,7 +432,13 @@ export async function checkTools(
     ports.log(
       `recording the CLIs' tree digests (${inputs.CLAUDE_CODE_VERSION}, ${inputs.CODEX_VERSION})`,
     );
-    const digests = await ports.recordCliDigests(inputs);
+    const record = await ports.recordCliDigests(inputs);
+    await checkIntegrity(
+      ports,
+      { claudeCode: inputs.CLAUDE_CODE_VERSION as string, codex: inputs.CODEX_VERSION as string },
+      record.integrity,
+    );
+    const digests = record.digests;
     for (const name of DIGEST_ARGS) args[name] = digests[name];
     for (const [tool, versionArg, names] of [
       [

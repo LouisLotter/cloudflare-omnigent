@@ -1,6 +1,7 @@
 // Proposing a bump (WP3.37) with real git against a bare "origin" made for the test, and a
-// fake gh that records its calls: one branch, one pull request, rebuilt from main on each new
-// bump, never rewritten over a person's commit, and CI dispatched only after a push.
+// fake gh that keeps pull requests and CI runs: one branch, one pull request, rebuilt from main
+// on each new bump, never rewritten or deleted over a person's commit, every step safe to
+// repeat after a failure, and a fork's same-named branch ignored.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -9,12 +10,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyBump, title } from "../apply.ts";
 import { type Bump, COMPUTER, SERVER } from "../pins.ts";
-import { BOT, bumpId, propose, type Runner, TRAILER } from "../propose.ts";
+import { BOT, bumpId, marker, propose, type Runner, TRAILER } from "../propose.ts";
 import { computerDockerfile, serverDockerfile } from "./world.ts";
 
 let dir: string;
 let origin: string;
 let work: string;
+const BRANCH = "automation/tool-versions";
 
 function env() {
   return {
@@ -32,30 +34,73 @@ function git(cwd: string, ...args: string[]): string {
   return r.stdout.trim();
 }
 
-/** The fake gh: an open pull request (or none), and every call it got. */
+interface FakePr {
+  number: number;
+  url: string;
+  body: string;
+  state: "open" | "closed";
+  mergedAt: string | null;
+  isCrossRepository: boolean;
+}
+
+/** The fake gh: pull requests, dispatched CI runs by commit, and every call it got. */
 class FakeGh {
-  open: { number: number; url: string } | undefined;
+  prs: FakePr[] = [];
+  runs: string[] = [];
   calls: string[][] = [];
-  createError: string | undefined;
+  fail: Record<string, string> = {};
   run(args: readonly string[]) {
     this.calls.push([...args]);
-    const [a, b] = args;
-    if (a === "pr" && b === "list") {
-      return { status: 0, stdout: JSON.stringify(this.open ? [this.open] : []), stderr: "" };
+    const key = `${args[0]} ${args[1]}`;
+    const failure = this.fail[key];
+    if (failure !== undefined) {
+      delete this.fail[key];
+      return { status: 1, stdout: "", stderr: failure };
     }
-    if (a === "pr" && b === "create") {
-      if (this.createError) return { status: 1, stdout: "", stderr: this.createError };
-      this.open = { number: 7, url: "https://github.com/o/r/pull/7" };
-      return { status: 0, stdout: `${this.open.url}\n`, stderr: "" };
+    const flag = (name: string) => args[args.indexOf(name) + 1] as string;
+    const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+    if (key === "pr list") {
+      return ok(JSON.stringify(this.prs.filter((p) => p.state === flag("--state"))));
     }
-    if (a === "pr" && b === "close") this.open = undefined;
-    return { status: 0, stdout: "", stderr: "" };
+    if (key === "pr create") {
+      const number = 7 + this.prs.length;
+      const pr: FakePr = {
+        number,
+        url: `https://github.com/o/r/pull/${number}`,
+        body: readFileSync(flag("--body-file"), "utf8"),
+        state: "open",
+        mergedAt: null,
+        isCrossRepository: false,
+      };
+      this.prs.push(pr);
+      return ok(`${pr.url}\n`);
+    }
+    const pr = this.prs.find((p) => p.number === Number(args[2]));
+    if (key === "pr edit" && pr) pr.body = readFileSync(flag("--body-file"), "utf8");
+    if (key === "pr close" && pr) pr.state = "closed";
+    if (key === "run list") {
+      return ok(JSON.stringify(this.runs.includes(flag("--commit")) ? [{ databaseId: 1 }] : []));
+    }
+    if (key === "workflow run") {
+      this.runs.push(git(origin, "rev-parse", `refs/heads/${flag("--ref")}`));
+    }
+    return ok();
+  }
+  open() {
+    return this.prs.filter((p) => p.state === "open" && !p.isCrossRepository);
   }
 }
 
 let gh: FakeGh;
+/** Runs just before the first git command with an argument containing `match` (a race). */
+let before: { match: string; act: () => void } | undefined;
 const runner: Runner = (command, args) => {
   if (command === "gh") return gh.run(args);
+  const race = before;
+  if (race && args.some((a) => a.includes(race.match))) {
+    before = undefined;
+    race.act();
+  }
   const r = spawnSync(command, args, { cwd: work, encoding: "utf8", env: env() });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 };
@@ -78,6 +123,7 @@ beforeEach(() => {
   git(work, "commit", "-q", "-m", "main");
   git(work, "push", "-q", "origin", "HEAD:refs/heads/main");
   gh = new FakeGh();
+  before = undefined;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -96,63 +142,102 @@ function bumpFor(version: string): Bump {
     warnings: [],
   };
 }
+const CURRENT: Bump = { ...bumpFor("0.164.0"), changes: [], args: {} };
 
-/** One run of the workflow's propose step on a fresh checkout of main. */
-function run(bump: Bump) {
-  git(work, "checkout", "-q", "--detach", "origin/main");
+const input = (bump: Bump, changed: string[]) => ({
+  bump,
+  files: changed,
+  title: title(bump),
+  body: "body",
+  bodyFile: join(dir, "body.md"),
+  branch: BRANCH,
+  base: "main",
+  ciWorkflow: "ci.yml",
+});
+
+/** A fresh checkout of main with the bump written in, as the workflow's propose step has it. */
+function checkout(bump: Bump): string[] {
   git(work, "fetch", "-q", "origin");
+  git(work, "checkout", "-q", "--detach", "origin/main");
   git(work, "reset", "-q", "--hard", "origin/main");
-  const changed = bump.changes.length === 0 ? [] : applyBump(work, bump, files);
-  writeFileSync(join(dir, "body.md"), "body\n");
-  return propose(runner, {
-    bump,
-    files: changed,
-    title: title(bump),
-    bodyFile: join(dir, "body.md"),
-    branch: "automation/tool-versions",
-    base: "main",
-    ciWorkflow: "ci.yml",
-  });
+  return bump.changes.length === 0 ? [] : applyBump(work, bump, files);
 }
 
-const branchHead = () => git(origin, "rev-parse", "refs/heads/automation/tool-versions");
+/** One run of the workflow's propose step. */
+function run(bump: Bump) {
+  return propose(runner, input(bump, checkout(bump)));
+}
+
+function branchHead(): string | undefined {
+  const r = spawnSync("git", ["rev-parse", "--verify", "-q", `refs/heads/${BRANCH}`], {
+    cwd: origin,
+    encoding: "utf8",
+    env: env(),
+  });
+  return r.status === 0 ? r.stdout.trim() : undefined;
+}
+const calls = () => gh.calls.map((c) => c.slice(0, 2).join(" "));
+
+/** A person's commit pushed on top of the branch, from their own clone. */
+let people = 0;
+function personPushes() {
+  people += 1;
+  const clone = join(dir, `person-${people}`);
+  git(dir, "clone", "-q", "-b", BRANCH, origin, clone);
+  writeFileSync(join(clone, "fix.txt"), "a fix\n");
+  git(clone, "add", ".");
+  git(clone, "commit", "-q", "-m", "fix the tests for the new Codex");
+  git(clone, "push", "-q", "origin", `HEAD:refs/heads/${BRANCH}`);
+}
 
 describe("propose", () => {
   it("opens one pull request from a bot commit on the branch, then dispatches CI", () => {
     expect(run(bumpFor("0.165.0"))).toEqual({
       kind: "created",
       pr: "https://github.com/o/r/pull/7",
+      ci: true,
     });
-    const head = branchHead();
+    const head = branchHead() as string;
     expect(git(origin, "log", "-1", "--format=%an <%ae>", head)).toBe(`${BOT.name} <${BOT.email}>`);
     expect(git(origin, "log", "-1", `--format=%(trailers:key=${TRAILER},valueonly)`, head)).toBe(
       bumpId(bumpFor("0.165.0")),
     );
     expect(git(origin, "diff", "--name-only", "main", head)).toBe(COMPUTER);
-    expect(gh.calls.map((c) => c.slice(0, 2).join(" "))).toEqual([
-      "pr list",
-      "pr create",
-      "workflow run",
-    ]);
-    expect(gh.calls.at(-1)).toEqual([
-      "workflow",
-      "run",
-      "ci.yml",
-      "--ref",
-      "automation/tool-versions",
-    ]);
+    expect(gh.prs[0]?.body).toBe(`body\n\n${marker(bumpId(bumpFor("0.165.0")))}\n`);
+    expect(calls()).toEqual(["pr list", "pr list", "pr create", "workflow run"]);
+    expect(gh.runs).toEqual([head]);
   });
 
-  it("pushes nothing and starts no CI when the same bump is already proposed", () => {
+  it("pushes nothing and starts no CI again when the same bump is already proposed", () => {
     run(bumpFor("0.165.0"));
     const head = branchHead();
     gh.calls = [];
     expect(run(bumpFor("0.165.0"))).toEqual({
       kind: "unchanged",
       pr: "https://github.com/o/r/pull/7",
+      ci: false,
     });
     expect(branchHead()).toBe(head);
-    expect(gh.calls.map((c) => c[1])).toEqual(["list"]);
+    expect(calls()).toEqual(["pr list", "run list"]);
+  });
+
+  it("dispatches CI on the next run when the dispatch failed", () => {
+    gh.fail["workflow run"] = "HTTP 500";
+    expect(() => run(bumpFor("0.165.0"))).toThrow(/workflow run .* failed/);
+    expect(gh.open()).toHaveLength(1);
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "unchanged", ci: true });
+    expect(gh.runs).toEqual([branchHead()]);
+  });
+
+  it("opens the pull request on the next run when opening it failed", () => {
+    gh.fail["pr create"] =
+      "pull request create failed: GitHub Actions is not permitted to create or approve pull requests";
+    expect(() => run(bumpFor("0.165.0"))).toThrow(/can_approve_pull_request_reviews=true/);
+    const head = branchHead();
+    expect(head).toBeDefined();
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "created", ci: true });
+    expect(branchHead()).toBe(head);
+    expect(gh.runs).toEqual([head]);
   });
 
   it("rebuilds the branch from main for a newer bump and updates the same pull request", () => {
@@ -161,76 +246,78 @@ describe("propose", () => {
     expect(run(bumpFor("0.166.0"))).toEqual({
       kind: "updated",
       pr: "https://github.com/o/r/pull/7",
+      ci: true,
     });
-    expect(git(origin, "rev-list", "--count", "main..automation/tool-versions")).toBe("1");
-    expect(gh.calls.map((c) => c.slice(0, 2).join(" "))).toEqual([
-      "pr list",
-      "pr edit",
-      "workflow run",
-    ]);
+    expect(git(origin, "rev-list", "--count", `main..${BRANCH}`)).toBe("1");
+    expect(calls()).toEqual(["pr list", "pr edit", "workflow run"]);
     expect(gh.calls[1]).toContain("7");
+    expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.166.0"))));
   });
 
-  it("does not reopen a bump the owner closed unmerged, until it changes", () => {
+  it("does not reopen a bump the owner closed unmerged, even with its branch deleted", () => {
     run(bumpFor("0.165.0"));
-    gh.open = undefined;
+    (gh.prs[0] as FakePr).state = "closed";
     expect(run(bumpFor("0.165.0"))).toEqual({ kind: "declined" });
-    expect(run(bumpFor("0.166.0")).kind).toBe("created");
+    git(origin, "update-ref", "-d", `refs/heads/${BRANCH}`);
+    expect(run(bumpFor("0.165.0"))).toEqual({ kind: "declined" });
+    expect(branchHead()).toBeUndefined();
+    expect(run(bumpFor("0.166.0"))).toMatchObject({ kind: "created" });
   });
 
-  it("never rewrites a branch holding a person's commit", () => {
+  it("never rewrites a branch holding a person's commit, nor closes its pull request", () => {
     run(bumpFor("0.165.0"));
-    const clone = join(dir, "person");
-    git(dir, "clone", "-q", "-b", "automation/tool-versions", origin, clone);
-    writeFileSync(join(clone, "fix.txt"), "a fix\n");
-    git(clone, "add", ".");
-    git(clone, "commit", "-q", "-m", "fix the tests for the new Codex");
-    git(clone, "push", "-q", "origin", "HEAD:refs/heads/automation/tool-versions");
+    personPushes();
     const head = branchHead();
-    const outcome = run(bumpFor("0.166.0"));
-    expect(outcome.kind).toBe("held");
+    expect(run(bumpFor("0.166.0")).kind).toBe("held");
     expect(branchHead()).toBe(head);
-    // Nor is its pull request closed when main catches up.
-    expect(run({ ...bumpFor("0.166.0"), changes: [], args: {} }).kind).toBe("held");
+    expect(run(CURRENT).kind).toBe("held");
     expect(gh.calls.some((c) => c[1] === "close")).toBe(false);
   });
 
-  it("closes the open pull request once main pins everything", () => {
+  it("closes the open pull request and deletes the branch once main pins everything", () => {
     run(bumpFor("0.165.0"));
-    expect(run({ ...bumpFor("0.165.0"), changes: [], args: {} })).toEqual({
-      kind: "closed",
-      pr: "https://github.com/o/r/pull/7",
-    });
+    expect(run(CURRENT)).toEqual({ kind: "closed", pr: "https://github.com/o/r/pull/7" });
     expect(gh.calls.at(-1)?.slice(0, 3)).toEqual(["pr", "close", "7"]);
-    expect(gh.calls.at(-1)).toContain("--delete-branch");
+    expect(branchHead()).toBeUndefined();
+  });
+
+  it("keeps a commit pushed between the inspection and the branch's deletion", () => {
+    run(bumpFor("0.165.0"));
+    before = { match: `:refs/heads/${BRANCH}`, act: personPushes };
+    expect(() => run(CURRENT)).toThrow(/git push .* failed/);
+    expect(git(origin, "log", "-1", "--format=%s", `refs/heads/${BRANCH}`)).toBe(
+      "fix the tests for the new Codex",
+    );
   });
 
   it("does nothing when everything is current and no pull request is open", () => {
-    expect(run({ ...bumpFor("0.165.0"), changes: [], args: {} })).toEqual({ kind: "nothing" });
-    expect(gh.calls.map((c) => c[1])).toEqual(["list"]);
+    expect(run(CURRENT)).toEqual({ kind: "nothing" });
+    expect(calls()).toEqual(["pr list"]);
+  });
+
+  it("ignores a fork's pull request from a branch with the same name", () => {
+    gh.prs.push({
+      number: 3,
+      url: "https://github.com/o/r/pull/3",
+      body: "a fork's",
+      state: "open",
+      mergedAt: null,
+      isCrossRepository: true,
+    });
+    expect(run(CURRENT)).toEqual({ kind: "nothing" });
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "created" });
+    expect(gh.prs.find((p) => p.number === 3)?.body).toBe("a fork's");
+    expect(gh.calls.some((c) => c[1] === "edit" || c[1] === "close")).toBe(false);
   });
 
   it("refuses files other than the Dockerfiles, and changes the bump did not make", () => {
-    const input = {
-      bump: bumpFor("0.165.0"),
-      title: "t",
-      bodyFile: "b",
-      branch: "automation/tool-versions",
-      base: "main",
-      ciWorkflow: "ci.yml",
-    };
-    expect(() => propose(runner, { ...input, files: [".github/workflows/ci.yml"] })).toThrow(
+    const bump = bumpFor("0.165.0");
+    expect(() => propose(runner, input(bump, [".github/workflows/ci.yml"]))).toThrow(
       /refusing to commit/,
     );
-    expect(() => propose(runner, { ...input, files: [] })).toThrow(/must change a Dockerfile/);
+    expect(() => propose(runner, input(bump, []))).toThrow(/must change a Dockerfile/);
     writeFileSync(join(work, SERVER), `${serverDockerfile()}# stray\n`);
-    expect(() => propose(runner, { ...input, files: [COMPUTER] })).toThrow(/not the bump's/);
-  });
-
-  it("says how to allow pull requests from Actions when GitHub refuses one", () => {
-    gh.createError =
-      "pull request create failed: GitHub Actions is not permitted to create or approve pull requests";
-    expect(() => run(bumpFor("0.165.0"))).toThrow(/can_approve_pull_request_reviews=true/);
+    expect(() => propose(runner, input(bump, [COMPUTER]))).toThrow(/not the bump's/);
   });
 
   it("reports any other failed command", () => {
@@ -238,36 +325,22 @@ describe("propose", () => {
       command === "git" && args[0] === "status"
         ? { status: 128, stdout: "", stderr: "not a git repository" }
         : runner(command, args);
-    expect(() =>
-      propose(failing, {
-        bump: { ...bumpFor("0.165.0"), changes: [], args: {} },
-        files: [],
-        title: "t",
-        bodyFile: "b",
-        branch: "x",
-        base: "main",
-        ciWorkflow: "ci.yml",
-      }),
-    ).toThrow(/git status .* failed \(128\): not a git repository/);
+    expect(() => propose(failing, input(CURRENT, []))).toThrow(
+      /git status .* failed \(128\): not a git repository/,
+    );
   });
 
-  it("refuses an unexpected answer from gh pr list", () => {
+  it.each([
+    ["pr list", '[{"number":"7"}]', /unexpected answer/],
+    ["pr list", "{}", /gh pr list: not a list/],
+    ["run list", "{}", /gh run list: not a list/],
+  ])("refuses an unexpected answer from gh %s", (which, stdout, error) => {
+    run(bumpFor("0.165.0"));
     const odd: Runner = (command, args) =>
-      command === "gh"
-        ? { status: 0, stdout: '[{"number":"7"}]', stderr: "" }
+      command === "gh" && `${args[0]} ${args[1]}` === which
+        ? { status: 0, stdout, stderr: "" }
         : runner(command, args);
-    const input = {
-      bump: { ...bumpFor("0.165.0"), changes: [], args: {} },
-      files: [],
-      title: "t",
-      bodyFile: "b",
-      branch: "x",
-      base: "main",
-      ciWorkflow: "ci.yml",
-    };
-    expect(() => propose(odd, input)).toThrow(/unexpected answer/);
-    const notList: Runner = (command, args) =>
-      command === "gh" ? { status: 0, stdout: "{}", stderr: "" } : runner(command, args);
-    expect(() => propose(notList, input)).toThrow(/not a list/);
+    const bump = bumpFor("0.165.0");
+    expect(() => propose(odd, input(bump, checkout(bump)))).toThrow(error);
   });
 });

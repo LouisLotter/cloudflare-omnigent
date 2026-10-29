@@ -14,9 +14,15 @@
 # tarball against the registry's integrity value), the extracted trees must match the digests
 # (every file's path and SHA-256, every symbolic link's target), and only then does Claude
 # Code's own postinstall (install.cjs, which links its native binary over bin/claude.exe) run,
-# after which the tree is checked again. Codex has no scripts. `record` first checks the npm
-# registry's signatures for the same versions, and Codex's provenance attestations, with
-# `npm audit signatures` in a throwaway project (it does not support global packages).
+# after which the tree is checked again. Codex has no scripts.
+#
+# `record` first installs the same versions into a throwaway project and checks the npm
+# registry's signatures over them, and Codex's provenance attestations, with `npm audit
+# signatures` (which does not support global packages). Before anything from the packages runs,
+# the global install must hold exactly the audited packages, file for file: each CLI and its
+# linux-x64 part (the native binary), and nothing else. It also writes the integrity values npm
+# checked the audited packages against, which the tool compares with the registry metadata it
+# reads itself.
 set -eu  # each check on its own line: set -e ignores a failure inside an && list
 MODE=${1:-}
 case "$MODE" in
@@ -37,12 +43,43 @@ if [ "$MODE" = record ]; then
     && npm install --ignore-scripts --no-audit --no-fund --save-exact --registry="$REGISTRY" \
          "$CLAUDE@${CLAUDE_CODE_VERSION}" "$CODEX@${CODEX_VERSION}" \
     && npm audit signatures --registry="$REGISTRY")
-  rm -rf "$AUDIT"
 fi
 
 npm install -g --ignore-scripts --no-audit --no-fund --registry="$REGISTRY" \
   "$CLAUDE@${CLAUDE_CODE_VERSION}" "$CODEX@${CODEX_VERSION}"
 npm cache clean --force
+
+if [ "$MODE" = record ]; then
+  # One package's own files (its nested node_modules left out), digested as tree() does.
+  pkgtree() ( cd "$1" \
+    && { find . -path ./node_modules -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; \
+         find . -path ./node_modules -prune -o -type l -printf '%p -> %l\n' | LC_ALL=C sort; } \
+    | sha256sum | cut -d' ' -f1 )
+  same() {
+    want=$(pkgtree "$1")
+    got=$(pkgtree "$2")
+    test "$got" = "$want" || { echo "$2 is not the audited $1" >&2; exit 1; }
+  }
+  # The packages npm installed inside a global package: names, sorted.
+  nested() ( cd "$1/node_modules" && for d in */ @*/*/; do
+      if [ -f "${d}package.json" ]; then echo "${d%/}"; fi
+    done | LC_ALL=C sort )
+  A=$AUDIT/node_modules
+  same "$A/$CLAUDE" "$LIB/$CLAUDE"
+  same "$A/$CLAUDE-linux-x64" "$LIB/$CLAUDE/node_modules/$CLAUDE-linux-x64"
+  same "$A/$CODEX" "$LIB/$CODEX"
+  same "$A/$CODEX-linux-x64" "$LIB/$CODEX/node_modules/$CODEX-linux-x64"
+  test "$(nested "$LIB/$CLAUDE")" = "$CLAUDE-linux-x64"
+  test "$(nested "$LIB/$CODEX")" = "$CODEX-linux-x64"
+  integrity() { node -p "require('$AUDIT/package-lock.json').packages['node_modules/$1'].integrity"; }
+  {
+    echo "CLAUDE_CODE_INTEGRITY=$(integrity "$CLAUDE")"
+    echo "CLAUDE_CODE_LINUX_X64_INTEGRITY=$(integrity "$CLAUDE-linux-x64")"
+    echo "CODEX_INTEGRITY=$(integrity "$CODEX")"
+    echo "CODEX_LINUX_X64_INTEGRITY=$(integrity "$CODEX-linux-x64")"
+  } > "$OUT"
+  rm -rf "$AUDIT"
+fi
 
 # The digest of an installed package's tree: every file's SHA-256 by path, then every
 # symbolic link's target, in byte order. Unchanged since the image first pinned the CLIs.
@@ -67,7 +104,6 @@ digest() {
 
 installed "$CLAUDE" "$CLAUDE_CODE_VERSION"
 installed "$CODEX" "$CODEX_VERSION"
-if [ "$MODE" = record ]; then : > "$OUT"; fi
 digest CLAUDE_CODE_TREE_SHA256 "$CLAUDE"
 digest CODEX_TREE_SHA256 "$CODEX"
 (cd "$LIB/$CLAUDE" && node install.cjs)

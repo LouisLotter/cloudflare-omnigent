@@ -7,7 +7,8 @@ import type { Fetch } from "../sources.ts";
 
 export const sha256 = (data: string | Uint8Array) =>
   createHash("sha256").update(data).digest("hex");
-const integrity = (data: string) => `sha512-${createHash("sha512").update(data).digest("base64")}`;
+export const integrity = (data: string) =>
+  `sha512-${createHash("sha512").update(data).digest("base64")}`;
 
 export const CURRENT = {
   claude: "2.1.311",
@@ -20,6 +21,14 @@ export const CURRENT = {
   python: "3.12.15",
   node: "22.23.4",
 } as const;
+
+/** The integrity values the world's registry gives the CLIs' packages and linux-x64 parts. */
+export const integrities = (claude: string, codex: string) => ({
+  CLAUDE_CODE_INTEGRITY: integrity(`@anthropic-ai/claude-code@${claude}`),
+  CLAUDE_CODE_LINUX_X64_INTEGRITY: integrity(`@anthropic-ai/claude-code-linux-x64@${claude}`),
+  CODEX_INTEGRITY: integrity(`@openai/codex@${codex}`),
+  CODEX_LINUX_X64_INTEGRITY: integrity(`@openai/codex@${codex}-linux-x64`),
+});
 
 export const DIGESTS = {
   CLAUDE_CODE_TREE_SHA256: "a".repeat(64),

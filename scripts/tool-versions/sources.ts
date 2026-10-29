@@ -6,7 +6,9 @@
 //   - npm: the version's `dist.integrity` (SHA-512) and registry signatures exist, and Codex's
 //     provenance attestation is still published. npm itself checks every tarball against that
 //     integrity value when it installs, and `npm audit signatures` (install_clis.sh, record
-//     mode) verifies the registry's signatures and the provenance, in the image's own stage.
+//     mode) verifies the registry's signatures and the provenance, in the image's own stage,
+//     on packages that must then be the installed ones file for file; check.ts compares their
+//     integrity values with the ones read here.
 //   - GitHub release downloads (gh, ttyd): the file's SHA-256 equals the line for it in the
 //     release's own checksum file (gh_<v>_checksums.txt, SHA256SUMS), and, where GitHub
 //     records one, the asset's upload digest. That shows the bytes are the ones the release

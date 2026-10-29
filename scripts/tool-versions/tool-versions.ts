@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { applyBump, body, type Files, title } from "./apply.ts";
-import { type CliDigests, checkTools, parseCliDigests } from "./check.ts";
+import { type CliRecord, checkTools, parseCliRecord } from "./check.ts";
 import { COMPUTER, parseBump, SERVER, type Texts } from "./pins.ts";
 import { propose } from "./propose.ts";
 
@@ -52,7 +52,7 @@ function summary(markdown: string): void {
 }
 
 /** Builds the computer Dockerfile's cli-digests stage and reads what it recorded. */
-async function recordCliDigests(args: Readonly<Record<string, string>>): Promise<CliDigests> {
+async function recordCliDigests(args: Readonly<Record<string, string>>): Promise<CliRecord> {
   const out = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "cfo-cli-digests-"));
   try {
     const build = spawnSync(
@@ -84,7 +84,7 @@ async function recordCliDigests(args: Readonly<Record<string, string>>): Promise
       },
     );
     if (build.status !== 0) throw new Error(`docker build --target cli-digests: ${build.status}`);
-    return parseCliDigests(readFileSync(join(out, "cli-digests.env"), "utf8"), {
+    return parseCliRecord(readFileSync(join(out, "cli-digests.env"), "utf8"), {
       claudeCode: args.CLAUDE_CODE_VERSION as string,
       codex: args.CODEX_VERSION as string,
     });
@@ -150,7 +150,6 @@ async function main(argv: string[]): Promise<number> {
     }
     const bodyFile =
       values["body-file"] ?? join(mkdtempSync(join(tmpdir(), "cfo-tool-versions-")), "body.md");
-    writeFileSync(bodyFile, body(bump));
     const run = (cmd: string, args: readonly string[]) => {
       const r = spawnSync(cmd, args, { cwd: ROOT, encoding: "utf8", timeout: 5 * 60_000 });
       return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -159,6 +158,7 @@ async function main(argv: string[]): Promise<number> {
       bump,
       files: changed,
       title: title(bump),
+      body: body(bump),
       bodyFile,
       branch: values.branch,
       base: values.base,
@@ -174,8 +174,9 @@ async function main(argv: string[]): Promise<number> {
       held: "the branch has commits the workflow did not make; left it as it is",
     };
     const where = "pr" in outcome ? ` (${outcome.pr})` : "";
-    log(`${say[outcome.kind]}${where}`);
-    summary(`${say[outcome.kind]}${where}`);
+    const ci = outcome.kind === "unchanged" && outcome.ci ? "; started CI, which had not run" : "";
+    log(`${say[outcome.kind]}${where}${ci}`);
+    summary(`${say[outcome.kind]}${where}${ci}`);
     if (outcome.kind === "held") {
       log(
         `commits: ${outcome.commits.join("; ")}. Merge or close the pull request, or delete the branch.`,

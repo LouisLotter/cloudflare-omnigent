@@ -3,7 +3,7 @@
 // and any failed lookup or check rejects the whole check.
 
 import { describe, expect, it, vi } from "vitest";
-import { type CliDigests, checkTools, parseCliDigests } from "../check.ts";
+import { type CliDigests, checkTools, parseCliRecord } from "../check.ts";
 import { parsePyPin } from "../pins.ts";
 import {
   CURRENT,
@@ -11,6 +11,7 @@ import {
   DIGESTS,
   ghSha,
   image,
+  integrities,
   NODE,
   serverDockerfile,
   texts,
@@ -27,7 +28,11 @@ const NEW_DIGESTS: CliDigests = {
 
 function setup(digests: CliDigests = NEW_DIGESTS) {
   const world = new World();
-  const record = vi.fn(async (_args: Readonly<Record<string, string>>) => digests);
+  // As install_clis.sh records: the digests, and the integrity values of what it installed.
+  const record = vi.fn(async (args: Readonly<Record<string, string>>) => ({
+    digests,
+    integrity: integrities(args.CLAUDE_CODE_VERSION as string, args.CODEX_VERSION as string),
+  }));
   const logs: string[] = [];
   const ports = { fetch: world.fetch, recordCliDigests: record, log: (m: string) => logs.push(m) };
   return { world, record, logs, ports };
@@ -226,6 +231,25 @@ describe("checkTools", () => {
     await expect(checkTools(texts(), failing)).rejects.toThrow(/build failed/);
   });
 
+  it("rejects the whole check when the audited install is not what the registry describes", async () => {
+    const { world, ports } = setup();
+    world.latest.claude = "2.1.312";
+    const swapped = {
+      ...ports,
+      recordCliDigests: async (args: Readonly<Record<string, string>>) => ({
+        digests: NEW_DIGESTS,
+        integrity: {
+          ...integrities(args.CLAUDE_CODE_VERSION as string, args.CODEX_VERSION as string),
+          CLAUDE_CODE_LINUX_X64_INTEGRITY: integrities("6.6.6", "0")
+            .CLAUDE_CODE_LINUX_X64_INTEGRITY,
+        },
+      }),
+    };
+    await expect(checkTools(texts(), swapped)).rejects.toThrow(
+      /CLAUDE_CODE_LINUX_X64_INTEGRITY: the audited install's .* is not the registry's/,
+    );
+  });
+
   it("refuses a release whose tag the Dockerfile's URL would not build", async () => {
     const { world, ports } = setup();
     world.latest.ttyd = "1.7.8";
@@ -270,22 +294,26 @@ describe("checkTools", () => {
   });
 });
 
-describe("parseCliDigests", () => {
+describe("parseCliRecord", () => {
   const good = [
     `CLAUDE_CODE_TREE_SHA256=${"a".repeat(64)}`,
     `CODEX_TREE_SHA256=${"c".repeat(64)}`,
     `CLAUDE_CODE_INSTALLED_SHA256=${"b".repeat(64)}`,
+    ...Object.entries(integrities("2.1.312", "0.165.0")).map(([k, v]) => `${k}=${v}`),
     "CLAUDE_CODE_VERSION=2.1.312",
     "CODEX_VERSION=0.165.0",
     "",
   ].join("\n");
   const versions = { claudeCode: "2.1.312", codex: "0.165.0" };
 
-  it("reads exactly the three digests for the requested versions", () => {
-    expect(parseCliDigests(good, versions)).toEqual({
-      CLAUDE_CODE_TREE_SHA256: "a".repeat(64),
-      CLAUDE_CODE_INSTALLED_SHA256: "b".repeat(64),
-      CODEX_TREE_SHA256: "c".repeat(64),
+  it("reads exactly the three digests and four integrity values for the requested versions", () => {
+    expect(parseCliRecord(good, versions)).toEqual({
+      digests: {
+        CLAUDE_CODE_TREE_SHA256: "a".repeat(64),
+        CLAUDE_CODE_INSTALLED_SHA256: "b".repeat(64),
+        CODEX_TREE_SHA256: "c".repeat(64),
+      },
+      integrity: integrities("2.1.312", "0.165.0"),
     });
   });
 
@@ -301,7 +329,12 @@ describe("parseCliDigests", () => {
       /another Codex/,
     ],
     ["a malformed digest", good.replace("a".repeat(64), "a".repeat(63)), /not a SHA-256/],
+    [
+      "a malformed integrity value",
+      good.replace(/^CODEX_INTEGRITY=sha512-/m, "CODEX_INTEGRITY=sha1-"),
+      /CODEX_INTEGRITY is not a SHA-512/,
+    ],
   ])("refuses %s", (_what, text, error) => {
-    expect(() => parseCliDigests(text, versions)).toThrow(error);
+    expect(() => parseCliRecord(text, versions)).toThrow(error);
   });
 });
