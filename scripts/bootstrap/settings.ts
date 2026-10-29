@@ -742,3 +742,47 @@ export function renderWebConfig(
     },
   };
 }
+
+/** What `install` was given, to compare with a plan already made (bootstrap.ts). */
+export interface InstallRequest {
+  readonly hostname: string;
+  readonly ownerEmail: string;
+  readonly ownerUsername: string;
+  readonly accountId?: string | undefined;
+  readonly platformWorker?: string | undefined;
+  readonly webWorker?: string | undefined;
+  readonly replicaUrl?: string | undefined;
+  readonly replicaEndpoint?: string | undefined;
+  readonly artifactsUrl?: string | undefined;
+  readonly artifactsEndpoint?: string | undefined;
+}
+
+/**
+ * How a plan already made differs from what `install` was given now: each option given that
+ * the plan does not hold (Codex WP3.31 r1-3). Empty: the same installation, which `install`
+ * continues. An option left out is not compared: the plan's own value stands.
+ */
+export async function planConflicts(
+  plan: Installation,
+  request: InstallRequest,
+): Promise<string[]> {
+  const pin = parseOwnerPin(plan.ownerPin);
+  const given: [string, string | undefined, string | undefined][] = [
+    ["the hostname", request.hostname, plan.hostname],
+    ["the owner's username", request.ownerUsername, plan.ownerUsername],
+    ["the account", request.accountId, plan.accountId],
+    ["the platform Worker", request.platformWorker, plan.platformWorker],
+    ["the web Worker", request.webWorker, plan.webWorker],
+    ["the replica URL", request.replicaUrl, plan.replica.url],
+    ["the replica endpoint", request.replicaEndpoint, plan.replica.endpoint],
+    ["the artifacts URL", request.artifactsUrl, plan.artifacts?.url],
+    ["the artifacts endpoint", request.artifactsEndpoint, plan.artifacts?.endpoint],
+  ];
+  const conflicts = given.flatMap(([what, wanted, held]) =>
+    wanted !== undefined && wanted !== held ? [what] : [],
+  );
+  if (pin === undefined || !(await pin.matches(request.ownerEmail))) {
+    conflicts.push("the owner's address");
+  }
+  return conflicts;
+}

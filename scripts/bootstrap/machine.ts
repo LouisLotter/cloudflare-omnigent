@@ -12,7 +12,9 @@
 //      with the one click that deletes it. A login that may not make tokens (403) gets the
 //      dashboard step in one sentence, and is asked for that token's two values;
 //   2. reads the hostname's Access application and checks that it is owner-only (no bypass, no
-//      service token, the owner's pin as its one identity) and sets SameSite=lax;
+//      service token, the owner's pin as its one identity) and sets SameSite=lax. In the
+//      installer's own account (an AccessApi), the run creates that application first, before
+//      the platform deploy, when the hostname has none (access-app.ts, owner decision D35);
 //   3. deploys the web Worker with ingress's variables, behind that Access application;
 //   4. waits for the watchdog's bootstrap status in Workers Logs showing this installation's
 //      owner initialized and durable (events.ts). The cron starts the server within a minute:
@@ -38,9 +40,18 @@
 // (bootstrap.ts takes a lock per account and Worker name, whatever the state file).
 //
 // Never: a request to the installation (`POST /auth/setup` included), an Access bypass or
-// service token, a secret value in the journal or the log.
+// service token, a change to an Access application the bootstrap did not create, a secret value
+// in the journal or the log.
 
 import type { BootstrapStatus } from "../../contracts/src/index.ts";
+import {
+  type AccessApi,
+  type AccessRecords,
+  AccessRefusal,
+  ensureOwnerAccess,
+  type RecordedAccessApp,
+  type RecordedLoginMethod,
+} from "./access-app.ts";
 import {
   decide,
   FRESH_MS,
@@ -160,6 +171,15 @@ export interface Journal {
   readonly r2Token?: RecordedToken;
   /** Tokens the bootstrap made and no longer uses, which Cloudflare did not let it delete. */
   readonly r2TokensToDelete?: readonly LeftToken[];
+  /** The hostname's Access application, when the bootstrap created it: its name and ID. */
+  readonly accessApp?: RecordedAccessApp;
+  /** The one-time PIN login method, when the bootstrap added it to an account that had none. */
+  readonly accessLoginMethod?: RecordedLoginMethod;
+  /**
+   * When the installer last gave the owner's password for an upload: a later run that must ask
+   * again knows that one never reached the Worker. Never the password.
+   */
+  readonly ownerPasswordGivenAt?: string;
 }
 
 export interface BootstrapState {
@@ -183,8 +203,15 @@ export interface RunContext {
     readonly platform: Readonly<Record<string, unknown>>;
     readonly web: Readonly<Record<string, unknown>>;
   };
-  /** The installer's secrets; called only when one of them must be uploaded. */
-  readonly secrets: () => SuppliedSecrets;
+  /**
+   * The installer's secrets; called only when one of them must be uploaded, and told whether
+   * the owner's password is among them (the CLI then generates it, or asks for it), and
+   * whether an earlier run's password never reached the Worker (`again`).
+   */
+  readonly secrets: (need: {
+    readonly password: boolean;
+    readonly again: boolean;
+  }) => SuppliedSecrets | Promise<SuppliedSecrets>;
   /**
    * The installer's user API tokens, through their `cf` login: the R2 credentials are made
    * with it when the installer supplied none. Without it, they must be supplied.
@@ -195,6 +222,14 @@ export interface RunContext {
    * their login may not make tokens, and only where someone can answer (a terminal).
    */
   readonly askR2?: (step: string) => Promise<S3Credentials>;
+  /**
+   * Access in the installer's own account, through their `cf` login: the run creates the
+   * hostname's owner-only application when it has none. Without it (staging), the cloud's
+   * `access` reads and checks the application only.
+   */
+  readonly accessApi?: AccessApi;
+  /** The owner's address, given to this run: only to create the Access application. */
+  readonly ownerEmail?: string;
   readonly random: (bytes: number) => Uint8Array;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
@@ -331,6 +366,44 @@ export async function runBootstrap(
     now: ctx.now,
     log: ctx.log,
   });
+  // The Access records are replaced whole, and left out when empty.
+  const accessRecords = (records: AccessRecords) => {
+    const { accessApp: _app, accessLoginMethod: _method, ...rest } = state.journal;
+    state = {
+      ...state,
+      journal: {
+        ...rest,
+        ...(records.app === undefined ? {} : { accessApp: records.app }),
+        ...(records.loginMethod === undefined ? {} : { accessLoginMethod: records.loginMethod }),
+      },
+    };
+    ctx.store.save(state);
+  };
+  // Created when missing (installer's account), or read (staging); checked owner-only either way.
+  const ownerAccess = async (): Promise<AccessSettings> => {
+    if (ctx.accessApi === undefined) return ctx.cloud.access(plan);
+    try {
+      return await ensureOwnerAccess({
+        api: ctx.accessApi,
+        plan,
+        ownerEmail: ctx.ownerEmail,
+        recorded: () => ({
+          ...(state.journal.accessApp === undefined ? {} : { app: state.journal.accessApp }),
+          ...(state.journal.accessLoginMethod === undefined
+            ? {}
+            : { loginMethod: state.journal.accessLoginMethod }),
+        }),
+        record: accessRecords,
+        now: ctx.now,
+        sleep: ctx.sleep,
+        nonce: () => hex(ctx.random(4)),
+        log: ctx.log,
+      });
+    } catch (error) {
+      if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+      throw error;
+    }
+  };
   const names = async (worker = plan.platformWorker) => {
     const listed = await ctx.cloud.secretNames(worker);
     return listed === null ? null : new Set(listed);
@@ -372,13 +445,25 @@ export async function runBootstrap(
   };
   await ours(plan.platformWorker);
   if (state.journal.webDeployedAt === undefined) await ours(plan.webWorker);
+  // In the installer's own account, Access first: a hostname that cannot have its owner-only
+  // application stops the run before anything is deployed (design: Access before the Worker).
+  if (ctx.accessApi !== undefined && state.journal.webDeployedAt === undefined) await ownerAccess();
 
   // 1. The platform Worker.
   if (secrets === null || state.journal.platformDeployedAt === undefined) {
     const present = secrets ?? new Set<string>();
     const lacksR2 = r2SecretNames(plan).some((name) => !present.has(name));
     const needsInstaller = !present.has(PASSWORD_SECRET) || lacksR2;
-    const given = needsInstaller ? ctx.secrets() : {};
+    const needsPassword = !present.has(PASSWORD_SECRET);
+    const given = needsInstaller
+      ? await ctx.secrets({
+          password: needsPassword,
+          again: needsPassword && state.journal.ownerPasswordGivenAt !== undefined,
+        })
+      : {};
+    if (needsPassword && given.ownerPassword !== undefined) {
+      record({ ownerPasswordGivenAt: iso(ctx.now()) });
+    }
     // The bootstrap makes the R2 token itself unless the installer gave one's values. Without
     // the installer's token API, missing values are named as any missing secret is.
     const makesToken = lacksR2 && ctx.r2Tokens !== undefined && !suppliesR2(plan, given);
@@ -440,11 +525,12 @@ export async function runBootstrap(
     record({ platformDeployedAt: iso(ctx.now()) });
   }
 
-  // 2. Access, read and checked just before; 3. the web Worker behind it. The staging adapter
+  // 2. Access, read and checked just before (and created first in the installer's account, as
+  // above); 3. the web Worker behind it. The staging adapter
   // may deploy the web Worker to create its Access application; that deploy carries the
   // installation's ID too, so the check before the web deploy recognises it.
   if (state.journal.webDeployedAt === undefined) {
-    const found = await ctx.cloud.access(plan);
+    const found = await ownerAccess();
     const accessIssues = accessProblems(plan, found);
     if (accessIssues.length > 0) {
       throw new BootstrapRefusal(`Access is not ready: ${accessIssues.join("; ")}`);

@@ -15,6 +15,7 @@ import {
   newInstallationId,
   PASSWORD_SECRET,
   passwordProblem,
+  planConflicts,
   platformVars,
   RELEASE_CHANGES,
   REPLICA_KEY_ID_SECRET,
@@ -28,7 +29,7 @@ import {
   usernameProblem,
   webVars,
 } from "../settings.ts";
-import { accountPlan, baseConfigs, OWNER_PASSWORD, stagingPlan } from "./fixtures.ts";
+import { accountPlan, baseConfigs, OWNER_EMAIL, OWNER_PASSWORD, stagingPlan } from "./fixtures.ts";
 
 const BASE = baseConfigs();
 const ACCESS = { teamDomain: "team.cloudflareaccess.com", aud: "a".repeat(64) };
@@ -503,5 +504,62 @@ describe("rendering the configurations", () => {
         ACCESS,
       ),
     ).toThrow(/must name the platform Worker/);
+  });
+});
+
+describe("planConflicts: install continuing a plan (Codex WP3.31 r1-3)", () => {
+  const same = {
+    hostname: "omnigent.example.test",
+    ownerEmail: OWNER_EMAIL,
+    ownerUsername: "owner",
+  };
+
+  it("finds none for the same installation, however the address is written, and compares only what was given", async () => {
+    const plan = await accountPlan();
+    expect(await planConflicts(plan, same)).toEqual([]);
+    expect(
+      await planConflicts(plan, {
+        ...same,
+        ownerEmail: ` ${OWNER_EMAIL.toUpperCase()}`,
+        accountId: plan.accountId,
+        platformWorker: plan.platformWorker,
+        webWorker: plan.webWorker,
+        replicaUrl: plan.replica.url,
+        replicaEndpoint: plan.replica.endpoint,
+        artifactsUrl: plan.artifacts?.url,
+      }),
+    ).toEqual([]);
+  });
+
+  it("names every option given that the plan does not hold", async () => {
+    const plan = await accountPlan();
+    expect(
+      await planConflicts(plan, {
+        hostname: "other.example.test",
+        ownerEmail: "someone-else@example.test",
+        ownerUsername: "admin",
+        accountId: "2".repeat(32),
+        platformWorker: "another",
+        webWorker: "another-web",
+        replicaUrl: "s3://cfo-canary-other/omnigent",
+        replicaEndpoint: "https://other.example.test",
+        artifactsUrl: "s3://cfo-canary-other-artifacts",
+        artifactsEndpoint: "https://other.example.test",
+      }),
+    ).toEqual([
+      "the hostname",
+      "the owner's username",
+      "the account",
+      "the platform Worker",
+      "the web Worker",
+      "the replica URL",
+      "the replica endpoint",
+      "the artifacts URL",
+      "the artifacts endpoint",
+      "the owner's address",
+    ]);
+    expect(await planConflicts({ ...plan, ownerPin: "broken" }, same)).toEqual([
+      "the owner's address",
+    ]);
   });
 });

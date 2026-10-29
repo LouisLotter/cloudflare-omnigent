@@ -1,9 +1,11 @@
 // Couplings the bootstrap depends on, checked against the other side's own code:
 //   - the server image (WP2.3) reads the environment the bootstrap gives it, before and after the
 //     release, with its own parser (images/server/cfo_server/config.py, standard library only);
-//   - the bootstrap script never talks to the installation, and never touches Access or service
-//     tokens; besides its deploys it creates only a missing R2 bucket of the plan, and the
-//     installation's own R2 user API token, which it may also roll or delete (WP3.25).
+//   - the bootstrap script never talks to the installation, and never changes Access or touches
+//     service tokens or policies; besides its deploys it creates only a missing R2 bucket of the
+//     plan, the installation's own R2 user API token, which it may also delete (WP3.25), and the
+//     hostname's owner-only Access application and the one-time PIN login method (WP3.31), only
+//     through cloud.ts's cfAccessApi, which may also delete the application for removal.
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -166,7 +168,7 @@ describe.skipIf(!python)(
   },
 );
 
-describe("the bootstrap never talks to the installation, Access or service tokens", () => {
+describe("the bootstrap never talks to the installation, changes Access or makes service tokens", () => {
   const dir = join(ROOT, "scripts", "bootstrap");
   const sources = readdirSync(dir)
     .filter((f) => f.endsWith(".ts"))
@@ -174,11 +176,14 @@ describe("the bootstrap never talks to the installation, Access or service token
 
   it("has sources to check", () => {
     expect(sources.map(([f]) => f).sort()).toEqual([
+      "access-app.ts",
       "access.ts",
       "bootstrap.ts",
       "cloud.ts",
       "events.ts",
       "machine.ts",
+      "password.ts",
+      "preflight.ts",
       "r2-token.ts",
       "remove.ts",
       "settings.ts",
@@ -195,13 +200,17 @@ describe("the bootstrap never talks to the installation, Access or service token
   });
 
   it.each(sources)(
-    "%s creates or changes no Access application, policy or service token",
+    "%s changes no Access application, and makes no policy or service token",
     (_file, text) => {
-      // The creations allowed: a missing R2 bucket of the plan, and the installation's own R2
-      // user API token (cloud.ts's cfTokenApi), which may also be rolled and deleted.
+      // The creations allowed: a missing R2 bucket of the plan, the installation's own R2 user
+      // API token (cloud.ts's cfTokenApi), which may also be deleted, and the owner-only Access
+      // application and the one-time PIN login method (cloud.ts's cfAccessApi), the application
+      // also deleted for removal. Never an update, a policy or a service token.
       const allowed = [
         /"r2",\s*"buckets",\s*"create",\s*"--body"/g,
         /"user",\s*"tokens",\s*"(create|roll|delete)"/g,
+        /"zero-trust",\s*"access",\s*"applications",\s*"(create|delete)"/g,
+        /"zero-trust",\s*"identity-providers",\s*"create"/g,
       ];
       const code = allowed.reduce(
         (rest, pattern) => rest.replace(pattern, ""),
@@ -221,5 +230,20 @@ describe("the bootstrap never talks to the installation, Access or service token
       const touches = /"user",\s*"tokens"/.test(code);
       expect([file, touches]).toEqual([file, file === "cloud.ts"]);
     }
+  });
+
+  it("calls Access only in cloud.ts's adapters, and creates only owner-only applications", () => {
+    for (const [file, text] of sources) {
+      const code = text.replace(/^\s*\/\/.*$/gm, "");
+      const touches = /"zero-trust"/.test(code);
+      expect([file, touches]).toEqual([file, file === "cloud.ts" || file === "staging.ts"]);
+    }
+    const cloud = sources.find(([f]) => f === "cloud.ts")?.[1] ?? "";
+    // The one create of an application sends the body access-app.ts built with ownerOnlyAppBody.
+    expect(cloud.match(/"applications",\s*"create"/g)).toHaveLength(1);
+    const app = sources.find(([f]) => f === "access-app.ts")?.[1] ?? "";
+    expect(app.match(/api\.create\(/g)).toHaveLength(1);
+    expect(app).toMatch(/api\.create\(\s*ownerOnlyAppBody\(/);
+    expect(app).not.toMatch(/api\.remove\(/);
   });
 });
