@@ -1553,9 +1553,11 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     expect(h.store.state.journal.webCode).toBe(code);
     expect(h.store.state.journal.updatedAt).toEqual(expect.any(String));
     expect(h.world.versions.get(h.world.plan.webWorker)).toHaveLength(2);
-    expect(h.lines.some((line) => line.startsWith(`updating the platform Worker ${worker}`))).toBe(
+    expect(h.lines.some((line) => line.startsWith(`deploying the platform Worker ${worker}`))).toBe(
       true,
     );
+    // The update checked the server on the new version before it said so (WP3.35).
+    expect(h.store.state.journal.update?.verifiedAt).toEqual(expect.any(String));
     // Once updated, a run with the same code changes nothing.
     const calls = h.world.calls.length;
     expect(await h.run()).toEqual({ kind: "done" });
@@ -1592,7 +1594,10 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
           codeVersion: "3".repeat(40),
           random: (n) => new Uint8Array(n).fill(0xcd),
           now: () => h.world.now,
-          sleep: async () => {},
+          // The update waits for the switch and the server's restart (update.ts, WP3.35).
+          sleep: async (ms) => {
+            h.world.now += Math.max(0, ms);
+          },
           log: (line) => h.lines.push(line),
         },
         OPTIONS,
@@ -1610,19 +1615,51 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     expect(h.world.secretsOf(worker)?.get(LAUNCHER_KEY_SECRET)).toBe(key);
   });
 
-  it("without new code, a missing launcher key is added in one secrets change", async () => {
-    const h = await finished();
+  it("with the same code, a missing launcher key is added once, by the update's deploy (WP3.35)", async () => {
+    const code = "1".repeat(40);
+    const h = await finished(() => code);
     const worker = h.world.plan.platformWorker;
     const held = h.world.latest(worker)?.secrets as Map<string, string>;
     held.delete(LAUNCHER_KEY_ID_SECRET); // half a pair: replaced whole
     const changes = h.world.secretChanges.length;
     expect(await h.run()).toEqual({ kind: "done", updated: true });
-    const change = h.world.secretChanges.slice(changes);
-    expect(change).toHaveLength(1);
-    expect(Object.keys(change[0]?.changes ?? {}).sort()).toEqual(
+    // One path for every update: a deploy of the same code, carrying the pair (update.ts).
+    expect(h.world.secretChanges.slice(changes)).toHaveLength(0);
+    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
+    expect(h.store.state.journal.update?.addedSecrets).toEqual(
       [LAUNCHER_KEY_ID_SECRET, LAUNCHER_KEY_SECRET].sort(),
     );
-    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(1);
+    const key = h.world.secretsOf(worker)?.get(LAUNCHER_KEY_SECRET);
+    expect(key).toMatch(/^[A-Za-z0-9_-]{64}$/);
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretsOf(worker)?.get(LAUNCHER_KEY_SECRET)).toBe(key);
+  });
+
+  it("without known code, a finished installation is left as it is", async () => {
+    const h = await finished();
+    const worker = h.world.plan.platformWorker;
+    const held = h.world.latest(worker)?.secrets as Map<string, string>;
+    held.delete(LAUNCHER_KEY_ID_SECRET);
+    const calls = h.world.calls.length;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.calls.slice(calls)).not.toContain("deployPlatform");
+    expect(h.world.calls.slice(calls)).not.toContain("updateSecrets");
+  });
+
+  it("an update whose check has not passed yet is reported as released, not checked", async () => {
+    let code = "1".repeat(40);
+    const h = await finished(() => code);
+    code = "2".repeat(40);
+    h.world.appliesReleases = false;
+    const outcome = await h.run();
+    expect(outcome).toEqual({
+      kind: "released",
+      why: expect.stringMatching(/^released, not yet applied/),
+      updated: true,
+    });
+    h.world.appliesReleases = true;
+    expect(await h.run()).toEqual({ kind: "done", updated: true });
+    expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
   });
 
   it("refuses to update over a Worker that is not this installation's", async () => {

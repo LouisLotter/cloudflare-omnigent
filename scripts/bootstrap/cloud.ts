@@ -381,14 +381,20 @@ export function workerInstallation(run: Runner, worker: string): WorkerIdentity 
     bindings?: unknown;
   } | null;
   const bindings = Array.isArray(answer?.bindings) ? answer.bindings : [];
-  const named = bindings.find((b) => {
-    const binding = b as { type?: unknown; name?: unknown } | null;
-    return binding?.type === "plain_text" && binding.name === INSTALLATION_ID_VAR;
-  }) as { text?: unknown } | undefined;
-  return {
-    exists: true,
-    installationId: typeof named?.text === "string" ? named.text : undefined,
-  };
+  // Its plain-text variables (none of them secret): the installation's ID and, since WP3.35,
+  // the platform features an installer step may check.
+  const vars: Record<string, string> = {};
+  for (const b of bindings) {
+    const binding = b as { type?: unknown; name?: unknown; text?: unknown } | null;
+    if (
+      binding?.type === "plain_text" &&
+      typeof binding.name === "string" &&
+      typeof binding.text === "string"
+    ) {
+      vars[binding.name] = binding.text;
+    }
+  }
+  return { exists: true, installationId: vars[INSTALLATION_ID_VAR], vars };
 }
 
 function activeVersionOf(listing: unknown): string | undefined {

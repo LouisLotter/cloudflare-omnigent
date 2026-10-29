@@ -88,7 +88,7 @@ describe("the state file", () => {
     const cases: [unknown, RegExp][] = [
       ["not json {", /not JSON/],
       [[], /top level is not an object/],
-      [{ ...good, stateVersion: 4 }, /unknown version/],
+      [{ ...good, stateVersion: 5 }, /unknown version/],
       [{ ...good, stateVersion: "1" }, /unknown version/],
       // D33: version 2 records the bucket tag, and only version 2 does.
       [{ ...good, stateVersion: 2 }, /version 2 plan records no bucket tag/],
@@ -369,6 +369,62 @@ describe("the state file", () => {
         { accessLoginMethod: { createStartedAt: "x" } },
         /journal.accessLoginMethod.createStartedAt is not a time/,
       ],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
+  });
+
+  it("round-trips the update's record, which holds no secret; a file without one reads too (WP3.35)", async () => {
+    const state = await fullState();
+    const path = join(dir, "u.json");
+    // A state file from before WP3.35 has none of these fields: it reads as it was.
+    fileStateStore(path).save(state);
+    expect(fileStateStore(path).load()).toEqual(state);
+    for (const update of [
+      { code: "a".repeat(40), startedAt: "2026-10-30T09:00:00.000Z" },
+      {
+        code: "b".repeat(40),
+        startedAt: "2026-10-30T09:00:00.000Z",
+        deployId: "0102030405060708",
+        platformDeployStartedAt: "2026-10-30T09:00:01.000Z",
+        platformDeployedAt: "2026-10-30T09:08:00.000Z",
+        platformVersionId: "v9",
+        addedSecrets: ["SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET"],
+        webDeployStartedAt: "2026-10-30T09:08:01.000Z",
+        webDeployedAt: "2026-10-30T09:09:00.000Z",
+        webVersionId: "w3",
+        verifiedAt: "2026-10-30T09:16:00.000Z",
+      },
+    ]) {
+      const withUpdate = {
+        ...state,
+        journal: {
+          ...state.journal,
+          update,
+          platformCode: update.code,
+          webCode: update.code,
+          updatedAt: "2026-10-30T09:09:00.000Z",
+        },
+      };
+      fileStateStore(path).save(withUpdate);
+      // Version 4: a bootstrap from before WP3.35 refuses it rather than drop the update's record.
+      expect(fileStateStore(path).load()).toEqual({ ...withUpdate, stateVersion: 4 });
+      expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(4);
+    }
+    const good = JSON.parse(JSON.stringify(state));
+    const start = { code: "c".repeat(40), startedAt: "2026-10-30T09:00:00.000Z" };
+    for (const [journal, message] of [
+      [{ update: "x" }, /journal.update is not an object/],
+      [{ update: { code: "c".repeat(40) } }, /journal.update.startedAt is missing/],
+      [{ update: { ...start, code: 1 } }, /journal.update.code is not text/],
+      [{ update: { ...start, code: "main" } }, /journal.update.code is not a commit ID/],
+      [{ update: { ...start, startedAt: "soon" } }, /journal.update.startedAt is not a time/],
+      [{ update: { ...start, verifiedAt: 3 } }, /journal.update.verifiedAt is not a time/],
+      [{ update: { ...start, deployId: 3 } }, /journal.update.deployId is not text/],
+      [{ update: { ...start, addedSecrets: "x" } }, /addedSecrets is not a list of names/],
+      [{ update: { ...start, addedSecrets: [1] } }, /addedSecrets is not a list of names/],
+      [{ platformCode: 1 }, /journal.platformCode is not a commit ID/],
+      [{ updatedAt: "later" }, /journal.updatedAt is not a time/],
     ] as const) {
       expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
     }

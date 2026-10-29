@@ -15,9 +15,11 @@ import { signingKeysFrom } from "../../../worker/src/internal/platform-api.ts";
 import { serverContainerEnv } from "../../../worker/src/server/server-env.ts";
 import { generatedSecrets } from "../machine.ts";
 import {
+  DEPLOY_ID_VAR,
   type Installation,
   installationProblems,
   PASSWORD_SECRET,
+  PLATFORM_FEATURES_VAR,
   platformVars,
   RELEASE_CHANGES,
   secretsToAdd,
@@ -148,6 +150,17 @@ describe.skipIf(!python)(
       expect(launcherReads({})).toBeNull();
     });
 
+    it("an updated installation's deploy ID reaches the image, which starts with it (WP3.35)", async () => {
+      const plan = await accountPlan();
+      const secrets = secretsToAdd(plan, new Set(), supplied, GENERATED);
+      const released = { ...secrets, ...RELEASE_CHANGES };
+      const env = containerEnv(plan, { ...released, [DEPLOY_ID_VAR]: "0123456789abcdef" });
+      expect(env.CFO_DEPLOY_ID).toBe("0123456789abcdef");
+      expect(imageReads(env)).toMatchObject({ initialized: true, bootstrap: false });
+      // The platform's feature list is the Worker's own: no container receives it.
+      expect(env).not.toHaveProperty(PLATFORM_FEATURES_VAR);
+    });
+
     it("an installation without its artifact bucket is refused by the image (G2-DUR-001)", async () => {
       const plan = await accountPlan();
       const secrets = secretsToAdd(plan, new Set(), supplied, GENERATED);
@@ -241,6 +254,8 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "settings.ts",
       "staging.ts",
       "state.ts",
+      "update-command.ts",
+      "update.ts",
     ]);
   });
 
@@ -282,6 +297,8 @@ describe("the bootstrap never talks to the installation, changes Access or makes
         /"user",\s*"tokens",\s*"(create|roll|delete)"/g,
         /"zero-trust",\s*"access",\s*"applications",\s*"(create|delete)"/g,
         /"zero-trust",\s*"identity-providers",\s*"create"/g,
+        // The installer's own command (bootstrap.ts update, WP3.35), not a call of a CLI.
+        /case "update":/g,
       ];
       const code = allowed.reduce(
         (rest, pattern) => rest.replace(pattern, ""),

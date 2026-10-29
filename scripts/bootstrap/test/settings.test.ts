@@ -10,6 +10,7 @@ import {
   bucketsOf,
   COOKIE_SECRET,
   containerEnvProblems,
+  DEPLOY_ID_VAR,
   defaultArtifactsUrl,
   INITIALIZED_SECRET,
   installationProblems,
@@ -18,7 +19,10 @@ import {
   launcherKeyToAdd,
   newInstallationId,
   OWNER_PASSWORD_ON_PAGE_SECRET,
+  offersPlatformFeature,
   PASSWORD_SECRET,
+  PLATFORM_FEATURES,
+  PLATFORM_FEATURES_VAR,
   passwordProblem,
   planConflicts,
   platformVars,
@@ -29,6 +33,7 @@ import {
   renderPlatformConfig,
   renderWebConfig,
   requiredSecretNames,
+  SERVER_ENV,
   STAGING_INSTALLATION_VAR,
   secretsToAdd,
   usernameProblem,
@@ -172,6 +177,7 @@ describe("the platform Worker's settings and secrets", () => {
     const plan = await accountPlan();
     expect(platformVars(plan)).toEqual({
       CFO_INSTALLATION_ID: plan.installationId,
+      CFO_PLATFORM_FEATURES: "key-service",
       SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL: "https://omnigent.example.test",
       SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
       SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-canary-replica/omnigent",
@@ -189,6 +195,28 @@ describe("the platform Worker's settings and secrets", () => {
       "SERVER_ENV_OMNIGENT_ARTIFACT_URI",
     );
     expect(platformVars(await stagingPlan())).not.toHaveProperty("SERVER_ENV_CFO_REPLICA_ENDPOINT");
+  });
+
+  it("names the platform's features on every platform Worker, never to the server (WP3.35)", async () => {
+    for (const plan of [await accountPlan(), await stagingPlan()]) {
+      const vars = platformVars(plan);
+      expect(vars[PLATFORM_FEATURES_VAR]).toBe(PLATFORM_FEATURES.join(" "));
+      expect(offersPlatformFeature(vars, "key-service")).toBe(true);
+      expect(renderPlatformConfig(BASE.platform, plan).vars).toMatchObject({
+        [PLATFORM_FEATURES_VAR]: "key-service",
+      });
+    }
+    expect(PLATFORM_FEATURES_VAR.startsWith(SERVER_ENV)).toBe(false);
+    expect(offersPlatformFeature(undefined, "key-service")).toBe(false);
+    expect(offersPlatformFeature({}, "key-service")).toBe(false);
+    expect(
+      offersPlatformFeature({ [PLATFORM_FEATURES_VAR]: "a key-service b" }, "key-service"),
+    ).toBe(true);
+    expect(offersPlatformFeature({ [PLATFORM_FEATURES_VAR]: "key-services" }, "key-service")).toBe(
+      false,
+    );
+    // The update's deploy ID reaches the server: that is its purpose.
+    expect(DEPLOY_ID_VAR).toBe("SERVER_ENV_CFO_DEPLOY_ID");
   });
 
   it("marks a staging installation for the RC-53 switch (WP3.23), and never production", async () => {

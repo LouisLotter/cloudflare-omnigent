@@ -22,6 +22,16 @@
 //   node scripts/bootstrap/bootstrap.ts remove-access [--platform-worker <name> | --state <file>] [--yes]
 //   node scripts/bootstrap/bootstrap.ts github-app [--platform-worker <name> | --state <file>]
 //       [--github-org <org>] [--replace] [--no-open]
+//   node scripts/bootstrap/bootstrap.ts update [--platform-worker <name> | --state <file>]
+//       [--owner-email <address>] [--no-verify]
+//
+// `update` moves a finished installation to the release in this checkout (WP3.35,
+// update-command.ts and update.ts): from a clean checkout, it adds any secret the release needs
+// that the platform Worker lacks (by name; never replacing one), deploys the platform Worker and
+// then the web Worker with the plan's own names and settings, keeping every secret, waits for the
+// server's restart on the new version and checks the owner is still initialized and durable.
+// Exit status: 0 updated (or already up to date); 3 deployed, not checked yet (run it again);
+// 1 an error or a refusal.
 //
 // `install` is the one command for an installation in the installer's own account (WP3.31):
 // `plan`, then `run`, in one go. Run again with the same options, it continues the installation
@@ -92,9 +102,8 @@
 // initialized and durable (run again); 3 released, but the check after the version switch has
 // not passed yet (run again); 1 an error or a refusal.
 //
-// Run again on a finished installation, from a newer clean checkout, `install` and `run` update
-// it: both Workers are deployed again with this checkout's code, adding only a missing launcher
-// key (machine.ts, step 7). The server restarts once on the new version.
+// Run again on a finished installation, from a clean checkout of other code, `install` and `run`
+// update it as `update` does, through the same steps (machine.ts step 7, update.ts).
 //
 // `buckets` creates (or, for staging, checks) the plan's buckets without deploying; `run` does
 // the same itself. `remove-r2-token` deletes the installation's R2 tokens, a step of removing
@@ -168,6 +177,7 @@ import {
   statePathFor,
   stateVersionFor,
 } from "./state.ts";
+import { updateCommand } from "./update-command.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = join(ROOT, "worker");
@@ -541,14 +551,16 @@ async function run(values: Record<string, string | boolean | undefined>, path: s
         const journal = store.load().journal;
         if (outcome.updated) {
           console.log(
-            "bootstrap: updated to this checkout's version; the server restarts once on it within about 10 minutes.",
+            "bootstrap: updated to this checkout's version, and the server checked on it.",
           );
         }
         console.log(doneMessage(installation, journal.ownerPassword === "page"));
         return 0;
       }
       case "released":
-        console.log(`bootstrap: released; not checked yet: ${outcome.why}. Run again to check.`);
+        console.log(
+          `bootstrap: ${outcome.updated ? "updated" : "released"}; not checked yet: ${outcome.why}. Run again to check.`,
+        );
         return 3;
       case "waiting":
         console.log(`bootstrap: still waiting: ${outcome.why}. Run again to continue.`);
@@ -701,6 +713,12 @@ async function main(): Promise<number> {
       return removeToken(statePath(), values.yes === true);
     case "remove-access":
       return removeAccess(statePath(), values.yes === true);
+    case "update":
+      return updateCommand(statePath(), {
+        root: ROOT,
+        ...(values["owner-email"] === undefined ? {} : { ownerEmail: values["owner-email"] }),
+        verify: values["no-verify"] !== true,
+      });
     case "github-app":
       return githubAppCommand(statePath(), {
         root: ROOT,
@@ -710,7 +728,7 @@ async function main(): Promise<number> {
       });
     default:
       throw new Error(
-        "usage: bootstrap.ts install|plan|run|status|buckets|remove-r2-token|remove-access|github-app (see the header comment)",
+        "usage: bootstrap.ts install|plan|run|update|status|buckets|remove-r2-token|remove-access|github-app (see the header comment)",
       );
   }
 }

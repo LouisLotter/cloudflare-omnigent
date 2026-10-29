@@ -30,12 +30,13 @@
 //      is applied: the watchdog replaced the server (one controlled restart), and the server
 //      started with the released configuration reports a durable owner (G2-SEC-001). Until
 //      then the outcome is "released", not yet applied, and a later run checks again;
-//   7. updates a finished installation (WP3.34): when the code this run deploys (`codeVersion`, a
-//      clean checkout's commit) is not the code the journal records as deployed, it deploys the
-//      platform Worker again, adding only a missing launcher key (read by name, never by value),
-//      then the web Worker; code of unknown version is never deployed over a finished
-//      installation. Without new code, a missing launcher key is added in one secrets change.
-//      The server restarts once either way, through the watchdog's existing replacement.
+//   7. updates a finished installation (WP3.34, WP3.35): when the code this run deploys
+//      (`codeVersion`, a clean checkout's commit) is not the code the journal records as deployed,
+//      or a secret this release needs is missing, the update (update.ts, which `bootstrap.ts
+//      update` runs too) deploys the platform Worker again, adding only missing secrets such as
+//      the launcher key (read by name, never by value), then the web Worker, and checks the
+//      server after its one restart on the new version. Code of unknown version is never deployed
+//      over a finished installation.
 //
 // Crash safety. The journal in the state file is written before each effect and after it.
 // A run re-reads the platform Worker's secret names first, so a step whose effect landed
@@ -92,9 +93,6 @@ import {
   INITIALIZED_SECRET,
   type Installation,
   installationProblems,
-  LAUNCHER_KEY_ID_SECRET,
-  LAUNCHER_KEY_SECRET,
-  launcherKeyToAdd,
   needsArtifactCredentials,
   needsReplicaCredentials,
   OWNER_PASSWORD_ON_PAGE_SECRET,
@@ -109,6 +107,9 @@ import {
   type SuppliedSecrets,
   secretsToAdd,
 } from "./settings.ts";
+// update.ts uses this module's refusal, generator and log reader; step 7 calls its runUpdate:
+// a cycle that neither module uses at load time.
+import { DEFAULT_UPDATE_OPTIONS, runUpdate, type UpdateRecord } from "./update.ts";
 
 /** What the bootstrap needs of Cloudflare. Implemented by cloud.ts and staging.ts. */
 export interface BootstrapCloud {
@@ -151,7 +152,12 @@ export interface BootstrapCloud {
 /** Whether a Worker exists, and the installation its active version names, if any. */
 export type WorkerIdentity =
   | { readonly exists: false }
-  | { readonly exists: true; readonly installationId: string | undefined };
+  | {
+      readonly exists: true;
+      readonly installationId: string | undefined;
+      /** The active version's plain-text variables, when Cloudflare listed them (WP3.35). */
+      readonly vars?: Readonly<Record<string, string>>;
+    };
 
 /** A status as the journal keeps it: the newest seen, so no later query can roll it back. */
 export interface SeenStatus {
@@ -203,16 +209,18 @@ export interface Journal {
   /** The code each Worker was last deployed from (`RunContext.codeVersion`), when known. */
   readonly platformCode?: string;
   readonly webCode?: string;
-  /** When the last update (step 7) finished deploying. */
+  /** When the last update finished deploying both Workers (step 7, update.ts). */
   readonly updatedAt?: string;
+  /** The last update (update.ts): its code, each step's intent and outcome, and its check. */
+  readonly update?: UpdateRecord;
 }
 
 export interface BootstrapState {
   /**
    * 2 when the plan records its bucket tag (D33), 1 for a plan from before it, 3 once the journal
-   * records WP3.34's fields (state.ts, stateVersionFor).
+   * records WP3.34's fields, 4 once it records an update (state.ts, stateVersionFor).
    */
-  readonly stateVersion: 1 | 2 | 3;
+  readonly stateVersion: 1 | 2 | 3 | 4;
   readonly installation: Installation;
   readonly journal: Journal;
 }
@@ -302,8 +310,8 @@ export const LOG_SLICE_MS = 5 * 60_000;
 const SETTLED_MS = 10 * 60_000;
 
 /** Reads a Worker's logs between two times, slice by slice, reading settled slices once. */
-function slicedLogs(
-  ctx: RunContext,
+export function slicedLogs(
+  ctx: Pick<RunContext, "cloud" | "now">,
   worker: string,
 ): (fromMs: number, toMs: number) => Promise<unknown[]> {
   const settled = new Map<number, unknown[]>();
@@ -326,8 +334,11 @@ function slicedLogs(
 export type Outcome =
   /** Released and checked after the version switch; `updated` when step 7 deployed again. */
   | { readonly kind: "done"; readonly updated?: true }
-  /** Released; the check after the switch has not passed yet (run again to check). */
-  | { readonly kind: "released"; readonly why: string }
+  /**
+   * Released; the check after the switch has not passed yet (run again to check). `updated` when
+   * it is step 7's update that is not checked yet.
+   */
+  | { readonly kind: "released"; readonly why: string; readonly updated?: true }
   /** The owner is not initialized and durable yet; the password stays. Run again to continue. */
   | { readonly kind: "waiting"; readonly why: string };
 
@@ -485,7 +496,7 @@ export async function runBootstrap(
   }
   if (state.journal.releasedAt !== undefined) {
     const verified = await verifyAfterRelease(ctx, () => state, options, record);
-    return verified.kind === "done" ? update(secrets) : verified;
+    return verified.kind === "done" ? update() : verified;
   }
   if (secrets?.has(INITIALIZED_SECRET) && !secrets.has(PASSWORD_SECRET)) {
     throw new BootstrapRefusal(
@@ -658,69 +669,41 @@ export async function runBootstrap(
   });
   ctx.log("released: the bootstrap password is gone and the installation is marked initialized");
   const verified = await verifyAfterRelease(ctx, () => state, options, record);
-  return verified.kind === "done" ? update(secrets) : verified;
+  return verified.kind === "done" ? update() : verified;
 
   /**
-   * 7. A finished installation: deploys this run's code where the journal records other code (or
-   * none), and adds the launcher's key where the Worker lacks it. Nothing else changes: no secret
-   * the Worker holds is replaced, and the password is never uploaded again. Code of unknown
-   * version (uncommitted changes, no git) is never deployed over a finished installation.
+   * 7. A finished installation, from a clean checkout: updated to this run's code where the
+   * journal records other code (or none), or an update to it is unfinished, or a secret this
+   * release needs is missing, through the update (update.ts, the one update path, which
+   * `bootstrap.ts update` runs too): both Workers deployed again, only missing secrets added, and
+   * the server checked after its restart on the new version. Code of unknown version (uncommitted
+   * changes, no git) is never deployed over a finished installation.
    */
-  async function update(present: ReadonlySet<string> | null): Promise<Outcome> {
-    const journal = state.journal;
-    const code = ctx.codeVersion;
-    const stale = code !== undefined && (journal.platformCode !== code || journal.webCode !== code);
-    const listed = present ?? (await names());
-    if (listed === null) throw new Error(`${plan.platformWorker} no longer exists`);
-    const add = launcherKeyToAdd(listed, generatedSecrets(ctx));
-    const adding = Object.keys(add).sort();
-    if (!stale && adding.length === 0) return { kind: "done" };
-    await ours(plan.platformWorker);
-    const standIns = Object.fromEntries([...listed].map((name) => [name, "present"]));
-    const problems = containerEnvProblems(platformVars(plan), { ...standIns, ...add }, plan);
-    if (problems.length > 0) {
-      throw new BootstrapRefusal(`the server would not start: ${problems.join("; ")}`);
-    }
-    if (stale) {
-      await ours(plan.webWorker);
-      ctx.log(
-        `updating the platform Worker ${plan.platformWorker} to this checkout${
-          adding.length > 0 ? `, with ${adding.join(", ")}` : ""
-        }: the server restarts once on it, within about 10 minutes`,
-      );
-      await ctx.cloud.deployPlatform(
-        plan,
-        renderPlatformConfig(ctx.baseConfigs.platform, plan),
-        add,
-      );
-    } else {
-      ctx.log(
-        `adding ${adding.join(", ")} to ${plan.platformWorker}: the server restarts once with it, within about 10 minutes`,
-      );
-      await ctx.cloud.updateSecrets(plan.platformWorker, add);
-    }
-    const after = await names();
-    const missing = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET].filter((n) => !after?.has(n));
-    if (after === null || missing.length > 0) {
-      throw new Error(
-        `after the update, ${plan.platformWorker} ${after === null ? "does not exist" : `lacks ${missing.join(", ")}`}; run again`,
-      );
-    }
-    if (stale) {
-      record({ platformCode: code });
-      const found = await ownerAccess();
-      const accessIssues = accessProblems(plan, found);
-      if (accessIssues.length > 0) {
-        throw new BootstrapRefusal(`Access is not ready: ${accessIssues.join("; ")}`);
-      }
-      const access = { ...found, checkedAt: iso(ctx.now()) };
-      record({ access });
-      ctx.log(`updating the web Worker ${plan.webWorker} for https://${plan.hostname}`);
-      await ctx.cloud.deployWeb(plan, renderWebConfig(ctx.baseConfigs.web, plan, access));
-      record({ webCode: code });
-    }
-    record({ updatedAt: iso(ctx.now()) });
-    return { kind: "done", updated: true };
+  async function update(): Promise<Outcome> {
+    if (ctx.codeVersion === undefined) return { kind: "done" };
+    const updated = await runUpdate(
+      {
+        cloud: ctx.cloud,
+        store: ctx.store,
+        baseConfigs: ctx.baseConfigs,
+        codeVersion: ctx.codeVersion,
+        ...(ctx.accessApi === undefined ? {} : { accessApi: ctx.accessApi }),
+        ...(ctx.ownerEmail === undefined ? {} : { ownerEmail: ctx.ownerEmail }),
+        random: ctx.random,
+        now: ctx.now,
+        sleep: ctx.sleep,
+        log: ctx.log,
+      },
+      {
+        ...DEFAULT_UPDATE_OPTIONS,
+        verify: options.verify,
+        pollMs: options.pollMs,
+        switchMs: options.switchMs,
+      },
+    );
+    if (updated.kind === "current") return { kind: "done" };
+    if (updated.kind === "done") return { kind: "done", updated: true };
+    return { kind: "released", why: updated.why, updated: true };
   }
 }
 
