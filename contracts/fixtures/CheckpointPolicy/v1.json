@@ -251,9 +251,13 @@
         ".omnigent/codex-native/*/codex-home/log/**",
         ".omnigent/codex-native/*/codex-home/.tmp/**",
         ".omnigent/codex-native/*/codex-home/tmp/**",
-        ".omnigent/codex-native/*/codex-home/cache/**"
+        ".omnigent/codex-native/*/codex-home/cache/**",
+        ".omnigent/codex-native/*/codex-home/logs_*.sqlite",
+        ".omnigent/codex-native/*/codex-home/logs_*.sqlite-wal",
+        ".omnigent/codex-native/*/codex-home/logs_*.sqlite-shm",
+        ".omnigent/codex-native/*/codex-home/logs_*.sqlite-journal"
       ],
-      "why": "Temporary siblings of saved files, and the same log, .tmp and cache exclusions as ~/.codex."
+      "why": "Temporary siblings of saved files, and the same log, .tmp, cache and log-database exclusions as ~/.codex."
     },
     {
       "id": "omnigent-cache",
@@ -483,9 +487,13 @@
         ".codex/cache",
         ".codex/cache/**",
         ".codex/skills/.system",
-        ".codex/skills/.system/**"
+        ".codex/skills/.system/**",
+        ".codex/logs_*.sqlite",
+        ".codex/logs_*.sqlite-wal",
+        ".codex/logs_*.sqlite-shm",
+        ".codex/logs_*.sqlite-journal"
       ],
-      "why": "Codex's logs, temporaries, regenerable caches and bundled skills. tmp/arg0-linux holds per-process helper links that every Codex run replaces (WP3.4)."
+      "why": "Codex's logs, temporaries, regenerable caches and bundled skills. tmp/arg0-linux holds per-process helper links that every Codex run replaces (WP3.4). logs_N.sqlite is Codex's own trace log (a `logs` table it prunes by age), not continuation state, and it held a ChatGPT edge token Codex logged (WP3.27)."
     },
     {
       "id": "omnigent-logs",

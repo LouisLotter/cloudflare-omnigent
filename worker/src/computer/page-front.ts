@@ -82,6 +82,12 @@ export interface FrontController {
     | { readonly outcome: "accepted"; readonly rc53: boolean }
     | { readonly outcome: "refused"; readonly reason: "not_staging" | "not_offered" }
   >;
+  setStagingKeepAwake(input: {
+    readonly on: boolean;
+  }): Promise<
+    | { readonly outcome: "accepted"; readonly on: boolean }
+    | { readonly outcome: "refused"; readonly reason: "not_staging" | "not_offered" }
+  >;
   sessionAttempts(session: string): readonly {
     readonly service: SignInService;
     readonly attempt: number;
@@ -355,6 +361,11 @@ export class PageFront {
         return {
           action: "staging_check",
           ...(await this.#d.controller.setStagingCheck({ rc53: call.rc53 })),
+        };
+      case "staging_keep_awake":
+        return {
+          action: "staging_keep_awake",
+          ...(await this.#d.controller.setStagingKeepAwake({ on: call.on })),
         };
     }
   }

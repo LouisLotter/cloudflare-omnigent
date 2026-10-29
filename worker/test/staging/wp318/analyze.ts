@@ -1,11 +1,13 @@
 // WP3.18 staging soak: the RC-26 reconnect table from a collected run (laptop only):
 //   node worker/test/staging/wp318/analyze.ts <run directory>
 // The directory holds what run.sh collect wrote: events.json (the soak run's own events, from
-// the results bucket), deploys.jsonl (the laptop's deploys) and logs.jsonl (the platform
-// Worker's Workers Logs). Prints the table and writes verdict.json next to them. A controlled
+// the results bucket), deploys.jsonl (the laptop's deploys), logs.jsonl (the platform Worker's
+// Workers Logs) and, from WP3.27, presence.jsonl (the host-tunnel opens before that window, so
+// a host connected earlier is judged at the first disruption). Prints the table and writes
+// verdict.json next to them. A controlled
 // restart (`config_changed`, G2-SEC-001) during the soak fails it: no soak deploy changes the
 // server's configuration or its image (WP3.19), so one would be a restart nobody planned.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   configRestarts,
@@ -36,10 +38,20 @@ const deploys = readFileSync(join(dir, "deploys.jsonl"), "utf8")
         version: string;
       },
   );
-const lines = readFileSync(join(dir, "logs.jsonl"), "utf8")
-  .split("\n")
-  .filter(Boolean)
-  .map((line) => JSON.parse(line) as LogLine);
+const jsonLines = (name: string): LogLine[] =>
+  existsSync(join(dir, name))
+    ? readFileSync(join(dir, name), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as LogLine)
+    : [];
+// The window's logs are required (Codex WP3.27 r1-4): without them nothing is checked. Only
+// presence.jsonl, which older collections lack, may be missing.
+if (!existsSync(join(dir, "logs.jsonl"))) {
+  throw new Error(`no logs.jsonl in ${dir}: run \`run.sh collect\` first`);
+}
+const lines = jsonLines("logs.jsonl");
+const presence = jsonLines("presence.jsonl");
 const disruptions: Disruption[] = [
   ...run.events.filter((e) => e.kind !== "end").map((e) => ({ kind: e.kind, at: e.at })),
   ...deploys
@@ -51,7 +63,7 @@ const disruptions: Disruption[] = [
       ...(d.version ? { version: d.version } : {}),
     })),
 ].sort((a, b) => a.at - b.at);
-const results = reconnects(disruptions, lines);
+const results = reconnects(disruptions, lines, presence);
 for (const r of results) {
   const at = r.at === null ? "?" : `T0+${((r.at - run.t0) / 60_000).toFixed(1)}m`;
   const gap =

@@ -12,7 +12,7 @@
 //   GET  /platform/computers/{id}/sign-in         a sign-in attempt's state (WP3.23, JSON)
 //   POST /platform/computers/{id}/sign-in         start a sign-in, relay the pasted code, cancel
 //   GET  /platform/computers/{id}/status          the computer's status (JSON)
-//   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check on or off
+//   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check, or keep-awake, on or off
 //   GET  /platform/assets/{name}                  the pages' own scripts and styles
 
 import type { PageOwner } from "@cfo/contracts";

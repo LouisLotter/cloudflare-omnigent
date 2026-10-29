@@ -20,6 +20,7 @@ import {
   credentialManifestOf,
   droppedLayers,
   holdsLogin,
+  midSignOut,
   nextLayer,
   noDeclaredFile,
   notSavedDue,
@@ -28,7 +29,10 @@ import {
   publish,
   restoreDirs,
   retryDelayMs,
+  signOutAbandoned,
+  signOutDecided,
   signOutEventOf,
+  signOutOnPublish,
   unchangedHolds,
   uncovered,
   unreferenced,
@@ -479,6 +483,49 @@ describe("checkpoints", () => {
     };
     expect(signOutEventOf(out)).toBe("tombstones_published");
     expect(noDeclaredFile(out)).toBe(true);
+  });
+
+  it("lets a sign-out run's own snapshot decide, never a bundle published between its logouts (WP3.27)", () => {
+    const state = (claude: string, codex: string) =>
+      ({
+        ".claude/.credentials.json": { state: claude },
+        ".claude/.device-keys.json": { state: "tombstone" },
+        ".codex/auth.json": { state: codex },
+        ".codex/.credentials.json": { state: "tombstone" },
+      }) as const;
+    const between = state("tombstone", "present"); // Claude logged out, Codex not yet
+    const out = state("tombstone", "tombstone");
+    const job = (order: number | null) => ({ generation: 3, order });
+    // Mid-run: before the snapshot's order is known, or below it, in the run's generation.
+    expect(midSignOut(job(null), { generation: 3, order: 1 })).toBe(true);
+    expect(midSignOut(job(2), { generation: 3, order: 1 })).toBe(true);
+    expect(midSignOut(job(2), { generation: 3, order: 2 })).toBe(false);
+    expect(midSignOut(job(null), { generation: 4, order: 1 })).toBe(false);
+    expect(midSignOut(null, { generation: 3, order: 1 })).toBe(false);
+    // The 28 Oct sequence: requested, the in-between bundle, then the snapshot's tombstones.
+    let phase = signOutOnPublish("requested", between, true);
+    expect(phase).toBe("requested");
+    phase = signOutOnPublish(phase, out, true);
+    expect(phase).toBe("tombstoned");
+    expect(signOutDecided(phase, out)).toBe("tombstoned");
+    // A run started from tombstoned or verified (the table keeps them): a login published between
+    // its logouts takes the claim away until its own tombstones come (Codex r1-1).
+    expect(signOutOnPublish("verified", between, true)).toBe("requested");
+    expect(signOutOnPublish("tombstoned", between, true)).toBe("requested");
+    expect(signOutOnPublish("none", between, true)).toBe("none");
+    expect(signOutOnPublish("verified", out, true)).toBe("verified");
+    // The table as before, outside a run: a login undoes any sign-out.
+    expect(signOutOnPublish("verified", between, false)).toBe("none");
+    expect(signOutOnPublish("requested", out, false)).toBe("tombstoned");
+    // The snapshot holds a login (a logout that failed): the run ends undone.
+    expect(signOutDecided("requested", between)).toBe("none");
+    expect(signOutDecided("tombstoned", between)).toBe("none");
+    expect(signOutDecided("requested", null)).toBe("requested");
+    // A run ended any other way: a login it set aside counts; "requested" says it never finished.
+    expect(signOutAbandoned("tombstoned", between)).toBe("none");
+    expect(signOutAbandoned("requested", between)).toBe("requested");
+    expect(signOutAbandoned("tombstoned", out)).toBe("tombstoned");
+    expect(signOutAbandoned("tombstoned", null)).toBe("tombstoned");
   });
 
   it("mints IDs the contract accepts", () => {

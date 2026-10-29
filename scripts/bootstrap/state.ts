@@ -6,6 +6,11 @@
 //   one file per platform Worker, <platform worker>.json, mode 0600, in a 0700 directory.
 // Writes are atomic (a temporary file in the same directory, then a rename), so a crash leaves
 // either the old journal or the new one. A lock file beside it keeps two runs apart.
+//
+// The plan is written once and never changed: every later run reads the installation's names,
+// its buckets' included, from it. A plan made since D33 records its bucket tag and is written
+// as version 2; one from before records none, stays version 1, and keeps its untagged bucket
+// names (stateVersionFor).
 
 import {
   closeSync,
@@ -156,6 +161,7 @@ function parseInstallation(value: unknown): Installation {
       ...(endpoint === undefined ? {} : { endpoint }),
     },
     ...(artifacts === undefined ? {} : { artifacts }),
+    ...(i.bucketTag === undefined ? {} : { bucketTag: str(i, "bucketTag", "installation") }),
     target: parseTarget(i.target),
     plannedAt: str(i, "plannedAt", "installation"),
   };
@@ -255,6 +261,17 @@ function parseJournal(value: unknown): Journal {
   return journal as Journal;
 }
 
+/**
+ * The state file's format for a plan. Version 2 records the plan's bucket tag (D33); version 1,
+ * from before it, records none, so its buckets keep their untagged names. A plan without a tag
+ * is still written as version 1, which earlier bootstraps read as before; a tagged one as
+ * version 2, which they refuse ("unknown version") rather than drop the tag and rename its
+ * buckets.
+ */
+export function stateVersionFor(plan: Pick<Installation, "bucketTag">): 1 | 2 {
+  return plan.bucketTag === undefined ? 1 : 2;
+}
+
 /** The state file's content, checked; throws naming the field, never echoing the file. */
 export function parseState(text: string): BootstrapState {
   let raw: unknown;
@@ -264,10 +281,20 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (o.stateVersion !== 1) throw new Error("the state file has an unknown version");
+  if (o.stateVersion !== 1 && o.stateVersion !== 2) {
+    throw new Error("the state file has an unknown version");
+  }
+  const installation = parseInstallation(o.installation);
+  if (stateVersionFor(installation) !== o.stateVersion) {
+    throw new Error(
+      o.stateVersion === 1
+        ? "the state file's plan has a bucket tag, which only version 2 records"
+        : "the state file's version 2 plan records no bucket tag",
+    );
+  }
   return {
-    stateVersion: 1,
-    installation: parseInstallation(o.installation),
+    stateVersion: o.stateVersion,
+    installation,
     journal: parseJournal(o.journal),
   };
 }
@@ -293,6 +320,11 @@ export function fileStateStore(path: string): StateStore {
       if (!existsSync(path)) throw new Error(`no state file at ${path}; run plan first`);
       return parseState(readFileSync(path, "utf8"));
     },
-    save: (state) => writeAtomic(path, `${JSON.stringify(state, null, 2)}\n`),
+    // The version follows the plan, whatever the caller's state says (stateVersionFor).
+    save: (state) =>
+      writeAtomic(
+        path,
+        `${JSON.stringify({ ...state, stateVersion: stateVersionFor(state.installation) }, null, 2)}\n`,
+      ),
   };
 }

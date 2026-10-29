@@ -162,6 +162,8 @@ describe("the bootstrap's check after its release reads what OmnigentServer logs
       why: expect.stringContaining("has not run"),
     });
     // The objects switch to v2: the new instance adopts the server still holding the password.
+    // Its `instance_started` line (WP3.27) is its first, after v1's last: a real switch takes time.
+    testServers.clock.advance(1);
     version = "v2";
     await evictDurableObject(stub);
     await nextCheck(stub); // v2 runs, and replaces the server

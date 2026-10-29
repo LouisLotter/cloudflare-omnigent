@@ -57,6 +57,7 @@ const AUD = /^[A-Za-z0-9_-]{1,256}$/;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 /** An R2 bucket name: lowercase letters, digits and hyphens, 3 to 63, no hyphen at either end. */
 const R2_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+const R2_BUCKET_MAX = 63;
 const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const BASE32 = "0123456789abcdefghjkmnpqrstvwxyz";
 const STAGING_PREFIX = "cfo-stg-";
@@ -112,6 +113,14 @@ export interface Installation {
    * it out: its server then keeps artifacts on the container's disk (the image's test switch).
    */
   readonly artifacts?: Artifacts;
+  /**
+   * The tag the installation's own bucket names carry (owner decision D33):
+   * `<platform Worker>-<tag>-<suffix>`, the first 8 digits of its ID (bucketTagOf), recorded
+   * when it is planned. A plan from before D33 has none, and its buckets keep
+   * `<platform Worker>-<suffix>`. Never derived again: every later run and deploy names the
+   * buckets from what the plan recorded, so an installation's buckets never change name.
+   */
+  readonly bucketTag?: string;
   readonly target: Target;
   readonly plannedAt: string;
 }
@@ -137,9 +146,60 @@ export function r2Endpoint(accountId: string): string {
   return `https://${accountId}.r2.cloudflarestorage.com`;
 }
 
-/** The artifact bucket a plan gets unless the installer names one: `<platform Worker>-artifacts`. */
-export function defaultArtifactsUrl(platformWorker: string): string {
-  return `s3://${platformWorker}-artifacts`;
+/**
+ * How many base32 digits of the installation ID a new installation's bucket names carry (D33):
+ * 40 bits, so two installations in one account practically never share a tag.
+ */
+export const BUCKET_TAG_DIGITS = 8;
+
+/**
+ * The tag of a (valid) installation ID: its first 8 base32 digits, lowercase (D33). Why: `cf`'s
+ * OAuth login may make an installation's R2 token but not delete it (r2-token.ts), so removal
+ * can leave a token scoped to the installation's buckets by name. A later installation that
+ * created a bucket of the same name would be covered by it; one whose names carry its own ID's
+ * tag does not.
+ */
+export function bucketTagOf(installationId: string): string {
+  return installationId.slice("ins_".length, "ins_".length + BUCKET_TAG_DIGITS).toLowerCase();
+}
+
+/** What names an installation's own buckets: its platform Worker, and its tag if it has one. */
+export type BucketNaming = Pick<Installation, "platformWorker" | "bucketTag">;
+
+/**
+ * One of the installation's own buckets: `<platform Worker>-<tag>-<suffix>` (D33), or
+ * `<platform Worker>-<suffix>` for a plan from before D33, which records no tag.
+ */
+export function ownBucket(naming: BucketNaming, suffix: string): string {
+  return naming.bucketTag === undefined
+    ? `${naming.platformWorker}-${suffix}`
+    : `${naming.platformWorker}-${naming.bucketTag}-${suffix}`;
+}
+
+/** Where in its bucket the default replica keeps the database (the server image's example). */
+export const REPLICA_PATH = "omnigent";
+
+/** The replica a plan gets unless the installer names one: `s3://<own "replica" bucket>/omnigent`. */
+export function defaultReplicaUrl(naming: BucketNaming): string {
+  return `s3://${ownBucket(naming, "replica")}/${REPLICA_PATH}`;
+}
+
+/** The artifact bucket a plan gets unless the installer names one: its own "artifacts" bucket. */
+export function defaultArtifactsUrl(naming: BucketNaming): string {
+  return `s3://${ownBucket(naming, "artifacts")}`;
+}
+
+/**
+ * Why a bucket name the plan derives from the platform Worker's name is not one R2 accepts, or
+ * undefined. Too long is said plainly, with the longest name that fits: never truncated.
+ */
+export function derivedBucketProblem(name: string, naming: BucketNaming): string | undefined {
+  if (R2_BUCKET.test(name)) return undefined;
+  if (name.length > R2_BUCKET_MAX) {
+    const fits = R2_BUCKET_MAX - (name.length - naming.platformWorker.length);
+    return `the platform Worker's name is too long for the R2 bucket ${name} (${name.length} characters, and R2 allows ${R2_BUCKET_MAX}): choose a platform Worker name of at most ${fits} characters`;
+  }
+  return `${name} is not a valid R2 bucket name`;
 }
 
 /** The bucket of an `s3://` URL, or undefined. */
@@ -272,6 +332,8 @@ export function installationProblems(plan: Installation): string[] {
   const problems: string[] = [];
   if (!InstallationId.safeParse(plan.installationId).success) {
     problems.push("the installation ID is not ins_<26 base32 digits>");
+  } else if (plan.bucketTag !== undefined && plan.bucketTag !== bucketTagOf(plan.installationId)) {
+    problems.push("the bucket tag is not the first 8 digits of the installation ID (D33)");
   }
   if (!ACCOUNT_ID.test(plan.accountId)) problems.push("the account ID must be 32 hex digits");
   for (const [what, name] of [
@@ -313,6 +375,87 @@ export function installationProblems(plan: Installation): string[] {
     problems.push(`${STAGING_PREFIX}… names belong to the guarded staging tool`);
   }
   return problems;
+}
+
+/** What `plan` is given or generates: everything but the defaults it derives. */
+export interface PlanRequest {
+  readonly installationId: string;
+  readonly accountId: string;
+  readonly platformWorker: string;
+  readonly webWorker: string;
+  readonly hostname: string;
+  readonly ownerPin: string;
+  readonly ownerUsername: string;
+  readonly target: Target;
+  /** Required for a staging installation, whose buckets come from a staging deployment. */
+  readonly replicaUrl?: string;
+  readonly replicaEndpoint?: string;
+  readonly artifactsUrl?: string;
+  readonly artifactsEndpoint?: string;
+  readonly plannedAt: string;
+}
+
+/**
+ * A new installation's plan, with its bucket tag recorded (D33). What the installer does not
+ * name is derived: the replica `s3://<platform Worker>-<tag>-replica/omnigent` (in the
+ * installer's own account; a staging installation names its replica), its endpoint the
+ * account's R2 endpoint, and beside an S3 replica the artifacts `s3://<platform Worker>-<tag>-
+ * artifacts`. Names the installer gives are kept exactly. `basePlatform` is the checked-in
+ * platform configuration, whose own buckets every deploy renames (renderPlatformConfig). Throws
+ * naming every problem; a platform Worker name that would make a derived bucket name too long
+ * is refused, never shortened.
+ */
+export function planInstallation(request: PlanRequest, basePlatform: Raw): Installation {
+  if (!InstallationId.safeParse(request.installationId).success) {
+    throw new Error("the installation ID is not ins_<26 base32 digits>");
+  }
+  const { replicaUrl, replicaEndpoint, artifactsUrl, artifactsEndpoint } = request;
+  if (replicaUrl === undefined && request.target.kind === "staging") {
+    throw new Error(
+      "a staging installation names its replica (--replica-url): file:///replica for a test, or a bucket that a staging deployment holds",
+    );
+  }
+  const bucketTag = bucketTagOf(request.installationId);
+  const naming: BucketNaming = { platformWorker: request.platformWorker, bucketTag };
+  const replica = replicaUrl ?? defaultReplicaUrl(naming);
+  const endpoint =
+    replicaEndpoint ?? (replica.startsWith("s3:") ? r2Endpoint(request.accountId) : undefined);
+  // A file replica (staging tests) keeps the artifacts on the container's disk unless named.
+  const artifacts =
+    artifactsUrl ?? (replica.startsWith("s3:") ? defaultArtifactsUrl(naming) : undefined);
+  const derived = [
+    ...(replicaUrl === undefined ? [ownBucket(naming, "replica")] : []),
+    ...(artifactsUrl === undefined && artifacts !== undefined
+      ? [ownBucket(naming, "artifacts")]
+      : []),
+    ...platformBucketNames(basePlatform, naming),
+  ];
+  const tooLong = derived.flatMap((name) => derivedBucketProblem(name, naming) ?? []);
+  if (tooLong.length > 0) throw new Error(tooLong.join("; "));
+  const plan: Installation = {
+    installationId: request.installationId,
+    accountId: request.accountId,
+    platformWorker: request.platformWorker,
+    webWorker: request.webWorker,
+    hostname: request.hostname,
+    ownerPin: request.ownerPin,
+    ownerUsername: request.ownerUsername,
+    replica: { url: replica, ...(endpoint === undefined ? {} : { endpoint }) },
+    ...(artifacts === undefined
+      ? {}
+      : {
+          artifacts: {
+            url: artifacts,
+            ...(artifactsEndpoint === undefined ? {} : { endpoint: artifactsEndpoint }),
+          },
+        }),
+    bucketTag,
+    target: request.target,
+    plannedAt: request.plannedAt,
+  };
+  const problems = installationProblems(plan);
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  return plan;
 }
 
 /** The platform Worker's variables: the installation ID and the server's plain settings. */
@@ -505,20 +648,46 @@ export function accessProblems(plan: Installation, access: AccessSettings): stri
 type Raw = Readonly<Record<string, unknown>>;
 
 /**
+ * A bucket of the checked-in platform configuration named after its own Worker
+ * (`<its name>-<suffix>`, the computers' `…-checkpoints`), named as this installation's own
+ * bucket instead (ownBucket: with the plan's tag, if it recorded one); undefined for any other.
+ */
+function ownBucketOf(base: Raw, entry: unknown, naming: BucketNaming): string | undefined {
+  const own = typeof base.name === "string" ? `${base.name}-` : null;
+  const name = (entry as { bucket_name?: unknown } | null)?.bucket_name;
+  return own !== null && typeof name === "string" && name.startsWith(own)
+    ? ownBucket(naming, name.slice(own.length))
+    : undefined;
+}
+
+/**
+ * The names renderPlatformConfig gives the buckets the checked-in configuration names after
+ * its own Worker: the platform Worker binds them, and its deploy creates the missing ones.
+ */
+export function platformBucketNames(base: Raw, naming: BucketNaming): string[] {
+  return (Array.isArray(base.r2_buckets) ? base.r2_buckets : []).flatMap((entry: unknown) => {
+    const name = ownBucketOf(base, entry, naming);
+    return name === undefined ? [] : [name];
+  });
+}
+
+/**
  * The platform Worker's configuration for this installation: the checked-in one
  * (worker/wrangler.jsonc) with its name, account and variables. Containers keep the names
  * Wrangler derives from the Worker's name; R2 buckets named after the checked-in Worker
- * (`<its name>-<suffix>`, the computers' `…-checkpoints`) are named after this one (WP3.18).
+ * (`<its name>-<suffix>`, the computers' `…-checkpoints`) are this installation's own buckets
+ * (WP3.18; with D33's tag when the plan recorded one). A name R2 would refuse is an error,
+ * never shortened.
  */
 export function renderPlatformConfig(base: Raw, plan: Installation): Record<string, unknown> {
   if ("vars" in base) throw new Error("the platform configuration already has variables");
-  const own = typeof base.name === "string" ? `${base.name}-` : null;
   const buckets = Array.isArray(base.r2_buckets)
     ? base.r2_buckets.map((entry: unknown) => {
-        const b = entry as Record<string, unknown>;
-        return own !== null && typeof b.bucket_name === "string" && b.bucket_name.startsWith(own)
-          ? { ...b, bucket_name: `${plan.platformWorker}-${b.bucket_name.slice(own.length)}` }
-          : b;
+        const name = ownBucketOf(base, entry, plan);
+        if (name === undefined) return entry;
+        const problem = derivedBucketProblem(name, plan);
+        if (problem !== undefined) throw new Error(problem);
+        return { ...(entry as Record<string, unknown>), bucket_name: name };
       })
     : undefined;
   return {

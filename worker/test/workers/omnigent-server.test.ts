@@ -881,7 +881,8 @@ describe("OmnigentServer: the server image's entrypoint (WP2.3)", () => {
     expect(fake.destroys).toEqual([]);
     expect(fake.starts).toHaveLength(1);
     expect(events("watchdog").some((e) => e.event === "state_unreadable")).toBe(false);
-  });
+    // Half an hour of checks, each a round trip: about 4 s alone, past 5 s under coverage in CI.
+  }, 30_000);
 
   it("waits for a stop the platform began instead of killing it during its final sync", async () => {
     const { stub, fake } = await runningServer();

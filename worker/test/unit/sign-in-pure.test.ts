@@ -333,6 +333,7 @@ describe("the status", () => {
       saves: [save("op_a", "failed", "upload")],
       staging: true,
       rc53Desired: true,
+      keepAwake: true,
     });
     expect(view.credentials.files.map((f) => f.state)).toEqual([
       "present",
@@ -346,6 +347,8 @@ describe("the status", () => {
       createdAt: "2026-10-28T09:00:00.000Z",
     });
     expect(view.rc53).toEqual({ staging: true, desired: true, applied: true });
+    // WP3.27: staging's keep-awake switch, shown only there.
+    expect(view.keepAwake).toEqual({ staging: true, on: true });
     expect(view.saves[0]).toMatchObject({ outcome: "failed", reason: "upload" });
     expect(JSON.stringify(view)).not.toContain("op_a");
     const bare = composeStatus({
@@ -357,9 +360,11 @@ describe("the status", () => {
       saves: [],
       staging: false,
       rc53Desired: false,
+      keepAwake: true,
     });
     expect(bare.metrics).toBeNull();
     expect(bare.rc53).toEqual({ staging: false, desired: null, applied: null });
+    expect(bare.keepAwake).toEqual({ staging: false, on: null });
     expect(bare.credentials.files.every((f) => f.state === "none")).toBe(true);
     expect(
       composeStatus({
@@ -371,6 +376,7 @@ describe("the status", () => {
           saves: [],
           staging: false,
           rc53Desired: false,
+          keepAwake: false,
         },
         metrics: { ...METRICS, disk: null },
       }).metrics?.disk,
@@ -387,6 +393,7 @@ describe("the status", () => {
       saves: [save("op_a", "failed", "upload")],
       staging: false,
       rc53Desired: false,
+      keepAwake: false,
     };
     const a = statusLog(composeStatus(base));
     const b = statusLog(
@@ -406,6 +413,12 @@ describe("the status", () => {
     const empty = statusLog(composeStatus({ ...base, metrics: null, saves: [] }));
     expect(empty.fields).toMatchObject({ versions: null, lastSave: null, diskFreeBytes: null });
     expect(empty.signature).not.toBe(a.signature);
+    // A switched keep-awake is logged as a change.
+    const awake = statusLog(composeStatus({ ...base, staging: true, keepAwake: true }));
+    expect(awake.fields).toMatchObject({ keepAwake: true });
+    expect(awake.signature).not.toBe(
+      statusLog(composeStatus({ ...base, staging: true, keepAwake: false })).signature,
+    );
   });
 });
 

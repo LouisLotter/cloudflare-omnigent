@@ -73,6 +73,10 @@ class FakeController implements FrontController {
     this.signIns.push({ method: "staging", input });
     return { outcome: "accepted" as const, rc53: input.rc53 };
   }
+  async setStagingKeepAwake(input: { readonly on: boolean }) {
+    this.signIns.push({ method: "keep_awake", input });
+    return { outcome: "accepted" as const, on: input.on };
+  }
   sessionAttempts(session: string) {
     this.signIns.push({ method: "sessionAttempts", input: session });
     return this.attempts;
@@ -635,6 +639,7 @@ describe("sign-in from the page (WP3.23)", () => {
       { action: "sign_in_input", service: "claude", attempt: 1, code: "a#b" },
       { action: "sign_in_cancel", service: "codex", attempt: 2 },
       { action: "staging_check", rc53: true },
+      { action: "staging_keep_awake", on: true },
     ]) {
       expect(await codeOf(front.pages(base("00".repeat(32), extra)))).toBe("forbidden");
     }
@@ -658,6 +663,11 @@ describe("sign-in from the page (WP3.23)", () => {
       outcome: "accepted",
       rc53: false,
     });
+    expect(await front.pages(base(intent, { action: "staging_keep_awake", on: true }))).toEqual({
+      action: "staging_keep_awake",
+      outcome: "accepted",
+      on: true,
+    });
     const calls = controller.signIns.filter((c) => c.method !== "sessionAttempts");
     expect(calls).toEqual([
       {
@@ -676,6 +686,7 @@ describe("sign-in from the page (WP3.23)", () => {
       },
       { method: "cancel", input: { service: "claude", attempt: 1, session: OWNER.sessionId } },
       { method: "staging", input: { rc53: false } },
+      { method: "keep_awake", input: { on: true } },
     ]);
     expect(JSON.stringify(calls)).not.toContain(intent);
   });

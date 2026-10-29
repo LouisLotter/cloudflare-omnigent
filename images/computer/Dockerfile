@@ -110,6 +110,19 @@ RUN apt-get update \
       git tmux procps lsof bubblewrap curl ca-certificates unzip \
       tini iproute2 sudo util-linux \
  && rm -rf /var/lib/apt/lists/*
+# The hostname resolves without /etc/hosts (WP3.27). A durable_object container's hostname is
+# its Durable Object's ID (64 hex characters), and Cloudflare mounts /etc/hosts read-only without
+# it, so every sudo warned "unable to resolve host". NSS myhostname answers for the machine's own
+# name, before DNS is asked. Pinned: once Debian's point release moves systemd on, this version
+# leaves the archive and the build fails here; take the new one from
+# `apt-cache policy libnss-myhostname` in the base image.
+ARG LIBNSS_MYHOSTNAME_VERSION=257.13-1~deb13u1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends "libnss-myhostname=${LIBNSS_MYHOSTNAME_VERSION}" \
+ && rm -rf /var/lib/apt/lists/* \
+ && sed -i -E 's/^hosts:.*$/hosts:          files myhostname dns/' /etc/nsswitch.conf \
+ && test "$(grep -E '^hosts:' /etc/nsswitch.conf | tr -s ' \t' ' ')" = "hosts: files myhostname dns" \
+ && test "$(dpkg-query -W -f='${Version}' libnss-myhostname)" = "${LIBNSS_MYHOSTNAME_VERSION}"
 # The image's own pip (agents run it too) at the fixed release, as in the builder stage, and
 # the wheel ensurepip seeds into every new virtual environment (images/trust/pin_pip.sh).
 ARG PIP_PIN

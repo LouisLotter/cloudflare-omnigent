@@ -409,6 +409,59 @@
         "rc53"
       ],
       "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "staging_keep_awake",
+          "type": "string"
+        },
+        "intent": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "on": {
+          "type": "boolean"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "owner": {
+          "additionalProperties": {},
+          "properties": {
+            "sessionId": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sub": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId",
+        "owner",
+        "intent",
+        "on"
+      ],
+      "type": "object"
     }
   ],
   "title": "PageFrontCall"

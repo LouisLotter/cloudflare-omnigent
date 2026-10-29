@@ -1068,7 +1068,7 @@ def test_computer_status_holds_names_and_counts_only(rig: Rig):
     )
     assert status["supervisorVersion"] == "0.3.0"
     assert status["signIn"] == {"claude": "none", "codex": "none"}
-    assert status["hostname"] in ("mapped", "unmapped", "unknown")
+    assert status["hostname"] in ("resolved", "unresolved", "unknown")
     assert status["disk"]["totalBytes"] >= status["disk"]["freeBytes"] > 0
     kinds = {a["kind"]: a["count"] for a in status["alerts"]}
     assert kinds["capture_skipped_paths"] == 1 and kinds["command_failed"] == 1
@@ -1109,15 +1109,9 @@ def test_versions_are_normalized():
     assert S.normalized_version(None) is None
 
 
-def test_hostname_and_counts_helpers(tmp_path: Path):
+def test_counts_helpers(tmp_path: Path):
     from cfo_computer import status as S
 
-    hosts = tmp_path / "hosts"
-    hosts.write_text("127.0.0.1 localhost\n127.0.1.1\tabc123 # mapped\n")
-    assert S.hostname_mapped(hosts, "abc123") == "mapped"
-    assert S.hostname_mapped(hosts, "other") == "unmapped"
-    assert S.hostname_mapped(tmp_path / "missing", "abc") == "unknown"
-    assert S.hostname_mapped(hosts, "") == "unknown"
     assert S.rc53_counts({}) is None
     assert S.rc53_counts({"rc53": {"status": 1, "values": 2, "files": 3, "findings": 4}}) is None
     assert (

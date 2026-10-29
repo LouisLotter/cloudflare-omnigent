@@ -1,6 +1,8 @@
 // WorkspaceDO's controller: removal intents, sign-out runs and their verification, the resolved
 // removal's deletions, and reconciliation after Omnigent's database loses writes (FH-29).
 import { describe, expect, it } from "vitest";
+import { holdsLogin } from "../../src/computer/checkpoints.ts";
+import { type ComputerRecord, RECORD_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
 const pageCall = (
@@ -285,4 +287,110 @@ describe("after Omnigent's database loses writes (FH-29)", () => {
     await sim.call(sim.client.statusRequest());
     expect((await state(sim)).noContact).toBe(false);
   });
+});
+
+describe("a sign-out run's phase (WP3.27, the 28 Oct sitting's B3)", () => {
+  const runSignOut = async (sim: ComputerSim) => {
+    expect(await pageCall(sim, "sign_out", 1)).toEqual({ action: "sign_out", outcome: "accepted" });
+    const phases: string[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      await sim.advance(5_000);
+      phases.push(sim.record().signOut.phase);
+    }
+    return phases;
+  };
+
+  it("reaches verified when the CLIs log out one after the other, never passing through none", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true };
+    await signedIn(sim);
+    const phases = await runSignOut(sim);
+    expect(phases).not.toContain("none");
+    expect(phases.at(-1)).toBe("verified");
+    expect(sim.record().signOut.job).toBeNull();
+    // Both bundles of the run were published: the in-between one did not undo it.
+    expect(sim.logs.filter((l) => l.event === "credentials_published").length).toBeGreaterThan(3);
+    const status = await sim.controller.computerStatus();
+    expect(status.signOut).toEqual({ phase: "verified", running: false });
+    expect(await state(sim)).toMatchObject({ removal: { signOut: "verified", settled: true } });
+  });
+
+  it("ends undone when a logout leaves its login: the run's snapshot decides", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true, failedLogout: "codex" };
+    await signedIn(sim);
+    const phases = await runSignOut(sim);
+    expect(phases.at(-1)).toBe("none");
+    expect(sim.record().signOut.job).toBeNull();
+    expect(sim.record().credential?.files[".codex/auth.json"].state).toBe("present");
+    expect(sim.logs.find((l) => l.event === "sign_out_ran")?.fields).toMatchObject({
+      claude: "ok",
+      codex: "failed",
+    });
+    expect(await state(sim)).toMatchObject({ removal: { settled: false } });
+  });
+
+  // Codex WP3.27 r1-1: a run started from `verified` or `tombstoned` (the table keeps both at
+  // `requested`) must not keep claiming them once a login is published between its logouts.
+  const runToEnd = async (sim: ComputerSim, n: number) => {
+    expect(await pageCall(sim, "sign_out", n)).toEqual({ action: "sign_out", outcome: "accepted" });
+    const phases: string[] = [];
+    for (let i = 0; i < 90 && (i === 0 || sim.record().signOut.job !== null); i += 1) {
+      await sim.advance(5_000);
+      const r = sim.record();
+      phases.push(r.signOut.phase);
+      // Never a claim with a login in the pointer, and never a removal it would let through.
+      if (r.credential !== null && holdsLogin(r.credential.files)) {
+        expect(["none", "requested"]).toContain(r.signOut.phase);
+        expect(await state(sim)).toMatchObject({ removal: { settled: false } });
+      }
+    }
+    expect(sim.record().signOut.job).toBeNull();
+    return phases;
+  };
+
+  for (const start of ["verified", "tombstoned"] as const) {
+    for (const codexLogout of ["ok", "failed"] as const) {
+      it(`a login written after a sign-out that ended ${start}, then a run whose Codex logout is ${codexLogout}`, async () => {
+        const sim = new ComputerSim();
+        sim.computer.supervisorOptions = { staggeredLogouts: true };
+        await signedIn(sim);
+        // The first run: verified, or tombstoned when its read-back never succeeds (given up).
+        if (start === "tombstoned") sim.bucket.failGets = 1_000;
+        await runToEnd(sim, 1);
+        sim.bucket.failGets = 0;
+        expect(sim.record().signOut.phase).toBe(start);
+        const reads = sim.bucket.gets.length;
+        // Codex writes a login again; nothing has published it when the next run starts, so the
+        // first bundle holding it is published between that run's logouts.
+        live(sim).credentials.set(".codex/auth.json", "codex-login-canary-again");
+        live(sim).options.failedLogout = codexLogout === "failed" ? "codex" : null;
+        // Every record write, not only the samples: the run's steps can all land in one pass.
+        const claims: string[] = [];
+        const put = sim.store.put.bind(sim.store);
+        sim.store.put = (key: string, value: unknown) => {
+          put(key, value);
+          const r = key === RECORD_KEY ? (value as ComputerRecord) : null;
+          if (r?.credential != null && holdsLogin(r.credential.files)) {
+            if (r.signOut.phase === "tombstoned" || r.signOut.phase === "verified") {
+              claims.push(r.signOut.phase);
+            }
+          }
+        };
+        const phases = await runToEnd(sim, 2);
+        expect(claims).toEqual([]);
+        if (codexLogout === "ok") {
+          // The run's own tombstones, read back again, are what it now claims (the run takes one
+          // runner pass here, so the samples see only its end).
+          expect(phases.at(-1)).toBe("verified");
+          expect(sim.bucket.gets.length).toBeGreaterThan(reads);
+          expect(await state(sim)).toMatchObject({ removal: { settled: true } });
+        } else {
+          expect(phases.at(-1)).toBe("none");
+          expect(sim.record().credential?.files[".codex/auth.json"].state).toBe("present");
+          expect(await state(sim)).toMatchObject({ removal: { settled: false } });
+        }
+      });
+    }
+  }
 });

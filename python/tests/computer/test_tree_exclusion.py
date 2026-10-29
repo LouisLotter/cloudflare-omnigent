@@ -105,3 +105,49 @@ def test_declared_file_is_excluded_even_under_saved_root(tmp_path):
     write(tmp_path, "work/declared")
     scan = scan_home(tmp_path, Policy.load(POLICY), declared=["work/declared"])
     assert "work/declared" not in {rel for rel, _ in scan.entries}
+
+
+def test_codex_log_database_stays_out_of_a_save_and_its_continuation_goes_in(tmp_path):
+    """WP3.27: ``logs_N.sqlite`` (with its WAL, shared memory and journal) is Codex's own trace
+    log, which it prunes by age; on 28 Oct it held a ChatGPT edge token Codex had logged. A real
+    capture through the supervisor leaves it out, in a session's private CODEX_HOME and in
+    ``~/.codex``, and keeps Codex 0.164.0's continuation databases and rollouts."""
+    from harness import Rig, canary
+
+    marker = canary("wp327-codex-log").encode()
+    rig = Rig(tmp_path / "a")
+    try:
+        rig.boot()
+        homes = [".omnigent/codex-native/b1/codex-home", ".codex"]
+        logs = ["logs_2.sqlite", "logs_2.sqlite-wal", "logs_2.sqlite-shm", "logs_1.sqlite-journal"]
+        kept = [
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "goals_1.sqlite",
+            "queue_1.sqlite",
+            "thread_history_1.sqlite",
+            "sessions/2026/10/28/rollout-x.jsonl",
+        ]
+        for home in homes:
+            for name in logs:
+                write(rig.home, f"{home}/{name}", b"SQLite format 3\0" + marker)
+            for name in kept:
+                write(rig.home, f"{home}/{name}", b"continuation")
+        op, job = rig.capture()
+        assert job["state"] == "staged", job
+        layer = Path(job["layerDir"])
+        staged = {
+            str((Path(d) / f).relative_to(layer))
+            for d, _dirs, files in os.walk(layer)
+            for f in files
+        }
+        for home in homes:
+            assert not [p for p in staged if p.startswith(f"{home}/logs_")], staged
+            for name in kept:
+                assert f"{home}/{name}" in staged, (home, name)
+        for d, _dirs, files in os.walk(layer):
+            for f in files:
+                assert marker not in (Path(d) / f).read_bytes()
+        rig.finish(op)
+    finally:
+        rig.close()

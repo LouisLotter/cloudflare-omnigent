@@ -346,15 +346,23 @@ def test_layers_round_trip_through_directory_backup(tmp_path: Path) -> None:
     assert [f["code"] for f in result["partFailures"]] == ["BACKUP_TRANSFER"] * 2
 
 
-def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed() -> None:
-    """WP3.22, under the real supervisor: started as Cloudflare's ``durable_object`` runtime
-    leaves a container (a 64-character hostname nothing maps; ``/`` owned by uid 2346, recreated
-    here before tini starts), the supervisor maps the hostname, so ``sudo`` prints no "unable to
-    resolve host", and gives ``/`` back to root, so Claude Code 2.1.311 binds its cross-session
-    messaging sockets instead of refusing them."""
+def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed(
+    tmp_path: Path,
+) -> None:
+    """WP3.22 and WP3.27, under the real supervisor: started as Cloudflare's ``durable_object``
+    runtime leaves a container (a 64-character hostname; ``/etc/hosts`` a read-only mount that
+    does not name it; ``/`` owned by uid 2346, recreated here before tini starts), the hostname
+    resolves through the image's NSS ``myhostname``, so ``sudo`` prints no "unable to resolve
+    host" and the supervisor's status says ``resolved``, and ``/`` goes back to root, so Claude
+    Code 2.1.311 binds its cross-session messaging sockets instead of refusing them."""
     tag = secrets.token_hex(4)
     name = f"cfo-wp34-it-do-{tag}"
     hostname = secrets.token_hex(32)
+    computer_id = ulid("cmp")
+    # Cloudflare's /etc/hosts, as the 28 Oct sitting found it: read-only, without the hostname.
+    hosts_file = tmp_path / "hosts"
+    hosts_file.write_text("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n")
+    hosts_file.chmod(0o644)
     script = (
         "chown 2346:2346 / && exec /usr/bin/tini -- /usr/local/bin/python3 -I -m cfo_computer.main"
     )
@@ -367,8 +375,10 @@ def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed()
         hostname,
         "--network",
         "none",
+        "-v",
+        f"{hosts_file}:/etc/hosts:ro",
         "-e",
-        f"CFO_COMPUTER_ID={ulid('cmp')}",
+        f"CFO_COMPUTER_ID={computer_id}",
         "-e",
         "CFO_GENERATION=1",
         "--entrypoint",
@@ -379,12 +389,24 @@ def test_a_durable_object_container_gets_its_hostname_and_root_directory_fixed()
     )
     try:
         _wait(lambda: "start fixes" in docker("logs", name, check=False).stderr)
-        assert "hostname mapped, root owner was 2346:2346" in docker("logs", name).stderr
+        assert "hostname resolved, root owner was 2346:2346" in docker("logs", name).stderr
         assert docker("exec", name, "stat", "-c", "%u:%g %a", "/").stdout.split() == ["0:0", "755"]
-        hosts = docker("exec", name, "cat", "/etc/hosts").stdout
-        assert f"127.0.1.1\t{hostname}" in hosts.splitlines()
+        assert docker("exec", name, "cat", "/etc/hosts").stdout == hosts_file.read_text()
+        touch = docker("exec", name, "sh", "-c", "echo x >> /etc/hosts", check=False)
+        assert touch.returncode != 0, "the test's /etc/hosts must be read-only"
         sudo = docker("exec", "-u", "omnigent", name, "sudo", "-n", "true")
-        assert "unable to resolve host" not in sudo.stderr, sudo.stderr
+        assert sudo.stderr == "", sudo.stderr
+        # The supervisor's own computer_status, asked on its command port inside the container.
+        ask = (
+            "import json, urllib.request\n"
+            "body = {'type': 'computer_status', 'protocolVersion': 1, 'computerId': "
+            f"{computer_id!r}, 'generation': 1, 'operationId': {ulid('op')!r}}}\n"
+            "request = urllib.request.Request('http://127.0.0.1:8090/v1/commands', "
+            "data=json.dumps(body).encode(), headers={'content-type': 'application/json'})\n"
+            "print(json.load(urllib.request.urlopen(request, timeout=30))['status']['hostname'])"
+        )
+        answer = docker("exec", name, "/usr/local/bin/python3", "-I", "-c", ask).stdout.strip()
+        assert answer == "resolved", answer
         # Claude Code's sockets directory, vetted up to "/", in a throwaway home.
         claude = " && ".join(
             [

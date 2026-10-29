@@ -1329,6 +1329,8 @@
             },
             "hostname": {
               "enum": [
+                "resolved",
+                "unresolved",
                 "mapped",
                 "unmapped",
                 "unknown"

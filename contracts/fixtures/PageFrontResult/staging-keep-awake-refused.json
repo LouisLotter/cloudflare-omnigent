@@ -1,0 +1,5 @@
+{
+  "action": "staging_keep_awake",
+  "outcome": "refused",
+  "reason": "not_staging"
+}

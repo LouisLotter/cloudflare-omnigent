@@ -10,7 +10,8 @@
 //   neither a restore into a fresh computer nor revocation at the providers;
 // - a bounded, durable history of *final* save outcomes, which it records itself when a save ends
 //   (a capture can stage and the upload still fail, as on 27 Oct), with the RC-53 counts the
-//   supervisor reported for that capture, matched by its operation ID.
+//   supervisor reported for that capture, matched by its operation ID;
+// - on staging, the keep-awake switch (WP3.27).
 // Names, versions, enum states and counts only: never a value, a path, or text from the computer.
 
 import {
@@ -115,6 +116,8 @@ export interface StatusInput {
   readonly staging: boolean;
   /** The switch's persisted, desired state (staging only). */
   readonly rc53Desired: boolean;
+  /** The keep-awake switch's persisted state (staging only, WP3.27). */
+  readonly keepAwake: boolean;
 }
 
 export function composeStatus(input: StatusInput): ComputerStatusView {
@@ -159,6 +162,7 @@ export function composeStatus(input: StatusInput): ComputerStatusView {
       desired: input.staging ? input.rc53Desired : null,
       applied: m === null ? null : m.rc53,
     },
+    keepAwake: { staging: input.staging, on: input.staging ? input.keepAwake : null },
   };
 }
 
@@ -184,6 +188,7 @@ export function statusLog(view: ComputerStatusView): {
     credentialOrder: view.credentials.checkpoint?.order ?? null,
     signOut: view.signOut.phase,
     rc53: view.rc53,
+    keepAwake: view.keepAwake?.on ?? null,
     lastSave:
       last === undefined
         ? null

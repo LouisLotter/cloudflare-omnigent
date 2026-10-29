@@ -48,7 +48,8 @@
 #                        WP3.5's hostile page for the owner's browser (http://127.0.0.1:8088/)
 #   run.sh campaign      after the owner's Start click: the web and platform deploys at their
 #                        times (plan.ts), then wait for the end and collect
-#   run.sh collect       the soak run's events, the deploys and the platform Worker's logs
+#   run.sh collect       the soak run's events, the deploys and the platform Worker's logs, and
+#                        each host's tunnel opens from the sitting's start (presence.jsonl)
 #   run.sh analyze       the RC-26 reconnect table and verdict.json (a `config_changed` restart
 #                        during the soak fails it)
 #   run.sh scan          WP3.5's log checks over the sitting, both Workers: no terminal canary
@@ -395,6 +396,15 @@ print(json.dumps({
     cp "$out/deploys.jsonl" "$run_dir/deploys.jsonl" 2>/dev/null || : >"$run_dir/deploys.jsonl"
     node "$here/logs.ts" "$platform" "$(( t0 - 600000 ))" "$(( t0 + 3 * 3600000 + 600000 ))" |
       "${redact[@]}" >"$run_dir/logs.jsonl"
+    # Each host's tunnel opens from the sitting's start to the window (WP3.27), so the first
+    # disruption judges a host that connected before the window (28 Oct: T0+10 had no row).
+    sitting="$(cat "$out/t0" 2>/dev/null || echo "$(( t0 - 600000 ))")"
+    if [ "$sitting" -lt "$(( t0 - 600000 ))" ]; then
+      node "$here/logs.ts" "$platform" "$sitting" "$(( t0 - 600000 ))" | node "$here/opens.ts" |
+        "${redact[@]}" >"$run_dir/presence.jsonl"
+    else
+      : >"$run_dir/presence.jsonl"
+    fi
     echo "collected into $run_dir"
     ;;
   analyze)
@@ -420,7 +430,9 @@ print(json.dumps({
     dir="$out/layers/$computer"
     mkdir -p "$dir"
     chmod 700 "$out/layers" "$dir"
-    CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects list --bucket-name "$platform-checkpoints" \
+    # The bucket as the bootstrap names it from the plan: tagged since D33 (WP3.30).
+    checkpoints="$(node --no-warnings "$here/soak-config.ts" checkpoints)"
+    CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects list --bucket-name "$checkpoints" \
       --prefix "workspace/$computer/" --per-page 1000 |
       python3 -I -c 'import json,sys
 d = json.load(sys.stdin)
@@ -429,7 +441,7 @@ for o in d if isinstance(d, list) else d.get("objects", []):
     print(o["key"])' |
       while read -r key; do
         CLOUDFLARE_ACCOUNT_ID="$(account)" cf r2 objects get "$key" \
-          --bucket-name "$platform-checkpoints" >"$dir/$(basename "$key")"
+          --bucket-name "$checkpoints" >"$dir/$(basename "$key")"
       done
     ls -l "$dir"
     ;;
