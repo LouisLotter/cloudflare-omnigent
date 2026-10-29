@@ -754,7 +754,15 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     const version = (text?: string) => ({
       bindings: [
         { type: "durable_object_namespace", name: "OMNIGENT" },
-        ...(text === undefined ? [] : [{ type: "plain_text", name: "CFO_INSTALLATION_ID", text }]),
+        ...(text === undefined
+          ? []
+          : [
+              { type: "plain_text", name: "CFO_INSTALLATION_ID", text },
+              // Its other plain-text variables come along (WP3.35); secrets never have text.
+              { type: "plain_text", name: "CFO_PLATFORM_FEATURES", text: "key-service" },
+              { type: "secret_text", name: "SERVER_ENV_OMNIGENT_ACCOUNTS_COOKIE_SECRET" },
+              { type: "plain_text", name: 7, text: "x" },
+            ]),
       ],
     });
     const answers: Partial<CommandResult>[] = [
@@ -771,11 +779,15 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     expect(await cloud.workerInstallation("w")).toEqual({
       exists: true,
       installationId: plan.installationId,
+      versionId: "v7",
+      vars: { CFO_INSTALLATION_ID: plan.installationId, CFO_PLATFORM_FEATURES: "key-service" },
     });
     expect(calls[1]?.args).toEqual(["workers", "versions", "get", "--worker-id", "w", "v7"]);
     expect(await cloud.workerInstallation("w")).toEqual({
       exists: true,
       installationId: undefined,
+      versionId: "v7",
+      vars: {},
     });
     expect(await cloud.workerInstallation("w")).toEqual({ exists: false });
     expect(await cloud.workerInstallation("w")).toEqual({

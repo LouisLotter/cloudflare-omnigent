@@ -2,8 +2,9 @@
 // the platform objects' switch to a new version about 300 s after it is deployed, and the
 // watchdog's bootstrap status lines in Workers Logs, once a minute while the running version
 // holds the bootstrap password (WP2.2's OmnigentServer), as Workers Logs delivers them.
-// The server container keeps the configuration it was started with: a new version adopts it,
-// and its watchdog replaces it once (a restart of `REPLACE_MS`) when its configuration differs.
+// The server container keeps the configuration it was started with (the version's secrets and its
+// `SERVER_ENV_` variables): a new version adopts it, and its watchdog replaces it once (a restart
+// of `REPLACE_MS`) when its configuration differs.
 // The server then logs its status without the password until it shows a durable owner, and for
 // `NOTICE_MS` after (G2-SEC-001).
 // The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
@@ -41,6 +42,8 @@ export interface Version {
   readonly id: string;
   readonly at: number;
   readonly secrets: ReadonlyMap<string, string>;
+  /** The `SERVER_ENV_` variables the version's configuration gives the server, as one text. */
+  readonly serverVars: string;
 }
 
 /** What the watchdog would find at a time: Omnigent's owner and the replicated position. */
@@ -194,9 +197,9 @@ export class FakeWorld {
     return this.latest(worker)?.secrets;
   }
 
-  #newVersion(worker: string, secrets: ReadonlyMap<string, string>): void {
+  #newVersion(worker: string, secrets: ReadonlyMap<string, string>, serverVars = ""): void {
     const list = this.versions.get(worker) ?? [];
-    list.push({ id: `v${this.#nextVersion++}`, at: this.now, secrets });
+    list.push({ id: `v${this.#nextVersion++}`, at: this.now, secrets, serverVars });
     this.versions.set(worker, list);
   }
 
@@ -230,7 +233,7 @@ export class FakeWorld {
         const kept = new Map(world.secretsOf(plan.platformWorker) ?? []);
         for (const [key, value] of Object.entries(secrets)) kept.set(key, value);
         for (const key of world.dropOnDeploy) kept.delete(key);
-        world.#newVersion(plan.platformWorker, kept);
+        world.#newVersion(plan.platformWorker, kept, serverVarsOf(config));
         world.configs.set(plan.platformWorker, [
           ...(world.configs.get(plan.platformWorker) ?? []),
           config,
@@ -246,11 +249,17 @@ export class FakeWorld {
       async workerInstallation(worker) {
         const n = world.#enter("workerInstallation");
         const exists = world.versions.has(worker);
-        const vars = (world.configs.get(worker)?.at(-1)?.vars ?? {}) as Record<string, unknown>;
+        const vars = (world.configs.get(worker)?.at(-1)?.vars ?? {}) as Record<string, string>;
         world.#leave("workerInstallation", n);
         if (!exists) return { exists: false };
         const id = vars.CFO_INSTALLATION_ID;
-        return { exists: true, installationId: typeof id === "string" ? id : undefined };
+        const versionId = world.noVersions ? undefined : world.latest(worker)?.id;
+        return {
+          exists: true,
+          installationId: typeof id === "string" ? id : undefined,
+          ...(versionId === undefined ? {} : { versionId }),
+          vars: { ...vars },
+        };
       },
       async updateSecrets(worker, changes, notAfter) {
         const n = world.#enter("updateSecrets");
@@ -267,7 +276,7 @@ export class FakeWorld {
           if (value === null) next.delete(key);
           else next.set(key, value);
         }
-        world.#newVersion(worker, next);
+        world.#newVersion(worker, next, world.latest(worker)?.serverVars);
         world.secretChanges.push({ at: world.now, worker, changes });
         world.#leave("updateSecrets", n);
         return "sent";
@@ -425,7 +434,7 @@ export class FakeWorld {
     for (const v of list.slice(1)) {
       const switchAt = v.at + SWITCH_MS;
       if (switchAt > t) break;
-      if (this.appliesReleases && !sameSecrets(v.secrets, running.version.secrets)) {
+      if (this.appliesReleases && !sameConfig(v, running.version)) {
         running = { version: v, since: Math.max(switchAt, running.since) + REPLACE_MS };
       }
     }
@@ -477,9 +486,7 @@ export class FakeWorld {
       // one being replaced, or one an older build never replaced, logs none.
       const container = this.containerAt(worker, t);
       const applied =
-        container !== undefined &&
-        t >= container.since &&
-        sameSecrets(container.version.secrets, version.secrets);
+        container !== undefined && t >= container.since && sameConfig(container.version, version);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
       const durableAt = container === undefined ? undefined : durableSince.get(container.since);
       const announcing = !truth.initialized || durableAt === undefined || t - durableAt < NOTICE_MS;
@@ -515,6 +522,28 @@ export class FakeWorld {
 
 function sameSecrets(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
   return a.size === b.size && [...a].every(([name, value]) => b.get(name) === value);
+}
+
+/**
+ * Whether a server started with one version's configuration runs another's (the fingerprint):
+ * the secrets and variables that reach the server, `SERVER_ENV_` ones only, as in production.
+ */
+function sameConfig(a: Version, b: Version): boolean {
+  return sameSecrets(serverSecrets(a), serverSecrets(b)) && a.serverVars === b.serverVars;
+}
+
+function serverSecrets(v: Version): Map<string, string> {
+  return new Map([...v.secrets].filter(([name]) => name.startsWith("SERVER_ENV_")));
+}
+
+/** The `SERVER_ENV_` variables of a deployed configuration, as one text. */
+function serverVarsOf(config: Readonly<Record<string, unknown>>): string {
+  const vars = (config.vars ?? {}) as Record<string, unknown>;
+  return JSON.stringify(
+    Object.entries(vars)
+      .filter(([name]) => name.startsWith("SERVER_ENV_"))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
 }
 
 export class MemoryStore implements StateStore {

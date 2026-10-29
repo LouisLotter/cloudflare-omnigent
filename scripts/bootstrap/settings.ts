@@ -477,13 +477,41 @@ export function planInstallation(request: PlanRequest, basePlatform: Raw): Insta
   return plan;
 }
 
-/** The platform Worker's variables: the installation ID and the server's plain settings. */
 /** Set on a staging installation's platform Worker only (WP3.23). */
 export const STAGING_INSTALLATION_VAR = "CFO_STAGING_INSTALLATION";
 
+/**
+ * What the platform Worker's code offers that an installer step relies on (WP3.35): a plain
+ * variable on every platform deploy, never forwarded to the server, so that a step can tell an
+ * installation running an older release and say "update it first" instead of failing later.
+ * Add a name here when a step starts to depend on a platform feature.
+ */
+export const PLATFORM_FEATURES_VAR = "CFO_PLATFORM_FEATURES";
+/** `key-service`: the credential store's key service on platform.internal (WP5.9). */
+export const PLATFORM_FEATURES: readonly string[] = ["key-service"];
+
+/** Whether a platform Worker's variables (its active version's) say it offers `feature`. */
+export function offersPlatformFeature(
+  vars: Readonly<Record<string, string>> | undefined,
+  feature: string,
+): boolean {
+  return (vars?.[PLATFORM_FEATURES_VAR] ?? "").split(/\s+/).includes(feature);
+}
+
+/**
+ * Unique to each platform deploy that `bootstrap.ts update` makes (WP3.35). It reaches the
+ * server, so every update changes the server's configuration and the watchdog restarts it once
+ * on the new version: the restarted server's status lines are the update's proof that the server
+ * answers on it with a durable owner. Without it, an update that changes neither the image nor
+ * the environment would restart nothing and leave nothing to check.
+ */
+export const DEPLOY_ID_VAR = `${SERVER_ENV}CFO_DEPLOY_ID`;
+
+/** The platform Worker's variables: the installation ID and the server's plain settings. */
 export function platformVars(plan: Installation): Record<string, string> {
   const vars: Record<string, string> = {
     [INSTALLATION_ID_VAR]: plan.installationId,
+    [PLATFORM_FEATURES_VAR]: PLATFORM_FEATURES.join(" "),
     [`${SERVER_ENV}OMNIGENT_ACCOUNTS_BASE_URL`]: `https://${plan.hostname}`,
     [`${SERVER_ENV}OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`]: plan.ownerUsername,
     [`${SERVER_ENV}CFO_REPLICA_URL`]: plan.replica.url,

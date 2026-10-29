@@ -2,8 +2,8 @@
 // It registers the installation's own GitHub App through GitHub's manifest flow, so the owner's
 // only part on GitHub is the "Create GitHub App" button, and gives the platform Worker everything
 // Omnigent's GitHub linking needs, in one secrets change:
-//   1. checks the plan's platform Worker exists, is this installation's, and has no App yet
-//      (unless --replace);
+//   1. checks the plan's platform Worker exists, is this installation's, runs a release with the
+//      key service (else: run `bootstrap.ts update` first), and has no App yet (unless --replace);
 //   2. serves a one-time page on 127.0.0.1 that posts the App's manifest to GitHub, and opens it
 //      in the browser (`xdg-open`, `open`, or `start`; the address is printed too);
 //   3. GitHub shows the App to create; the owner clicks "Create GitHub App"; GitHub sends the
@@ -33,7 +33,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { KEY_SERVICE_SECRETS, recordKeysSecret } from "../../worker/src/internal/key-service.ts";
 import type { BootstrapCloud } from "./machine.ts";
-import { bucketTagOf, type Installation, SERVER_ENV } from "./settings.ts";
+import { bucketTagOf, type Installation, offersPlatformFeature, SERVER_ENV } from "./settings.ts";
 
 /** The App's settings as the platform Worker holds them; the server receives them unprefixed. */
 export const GITHUB_APP_SECRETS = {
@@ -298,6 +298,13 @@ async function preflight(
   if (!identity.exists || identity.installationId !== plan.installationId) {
     throw new GitHubAppRefusal(
       `${plan.platformWorker} is not serving installation ${plan.installationId}; nothing was changed`,
+    );
+  }
+  // The release running there must have the key service the App's settings need (WP5.9): an
+  // installation made before it takes the release with `update` first (WP3.35).
+  if (!offersPlatformFeature(identity.vars, "key-service")) {
+    throw new GitHubAppRefusal(
+      `${plan.platformWorker} runs a release from before GitHub linking (it has no key service): update the installation first with bootstrap.ts update, then run this step again; nothing was changed`,
     );
   }
   const present = new Set(names);

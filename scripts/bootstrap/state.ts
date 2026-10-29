@@ -31,6 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
 import type { BootstrapState, Journal, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
+import type { UpdateRecord } from "./update.ts";
 
 export function installationsDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.CFO_INSTALL_DIR) return env.CFO_INSTALL_DIR;
@@ -239,6 +240,7 @@ function parseJournal(value: unknown): Journal {
     }
     journal.releasedVersionId = j.releasedVersionId;
   }
+  if (j.update !== undefined) journal.update = parseUpdate(j.update);
   if (j.r2Token !== undefined) {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
@@ -305,17 +307,57 @@ function parseJournal(value: unknown): Journal {
 const WP334_JOURNAL_FIELDS = ["ownerPassword", "platformCode", "webCode", "updatedAt"] as const;
 
 /**
+ * The last update's record (WP3.35, update.ts). Names, times and IDs only, never a secret.
+ */
+function parseUpdate(value: unknown): UpdateRecord {
+  const u = object(value, "journal.update");
+  const where = "journal.update";
+  const startedAt = optionalTime(u, "startedAt", where);
+  if (startedAt === undefined)
+    throw new Error("the state file's journal.update.startedAt is missing");
+  const code = str(u, "code", where);
+  if (!/^[0-9a-f]{40}$/.test(code))
+    throw new Error("the state file's journal.update.code is not a commit ID");
+  const update: Record<string, unknown> = { code, startedAt };
+  for (const key of [
+    "platformDeployStartedAt",
+    "platformDeployedAt",
+    "webDeployStartedAt",
+    "webDeployedAt",
+    "verifiedAt",
+  ] as const) {
+    const time = optionalTime(u, key, where);
+    if (time !== undefined) update[key] = time;
+  }
+  for (const key of ["deployId", "platformVersionId", "webVersionId"] as const) {
+    if (u[key] !== undefined) update[key] = str(u, key, where);
+  }
+  if (u.addedSecrets !== undefined) {
+    if (!Array.isArray(u.addedSecrets) || !u.addedSecrets.every((n) => typeof n === "string")) {
+      throw new Error("the state file's journal.update.addedSecrets is not a list of names");
+    }
+    update.addedSecrets = [...u.addedSecrets];
+  }
+  return update as unknown as UpdateRecord;
+}
+
+/**
  * The state file's format for a plan and its journal. Version 2 records the plan's bucket tag
  * (D33); version 1, from before it, records none, so its buckets keep their untagged names. A
  * plan without a tag is still written as version 1, which earlier bootstraps read as before; a
  * tagged one as version 2, which they refuse ("unknown version") rather than drop the tag and
  * rename its buckets. Version 3 is either, with a journal that records WP3.34's fields: every
- * bootstrap from before WP3.34 refuses it rather than drop them (Codex WP3.34 r2-1).
+ * bootstrap from before WP3.34 refuses it rather than drop them (Codex WP3.34 r2-1). Version 4
+ * is either, with a journal that records an update (WP3.35, `bootstrap.ts update`), for the same
+ * reason: a bootstrap from before it would drop the record of an unfinished update and take the
+ * installation for up to date.
  */
 export function stateVersionFor(
   plan: Pick<Installation, "bucketTag">,
   journal: Readonly<Record<string, unknown>> = {},
-): 1 | 2 | 3 {
+): 1 | 2 | 3 | 4 {
+  // The last update's record (WP3.35), which a bootstrap from before it would drop.
+  if ((journal as Partial<Journal>).update !== undefined) return 4;
   if (WP334_JOURNAL_FIELDS.some((key) => journal[key] !== undefined)) return 3;
   return plan.bucketTag === undefined ? 1 : 2;
 }
@@ -329,12 +371,16 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (o.stateVersion !== 1 && o.stateVersion !== 2 && o.stateVersion !== 3) {
+  if (![1, 2, 3, 4].includes(o.stateVersion as number)) {
     throw new Error("the state file has an unknown version");
   }
   const installation = parseInstallation(o.installation);
-  // Version 3 holds a plan with or without a tag; 1 and 2 as their plans say.
-  if (o.stateVersion !== 3 && stateVersionFor(installation) !== o.stateVersion) {
+  // Versions 3 and 4 hold a plan with or without a tag; 1 and 2 as their plans say.
+  if (
+    o.stateVersion !== 3 &&
+    o.stateVersion !== 4 &&
+    stateVersionFor(installation) !== o.stateVersion
+  ) {
     throw new Error(
       o.stateVersion === 1
         ? "the state file's plan has a bucket tag, which only version 2 records"
@@ -342,7 +388,7 @@ export function parseState(text: string): BootstrapState {
     );
   }
   return {
-    stateVersion: o.stateVersion,
+    stateVersion: o.stateVersion as BootstrapState["stateVersion"],
     installation,
     journal: parseJournal(o.journal),
   };
