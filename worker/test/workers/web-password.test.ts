@@ -14,7 +14,7 @@ import {
   PLATFORM_CALL_TIMESTAMP_HEADER,
   signPlatformCall,
 } from "@cfo/contracts";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebEnv } from "../../src/env.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import { PASSWORD_PATH } from "../../src/pages/password.ts";
@@ -101,8 +101,6 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-});
-afterAll(async () => {
   await evictAllDurableObjects();
 });
 
@@ -173,15 +171,31 @@ describe("web Worker: the password page behind Access (in this order)", () => {
   });
 
   it("forwards a page load as usual, and logs it, when OmnigentServer cannot say", async () => {
-    // An admission whose session ID OmnigentServer's contract refuses: the call fails.
+    // As an object still on an older build answers: no such method. Forwarding is the real one.
+    const olderObject = {
+      ...ingressEnv,
+      OMNIGENT: {
+        getByName(name: string) {
+          const stub = env.OMNIGENT.getByName(name);
+          return {
+            fetch: (request: Request) => stub.fetch(request),
+            ownerPassword: async () => {
+              throw new TypeError(
+                'The RPC receiver does not implement the method "ownerPassword".',
+              );
+            },
+          };
+        },
+      },
+    } as unknown as WebEnv;
     const response = await routeAdmitted(
       {
         ok: true,
         request: new Request(`${ORIGIN}/`, { headers: navigation }),
         origin: ORIGIN,
-        identity: { sub: "sub", sessionId: "not-a-session", issuedAt: 1, expiresAt: 2 },
+        identity: { sub: "sub", sessionId: "e".repeat(64), issuedAt: 1, expiresAt: 2 },
       },
-      ingressEnv,
+      olderObject,
       createExecutionContext(),
     );
     expect(response.status).toBe(200);
