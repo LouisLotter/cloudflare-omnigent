@@ -1,6 +1,6 @@
 # 0004 — Identity and credential authority
 
-Status: accepted design. Fork mechanisms exist; the platform key service and GitHub wiring are in source and tested locally; complete computer-route integration and Cloudflare qualification remain.
+Status: accepted design, amended 29 October 2026 (the owner's password from the platform page). Fork mechanisms exist; the platform key service and GitHub wiring are in source and tested locally; complete computer-route integration and Cloudflare qualification remain.
 
 ## Context
 
@@ -15,6 +15,8 @@ Managed-host registration requires that host's launch token. Owner bearer fallba
 Runner tokens are short-lived owner bearers marked `delegated`. The fork refuses them for approval answers through either route, policy updates/deletes, default-policy creation, replacing a session's agent, and account/credential administration under `/auth/*` and `/oauth/*`. The private computer route additionally blocks sharing mutations and protected administrative/approval paths. The runner may consume a human-approved MCP call only against the server's recorded verdict, bound to the exact call/arguments, session or actor and connection generation, and consumed once. Caller-supplied acceptance is insufficient.
 
 Delegated runners may still add session policies, cap sub-agent costs and manage user agents. The planned connected-account service uses installation-wide default approval policies, because a per-agent or per-session rule alone would not bind a new session created with a different bundle. This is the connected-account design, not a new requirement for every kind of approval. Added policies can affect state read by other policies, leaving a known approval-bypass risk. These narrow restrictions do not promise confinement of hostile code: runners can reach the person's other conversations and computers' work. A fully scoped runner principal remains later work. The `harness_install` feature stays disabled in the platform image.
+
+**The platform's one account-administration power (amended 29 October 2026).** The platform can set the password of exactly one account: the installation's named owner (`OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`). Only the owner reaches the page that does it: it sits behind Cloudflare Access and the owner pin, with the same origin, fetch-metadata and request-intent checks as the other platform pages. The web Worker hands the password to OmnigentServer, which alone calls the server's `/_cfo/owner-password` with a signed, timestamped, single-use request. The key is derived from the cookie secret, whose holders can already mint the owner's sessions. OmnigentServer never forwards a `/_cfo/` path from a browser or a computer, so neither a runner nor anything on a computer can use this power. Setting the password signs the owner out of every Omnigent session, and the page reports success only once the change is durable. The installer no longer chooses a password anyone knows: the owner chooses it on this page the first time, and the same page is the owner's reset.
 
 ### Custody by material
 
