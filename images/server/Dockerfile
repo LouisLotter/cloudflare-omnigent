@@ -152,6 +152,8 @@ COPY --from=builder /build /build
 COPY --from=omnigent-src /deploy/docker/entrypoint.py /app/entrypoint.py
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY images/server/cfo_server/ /opt/cfo/cfo_server/
+# Omnigent's MCP registry entries the installation can turn on (WP5.10, cfo_server.mcp).
+COPY images/server/services/ /opt/cfo/services/
 # The Cloudflare launcher (WP3.6), which cfo_server registers through sandbox_config.
 COPY python/cloudflare_omnigent/ /opt/cfo/cloudflare_omnigent/
 ENV PYTHONPATH=/opt/cfo \

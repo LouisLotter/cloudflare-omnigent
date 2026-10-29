@@ -1,0 +1,19 @@
+{
+  "manifest": 1,
+  "asks": ["origin"],
+  "service": {
+    "id": "tracker",
+    "title": "Demo work tracker (test service)",
+    "description": "Omnigent's demo OAuth MCP service (examples/mcp-registry/demo_service.py), for testing connected accounts. Fictional accounts and data only.",
+    "url": "${origin}/mcp",
+    "auth": "oauth",
+    "tools": ["whoami", "read_ticket"],
+    "oauth": {
+      "authorize_url": "${origin}/authorize",
+      "token_url": "${origin}/token",
+      "client_id": "omnigent-local-demo",
+      "scopes": ["tickets:read", "offline_access"]
+    },
+    "timeout": 60
+  }
+}

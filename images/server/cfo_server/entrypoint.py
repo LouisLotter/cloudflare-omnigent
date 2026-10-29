@@ -618,6 +618,14 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         artifacts="local" if config.artifacts.uri is None else "s3",
         # Omnigent's GitHub linking (D22): on, or why not. Names only, never a value.
         github_linking="on" if config.github.enabled else f"off: {config.github.off_reason}",
+        # The credential store's key service, and Omnigent's MCP registry with the services on
+        # (WP5.10). Names only.
+        key_service="on" if config.key_service is not None else "off",
+        mcp_registry=(
+            f"on: {', '.join(config.mcp.services)}"
+            if config.mcp.enabled
+            else f"off: {config.mcp.off_reason}"
+        ),
     )
     supervisor = Supervisor(config, layout, env, board)
     supervisor.install_signal_handlers()
