@@ -17,6 +17,31 @@ export function githubAppConfigured(env: Readonly<Record<string, unknown>>): boo
 }
 
 /**
+ * A short tag of the installation's GitHub App (WP3.36, Codex r1-1): the first 16 hex digits of
+ * SHA-256 over a label and the App's client ID, or null when this Worker version holds none. The
+ * client ID is not a secret, and the tag does not repeat it; it lets the installer tell the App
+ * it just stored from an earlier one, whatever Cloudflare says of versions.
+ */
+export async function githubAppTag(clientId: string | null | undefined): Promise<string | null> {
+  const id = clientId?.trim() ?? "";
+  if (id === "") return null;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`cfo-github-app/v1\n${id}`),
+  );
+  return [...new Uint8Array(digest)]
+    .slice(0, 8)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** The tag of the App this Worker version holds (`githubAppTag`), or null. */
+export function githubAppTagOf(env: Readonly<Record<string, unknown>>): Promise<string | null> {
+  const value = env[GITHUB_APP_CLIENT_ID_ENV];
+  return githubAppTag(typeof value === "string" ? value : null);
+}
+
+/**
  * Whether Omnigent's `/v1/info` answer lists GitHub linking: true or false, or null when the
  * answer does not say (no `enabled_connections` list: an Omnigent from before it, or no answer).
  */

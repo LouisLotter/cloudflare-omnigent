@@ -14,6 +14,7 @@
 // methods, as cf answers for them.
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
+import { createHash } from "node:crypto";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
 import {
@@ -41,6 +42,16 @@ export const REPLACE_MS = 90_000;
 export const NOTICE_MS = 15 * 60_000;
 /** The GitHub App's client ID as the platform Worker holds it (github-app.ts). */
 const GITHUB_CLIENT_ID = "SERVER_ENV_OMNIGENT_GITHUB_APP_CLIENT_ID";
+
+/**
+ * The tag OmnigentServer logs for the App a version holds (worker/src/server/github-linking.ts,
+ * `githubAppTag`), computed synchronously; github-app.test.ts checks the two agree.
+ */
+export function fakeAppTag(secrets: ReadonlyMap<string, string>): string | null {
+  const id = secrets.get(GITHUB_CLIENT_ID)?.trim() ?? "";
+  if (id === "") return null;
+  return createHash("sha256").update(`cfo-github-app/v1\n${id}`).digest("hex").slice(0, 16);
+}
 
 export interface Version {
   readonly id: string;
@@ -469,6 +480,7 @@ export class FakeWorld {
     const durableSince = new Map<number, number>();
     let wasDurable = false;
     const refused = new Set<number>();
+    let replacing: string | undefined;
     for (let t = startAt; t <= Math.min(toMs, this.now); t += CHECK_MS) {
       const running = this.containerAt(worker, t);
       const truth = this.truth(t);
@@ -482,6 +494,16 @@ export class FakeWorld {
       }
       const version = this.activeAt(worker, t);
       if (version === undefined) continue;
+      // The watchdog of a version replacing the server for its new configuration says so once
+      // (`config_changed`), while the replacement is under way.
+      const runningNow = this.containerAt(worker, t);
+      const announce =
+        this.appliesReleases &&
+        runningNow !== undefined &&
+        runningNow.version.id === version.id &&
+        t < runningNow.since &&
+        replacing !== version.id;
+      if (announce) replacing = version.id;
       const $workers = {
         scriptName: worker,
         scriptVersion: { id: this.noVersions ? "" : version.id },
@@ -489,6 +511,13 @@ export class FakeWorld {
         entrypoint: "OmnigentServer",
       };
       events.push({ timestamp: t, $workers, source: { level: "info", message: "" } });
+      if (announce) {
+        events.push({
+          timestamp: t,
+          $workers,
+          source: { cfo: "watchdog", event: "config_changed" },
+        });
+      }
       for (let i = 1; i <= this.noisePerMinute; i++) {
         events.push({
           timestamp: t + i,
@@ -510,7 +539,13 @@ export class FakeWorld {
           events.push({
             timestamp: t,
             $workers,
-            source: { cfo: "watchdog", event: "config_error", exitCode: 78 },
+            source: {
+              cfo: "watchdog",
+              event: "config_error",
+              exitCode: 78,
+              held: true,
+              githubApp: fakeAppTag(container.version.secrets),
+            },
           });
         }
         continue;
@@ -539,7 +574,7 @@ export class FakeWorld {
           ...(this.appliesReleases ? { configApplied: true } : {}),
           ...(this.reportsGitHub
             ? {
-                githubApp: version.secrets.has(GITHUB_CLIENT_ID),
+                githubApp: fakeAppTag(version.secrets),
                 githubLinking: this.githubLinks(version),
               }
             : {}),

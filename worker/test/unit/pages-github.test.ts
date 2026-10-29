@@ -24,6 +24,8 @@ import { routePlatform } from "../../src/pages/router.ts";
 import {
   GITHUB_APP_CLIENT_ID_ENV,
   githubAppConfigured,
+  githubAppTag,
+  githubAppTagOf,
   githubLinkingOf,
 } from "../../src/server/github-linking.ts";
 import { FakeOmnigentServer } from "../support/fake-omnigent-server.ts";
@@ -267,6 +269,18 @@ describe("Omnigent's /v1/info, read for GitHub linking", () => {
     for (const unsaid of [null, undefined, "x", [], { enabled_connections: "github" }, {}]) {
       expect(githubLinkingOf(unsaid)).toBeNull();
     }
+  });
+
+  it("tags the App by its client ID: short, stable, distinct, never the ID itself", async () => {
+    const tag = await githubAppTag("Iv23liCanary");
+    expect(tag).toMatch(/^[0-9a-f]{16}$/);
+    expect(tag).not.toContain("Iv23liCanary");
+    expect(await githubAppTag(" Iv23liCanary ")).toBe(tag);
+    expect(await githubAppTag("Iv23liCanarz")).not.toBe(tag);
+    expect(await githubAppTagOf({ [GITHUB_APP_CLIENT_ID_ENV]: "Iv23liCanary" })).toBe(tag);
+    for (const value of [undefined, null, "", "  "]) expect(await githubAppTag(value)).toBeNull();
+    expect(await githubAppTagOf({ [GITHUB_APP_CLIENT_ID_ENV]: 7 })).toBeNull();
+    expect(await githubAppTagOf({})).toBeNull();
   });
 
   it("says whether this version holds the App's client ID, names only", () => {

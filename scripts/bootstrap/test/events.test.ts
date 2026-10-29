@@ -459,7 +459,10 @@ describe("verifyRelease", () => {
 
 describe("checkGitHubLinking (WP3.36)", () => {
   const SINCE = NOW;
-  /** A status from a server started with version `version`'s configuration. */
+  /** The tag of the App the step stored, and of an earlier one (--replace). */
+  const APP = "1a2b3c4d5e6f7081";
+  const OLD = "9f8e7d6c5b4a3921";
+  /** A status from a server started with its logging version's configuration. */
   const github = (
     at: number,
     linking: unknown,
@@ -473,49 +476,57 @@ describe("checkGitHubLinking (WP3.36)", () => {
           configApplied: over.configApplied ?? true,
           ...(over.id === undefined ? {} : { installationId: over.id }),
         }),
-        githubApp: "githubApp" in over ? over.githubApp : true,
+        githubApp: "githubApp" in over ? over.githubApp : APP,
         githubLinking: linking,
       },
       over.version ?? "v2",
     );
-  const held = (at: number, version = "v2", entrypoint = "OmnigentServer") => {
-    const e = event(at, { cfo: "watchdog", event: "config_error", exitCode: 78 }, version);
-    return { ...e, $workers: { ...e.$workers, entrypoint } };
+  const configError = (
+    at: number,
+    over: { held?: unknown; githubApp?: unknown; entrypoint?: string } = {},
+  ) => {
+    const e = event(at, {
+      cfo: "watchdog",
+      event: "config_error",
+      exitCode: 78,
+      held: "held" in over ? over.held : true,
+      githubApp: "githubApp" in over ? over.githubApp : APP,
+    });
+    return { ...e, $workers: { ...e.$workers, entrypoint: over.entrypoint ?? "OmnigentServer" } };
   };
-  const check = (events: unknown[], versionId: string | null = "v2") =>
+  const changed = (at: number) => event(at, { cfo: "watchdog", event: "config_changed" });
+  const check = (events: unknown[]) =>
     checkGitHubLinking(parseLogs(events, SCRIPT), {
       installationId: INSTALLATION,
-      versionId: versionId ?? undefined,
+      appTag: APP,
       since: SINCE,
     });
 
-  it("is on, or off, by the newest status from the App's version, after the change", () => {
+  it("is on, or off, by the newest status naming this App, after the change, whatever the version", () => {
     expect(check([github(SINCE + 60_000, true)])).toEqual({ state: "on" });
     expect(check([github(SINCE + 60_000, false)])).toEqual({ state: "off" });
     expect(check([github(SINCE + 60_000, false), github(SINCE + 120_000, true)])).toEqual({
       state: "on",
     });
+    // Versions do not matter: Cloudflare may name none, or an old one (Codex r1-1).
+    expect(check([github(SINCE + 60_000, true, { version: "" })])).toEqual({ state: "on" });
   });
 
-  it("never counts a status from another version, from before the change, of another installation, without the App, or not applied", () => {
+  it("never counts a status of another App (an earlier one on --replace, or none), from before the change, of another installation, or not applied", () => {
     for (const ignored of [
-      github(SINCE + 60_000, true, { version: "v1" }),
+      github(SINCE + 60_000, true, { githubApp: OLD }),
+      github(SINCE + 60_000, true, { githubApp: null }),
+      github(SINCE + 60_000, true, { githubApp: true }),
       github(SINCE - 1, true),
       github(SINCE + 60_000, true, { id: OTHER }),
-      github(SINCE + 60_000, true, { githubApp: false }),
-      github(SINCE + 60_000, true, { githubApp: "yes" }),
       github(SINCE + 60_000, true, { configApplied: false }),
-      github(SINCE + 60_000, false, { version: "v1" }),
+      github(SINCE + 60_000, false, { githubApp: OLD }),
     ]) {
       expect(check([ignored]).state).toBe("waiting");
     }
   });
 
-  it("waits while Cloudflare names no version, or the status does not say", () => {
-    expect(check([github(SINCE + 60_000, true)], null)).toMatchObject({
-      state: "waiting",
-      why: expect.stringContaining("Cloudflare does not say"),
-    });
+  it("waits while the status does not say", () => {
     for (const unsaid of [null, "on", 1]) {
       expect(check([github(SINCE + 60_000, unsaid)])).toMatchObject({
         state: "waiting",
@@ -524,29 +535,38 @@ describe("checkGitHubLinking (WP3.36)", () => {
     }
   });
 
-  it("says held when the watchdog's config_error is the newest word from the App's version", () => {
-    expect(check([held(SINCE + 60_000)])).toEqual({ state: "held" });
-    expect(check([github(SINCE + 30_000, true), held(SINCE + 60_000)])).toEqual({
+  it("says held only when the watchdog holds a configuration with this App, and nothing newer answered", () => {
+    expect(check([configError(SINCE + 60_000)])).toEqual({ state: "held" });
+    expect(check([github(SINCE + 30_000, true), configError(SINCE + 60_000)])).toEqual({
       state: "held",
     });
-    expect(check([held(SINCE + 30_000), github(SINCE + 60_000, true)])).toEqual({ state: "on" });
-    // Another version's, one from before the change, or one not from the object: not evidence.
+    expect(check([configError(SINCE + 30_000), github(SINCE + 60_000, true)])).toEqual({
+      state: "on",
+    });
+    // An older container's exit (the current configuration starts at once), another App's, an
+    // unsaid one, one from before the change, or one not from the object: not evidence (r1-2).
     for (const ignored of [
-      held(SINCE + 60_000, "v1"),
-      held(SINCE - 1),
-      held(SINCE + 60_000, "v2", "ControlDO"),
+      configError(SINCE + 60_000, { held: false }),
+      configError(SINCE + 60_000, { held: undefined }),
+      configError(SINCE + 60_000, { githubApp: OLD }),
+      configError(SINCE + 60_000, { githubApp: null }),
+      configError(SINCE - 1),
+      configError(SINCE + 60_000, { entrypoint: "ControlDO" }),
     ]) {
       expect(check([ignored]).state).toBe("waiting");
     }
   });
 
-  it("says whether the object has switched to the App's version yet", () => {
+  it("says whether the watchdog has begun the restart", () => {
     expect(check([])).toMatchObject({ why: expect.stringContaining("has not switched") });
-    expect(check([event(SINCE + 60_000, { level: "info" }, "v2")])).toMatchObject({
+    expect(check([changed(SINCE - 1)])).toMatchObject({
+      why: expect.stringContaining("has not switched"),
+    });
+    expect(check([changed(SINCE + 60_000)])).toMatchObject({
       why: expect.stringContaining("restarting with the App's settings"),
     });
-    expect(check([event(SINCE + 60_000, { level: "info" }, "v1")])).toMatchObject({
-      why: expect.stringContaining("has not switched"),
+    expect(check([github(SINCE + 60_000, false, { configApplied: false })])).toMatchObject({
+      why: expect.stringContaining("restarting with the App's settings"),
     });
   });
 });

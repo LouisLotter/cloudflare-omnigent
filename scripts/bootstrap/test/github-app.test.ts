@@ -5,6 +5,7 @@
 // the bootstrap's simulated Cloudflare (fake-cloud.ts) for the wait for GitHub linking (WP3.36).
 import { describe, expect, it } from "vitest";
 import { KEY_SERVICE_SECRETS, parseRecordKeys } from "../../../worker/src/internal/key-service.ts";
+import { githubAppTag } from "../../../worker/src/server/github-linking.ts";
 import {
   APP_PERMISSIONS,
   appName,
@@ -29,7 +30,7 @@ import {
   parseConversion,
 } from "../github-app.ts";
 import { runBootstrap, type WorkerIdentity } from "../machine.ts";
-import { FakeWorld, MemoryStore, REPLACE_MS, SWITCH_MS } from "./fake-cloud.ts";
+import { FakeWorld, fakeAppTag, MemoryStore, REPLACE_MS, SWITCH_MS } from "./fake-cloud.ts";
 import { accountPlan, baseConfigs, freshState, INSTALLATION, OWNER_PASSWORD } from "./fixtures.ts";
 
 const CLIENT_SECRET = "cfo-canary-github-client-secret-00000000";
@@ -62,13 +63,19 @@ class FakeCloud implements GitHubAppCloud {
     installationId: INSTALLATION,
     vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: FEATURES },
   };
+  /** The web Worker's (WP3.36: it serves the GitHub setup page). */
+  web: WorkerIdentity = {
+    exists: true,
+    installationId: INSTALLATION,
+    vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_WEB_FEATURES: "github-setup" },
+  };
   changes: Record<string, string | null>[] = [];
   linking: boolean | null = true;
   async secretNames() {
     return this.names;
   }
-  async workerInstallation() {
-    return this.identity;
+  async workerInstallation(worker: string) {
+    return worker.endsWith("-web") ? this.web : this.identity;
   }
   async updateSecrets(_worker: string, changes: Readonly<Record<string, string | null>>) {
     this.changes.push({ ...changes });
@@ -101,7 +108,14 @@ class FakeCloud implements GitHubAppCloud {
           },
           secretPresent: false,
           configApplied: true,
-          githubApp: true,
+          githubApp: fakeAppTag(
+            new Map([
+              [
+                GITHUB_APP_SECRETS.clientId,
+                String(this.changes.at(-1)?.[GITHUB_APP_SECRETS.clientId]),
+              ],
+            ]),
+          ),
           githubLinking: this.linking,
         },
       },
@@ -539,6 +553,18 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       installationId: INSTALLATION,
       vars: { CFO_PLATFORM_FEATURES: "key-service" },
     };
+    // The web Worker: gone, another installation's, or from before the setup page (an update
+    // interrupted between its two deploys; Codex r1-3).
+    const noWeb = new FakeCloud();
+    noWeb.web = { exists: false };
+    const otherWeb = new FakeCloud();
+    otherWeb.web = { exists: true, installationId: "ins_01aaaaaaaaaaaaaaaaaaaaaaaa" };
+    const oldWeb = new FakeCloud();
+    oldWeb.web = {
+      exists: true,
+      installationId: INSTALLATION,
+      vars: { CFO_INSTALLATION_ID: INSTALLATION },
+    };
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
       [other, /is not serving installation/],
@@ -547,6 +573,9 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       [unlisted, /runs a release from before GitHub linking/],
       [without, /runs a release from before GitHub linking/],
       [keyOnly, /runs a release from before the GitHub setup page: .*bootstrap\.ts update/],
+      [noWeb, /cloudflare-omnigent-web is not serving installation/],
+      [otherWeb, /cloudflare-omnigent-web is not serving installation/],
+      [oldWeb, /cloudflare-omnigent-web runs a release from before the GitHub setup page/],
       [linked, /already has a GitHub App/],
       [half, /half of the key service's signing pair/],
     ] as const) {
@@ -702,7 +731,7 @@ describe("the wait for GitHub linking, on a simulated Cloudflare (WP3.36)", () =
     const result = await outcome;
     expect(result).toMatchObject({
       kind: "waiting",
-      why: "the server is restarting with the App's settings (a few minutes)",
+      why: "the platform has not switched the server's object to the App's settings yet",
     });
     const last = (await visited).progress.at(-1);
     expect(last?.html).toContain("GitHub linking is not on yet");
@@ -719,14 +748,17 @@ describe("the wait for GitHub linking, on a simulated Cloudflare (WP3.36)", () =
     expect(logs.join("\n")).toContain("waiting: Cloudflare did not answer the query");
   });
 
-  it("waits while Cloudflare does not say which version holds the App", async () => {
+  it("needs no word from Cloudflare about versions: the App's own tag decides (Codex r1-1)", async () => {
     const world = await installedWorld();
     world.noVersions = true;
     const result = await (await run({ world, linkingWaitMs: 10 * 60_000 })).outcome;
-    expect(result).toMatchObject({
-      kind: "waiting",
-      why: expect.stringContaining("Cloudflare does not say"),
-    });
+    expect(result.kind).toBe("on");
+  });
+
+  it("logs the same App tag the platform computes", async () => {
+    const id = "Iv23liCanaryClient00";
+    expect(fakeAppTag(new Map([[GITHUB_APP_SECRETS.clientId, id]]))).toBe(await githubAppTag(id));
+    expect(await githubAppTag(" ")).toBeNull();
   });
 
   it("on --replace, never takes the old App's server for the new one's", async () => {

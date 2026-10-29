@@ -571,7 +571,10 @@ describe("rendering the configurations", () => {
     const staging = await stagingPlan();
     const rendered = renderWebConfig(BASE.web, staging, undefined);
     expect(rendered).not.toHaveProperty("routes");
-    expect(rendered.vars).toEqual({ CFO_INSTALLATION_ID: staging.installationId });
+    expect(rendered.vars).toEqual({
+      CFO_INSTALLATION_ID: staging.installationId,
+      CFO_WEB_FEATURES: "github-setup",
+    });
     expect(rendered.durable_objects).toEqual({
       bindings: [
         { name: "OMNIGENT", class_name: "OmnigentServer", script_name: staging.platformWorker },

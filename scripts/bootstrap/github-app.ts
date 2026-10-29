@@ -54,9 +54,16 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { KEY_SERVICE_SECRETS, recordKeysSecret } from "../../worker/src/internal/key-service.ts";
+import { githubAppTag } from "../../worker/src/server/github-linking.ts";
 import { checkGitHubLinking, parseLogs } from "./events.ts";
 import { type BootstrapCloud, slicedLogs } from "./machine.ts";
-import { bucketTagOf, type Installation, offersPlatformFeature, SERVER_ENV } from "./settings.ts";
+import {
+  bucketTagOf,
+  type Installation,
+  offersPlatformFeature,
+  offersWebFeature,
+  SERVER_ENV,
+} from "./settings.ts";
 import { pollServer } from "./update.ts";
 
 /** The App's settings as the platform Worker holds them; the server receives them unprefixed. */
@@ -119,7 +126,7 @@ export class GitHubAppRefusal extends Error {}
 /** What the step needs of Cloudflare: the bootstrap's own adapter (cloud.ts, staging.ts). */
 export type GitHubAppCloud = Pick<
   BootstrapCloud,
-  "secretNames" | "workerInstallation" | "updateSecrets" | "activeVersion" | "logs"
+  "secretNames" | "workerInstallation" | "updateSecrets" | "logs"
 >;
 
 export interface GitHubAppPorts {
@@ -406,6 +413,19 @@ async function preflight(
       `${plan.platformWorker} runs a release from before ${what}: update the installation first with bootstrap.ts update, then run this step again; nothing was changed`,
     );
   }
+  // GitHub's Install returns to the web Worker's GitHub setup page: the web Worker must serve
+  // it (an update interrupted between its two deploys leaves it without; Codex WP3.36 r1-3).
+  const web = await cloud.workerInstallation(plan.webWorker);
+  if (!web.exists || web.installationId !== plan.installationId) {
+    throw new GitHubAppRefusal(
+      `${plan.webWorker} is not serving installation ${plan.installationId}; nothing was changed`,
+    );
+  }
+  if (!offersWebFeature(web.vars, "github-setup")) {
+    throw new GitHubAppRefusal(
+      `${plan.webWorker} runs a release from before the GitHub setup page: update the installation first with bootstrap.ts update, then run this step again; nothing was changed`,
+    );
+  }
   const present = new Set(names);
   if (!replace && present.has(GITHUB_APP_SECRETS.clientId)) {
     throw new GitHubAppRefusal(
@@ -455,14 +475,14 @@ export function notOnMessage(
         title: "GitHub linking is off",
         text: [
           `${stored}, and Omnigent's server restarted with it, but Omnigent does not turn GitHub linking on: a setting it needs is missing.`,
-          `The server's start line in the platform Worker's Workers Logs names it (github_linking). Run this step again with --replace to store a new App, then delete this one at ${remove}.`,
+          `The server's config.warning line in the platform Worker's Workers Logs names what is missing. Run this step again with --replace to store a new App, then delete this one at ${remove}.`,
         ],
       };
     case "held":
       return {
         title: "Omnigent's server does not start with the App's settings",
         text: [
-          `${stored}, but Omnigent's server refused one of the new settings (exit code 78) and stays stopped until the settings change, so Omnigent is down.`,
+          `${stored}, but Omnigent's server refused one of the new settings (exit code 78) and stays stopped until the settings change, so Omnigent is down. The server's config.error line in the platform Worker's Workers Logs names the setting.`,
           `Run this step again with --replace to store a new App, then delete this one at ${remove}. If it happens again, see docs/operations/troubleshooting.md, "GitHub setup".`,
         ],
       };
@@ -613,6 +633,8 @@ export async function createGitHubApp(
     const timeoutMs = options.timeoutMs ?? DEFAULT_GITHUB_APP_TIMEOUT_MS;
     const expired = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        // GitHub's answer came first: never expire a step under way.
+        if (phase.kind !== "github") return;
         const until = new Date(Date.now() + expiredPageMs);
         phase = {
           kind: "expired",
@@ -641,9 +663,7 @@ export async function createGitHubApp(
       linger = Promise.race([fetched, delay(options.finalPageMs ?? FINAL_PAGE_MS)]);
     };
     let app: CreatedApp;
-    // The version serving before the change, and when the change began: what the wait counts
-    // from (a line from an older version, or from before, is never evidence).
-    let before: string | undefined;
+    // When the change began: what the wait counts from (a line from before is never evidence).
     let changedAt = 0;
     try {
       const answer = await ports.githubApi(
@@ -675,7 +695,6 @@ export async function createGitHubApp(
         ports.log(`warning: GitHub granted more than asked for: ${extra.join(", ")}`);
       }
       const changes = githubAppChanges(plan, app, present, ports.random);
-      before = await ports.cloud.activeVersion(plan.platformWorker);
       changedAt = ports.now();
       try {
         await ports.cloud.updateSecrets(plan.platformWorker, changes);
@@ -700,9 +719,16 @@ export async function createGitHubApp(
     }
     const installUrl = `${GITHUB}/apps/${app.slug}/installations/new`;
     phase = { kind: "restarting", why: "the installation is taking up the App's settings" };
-    const linking = await waitForLinking(plan, ports, options, before, changedAt, (why) => {
-      phase = { kind: "restarting", why };
-    });
+    const linking = await waitForLinking(
+      plan,
+      ports,
+      options,
+      await githubAppTag(app.clientId),
+      changedAt,
+      (why) => {
+        phase = { kind: "restarting", why };
+      },
+    );
     const outcome: GitHubAppOutcome =
       "decided" in linking
         ? { kind: linking.decided, slug: app.slug, installUrl }
@@ -734,19 +760,18 @@ export async function createGitHubApp(
 
 /**
  * The wait for GitHub linking (WP3.36), with `update`'s reader (`slicedLogs`, `parseLogs`,
- * `pollServer`): the newest version serving that is not `before` holds the App's settings, and
- * its watchdog's status line from a server started with them decides (`checkGitHubLinking`).
+ * `pollServer`): the watchdog's lines since the change that name this App's tag decide
+ * (`checkGitHubLinking`). A failed read of Cloudflare is no evidence: asked again.
  */
 async function waitForLinking(
   plan: Installation,
   ports: GitHubAppPorts,
   options: GitHubAppOptions,
-  before: string | undefined,
+  appTag: string | null,
   since: number,
   progress: (why: string) => void,
 ): Promise<{ readonly decided: "on" | "off" | "held" } | { readonly why: string }> {
   const logsSince = slicedLogs({ cloud: ports.cloud, now: () => ports.now() }, plan.platformWorker);
-  let target: string | undefined;
   return pollServer<"on" | "off" | "held">(
     ports,
     {
@@ -756,18 +781,16 @@ async function waitForLinking(
     async () => {
       let events: unknown[];
       try {
-        const active = await ports.cloud.activeVersion(plan.platformWorker);
-        if (active !== undefined && active !== before) target = active;
         events = await logsSince(since, ports.now());
       } catch {
-        // A failed read is no evidence either way: asked again at the next poll.
         const why = "Cloudflare did not answer the query for the platform Worker's logs";
         progress(why);
         return { why };
       }
       const check = checkGitHubLinking(parseLogs(events, plan.platformWorker), {
         installationId: plan.installationId,
-        versionId: target,
+        // parseConversion checked the client ID: never empty, so never null.
+        appTag: appTag ?? "",
         since,
       });
       if (check.state === "waiting") {
@@ -779,9 +802,13 @@ async function waitForLinking(
   );
 }
 
-/** A real pause, for the local page's own lifetime (never the fake clock of the wait). */
+/**
+ * A real pause, for the local page's own lifetime (never the fake clock of the wait). Its timer
+ * does not keep the process alive by itself (Codex WP3.36 r1-4): the page's server does while it
+ * listens.
+ */
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
 }
 
 /** A duration in words, for the person. */

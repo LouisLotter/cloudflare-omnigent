@@ -727,6 +727,12 @@ describe("watchdog: recovery mode and settings (WP2.3)", () => {
     const same = step(answered(T0), ranWithA, T0 + 10_000, T, nextId, "config-a");
     expect(same.state).toMatchObject({ phase: "held", heldConfig: "config-a" });
     expect(types(same)).not.toContain("start");
+    // The line says which (WP3.36, Codex r1-2): only the hold of the current configuration
+    // is evidence that the current settings are refused.
+    const fieldsOf = (s: Step) =>
+      s.effects.flatMap((e) => (e.type === "event" && e.name === "config_error" ? [e.fields] : []));
+    expect(fieldsOf(corrected)).toEqual([{ exitCode: EXIT_CONFIG, held: false }]);
+    expect(fieldsOf(same)).toEqual([{ exitCode: EXIT_CONFIG, held: true }]);
   });
 
   it("holds a first start that exits 78 too, recording it as a failed start", () => {

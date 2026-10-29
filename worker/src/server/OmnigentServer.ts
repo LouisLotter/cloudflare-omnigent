@@ -77,7 +77,7 @@ import {
   serverContainerOf,
   serverImageOf,
 } from "./container-port.ts";
-import { githubAppConfigured, githubLinkingOf } from "./github-linking.ts";
+import { githubAppConfigured, githubAppTagOf, githubLinkingOf } from "./github-linking.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
 import {
   constantTimeEqual,
@@ -264,7 +264,10 @@ const PASSWORD_CHOSEN_KEY = "owner_password_chosen";
 const PASSWORD_DONE_KEY = "owner_password_done";
 /** The times of the latest attempts that reached the server (WP3.34's limit). */
 const PASSWORD_ATTEMPTS_KEY = "owner_password_attempts";
-/** When this object last yielded to a newer version of the Worker (WP3.36), in milliseconds. */
+/**
+ * When this object last yielded to a newer version of the Worker, and that version's server
+ * environment fingerprint (WP3.36): a digest, stored, never logged or returned.
+ */
 const VERSION_YIELD_KEY = "version_yield";
 /**
  * At most one yield to a newer version in this time (WP3.36). A reset costs little (the
@@ -720,7 +723,18 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     for (const effect of effects) {
       switch (effect.type) {
         case "event":
-          logEvent("watchdog", effect.name, effect.fields);
+          // A configuration error names the GitHub App the held configuration holds (WP3.36,
+          // Codex r1-2): the installer's evidence that its own App's settings are held.
+          logEvent(
+            "watchdog",
+            effect.name,
+            effect.name === "config_error"
+              ? {
+                  ...effect.fields,
+                  githubApp: await githubAppTagOf(this.env as unknown as Record<string, unknown>),
+                }
+              : effect.fields,
+          );
           break;
         case "outage":
           break; // persisted with the state
@@ -960,10 +974,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         bootstrapStatus: check.status,
         secretPresent,
         configApplied,
-        // WP3.36: whether this version holds the GitHub App's settings (names only), and whether
-        // Omnigent lists GitHub linking (null: its answer did not say). The installer's GitHub
-        // step waits for both from a server started with this version's configuration.
-        githubApp: githubAppConfigured(this.env as unknown as Record<string, unknown>),
+        // WP3.36: which GitHub App this version holds (a tag of its client ID, null for none),
+        // and whether Omnigent lists GitHub linking (null: its answer did not say). The
+        // installer's GitHub step waits for both from a server started with this version's
+        // configuration, and for its own App's tag (Codex r1-1).
+        githubApp: await githubAppTagOf(this.env as unknown as Record<string, unknown>),
         githubLinking: githubLinkingOf(info),
       });
     }
@@ -1079,16 +1094,28 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
    * environment differs from this version's, this instance arms its alarm for now and resets
    * itself, so that the next instance runs the newest version and its first check applies the
    * new configuration. Every step of the watchdog is persisted before its effect and a new
-   * instance adopts the running container, as after any reset. At most once in
-   * `VERSION_YIELD_INTERVAL_MS`; a call without a fingerprint (an older cron) changes nothing.
+   * instance adopts the running container, as after any reset. At most once for each newer
+   * environment and once in `VERSION_YIELD_INTERVAL_MS`; a call without a fingerprint (an older
+   * cron) changes nothing.
    */
   async #yieldToNewerVersion(environment: unknown): Promise<void> {
     if (typeof environment !== "string" || !/^[0-9a-f]{32}$/.test(environment)) return;
     const own = await environmentFingerprint(this.env as unknown as Record<string, unknown>);
     if (environment === own) return;
-    const last = Millis.safeParse(this.#serverState(VERSION_YIELD_KEY));
-    if (last.success && this.now() - last.data < VERSION_YIELD_INTERVAL_MS) return;
-    this.#putServerState(VERSION_YIELD_KEY, this.now());
+    // At most once for each newer environment, and once in the interval: an object the platform
+    // keeps on its version on purpose (a gradual deployment) resets once, not every few minutes
+    // (Codex r1, the yield).
+    const last = z
+      .object({ at: Millis, environment: z.string().max(64) })
+      .safeParse(this.#serverState(VERSION_YIELD_KEY));
+    if (
+      last.success &&
+      (last.data.environment === environment ||
+        this.now() - last.data.at < VERSION_YIELD_INTERVAL_MS)
+    ) {
+      return;
+    }
+    this.#putServerState(VERSION_YIELD_KEY, { at: this.now(), environment });
     await this.ctx.storage.setAlarm(this.now());
     await this.ctx.storage.sync();
     logEvent("watchdog", "version_yield", { instanceId: this.#instanceId });

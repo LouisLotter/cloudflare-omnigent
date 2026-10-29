@@ -1,13 +1,15 @@
 // OmnigentServer's GitHub linking parts (WP3.36), in workerd with real storage, alarms and
 // eviction, and a fake server container:
-//   - the status line says whether this version holds the GitHub App (`githubApp`) and whether
+//   - the status line says which GitHub App this version holds (`githubApp`, a tag) and whether
 //     Omnigent's `/v1/info` lists GitHub linking (`githubLinking`), and the installer's reading of
 //     it (events.ts) agrees with what the object logged;
 //   - `githubSetup`, the GitHub setup page's state, through a secrets change: the object on the
 //     old version, the new version before and after the watchdog's restart, a held, a recovering
 //     and a starting server, and no container;
-//   - the cron's yield: an object on an older version than the cron's resets itself, once in
-//     `VERSION_YIELD_INTERVAL_MS`, and its next instance applies the new configuration.
+//   - the cron's yield: an object on an older version than the cron's resets itself, once for
+//     each newer environment and once in `VERSION_YIELD_INTERVAL_MS`, and its next instance
+//     applies the new configuration;
+//   - a configuration error names the App of the configuration it holds.
 import {
   createExecutionContext,
   createScheduledController,
@@ -22,6 +24,7 @@ import { GitHubSetupResult, type ReplicationPosition } from "@cfo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkGitHubLinking, parseLogs } from "../../../scripts/bootstrap/events.ts";
 import platform from "../../src/index.ts";
+import { githubAppTag } from "../../src/server/github-linking.ts";
 import { type OmnigentServer, VERSION_YIELD_INTERVAL_MS } from "../../src/server/OmnigentServer.ts";
 import { environmentFingerprint } from "../../src/server/server-env.ts";
 import { errorCodeOf } from "../../src/shared/errors.ts";
@@ -115,7 +118,7 @@ describe("OmnigentServer: the status line's GitHub linking (WP3.36)", () => {
     // The bootstrap secret is still set in the test env: a status on every check.
     expect(events("bootstrap", "status").at(-1)).toMatchObject({
       configApplied: true,
-      githubApp: false,
+      githubApp: null,
       githubLinking: false,
     });
     const since = testServers.clock.now();
@@ -128,7 +131,8 @@ describe("OmnigentServer: the status line's GitHub linking (WP3.36)", () => {
     expect(fake.starts.at(-1)?.env.OMNIGENT_GITHUB_APP_CLIENT_ID).toBe(CLIENT_ID);
     await nextCheck(stub); // it answers
     const applied = events("bootstrap", "status").at(-1);
-    expect(applied).toMatchObject({ configApplied: true, githubApp: true, githubLinking: true });
+    const tag = await githubAppTag(CLIENT_ID);
+    expect(applied).toMatchObject({ configApplied: true, githubApp: tag, githubLinking: true });
     // No line carries a value of the App's settings.
     for (const value of Object.values(APP)) expect(logs.join("\n")).not.toContain(value);
     // The installer's reading of these very lines, as Workers Logs would deliver them.
@@ -147,10 +151,18 @@ describe("OmnigentServer: the status line's GitHub linking (WP3.36)", () => {
     expect(
       checkGitHubLinking(parseLogs(delivered, "cloudflare-omnigent"), {
         installationId: INSTALLATION,
-        versionId: "v2",
+        appTag: tag ?? "",
         since,
       }),
     ).toEqual({ state: "on" });
+    // And never for another App (an earlier one, on --replace).
+    expect(
+      checkGitHubLinking(parseLogs(delivered, "cloudflare-omnigent"), {
+        installationId: INSTALLATION,
+        appTag: (await githubAppTag("Iv23liAnotherApp0000")) ?? "",
+        since,
+      }).state,
+    ).toBe("waiting");
   });
 
   it("logs null when Omnigent's answer does not say", async () => {
@@ -199,6 +211,12 @@ describe("OmnigentServer: githubSetup, the GitHub setup page's state (WP3.36)", 
     await runInDurableObject(held.stub, () => held.fake.stopByPlatform(78));
     await nextCheck(held.stub);
     expect(await setup(held.stub)).toMatchObject({ server: "held", linking: "unknown" });
+    // The line names the held configuration's App (none here), and that it is the current one.
+    expect(events("watchdog", "config_error").at(-1)).toMatchObject({
+      exitCode: 78,
+      held: true,
+      githubApp: null,
+    });
 
     const recovering = await runningServer();
     recovering.fake.listening = false;
@@ -212,6 +230,21 @@ describe("OmnigentServer: githubSetup, the GitHub setup page's state (WP3.36)", 
     const reads = stopped.fake.requests.length;
     expect(await setup(stopped.stub)).toMatchObject({ server: "starting", linking: "unknown" });
     expect(stopped.fake.requests.length).toBe(reads);
+  });
+
+  it("names the App of a held configuration on its config_error line, and none for an older container's exit", async () => {
+    const { stub, fake } = await runningServer();
+    await storeApp(stub);
+    await nextCheck(stub); // replaced: SIGTERM
+    await nextCheck(stub); // seen stopped
+    await nextCheck(stub); // started with the App's settings
+    await runInDurableObject(stub, () => fake.stopByPlatform(78)); // which it refuses
+    await nextCheck(stub);
+    expect(events("watchdog", "config_error").at(-1)).toMatchObject({
+      held: true,
+      githubApp: await githubAppTag(CLIENT_ID),
+    });
+    expect(await setup(stub)).toMatchObject({ configured: true, server: "held" });
   });
 
   it("says starting when the server does not answer the read", async () => {
@@ -268,7 +301,7 @@ describe("OmnigentServer: the cron's yield to a newer version (WP3.36)", () => {
   // takes a new stub (the cron makes one every minute).
   const again = (stub: Stub) => env.OMNIGENT.get(stub.id) as Stub;
 
-  it("resets itself once for a newer version's cron, with its alarm due now, then not again for a while", async () => {
+  it("resets itself once for a newer version's cron, with its alarm due now, then not again for that version, nor for a while", async () => {
     const { stub } = await runningServer();
     const fingerprint = await newer();
     const error = await ensure(stub, fingerprint);
@@ -283,10 +316,22 @@ describe("OmnigentServer: the cron's yield to a newer version (WP3.36)", () => {
     // The next instance, still on the same version (the platform has not switched it): no
     // second reset within the interval.
     expect(await ensure(again(stub), fingerprint)).toBeUndefined();
+    // Another newer version within the interval: not yet.
+    const newest = await environmentFingerprint({
+      ...(env as unknown as Record<string, unknown>),
+      ...APP,
+      SERVER_ENV_CFO_DEPLOY_ID: "d2",
+    });
     testServers.clock.advance(VERSION_YIELD_INTERVAL_MS - 1);
-    expect(await ensure(again(stub), fingerprint)).toBeUndefined();
+    expect(await ensure(again(stub), newest)).toBeUndefined();
     testServers.clock.advance(1);
-    expect(String(await ensure(again(stub), fingerprint))).toContain("newer version");
+    // The same version, however long after: never again (Codex r1: a gradual deployment keeps
+    // an object on its version on purpose).
+    expect(await ensure(again(stub), fingerprint)).toBeUndefined();
+    testServers.clock.advance(24 * 60 * 60_000);
+    expect(await ensure(again(stub), fingerprint)).toBeUndefined();
+    // Another newer version, after the interval: once.
+    expect(String(await ensure(again(stub), newest))).toContain("newer version");
     expect(events("watchdog", "version_yield")).toHaveLength(2);
   });
 

@@ -18,10 +18,12 @@
 // running server only once the watchdog has replaced it (G2-SEC-001). For a while after that,
 // the watchdog logs the same line without the password: the proof that the release applied.
 //
-// The same line says whether Omnigent lists GitHub linking (`githubLinking`, WP3.36): the
-// installer's GitHub step waits for it from a server started with the App's settings
+// The same line says which GitHub App the logging version holds (`githubApp`, a tag of its client
+// ID) and whether Omnigent lists GitHub linking (`githubLinking`, WP3.36): the installer's GitHub
+// step waits for its own App's tag from a server started with that configuration
 // (`checkGitHubLinking`). The watchdog's `config_error` line says a server exited with a missing
-// or malformed setting (78) and is held until the configuration changes.
+// or malformed setting (78), whether that holds the current configuration (`held`) and the App
+// that configuration holds.
 //
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
@@ -48,14 +50,25 @@ export interface StatusEvent {
    * say, undefined from a build that does not report it.
    */
   readonly githubLinking?: boolean | null | undefined;
-  /** Whether the logging version holds the GitHub App's settings (WP3.36); undefined: unsaid. */
-  readonly githubApp?: boolean | undefined;
+  /**
+   * The GitHub App the logging version holds (WP3.36): a tag of its client ID
+   * (worker/src/server/github-linking.ts, `githubAppTag`), null for none; undefined: unsaid.
+   */
+  readonly githubApp?: string | null | undefined;
 }
 
 /** The watchdog's `config_error` line: a server exited with a missing or malformed setting. */
 export interface ConfigErrorEvent {
   readonly loggedAt: number;
   readonly versionId: string | undefined;
+  /** The current configuration is the one held (Codex WP3.36 r1-2); undefined: unsaid. */
+  readonly held: boolean | undefined;
+  /** The GitHub App the current configuration holds, as on a status line. */
+  readonly githubApp: string | null | undefined;
+}
+
+function appTag(value: unknown): string | null | undefined {
+  return typeof value === "string" || value === null ? value : undefined;
 }
 
 /** Any invocation of the platform Worker, for the check after the release. */
@@ -72,6 +85,8 @@ export interface ParsedLogs {
   readonly invocations: readonly Invocation[];
   /** The watchdog's `config_error` lines, from the OmnigentServer object (WP3.36). */
   readonly configErrors: readonly ConfigErrorEvent[];
+  /** When the watchdog said it replaces the server for a changed configuration (WP3.36). */
+  readonly configChanges: readonly number[];
   /**
    * Bootstrap lines that are not the contract, or not from the OmnigentServer object: never
    * accepted, counted for the report.
@@ -119,6 +134,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
   const statuses: StatusEvent[] = [];
   const invocations: Invocation[] = [];
   const configErrors: ConfigErrorEvent[] = [];
+  const configChanges: number[] = [];
   let malformed = 0;
   for (const raw of events) {
     const event = record(raw);
@@ -134,10 +150,23 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
     const line = logLine(event.source);
     if (
       line?.cfo === "watchdog" &&
+      line.event === "config_changed" &&
+      workers.entrypoint === STATUS_ENTRYPOINT
+    ) {
+      configChanges.push(loggedAt);
+      continue;
+    }
+    if (
+      line?.cfo === "watchdog" &&
       line.event === "config_error" &&
       workers.entrypoint === STATUS_ENTRYPOINT
     ) {
-      configErrors.push({ loggedAt, versionId });
+      configErrors.push({
+        loggedAt,
+        versionId,
+        held: typeof line.held === "boolean" ? line.held : undefined,
+        githubApp: appTag(line.githubApp),
+      });
       continue;
     }
     if (line?.cfo !== "bootstrap" || line.event !== "status") continue;
@@ -161,10 +190,10 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
         typeof line.githubLinking === "boolean" || line.githubLinking === null
           ? line.githubLinking
           : undefined,
-      githubApp: typeof line.githubApp === "boolean" ? line.githubApp : undefined,
+      githubApp: appTag(line.githubApp),
     });
   }
-  return { statuses, invocations, configErrors, malformed };
+  return { statuses, invocations, configErrors, configChanges, malformed };
 }
 
 export interface AcceptanceRules {
@@ -372,39 +401,34 @@ export type GitHubLinkingCheck =
 
 /**
  * After the GitHub step's secrets change (WP3.36): whether the server runs with the App's
- * settings and Omnigent lists GitHub linking. Only lines from `versionId`, the platform Worker's
- * version that holds the App's settings, logged at or after `since` (the change) count: a status
- * from a server started with that version's configuration (`configApplied`) by a version that
- * says it holds the App (`githubApp`), or the watchdog's `config_error`, whichever is newer.
- * Anything older, from another version or another installation is never evidence either way.
+ * settings and Omnigent lists GitHub linking. The evidence is bound to the App the step just
+ * stored, by its tag (`appTag`), never to what Cloudflare says of versions (Codex r1-1): a status
+ * logged at or after `since` (the change) from a server started with its logging version's
+ * configuration (`configApplied`) where that version holds this App; or the watchdog's
+ * `config_error` saying that a configuration holding this App is held (`held`), whichever is
+ * newer. A status from another App (an earlier one, on --replace), from before the change or of
+ * another installation is never evidence either way, nor is a `config_error` of a container that
+ * ran an older configuration (Codex r1-2).
  */
 export function checkGitHubLinking(
   logs: ParsedLogs,
   rules: {
     readonly installationId: string;
-    /** The version that holds the App's settings; undefined while Cloudflare does not say. */
-    readonly versionId: string | undefined;
+    /** The tag of the App the step stored (`githubAppTag` of its client ID). */
+    readonly appTag: string;
     readonly since: number;
   },
 ): GitHubLinkingCheck {
-  const version = rules.versionId;
-  if (version === undefined) {
-    return {
-      state: "waiting",
-      why: "Cloudflare does not say yet which version of the platform Worker holds the App's settings",
-    };
-  }
   const applied = logs.statuses.filter(
     (e) =>
       e.status.installationId === rules.installationId &&
-      e.versionId === version &&
       e.loggedAt >= rules.since &&
       e.configApplied === true &&
-      e.githubApp === true,
+      e.githubApp === rules.appTag,
   );
   const latest = newest(applied);
   const held = logs.configErrors
-    .filter((e) => e.versionId === version && e.loggedAt >= rules.since)
+    .filter((e) => e.held === true && e.githubApp === rules.appTag && e.loggedAt >= rules.since)
     .reduce((at, e) => Math.max(at, e.loggedAt), Number.NEGATIVE_INFINITY);
   if (held > (latest?.loggedAt ?? Number.NEGATIVE_INFINITY)) return { state: "held" };
   if (latest !== undefined) {
@@ -415,13 +439,14 @@ export function checkGitHubLinking(
       why: "the restarted server answers, but its status does not say whether GitHub linking is on",
     };
   }
-  const ran = logs.invocations.some(
-    (i) =>
-      i.entrypoint === STATUS_ENTRYPOINT && i.versionId === version && i.loggedAt >= rules.since,
-  );
+  // Only for the words: the watchdog said, since the change, that it replaces the server for a
+  // changed configuration, or a version holding this App already logs.
+  const restarting =
+    logs.configChanges.some((at) => at >= rules.since) ||
+    logs.statuses.some((e) => e.loggedAt >= rules.since && e.githubApp === rules.appTag);
   return {
     state: "waiting",
-    why: ran
+    why: restarting
       ? "the server is restarting with the App's settings (a few minutes)"
       : "the platform has not switched the server's object to the App's settings yet",
   };

@@ -34,9 +34,14 @@ import {
   type GitHubAppOutcome,
   type Manifest,
 } from "../../../scripts/bootstrap/github-app.ts";
-import { type Installation, PLATFORM_FEATURES } from "../../../scripts/bootstrap/settings.ts";
+import {
+  type Installation,
+  PLATFORM_FEATURES,
+  WEB_FEATURES,
+} from "../../../scripts/bootstrap/settings.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import { KEY_SERVICE_SECRETS } from "../../src/internal/key-service.ts";
+import { githubAppTag } from "../../src/server/github-linking.ts";
 import { AUD, claims, makeKey, OWNER_EMAIL, SALT, sign, TEAM } from "../support/access-keys.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +53,7 @@ const IMAGE = process.env.CFO_E2E_SERVER_IMAGE ?? "cfo-wp336-server:runtime";
 const CONTAINER = "cfo-wp336-e2e-server";
 const INSTALLATION = "ins_01hs3f9q2m8z4w7k6t5r1n0ybc";
 const PLATFORM = "cloudflare-omnigent";
+const WEB = "cloudflare-omnigent-web-e2e";
 /** Built at run time: no literal canary in a source file (scripts/canary-scan.ts). */
 const CANARY = ["CFO", "CANARY", ""].join("_");
 const CLIENT_SECRET = `${CANARY}E2EGITHUBCLIENTSECRET${randomBytes(6).toString("hex")}`;
@@ -446,12 +452,16 @@ async function main(): Promise<number> {
       async secretNames() {
         return Object.keys(secrets).sort();
       },
-      async workerInstallation() {
+      async workerInstallation(worker) {
+        // The web Worker says it serves the GitHub setup page, as a deployed release's does.
         return {
           exists: true,
           installationId: INSTALLATION,
           versionId: `v${version}`,
-          vars: { ...plain },
+          vars:
+            worker === WEB
+              ? { CFO_INSTALLATION_ID: INSTALLATION, CFO_WEB_FEATURES: WEB_FEATURES.join(" ") }
+              : { ...plain },
         };
       },
       async updateSecrets(_worker, changes) {
@@ -463,9 +473,6 @@ async function main(): Promise<number> {
         version += 1;
         await restart();
         return "sent";
-      },
-      async activeVersion() {
-        return `v${version}`;
       },
       async logs(worker, fromMs, toMs) {
         return printed
@@ -486,6 +493,7 @@ async function main(): Promise<number> {
       installationId: INSTALLATION,
       hostname,
       platformWorker: PLATFORM,
+      webWorker: WEB,
     } as unknown as Installation;
     const browser: {
       manifest?: Manifest;
@@ -593,9 +601,10 @@ async function main(): Promise<number> {
       (p) =>
         p.version === `v${version}` && p.line.cfo === "bootstrap" && p.line.configApplied === true,
     );
+    const tag = await githubAppTag("Iv23liE2EClient00000");
     check(
-      "the server the watchdog restarted with the App's settings reported GitHub linking on",
-      applied.some((p) => p.line.githubApp === true && p.line.githubLinking === true) &&
+      "the server the watchdog restarted with the App's settings reported GitHub linking on, naming that App",
+      applied.some((p) => p.line.githubApp === tag && p.line.githubLinking === true) &&
         printed.some((p) => p.line.cfo === "watchdog" && p.line.event === "config_changed"),
       `${applied.length} applied status lines`,
     );

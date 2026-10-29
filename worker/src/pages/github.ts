@@ -110,7 +110,7 @@ const STEP_COMMAND = "node scripts/bootstrap/bootstrap.ts github-app";
 
 /** What each problem says: what is wrong, and what to do. */
 export const PROBLEMS: Readonly<Record<GitHubSetupProblem, string>> = {
-  held: "Omnigent's server cannot start: one of this installation's settings is missing or malformed, so the server stopped and waits for the settings to change. If you just set up GitHub, the installer's GitHub step says which setting; run it again to replace the App.",
+  held: "Omnigent's server cannot start: one of this installation's settings is missing or malformed, so the server stopped and waits for the settings to change. The server's config.error line in the platform Worker's logs names the setting. If you just set up GitHub, run the installer's GitHub step again with --replace.",
   recovery:
     "Omnigent's server is in recovery mode: its database could not be restored safely, so it does not serve Omnigent until someone looks at it (see the installation's recovery guide). GitHub setup goes on once the server is back.",
   not_configured: `This installation has no GitHub App yet. Create one with the installer's GitHub step: ${STEP_COMMAND}`,

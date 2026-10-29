@@ -969,7 +969,10 @@ describe("stagingCloud: through the guarded staging tool", () => {
     expect(tool).toHaveLength(1);
     const rendered = JSON.parse(Object.values(tool[0]?.files ?? {})[0] ?? "{}");
     // No ingress variables yet (the Worker answers 503), but the installation's ID.
-    expect(rendered.vars).toEqual({ CFO_INSTALLATION_ID: plan.installationId });
+    expect(rendered.vars).toEqual({
+      CFO_INSTALLATION_ID: plan.installationId,
+      CFO_WEB_FEATURES: "github-setup",
+    });
     expect(rendered.routes).toBeUndefined();
     expect(rendered.durable_objects.bindings[0].script_name).toBe(plan.platformWorker);
     // Once it exists, Access is only read.
