@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
@@ -1671,6 +1672,13 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     ).toBeUndefined();
     expect(
       codeVersionFrom(git({ ...clean, "rev-parse": { status: 0, stdout: "HEAD\n" } })),
+    ).toBeUndefined();
+    // git that cannot start at all, as spawnSync answers it (Codex r2-2).
+    const missing = spawnSync("cfo-wp334-no-such-git", ["status"], { encoding: "utf8" });
+    expect(missing.status).toBeNull();
+    expect(codeVersionFrom(() => missing)).toBeUndefined();
+    expect(
+      codeVersionFrom(git({ ...clean, status: { status: 0, stdout: undefined as never } })),
     ).toBeUndefined();
   });
 });

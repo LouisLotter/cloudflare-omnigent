@@ -10,7 +10,10 @@
 // The plan is written once and never changed: every later run reads the installation's names,
 // its buckets' included, from it. A plan made since D33 records its bucket tag and is written
 // as version 2; one from before records none, stays version 1, and keeps its untagged bucket
-// names (stateVersionFor).
+// names (stateVersionFor). A journal that records what WP3.34 added (whose password was
+// uploaded, the code each Worker was deployed from) is written as version 3, tagged or not, so a
+// bootstrap from before WP3.34 refuses it ("unknown version") rather than drop those fields
+// (Codex WP3.34 r2-1).
 
 import {
   closeSync,
@@ -298,14 +301,22 @@ function parseJournal(value: unknown): Journal {
   return journal as Journal;
 }
 
+/** The journal fields WP3.34 added, which a bootstrap from before it would drop. */
+const WP334_JOURNAL_FIELDS = ["ownerPassword", "platformCode", "webCode", "updatedAt"] as const;
+
 /**
- * The state file's format for a plan. Version 2 records the plan's bucket tag (D33); version 1,
- * from before it, records none, so its buckets keep their untagged names. A plan without a tag
- * is still written as version 1, which earlier bootstraps read as before; a tagged one as
- * version 2, which they refuse ("unknown version") rather than drop the tag and rename its
- * buckets.
+ * The state file's format for a plan and its journal. Version 2 records the plan's bucket tag
+ * (D33); version 1, from before it, records none, so its buckets keep their untagged names. A
+ * plan without a tag is still written as version 1, which earlier bootstraps read as before; a
+ * tagged one as version 2, which they refuse ("unknown version") rather than drop the tag and
+ * rename its buckets. Version 3 is either, with a journal that records WP3.34's fields: every
+ * bootstrap from before WP3.34 refuses it rather than drop them (Codex WP3.34 r2-1).
  */
-export function stateVersionFor(plan: Pick<Installation, "bucketTag">): 1 | 2 {
+export function stateVersionFor(
+  plan: Pick<Installation, "bucketTag">,
+  journal: Readonly<Record<string, unknown>> = {},
+): 1 | 2 | 3 {
+  if (WP334_JOURNAL_FIELDS.some((key) => journal[key] !== undefined)) return 3;
   return plan.bucketTag === undefined ? 1 : 2;
 }
 
@@ -318,11 +329,12 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (o.stateVersion !== 1 && o.stateVersion !== 2) {
+  if (o.stateVersion !== 1 && o.stateVersion !== 2 && o.stateVersion !== 3) {
     throw new Error("the state file has an unknown version");
   }
   const installation = parseInstallation(o.installation);
-  if (stateVersionFor(installation) !== o.stateVersion) {
+  // Version 3 holds a plan with or without a tag; 1 and 2 as their plans say.
+  if (o.stateVersion !== 3 && stateVersionFor(installation) !== o.stateVersion) {
     throw new Error(
       o.stateVersion === 1
         ? "the state file's plan has a bucket tag, which only version 2 records"
@@ -357,11 +369,22 @@ export function fileStateStore(path: string): StateStore {
       if (!existsSync(path)) throw new Error(`no state file at ${path}; run plan first`);
       return parseState(readFileSync(path, "utf8"));
     },
-    // The version follows the plan, whatever the caller's state says (stateVersionFor).
+    // The version follows the plan and the journal, whatever the caller's state says
+    // (stateVersionFor).
     save: (state) =>
       writeAtomic(
         path,
-        `${JSON.stringify({ ...state, stateVersion: stateVersionFor(state.installation) }, null, 2)}\n`,
+        `${JSON.stringify(
+          {
+            ...state,
+            stateVersion: stateVersionFor(
+              state.installation,
+              state.journal as unknown as Record<string, unknown>,
+            ),
+          },
+          null,
+          2,
+        )}\n`,
       ),
   };
 }

@@ -422,9 +422,10 @@ describe("an existing installation never changes bucket names (D33's invariant)"
       tokenScope: UNTAGGED.tokenScope,
     });
 
-    // The file is still version 1 with the same plan, which an earlier bootstrap reads as before.
+    // The same plan, untagged. Once the run recorded WP3.34's journal fields the file is version
+    // 3, which no earlier bootstrap reads (Codex WP3.34 r2-1); the plan inside is unchanged.
     const after = JSON.parse(readFileSync(path, "utf8"));
-    expect(after.stateVersion).toBe(1);
+    expect(after.stateVersion).toBe(3);
     expect(after.installation).toEqual(JSON.parse(before).installation);
     expect(after.installation).not.toHaveProperty("bucketTag");
     expect(namesOf(store.load().installation)).toEqual(UNTAGGED);
@@ -440,7 +441,7 @@ describe("an existing installation never changes bucket names (D33's invariant)"
       log: (line) => lines.push(line),
     });
     expect(lines.join("\n")).toContain(`the buckets ${UNTAGGED.created.join(" and ")}, and`);
-    expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(1);
+    expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(3);
   });
 
   it("a new plan's re-run is stable: the same tagged names from the file, every time", async () => {
@@ -470,7 +471,8 @@ describe("an existing installation never changes bucket names (D33's invariant)"
       tokenScope: TAGGED.tokenScope,
     });
     const loaded = store.load();
-    expect(loaded.stateVersion).toBe(2);
+    // Version 3 once WP3.34's journal fields are recorded; the tag is kept (Codex WP3.34 r2-1).
+    expect(loaded.stateVersion).toBe(3);
     expect(loaded.installation).toEqual(planned);
     expect(namesOf(loaded.installation)).toEqual(TAGGED);
   });

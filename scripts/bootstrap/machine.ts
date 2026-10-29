@@ -208,8 +208,11 @@ export interface Journal {
 }
 
 export interface BootstrapState {
-  /** 2 when the plan records its bucket tag (D33), 1 for a plan from before it (state.ts). */
-  readonly stateVersion: 1 | 2;
+  /**
+   * 2 when the plan records its bucket tag (D33), 1 for a plan from before it, 3 once the journal
+   * records WP3.34's fields (state.ts, stateVersionFor).
+   */
+  readonly stateVersion: 1 | 2 | 3;
   readonly installation: Installation;
   readonly journal: Journal;
 }
@@ -908,7 +911,8 @@ export function doneMessage(
 /** What `codeVersionFrom` needs of git: one command's status and output. */
 export type GitRunner = (args: string[]) => {
   readonly status: number | null;
-  readonly stdout: string;
+  /** Missing when git could not start (spawnSync's answer then). */
+  readonly stdout?: string | null;
 };
 
 /**
@@ -919,9 +923,10 @@ export type GitRunner = (args: string[]) => {
  */
 export function codeVersionFrom(git: GitRunner): string | undefined {
   const head = git(["rev-parse", "--verify", "HEAD"]);
+  if (head.status !== 0 || typeof head.stdout !== "string") return undefined;
   const commit = head.stdout.trim();
-  if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(commit)) return undefined;
+  if (!/^[0-9a-f]{40}$/.test(commit)) return undefined;
   const status = git(["status", "--porcelain", "--untracked-files=normal"]);
-  if (status.status !== 0 || status.stdout.trim() !== "") return undefined;
-  return commit;
+  if (status.status !== 0 || typeof status.stdout !== "string") return undefined;
+  return status.stdout.trim() === "" ? commit : undefined;
 }
