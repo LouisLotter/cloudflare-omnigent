@@ -44,6 +44,10 @@ export default defineConfig({
         "bootstrap/settings.ts": pure,
         "bootstrap/events.ts": pure,
         "bootstrap/access.ts": pure,
+        "bootstrap/access-app.ts": pure,
+        "bootstrap/preflight.ts": pure,
+        // It starts the clipboard tool: a fake one on PATH exercises that.
+        "bootstrap/password.ts": io,
         "bootstrap/machine.ts": pure,
         "bootstrap/state.ts": pure,
         "bootstrap/r2-token.ts": pure,
