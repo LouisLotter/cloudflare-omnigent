@@ -279,6 +279,47 @@ describe("the state file", () => {
     }
   });
 
+  it("round-trips the Access application's record and the login method's (WP3.31)", async () => {
+    const state = await fullState();
+    const path = join(dir, "a.json");
+    for (const [accessApp, accessLoginMethod] of [
+      [
+        { name: "cloudflare-omnigent-web--0a1b2c3d", createStartedAt: "2026-10-29T12:00:00.000Z" },
+        { createStartedAt: "2026-10-29T11:59:59.000Z" },
+      ],
+      [
+        {
+          name: "cloudflare-omnigent-web--0a1b2c3d",
+          id: "app-1",
+          createdAt: "2026-10-29T12:00:01.000Z",
+        },
+        { id: "idp-1", createdAt: "2026-10-29T12:00:00.000Z" },
+      ],
+    ] as const) {
+      const withAccess = { ...state, journal: { ...state.journal, accessApp, accessLoginMethod } };
+      fileStateStore(path).save(withAccess);
+      expect(fileStateStore(path).load()).toEqual(withAccess);
+    }
+    const good = JSON.parse(JSON.stringify(state));
+    for (const [journal, message] of [
+      [{ accessApp: "x" }, /journal.accessApp is not an object/],
+      [{ accessApp: {} }, /journal.accessApp.name is not text/],
+      [{ accessApp: { name: "n", id: 1 } }, /journal.accessApp.id is not text/],
+      [
+        { accessApp: { name: "n", createdAt: "soon" } },
+        /journal.accessApp.createdAt is not a time/,
+      ],
+      [{ accessLoginMethod: [] }, /journal.accessLoginMethod is not an object/],
+      [{ accessLoginMethod: { id: 2 } }, /journal.accessLoginMethod.id is not text/],
+      [
+        { accessLoginMethod: { createStartedAt: "x" } },
+        /journal.accessLoginMethod.createStartedAt is not a time/,
+      ],
+    ] as const) {
+      expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
+  });
+
   it("keeps a staging installation's state where the staging tool finds it (Codex WP3.25 r3-5)", async () => {
     const staging = await stagingPlan();
     const home = join(dir, "installations");

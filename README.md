@@ -14,6 +14,10 @@ Main registers the [Cloudflare launcher](python/cloudflare_omnigent/sandbox/), b
 
 The [compatibility snapshot](docs/compatibility.md) identifies exact revisions and pins. The default server image uses an older fork commit than current fork integration and lacks later Stop and history-resume corrections. No production-ready release or selected, fully qualified image pair is claimed here.
 
+## Install
+
+To set up your own installation in your Cloudflare account with one command, follow the [install guide](docs/install.md). It lists what the account needs first (the Workers Paid plan, R2, a domain and a Zero Trust organization), the two sign-ins, and what happens at the first sign-in.
+
 ## How it fits together
 
 The **web Worker** owns public ingress and forwarding. The **platform Worker** owns Durable Objects, container bindings and private virtual hosts; it has no public route. Omnigent owns conversations, schedules, approvals and application work. The platform supplies provider lifecycle and storage interfaces rather than duplicating that state.

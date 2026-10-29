@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLock } from "../../staging/lock.ts";
+import { ownerOnlyAppBody } from "../access.ts";
 import type { BootstrapState } from "../machine.ts";
 import { type ApiToken, r2TokenName, r2TokenResources } from "../r2-token.ts";
 import {
   installationStateFiles,
+  removeInstallationAccess,
   removeInstallationToken,
   removeStagingTokens,
   stagingTokenDeployment,
@@ -387,4 +389,176 @@ describe("installationStateFiles and withInstallationLocks", () => {
     ).toThrow("inside");
     expect(withInstallationLocks(store, "test", () => 8)).toBe(8);
   });
+});
+
+describe("remove-access: the Access application this installation created (WP3.31)", () => {
+  async function created(recordId = true) {
+    const plan = await accountPlan();
+    const world = new FakeWorld(plan);
+    const name = "cloudflare-omnigent-web--0a1b2c3d";
+    const id = world.addAccessApp(
+      ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "owner-canary@example.test" }),
+    );
+    const theirs = world.addAccessApp({ name: "someone else's", domain: "other.example.test" });
+    const store = new MemoryStore({
+      stateVersion: 1,
+      installation: plan,
+      journal: {
+        accessApp: recordId
+          ? { name, id, createdAt: "2026-10-29T12:00:00.000Z" }
+          : { name, createStartedAt: "2026-10-29T12:00:00.000Z" },
+      },
+    });
+    const lines: string[] = [];
+    const remove = (o: { exists?: boolean; force?: boolean; now?: number } = {}) =>
+      removeInstallationAccess({
+        store,
+        api: world.accessApi(),
+        webWorkerExists: () => o.exists ?? false,
+        force: o.force ?? false,
+        now: () => o.now ?? Date.parse("2026-10-29T13:00:00.000Z"),
+        log: (line) => lines.push(line),
+      });
+    return { world, store, lines, remove, id, theirs, name };
+  }
+
+  it("deletes only the recorded application, then forgets it", async () => {
+    const c = await created();
+    expect(c.remove()).toBeUndefined();
+    expect([...c.world.accessApps.keys()]).toEqual([c.theirs]);
+    expect(c.store.state.journal.accessApp).toBeUndefined();
+    expect(c.lines).toEqual([
+      `deleted the Access application "${c.name}" on omnigent.example.test`,
+    ]);
+    // Again: nothing recorded, nothing touched.
+    expect(c.remove()).toBeUndefined();
+    expect(c.world.calls.filter((call) => call === "accessRemove")).toHaveLength(1);
+  });
+
+  it("refuses while the web Worker exists, unless told to go ahead", async () => {
+    const c = await created();
+    expect(() => c.remove({ exists: true })).toThrow(
+      `a Worker named cloudflare-omnigent-web still exists, and the Access application "${c.name}" keeps everyone but the owner away from it; remove the installation's Workers first, or pass --yes`,
+    );
+    expect(c.world.accessApps.has(c.id)).toBe(true);
+    expect(c.remove({ exists: true, force: true })).toBeUndefined();
+    expect(c.world.accessApps.has(c.id)).toBe(false);
+  });
+
+  it("names it with the click when Cloudflare refuses (403), and confirms a by-hand delete", async () => {
+    const c = await created();
+    c.world.accessForbidden = true;
+    expect(c.remove()).toBe(c.name);
+    expect(c.lines.at(-1)).toBe(
+      `Cloudflare does not let this cf login delete Access applications, so delete the one named exactly "${c.name}" by hand: open https://one.dash.cloudflare.com/, Access, Applications, open it, and choose Delete. Then run this again to check.`,
+    );
+    expect(c.store.state.journal.accessApp?.id).toBe(c.id);
+    // The person deletes it; the next run reads it as gone.
+    c.world.accessApps.delete(c.id);
+    expect(c.remove()).toBeUndefined();
+    expect(c.store.state.journal.accessApp).toBeUndefined();
+    expect(c.lines.at(-1)).toBe(`the Access application "${c.name}" is gone`);
+  });
+
+  it("finds a create never answered by its name, and forgets one that never landed", async () => {
+    const c = await created(false);
+    expect(c.remove()).toBeUndefined();
+    expect(c.world.accessApps.has(c.id)).toBe(false);
+    const none = await created(false);
+    none.world.accessApps.delete(none.id);
+    // Within the settle time it may still land: kept, and named (Codex r1-2).
+    const sent = Date.parse("2026-10-29T12:00:00.000Z");
+    expect(none.remove({ now: sent + 60_000 })).toBe(none.name);
+    expect(none.store.state.journal.accessApp?.createStartedAt).toBeDefined();
+    expect(none.lines).toEqual([
+      `the Access application "${none.name}" was being created when a run stopped, and may still appear until 2026-10-29T12:05:00.000Z: run this again after that`,
+    ]);
+    none.lines.length = 0;
+    expect(none.remove()).toBeUndefined();
+    expect(none.lines).toEqual([
+      `the Access application "${none.name}" was never seen after its create, and is not there now: nothing to delete`,
+    ]);
+    expect(none.world.calls).not.toContain("accessRemove");
+  });
+
+  it("leaves an application it did not create alone", async () => {
+    const plan = await accountPlan();
+    const world = new FakeWorld(plan);
+    world.addAccessApp(
+      ownerOnlyAppBody({ name: "mine", hostname: plan.hostname, ownerEmail: "x" }),
+    );
+    const lines: string[] = [];
+    const store = new MemoryStore({ stateVersion: 1, installation: plan, journal: {} });
+    expect(
+      removeInstallationAccess({
+        store,
+        api: world.accessApi(),
+        webWorkerExists: () => true,
+        force: false,
+        now: () => 0,
+        log: (line) => lines.push(line),
+      }),
+    ).toBeUndefined();
+    expect(world.accessApps.size).toBe(1);
+    expect(world.calls).toEqual([]);
+    expect(lines[0]).toMatch(/^no Access application is recorded as this installation's/);
+  });
+});
+
+it("remove-access deletes a late create that landed within the settle time, by its name", async () => {
+  const plan = await accountPlan();
+  const world = new FakeWorld(plan);
+  const name = "cloudflare-omnigent-web--0a1b2c3d";
+  const store = new MemoryStore({
+    stateVersion: 1,
+    installation: plan,
+    journal: { accessApp: { name, createStartedAt: new Date(world.now).toISOString() } },
+  });
+  const options = {
+    store,
+    api: world.accessApi(),
+    webWorkerExists: () => false,
+    force: false,
+    now: () => world.now,
+    log: () => {},
+  };
+  expect(removeInstallationAccess(options)).toBe(name);
+  // It lands; the next removal finds it by its name and deletes it.
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  world.now += 60_000;
+  expect(removeInstallationAccess(options)).toBeUndefined();
+  expect(world.accessApps.size).toBe(0);
+  expect(store.state.journal.accessApp).toBeUndefined();
+});
+
+it("remove-access never deletes a same-name application elsewhere, nor guesses between two (Codex r2-1)", async () => {
+  const plan = await accountPlan();
+  const world = new FakeWorld(plan);
+  const name = "cloudflare-omnigent-web--0a1b2c3d";
+  const elsewhere = world.addAccessApp(
+    ownerOnlyAppBody({ name, hostname: "other.example.test", ownerEmail: "x" }),
+  );
+  const journal = { accessApp: { name, createStartedAt: "2026-10-29T12:00:00.000Z" } };
+  const store = new MemoryStore({ stateVersion: 1, installation: plan, journal });
+  const lines: string[] = [];
+  const options = {
+    store,
+    api: world.accessApi(),
+    webWorkerExists: () => false,
+    force: false,
+    now: () => Date.parse("2026-10-29T13:00:00.000Z"),
+    log: (line: string) => lines.push(line),
+  };
+  // Settled, and not on the hostname: never ours; forgotten, and the other one kept.
+  expect(removeInstallationAccess(options)).toBeUndefined();
+  expect(world.accessApps.has(elsewhere)).toBe(true);
+  expect(world.calls).not.toContain("accessRemove");
+  // Two on the hostname with the create's name: neither is deleted, and the record stays.
+  store.state = { stateVersion: 1, installation: plan, journal };
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  world.addAccessApp(ownerOnlyAppBody({ name, hostname: plan.hostname, ownerEmail: "x" }));
+  expect(removeInstallationAccess(options)).toBe(name);
+  expect(world.accessApps.size).toBe(3);
+  expect(store.state.journal.accessApp).toEqual(journal.accessApp);
+  expect(lines.at(-1)).toMatch(/^2 Access applications on omnigent\.example\.test are named/);
 });

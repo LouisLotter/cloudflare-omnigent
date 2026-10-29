@@ -65,6 +65,8 @@ interface Harness {
   readonly store: MemoryStore;
   readonly lines: string[];
   asked: number;
+  /** For each read of the installer's secrets: whether the owner's password was needed. */
+  readonly needs: boolean[];
   run(options?: Partial<RunOptions>): ReturnType<typeof runBootstrap>;
 }
 
@@ -89,13 +91,15 @@ function harness(
     store,
     lines: [],
     asked: 0,
+    needs: [],
     run: (options = {}) => {
       const ctx: RunContext = {
         cloud: world.cloud(),
         store,
         baseConfigs: BASE,
-        secrets: () => {
+        secrets: (need) => {
           h.asked++;
+          h.needs.push(need.password);
           return r2.tokens
             ? { ownerPassword: OWNER_PASSWORD }
             : {
@@ -663,8 +667,47 @@ describe("runBootstrap: Cloudflare misbehaving", () => {
     expect(h.asked).toBe(1);
     h.world.dropOnDeploy = [];
     expect(await h.run()).toEqual({ kind: "done" });
-    // The password and the replica's pair are held: only the artifacts' half was missing.
+    // The password and the replica's pair are held: only the artifacts' half was missing, so
+    // the second read says the password is not needed (nothing is generated or asked for).
     expect(h.asked).toBe(2);
+    expect(h.needs).toEqual([true, false]);
+    expect(h.store.state.journal.ownerPasswordGivenAt).toEqual(expect.any(String));
+  });
+
+  it("tells the installer when an earlier run's password never reached the Worker", async () => {
+    const h = harness(await accountPlan());
+    const again: boolean[] = [];
+    const run = (fail: boolean) =>
+      runBootstrap(
+        {
+          cloud: h.world.cloud(),
+          store: h.store,
+          baseConfigs: BASE,
+          secrets: (need) => {
+            again.push(need.again);
+            if (fail) throw new Error("cancelled");
+            return {
+              ownerPassword: OWNER_PASSWORD,
+              replicaAccessKeyId: REPLICA_KEY_ID,
+              replicaSecretAccessKey: REPLICA_SECRET,
+            };
+          },
+          random: (n) => new Uint8Array(n).fill(0xab),
+          now: () => h.world.now,
+          sleep: async (ms) => {
+            h.world.now += Math.max(0, ms);
+          },
+          log: () => {},
+        },
+        OPTIONS,
+      );
+    await expect(run(true)).rejects.toThrow("cancelled");
+    // Given, then the deploy failed before it landed: the next run's password replaces it.
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(run(false)).rejects.toThrow(Crash);
+    expect(await run(false)).toEqual({ kind: "done" });
+    expect(again).toEqual([false, false, true]);
+    expect(JSON.stringify(h.store.state)).not.toContain(OWNER_PASSWORD);
     expect(h.world.secretsOf(h.world.plan.platformWorker)?.get(ARTIFACTS_SECRET_KEY_SECRET)).toBe(
       REPLICA_SECRET,
     );

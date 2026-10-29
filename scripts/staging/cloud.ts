@@ -13,6 +13,8 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statfsSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -371,14 +373,38 @@ export function credentialsOf(answer: unknown): ServiceTokenCredentials {
   return { id: field("id"), clientId: field("client_id"), clientSecret: field("client_secret") };
 }
 
+/** Linux's filesystem types that live in memory: tmpfs and ramfs (statfs(2)'s f_type). */
+const MEMORY_FILESYSTEMS = new Set([0x01021994, 0x858458f6]);
+
+/** Whether `path` is a directory on a filesystem that lives in memory (Linux; never on macOS). */
+export function inMemoryDirectory(path: string): boolean {
+  try {
+    return (
+      statSync(path).isDirectory() &&
+      process.platform === "linux" &&
+      MEMORY_FILESYSTEMS.has(Number(statfsSync(path).type))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Where the secrets file lives for the instant before it is unlinked: the user's runtime
- * directory, which is private and in memory on most Linux systems, or else the system's
- * temporary directory.
+ * Where the secrets file lives, unlinked, while a child reads it: a directory whose filesystem
+ * lives in memory, so that no secret reaches a disk (Codex WP3.31 r1-5, r2-2). The user's
+ * runtime directory (a private tmpfs on most Linux systems), else Linux's shared memory
+ * (/dev/shm; the file's own directory is private), each only if it is checked to be in memory;
+ * else the system's temporary directory, which may be on disk (macOS, or a Linux without
+ * either).
  */
-export function secretsBase(): string {
-  const runtime = process.env.XDG_RUNTIME_DIR;
-  return runtime !== undefined && runtime !== "" && existsSync(runtime) ? runtime : tmpdir();
+export function secretsBase(
+  env: NodeJS.ProcessEnv = process.env,
+  inMemory: (path: string) => boolean = inMemoryDirectory,
+): string {
+  const runtime = env.XDG_RUNTIME_DIR;
+  if (runtime !== undefined && runtime !== "" && inMemory(runtime)) return runtime;
+  if (inMemory("/dev/shm")) return "/dev/shm";
+  return tmpdir();
 }
 
 const SECRETS_DIR_PREFIX = "cfo-stg-secrets-";

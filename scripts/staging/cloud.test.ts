@@ -28,6 +28,7 @@ import {
   fileStore,
   imagesOf,
   ingressOf,
+  inMemoryDirectory,
   openNameless,
   type RunOptions,
   readStagingManifest,
@@ -325,6 +326,33 @@ describe("secrets for an upload", () => {
   const config = { accountId: "a".repeat(32), zone: "example.com", ownerEmail: "o@example.com" };
   const secretDirs = () =>
     readdirSync(secretsBase()).filter((name) => name.startsWith("cfo-stg-secrets-"));
+
+  it("live in memory where there is a place for it: the runtime directory, then /dev/shm (Codex WP3.31 r1-5, r2-2)", () => {
+    const dirs =
+      (...have: string[]) =>
+      (path: string) =>
+        have.includes(path);
+    expect(secretsBase({ XDG_RUNTIME_DIR: "/run/user/7" }, dirs("/run/user/7", "/dev/shm"))).toBe(
+      "/run/user/7",
+    );
+    expect(secretsBase({ XDG_RUNTIME_DIR: "/run/user/7" }, dirs("/dev/shm"))).toBe("/dev/shm");
+    expect(secretsBase({ XDG_RUNTIME_DIR: "" }, dirs("/dev/shm"))).toBe("/dev/shm");
+    expect(secretsBase({}, dirs())).toBe(tmpdir());
+    // The real check: a missing path, a file, or a directory on disk (this checkout) is not one.
+    const here = dirname(fileURLToPath(import.meta.url));
+    expect(inMemoryDirectory(join(scratch, "missing"))).toBe(false);
+    expect(inMemoryDirectory(fileURLToPath(import.meta.url))).toBe(false);
+    expect(inMemoryDirectory(here)).toBe(false);
+    expect(secretsBase({ XDG_RUNTIME_DIR: here })).toBe(secretsBase({}));
+  });
+
+  it.skipIf(process.platform !== "linux" || !existsSync("/dev/shm"))(
+    "recognises Linux's /dev/shm as in memory (Codex WP3.31 r2-2)",
+    () => {
+      expect(inMemoryDirectory("/dev/shm")).toBe(true);
+      expect(secretsBase({})).toBe("/dev/shm");
+    },
+  );
 
   it("reach Wrangler only as descriptor 3, a file without a name, and never argv", () => {
     const before = secretDirs();

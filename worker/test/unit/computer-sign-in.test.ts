@@ -5,6 +5,7 @@
 // stored record (the sim records a violation if a log holds one; `noSecrets` scans storage).
 import { describe, expect, it } from "vitest";
 import { STATUS_LOG_KEY } from "../../src/computer/record.ts";
+import { statusHtml } from "../../src/pages/owner-actions.ts";
 import { ComputerSim, live } from "../support/computer-sim.ts";
 
 const SESSION = "ab".repeat(32);
@@ -716,6 +717,60 @@ describe("the computer's status", () => {
     older.computer.supervisorOptions = { legacy: true };
     await older.running();
     expect((await older.controller.computerStatus()).supervisor).toBe("unsupported");
+  });
+
+  it("reads a newer supervisor's status, showing what it does not know as unknown (WP3.29)", async () => {
+    // After a platform rollback, this (older) WorkspaceDO meets a newer computer's supervisor.
+    const sim = new ComputerSim();
+    await sim.running();
+    const handler = sim.computer.supervisor as (r: Request) => Promise<Response>;
+    sim.computer.supervisor = async (request) => {
+      const body = (await request.clone().json()) as { type?: string };
+      const response = await handler(request);
+      if (body.type !== "computer_status") return response;
+      const reply = (await response.json()) as { status: Record<string, unknown> };
+      const status = reply.status as { logins: object; disk: object };
+      return Response.json({
+        ...reply,
+        statusVersion: 2,
+        status: {
+          ...status,
+          hostname: "resolved_via_dns",
+          logins: { ...status.logins, codex: "rate_limited", gemini: "signed_in" },
+          signIn: { claude: "awaiting_device", codex: "none" },
+          disk: { ...status.disk, usedBytes: 1 },
+          alerts: [{ kind: "gpu_lost", count: 2, detail: "future alert text" }],
+          memory: { totalBytes: 8, freeBytes: 4 },
+        },
+      });
+    };
+    await sim.advance(5 * 60_000 + 1_000);
+    const logged = sim.logs.filter((l) => l.event === "computer_status").at(-1)?.fields;
+    expect(logged).toMatchObject({
+      supervisor: "ok",
+      hostname: "unknown",
+      logins: { codex: "unknown" },
+      signIn: { claude: "unknown", codex: "none" },
+      alerts: { other: 2 },
+    });
+    // The status log does not back off: the read was answered.
+    expect(sim.store.get(STATUS_LOG_KEY)).toMatchObject({ failedAt: null });
+    sim.now += 20_000;
+    const status = await sim.controller.computerStatus();
+    expect(status.supervisor).toBe("ok");
+    expect(status.metrics).toMatchObject({
+      hostname: "unknown",
+      logins: { claude: expect.any(String), codex: "unknown" },
+      signIn: { claude: "unknown", codex: "none" },
+      alerts: [{ kind: "other", count: 2 }],
+    });
+    expect(Object.keys(status.metrics ?? {})).not.toContain("memory");
+    expect(Object.keys(status.metrics?.logins ?? {}).sort()).toEqual(["claude", "codex"]);
+    expect(Object.keys(status.metrics?.disk ?? {}).sort()).toEqual(["freeBytes", "totalBytes"]);
+    const html = statusHtml(status, sim.now);
+    expect(html).toContain("not known");
+    expect(html).not.toContain("future alert text");
+    expect(sim.logs.some((l) => l.event === "command_failed")).toBe(false);
   });
 
   it("logs computer_status with names and counts, on change and at its interval", async () => {

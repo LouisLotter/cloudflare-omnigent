@@ -6,9 +6,12 @@
 // and its watchdog replaces it once (a restart of `REPLACE_MS`) when its configuration differs.
 // The server then logs its status without the password until it shows a durable owner, and for
 // `NOTICE_MS` after (G2-SEC-001).
-// The installer's user API tokens (WP3.25) live here too, with the same crash points.
+// The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
+// Access in the installer's account (WP3.31): the organization, the applications and the login
+// methods, as cf answers for them.
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
+import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
 import {
   type ApiToken,
@@ -49,8 +52,9 @@ export const R2_GROUP_ID = `${"0".repeat(31)}9`;
 
 export interface CrashPoint {
   /**
-   * The call: deployPlatform, deployWeb, updateSecrets, access, secretNames, logs, save, and
-   * the token calls tokenGroup, tokenList, tokenCreate and tokenRemove.
+   * The call: deployPlatform, deployWeb, updateSecrets, access, secretNames, logs, save, the
+   * token calls tokenGroup, tokenList, tokenCreate and tokenRemove, and the Access calls
+   * accessOrg, accessList, accessGet, accessCreate, accessRemove, loginList and loginCreate.
    */
   readonly call: string;
   /** Which occurrence of it (1 is the first). */
@@ -118,7 +122,18 @@ export class FakeWorld {
    * A token request whose client gives up (cf fails with a timeout) while the request itself
    * takes effect `afterMs` later, as a request left in flight by a stopped run may.
    */
-  late: { call: "tokenCreate"; nth: number; afterMs: number } | undefined;
+  late: { call: "tokenCreate" | "accessCreate"; nth: number; afterMs: number } | undefined;
+  /** The Zero Trust organization's team domain; undefined: the account has none. */
+  teamDomain: string | undefined = "team.cloudflareaccess.com";
+  /** Access applications in the account, by ID, as Cloudflare answers for them. */
+  readonly accessApps = new Map<string, Record<string, unknown>>();
+  /** The account's login methods. */
+  loginMethods: IdentityProvider[] = [{ id: "idp-onetimepin", type: "onetimepin" }];
+  /** Cloudflare answers 403 to creating and deleting Access applications. */
+  accessForbidden = false;
+  /** Cloudflare answers 403 to reading and adding login methods. */
+  loginsForbidden = false;
+  #nextApp = 1;
   #landing: { due: number; apply: () => void }[] = [];
   #nextVersion = 1;
   #nextToken = 1;
@@ -268,6 +283,61 @@ export class FakeWorld {
         world.#leave("logs", n);
         return world.logCap === undefined ? events : events.slice(0, world.logCap);
       },
+    };
+  }
+
+  /** An Access application as Cloudflare answers for it: AUD and defaults filled in. */
+  addAccessApp(app: Record<string, unknown>): string {
+    const id = typeof app.id === "string" ? app.id : `app-${this.#nextApp++}`;
+    this.accessApps.set(id, {
+      aud: `${"a".repeat(60)}${String(this.#nextApp).padStart(4, "0")}`,
+      options_preflight_bypass: false,
+      http_only_cookie_attribute: true,
+      ...structuredClone(app),
+      id,
+    });
+    return id;
+  }
+
+  accessApi(): AccessApi {
+    const call = <T>(name: string, forbidden: boolean, effect: () => T): T => {
+      const n = this.#enter(name);
+      if (forbidden) throw new AccessUnavailable("Cloudflare refused (403)");
+      if (this.late?.call === name && this.late.nth === n) {
+        this.#landing.push({ due: this.now + this.late.afterMs, apply: () => void effect() });
+        this.late = undefined;
+        throw new Error("cf zero-trust access applications create failed: timeout");
+      }
+      const result = effect();
+      this.#leave(name, n);
+      return result;
+    };
+    return {
+      teamDomain: () => call("accessOrg", false, () => this.teamDomain),
+      apps: () =>
+        call("accessList", false, () =>
+          [...this.accessApps.values()].map((a) => structuredClone(a)),
+        ),
+      app: (id) => call("accessGet", false, () => structuredClone(this.accessApps.get(id))),
+      create: (body) =>
+        call("accessCreate", this.accessForbidden, () =>
+          this.addAccessApp({ ...body, id: `app-${this.#nextApp++}` }),
+        ),
+      identityProviders: () =>
+        call("loginList", this.loginsForbidden, () => this.loginMethods.map((m) => ({ ...m }))),
+      createOneTimePin: () =>
+        call("loginCreate", this.loginsForbidden, () => {
+          if (this.loginMethods.some((m) => m.type === "onetimepin")) {
+            throw new Error("cf zero-trust identity-providers create failed: [12130] exists");
+          }
+          const method = { id: "idp-added-onetimepin", type: "onetimepin" };
+          this.loginMethods = [...this.loginMethods, method];
+          return method.id;
+        }),
+      remove: (id) =>
+        call("accessRemove", this.accessForbidden, () =>
+          this.accessApps.delete(id) ? "deleted" : "absent",
+        ),
     };
   }
 
