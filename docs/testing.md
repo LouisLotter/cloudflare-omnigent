@@ -110,12 +110,14 @@ uv run --locked --directory python pytest tests/computer
 
 # 2. Inside the image, as root: the same suite plus image-only tests (contents and pins,
 #    Omnigent's own native-harness writers paused before their renames, Codex's restore test,
-#    the real host under the supervisor). --privileged adds the cgroup-freezer case.
+#    the real host under the supervisor, the setup terminal's tmux sessions behind the real
+#    ttyd). --privileged adds the cgroup-freezer cases.
 docker build --platform linux/amd64 -f images/computer/Dockerfile --target test -t cfo-computer:local-test .
 docker run --rm --privileged --hostname "$(openssl rand -hex 32)" cfo-computer:local-test
 
 # 3. The built image as containers: the supervisor as tini's only child, its death ending the
-#    container, an assembled restore/install/host/capture/SIGTERM through the command port, and
+#    container, an assembled restore/install/host/terminal/capture/SIGTERM through the command
+#    port (the SIGSTOP freezer pausing the terminal's tmux server under tini), and
 #    (after `npm ci --prefix images/computer/integration/directory-backup`) a base and a delta
 #    carried between two computers by the Sandbox SDK's real DirectoryBackup and sandbox-shim.
 docker build --platform linux/amd64 -f images/computer/Dockerfile -t cfo-computer:dev .

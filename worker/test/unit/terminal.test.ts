@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLOSED_BY_COMPUTER,
   CLOSED_BY_PLATFORM,
+  COMPUTER_LINK_DROPPED,
   TerminalBridge,
   type TerminalTarget,
 } from "../../src/computer/terminal.ts";
@@ -42,13 +43,20 @@ function harness(start = 1_000_000_000_000) {
     windows,
     target: { ok: true, generation: 3 } as TerminalTarget,
     targetFails: false,
+    /** The controller's answer waits for this first, while set (interleavings, WP3.28). */
+    targetHold: null as Promise<void> | null,
     bridge: null as unknown as TerminalBridge,
+    /** The browser end a test keeps (WP3.28). */
+    browser: null as FakeSocket | null,
+    /** How often the bridge said a shell's end was recorded (WP3.28). */
+    endsRecorded: 0,
     build(): TerminalBridge {
       h.bridge = new TerminalBridge({
         computerId: CMP,
         store,
         now: () => h.now,
         target: async () => {
+          if (h.targetHold !== null) await h.targetHold;
           if (h.targetFails) throw new Error("the controller cannot be asked");
           return h.target;
         },
@@ -69,6 +77,9 @@ function harness(start = 1_000_000_000_000) {
           timers.delete(id as number);
         },
         log: (event, fields) => logs.push({ event, fields }),
+        endRecorded: () => {
+          h.endsRecorded += 1;
+        },
       });
       return h.bridge;
     },
@@ -102,6 +113,12 @@ function harness(start = 1_000_000_000_000) {
 function browserOf(response: Response): FakeSocket {
   if (!(response instanceof UpgradeResponse)) throw new Error(`refused: ${response.status}`);
   return response.client;
+}
+
+/** Waits (a few event-loop turns at most) until `cond` holds. */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 0));
+  if (!cond()) throw new Error("the condition never held");
 }
 
 const bytes = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
@@ -364,6 +381,7 @@ describe("streams end (RC-24)", () => {
 
   it("after a Durable Object restart: the window survives, spent capabilities stay spent", async () => {
     const h = harness();
+    h.target = { ok: true, generation: 3, keepsShells: true };
     const opened = await h.open();
     browserOf(await h.connect(opened.capability));
     // The runtime drops every socket with the instance; a new instance reads the same storage.
@@ -373,7 +391,7 @@ describe("streams end (RC-24)", () => {
     const fresh = await restarted.open({ operationId: OP(9), owner: OWNER, window: 1 });
     expect(fresh.outcome).toBe("accepted");
     if (fresh.outcome === "accepted") {
-      expect(browserOf(await h.connect(fresh.capability))).toBeInstanceOf(FakeSocket);
+      expect(browserOf(await h.connect(fresh.capability)).closed).toBeNull();
     }
   });
 });
@@ -435,14 +453,15 @@ describe("bridge edges", () => {
     expect(h.bridge.view()).toMatchObject({ streams: 1 });
   });
 
-  it("ends a stream on a computer-side error, and only once", async () => {
+  it("ends a stream on a computer-side error, and only once: a drop the page reconnects after", async () => {
     const h = harness();
     const browser = browserOf(await h.connect((await h.open()).capability));
     const bridgeEnd = h.ttyd.shell.peer as FakeSocket;
     bridgeEnd.emit("error", {});
     bridgeEnd.emit("close", {});
-    expect(browser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(browser.closed?.code).toBe(COMPUTER_LINK_DROPPED);
     expect(h.logs.filter((l) => l.event === "terminal_stream_ended")).toHaveLength(1);
+    expect(h.bridge.pendingEnd()).toBeNull();
   });
 
   it("ignores frames after a stream ended, and frames it cannot send", async () => {
@@ -507,5 +526,461 @@ describe("closeNow, the controller's hook before a credential-sensitive step (Co
     expect((await h.connect(spare.capability)).status).toBe(403);
     h.bridge.closeNow("again");
     expect(h.logs.filter((l) => l.event === "terminal_window_closed")).toHaveLength(1);
+  });
+});
+
+describe("shells kept on the computer (WP3.28, FH-38)", () => {
+  const KEPT: TerminalTarget = { ok: true, generation: 3, keepsShells: true };
+
+  async function reconnect(h: ReturnType<typeof harness>, window = 1) {
+    const fresh = await h.bridge.open({ operationId: OP(50 + h.ttyd.dials), owner: OWNER, window });
+    if (fresh.outcome !== "accepted") throw new Error(`refused: ${fresh.reason}`);
+    return h.connect(fresh.capability);
+  }
+
+  it("dials a window's first stream as new, and persists that it reached ttyd", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const opened = await h.open();
+    expect(h.store.get("terminal/window")).toMatchObject({ window: 1, bridged: false });
+    browserOf(await h.connect(opened.capability));
+    expect(h.ttyd.dialled).toEqual([{ mode: "new", window: 1 }]);
+    expect(h.store.get("terminal/window")).toMatchObject({ window: 1, bridged: true });
+  });
+
+  it("after a reset, reconnects by attaching to the same window's session, never new", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    h.build(); // a new instance: no stream in memory, the marker in storage
+    const again = browserOf(await reconnect(h));
+    expect(again.closed).toBeNull();
+    expect(h.ttyd.dialled).toEqual([
+      { mode: "new", window: 1 },
+      { mode: "attach", window: 1 },
+    ]);
+    expect(h.logs.map((l) => l.event)).toContain("terminal_reattached");
+    // The session's end is owed only when the stream ends for good.
+    expect(h.bridge.pendingEnd()).toBeNull();
+  });
+
+  it("with a supervisor that does not keep shells, refuses that reconnect with 4002 and never dials", async () => {
+    const h = harness();
+    browserOf(await h.connect((await h.open()).capability));
+    h.build();
+    const response = await reconnect(h);
+    const browser = browserOf(response);
+    expect(browser.closed).toEqual({
+      code: CLOSED_BY_COMPUTER,
+      reason: "terminal closed: the session on the computer ended",
+    });
+    expect(h.ttyd.dials).toBe(1);
+    expect(h.logs.at(-1)).toMatchObject({ event: "terminal_session_gone", fields: { window: 1 } });
+    // A new window still gets a new shell.
+    const two = await h.open(OP(60));
+    expect(browserOf(await h.connect(two.capability)).closed).toBeNull();
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "new", window: 2 });
+  });
+
+  it("closes the browser with 4002 when an attach finds the session gone (ttyd ends the stream)", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    h.build();
+    const browser = browserOf(await reconnect(h));
+    h.ttyd.shell.close(1000, "");
+    expect(browser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "attach", window: 1 });
+  });
+
+  it("hands a half-open stream to the new browser instead of ending the shell (27 Oct)", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const old = browserOf(await h.connect((await h.open()).capability));
+    const shell = h.ttyd.shell;
+    // The old browser's stream never reported closed: the new browser takes it over.
+    const fresh = browserOf(await reconnect(h));
+    expect(h.ttyd.dials).toBe(1);
+    expect(shell.closed).toBeNull();
+    expect(old.closed).toEqual({
+      code: CLOSED_BY_PLATFORM,
+      reason: "terminal closed: the terminal was opened again",
+    });
+    shell.send(bytes("0after"));
+    expect(fresh.received).toHaveLength(1);
+    expect(old.received).toHaveLength(0);
+    fresh.send("0x");
+    expect(shell.received.at(-1)).toBe("0x");
+    // The old end's late close changes nothing.
+    (old.peer as FakeSocket).emit("close", { code: 1006 });
+    expect(h.bridge.view().streams).toBe(1);
+    expect(h.logs.map((l) => l.event)).toContain("terminal_taken_over");
+    expect(h.bridge.pendingEnd()).toBeNull();
+  });
+
+  it("takes over with an older supervisor too: the same shell, no new dial", async () => {
+    const h = harness();
+    const old = browserOf(await h.connect((await h.open()).capability));
+    const fresh = browserOf(await reconnect(h));
+    expect(h.ttyd.dials).toBe(1);
+    expect(old.closed?.code).toBe(CLOSED_BY_PLATFORM);
+    expect(fresh.closed).toBeNull();
+  });
+
+  it.each([
+    [
+      "the owner's close",
+      async (h: ReturnType<typeof harness>): Promise<void> =>
+        void (await h.bridge.close("closed on the page")),
+    ],
+    [
+      "its deadline",
+      async (h: ReturnType<typeof harness>): Promise<void> => void (await h.advance(31 * 60_000)),
+    ],
+    [
+      "a new window",
+      async (h: ReturnType<typeof harness>): Promise<void> => void (await h.open(OP(70))),
+    ],
+    [
+      "a removal",
+      async (h: ReturnType<typeof harness>): Promise<void> => {
+        h.target = { ok: false, reason: "not_offered" };
+        await h.bridge.enforce();
+      },
+    ],
+    [
+      "a new generation",
+      async (h: ReturnType<typeof harness>): Promise<void> => {
+        h.target = { ok: true, generation: 4, keepsShells: true };
+        await h.bridge.enforce();
+      },
+    ],
+    [
+      "a credential-sensitive step (closeNow)",
+      async (h: ReturnType<typeof harness>): Promise<void> => {
+        h.bridge.closeNow("a sign-out started");
+      },
+    ],
+    [
+      "no reconnect within the grace time",
+      async (h: ReturnType<typeof harness>): Promise<void> => {
+        h.browser?.drop();
+        await h.advance(30_000);
+      },
+    ],
+    [
+      "the computer's side ending",
+      async (h: ReturnType<typeof harness>): Promise<void> => {
+        h.ttyd.shell.close(1000, "");
+      },
+    ],
+  ] as const)("records the shell's end when the stream ends for good: %s", async (_name, step) => {
+    const h = harness();
+    h.target = KEPT;
+    h.browser = browserOf(await h.connect((await h.open()).capability));
+    expect(h.bridge.pendingEnd()).toBeNull();
+    await step(h);
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1, generation: 3 });
+    expect(h.bridge.pendingEnd()?.op).toMatch(/^op_[0-9a-z]{26}$/);
+  });
+
+  it("refuses a reconnect once the window's shell is owed its end, without dialling", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    browser.drop();
+    await h.advance(30_000); // no reconnect in time: the stream ended for good
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1, generation: 3 });
+    const dials = h.ttyd.dials;
+    const again = browserOf(await reconnect(h));
+    expect(again.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.ttyd.dials).toBe(dials);
+    // Settled (the supervisor ended it): an attach would find nothing either way, and it is tried.
+    h.bridge.endSettled(h.bridge.pendingEnd()?.op ?? "");
+    browserOf(await reconnect(h));
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "attach", window: 1 });
+    // An end owed for an older generation's window does not refuse this one's.
+    h.store.put("terminal/end", { window: 9, generation: 2, op: OP(90) });
+    const opened = await h.open(OP(91));
+    browserOf(await h.connect(opened.capability));
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "new", window: 2 });
+  });
+
+  it("never gives an overlapping upgrade a new shell once the window has had one (Codex r1-1)", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const first = await h.open();
+    const second = await h.open(OP(2), 1);
+    const release: (() => void)[] = [];
+    const hold = () => new Promise<void>((resolve) => release.push(resolve));
+    // A's dial waits; B's first dial finds ttyd busy, its retry waits too.
+    h.ttyd.holds.push(hold());
+    const a = h.connect(first.capability);
+    await until(() => h.ttyd.dials === 1);
+    h.ttyd.busy = 1;
+    h.ttyd.holds.push(Promise.resolve(), hold());
+    const b = h.connect(second.capability);
+    await until(() => h.ttyd.dials === 3);
+    // A bridges the window, then its shell exits: the window's end is owed.
+    release[0]?.();
+    const aBrowser = browserOf(await a);
+    h.ttyd.shells[0]?.close(1000, "");
+    expect(aBrowser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1 });
+    // B's dial answers now, as `new`: let go before anything reached ttyd, and refused.
+    release[1]?.();
+    const bBrowser = browserOf(await b);
+    expect(bBrowser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.ttyd.dialled).toEqual([
+      { mode: "new", window: 1 },
+      { mode: "new", window: 1 },
+      { mode: "new", window: 1 },
+    ]);
+    expect(h.ttyd.shells).toHaveLength(2);
+    expect(h.ttyd.shells[1]?.received).toEqual([]);
+    expect(h.ttyd.shells[1]?.closed).not.toBeNull();
+  });
+
+  it("hands an overlapping upgrade the stream another one bridged meanwhile", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const first = await h.open();
+    const second = await h.open(OP(2), 1);
+    let release = () => {};
+    h.ttyd.holds.push(new Promise<void>((resolve) => (release = resolve)));
+    const a = h.connect(first.capability);
+    await until(() => h.ttyd.dials === 1);
+    const bBrowser = browserOf(await h.connect(second.capability));
+    release();
+    const aBrowser = browserOf(await a);
+    // A's dial, `new` when it was decided, started nothing; A took B's stream over.
+    expect(h.ttyd.dialled).toEqual([
+      { mode: "new", window: 1 },
+      { mode: "new", window: 1 },
+    ]);
+    // B's dial answered first (shells[0]); A's (held) answered second and was let go.
+    expect(h.ttyd.shells[1]?.received).toEqual([]);
+    expect(h.ttyd.shells[1]?.closed).not.toBeNull();
+    expect(bBrowser.closed?.code).toBe(CLOSED_BY_PLATFORM);
+    expect(aBrowser.closed).toBeNull();
+    aBrowser.send("0x");
+    expect(h.ttyd.shells[0]?.received.at(-1)).toBe("0x");
+    expect(h.bridge.pendingEnd()).toBeNull();
+  });
+
+  it("treats a window opened before WP3.28 as bridged: no new shell on its reconnect (Codex r1-2)", async () => {
+    for (const keepsShells of [false, true]) {
+      const h = harness();
+      h.target = { ok: true, generation: 3, keepsShells };
+      // As the previous release wrote it, with a stream in it then: no marker.
+      h.store.put("terminal/window", {
+        window: 1,
+        open: true,
+        generation: 3,
+        until: h.now + 20 * 60_000,
+        sessionId: OWNER.sessionId,
+      });
+      const fresh = await h.bridge.open({ operationId: OP(5), owner: OWNER, window: 1 });
+      if (fresh.outcome !== "accepted") throw new Error("refused");
+      const browser = browserOf(await h.connect(fresh.capability));
+      if (keepsShells) {
+        expect(h.ttyd.dialled).toEqual([{ mode: "attach", window: 1 }]);
+      } else {
+        expect(browser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+        expect(h.ttyd.dials).toBe(0);
+      }
+      // A window opened now starts its own session, and its close owes that session's end.
+      const next = await h.open(OP(6));
+      browserOf(await h.connect(next.capability));
+      expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "new", window: 2 });
+    }
+  });
+
+  it("keeps the shell when the connection to the computer drops, and the reconnect attaches", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    // As this object's shutdown or the container's network leaves it: 1006, not clean.
+    (h.ttyd.shell.peer as FakeSocket).emit("close", { code: 1006, wasClean: false });
+    expect(browser.closed?.code).toBe(COMPUTER_LINK_DROPPED);
+    expect(h.bridge.pendingEnd()).toBeNull();
+    expect(h.logs.at(-1)).toMatchObject({
+      event: "terminal_stream_ended",
+      fields: { reason: "the connection to the computer dropped", code: 4003, computerCode: 1006 },
+    });
+    const again = browserOf(await reconnect(h));
+    expect(again.closed).toBeNull();
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "attach", window: 1 });
+    // ttyd's own close (the shell exited) is the session's end: 4002, and its end owed.
+    h.ttyd.shell.close(1000, "");
+    expect(again.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1 });
+  });
+
+  it("after a drop with a supervisor that does not keep shells, says the shell ended", async () => {
+    const h = harness();
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    (h.ttyd.shell.peer as FakeSocket).emit("close", { code: 1006, wasClean: false });
+    expect(browser.closed?.code).toBe(COMPUTER_LINK_DROPPED);
+    const again = browserOf(await reconnect(h));
+    expect(again.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.ttyd.dials).toBe(1);
+  });
+
+  it("never leaves a browser open and silent, however two upgrades interleave (Codex r2-3)", async () => {
+    for (let turns = 0; turns <= 12; turns += 1) {
+      const h = harness();
+      h.target = KEPT;
+      const first = await h.open();
+      const second = await h.open(OP(2), 1);
+      let releaseDial = () => {};
+      h.ttyd.holds.push(new Promise<void>((resolve) => (releaseDial = resolve)));
+      const a = h.connect(first.capability);
+      await until(() => h.ttyd.dials === 1);
+      let releaseTarget = () => {};
+      h.targetHold = new Promise<void>((resolve) => (releaseTarget = resolve));
+      const b = h.connect(second.capability);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      h.targetHold = null;
+      // A's dial answers, then B's look at the window comes `turns` microtasks later.
+      releaseDial();
+      for (let i = 0; i < turns; i += 1) await Promise.resolve();
+      releaseTarget();
+      const answers = await Promise.all([a, b]);
+      const open = answers
+        .filter((r): r is UpgradeResponse => r instanceof UpgradeResponse)
+        .map((r) => r.client)
+        .filter((c) => c.closed === null);
+      expect(open.length, `turns=${turns}`).toBeLessThanOrEqual(1);
+      for (const client of open) {
+        const shell = h.ttyd.shells.find((x) => x.closed === null);
+        client.send("0ping");
+        expect(shell?.received.at(-1), `turns=${turns}`).toBe("0ping");
+      }
+    }
+  });
+
+  it("judges ttyd's own close by its frame: a 1006 frame is the session's end, no frame a drop", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    // ttyd closes with a 1006 frame when its command exits non-zero (an attach that found
+    // nothing, before the wrapper exited 0 for it): workerd reports it clean.
+    (h.ttyd.shell.peer as FakeSocket).emit("close", { code: 1006, wasClean: true });
+    expect(browser.closed?.code).toBe(CLOSED_BY_COMPUTER);
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1 });
+  });
+
+  it("tells the controller each time an end is recorded, and not otherwise", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    expect(h.endsRecorded).toBe(0);
+    await h.bridge.close("closed on the page");
+    expect(h.endsRecorded).toBe(1);
+    await h.bridge.close("again");
+    h.bridge.closeNow("and again");
+    expect(h.endsRecorded).toBe(1);
+  });
+
+  it("records a reset window's end on close, though no stream is in memory", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    const restarted = h.build();
+    expect(restarted.pendingEnd()).toBeNull();
+    restarted.closeNow("the computer is stopping");
+    expect(restarted.pendingEnd()).toMatchObject({ window: 1, generation: 3 });
+  });
+
+  it("writes the end in the same transaction as the window's close", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    h.build();
+    const commits: string[] = [];
+    h.store.beforeCommit = () => {
+      commits.push(JSON.stringify([h.store.get("terminal/window"), h.store.get("terminal/end")]));
+    };
+    await h.bridge.close("closed on the page");
+    expect(commits).toHaveLength(1);
+    const [window, end] = JSON.parse(commits[0] as string) as [{ open: boolean }, unknown];
+    expect(window.open).toBe(false);
+    expect(end).toMatchObject({ window: 1, generation: 3 });
+  });
+
+  it("owes no end for a window that never reached ttyd", async () => {
+    const h = harness();
+    h.target = KEPT;
+    await h.open();
+    await h.bridge.close("closed on the page");
+    expect(h.bridge.pendingEnd()).toBeNull();
+  });
+
+  it("keeps the shell when only the bridge lets go (too much output while away)", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    browser.drop();
+    h.ttyd.shell.send(new Uint8Array((1 << 20) + 1).buffer);
+    expect(h.bridge.sessions).toBe(0);
+    expect(h.bridge.pendingEnd()).toBeNull();
+    const again = browserOf(await reconnect(h));
+    expect(again.closed).toBeNull();
+    expect(h.ttyd.dialled.at(-1)).toEqual({ mode: "attach", window: 1 });
+  });
+
+  it("raises one pending end to the newest window, and settles it by operation ID", async () => {
+    const h = harness();
+    h.target = KEPT;
+    browserOf(await h.connect((await h.open()).capability));
+    await h.bridge.close("closed");
+    const first = h.bridge.pendingEnd();
+    browserOf(await h.connect((await h.open(OP(80))).capability));
+    await h.bridge.close("closed");
+    const second = h.bridge.pendingEnd();
+    expect(second).toMatchObject({ window: 2, generation: 3 });
+    expect(second?.op).not.toBe(first?.op);
+    h.bridge.endSettled(first?.op ?? "");
+    expect(h.bridge.pendingEnd()).toEqual(second);
+    h.bridge.endSettled(second?.op ?? "");
+    expect(h.bridge.pendingEnd()).toBeNull();
+    // A newer generation's end replaces an older one's; an older one never replaces a newer.
+    h.store.put("terminal/end", { window: 5, generation: 9, op: second?.op });
+    h.bridge.closeNow("x");
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 5, generation: 9 });
+    h.store.put("terminal/end", { nonsense: true });
+    expect(h.bridge.pendingEnd()).toBeNull();
+    h.bridge.endSettled("op_whatever");
+    expect(h.store.get("terminal/end")).toBeUndefined();
+  });
+
+  it("logs the close codes of both sides, as numbers only", async () => {
+    const h = harness();
+    h.target = KEPT;
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    (browser.peer as FakeSocket).emit("close", {
+      code: 1006,
+      reason: "secret-reason",
+      wasClean: false,
+    });
+    expect(h.logs.at(-1)).toEqual({
+      event: "terminal_detached",
+      fields: { window: 1, code: 1006, clean: false },
+    });
+    const bridgeEnd = h.ttyd.shell.peer as FakeSocket;
+    bridgeEnd.emit("close", { code: 1000, reason: "shell-text", wasClean: true });
+    expect(h.logs.at(-1)).toEqual({
+      event: "terminal_stream_ended",
+      fields: {
+        window: 1,
+        reason: "closed by the computer",
+        code: null,
+        computerCode: 1000,
+        computerClean: true,
+      },
+    });
+    expect(JSON.stringify(h.logs)).not.toContain("secret-reason");
+    expect(JSON.stringify(h.logs)).not.toContain("shell-text");
   });
 });

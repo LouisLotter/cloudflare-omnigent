@@ -388,14 +388,14 @@ describe("the page front's answers", () => {
 
 describe("whether a computer can have a terminal", () => {
   it.each([
-    [{}, { ok: true, generation: 7 }],
+    [{}, { ok: true, generation: 7, keepsShells: false }],
     [
       { lifecycle: "started_no_host", status: "started_no_host" },
-      { ok: true, generation: 7 },
+      { ok: true, generation: 7, keepsShells: false },
     ],
     [
       { lifecycle: "host_refused", status: "host_refused" },
-      { ok: true, generation: 7 },
+      { ok: true, generation: 7, keepsShells: false },
     ],
     [{ status: "stopping" }, { ok: false, reason: "busy" }],
     [
@@ -418,7 +418,7 @@ describe("whether a computer can have a terminal", () => {
           revocationRecorded: false,
         },
       },
-      { ok: true, generation: 7 },
+      { ok: true, generation: 7, keepsShells: false },
     ],
     [
       {
@@ -454,7 +454,7 @@ describe("whether a computer can have a terminal", () => {
           signOutRunning: false,
         },
       },
-      { ok: true, generation: 7 },
+      { ok: true, generation: 7, keepsShells: false },
     ],
     [
       { lifecycle: "asleep", status: "stopped" },
@@ -477,6 +477,18 @@ describe("whether a computer can have a terminal", () => {
     ],
   ] as const)("%o → %o", (overrides, expected) => {
     expect(terminalTarget(pageState(overrides as Partial<ComputerPageState>))).toEqual(expected);
+  });
+
+  it("tells the bridge whether the supervisor keeps the shells (WP3.28)", async () => {
+    expect(terminalTarget(pageState(), true)).toEqual({
+      ok: true,
+      generation: 7,
+      keepsShells: true,
+    });
+    const { front, controller } = harness();
+    expect(await front.target()).toMatchObject({ ok: true, keepsShells: false });
+    (controller as { terminalShellsKept?: () => boolean }).terminalShellsKept = () => true;
+    expect(await front.target()).toMatchObject({ ok: true, keepsShells: true });
   });
 });
 
@@ -522,9 +534,11 @@ describe("terminal admission is serialized with the steps that end it (Codex r1-
       release = resolve;
     });
     const pages = controller.pages.bind(controller);
+    let reached = false;
     controller.pages = async (call: unknown) => {
       const c = call as { action: string };
       if (c.action === "sign_out") {
+        reached = true;
         await gate;
         controller.state = pageState({
           removal: {
@@ -544,7 +558,9 @@ describe("terminal admission is serialized with the steps that end it (Codex r1-
       owner: OWNER,
       intent,
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The sign-out holds the front's queue before the open arrives (not one event-loop turn,
+    // which a loaded machine may not give it: this flaked under coverage).
+    while (!reached) await new Promise((resolve) => setTimeout(resolve, 0));
     const opening = front.pages({
       action: "open_terminal",
       interfaceVersion: 1,

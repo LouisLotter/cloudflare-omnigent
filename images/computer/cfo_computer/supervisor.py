@@ -16,6 +16,9 @@ Command rules (contracts/src/computer-protocol.ts, ``COMPUTER_API_MESSAGES``):
 - the sign-in commands (WP3.23, ``signin.py``) are fenced by attempt: ``sign_in_start`` and
   ``sign_in_cancel`` are idempotent by attempt and never journaled; ``sign_in_input`` is journaled
   by operation ID without its code; ``sign_in_status`` and ``computer_status`` read.
+- the setup terminal's sessions (WP3.28, ``terminals.py``): ``terminal_end`` ends a window's
+  sessions; a sign-out, a stop's final capture (``endTerminals``), the credential barrier and a
+  page sign-in's spawn end every session first; a reaper ends the idle and the old ones.
 Ordering the design requires and the receiver enforces: the workspace restore, then the
 credential install, then the host. No capture before the restore is confirmed.
 """
@@ -64,6 +67,7 @@ from .procutil import module_argv, run_workload, spawn_workload, workload_argv, 
 from .restore import RestoreFailed, restore_workspace
 from .signin import SignInConflict, SignIns, SignInUnsettled, SpawnCancelled, spawn_login
 from .startup import hostname_resolution
+from .terminals import REAP_INTERVAL_S, NotAnswering, TerminalSessions
 from .tree import tree_digest
 
 REPORT_INTERVAL_S = 30.0
@@ -154,6 +158,7 @@ class Supervisor:
         scope_pids: list[int] | None = None,
         host_backoff: Callable[[int], float] | None = None,
         whole_container: bool = False,
+        terminal_socket: Path | None = None,
     ) -> None:
         self.computer_id = computer_id
         self.generation = generation
@@ -205,6 +210,8 @@ class Supervisor:
         self.extra_env: dict[str, str] = {}
         self._outbox_message: dict[str, Any] | None = None
         self.terminal: subprocess.Popen[bytes] | None = None
+        #: The setup terminal's sessions (WP3.28); tests point it at a socket of their own.
+        self.terminals = TerminalSessions(uid=account.uid, gid=account.gid, socket=terminal_socket)
         self.sigterm = False
         layout.ensure()
         self.creds = Credentials(
@@ -371,6 +378,8 @@ class Supervisor:
         try:
             if cancelled():
                 raise SpawnCancelled
+            # A sign-in from the page ends the setup terminal's sessions first (WP3.28).
+            self._end_terminals()
             proc, fd = spawn_login(
                 service,
                 cli=cli,
@@ -616,6 +625,11 @@ class Supervisor:
                 if self.capture_running:
                     self._capture_gate.release()
                     return {"type": "capture", "job": self._failed_capture(op, "busy")}
+            # A stop's final capture ends the setup terminal's sessions first (WP3.28), before
+            # the workload is listed: no capture runs, so the tmux server is not paused.
+            if command.get("endTerminals"):
+                self._end_terminals()
+            with self._lock:
                 parent_path = None
                 if command["kind"] == "delta":
                     want = command["parent"]["treeDigest"]
@@ -907,6 +921,8 @@ class Supervisor:
     # credentials ----------------------------------------------------------------------------
 
     def _cmd_credential_snapshot(self, command: dict[str, Any]) -> dict[str, Any]:
+        # The final barrier of a stop or a sign-out: the terminal's sessions end first (WP3.28).
+        self._end_terminals()
         if not self.credentials_installed:
             raise CommandError("conflict", "the credentials are not installed")
         deadline = time.monotonic() + 5.0
@@ -927,6 +943,8 @@ class Supervisor:
         return {"type": "credential_snapshot", "order": bundle["order"]}
 
     def _cmd_sign_out(self, command: dict[str, Any]) -> dict[str, Any]:
+        # The setup terminal's sessions end first (WP3.28): no shell outlives a sign-out.
+        self._end_terminals()
         # A sign-in still running could finish after the logouts: it is ended first, its process
         # reaped; if that cannot be confirmed, nothing runs and WorkspaceDO asks again.
         if not self.signins.cancel_all():
@@ -967,6 +985,51 @@ class Supervisor:
     def _cmd_computer_status(self, command: dict[str, Any]) -> dict[str, Any]:
         return {"type": "computer_status", "status": self.computer_status()}
 
+    # the setup terminal's sessions (WP3.28) --------------------------------------------------
+
+    def _cmd_terminal_end(self, command: dict[str, Any]) -> dict[str, Any]:
+        # A capture may have paused the tmux server: WorkspaceDO asks again afterwards.
+        if self.capture_running:
+            raise CommandError("unavailable", "a capture is running", retryable=True)
+        try:
+            remaining = self.terminals.end(int(command["window"]))
+        except NotAnswering:
+            raise CommandError(
+                "unavailable", "the terminal sessions did not answer", retryable=True
+            ) from None
+        self.changed()
+        return {"type": "terminal_end", "remaining": remaining}
+
+    def _end_terminals(self) -> None:
+        """Every setup-terminal session, and every process in one, ends now, answering or not,
+        and is confirmed gone (``end_all``). Otherwise the credential-sensitive step it guards
+        does not run: a retryable refusal, before any effect (Codex WP3.28 r1-3)."""
+        try:
+            self.terminals.end_all()
+        except Exception:  # noqa: BLE001 - never the exception's text
+            self._alert("the terminal sessions could not be ended")
+            raise CommandError(
+                "unavailable", "the terminal sessions could not be ended", retryable=True
+            ) from None
+
+    def _terminal_loop(self) -> None:
+        """The reaper: a session with no stream for 45 s, or older than 30 minutes, ends."""
+        while not self._stop.wait(REAP_INTERVAL_S):
+            # A capture (or a workload spawn) holds the gate: the server may be paused.
+            if not self._capture_gate.acquire(blocking=False):
+                continue
+            try:
+                ended = self.terminals.reap()
+            except NotAnswering:
+                ended = []
+            except Exception:  # noqa: BLE001 - the reaper must never stop
+                self._alert("the terminal reaper failed")
+                ended = []
+            finally:
+                self._capture_gate.release()
+            if ended:
+                self.changed()
+
     def _cmd_staging_check(self, command: dict[str, Any]) -> dict[str, Any]:
         """RC-53's save check on or off: ``<state>/rc53/enabled``. WorkspaceDO sends it only on
         a staging installation."""
@@ -994,6 +1057,9 @@ class Supervisor:
             ]
             logins = dict(self.logins)
             versions = dict(self.cli_versions)
+            capture_running = self.capture_running
+        # Not while a capture pauses the tmux server: the count is left out then.
+        terminals = None if capture_running else self.terminals.count()
         return {
             "supervisorVersion": SUPERVISOR_VERSION,
             "versions": versions,
@@ -1004,6 +1070,7 @@ class Supervisor:
             "disk": S.disk(self.account.home),
             "alerts": alerts,
             "captures": captures,
+            **({"terminals": terminals} if terminals is not None else {}),
         }
 
     def refresh_versions(self, now: float | None = None) -> None:
@@ -1129,6 +1196,7 @@ class Supervisor:
         threading.Thread(target=self._report_loop, name="reports", daemon=True).start()
         threading.Thread(target=self.creds.run, name="credentials", daemon=True).start()
         threading.Thread(target=self._login_loop, name="logins", daemon=True).start()
+        threading.Thread(target=self._terminal_loop, name="terminals", daemon=True).start()
 
     def _report_loop(self) -> None:
         if self.api is not None:
@@ -1168,3 +1236,5 @@ class Supervisor:
         self.host.stop()
         if self.terminal is not None and self.terminal.poll() is None:
             self.terminal.terminate()
+        with contextlib.suppress(CommandError):
+            self._end_terminals()

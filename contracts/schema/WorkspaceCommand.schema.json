@@ -692,6 +692,10 @@
               "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
               "type": "string"
             },
+            "endTerminals": {
+              "const": true,
+              "type": "boolean"
+            },
             "generation": {
               "maximum": 9007199254740991,
               "minimum": 0,
@@ -767,6 +771,10 @@
             "computerId": {
               "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
               "type": "string"
+            },
+            "endTerminals": {
+              "const": true,
+              "type": "boolean"
             },
             "generation": {
               "maximum": 9007199254740991,
@@ -1376,6 +1384,47 @@
         "generation",
         "operationId",
         "rc53"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "pattern": "^cmp_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        },
+        "protocolVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "type": {
+          "const": "terminal_end",
+          "type": "string"
+        },
+        "window": {
+          "maximum": 999999999,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "protocolVersion",
+        "computerId",
+        "generation",
+        "operationId",
+        "window"
       ],
       "type": "object"
     }

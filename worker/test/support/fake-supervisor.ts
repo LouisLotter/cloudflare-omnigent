@@ -112,6 +112,50 @@ export interface SupervisorOptions {
   staggeredLogouts: boolean;
   /** `sign_out`: this CLI's logout fails and leaves its login file (null: both succeed). */
   failedLogout: SignInService | null;
+  /**
+   * The setup terminal's shells kept in sessions on the computer (WP3.28): its hello names
+   * `terminal_sessions`, and it takes `terminal_end`. False: a WP3.23-era supervisor, which
+   * refuses `terminal_end` as unknown.
+   */
+  terminalSessions: boolean;
+}
+
+/**
+ * The computer's setup-terminal sessions (WP3.28), one per window, as tmux keeps them behind
+ * ttyd: they outlive their streams and end only when told to, or with the container.
+ */
+export class FakeTerminalSessions {
+  readonly sessions = new Map<number, { readonly id: number }>();
+  /** Every end asked for: a window (`terminal_end`) or `all` (a backstop). */
+  readonly ended: (number | "all")[] = [];
+  #next = 1;
+
+  /** ttyd's `new`: every other window's session ends, then this one starts or is joined. */
+  open(window: number): { readonly id: number } {
+    for (const w of [...this.sessions.keys()]) if (w !== window) this.sessions.delete(w);
+    let session = this.sessions.get(window);
+    if (session === undefined) {
+      session = { id: this.#next++ };
+      this.sessions.set(window, session);
+    }
+    return session;
+  }
+
+  /** ttyd's `attach`: the window's session, or null (the stream then ends). */
+  attach(window: number): { readonly id: number } | null {
+    return this.sessions.get(window) ?? null;
+  }
+
+  end(window: number): number {
+    for (const w of [...this.sessions.keys()]) if (w <= window) this.sessions.delete(w);
+    this.ended.push(window);
+    return this.sessions.size;
+  }
+
+  endAll(): void {
+    this.sessions.clear();
+    this.ended.push("all");
+  }
 }
 
 /** The canary prefix, built at run time: no source file holds a literal canary. */
@@ -214,6 +258,7 @@ export class FakeSupervisor {
       holdCredentials: false,
       declineStarts: 0,
       legacy: false,
+      terminalSessions: true,
       signInMode: "ok",
       rc53Findings: 0,
       staggeredLogouts: false,
@@ -302,7 +347,12 @@ export class FakeSupervisor {
             type: "hello",
             ...this.#envelope(),
             supervisorVersion: "fake-2",
-            features: ["sign_in", "computer_status", "staging_check"],
+            features: [
+              "sign_in",
+              "computer_status",
+              "staging_check",
+              ...(this.options.terminalSessions ? ["terminal_sessions"] : []),
+            ],
           },
     );
   }
@@ -340,6 +390,7 @@ export class FakeSupervisor {
     const s = this.#signIns[service];
     if (attempt <= s.fence && s.fence > 0) return this.#signInView(service, attempt);
     s.fence = attempt;
+    this.#endTerminals();
     this.#endSignIn(service, "superseded");
     if (this.options.signInMode === "unexpected") {
       s.current = { service, attempt, state: "failed", reason: "unexpected_output" };
@@ -477,6 +528,13 @@ export class FakeSupervisor {
       "staging_check",
     ];
     if (this.options.legacy && newer.includes(command.type)) {
+      return refuse("bad_request", "not a WorkspaceCommand", 400);
+    }
+    if (
+      (this.options.legacy || !this.options.terminalSessions) &&
+      (command.type === "terminal_end" ||
+        (command.type === "capture" && command.endTerminals !== undefined))
+    ) {
       return refuse("bad_request", "not a WorkspaceCommand", 400);
     }
     this.commands.push(
@@ -625,6 +683,10 @@ export class FakeSupervisor {
         return { type: "start_host", outcome: "taken" };
       }
       case "capture": {
+        // A stop's final capture ends the terminal's sessions first (WP3.28).
+        if (command.endTerminals === true && !this.#jobs.has(command.operationId)) {
+          this.#endTerminals();
+        }
         if (this.#jobs.has(command.operationId))
           return {
             type: "capture",
@@ -737,8 +799,10 @@ export class FakeSupervisor {
       case "status":
         return { type: "status", report: this.state() };
       case "credential_snapshot":
+        this.#endTerminals();
         return { type: "credential_snapshot", order: this.#publishCredentials() };
       case "sign_out": {
+        this.#endTerminals();
         this.#endSignIn("claude", "cancelled");
         this.#endSignIn("codex", "cancelled");
         const failed = this.options.failedLogout;
@@ -802,7 +866,20 @@ export class FakeSupervisor {
       case "staging_check":
         this.rc53 = command.rc53;
         return { type: "staging_check", rc53: this.rc53 };
+      case "terminal_end":
+        return {
+          type: "terminal_end",
+          remaining: this.terminalSessions?.end(command.window) ?? 0,
+        };
     }
+  }
+
+  /** The computer's terminal sessions (WP3.28); set by the simulated computer. */
+  terminalSessions: FakeTerminalSessions | null = null;
+
+  /** A backstop before a credential-sensitive step (WP3.28): every session ends. */
+  #endTerminals(): void {
+    if (this.options.terminalSessions && !this.options.legacy) this.terminalSessions?.endAll();
   }
 
   /** `computer_status`'s metrics: names, versions, states and counts only. */
@@ -818,6 +895,9 @@ export class FakeSupervisor {
       disk: { totalBytes: 20_000_000_000, freeBytes: 15_000_000_000 },
       alerts: this.rc53Captures > 0 ? [{ kind: "rc53_finding", count: this.rc53Captures }] : [],
       captures: [...this.#rc53Counts].map(([jobOperationId, rc53]) => ({ jobOperationId, rc53 })),
+      ...(this.options.terminalSessions
+        ? { terminals: this.terminalSessions?.sessions.size ?? 0 }
+        : {}),
     };
   }
 
@@ -873,6 +953,8 @@ export class SimulatedComputer extends FakeComputerContainer {
   sup: FakeSupervisor | null = null;
   readonly supervisors: FakeSupervisor[] = [];
   supervisorOptions: Partial<SupervisorOptions> = {};
+  /** The setup terminal's sessions on this container (WP3.28): gone with it. */
+  readonly terminalSessions = new FakeTerminalSessions();
 
   constructor(computerId: ComputerId) {
     super();
@@ -896,6 +978,8 @@ export class SimulatedComputer extends FakeComputerContainer {
     if (this.running) {
       const generation = Number(options.env.CFO_GENERATION);
       this.sup = new FakeSupervisor(this.computerId, generation, { ...this.supervisorOptions });
+      this.terminalSessions.sessions.clear();
+      this.sup.terminalSessions = this.terminalSessions;
       this.supervisors.push(this.sup);
       this.sup.hello();
     }

@@ -102,13 +102,20 @@ export class SocketResponse extends Response {
  */
 export class FakeTtyd {
   readonly shells: FakeSocket[] = [];
+  /** Each dial's URL arguments (WP3.28): `new` or `attach`, and the window. */
+  readonly dialled: { readonly mode: string; readonly window: number }[] = [];
   busy = 0;
   dials = 0;
   /** Throws on dial, as a dropped container connection does. */
   fail = false;
+  /** Each dial waits for the next of these first, while any are left (overlapping upgrades). */
+  readonly holds: Promise<void>[] = [];
 
-  dial = async (): Promise<Response> => {
+  dial = async (mode = "new", window = 0): Promise<Response> => {
     this.dials += 1;
+    this.dialled.push({ mode, window });
+    const hold = this.holds.shift();
+    if (hold !== undefined) await hold;
     if (this.fail) throw new Error("Network connection lost.");
     if (this.busy > 0) {
       this.busy -= 1;

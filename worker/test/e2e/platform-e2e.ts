@@ -64,7 +64,11 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
         failCaptures: failingSaves.has(name) ? 1_000 : 0,
       };
       const simulated = computer;
-      computer.terminal = fakeTtyd({ onSignIn: (provider) => simulated.sup?.signIn(provider) });
+      computer.terminal = fakeTtyd({
+        onSignIn: (provider) => simulated.sup?.signIn(provider),
+        // WP3.28: the shells are kept per window, as tmux keeps them on a real computer.
+        sessions: simulated.terminalSessions,
+      });
       computers.set(id, computer);
     }
     return computer;
@@ -144,6 +148,36 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
     await this.e2eSettle();
   }
 
+  /**
+   * The setup terminal's sessions on the computer, and the `terminal_end` commands it received
+   * (WP3.28).
+   */
+  async e2eTerminals() {
+    const computer = computers.get(this.ctx.id.toString());
+    const commands = (computer?.supervisors ?? []).flatMap((s) => s.commands);
+    return {
+      sessions: [...(computer?.terminalSessions.sessions.keys() ?? [])],
+      ends: commands.filter((c) => c.type === "terminal_end").length,
+    };
+  }
+
+  /** The computer's supervisor ends every terminal session, as its reaper would (WP3.28). */
+  async e2eEndTerminals(): Promise<void> {
+    computers.get(this.ctx.id.toString())?.terminalSessions.endAll();
+  }
+
+  /**
+   * Resets this object, as a platform shutdown or a deploy's switch does: its memory and every
+   * socket it holds are gone; storage and the computer are not (FH-38, WP3.28).
+   */
+  async e2eReset(): Promise<void> {
+    try {
+      this.ctx.abort("e2e reset");
+    } catch {
+      // abort() throws in the calling request by design
+    }
+  }
+
   /** The sign-in starts the computer received, and every sign-in value issued (for scans). */
   async e2eSignIns() {
     const sups = computers.get(this.ctx.id.toString())?.supervisors ?? [];
@@ -193,6 +227,9 @@ interface E2eStub {
   e2eIssued: WorkspaceDO["e2eIssued"];
   e2eApprove(): Promise<void>;
   e2eSignIns: WorkspaceDO["e2eSignIns"];
+  e2eTerminals: WorkspaceDO["e2eTerminals"];
+  e2eEndTerminals(): Promise<void>;
+  e2eReset(): Promise<void>;
 }
 
 async function create(env: Env, name: string) {
@@ -292,6 +329,22 @@ export default {
     if (request.method === "GET" && url.pathname === "/__e2e/sign-ins" && id !== null) {
       const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
       return Response.json(await stub.e2eSignIns());
+    }
+    // WP3.28: the terminal's sessions on the computer, a reaper's end, and a WorkspaceDO reset.
+    if (request.method === "GET" && url.pathname === "/__e2e/terminals" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      return Response.json(await stub.e2eTerminals());
+    }
+    if (request.method === "POST" && url.pathname === "/__e2e/end-terminals" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      await stub.e2eEndTerminals();
+      return Response.json({ ended: true });
+    }
+    if (request.method === "POST" && url.pathname === "/__e2e/reset" && id !== null) {
+      const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
+      // The reset breaks the call that asked for it.
+      await stub.e2eReset().catch(() => undefined);
+      return Response.json({ reset: true });
     }
     return new Response("not found", { status: 404 });
   },
