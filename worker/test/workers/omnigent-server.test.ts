@@ -184,11 +184,17 @@ describe("OmnigentServer: always on", () => {
       // The launcher's signing key (WP3.3, WP3.6), the same secret the launcher API verifies.
       CFO_LAUNCHER_SIGNING_KEY_ID: "k-test-current",
       CFO_LAUNCHER_SIGNING_KEY: "cfo-canary-launcher-key-current-0000000000",
+      // The key service's signing pair (WP5.9), the same secret the key service verifies. Its
+      // record keys (CFO_KEY_SERVICE_RECORD_KEYS) are the Worker's alone: absent here.
+      OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY_ID: "ks-test-current",
+      OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY: "cfo-canary-key-service-signing-0000000000",
     });
+    expect(JSON.stringify(fake.starts[0]?.env)).not.toContain("ERERERERERERERERERERERERERER");
     expect(new Set(fake.inactivityTimeouts)).toEqual(new Set([T.inactivityTimeoutMs]));
     // The secrets' values never reach a log line.
     expect(logs.join("\n")).not.toContain("cfo-canary-bootstrap-password");
     expect(logs.join("\n")).not.toContain("cfo-canary-launcher-key");
+    expect(logs.join("\n")).not.toContain("cfo-canary-key-service-signing");
   });
 
   it("checks an answering server every interval, renews its timeout, and never stops it, across evictions", async () => {
