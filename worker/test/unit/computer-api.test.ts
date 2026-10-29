@@ -434,6 +434,20 @@ describe("outbound: a command to the supervisor", () => {
     }
   });
 
+  it("reads a newer supervisor's status reply in its degraded form (WP3.29)", async () => {
+    const command = read("WorkspaceCommand", "computer-status.json") as WorkspaceCommand;
+    const names = jsonFiles("WorkspaceCommandReply", "tolerated");
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      const { input, parsed } = read("WorkspaceCommandReply", "tolerated", name) as {
+        input: unknown;
+        parsed: unknown;
+      };
+      const outcome = await sendCommand(container(input), command, quick);
+      expect(outcome, name).toEqual({ kind: "reply", reply: parsed, attempts: 1 });
+    }
+  });
+
   it("classifies what the container port throws", () => {
     expect(classifyFailure(new Error(CONNECTION_LOST_MESSAGE))).toMatchObject({
       maybeDelivered: true,
