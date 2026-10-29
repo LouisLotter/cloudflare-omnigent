@@ -112,9 +112,10 @@ export interface OmnigentServerRpc {
    * WP3.36: when the call carries an `environment` fingerprint that differs from the one this
    * object's own version would start the server with, the object is on an older version than
    * the cron's (a secrets change or a deploy it has not switched to yet). It then arms its
-   * alarm for now and resets itself (`ctx.abort`), once for each newer environment and at most
-   * once in `VERSION_YIELD_INTERVAL_MS`, so that its next instance runs the newest version and its
-   * watchdog applies the new configuration minutes sooner than the platform's own switch. The call then fails with the
+   * alarm for now and resets itself (`ctx.abort`), never twice in a row for the same newer
+   * environment and at most once in `VERSION_YIELD_INTERVAL_MS`, so that its next instance runs
+   * the newest version and its watchdog applies the new configuration minutes sooner than the
+   * platform's own switch. The call then fails with the
    * reset; the cron logs it and carries on.
    */
   ensureStarted(call: EnsureStartedCall): Promise<void>;
