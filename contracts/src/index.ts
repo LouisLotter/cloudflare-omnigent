@@ -18,6 +18,7 @@ import {
 } from "./controllers.ts";
 import { DurabilityUnconfirmed, DurabilityUnconfirmedAuth } from "./durability.ts";
 import { ErrorBody } from "./errors.ts";
+import { GitHubSetupCall, GitHubSetupResult } from "./github-setup.ts";
 import { LauncherRequest, LauncherResult } from "./launcher.ts";
 import {
   CredentialBundle,
@@ -43,6 +44,7 @@ export * from "./computer-protocol.ts";
 export * from "./controllers.ts";
 export * from "./durability.ts";
 export * from "./errors.ts";
+export * from "./github-setup.ts";
 export * from "./ids.ts";
 export * from "./launcher.ts";
 export * from "./lifecycle.ts";
@@ -69,6 +71,8 @@ export const wireSchemas = {
   DurabilityUnconfirmed,
   DurabilityUnconfirmedAuth,
   ErrorBody,
+  GitHubSetupCall,
+  GitHubSetupResult,
   InterceptProps,
   LauncherRequest,
   LauncherResult,

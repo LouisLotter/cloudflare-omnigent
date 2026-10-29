@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": {},
+  "properties": {
+    "applied": {
+      "type": "boolean"
+    },
+    "configured": {
+      "type": "boolean"
+    },
+    "linking": {
+      "enum": [
+        "on",
+        "off",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "server": {
+      "enum": [
+        "answering",
+        "starting",
+        "held",
+        "recovery",
+        "unavailable"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "configured",
+    "applied",
+    "server",
+    "linking"
+  ],
+  "title": "GitHubSetupResult",
+  "type": "object"
+}
