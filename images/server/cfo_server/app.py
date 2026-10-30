@@ -71,14 +71,21 @@ def load_docker_entrypoint(path: Path = DOCKER_ENTRYPOINT) -> ModuleType:
 
 
 def pinned_feature_flags() -> Any:
-    """Every release feature off, whatever ``OMNIGENT_FEATURES`` says.
+    """Omnigent's release defaults, whatever ``OMNIGENT_FEATURES`` says.
 
-    ``harness_install`` in particular stays off: its harness-credential route could redirect
-    another computer's model traffic (design, "Trust inside a cloud computer").
+    Since 0.20.0 an empty setting means each feature's release default rather than every
+    feature off: 0.20.0 turns on only ``claude_osc_status``, a runner feature the server does not
+    read. Everything a release ships off stays off, ``automations_v2`` (0.20.0's scheduler, D38)
+    among them. ``harness_install`` must stay off: its harness-credential route could redirect
+    another computer's model traffic (design, "Trust inside a cloud computer"). Should a release
+    turn it on by default, the app refuses to start.
     """
-    from omnigent.server.feature_flags import resolve_feature_flags
+    from omnigent.server.feature_flags import Feature, resolve_feature_flags
 
-    return resolve_feature_flags({})
+    flags = resolve_feature_flags({})
+    if flags.enabled(Feature.HARNESS_INSTALL):
+        raise RuntimeError("Omnigent turns harness_install on by default; the image refuses it")
+    return flags
 
 
 def github_linking(config: image_config.ServerImageConfig, database_url: str) -> tuple[Any, Any]:

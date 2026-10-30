@@ -10,18 +10,22 @@
 #   docker run --rm cfo-server:fork-tests     (the fork's Stop tests against this image's Omnigent)
 #
 # What it holds:
-#   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
-#     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
-#     entrypoint's GET /status (`build`) and boot log line. afb809aa6 (30 Oct 2026, WP5.11) adds
-#     F1 to 3d7f7d08c: a provider's 401 or a refresh's invalid_grant marks an MCP login, which
-#     Settings and the picker show as "Reconnect needed" and which refreshes before its next
-#     use. 3d7f7d08c (28 Oct 2026, WP3.24) adds a
-#     Codex policy hook that fails closed (UC-110), Claude's renderer named in its hook settings
-#     (UC-107), certifi 2026.10.19 in the lock and gh 2.103.3 to 3228d4de3 (26 Oct), which has the
-#     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
-#     the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable resume
-#     refusal (AIR2-008) and, since 184b5cf8b, persistent hosts provisioned by the whole host ID,
-#     with one sandbox never shared by two hosts (WP3.8b). The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
+#   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which the
+#     image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
+#     (`build`) and boot log line. 212fc5886 (`cfo/upgrade-0.20.0`, 30 Oct 2026) is Omnigent
+#     0.20.0 merged into the fork's 3d7f7d08c (WP3.24), then fork integration afb809aa6 (WP5.11)
+#     merged in, then WP3.40c's crash-safe database upgrade (one SQLite transaction, every
+#     Alembic head read at start), keeping the fork's changes: the Codex policy
+#     hook that fails closed (UC-110), Claude's renderer named in its hook settings (UC-107), gh
+#     2.103.3, the Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes
+#     12 to 21, the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable
+#     resume refusal (AIR2-008) and persistent hosts provisioned by the whole host ID, with one
+#     sandbox never shared by two hosts (WP3.8b). It adds a database migration that joins the
+#     fork's and 0.20.0's heads (one way once complete), and a new runner launch needs a computer whose host advertises
+#     `runner_replacement_targets` (docs/compatibility.md). With WP5.11, a provider's 401 or a
+#     refresh's invalid_grant marks an MCP login, which Settings, the picker and the composer's
+#     /mcp panel show as "Reconnect needed" and which refreshes before its next use (F1).
+#     The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
 #     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Three
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
 #     resolves them afresh), the `s3` extra is installed with them (the fork's image adds
@@ -37,7 +41,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=afb809aa62414e20142059a30b7576e41f595916
+ARG OMNIGENT_COMMIT=212fc5886522931b0e96ffc4f5edc1d5145dd2fa
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
@@ -60,6 +64,8 @@ ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org \
     PNPM_CONFIG_REGISTRY=https://registry.npmjs.org
 WORKDIR /web
 COPY --from=omnigent-src /pnpm-workspace.yaml /pnpm-lock.yaml ./
+# The lock's patched dependencies (0.20.0: @tiptap/react), as the fork's stage copies them.
+COPY --from=omnigent-src /patches/ ./patches/
 COPY --from=omnigent-src /web/package.json ./web/
 COPY --from=omnigent-src /web/electron/package.json ./web/electron/
 RUN npm install -g pnpm@11.15.1
@@ -82,7 +88,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's image is built: review these stages against it, then update the digest.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
+RUN echo "dca1880e581694c345a7138da34f10274c28c45c04cbee39ca61c24238cc21cd  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/

@@ -33,6 +33,8 @@ SECURITY_TABLE_KEYS: dict[str, tuple[str, ...]] = {
     "account_tokens": ("workspace_id", "id"),
     "hosts": ("workspace_id", "host_id"),
     "scheduled_tasks": ("workspace_id", "id"),
+    # Omnigent's linked accounts (GitHub, WP5.9), sealed by the key service: digests only.
+    "connections": ("workspace_id", "user_id", "provider", "account_id"),
 }
 ITEMS_TABLE = "conversation_items"
 ITEM_KEY = ("workspace_id", "conversation_id", "id")

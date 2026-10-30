@@ -16,8 +16,8 @@ restart, so an image without that setting refuses to start; ``CFO_ALLOW_LOCAL_AR
 allows the disk in tests and local runs only (G2-DUR-001).
 
 Some settings are pinned by the image and cannot be changed by the environment at all:
-accounts mode, the release-feature set (``OMNIGENT_FEATURES``, which must never contain
-``harness_install``), default-public sessions off, the database and data paths, and the
+accounts mode, the release-feature set (``OMNIGENT_FEATURES``: Omnigent's release defaults,
+never ``harness_install``), default-public sessions off, the database and data paths, and the
 managed-sandbox reaper. Variables that would select integrations the image does not wire
 (Databricks, AWS KMS, Vault) are removed from the app's environment.
 
@@ -710,7 +710,9 @@ def load(
 
     features = _get(env, "OMNIGENT_FEATURES")
     if features is not None:
-        warnings.append(f"OMNIGENT_FEATURES={features!r} ignored: the image pins every feature off")
+        warnings.append(
+            f"OMNIGENT_FEATURES={features!r} ignored: the image pins Omnigent's release defaults"
+        )
     key_service = parse_key_service(env, warnings)
     github = parse_github_linking(env, base_origin, warnings, key_service)
     mcp_registry = parse_mcp_registry(

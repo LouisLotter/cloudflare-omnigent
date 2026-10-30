@@ -8,9 +8,10 @@
 # The last stage is the computer, so a build without --target (Wrangler's) gets the computer.
 #
 # What it holds:
-#   - Omnigent's host, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
-#     commit. The stages mirror the `host` target of the fork's deploy/docker/Dockerfile, whose
-#     SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Differences:
+#   - Omnigent's host, built from the fork LouisLotter/omnigent at the pinned commit, the same as
+#     the server image's (0.20.0, `cfo/upgrade-0.20.0`). The stages mirror the `host` target of
+#     the fork's deploy/docker/Dockerfile, whose SHA-256 is checked, so a commit bump fails here
+#     until the mirror is reviewed. Differences:
 #     Python packages install from the fork's uv.lock; only Claude Code and Codex are installed
 #     (not pi, kiro-cli or agy, about 1.2 GB of other CLIs), at exact published versions, not
 #     "latest"; no Databricks, GitHub App or credential-key configuration.
@@ -32,7 +33,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=afb809aa62414e20142059a30b7576e41f595916
+ARG OMNIGENT_COMMIT=212fc5886522931b0e96ffc4f5edc1d5145dd2fa
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -68,7 +69,7 @@ WORKDIR /build
 # The fork's Dockerfile at the pinned commit. If this check fails, the commit changed how
 # Omnigent's images are built: review these stages against its `host` target, then update it.
 COPY --from=omnigent-src /deploy/docker/Dockerfile /tmp/omnigent.Dockerfile
-RUN echo "04d0835cbbcbc7db38acb22525cbf8ffae0f8c02eaf1644a7c1cc37bb97a0795  /tmp/omnigent.Dockerfile" \
+RUN echo "dca1880e581694c345a7138da34f10274c28c45c04cbee39ca61c24238cc21cd  /tmp/omnigent.Dockerfile" \
       | sha256sum -c -
 COPY --from=omnigent-src /pyproject.toml /setup.py /uv.lock /LICENSE /NOTICE ./
 COPY --from=omnigent-src /sdks/ ./sdks/
@@ -254,7 +255,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="afb809aa62414e20142059a30b7576e41f595916" \
+      cloudflare-omnigent.omnigent-commit="212fc5886522931b0e96ffc4f5edc1d5145dd2fa" \
       cloudflare-omnigent.claude-code="${CLAUDE_CODE_VERSION}" \
       cloudflare-omnigent.codex="${CODEX_VERSION}" \
       cloudflare-omnigent.gh="${GH_VERSION}" \
