@@ -40,6 +40,7 @@ import {
   SERVER_ENV,
 } from "./settings.ts";
 import { pollServer } from "./update.ts";
+import { windowRefusal } from "./window.ts";
 
 /** The settings the server image reads (images/server/cfo_server/mcp.py), as the Worker holds them. */
 export const MCP_SERVICES_SECRET = `${SERVER_ENV}CFO_MCP_SERVICES`;
@@ -337,6 +338,9 @@ export async function changeServices(
   options: ServicesOptions = {},
 ): Promise<ServicesOutcome> {
   let state = ports.store.load();
+  // Not inside an update's read-only window (WP3.41): a rollback would undo this change unseen.
+  const inWindow = windowRefusal(state.journal);
+  if (inWindow !== undefined) throw new ServicesRefusal(`${inWindow}; nothing was changed`);
   const record = state.journal.mcpServices;
   const manifest = ports.manifests.get(change.id);
   if (manifest === undefined) {

@@ -23,6 +23,7 @@ import {
   childStdio,
   cliCloud,
   DIAGNOSTIC_LIMIT,
+  deployVersionArgs,
   diagnostic,
   dnsRecordsOf,
   fileStore,
@@ -701,6 +702,38 @@ describe("CLI wiring", () => {
     expect(() => failing.secretNames("cfo-stg-a")).toThrow("wrangler secret list exited with 1");
     expect(() => failing.updateSecrets("cfo-stg-a", { A: null })).toThrow(
       /^cf workers secrets bulk failed: \[10007\]$/,
+    );
+  });
+
+  it("deploys an earlier version through cf, forced past its secrets, and nothing but a version ID (WP3.41)", () => {
+    const seen: { command: string; args: readonly string[] }[] = [];
+    const version = "0a1b2c3d-0000-4000-8000-000000000001";
+    const cloud = cliCloud(config, WORKER, (command, args) => {
+      seen.push({ command, args });
+      return ok("{}");
+    });
+    cloud.deployVersion("cfo-stg-a", version);
+    expect(seen).toEqual([
+      {
+        command: "cf",
+        args: [
+          "workers",
+          "deployments",
+          "create",
+          "--worker",
+          "cfo-stg-a",
+          "--strategy",
+          "percentage",
+          "--versions",
+          JSON.stringify([{ version_id: version, percentage: 100 }]),
+          "--bypass-deployment-checks",
+        ],
+      },
+    ]);
+    expect(() => deployVersionArgs("cfo-stg-a", "v1; rm -rf")).toThrow("not a Worker version's ID");
+    const failing = cliCloud(config, WORKER, () => failed("[10007] no such version"));
+    expect(() => failing.deployVersion("cfo-stg-a", version)).toThrow(
+      /^cf workers deployments create failed: \[10007\]$/,
     );
   });
 

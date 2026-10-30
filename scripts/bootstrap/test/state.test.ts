@@ -88,7 +88,7 @@ describe("the state file", () => {
     const cases: [unknown, RegExp][] = [
       ["not json {", /not JSON/],
       [[], /top level is not an object/],
-      [{ ...good, stateVersion: 6 }, /unknown version/],
+      [{ ...good, stateVersion: 7 }, /unknown version/],
       [{ ...good, stateVersion: "1" }, /unknown version/],
       // D33: version 2 records the bucket tag, and only version 2 does.
       [{ ...good, stateVersion: 2 }, /version 2 plan records no bucket tag/],

@@ -110,6 +110,7 @@ import {
 // update.ts uses this module's refusal, generator and log reader; step 7 calls its runUpdate:
 // a cycle that neither module uses at load time.
 import { DEFAULT_UPDATE_OPTIONS, runUpdate, type UpdateRecord } from "./update.ts";
+import type { RestorePointRecord, WindowRecord } from "./window.ts";
 
 /** What the bootstrap needs of Cloudflare. Implemented by cloud.ts and staging.ts. */
 export interface BootstrapCloud {
@@ -145,6 +146,12 @@ export interface BootstrapCloud {
   ): Promise<"sent" | "expired">;
   /** The version serving all of the Worker's traffic now, or undefined if not one. Read-only. */
   activeVersion(worker: string): Promise<string | undefined>;
+  /**
+   * Deploys an existing version of the Worker to all of its traffic: its code, configuration,
+   * images and secrets, as they were (an update's rollback, WP3.41). Fails, creating nothing,
+   * when the Worker or the version does not exist.
+   */
+  deployVersion(worker: string, versionId: string): Promise<void>;
   /** Workers Logs events of the Worker between two times, in milliseconds. */
   logs(worker: string, fromMs: number, toMs: number): Promise<unknown[]>;
 }
@@ -215,6 +222,10 @@ export interface Journal {
   readonly updatedAt?: string;
   /** The last update (update.ts): its code, each step's intent and outcome, and its check. */
   readonly update?: UpdateRecord;
+  /** An update's read-only window, while it is open (WP3.41, window.ts). */
+  readonly window?: WindowRecord;
+  /** The last few restore points, newest last, once their windows closed (WP3.41). */
+  readonly restorePoints?: readonly RestorePointRecord[];
   /** The MCP services this installation turned on (WP5.10, services.ts). */
   readonly mcpServices?: McpServicesRecord;
 }
@@ -244,10 +255,10 @@ export interface McpServicesRecord {
 export interface BootstrapState {
   /**
    * 2 when the plan records its bucket tag (D33), 1 for a plan from before it, 3 once the journal
-   * records WP3.34's fields, 4 once it records an update, 5 once it records the MCP services
-   * (state.ts, stateVersionFor).
+   * records WP3.34's fields, 4 once it records an update, 5 once it records the MCP services, 6
+   * once it records an update's window or restore points (state.ts, stateVersionFor).
    */
-  readonly stateVersion: 1 | 2 | 3 | 4 | 5;
+  readonly stateVersion: 1 | 2 | 3 | 4 | 5 | 6;
   readonly installation: Installation;
   readonly journal: Journal;
 }
@@ -736,7 +747,12 @@ export async function runBootstrap(
     );
     if (updated.kind === "current") return { kind: "done" };
     if (updated.kind === "done") return { kind: "done", updated: true };
-    return { kind: "released", why: updated.why, updated: true };
+    // WP3.41: while the update's window is open, Omnigent is paused; it can go back.
+    const why =
+      updated.window === "open"
+        ? `${updated.why} (Omnigent stays paused until the update is checked; bootstrap.ts update --rollback goes back to the version from before it)`
+        : `accepted, and Omnigent is available again once the platform switches: ${updated.why}`;
+    return { kind: "released", why, updated: true };
   }
 }
 

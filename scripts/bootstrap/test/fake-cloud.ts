@@ -10,12 +10,25 @@
 // and whether Omnigent lists GitHub linking (WP3.36), and the revision of the MCP choices and
 // whether Omnigent lists MCP (WP5.10); a server whose settings it refuses exits 78, logs no
 // status, and the watchdog logs `config_error` once.
+// An update's read-only window (WP3.41): a version holding `CFO_MAINTENANCE_WINDOW` says so on its
+// status lines (`maintenance`), with the restore point a server started with
+// `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`); a server started with a
+// rollback order (`SERVER_ENV_CFO_ROLLBACK_TO`) never answers, and the watchdog logs `rolled_back`
+// once and holds it. A rollback deploys an earlier version again (`deployVersion`), with its own
+// secrets and configuration.
 // The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
 // Access in the installer's account (WP3.31): the organization, the applications and the login
 // methods, as cf answers for them.
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
 import { createHash } from "node:crypto";
+import {
+  MAINTENANCE_WINDOW_SECRET,
+  maintenanceWindowOf,
+  RESTORE_POINT_VAR,
+  ROLLBACK_SECRET,
+  rollbackOrderOf,
+} from "../../../worker/src/server/maintenance.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
 import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
 import {
@@ -69,6 +82,8 @@ export interface Version {
   readonly secrets: ReadonlyMap<string, string>;
   /** The `SERVER_ENV_` variables the version's configuration gives the server, as one text. */
   readonly serverVars: string;
+  /** The configuration it was deployed with (a secrets change keeps its version's). */
+  readonly config?: Readonly<Record<string, unknown>>;
 }
 
 /** What the watchdog would find at a time: Omnigent's owner and the replicated position. */
@@ -153,6 +168,16 @@ export class FakeWorld {
   mcpListed: (v: Version) => boolean | null = (v) => (v.secrets.get(MCP_SERVICES) ?? "") !== "";
   /** Whether status lines carry the MCP fields; false models a build from before WP5.10. */
   reportsMcp = true;
+  /** A server started with a restore point to take cannot take it (WP3.41): it never answers. */
+  restorePointFails = false;
+  /** A server started with a rollback order does it, and the watchdog says so (WP3.41). */
+  rollbackWorks = true;
+  /** Status lines name the restore point the server took; false models one it never reports. */
+  reportsRestorePoint = true;
+  /** A rollback keeps the current secrets instead of the version's own (Cloudflare does not). */
+  rollbackKeepsSecrets = false;
+  /** Every `deployVersion`: the Worker and the version deployed again. */
+  readonly redeployed: { worker: string; versionId: string; at: number }[] = [];
   readonly counts = new Map<string, number>();
   /** The installer's user API tokens, with the value each has now. */
   readonly tokens = new Map<string, { token: ApiToken; value: string }>();
@@ -238,9 +263,20 @@ export class FakeWorld {
     return this.latest(worker)?.secrets;
   }
 
-  #newVersion(worker: string, secrets: ReadonlyMap<string, string>, serverVars = ""): void {
+  #newVersion(
+    worker: string,
+    secrets: ReadonlyMap<string, string>,
+    serverVars = "",
+    config?: Readonly<Record<string, unknown>>,
+  ): void {
     const list = this.versions.get(worker) ?? [];
-    list.push({ id: `v${this.#nextVersion++}`, at: this.now, secrets, serverVars });
+    list.push({
+      id: `v${this.#nextVersion++}`,
+      at: this.now,
+      secrets,
+      serverVars,
+      ...(config === undefined ? {} : { config }),
+    });
     this.versions.set(worker, list);
   }
 
@@ -274,7 +310,7 @@ export class FakeWorld {
         const kept = new Map(world.secretsOf(plan.platformWorker) ?? []);
         for (const [key, value] of Object.entries(secrets)) kept.set(key, value);
         for (const key of world.dropOnDeploy) kept.delete(key);
-        world.#newVersion(plan.platformWorker, kept, serverVarsOf(config));
+        world.#newVersion(plan.platformWorker, kept, serverVarsOf(config), config);
         world.configs.set(plan.platformWorker, [
           ...(world.configs.get(plan.platformWorker) ?? []),
           config,
@@ -283,7 +319,7 @@ export class FakeWorld {
       },
       async deployWeb(plan, config) {
         const n = world.#enter("deployWeb");
-        world.#newVersion(plan.webWorker, new Map());
+        world.#newVersion(plan.webWorker, new Map(), "", config);
         world.configs.set(plan.webWorker, [...(world.configs.get(plan.webWorker) ?? []), config]);
         world.#leave("deployWeb", n);
       },
@@ -317,7 +353,12 @@ export class FakeWorld {
           if (value === null) next.delete(key);
           else next.set(key, value);
         }
-        world.#newVersion(worker, next, world.latest(worker)?.serverVars);
+        world.#newVersion(
+          worker,
+          next,
+          world.latest(worker)?.serverVars,
+          world.latest(worker)?.config,
+        );
         world.secretChanges.push({ at: world.now, worker, changes });
         world.#leave("updateSecrets", n);
         return "sent";
@@ -327,6 +368,28 @@ export class FakeWorld {
         const id = world.noVersions ? undefined : world.latest(worker)?.id;
         world.#leave("activeVersion", n);
         return id;
+      },
+      async deployVersion(worker, versionId) {
+        const n = world.#enter("deployVersion");
+        const list = world.versions.get(worker);
+        const target = list?.findLast((v) => v.id === versionId);
+        if (list === undefined || target === undefined) {
+          throw new Error("cf workers deployments create failed: [10007]");
+        }
+        // The same version again, from now: its secrets, variables and configuration as they were.
+        const latest = list.at(-1);
+        list.push({
+          ...target,
+          at: world.now,
+          ...(world.rollbackKeepsSecrets && latest !== undefined
+            ? { secrets: latest.secrets }
+            : {}),
+        });
+        if (target.config !== undefined) {
+          world.configs.set(worker, [...(world.configs.get(worker) ?? []), target.config]);
+        }
+        world.redeployed.push({ worker, versionId, at: world.now });
+        world.#leave("deployVersion", n);
       },
       async logs(worker, fromMs, toMs) {
         const n = world.#enter("logs");
@@ -497,6 +560,7 @@ export class FakeWorld {
     const durableSince = new Map<number, number>();
     let wasDurable = false;
     const refused = new Set<number>();
+    const rolled = new Set<number>();
     let replacing: string | undefined;
     for (let t = startAt; t <= Math.min(toMs, this.now); t += CHECK_MS) {
       const running = this.containerAt(worker, t);
@@ -568,6 +632,33 @@ export class FakeWorld {
         }
         continue;
       }
+      // A server ordered to roll back (WP3.41) puts the restore point back, exits 79, and is held:
+      // the watchdog says so once, naming the order; it never answers.
+      if (
+        container !== undefined &&
+        t >= container.since &&
+        rollbackOrderOf(Object.fromEntries(container.version.secrets)) !== null
+      ) {
+        if (this.rollbackWorks && !rolled.has(container.since)) {
+          rolled.add(container.since);
+          events.push({
+            timestamp: t,
+            $workers,
+            source: {
+              cfo: "watchdog",
+              event: "rolled_back",
+              exitCode: 79,
+              held: sameConfig(container.version, version),
+              restorePoint: rollbackOrderOf(Object.fromEntries(version.secrets)),
+            },
+          });
+        }
+        continue;
+      }
+      // A server that cannot take its restore point never starts Omnigent (exit 74, retried).
+      const restorePoint =
+        container === undefined ? null : restorePointVarOf(container.version.serverVars);
+      if (container !== undefined && restorePoint !== null && this.restorePointFails) continue;
       const applied =
         container !== undefined && t >= container.since && sameConfig(container.version, version);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
@@ -602,6 +693,15 @@ export class FakeWorld {
                 mcpRegistry: this.mcpListed(version),
               }
             : {}),
+          // WP3.41: the window this version holds, and the restore point the server took.
+          maintenance: maintenanceWindowOf(Object.fromEntries(version.secrets)),
+          restorePoint:
+            maintenanceWindowOf(Object.fromEntries(version.secrets)) !== null &&
+            container !== undefined &&
+            restorePoint !== null &&
+            this.reportsRestorePoint
+              ? { id: restorePoint, takenAt: new Date(container.since).toISOString() }
+              : null,
         },
       });
     }
@@ -630,6 +730,16 @@ function sameConfig(a: Version, b: Version): boolean {
 function serverSecrets(v: Version): Map<string, string> {
   return new Map([...v.secrets].filter(([name]) => name.startsWith("SERVER_ENV_")));
 }
+
+/** The restore point a version's server variables name (WP3.41), or null. */
+function restorePointVarOf(serverVars: string): string | null {
+  const entries = (serverVars === "" ? [] : JSON.parse(serverVars)) as [string, unknown][];
+  const value = entries.find(([name]) => name === RESTORE_POINT_VAR)?.[1];
+  return typeof value === "string" ? value : null;
+}
+
+/** The window's names, for tests. */
+export const WINDOW_SECRETS = { window: MAINTENANCE_WINDOW_SECRET, rollback: ROLLBACK_SECRET };
 
 /** The `SERVER_ENV_` variables of a deployed configuration, as one text. */
 function serverVarsOf(config: Readonly<Record<string, unknown>>): string {

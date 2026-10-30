@@ -153,6 +153,18 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
       return "sent";
     },
     activeVersion: async (worker) => activeVersion(run, worker),
+    // An update's rollback (WP3.41), through the tool's guards like every other change.
+    deployVersion: async (worker, versionId) => {
+      tool([
+        "deploy-version",
+        "--suffix",
+        suffixOf(worker),
+        "--owner",
+        target.owner,
+        "--version",
+        versionId,
+      ]);
+    },
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };
 }

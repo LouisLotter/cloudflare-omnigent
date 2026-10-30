@@ -13,6 +13,7 @@ import { accountCloud } from "./cloud.ts";
 import { browserCommand, createGitHubApp, finalMessage, GitHubAppRefusal } from "./github-app.ts";
 import { stagingCloud } from "./staging.ts";
 import { fileStateStore, resourceLockPaths, stagingStateProblem } from "./state.ts";
+import { windowRefusal } from "./window.ts";
 
 export interface GitHubAppCommandOptions {
   readonly root: string;
@@ -53,6 +54,9 @@ export async function githubAppCommand(
     for (const lock of resourceLockPaths(installation)) {
       releases.push(acquireLock(lock, 0, `pid ${process.pid}, bootstrap github-app, ${path}`));
     }
+    // Not inside an update's read-only window (WP3.41): a rollback would undo the App unseen.
+    const inWindow = windowRefusal(store.load().journal);
+    if (inWindow !== undefined) throw new GitHubAppRefusal(`${inWindow}; nothing was changed`);
     const worker = join(options.root, "worker");
     const cloud =
       installation.target.kind === "staging"

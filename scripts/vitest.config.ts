@@ -67,6 +67,9 @@ export default defineConfig({
         "bootstrap/github-app.ts": pure,
         "bootstrap/services.ts": pure,
         "bootstrap/update.ts": pure,
+        // The update's window, its acceptance and its rollback (WP3.41).
+        "bootstrap/window.ts": pure,
+        "bootstrap/rollback.ts": pure,
         // It runs git for the checkout's version: a real repository made by the test does that.
         "bootstrap/update-command.ts": io,
         "bootstrap/remove.ts": io,

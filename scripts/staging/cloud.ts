@@ -129,6 +129,31 @@ export function diagnostic(stderr: string): string {
 }
 
 /** Cloudflare's numeric error codes in cf's error output, such as [1002]: safe to show. */
+/** A Worker version's ID, as Cloudflare gives it: a UUID. */
+const VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * `cf workers deployments create` for one existing version at 100% of the Worker's traffic
+ * (WP3.41's rollback): its code, configuration, images and secrets as they were. Cloudflare
+ * refuses a version whose secrets differ from the current one's unless forced: a rollback's
+ * previous version always lacks the update's window, so it is forced.
+ */
+export function deployVersionArgs(worker: string, versionId: string): string[] {
+  if (!VERSION_ID.test(versionId)) throw new Error("not a Worker version's ID");
+  return [
+    "workers",
+    "deployments",
+    "create",
+    "--worker",
+    worker,
+    "--strategy",
+    "percentage",
+    "--versions",
+    JSON.stringify([{ version_id: versionId, percentage: 100 }]),
+    "--bypass-deployment-checks",
+  ];
+}
+
 function errorCodes(stderr: string): string {
   const codes = [...new Set(stderr.match(/\[\d{3,6}\]/g) ?? [])];
   return codes.length > 0 ? `: ${codes.join(" ")}` : "";
@@ -707,6 +732,14 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       );
       if (result.status !== 0) {
         throw new Error(`cf workers secrets bulk failed${errorCodes(result.stderr)}`);
+      }
+    },
+    // An existing version to all of the Worker's traffic (WP3.41's rollback), through cf, which
+    // fails for a missing Worker or version.
+    deployVersion: (name, versionId) => {
+      const result = run("cf", deployVersionArgs(name, versionId), { inherit: false });
+      if (result.status !== 0) {
+        throw new Error(`cf workers deployments create failed${errorCodes(result.stderr)}`);
       }
     },
     bucketExists: (name) =>
