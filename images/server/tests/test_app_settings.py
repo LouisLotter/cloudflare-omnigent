@@ -3,6 +3,8 @@ registration and the reaper. In process, against the pinned Omnigent build."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from conftest import AppHarness, requires_omnigent
@@ -63,6 +65,46 @@ def test_info_reports_pinned_features_and_sharing(app_harness: AppHarness) -> No
     assert info["public_sharing_enabled"] is False
     assert not any(info.get("features", {}).values())
     assert info["features"].get("harness_install") is False
+
+
+def test_the_app_runs_with_omnigents_release_defaults(
+    app_harness: AppHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Since 0.20.0 an empty ``OMNIGENT_FEATURES`` means each feature's release default. The app
+    gets exactly those, never ``harness_install`` and never 0.20.0's scheduler (D38)."""
+    from omnigent.server.feature_flags import FEATURE_DEFINITIONS, Feature
+
+    from cfo_server.app import pinned_feature_flags
+
+    defaults = {d.feature for d in FEATURE_DEFINITIONS if d.default_enabled}
+    flags = app_harness.app.state.feature_flags
+    assert {f for f in Feature if flags.enabled(f)} == defaults
+    assert not flags.enabled(Feature.HARNESS_INSTALL)
+    assert not flags.enabled(Feature.AUTOMATIONS_V2)
+    # The environment never changes it.
+    monkeypatch.setenv("OMNIGENT_FEATURES", "harness_install,automations_v2")
+    assert pinned_feature_flags() == flags
+
+
+def test_a_release_that_turns_harness_install_on_stops_the_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from omnigent.server import feature_flags
+
+    from cfo_server.app import pinned_feature_flags
+
+    monkeypatch.setattr(
+        feature_flags,
+        "FEATURE_DEFINITIONS",
+        tuple(
+            dataclasses.replace(d, default_enabled=True)
+            if d.feature == feature_flags.Feature.HARNESS_INSTALL
+            else d
+            for d in feature_flags.FEATURE_DEFINITIONS
+        ),
+    )
+    with pytest.raises(RuntimeError, match="harness_install"):
+        pinned_feature_flags()
 
 
 def test_launcher_is_registered_through_sandbox_config_with_the_reaper(
