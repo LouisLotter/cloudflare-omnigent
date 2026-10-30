@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "5885829815a9fba3f91828c578a4b1acad6a6ba1"
+COMMIT = "8a60532f350d9eb485becf35a7efe993846fd9e8"
 
 
 def _write(path: Path, **fields: object) -> Path:
@@ -65,11 +65,11 @@ def _dockerfile_commit() -> str:
 
 
 def test_the_dockerfile_pins_the_fork_commit_with_the_stop_fix() -> None:
-    # cfo/upgrade-0.20.0 588582981 (WP3.40b): Omnigent 0.20.0 merged into the fork at 3d7f7d08c
-    # (WP3.24), keeping the Stop fix (AIR2-007), core changes 12 to 21, WP3.16's notices,
-    # AIR2-008's resume refusal, WP3.8b's provision by the whole host ID, and WP3.24's Codex
-    # policy hook failing closed and Claude's renderer pin. A later fork merge bumps it; this
-    # test then names the new commit.
+    # cfo/upgrade-0.20.0 8a60532f3 (WP3.40): Omnigent 0.20.0 merged into the fork at 3d7f7d08c
+    # (WP3.24), then fork integration afb809aa6 (WP5.11's F1) merged in. It keeps the Stop fix
+    # (AIR2-007), core changes 12 to 21, WP3.16's notices, AIR2-008's resume refusal, WP3.8b's
+    # provision by the whole host ID, WP3.24's Codex policy hook failing closed and Claude's
+    # renderer pin. A later fork merge bumps it; this test then names the new commit.
     assert _dockerfile_commit() == COMMIT
 
 

@@ -12,16 +12,18 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which the
 #     image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
-#     (`build`) and boot log line. 588582981 (`cfo/upgrade-0.20.0`, 28 Oct 2026) is Omnigent
-#     0.20.0 merged into the fork's 3d7f7d08c (WP3.24), keeping its changes: the Codex policy
+#     (`build`) and boot log line. 8a60532f3 (`cfo/upgrade-0.20.0`, 30 Oct 2026) is Omnigent
+#     0.20.0 merged into the fork's 3d7f7d08c (WP3.24), then fork integration afb809aa6 (WP5.11)
+#     merged in, keeping the fork's changes: the Codex policy
 #     hook that fails closed (UC-110), Claude's renderer named in its hook settings (UC-107), gh
 #     2.103.3, the Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes
 #     12 to 21, the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable
 #     resume refusal (AIR2-008) and persistent hosts provisioned by the whole host ID, with one
 #     sandbox never shared by two hosts (WP3.8b). It adds a database migration that joins the
 #     fork's and 0.20.0's heads, and a new runner launch needs a computer whose host advertises
-#     `runner_replacement_targets` (docs/compatibility.md). It does not yet have WP5.11's F1
-#     ("Reconnect needed" for a rejected MCP login, afb809aa6 on `cfo/integration`).
+#     `runner_replacement_targets` (docs/compatibility.md). With WP5.11, a provider's 401 or a
+#     refresh's invalid_grant marks an MCP login, which Settings, the picker and the composer's
+#     /mcp panel show as "Reconnect needed" and which refreshes before its next use (F1).
 #     The stages below mirror the `runtime` target of the fork's deploy/docker/Dockerfile,
 #     whose SHA-256 is checked, so a commit bump fails here until the mirror is reviewed. Three
 #     differences: Python packages install from the fork's uv.lock (Omnigent's own image
@@ -38,7 +40,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=5885829815a9fba3f91828c578a4b1acad6a6ba1
+ARG OMNIGENT_COMMIT=8a60532f350d9eb485becf35a7efe993846fd9e8
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
