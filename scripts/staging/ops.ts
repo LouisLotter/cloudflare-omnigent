@@ -158,6 +158,11 @@ export interface Cloud {
    * values never reach argv or the output.
    */
   updateSecrets(name: string, changes: Readonly<Record<string, string | null>>): void;
+  /**
+   * Deploys an existing version of the Worker to all of its traffic, even when its secrets
+   * differ from the current version's (WP3.41's rollback). Fails for a missing Worker or version.
+   */
+  deployVersion(name: string, versionId: string): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
   /** The names of every R2 bucket whose name starts with `prefix`. */
@@ -1409,6 +1414,38 @@ export function updateSecrets(ctx: Context, request: SecretsRequest): void {
         deleted.length > 0 ? ` deleted ${deleted.join(", ")}` : ""
       }`,
     );
+  });
+}
+
+export interface DeployVersionRequest {
+  readonly suffix: string;
+  readonly owner: string;
+  readonly versionId: string;
+}
+
+/**
+ * Deploys an earlier version of a deployed staging Worker to all of its traffic (WP3.41's
+ * rollback, `bootstrap.ts update --rollback`): only for a deployment the registry shows deployed,
+ * by the owner that deployed it, whose Worker Cloudflare confirms. The version keeps the
+ * registry's bindings: a Worker's versions all bind what its deploys bound.
+ */
+export function deployVersion(ctx: Context, request: DeployVersionRequest): void {
+  const name = resourceName(request.suffix);
+  locked(ctx, name, () => {
+    const record = ctx.store.load().find((d) => d.name === name);
+    if (record === undefined) throw new Error(`${name} is not a recorded staging deployment`);
+    if (record.owner !== request.owner) {
+      throw new Error(`${name} belongs to ${record.owner}, not ${request.owner}`);
+    }
+    if (record.state !== "deployed" || record.uploadStartedAt !== undefined) {
+      throw new Error(`${name} is not deployed; deploy it first`);
+    }
+    assertAccount(ctx.config.accountId, ctx.cloud.accountIds());
+    if (!ctx.cloud.workerExists(name)) {
+      throw new Error(`${name} is recorded, but the staging account has no such Worker`);
+    }
+    ctx.cloud.deployVersion(name, request.versionId);
+    ctx.log(`deployed version ${request.versionId} of ${name} to all of its traffic`);
   });
 }
 

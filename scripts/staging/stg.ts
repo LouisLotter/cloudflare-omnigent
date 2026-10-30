@@ -8,6 +8,7 @@
 //   node scripts/staging/stg.ts deploy --suffix <s> --owner <wp> [--config worker/wrangler.jsonc] [--days 7]
 //                                      [--secrets-stdin]
 //   node scripts/staging/stg.ts secrets --suffix <s> --owner <wp> [--not-after <ms>]
+//   node scripts/staging/stg.ts deploy-version --suffix <s> --owner <wp> --version <version ID>
 //                                                                    (changes as JSON on stdin)
 //   node scripts/staging/stg.ts secret-names --suffix <s>
 //   node scripts/staging/stg.ts list
@@ -17,6 +18,8 @@
 // deploy --secrets-stdin uploads the secrets in a JSON object on stdin, {"NAME": "value", …},
 // with the version, as the manifest's are. secrets changes a deployed Worker's secrets in one
 // new deployed version (one bulk request): {"NAME": "value"} sets one, {"NAME": null} deletes one.
+// deploy-version deploys an earlier version of a deployed Worker to all of its traffic, its secrets
+// as they were (WP3.41: `bootstrap.ts update --rollback` of a staging installation).
 // Values come only from stdin and never reach argv, the output or a file that stays; names are
 // logged. With --not-after (Unix milliseconds), the change is sent only if that time has not
 // passed once every check is done; otherwise nothing is sent and the tool exits with 3.
@@ -104,6 +107,7 @@ import { acquireLock, sleepSync } from "./lock.ts";
 import {
   type Context,
   deploy,
+  deployVersion,
   listSecretNames,
   sweep,
   teardown,
@@ -247,6 +251,7 @@ function main(): void {
       yes: { type: "boolean", default: false },
       "secrets-stdin": { type: "boolean", default: false },
       "not-after": { type: "string" },
+      version: { type: "string" },
     },
   });
 
@@ -299,6 +304,17 @@ function main(): void {
         owner: values.owner,
         changes: secretsFromStdin(true),
         ...(notAfter === undefined ? {} : { notAfter }),
+      });
+      return;
+    }
+    case "deploy-version": {
+      if (!values.suffix || !values.owner || !values.version) {
+        throw new Error("deploy-version needs --suffix, --owner and --version");
+      }
+      deployVersion(context(loadConfig(), command), {
+        suffix: values.suffix,
+        owner: values.owner,
+        versionId: values.version,
       });
       return;
     }

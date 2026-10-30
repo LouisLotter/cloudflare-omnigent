@@ -20,14 +20,26 @@ In order (code-structure plan, ``images/server``):
    either exits, the other is stopped. ``/status`` says ``initializing`` while the app starts
    (Python's imports, Omnigent's migrations, ``create_app``, the owner check) and ``running``
    once it answers ``GET /health``, so the watchdog can give each its own budget (AIR2-010).
+5a. **A restore point** (WP3.41), when the environment names one (``CFO_RESTORE_POINT``) and it
+   does not exist yet: after the restore, before Litestream replicates or the app (and its
+   migrations) starts, every object of the replica is copied beside it
+   (:mod:`cfo_server.restore_point`). Nothing starts until it is complete; a failure exits 74,
+   and the watchdog's next start tries again.
 6. **Final sync.** On SIGTERM: stop the app, then wait until Litestream's replica covers every
    commit (``replicated_txid >= txid``, the same check the barriers use), then stop
    Litestream, whose own shutdown sync is the backstop. A final sync that is not confirmed
    is reported in a log line and by exit code 75, because Litestream itself exits 0 even
    when its final sync fails.
 
+**Rollback mode** (``CFO_ROLLBACK_TO``, ordered by ``bootstrap.ts update --rollback`` inside the
+update's read-only window): instead of all of the above, the restore point is checked by restoring
+it to a scratch file, then put back as the live replica, and the entrypoint exits 79 without
+starting Litestream's replication or the app. The watchdog then holds the server until the
+configuration changes (the previous release), whose server restores the replica as it left it.
+
 Exit codes: 0 stopped cleanly; 75 the final sync was not confirmed; 70 Litestream failed or
-never became ready; 71 the app exited on its own; 78 a setting is missing or malformed.
+never became ready; 71 the app exited on its own; 74 the restore point could not be taken; 76
+the rollback could not be done; 78 a setting is missing or malformed; 79 rolled back.
 """
 
 from __future__ import annotations
@@ -50,6 +62,7 @@ from urllib.parse import urlsplit
 
 from cfo_server import buildinfo
 from cfo_server import config as image_config
+from cfo_server import restore_point as restore_points
 from cfo_server.dbcheck import check_database
 from cfo_server.events import log
 from cfo_server.httpd import (
@@ -64,8 +77,13 @@ from cfo_server.litestream import BlockingClient, LitestreamError
 EXIT_OK = 0
 EXIT_LITESTREAM_FAILED = 70
 EXIT_APP_EXITED = 71
+EXIT_RESTORE_POINT_FAILED = 74
 EXIT_FINAL_SYNC_UNCONFIRMED = 75
+EXIT_ROLLBACK_FAILED = 76
 EXIT_CONFIG = 78
+#: The rollback put the restore point back: the watchdog holds the server until the
+#: configuration changes. Only rollback mode exits with it (an app's own 79 is reported as 71).
+EXIT_ROLLED_BACK = 79
 
 #: Sharing override files Omnigent's own ``PUT /v1/sharing`` would write. Authoritative mode
 #: never reads them; any found at start are removed so nothing stale lingers.
@@ -143,13 +161,16 @@ class Recovery:
 # ── Litestream configuration ──────────────────────────────────────────────────────────
 
 
-def litestream_config(config: image_config.ServerImageConfig, layout: Layout) -> dict[str, Any]:
+def litestream_config(
+    config: image_config.ServerImageConfig, layout: Layout, replica_url: str | None = None
+) -> dict[str, Any]:
     """Litestream's configuration, as JSON (a YAML subset). Credentials stay in the
-    environment (``LITESTREAM_ACCESS_KEY_ID``, ``LITESTREAM_SECRET_ACCESS_KEY``)."""
+    environment (``LITESTREAM_ACCESS_KEY_ID``, ``LITESTREAM_SECRET_ACCESS_KEY``).
+    ``replica_url`` reads another replica in the same store instead (a restore point's copy)."""
     replica_settings = config.replica
     if replica_settings is None:
         raise ValueError("the entrypoint needs the replica settings")
-    parts = urlsplit(replica_settings.url)
+    parts = urlsplit(replica_url or replica_settings.url)
     if parts.scheme == "s3":
         replica: dict[str, Any] = {
             "type": "s3",
@@ -247,6 +268,9 @@ def restore(
     env: Mapping[str, str],
     deadline_s: float,
     should_stop: Callable[[], bool] = lambda: False,
+    *,
+    config_path: Path | None = None,
+    output: Path | None = None,
 ) -> RestoreOutcome:
     """``litestream restore -if-replica-exists`` under a deadline.
 
@@ -255,13 +279,18 @@ def restore(
     afterwards only if a backup was restored completely. A stop signal ends it early: a restore
     only reads the replica, so stopping it loses nothing.
     """
+    base_args = (
+        litestream_base_args(layout)
+        if config_path is None
+        else ["-config", str(config_path), "-no-expand-env"]
+    )
     command = [
         str(layout.litestream_bin),
         "restore",
-        *litestream_base_args(layout),
+        *base_args,
         "-if-replica-exists",
         "-o",
-        str(layout.db_path),
+        str(output or layout.db_path),
         str(layout.db_path),
     ]
     started = time.monotonic()
@@ -593,8 +622,167 @@ class Supervisor:
         if why == "litestream_exited":
             return EXIT_LITESTREAM_FAILED
         if why == "app_exited":
-            return app.returncode or EXIT_APP_EXITED
+            # Never the rollback's own code: only rollback mode may ask for that hold.
+            code = app.returncode
+            return EXIT_APP_EXITED if not code or code == EXIT_ROLLED_BACK else code
         return EXIT_OK
+
+
+# ── Restore points and the rollback (WP3.41) ──────────────────────────────────────────
+
+
+def _store(
+    config: image_config.ServerImageConfig, env: Mapping[str, str]
+) -> tuple[restore_points.Store, restore_points.Places]:
+    replica = config.replica
+    if replica is None:
+        raise ValueError("the entrypoint needs the replica settings")
+    store = restore_points.open_store(
+        replica.url,
+        endpoint=replica.endpoint,
+        region=replica.region,
+        force_path_style=replica.force_path_style,
+        env=env,
+    )
+    return store, restore_points.places(replica.url)
+
+
+def take_restore_point(
+    config: image_config.ServerImageConfig,
+    layout: Layout,
+    env: Mapping[str, str],
+    decision: Ready,
+    board: StatusBoard,
+    should_stop: Callable[[], bool],
+) -> int | None:
+    """The update's restore point, before anything replicates or the app starts; ``None`` once
+    it exists, else the exit code. A new installation has nothing to protect."""
+    rp_id = config.restore_point
+    assert rp_id is not None
+    if decision.source == "fresh":
+        log("restore_point.skipped", restore_point=rp_id, reason="no backup yet")
+        return None
+    started = time.monotonic()
+    try:
+        store, where = _store(config, env)
+        taken = restore_points.take(
+            store,
+            where,
+            rp_id,
+            # Its digest is the restored database's; a database found on the disk is not the
+            # replica's, so none is recorded for it.
+            database=layout.db_path if decision.source == "restored" else None,
+            build=board.get("build"),
+            deadline=started + config.restore_deadline_s,
+            should_stop=should_stop,
+            log=log,
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure: nothing starts, the watchdog retries
+        log(
+            "restore_point.failed",
+            restore_point=rp_id,
+            error=redact(f"{type(exc).__name__}: {exc}", env)[:300],
+        )
+        board.update(phase="stopped")
+        return _unless_stopped(should_stop, EXIT_RESTORE_POINT_FAILED)
+    summary = taken.manifest.summary()
+    board.update(restorePoint=summary)
+    log(
+        "restore_point.taken" if taken.new else "restore_point.present",
+        restore_point=rp_id,
+        objects=summary["objects"],
+        bytes=summary["bytes"],
+        pruned=list(taken.pruned),
+        seconds=round(time.monotonic() - started, 2),
+    )
+    return None
+
+
+def _unless_stopped(should_stop: Callable[[], bool], code: int) -> int:
+    """A step cut short by a stop signal ends as a clean stop, not as its failure."""
+    return EXIT_OK if should_stop() else code
+
+
+def roll_back_replica(
+    config: image_config.ServerImageConfig,
+    layout: Layout,
+    env: Mapping[str, str],
+    board: StatusBoard,
+    should_stop: Callable[[], bool],
+) -> int:
+    """Rollback mode: the restore point back as the live replica, checked first; exits 79."""
+    rp_id = config.rollback_to
+    assert rp_id is not None
+    board.update(phase="restoring", rollback={"id": rp_id, "since": now_iso(), "done": False})
+    log("rollback.started", restore_point=rp_id)
+    layout.run_dir.mkdir(parents=True, exist_ok=True)
+    layout.db_path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = layout.db_path.with_name(f".{layout.db_path.name}.restore-point")
+    restore_config = layout.run_dir / "litestream-restore-point.yml"
+
+    def clear_scratch() -> None:
+        for suffix in ("", "-wal", "-shm", ".tmp", ".tmp-wal", ".tmp-shm"):
+            with contextlib.suppress(FileNotFoundError):
+                scratch.with_name(scratch.name + suffix).unlink()
+
+    def verify(manifest: restore_points.Manifest) -> str | None:
+        """Restores the restore point's copy to a scratch file: what is wrong with it, if
+        anything. Nothing of the live replica has changed yet."""
+        clear_scratch()
+        restore_config.write_text(
+            json.dumps(litestream_config(config, layout, where.copy_url(rp_id)), indent=2)
+        )
+        try:
+            outcome = restore(
+                layout,
+                env,
+                config.restore_deadline_s,
+                should_stop,
+                config_path=restore_config,
+                output=scratch,
+            )
+            if outcome.timed_out:
+                return "its restore did not finish in time"
+            if outcome.returncode != 0 or not scratch.exists():
+                return f"its restore failed: {outcome.stderr_tail or 'no database'}"
+            if manifest.database_sha256 is not None:
+                digest, _ = restore_points.sha256_of(scratch)
+                if digest != manifest.database_sha256:
+                    return "the restored database is not the one recorded"
+            check = check_database(scratch)
+            if not check.intact:
+                return f"the restored database is damaged: {check.detail}"
+            if config.installation_initialized and not check.initialized:
+                return "the restored database has no owner"
+            return None
+        finally:
+            clear_scratch()
+
+    try:
+        store, where = _store(config, env)
+        result = restore_points.roll_back(
+            store, where, rp_id, verify_copy=verify, should_stop=should_stop, log=log
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure: retried by the watchdog's next start
+        log(
+            "rollback.failed",
+            restore_point=rp_id,
+            error=redact(f"{type(exc).__name__}: {exc}", env)[:300],
+        )
+        board.update(phase="stopped")
+        return _unless_stopped(should_stop, EXIT_ROLLBACK_FAILED)
+    log(
+        "rollback.done",
+        restore_point=rp_id,
+        restored=result.restored,
+        already=result.already,
+        detail=result.detail,
+    )
+    board.update(
+        phase="stopped",
+        rollback={"id": rp_id, "done": True, "restored": result.restored},
+    )
+    return EXIT_ROLLED_BACK
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────────────
@@ -626,6 +814,8 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
             if config.mcp.enabled
             else f"off: {config.mcp.off_reason}"
         ),
+        # An update's read-only window (WP3.41): Omnigent starts without its scheduler.
+        maintenance=config.maintenance,
     )
     supervisor = Supervisor(config, layout, env, board)
     supervisor.install_signal_handlers()
@@ -634,6 +824,8 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         layout.run_dir.mkdir(parents=True, exist_ok=True)
         layout.db_path.parent.mkdir(parents=True, exist_ok=True)
         layout.litestream_config.write_text(json.dumps(litestream_config(config, layout), indent=2))
+        if config.rollback_to is not None:
+            return roll_back_replica(config, layout, env, board, lambda: supervisor.stop_requested)
 
         while True:
             board.update(phase="restoring")
@@ -674,6 +866,12 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
 
         if supervisor.stop_requested:
             return EXIT_OK
+        if config.restore_point is not None:
+            failed = take_restore_point(
+                config, layout, env, decision, board, lambda: supervisor.stop_requested
+            )
+            if failed is not None:
+                return failed
         write_settings_files(config, layout)
         return supervisor.run()
     finally:

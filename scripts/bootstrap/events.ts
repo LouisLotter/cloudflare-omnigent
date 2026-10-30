@@ -30,11 +30,22 @@
 // whether Omnigent lists its registry (`mcpRegistry`); `config_error` names the revision held
 // too (`checkMcpServices`).
 //
+// And an update's read-only window (WP3.41): the window the logging version holds
+// (`maintenance`, its ID) and the restore point the answering server reports (`restorePoint`,
+// its ID and when it was taken), which `update` needs from its own version before it accepts the
+// release. The watchdog's `rolled_back` line says a server ordered to roll back put the restore
+// point back and is held (`held`), naming the restore point ordered (`restorePoint`).
+//
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
 // one, a contradictory one, or one that does not parse as the contract is never accepted.
 
 import { BootstrapStatus, SUPPORTED_BOOTSTRAP_STATUS_VERSIONS } from "../../contracts/src/index.ts";
+import {
+  RESTORE_POINT_ID,
+  type ReportedRestorePoint,
+  restorePointOf,
+} from "../../worker/src/server/maintenance.ts";
 
 /** One bootstrap status line, as Workers Logs delivered it. */
 export interface StatusEvent {
@@ -70,6 +81,20 @@ export interface StatusEvent {
    * worker/src/server/mcp-services.ts), null for none; undefined: unsaid.
    */
   readonly mcpRevision?: string | null | undefined;
+  /** The update's window the logging version holds (WP3.41), null for none; undefined: unsaid. */
+  readonly maintenance?: string | null | undefined;
+  /** The restore point the answering server reports (WP3.41), null for none; undefined: unsaid. */
+  readonly restorePoint?: ReportedRestorePoint | null | undefined;
+}
+
+/** The watchdog's `rolled_back` line (WP3.41): a server's rollback is done, and it is held. */
+export interface RollbackEvent {
+  readonly loggedAt: number;
+  readonly versionId: string | undefined;
+  /** The current configuration is the one held; undefined: unsaid. */
+  readonly held: boolean | undefined;
+  /** The restore point the logging version ordered, null for none. */
+  readonly restorePoint: string | null | undefined;
 }
 
 /** The watchdog's `config_error` line: a server exited with a missing or malformed setting. */
@@ -104,6 +129,8 @@ export interface ParsedLogs {
   readonly configErrors: readonly ConfigErrorEvent[];
   /** When the watchdog said it replaces the server for a changed configuration (WP3.36). */
   readonly configChanges: readonly number[];
+  /** The watchdog's `rolled_back` lines, from the OmnigentServer object (WP3.41). */
+  readonly rollbacks: readonly RollbackEvent[];
   /**
    * Bootstrap lines that are not the contract, or not from the OmnigentServer object: never
    * accepted, counted for the report.
@@ -152,6 +179,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
   const invocations: Invocation[] = [];
   const configErrors: ConfigErrorEvent[] = [];
   const configChanges: number[] = [];
+  const rollbacks: RollbackEvent[] = [];
   let malformed = 0;
   for (const raw of events) {
     const event = record(raw);
@@ -187,6 +215,19 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
       });
       continue;
     }
+    if (
+      line?.cfo === "watchdog" &&
+      line.event === "rolled_back" &&
+      workers.entrypoint === STATUS_ENTRYPOINT
+    ) {
+      rollbacks.push({
+        loggedAt,
+        versionId,
+        held: typeof line.held === "boolean" ? line.held : undefined,
+        restorePoint: windowId(line.restorePoint),
+      });
+      continue;
+    }
     if (line?.cfo !== "bootstrap" || line.event !== "status") continue;
     const status = BootstrapStatus.safeParse(line.bootstrapStatus);
     if (
@@ -214,9 +255,24 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
           ? line.mcpRegistry
           : undefined,
       mcpRevision: appTag(line.mcpRevision),
+      ...("maintenance" in line ? { maintenance: windowId(line.maintenance) } : {}),
+      ...("restorePoint" in line
+        ? {
+            restorePoint:
+              line.restorePoint === null
+                ? null
+                : restorePointOf({ restorePoint: line.restorePoint }),
+          }
+        : {}),
     });
   }
-  return { statuses, invocations, configErrors, configChanges, malformed };
+  return { statuses, invocations, configErrors, configChanges, rollbacks, malformed };
+}
+
+/** A window's or restore point's ID on a line: the ID, null for none; undefined otherwise. */
+function windowId(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && RESTORE_POINT_ID.test(value) ? value : undefined;
 }
 
 export interface AcceptanceRules {

@@ -46,9 +46,26 @@
 // from the names each time, so none is added twice. A run whose update to this code finished and
 // checked, with nothing missing, deploys nothing.
 //
-// Never: a secret value in the journal or the log, a secret replaced or deleted, the bootstrap
-// password, a request to the installation, a Worker deployed over one this plan did not create.
+// ADR 0007's restore point and read-only window (WP3.41, window.ts; owner decision D45): every
+// update opens one, recorded in the journal before the first platform deploy with the versions
+// that ran before. That deploy carries the window's secret, which keeps every request from the
+// server once the platform's object runs it, and names the restore point the new server copies
+// before Omnigent (and its migrations) starts. The check then also needs, from the update's own
+// version, the window held and the restore point reported; then the update accepts the release:
+// it records the decision, deletes the window's secret, and waits until the object runs without
+// it. Until the decision, `bootstrap.ts update --rollback` (rollback.ts) can go back; after it,
+// problems are fixed forward. An update to newer code while a window is open stays inside it, so
+// its restore point stays the one from before the first.
+//
+// Never: a secret value in the journal or the log, a secret replaced or deleted (but the window's
+// own), the bootstrap password, a request to the installation, a Worker deployed over one this
+// plan did not create.
 
+import {
+  MAINTENANCE_WINDOW_SECRET,
+  RESTORE_POINT_VAR,
+  ROLLBACK_SECRET,
+} from "../../worker/src/server/maintenance.ts";
 import {
   type AccessApi,
   type AccessRecords,
@@ -61,6 +78,7 @@ import { parseLogs, type Verification, verifyRelease } from "./events.ts";
 import {
   type BootstrapCloud,
   BootstrapRefusal,
+  type BootstrapState,
   generatedSecrets,
   type Journal,
   type RunContext,
@@ -91,6 +109,16 @@ import {
   renderWebConfig,
   requiredSecretNames,
 } from "./settings.ts";
+import {
+  acceptWindow,
+  closeWindow,
+  newWindowId,
+  type PreviousRelease,
+  restorePointProblem,
+  restorePointRecord,
+  type WindowRecord,
+  windowCheck,
+} from "./window.ts";
 
 /** The last update, as the journal keeps it. Names, times and IDs only, never a secret. */
 export interface UpdateRecord {
@@ -145,6 +173,8 @@ export interface UpdateOptions {
   readonly switchMs: number;
   /** How long to keep checking after the switch: the restart, and a new image's first start. */
   readonly verifyWaitMs: number;
+  /** How long to wait for the object to run without the window once accepted (WP3.41). */
+  readonly acceptWaitMs?: number;
 }
 
 export const DEFAULT_UPDATE_OPTIONS: UpdateOptions = {
@@ -159,8 +189,12 @@ export type UpdateOutcome =
   | { readonly kind: "current" }
   /** Deployed, and the server checked on the new version. */
   | { readonly kind: "done" }
-  /** Deployed; the check has not passed yet (run update again: it checks, deploying nothing). */
-  | { readonly kind: "deployed"; readonly why: string };
+  /**
+   * Deployed; the check has not passed yet (run update again: it checks, deploying nothing).
+   * `window`: the update's read-only window is open (not accepted, rollback possible), or
+   * accepted and closed, with the server's restart without it not seen yet (WP3.41).
+   */
+  | { readonly kind: "deployed"; readonly why: string; readonly window: "open" | "closing" };
 
 /** A clean checkout's commit, as codeVersionFrom gives it and the journal keeps it. */
 const CODE = /^[0-9a-f]{40}$/;
@@ -222,8 +256,20 @@ export async function runUpdate(
   if (problems.length > 0) {
     throw new BootstrapRefusal(`the plan is not usable: ${problems.join("; ")}`);
   }
+  // Every update takes a restore point beside the replica (WP3.41): refused before any effect
+  // when there is no room for one, rather than opening a window it could not close.
+  const noRoom = restorePointProblem(plan);
+  if (noRoom !== undefined) {
+    throw new BootstrapRefusal(
+      `this installation cannot be updated: ${noRoom}; nothing was changed`,
+    );
+  }
   const record = (change: Partial<Journal>) => {
     state = { ...state, journal: { ...state.journal, ...change } };
+    ctx.store.save(state);
+  };
+  const setJournal = (journal: Journal) => {
+    state = { ...state, journal };
     ctx.store.save(state);
   };
   const current = (): UpdateRecord => {
@@ -298,9 +344,9 @@ export async function runUpdate(
       );
     }
   };
-  const platformIdentity = await ours(plan.platformWorker);
+  let platformIdentity = await ours(plan.platformWorker);
   const platformHeld = platformIdentity.vars ?? {};
-  await ours(plan.webWorker);
+  let webIdentity = await ours(plan.webWorker);
 
   // 2. What this release needs that the Worker lacks: made here, or refused by name. Half a
   // pair is never completed or replaced: the half held may be in use (Codex WP3.35 r1-1).
@@ -326,7 +372,11 @@ export async function runUpdate(
   }
   const standIns = Object.fromEntries([...present].map((name) => [name, "present"]));
   const envProblems = containerEnvProblems(
-    { ...platformVars(plan), [DEPLOY_ID_VAR]: "stand-in" },
+    {
+      ...platformVars(plan),
+      [DEPLOY_ID_VAR]: "stand-in",
+      [RESTORE_POINT_VAR]: "rp-20000101T000000Z-00000000",
+    },
     { ...standIns, ...add },
     plan,
   );
@@ -334,23 +384,106 @@ export async function runUpdate(
     throw new BootstrapRefusal(`the server would not start: ${envProblems.join("; ")}${nothing}`);
   }
 
-  // 3. Nothing to do, a new update, or the rest of an unfinished one to this code. Up to date
+  // 3. The update's read-only window (WP3.41): nothing the journal does not explain, and an
+  // acceptance once decided is finished first (from the decision on, the window only closes).
+  if (state.journal.window?.rollback !== undefined) {
+    throw new BootstrapRefusal(
+      `the update is being rolled back: finish it with bootstrap.ts update --rollback${nothing}`,
+    );
+  }
+  if (present.has(ROLLBACK_SECRET)) {
+    throw new BootstrapRefusal(
+      `${plan.platformWorker} holds a rollback order (${ROLLBACK_SECRET}) that this state file does not explain: use the state file of the installer that ordered it, and finish with bootstrap.ts update --rollback${nothing}`,
+    );
+  }
+  if (state.journal.window === undefined && present.has(MAINTENANCE_WINDOW_SECRET)) {
+    throw new BootstrapRefusal(
+      `${plan.platformWorker} holds an update's read-only window (${MAINTENANCE_WINDOW_SECRET}) that this state file does not record: use the state file of the installer that opened it${nothing}`,
+    );
+  }
+  let accepted = false;
+  if (state.journal.window?.acceptStartedAt !== undefined) {
+    // The window's update record is written with it, and stays while it is open.
+    const updatedTo = (state.journal.update as UpdateRecord).code;
+    const closed = await acceptWindow(ctx, () => state, setJournal, updatedTo, acceptWait(options));
+    if (!closed.confirmed) return { kind: "deployed", why: closed.why, window: "closing" };
+    // What runs now is the accepted release: the next window goes back to it (Codex WP3.41 r1).
+    present.delete(MAINTENANCE_WINDOW_SECRET);
+    platformIdentity = await ours(plan.platformWorker);
+    webIdentity = await ours(plan.webWorker);
+    accepted = true;
+  }
+  const opened = state.journal.window;
+  if (
+    opened?.deployStartedAt !== undefined &&
+    opened.acceptStartedAt === undefined &&
+    !present.has(MAINTENANCE_WINDOW_SECRET)
+  ) {
+    // The window's secret is gone after a deploy carrying it was sent: whether that deploy's
+    // confirmation was lost or another version was deployed since (Codex WP3.41 r1-3, r2-1), the
+    // window may have opened and been ended outside the installer, and Omnigent may have taken
+    // changes since its restore point, so it can no longer go back to it: the update starts
+    // afresh, with a restore point of now.
+    // The version from before serving: the deploy did not land, or it was deployed again.
+    const before = platformIdentity.versionId === opened.previous.platformVersionId;
+    setJournal(
+      closeWindow(
+        state.journal,
+        restorePointRecord(
+          plan,
+          opened,
+          before ? "abandoned" : "ended outside the installer",
+          iso(ctx.now()),
+          (state.journal.update as UpdateRecord).code,
+        ),
+      ),
+    );
+    ctx.log(
+      before
+        ? "the update's earlier deploy did not land (or the version from before it was deployed again), so its read-only window does not hold: the update starts again, with a restore point of Omnigent's data as it is now"
+        : `the update's read-only window was ended outside this installer (${plan.platformWorker} no longer holds ${MAINTENANCE_WINDOW_SECRET}), so Omnigent may have taken changes since its restore point and cannot go back to it: the update starts again, with a restore point of Omnigent's data as it is now`,
+    );
+  }
+
+  // 4. Nothing to do, a new update, or the rest of an unfinished one to this code. Up to date
   // only when the last update is this code's and checked, or none was ever made (the install's
   // own release check covered its code): an unchecked update that a later, unfinished one
-  // replaced in the journal is deployed and checked again (Codex WP3.35 r1-2).
-  const last = journal.update;
-  const resuming = last?.code === code && last.verifiedAt === undefined;
+  // replaced in the journal is deployed and checked again (Codex WP3.35 r1-2). An unfinished
+  // update continues only inside its window; one without (from before WP3.41) starts again.
+  const window = state.journal.window;
+  const last = state.journal.update;
+  const resuming = window !== undefined && last?.code === code && last.verifiedAt === undefined;
   const checked = last === undefined || (last.code === code && last.verifiedAt !== undefined);
-  if (checked && adding.length === 0 && journal.platformCode === code && journal.webCode === code) {
-    ctx.log(`https://${plan.hostname} already runs this checkout's version (${shortCode(code)})`);
-    return { kind: "current" };
+  const deployed = state.journal.platformCode === code && state.journal.webCode === code;
+  if (checked && adding.length === 0 && deployed) {
+    if (window === undefined) {
+      // Just accepted: that update is done.
+      if (accepted) return { kind: "done" };
+      ctx.log(`https://${plan.hostname} already runs this checkout's version (${shortCode(code)})`);
+      return { kind: "current" };
+    }
+    // Checked in its window, not accepted yet: accepted now.
+    return accept(ctx, () => state, setJournal, code, options);
   }
   if (resuming) {
     ctx.log(`continuing the update of https://${plan.hostname} to ${shortCode(code)}`);
+  } else if (window === undefined) {
+    const previous = previousRelease(plan, platformIdentity, webIdentity, state.journal);
+    const id = newWindowId(ctx.now(), ctx.random);
+    record({
+      update: { code, startedAt: iso(ctx.now()) },
+      window: { id, openedAt: iso(ctx.now()), previous },
+    });
+    ctx.log(
+      `updating https://${plan.hostname} to ${shortCode(code)}: ${plan.platformWorker}, then ${plan.webWorker}`,
+    );
+    ctx.log(
+      `first the new server takes a restore point of Omnigent's data (${id}), and Omnigent is paused (it takes no requests) until the new version is checked: about 10 to 15 minutes`,
+    );
   } else {
     record({ update: { code, startedAt: iso(ctx.now()) } });
     ctx.log(
-      `updating https://${plan.hostname} to ${shortCode(code)}: ${plan.platformWorker}, then ${plan.webWorker}`,
+      `updating https://${plan.hostname} to ${shortCode(code)} inside the read-only window opened at ${window.openedAt}: its restore point, from before the first update, stays the one to go back to`,
     );
   }
 
@@ -370,11 +503,13 @@ export async function runUpdate(
     );
   }
 
-  // 4. The platform Worker, once per update; again only if its confirmation was not recorded,
+  // 5. The platform Worker, once per update; again only if its confirmation was not recorded,
   // if a secret it needs went missing since, or if its version no longer serves (above).
   if (current().platformDeployedAt === undefined || adding.length > 0) {
     const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = current();
     const deployId = hex(ctx.random(8));
+    // With the update's intent, the window's: from here it may open (Codex WP3.41 r2-1).
+    const opening = currentWindow();
     record({
       update: {
         ...rest,
@@ -382,17 +517,25 @@ export async function runUpdate(
         platformDeployStartedAt: iso(ctx.now()),
         ...(adding.length > 0 ? { addedSecrets: adding } : {}),
       },
+      window: { ...opening, deployStartedAt: opening.deployStartedAt ?? iso(ctx.now()) },
     });
     const rendered = renderPlatformConfig(ctx.baseConfigs.platform, plan);
+    const open = currentWindow();
+    // The window's ID twice: the restore point the new server takes, and the window's secret,
+    // which keeps every request from the server while this version (or a later one) holds it.
     const config = {
       ...rendered,
-      vars: { ...(rendered.vars as Record<string, string>), [DEPLOY_ID_VAR]: deployId },
+      vars: {
+        ...(rendered.vars as Record<string, string>),
+        [DEPLOY_ID_VAR]: deployId,
+        [RESTORE_POINT_VAR]: open.id,
+      },
     };
     removes(plan.platformWorker, platformHeld, config);
     ctx.log(
       `deploying the platform Worker ${plan.platformWorker}${adding.length > 0 ? `, adding ${adding.join(", ")}` : ""}: Wrangler builds and pushes the images first, the slow part`,
     );
-    await ctx.cloud.deployPlatform(plan, config, add);
+    await ctx.cloud.deployPlatform(plan, config, { ...add, [MAINTENANCE_WINDOW_SECRET]: open.id });
     const after = await names(plan.platformWorker);
     if (after === null) {
       throw new Error(`after the deploy, ${plan.platformWorker} does not exist; run update again`);
@@ -403,7 +546,7 @@ export async function runUpdate(
         `after the deploy, ${plan.platformWorker} no longer holds ${lost.join(", ")}, which it held before: the update cannot restore a secret's value. Check the installation by hand (docs/secrets.md); nothing more was changed`,
       );
     }
-    const missing = adding.filter((name) => !after.has(name));
+    const missing = [...adding, MAINTENANCE_WINDOW_SECRET].filter((name) => !after.has(name));
     if (missing.length > 0) {
       throw new Error(
         `after the deploy, ${plan.platformWorker} lacks ${missing.join(", ")}; run update again`,
@@ -422,7 +565,7 @@ export async function runUpdate(
     );
   }
 
-  // 5. The web Worker, behind the hostname's Access application, read and checked just before.
+  // 6. The web Worker, behind the hostname's Access application, read and checked just before.
   if (current().webDeployedAt === undefined) {
     const found = await ownerAccess(
       ctx,
@@ -454,15 +597,77 @@ export async function runUpdate(
     ctx.log("deployed the web Worker");
   }
 
-  // 6. The switch, the server's restart on the new configuration, and its owner.
-  if (!options.verify) return { kind: "deployed", why: "the check after the update was skipped" };
-  return checkUpdate(
+  // 7. The switch, the server's restart on the new configuration, its owner and its restore
+  // point; then the acceptance, which ends the window.
+  if (!options.verify) {
+    return { kind: "deployed", why: "the check after the update was skipped", window: "open" };
+  }
+  const checkedUpdate = await checkUpdate(
     ctx,
     () => state,
     progress,
     (update) => record({ update }),
+    (change) => record({ window: { ...currentWindow(), ...change } }),
     options,
   );
+  if (checkedUpdate.kind !== "done") return checkedUpdate;
+  return accept(ctx, () => state, setJournal, code, options);
+
+  function currentWindow(): WindowRecord {
+    const open = state.journal.window;
+    if (open === undefined) throw new Error("the journal holds no update window");
+    return open;
+  }
+}
+
+/** How long an acceptance waits for the object to run without the window, unless told. */
+const ACCEPT_WAIT_MS = 10 * 60_000;
+
+function acceptWait(options: UpdateOptions) {
+  return { pollMs: options.pollMs, waitMs: options.acceptWaitMs ?? ACCEPT_WAIT_MS };
+}
+
+/** Accepts the release in its window, and says how it went. */
+async function accept(
+  ctx: UpdateContext,
+  state: () => BootstrapState,
+  setJournal: (journal: Journal) => void,
+  code: string,
+  options: UpdateOptions,
+): Promise<UpdateOutcome> {
+  const closed = await acceptWindow(ctx, state, setJournal, code, acceptWait(options));
+  return closed.confirmed
+    ? { kind: "done" }
+    : { kind: "deployed", why: closed.why, window: "closing" };
+}
+
+/**
+ * What runs before the update, to go back to: the versions serving all of each Worker's traffic,
+ * read just now, and the code the journal records. Refused when Cloudflare does not name a
+ * version for either (a gradual deployment): the update could not go back to it.
+ */
+function previousRelease(
+  plan: Installation,
+  platform: ServingIdentity,
+  web: ServingIdentity,
+  journal: Journal,
+): PreviousRelease {
+  for (const [worker, identity] of [
+    [plan.platformWorker, platform],
+    [plan.webWorker, web],
+  ] as const) {
+    if (identity.versionId === undefined) {
+      throw new BootstrapRefusal(
+        `Cloudflare does not name one version serving all of ${worker}'s traffic (a gradual deployment?), so the update could not go back to it; nothing was changed`,
+      );
+    }
+  }
+  return {
+    platformVersionId: String(platform.versionId),
+    webVersionId: String(web.versionId),
+    ...(journal.platformCode === undefined ? {} : { platformCode: journal.platformCode }),
+    ...(journal.webCode === undefined ? {} : { webCode: journal.webCode }),
+  };
 }
 
 /**
@@ -547,6 +752,7 @@ async function checkUpdate(
   state: () => { readonly journal: Journal; readonly installation: Installation },
   progress: (change: Partial<UpdateRecord>) => void,
   replace: (update: UpdateRecord) => void,
+  setWindow: (change: Partial<WindowRecord>) => void,
   options: UpdateOptions,
 ): Promise<UpdateOutcome> {
   const plan = state().installation;
@@ -575,6 +781,7 @@ async function checkUpdate(
           decided: {
             kind: "deployed",
             why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
+            window: "open",
           },
         };
       }
@@ -583,28 +790,38 @@ async function checkUpdate(
         // update's deploy ID, is its version.
         progress({ platformVersionId: String(identity.versionId) });
       }
-      const result: Verification =
-        which === "unknown"
-          ? {
-              verified: false,
-              why: "Cloudflare does not say yet which version serves the platform Worker",
-            }
-          : verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
-              installationId: plan.installationId,
-              releasedVersionId: update().platformVersionId,
-              releasedAt: since,
-            });
-      if (result.verified) {
-        progress({ verifiedAt: iso(ctx.now()) });
-        ctx.log(
-          "checked: the server restarted on the new version, answers, and shows the owner initialized and durable",
-        );
-        return { decided: { kind: "done" } };
+      if (which === "unknown") {
+        return { why: "Cloudflare does not say yet which version serves the platform Worker" };
       }
-      return { why: result.why };
+      const logs = parseLogs(await logsSince(since, ctx.now()), plan.platformWorker);
+      // The update's window (WP3.41), which every update opens before its deploy: held by its
+      // own version, and the restore point taken, recorded as soon as the server reports it (a
+      // rollback names its time).
+      const open = state().journal.window as WindowRecord;
+      const held = windowCheck(logs, {
+        installationId: plan.installationId,
+        versionId: update().platformVersionId,
+        since,
+        id: open.id,
+      });
+      if (held.ok && open.restorePointTakenAt !== held.takenAt) {
+        setWindow({ restorePointTakenAt: held.takenAt });
+      }
+      const result: Verification = verifyRelease(logs, {
+        installationId: plan.installationId,
+        releasedVersionId: update().platformVersionId,
+        releasedAt: since,
+      });
+      if (!result.verified) return { why: result.why };
+      if (!held.ok) return { why: held.why };
+      progress({ verifiedAt: iso(ctx.now()) });
+      ctx.log(
+        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable; its restore point ${open.id} was taken at ${held.takenAt}`,
+      );
+      return { decided: { kind: "done" } };
     },
   );
-  return "decided" in seen ? seen.decided : { kind: "deployed", why: seen.why };
+  return "decided" in seen ? seen.decided : { kind: "deployed", why: seen.why, window: "open" };
 }
 
 /**

@@ -14,7 +14,7 @@
 // uploaded, the code each Worker was deployed from) is written as version 3, tagged or not, so a
 // bootstrap from before WP3.34 refuses it ("unknown version") rather than drop those fields
 // (Codex WP3.34 r2-1). One that records the MCP services (WP5.10) is version 5, for the same
-// reason.
+// reason, and one that records an update's read-only window or restore points (WP3.41) version 6.
 
 import {
   closeSync,
@@ -33,6 +33,12 @@ import { BootstrapStatus } from "../../contracts/src/index.ts";
 import type { BootstrapState, Journal, McpServicesRecord, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
 import type { UpdateRecord } from "./update.ts";
+import type {
+  PreviousRelease,
+  RestorePointRecord,
+  RollbackRecord,
+  WindowRecord,
+} from "./window.ts";
 
 export function installationsDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.CFO_INSTALL_DIR) return env.CFO_INSTALL_DIR;
@@ -243,6 +249,8 @@ function parseJournal(value: unknown): Journal {
   }
   if (j.update !== undefined) journal.update = parseUpdate(j.update);
   if (j.mcpServices !== undefined) journal.mcpServices = parseMcpServices(j.mcpServices);
+  if (j.window !== undefined) journal.window = parseWindow(j.window);
+  if (j.restorePoints !== undefined) journal.restorePoints = parseRestorePoints(j.restorePoints);
   if (j.r2Token !== undefined) {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
@@ -343,6 +351,94 @@ function parseUpdate(value: unknown): UpdateRecord {
   return update as unknown as UpdateRecord;
 }
 
+/** A window's and restore point's ID (worker/src/server/maintenance.ts). */
+const WINDOW_ID = /^rp-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
+const COMMIT = /^[0-9a-f]{40}$/;
+
+function windowIdOf(o: Record<string, unknown>, key: string, where: string): string {
+  const id = str(o, key, where);
+  if (!WINDOW_ID.test(id)) throw new Error(`the state file's ${where}.${key} is not a window's ID`);
+  return id;
+}
+
+function optionalCommit(o: Record<string, unknown>, key: string, where: string) {
+  if (o[key] === undefined) return {};
+  const value = str(o, key, where);
+  if (!COMMIT.test(value)) throw new Error(`the state file's ${where}.${key} is not a commit ID`);
+  return { [key]: value };
+}
+
+function requiredTime(o: Record<string, unknown>, key: string, where: string): string {
+  const time = optionalTime(o, key, where);
+  if (time === undefined) throw new Error(`the state file's ${where}.${key} is missing`);
+  return time;
+}
+
+function optionalTimes(o: Record<string, unknown>, keys: readonly string[], where: string) {
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const time = optionalTime(o, key, where);
+    if (time !== undefined) out[key] = time;
+  }
+  return out;
+}
+
+/** An update's open window (WP3.41, window.ts). Names, times and IDs only. */
+function parseWindow(value: unknown): WindowRecord {
+  const where = "journal.window";
+  const w = object(value, where);
+  const p = object(w.previous, `${where}.previous`);
+  const previous: PreviousRelease = {
+    platformVersionId: str(p, "platformVersionId", `${where}.previous`),
+    webVersionId: str(p, "webVersionId", `${where}.previous`),
+    ...optionalCommit(p, "platformCode", `${where}.previous`),
+    ...optionalCommit(p, "webCode", `${where}.previous`),
+  };
+  let rollback: RollbackRecord | undefined;
+  if (w.rollback !== undefined) {
+    const rw = `${where}.rollback`;
+    const r = object(w.rollback, rw);
+    rollback = {
+      startedAt: requiredTime(r, "startedAt", rw),
+      ...optionalTimes(r, ["restoredAt", "webRolledBackAt", "platformRolledBackAt"], rw),
+      ...(r.platformVersionId === undefined
+        ? {}
+        : { platformVersionId: str(r, "platformVersionId", rw) }),
+    };
+  }
+  return {
+    id: windowIdOf(w, "id", where),
+    openedAt: requiredTime(w, "openedAt", where),
+    previous,
+    ...optionalTimes(w, ["deployStartedAt", "restorePointTakenAt", "acceptStartedAt"], where),
+    ...(rollback === undefined ? {} : { rollback }),
+  };
+}
+
+const OUTCOMES = ["accepted", "rolled back", "ended outside the installer", "abandoned"] as const;
+
+/** The last few restore points (WP3.41). */
+function parseRestorePoints(value: unknown): RestorePointRecord[] {
+  const where = "journal.restorePoints";
+  if (!Array.isArray(value)) throw new Error(`the state file's ${where} is not a list`);
+  return value.map((entry: unknown) => {
+    const r = object(entry, `${where} entry`);
+    const outcome = r.outcome;
+    if (!OUTCOMES.includes(outcome as (typeof OUTCOMES)[number])) {
+      throw new Error(`the state file's ${where} entry has an unknown outcome`);
+    }
+    return {
+      id: windowIdOf(r, "id", where),
+      where: str(r, "where", where),
+      ...optionalTimes(r, ["takenAt"], where),
+      ...optionalCommit(r, "before", where),
+      ...optionalCommit(r, "updatedTo", where),
+      outcome: outcome as RestorePointRecord["outcome"],
+      closedAt: requiredTime(r, "closedAt", where),
+    };
+  });
+}
+
 const SERVICE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const REVISION = /^[0-9a-f]{16,64}$/;
 
@@ -398,11 +494,15 @@ function parseMcpServices(value: unknown): McpServicesRecord {
  * reason: a bootstrap from before it would drop the record of an unfinished update and take the
  * installation for up to date. Version 5 is either, with a journal that records the MCP services
  * (WP5.10, `bootstrap.ts services`): a bootstrap from before it would drop which services are on.
+ * Version 6 is either, with a journal that records an update's read-only window or restore
+ * points (WP3.41): a bootstrap from before it would drop an open window and deploy over it.
  */
 export function stateVersionFor(
   plan: Pick<Installation, "bucketTag">,
   journal: Readonly<Record<string, unknown>> = {},
-): 1 | 2 | 3 | 4 | 5 {
+): 1 | 2 | 3 | 4 | 5 | 6 {
+  const j = journal as Partial<Journal>;
+  if (j.window !== undefined || j.restorePoints !== undefined) return 6;
   if ((journal as Partial<Journal>).mcpServices !== undefined) return 5;
   // The last update's record (WP3.35), which a bootstrap from before it would drop.
   if ((journal as Partial<Journal>).update !== undefined) return 4;
@@ -419,15 +519,13 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (![1, 2, 3, 4, 5].includes(o.stateVersion as number)) {
+  if (![1, 2, 3, 4, 5, 6].includes(o.stateVersion as number)) {
     throw new Error("the state file has an unknown version");
   }
   const installation = parseInstallation(o.installation);
-  // Versions 3 to 5 hold a plan with or without a tag; 1 and 2 as their plans say.
+  // Versions 3 to 6 hold a plan with or without a tag; 1 and 2 as their plans say.
   if (
-    o.stateVersion !== 3 &&
-    o.stateVersion !== 4 &&
-    o.stateVersion !== 5 &&
+    ![3, 4, 5, 6].includes(o.stateVersion as number) &&
     stateVersionFor(installation) !== o.stateVersion
   ) {
     throw new Error(

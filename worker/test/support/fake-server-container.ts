@@ -84,6 +84,8 @@ export class FakeServerContainer implements ServerContainer {
   handler: FakeHandler | null = null;
   /** The `replication` member of the entrypoint's `/status` (WP3.5's replication warning). */
   replication: unknown = null;
+  /** The `restorePoint` member of the entrypoint's `/status` (WP3.41). */
+  restorePoint: unknown = null;
   #onExit: ((exit: ContainerExit) => void) | null = null;
   #positionReads = 0;
 
@@ -184,6 +186,7 @@ export class FakeServerContainer implements ServerContainer {
             recovery: this.recovery,
             finalSync: null,
             replication: this.replication,
+            restorePoint: this.restorePoint,
           });
     }
     // Port 8000 refuses connections until the app listens: through the restore and while it

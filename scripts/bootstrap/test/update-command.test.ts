@@ -93,7 +93,9 @@ describe("updateCommand", () => {
     const plan = await accountPlan();
     const { world, path, lines, ports } = await finished(plan);
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
-    expect(lines.at(-1)).toBe(`updated to ${CODE.slice(0, 12)}. Open https://${plan.hostname}`);
+    expect(lines.at(-1)).toBe(
+      `updated to ${CODE.slice(0, 12)}, checked and accepted: Omnigent is available again. Open https://${plan.hostname}`,
+    );
     expect(world.calls.filter((c) => c.startsWith("deploy"))).toEqual([
       "deployPlatform",
       "deployWeb",
@@ -111,7 +113,7 @@ describe("updateCommand", () => {
     const { world, path, lines, ports } = await finished(plan);
     expect(await updateCommand(path, { root: ROOT, verify: false }, ports())).toBe(3);
     expect(lines.at(-1)).toBe(
-      `updated, but not checked yet: the check after the update was skipped. Run bootstrap.ts update again to check; it deploys nothing again. Open https://${plan.hostname}`,
+      `updated, but not checked yet: the check after the update was skipped. Omnigent stays paused until the update is checked, so nothing can be lost meanwhile. Run bootstrap.ts update again to check; it deploys nothing again. Or go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback. Open https://${plan.hostname}`,
     );
     world.now += 20 * 60_000;
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
@@ -132,9 +134,46 @@ describe("updateCommand", () => {
     };
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(3);
     expect(lines.at(-1)).toMatch(
-      /it deploys the update again\. Run bootstrap\.ts update again\. Open/,
+      /it deploys the update again\. Omnigent stays paused .* Run bootstrap\.ts update again\. Or go back .*--rollback\. Open/,
     );
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
+  });
+
+  it("goes back with --rollback inside the window: 3 while under way, 0 once done (WP3.41)", async () => {
+    const plan = await accountPlan();
+    const { world, path, lines, ports } = await finished(plan);
+    // Deployed, not checked: the window is open.
+    expect(await updateCommand(path, { root: ROOT, verify: false }, ports())).toBe(3);
+    const rollback = { root: ROOT, verify: true, rollback: true };
+    world.rollbackWorks = false;
+    expect(await updateCommand(path, rollback, ports({ options: { verifyWaitMs: 60_000 } }))).toBe(
+      3,
+    );
+    expect(lines.at(-1)).toMatch(
+      /^rolling back, not finished yet: .*Omnigent stays paused until it is\. Run bootstrap\.ts update --rollback again/,
+    );
+    world.rollbackWorks = true;
+    expect(await updateCommand(path, rollback, ports())).toBe(0);
+    expect(lines.at(-1)).toBe(`rolled back. Open https://${plan.hostname}`);
+    expect(world.calls.filter((c) => c === "deployVersion")).toHaveLength(2);
+    await expect(updateCommand(path, rollback, ports())).rejects.toThrow(/nothing to go back to/);
+  });
+
+  it("exits 3 while an accepted update's window is still closing", async () => {
+    const plan = await accountPlan();
+    const { path, lines, ports } = await finished(plan);
+    expect(
+      await updateCommand(
+        path,
+        { root: ROOT, verify: true },
+        ports({ options: { acceptWaitMs: 30_000 } }),
+      ),
+    ).toBe(3);
+    expect(lines.at(-1)).toMatch(
+      /^accepted, and the read-only window is closed; the server's restart without it was not seen yet: .*bootstrap\.ts status --logs shows it\. Open/,
+    );
+    expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
+    expect(lines.at(-1)).toMatch(/^up to date/);
   });
 
   it("passes Access in the installer's account and the owner's address on", async () => {

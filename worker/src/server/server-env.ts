@@ -214,7 +214,8 @@ export function startFingerprint(
  * The fingerprint of the server environment alone (no image): what the platform Worker's cron
  * sends OmnigentServer with `ensureStarted` (WP3.36). The cron runs on the newest deployed
  * version at once, and has no `images` map of its own, so the two compare environments only.
- * A digest, never logged.
+ * An update's read-only window is part of it (WP3.41: the server receives it). A digest, never
+ * logged.
  */
 export function environmentFingerprint(env: Readonly<Record<string, unknown>>): Promise<string> {
   return configFingerprint(serverContainerEnv(env).vars, {

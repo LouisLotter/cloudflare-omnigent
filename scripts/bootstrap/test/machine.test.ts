@@ -1640,8 +1640,11 @@ describe("runBootstrap: the owner's password on the site, and updates (WP3.34)",
     held.delete(LAUNCHER_KEY_SECRET);
     const changes = h.world.secretChanges.length;
     expect(await h.run()).toEqual({ kind: "done", updated: true });
-    // One path for every update: a deploy of the same code, carrying the pair (update.ts).
-    expect(h.world.secretChanges.slice(changes)).toHaveLength(0);
+    // One path for every update: a deploy of the same code, carrying the pair (update.ts); the
+    // only secrets change is its acceptance, which deletes the window's secret (WP3.41).
+    expect(h.world.secretChanges.slice(changes).map((c) => c.changes)).toEqual([
+      { SERVER_ENV_CFO_MAINTENANCE_WINDOW: null },
+    ]);
     expect(h.world.calls.filter((c) => c === "deployPlatform")).toHaveLength(2);
     expect(h.store.state.journal.update?.addedSecrets).toEqual(
       [LAUNCHER_KEY_ID_SECRET, LAUNCHER_KEY_SECRET].sort(),

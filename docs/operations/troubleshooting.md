@@ -49,6 +49,22 @@ A saved session's 201 response is distinct from `runner_launch: started|failed|u
 | GitHub linking is off (exit 1) | A server started with the App's settings answers, but Omnigent does not list GitHub in `/v1/info`'s `enabled_connections`: the image turned linking off, so a setting it needs is missing. | The server's `boot` line says `github_linking: off: incomplete`, and its `config.warning` line names what is missing (both in the platform Worker's Workers Logs). Run the step again with `--replace`, then delete the old App on GitHub. |
 | The server does not start with the App's settings (exit 1), or the setup page says the server cannot start | The server exited 78 with a malformed setting and the watchdog holds it until the configuration changes: Omnigent is down. | The server's `config.error` line names the setting. Run the step again with `--replace` (a new App, freshly stored), then delete the old App on GitHub. |
 
+## Updates
+
+`bootstrap.ts update` opens a window in which Omnigent takes no request, takes a restore point, checks the new version, and accepts it ([install guide](../install.md#updating-your-installation)).
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| "Omnigent is being updated" (503, `retry-after: 60`) on every page and API call | The update's window is open: the platform Worker holds `SERVER_ENV_CFO_MAINTENANCE_WINDOW`, and its object passes nothing to the server. Cloud computers wait and reconnect afterwards; no scheduled task fires, and the server starts no computer. | Let the update finish; if it stopped, `bootstrap.ts update` continues it, or `bootstrap.ts update --rollback` goes back. `bootstrap.ts status` says which. |
+| Not checked yet (exit 3), the window open | The new server has not answered with a durable owner, or has not reported its restore point. | `bootstrap.ts status --logs` shows `window=` and `restorePoint=` on the status lines. The server's `cfo.restore_point.failed` line (exit 74, retried at each start) says why a restore point could not be taken; Omnigent never starts without it. |
+| Accepted, restart not seen (exit 3) | The window's secret is deleted and the window closed; the platform's object has not switched to that version yet (up to about 5 minutes), or the server it restarts without the window has not answered yet. | `bootstrap.ts status --logs` shows it come back; `update` says up to date. |
+| Rollback not finished (exit 3) | The server has not reported the restore point back (`rolled_back`), or the previous version's server has not answered yet. | Run `bootstrap.ts update --rollback` again. The server's `cfo.rollback.failed` line (exit 76, retried) names the cause; a restore point that does not restore as its manifest records is never put back, and the replica stays as it was. |
+| "The update's read-only window was ended outside this installer" | `SERVER_ENV_CFO_MAINTENANCE_WINDOW` was deleted by hand (or another version deployed): Omnigent may have taken changes since the restore point. | Going back would lose them, so rollback refuses (a rollback whose order was not sent yet is called off); `update` starts again with a new restore point. |
+| "…while its rollback was under way. Omnigent's data may be partly put back" | The window ended after the rollback's order was sent. The order stays, and the server refuses it outside its window (exit 78), so it stays stopped and nothing more changes. | A decision for a person: the restore point is intact (`cfo-restore-points/<id>/`, never changed by a rollback). Setting the window's secret again to its ID lets `update --rollback` finish putting it back. |
+| "The version from before the update serves" | A deploy was sent but the window does not hold: the deploy did not land, or that version was deployed again. | Nothing to go back to from here; `update` starts again with a new restore point (the old window is recorded as `abandoned`). |
+| "Cannot be updated: its replica … is at the root of its bucket" | A replica planned without a path leaves no room beside it for a restore point. | Nothing was changed. The default replica, `s3://<bucket>/omnigent`, has one; moving a replica is a recovery task. |
+| `services` or `github-app` refuses: an update is waiting | A change made inside the window would be undone, unseen, by a rollback. | Finish the update first. |
+
 ## MCP services
 
 `bootstrap.ts services add <id>` stores the service's settings and waits until a server started with them answers.

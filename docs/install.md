@@ -130,11 +130,27 @@ node scripts/bootstrap/bootstrap.ts update
 
 It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key or the keys Omnigent stores your service sign-ins with. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers and that your account is still there and stored safely, and ends with the link to open.
 
+Every update can be undone until it is checked, and not after:
+
+- **A restore point first.** Before the new version can change anything, its server copies Omnigent's data aside, in your own storage, where nothing deletes it automatically. The last three restore points are kept. A new Omnigent version may change how it stores its data in a way the old one cannot read; the restore point is what makes going back possible.
+- **Paused until checked.** From the moment the new version takes over until the update is checked, Omnigent takes no request from anyone, so nothing can change: opening it shows "Omnigent is being updated", your cloud computers wait, and scheduled tasks do not run. Nothing can be lost in that time. The update checks the new version, accepts it, and says "updated, checked and accepted: Omnigent takes changes again". Accepting restarts the server once more and takes up to 5 more minutes.
+- **Going back, only before it is accepted.** If the update ends with "not checked yet", Omnigent stays paused. Run `update` again to keep checking, or go back to the version from before the update, with its data exactly as it was then:
+
+  ```bash
+  node scripts/bootstrap/bootstrap.ts update --rollback
+  ```
+
+  It puts the restore point back, returns both parts of your installation to their versions from before the update, waits until the server answers, and ends with "rolled back". Run it again if it stops early. Once an update is accepted, going back would lose what changed since, so `--rollback` refuses: a problem is then fixed by a newer release.
+
+More:
+
 - With changes of your own in the folder (anything `git status` shows), it stops and says so: it only deploys a release exactly as published.
-- If it stops early, run it again: it carries on where it stopped. Exit status 3 means "deployed, not checked yet, run it again"; that run only checks.
+- If it stops early, run it again: it carries on where it stopped. Exit status 3 means "not finished, run it again": deployed but not checked (Omnigent stays paused), accepted but still switching, or a rollback under way.
 - Run it when nothing is new, and it says the installation is up to date.
 - Running the `install` command again does the same on a finished installation.
-- The release that brings Omnigent 0.20 also changes Omnigent's database, so after it you cannot go back by deploying the earlier release, and `update` does not yet keep a copy of your data to go back to (that is being added). An update interrupted while it changes the database is simply finished at the next start. Updating an existing installation to it has not been tried on Cloudflare yet. A cloud computer that is awake during the update keeps the earlier Omnigent until it next sleeps, about a quarter of an hour after its last chat goes quiet; until then a new chat on it is refused ("This computer cannot safely select which session runner to replace…"). Try again a little later. Details: [the 0.20.0 upgrade](compatibility.md#the-omnigent-0200-upgrade-30-october-2026).
+- `bootstrap.ts status` says whether an update is waiting, and lists the restore points.
+- While an update is waiting to be checked, `services` and `github-app` refuse, so that going back cannot undo them without a word.
+- The release that brings Omnigent 0.20 also changes Omnigent's database. Until the update is accepted you can go back with `update --rollback`, which restores the restore point taken before the change; once it is accepted, there is no going back by deploying the earlier release. An update interrupted while it changes the database is simply finished at the next start. Updating an existing installation to it has not been tried on Cloudflare yet. A cloud computer that is awake during the update keeps the earlier Omnigent until it next sleeps, about a quarter of an hour after its last chat goes quiet; until then a new chat on it is refused ("This computer cannot safely select which session runner to replace…"). Try again a little later. Details: [the 0.20.0 upgrade](compatibility.md#the-omnigent-0200-upgrade-30-october-2026).
 - New versions of the tools on your cloud computers (Claude Code, Codex, gh and others) come the same way: a daily check proposes them to the project as one pull request, and once it is merged, `update` brings them to your installation. Each computer picks up the new image the next time it starts or wakes. The tools never update themselves on a computer. See [keeping the pinned tools current](compatibility.md#keeping-the-pinned-tools-current).
 
 ## When something needs you

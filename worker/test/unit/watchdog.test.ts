@@ -6,6 +6,7 @@ import {
   type Effect,
   type EntrypointPhase,
   EXIT_CONFIG,
+  EXIT_ROLLED_BACK,
   INITIAL_WATCHDOG_STATE,
   type Observation,
   randomOutageId,
@@ -749,6 +750,89 @@ describe("watchdog: recovery mode and settings (WP2.3)", () => {
     const stopping: WatchdogState = { ...answered(T0), phase: "stopping", phaseSince: T0 };
     const s = step(stopping, exited(EXIT_CONFIG), T0 + 1_000, T, nextId, "config-a");
     expect(s.state).toMatchObject({ phase: "held", heldConfig: "config-a" });
+  });
+});
+
+describe("watchdog: an update's rollback (WP3.41)", () => {
+  it("holds a server that exited 79 after its rollback until the configuration changes", () => {
+    const rolled: Observation = {
+      kind: "stopped",
+      exitCode: EXIT_ROLLED_BACK,
+      ranWith: "rollback",
+    };
+    const held = step(answered(T0), rolled, T0 + 10_000, T, nextId, "rollback");
+    expect(events(held)).toContain("rolled_back");
+    expect(events(held)).not.toContain("config_error");
+    expect(held.state).toMatchObject({ phase: "held", heldConfig: "rollback" });
+    expect(types(held)).not.toContain("start");
+    const fields = held.effects.flatMap((e) =>
+      e.type === "event" && e.name === "rolled_back" ? [e.fields] : [],
+    );
+    expect(fields).toEqual([{ exitCode: EXIT_ROLLED_BACK, held: true }]);
+    const later = step(held.state, STOPPED, T0 + 3_600_000, T, nextId, "rollback");
+    expect(types(later)).not.toContain("start");
+    // Said again at every check while held, so a lost line recurs; a 78's hold says nothing.
+    expect(events(later)).toEqual(["rolled_back"]);
+    const configHeld = step(
+      answered(T0),
+      { kind: "stopped", exitCode: EXIT_CONFIG, ranWith: "rollback" },
+      T0 + 10_000,
+      T,
+      nextId,
+      "rollback",
+    );
+    expect(events(step(configHeld.state, STOPPED, T0 + 70_000, T, nextId, "rollback"))).toEqual([]);
+    // The previous release's configuration starts it.
+    const previous = step(later.state, STOPPED, T0 + 3_700_000, T, nextId, "previous");
+    expect(events(previous)).toEqual(["config_changed", "start"]);
+    // Ended during a graceful stop, or from a configuration already replaced: the same rules.
+    const stopping: WatchdogState = { ...answered(T0), phase: "stopping", phaseSince: T0 };
+    expect(step(stopping, rolled, T0 + 1_000, T, nextId, "rollback").state.phase).toBe("held");
+    expect(step(answered(T0), rolled, T0 + 1_000, T, nextId, "previous").state.phase).toBe(
+      "starting",
+    );
+  });
+
+  it("replaces a server in recovery mode once when the observation carries another configuration", () => {
+    const inRecovery = (ranWith?: string | null): Observation => ({
+      kind: "silent",
+      entrypoint: {
+        phase: "recovery",
+        recovery: { reason: "database_corrupt", transient: false },
+      },
+      ...(ranWith === undefined ? {} : { ranWith }),
+    });
+    const seen = step(answered(T0), inRecovery(), T0 + 5_000, T, nextId, "update");
+    expect(types(seen)).not.toContain("stop");
+    // Without a configuration to compare (no rollback ordered): never stopped.
+    expect(types(step(seen.state, inRecovery(), T0 + 65_000, T, nextId, "update"))).not.toContain(
+      "stop",
+    );
+    // With one, and it is not the current one: replaced, gracefully, the outage continuing.
+    const ordered = step(seen.state, inRecovery("update"), T0 + 125_000, T, nextId, "rollback");
+    expect(types(ordered)).toContain("stop");
+    expect(ordered.effects).toContainEqual({
+      type: "stop",
+      reason: "the configuration changed",
+      onSilence: false,
+    });
+    expect(events(ordered)).toContain("config_changed");
+    expect(ordered.state).toMatchObject({ phase: "stopping", recoverySince: null });
+    expect(outages(ordered)[0]?.cause).toBe("recovery_mode");
+    // An intended stop not yet delivered is sent again, not cancelled, while it is outdated.
+    const again = step(ordered.state, inRecovery("update"), T0 + 130_000, T, nextId, "rollback");
+    expect(types(again)).toContain("stop");
+    expect(events(again)).not.toContain("stop_cancelled");
+    // Started with the current one and in recovery mode again: never replaced for it.
+    const replacement = step(
+      { ...answered(T0), recoverySince: T0 },
+      inRecovery("rollback"),
+      T0 + 400_000,
+      T,
+      nextId,
+      "rollback",
+    );
+    expect(types(replacement)).not.toContain("stop");
   });
 });
 

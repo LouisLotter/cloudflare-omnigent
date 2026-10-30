@@ -23,7 +23,7 @@
 //   node scripts/bootstrap/bootstrap.ts github-app [--platform-worker <name> | --state <file>]
 //       [--github-org <org>] [--replace] [--no-open]
 //   node scripts/bootstrap/bootstrap.ts update [--platform-worker <name> | --state <file>]
-//       [--owner-email <address>] [--no-verify]
+//       [--owner-email <address>] [--no-verify] [--rollback]
 //   node scripts/bootstrap/bootstrap.ts services [add <id> [--origin <url>] [--replace] |
 //       remove <id>] [--platform-worker <name> | --state <file>]
 //
@@ -40,8 +40,15 @@
 // that the platform Worker lacks (by name; never replacing one), deploys the platform Worker and
 // then the web Worker with the plan's own names and settings, keeping every secret, waits for the
 // server's restart on the new version and checks the owner is still initialized and durable.
-// Exit status: 0 updated (or already up to date); 3 deployed, not checked yet (run it again);
-// 1 an error or a refusal.
+// Every update follows ADR 0007 (WP3.41, window.ts): before the new server can write, it takes a
+// restore point of Omnigent's data that nothing automatic deletes (the last three are kept, beside
+// the replica in its bucket), and Omnigent accepts no request until the new version is checked;
+// then the update accepts it, and Omnigent is available again. Until then, `update --rollback`
+// (rollback.ts) goes back to the versions from before the update and puts the restore point back
+// as Omnigent's data; once accepted, a problem is fixed with a newer update.
+// Exit status: 0 updated and accepted (or already up to date; with --rollback, rolled back);
+// 3 not finished yet: deployed and not checked, accepted with its restart not seen yet, or a rollback under
+// way (run the same command again); 1 an error or a refusal.
 //
 // `install` is the one command for an installation in the installer's own account (WP3.31):
 // `plan`, then `run`, in one go. Run again with the same options, it continues the installation
@@ -651,6 +658,22 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   for (const line of servicesListing(shippedManifests(ROOT), journal.mcpServices)) {
     console.log(`  ${line}`);
   }
+  // An update's read-only window and the restore points (WP3.41).
+  const window = journal.window;
+  console.log(
+    window === undefined
+      ? "Update window: none open."
+      : window.rollback !== undefined
+        ? `Update window: open since ${window.openedAt}, being rolled back (finish with bootstrap.ts update --rollback).`
+        : window.acceptStartedAt !== undefined
+          ? `Update window: accepted at ${window.acceptStartedAt}, closing (confirm with bootstrap.ts update).`
+          : `Update window: open since ${window.openedAt}; Omnigent is paused until bootstrap.ts update checks and accepts the update, or bootstrap.ts update --rollback goes back.`,
+  );
+  for (const point of journal.restorePoints ?? []) {
+    console.log(
+      `  restore point ${point.id}: ${point.outcome} at ${point.closedAt}${point.takenAt === undefined ? "" : `, taken at ${point.takenAt}`}, kept at ${point.where}`,
+    );
+  }
   if (!withLogs) return;
   // The watchdog's statuses of the last 15 minutes, read-only: no secret is in them.
   const now = Date.now();
@@ -663,7 +686,7 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   const logs = parseLogs(events, installation.platformWorker);
   for (const e of [...logs.statuses].sort((a, b) => a.loggedAt - b.loggedAt)) {
     console.log(
-      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"}`,
+      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
     );
   }
   if (journal.releasedAt !== undefined) {
@@ -711,6 +734,7 @@ async function main(): Promise<number> {
       replace: { type: "boolean" },
       "no-open": { type: "boolean" },
       origin: { type: "string" },
+      rollback: { type: "boolean" },
     },
   });
   // Only `services` takes words after the command (its action and the service).
@@ -748,6 +772,7 @@ async function main(): Promise<number> {
         root: ROOT,
         ...(values["owner-email"] === undefined ? {} : { ownerEmail: values["owner-email"] }),
         verify: values["no-verify"] !== true,
+        rollback: values.rollback === true,
       });
     case "github-app":
       return githubAppCommand(statePath(), {

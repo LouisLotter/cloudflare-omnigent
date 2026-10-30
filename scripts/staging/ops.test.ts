@@ -27,6 +27,7 @@ import {
   type Cloud,
   type Context,
   deploy,
+  deployVersion,
   listSecretNames,
   type NameFilter,
   type Store,
@@ -455,6 +456,10 @@ class FakeCloud implements Cloud {
       else next[key] = value;
     }
     this.secrets.set(name, next);
+  }
+  deployVersion(name: string, versionId: string): void {
+    this.tick();
+    this.calls.push(`worker.deploy-version ${name} ${versionId}`);
   }
   bucketExists(name: string): boolean {
     this.tick();
@@ -2530,6 +2535,30 @@ describe("WP2.4: the caller's secrets, on deploy and afterwards", () => {
     expect(cloud.secrets.get("cfo-stg-a")).toEqual({ B: "2", C: "3" });
     expect(logs.at(-1)).toBe("changed the secrets of cfo-stg-a: set C deleted A");
     expect(logs.join("\n")).not.toContain('"3"');
+    expect(locks.held.size).toBe(0);
+  });
+
+  it("deploys an earlier version again for a deployed Worker of the same owner only (WP3.41)", () => {
+    const version = "0a1b2c3d-0000-4000-8000-000000000001";
+    const again =
+      (suffix: string, owner = "wp0.4") =>
+      () =>
+        deployVersion(ctx, { suffix, owner, versionId: version });
+    expect(again("none")).toThrow("cfo-stg-none is not a recorded staging deployment");
+    deploy(ctx, request());
+    cloud.calls.length = 0;
+    expect(again("a", "wp9.9")).toThrow("cfo-stg-a belongs to wp0.4, not wp9.9");
+    again("a")();
+    expect(cloud.calls).toEqual([
+      "accounts",
+      "worker.exists",
+      `worker.deploy-version cfo-stg-a ${version}`,
+    ]);
+    expect(logs.at(-1)).toBe(`deployed version ${version} of cfo-stg-a to all of its traffic`);
+    cloud.workers.delete("cfo-stg-a");
+    expect(again("a")).toThrow("cfo-stg-a is recorded, but the staging account has no such Worker");
+    store.update((all) => all.map((d) => ({ ...d, state: "pending" as const })));
+    expect(again("a")).toThrow("cfo-stg-a is not deployed; deploy it first");
     expect(locks.held.size).toBe(0);
   });
 

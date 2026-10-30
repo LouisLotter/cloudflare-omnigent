@@ -34,6 +34,12 @@
 //   - Omnigent's MCP registry (WP5.10): the same line says whether `/v1/info` lists `mcp`
 //     (`mcpRegistry`) and which revision of the installation's MCP choices the version holds
 //     (`mcpRevision`), which the installer's `services` step waits for.
+//   - An update's read-only window (WP3.41, maintenance.ts): while the version holds
+//     `SERVER_ENV_CFO_MAINTENANCE_WINDOW`, nothing is passed to the server (`fetch` answers 503,
+//     and so does the password page's change), the watchdog still checks it directly, and the
+//     status line says so (`maintenance`) with the restore point the server reports
+//     (`restorePoint`). A server held after its rollback is logged as `rolled_back`, with the
+//     restore point ordered, at every check while it is held.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.
@@ -82,6 +88,12 @@ import {
 } from "./container-port.ts";
 import { githubAppConfigured, githubAppTagOf, githubLinkingOf } from "./github-linking.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
+import {
+  MAINTENANCE_MESSAGE,
+  maintenanceWindowOf,
+  restorePointOf,
+  rollbackOrderOf,
+} from "./maintenance.ts";
 import { mcpRegistryOf, mcpRevisionOf } from "./mcp-services.ts";
 import {
   constantTimeEqual,
@@ -397,6 +409,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       logEvent("server", "forward_refused", { reason: "platform_path" });
       return errorResponse(404, "not_found", "Not found.", false);
     }
+    if (this.#window() !== null) {
+      // An update's read-only window (WP3.41): no request reaches the server, a read or a
+      // WebSocket included, from the browser or from a computer, until the update accepts its
+      // release or rolls it back.
+      logEvent("server", "forward_refused", { reason: "maintenance" });
+      return errorResponse(503, "unavailable", MAINTENANCE_MESSAGE, true, { "retry-after": "60" });
+    }
     const container = this.#container;
     if (container === null) {
       logEvent("server", "forward_refused", { reason: "no_container" });
@@ -549,12 +568,18 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       const answering: Observation = { kind: "answering", ranWith };
       // The exit is read here, with no await before the decision is persisted and the record
       // consumed, so an exit reported meanwhile is never deleted unread (Codex WP2.2 r4-4).
+      // A silent server's configuration counts only while an update's rollback is ordered: a
+      // server in recovery mode is then replaced to carry the order out (WP3.41), and otherwise
+      // never stopped.
+      const rollback = rollbackOrderOf(this.env as unknown as Record<string, unknown>) !== null;
       const observation: Observation =
         seen.kind === "stopped"
           ? { kind: "stopped", ...this.#lastExit() }
           : seen.kind === "answering"
             ? answering
-            : seen;
+            : rollback
+              ? { ...seen, ranWith }
+              : seen;
       let result = step(this.#loadState(), observation, this.now(), timing, randomOutageId, config);
       this.#persist(result.state, result.effects, observation.kind === "stopped");
       nextCheckAt = result.nextCheckAt;
@@ -730,6 +755,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
           // A configuration error names the GitHub App the held configuration holds (WP3.36,
           // Codex r1-2), and the revision of its MCP choices (WP5.10): the installer's evidence
           // that the settings it stored are the ones held.
+          // A rollback's hold names the restore point this version ordered (WP3.41): the
+          // installer's proof that the replica is back, before it deploys the previous release.
           logEvent(
             "watchdog",
             effect.name,
@@ -739,7 +766,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
                   githubApp: await githubAppTagOf(this.env as unknown as Record<string, unknown>),
                   mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
                 }
-              : effect.fields,
+              : effect.name === "rolled_back"
+                ? {
+                    ...effect.fields,
+                    restorePoint: rollbackOrderOf(this.env as unknown as Record<string, unknown>),
+                  }
+                : effect.fields,
           );
           break;
         case "outage":
@@ -931,6 +963,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     );
     const info = await this.#read(container, OMNIGENT_PORT, "/v1/info");
     const after = await this.#read(container, REPLICATION_POSITION_PORT, REPLICATION_POSITION_PATH);
+    // In an update's window (WP3.41), the restore point the server reports: read only then.
+    const window = this.#window();
+    const restorePoint =
+      window === null
+        ? null
+        : restorePointOf(await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH));
     const check = checkBootstrap(
       this.env.CFO_INSTALLATION_ID,
       stored.target,
@@ -992,6 +1030,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         // configuration.
         mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
         mcpRegistry: mcpRegistryOf(info),
+        // WP3.41: the update's read-only window this version holds (its ID, null for none), and
+        // the restore point the answering server reports while it is open. The update accepts
+        // its release only from a line of its own version naming both.
+        maintenance: window,
+        restorePoint,
       });
     }
   }
@@ -1227,6 +1270,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // starting one is waited for, briefly.
     const container = this.#container;
     if (container === null) return UNAVAILABLE;
+    if (this.#window() !== null) return UNAVAILABLE;
     const state = this.#loadState();
     if (state.phase === "held") return { action: "set", outcome: "failed" };
     if (this.#stopping || state.phase === "stopping" || state.recoverySince !== null) {
@@ -1338,6 +1382,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #passwordAttempts(): number[] {
     const parsed = z.array(Millis).max(100).safeParse(this.#serverState(PASSWORD_ATTEMPTS_KEY));
     return parsed.success ? parsed.data : [];
+  }
+
+  /** The update's read-only window this version holds (WP3.41), or null. */
+  #window(): string | null {
+    return maintenanceWindowOf(this.env as unknown as Record<string, unknown>);
   }
 
   #serverState(key: string): unknown {

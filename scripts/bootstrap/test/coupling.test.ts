@@ -251,6 +251,7 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "preflight.ts",
       "r2-token.ts",
       "remove.ts",
+      "rollback.ts",
       "services-command.ts",
       "services.ts",
       "settings.ts",
@@ -258,6 +259,7 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "state.ts",
       "update-command.ts",
       "update.ts",
+      "window.ts",
     ]);
   });
 

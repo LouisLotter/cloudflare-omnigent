@@ -9,6 +9,9 @@
 // which hold no secret, are written next to the checked-in ones under a name unique to the run,
 // mode 0600, and removed after the deploy.
 //
+// An update's rollback (WP3.41) deploys an earlier version of each Worker again, as it was, with
+// `cf workers deployments create`; nothing else ever deploys a version other than the newest.
+//
 // What it never does: change an Access application, create or change a policy or service token;
 // send a request to the installation's hostname; create a Worker by a secret change; delete or
 // empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the plan; the
@@ -29,6 +32,7 @@ import { join } from "node:path";
 import {
   bucketLookup,
   type CommandResult,
+  deployVersionArgs,
   diagnostic,
   type Runner,
   secretNamesOf,
@@ -501,6 +505,9 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
     workerInstallation: async (worker) => workerInstallation(run, worker),
     updateSecrets: async (worker, changes, notAfter) => bulkSecrets(run, worker, changes, notAfter),
     activeVersion: async (worker) => activeVersion(run, worker),
+    deployVersion: async (worker, versionId) => {
+      cfJson(run, deployVersionArgs(worker, versionId));
+    },
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };
 }

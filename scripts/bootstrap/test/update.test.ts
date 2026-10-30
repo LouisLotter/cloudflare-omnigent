@@ -53,6 +53,7 @@ import {
   MemoryStore,
   REPLACE_MS,
   SWITCH_MS,
+  WINDOW_SECRETS,
 } from "./fake-cloud.ts";
 import {
   accountPlan,
@@ -194,9 +195,13 @@ function journalOf(h: Harness) {
   return h.store.load().journal;
 }
 
-/** The platform configuration without the update's own deploy ID. */
+/** The platform configuration without the update's own deploy ID and restore point (WP3.41). */
 function withoutDeployId(config: Record<string, unknown>): Record<string, unknown> {
-  const { [DEPLOY_ID_VAR]: _id, ...vars } = config.vars as Record<string, string>;
+  const {
+    [DEPLOY_ID_VAR]: _id,
+    SERVER_ENV_CFO_RESTORE_POINT: _point,
+    ...vars
+  } = config.vars as Record<string, string>;
   return { ...config, vars };
 }
 
@@ -217,9 +222,10 @@ describe("runUpdate: a finished installation moves to new code", () => {
 
       expect(await h.update()).toEqual({ kind: "done" });
 
-      // Platform first, then web, then only reads.
+      // Platform first, then web, then only reads, and the acceptance: the window's secret deleted.
       const effects = h.world.calls.filter((c) => c.startsWith("deploy") || c === "updateSecrets");
-      expect(effects).toEqual(["deployPlatform", "deployWeb"]);
+      expect(effects).toEqual(["deployPlatform", "deployWeb", "updateSecrets"]);
+      expect(h.world.secretChanges.at(-1)?.changes).toEqual({ [WINDOW_SECRETS.window]: null });
       // The same names and settings: the plan's, its buckets' D33 tag or none, Access's variables.
       const platform = lastConfig(h, plan.platformWorker);
       expect(withoutDeployId(platform)).toEqual(platformBefore);
@@ -235,16 +241,34 @@ describe("runUpdate: a finished installation moves to new code", () => {
       expect(lastConfig(h, plan.webWorker)).toEqual(webBefore);
       // Every secret kept, with its value; nothing added; the release stays.
       expect(platformSecrets(h)).toEqual(before);
-      expect(h.world.versions.get(plan.platformWorker)).toHaveLength(versionsBefore + 1);
+      // The deploy (with the window's secret), then the acceptance (without it).
+      const versions = h.world.versions.get(plan.platformWorker) ?? [];
+      expect(versions).toHaveLength(versionsBefore + 2);
+      expect(versions.at(-2)?.secrets.get(WINDOW_SECRETS.window)).toMatch(/^rp-/);
       expect(h.world.released()).toBe(true);
       // The journal: the code, each step, the versions, the check after the restart.
       const journal = journalOf(h);
       const update = journal.update;
       expect(update).toMatchObject({
         code: CODE_A,
-        platformVersionId: h.world.latest(plan.platformWorker)?.id,
+        platformVersionId: versions.at(-2)?.id,
         webVersionId: h.world.latest(plan.webWorker)?.id,
       });
+      // The window closed, its restore point recorded where the server keeps it.
+      const id = (platform.vars as Record<string, string>).SERVER_ENV_CFO_RESTORE_POINT;
+      expect(id).toMatch(/^rp-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/);
+      expect(versions.at(-2)?.secrets.get(WINDOW_SECRETS.window)).toBe(id);
+      expect(journal.window).toBeUndefined();
+      expect(journal.restorePoints).toEqual([
+        {
+          id,
+          where: `${plan.replica.url.startsWith("s3:") ? `s3://${new URL(plan.replica.url).hostname}` : "file://"}/cfo-restore-points/${id}/`,
+          takenAt: expect.any(String),
+          updatedTo: CODE_A,
+          outcome: "accepted",
+          closedAt: expect.any(String),
+        },
+      ]);
       expect(update?.addedSecrets).toBeUndefined();
       expect(journal).toMatchObject({ platformCode: CODE_A, webCode: CODE_A });
       expect(journal.updatedAt).toBe(update?.webDeployedAt);
@@ -257,19 +281,31 @@ describe("runUpdate: a finished installation moves to new code", () => {
       expect(journal.verifiedAt).toBeDefined();
       expect(h.store.load().stateVersion).toBe(stateOf(plan).stateVersion);
       // What the person sees: a short line per step, and no secret.
-      expect(h.lines.slice(0, 6)).toEqual([
+      expect(h.lines.slice(0, 7)).toEqual([
         `updating https://${plan.hostname} to ${shortCode(CODE_A)}: ${plan.platformWorker}, then ${plan.webWorker}`,
+        `first the new server takes a restore point of Omnigent's data (${id}), and Omnigent is paused (it takes no requests) until the new version is checked: about 10 to 15 minutes`,
         `deploying the platform Worker ${plan.platformWorker}: Wrangler builds and pushes the images first, the slow part`,
         `deployed the platform Worker: it kept all ${before.size} of its secrets`,
         `deploying the web Worker ${plan.webWorker} for https://${plan.hostname}`,
         "deployed the web Worker",
         "waiting for the platform objects to switch to the new version and the server to restart on it (about 5 to 10 minutes)",
       ]);
-      expect(h.lines.at(-1)).toBe(
-        "checked: the server restarted on the new version, answers, and shows the owner initialized and durable",
+      const checked = h.lines.findIndex((l) => l.startsWith("checked: "));
+      expect(h.lines[checked]).toBe(
+        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable; its restore point ${id} was taken at ${journal.restorePoints?.[0]?.takenAt}`,
       );
-      for (const line of h.lines.slice(6, -1)) expect(line).toMatch(/^waiting: /);
-      expect(h.lines.length).toBeLessThanOrEqual(9);
+      for (const line of h.lines.slice(7, checked)) expect(line).toMatch(/^waiting: /);
+      expect(h.lines[checked + 1]).toMatch(
+        /^accepting the update: Omnigent will be available again/,
+      );
+      expect(h.lines[checked + 2]).toBe(
+        `accepted: the read-only window is closed. The restore point ${id} is kept (${journal.restorePoints?.[0]?.where})`,
+      );
+      expect(h.lines.at(-1)).toBe(
+        "checked: the server restarted without the window and answers; Omnigent is available again",
+      );
+      for (const line of h.lines.slice(checked + 3, -1)) expect(line).toMatch(/^waiting: /);
+      expect(h.lines.length).toBeLessThanOrEqual(16);
       const log = h.lines.join("\n");
       for (const value of before.values()) {
         if (value.length > 8) expect(log).not.toContain(value);
@@ -289,8 +325,11 @@ describe("runUpdate: a finished installation moves to new code", () => {
     expect(await h.update()).toEqual({ kind: "done" });
 
     expect(platformSecrets(h)).toEqual(before);
-    // The update changed no secret: it only deployed, and the deploy added nothing.
-    expect(h.world.secretChanges).toHaveLength(changes);
+    // The update changed no secret but its window's own: it deployed, adding nothing else, and
+    // its acceptance deleted the window's secret.
+    expect(h.world.secretChanges.slice(changes).map((c) => c.changes)).toEqual([
+      { [WINDOW_SECRETS.window]: null },
+    ]);
     expect(JSON.stringify(h.store.load())).not.toContain("cfo-canary-github-client-secret");
     expect(h.lines.join("\n")).not.toMatch(/cfo-canary-(github|key-service|launcher)/);
   });
@@ -408,7 +447,7 @@ describe("runUpdate: a finished installation moves to new code", () => {
     ["an old state file (version 1, untagged)", () => accountPlan(), 1],
     ["a version 2 one (tagged), as the owner's", taggedPlan, 2],
   ] as const)(
-    "%s, from before WP3.34, reads and keeps its names; it is written as version 4",
+    "%s, from before WP3.34, reads and keeps its names; it is written as version 6",
     async (_n, make, version) => {
       const dir = mkdtempSync(join(tmpdir(), "cfo-bootstrap-update-"));
       try {
@@ -424,8 +463,8 @@ describe("runUpdate: a finished installation moves to new code", () => {
         const platformBefore = lastConfig(h, plan.platformWorker);
         expect(await h.update()).toEqual({ kind: "done" });
         const text = readFileSync(path, "utf8");
-        // An older bootstrap refuses it now, rather than drop the update's record.
-        expect(JSON.parse(text).stateVersion).toBe(4);
+        // An older bootstrap refuses it now, rather than drop the update's records.
+        expect(JSON.parse(text).stateVersion).toBe(6);
         const state = parseState(text);
         expect(state.installation).toEqual(plan);
         expect(state.journal.update).toMatchObject({ code: CODE_A });
@@ -657,6 +696,7 @@ describe("runUpdate: the wait for the switch and the check", () => {
     expect(outcome).toEqual({
       kind: "deployed",
       why: expect.stringMatching(/^released, not yet applied/),
+      window: "open",
     });
     expect(journalOf(h).update?.verifiedAt).toBeUndefined();
     // The watchdog replaces the server after all: the next run only checks.
@@ -683,6 +723,7 @@ describe("runUpdate: the wait for the switch and the check", () => {
       why: expect.stringMatching(
         /does not show a durable owner yet: the owner exists but its record/,
       ),
+      window: "open",
     });
     h.world.now = from + 45 * 60_000;
     expect(await h.update()).toEqual({ kind: "done" });
@@ -726,22 +767,43 @@ describe("runUpdate: the wait for the switch and the check", () => {
       },
     };
     expect(await h.update()).toEqual({ kind: "done" });
-    expect(journalOf(h).update?.platformVersionId).toBe(h.world.latest(plan.platformWorker)?.id);
+    expect(journalOf(h).update?.platformVersionId).toBe(
+      h.world.versions.get(plan.platformWorker)?.at(-2)?.id,
+    );
     expect(journalOf(h).update?.webVersionId).toBeUndefined();
   });
 
   it("never checks a version Cloudflare never names", async () => {
     const plan = await accountPlan();
     const noVersion = await installed(plan);
-    noVersion.world.noVersions = true;
+    // Named before the update (its window records what to go back to), then never again.
+    noVersion.world.before = {
+      call: "deployPlatform",
+      nth: 1,
+      run: () => {
+        noVersion.world.noVersions = true;
+      },
+    };
     const outcome = await noVersion.update();
     // Nothing is decided without knowing which version serves (Codex r2-2): never checked.
     expect(outcome).toEqual({
       kind: "deployed",
       why: "Cloudflare does not say yet which version serves the platform Worker",
+      window: "open",
     });
     expect(journalOf(noVersion).update?.verifiedAt).toBeUndefined();
     expect(count(noVersion, "logs")).toBe(0);
+  });
+
+  it("refuses to start when Cloudflare names no version to go back to (WP3.41)", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    h.world.noVersions = true;
+    await expect(h.update()).rejects.toThrow(
+      /does not name one version serving all of .*'s traffic .*nothing was changed/,
+    );
+    expect(count(h, "deployPlatform")).toBe(0);
+    expect(journalOf(h).window).toBeUndefined();
   });
 
   it("can skip the check, and check on the next run without deploying again", async () => {
@@ -750,6 +812,7 @@ describe("runUpdate: the wait for the switch and the check", () => {
     expect(await h.update(CODE_A, { verify: false })).toEqual({
       kind: "deployed",
       why: "the check after the update was skipped",
+      window: "open",
     });
     expect(count(h, "logs")).toBe(0);
     h.world.now += 20 * 60_000;
@@ -786,7 +849,9 @@ describe("runUpdate: the wait for the switch and the check", () => {
       "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy): deploying the update again, so that its own restart can be checked",
     );
     expect(count(h, "deployPlatform")).toBe(2);
-    expect(journalOf(h).update?.platformVersionId).toBe(h.world.latest(plan.platformWorker)?.id);
+    expect(journalOf(h).update?.platformVersionId).toBe(
+      h.world.versions.get(plan.platformWorker)?.at(-2)?.id,
+    );
     for (const [name, value] of Object.entries(LATER_SECRETS)) {
       expect(h.world.secretsOf(plan.platformWorker)?.get(name)).toBe(value);
     }
@@ -836,6 +901,7 @@ describe("runUpdate: the wait for the switch and the check", () => {
     expect(outcome).toEqual({
       kind: "deployed",
       why: "a newer version of the platform Worker serves since this update's deploy (a secrets change or another deploy); run update again, and it deploys the update again",
+      window: "open",
     });
     expect(journalOf(h).update?.platformDeployedAt).toBeUndefined();
     expect(journalOf(h).update?.verifiedAt).toBeUndefined();
@@ -940,8 +1006,18 @@ describe("runUpdate: a crash at any point", () => {
       }
       const journal = journalOf(h);
       expect(journal.update?.verifiedAt).toBeDefined();
-      expect(journal.update?.platformVersionId).toBe(h.world.latest(plan.platformWorker)?.id);
+      expect(journal.update?.platformVersionId).toBe(
+        h.world.versions.get(plan.platformWorker)?.at(-2)?.id,
+      );
       expect(journal).toMatchObject({ platformCode: CODE_A, webCode: CODE_A });
+      // Accepted: the window closed, its restore point recorded (a window whose deploy may not
+      // have landed is abandoned first, never reused), the secret gone.
+      expect(journal.window).toBeUndefined();
+      expect(journal.restorePoints?.at(-1)?.outcome).toBe("accepted");
+      expect(journal.restorePoints?.slice(0, -1).every((p) => p.outcome === "abandoned")).toBe(
+        true,
+      );
+      expect(platformSecrets(h).has(WINDOW_SECRETS.window)).toBe(false);
     },
   );
 });

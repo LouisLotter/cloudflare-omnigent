@@ -810,6 +810,32 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("deploys an earlier version through cf, forced past the update's secrets (WP3.41)", async () => {
+    const plan = await accountPlan();
+    const { runner, calls } = fakeRunner(() => ({ stdout: '{"result":{}}' }));
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    const version = "0a1b2c3d-0000-4000-8000-000000000001";
+    await cloud.deployVersion("w", version);
+    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+      [
+        "cf",
+        "workers",
+        "deployments",
+        "create",
+        "--worker",
+        "w",
+        "--strategy",
+        "percentage",
+        "--versions",
+        JSON.stringify([{ version_id: version, percentage: 100 }]),
+        "--bypass-deployment-checks",
+      ],
+    ]);
+    await expect(cloud.deployVersion("w", "not-a-version")).rejects.toThrow(
+      "not a Worker version's ID",
+    );
+  });
+
   it("reads the version serving all traffic from the newest deployment", async () => {
     const plan = await accountPlan();
     const answers: unknown[] = [
@@ -991,6 +1017,21 @@ describe("stagingCloud: through the guarded staging tool", () => {
     expect(tool[1]?.args).toEqual(["secrets", "--suffix", "wp24-platform", "--owner", "WP2.4"]);
     expect(JSON.parse(tool[1]?.input ?? "{}")).toEqual(RELEASE_CHANGES);
     expect(await cloud.logs(plan.platformWorker, 0, 1)).toEqual([]);
+  });
+
+  it("deploys an earlier version through stg deploy-version, by suffix and owner (WP3.41)", async () => {
+    const { plan, cloud, tool } = await staging();
+    const version = "0a1b2c3d-0000-4000-8000-000000000001";
+    await cloud.deployVersion(plan.webWorker, version);
+    expect(tool[0]?.args).toEqual([
+      "deploy-version",
+      "--suffix",
+      "wp24-web",
+      "--owner",
+      "WP2.4",
+      "--version",
+      version,
+    ]);
   });
 
   it("passes the release's window to the tool, and reads its 'window passed' exit as expired", async () => {
