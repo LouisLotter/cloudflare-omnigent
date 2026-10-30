@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import socket
 import subprocess
 import threading
@@ -214,24 +215,31 @@ def test_the_wrappers_own_endings_exit_0(computer: Computer, args: list[str]) ->
     sup = computer.rig.sup
     leader, follower = os.openpty()
     try:
-        done = subprocess.run(
-            workload_argv([*command, *args], uid=UID, gid=UID, cgroup_dir=None),
-            env=sup._env({"TERM": "xterm-256color"}),
-            cwd=sup.account.home,
-            stdin=follower,
-            stdout=follower,
-            stderr=follower,
-            start_new_session=True,
-            timeout=30,
-            check=False,
-        )
+        try:
+            done = subprocess.run(
+                workload_argv([*command, *args], uid=UID, gid=UID, cgroup_dir=None),
+                env=sup._env({"TERM": "xterm-256color"}),
+                cwd=sup.account.home,
+                stdin=follower,
+                stdout=follower,
+                stderr=follower,
+                start_new_session=True,
+                timeout=30,
+                check=False,
+            )
+        finally:
+            os.close(follower)
+        # What it printed, for the failure message: bounded, in case something kept the terminal.
+        output = b""
+        end = time.monotonic() + 5
+        with contextlib.suppress(OSError):  # EIO once the terminal has nothing more
+            while select.select([leader], [], [], max(0.0, end - time.monotonic()))[0]:
+                chunk = os.read(leader, 4096)
+                if not chunk:
+                    break
+                output += chunk
     finally:
-        os.close(follower)
-    output = b""
-    with contextlib.suppress(OSError):  # EIO once the terminal has nothing more
-        while chunk := os.read(leader, 4096):
-            output += chunk
-    os.close(leader)
+        os.close(leader)
     assert done.returncode == 0, output
     assert b"uid=" not in output
     assert computer.names() == []
