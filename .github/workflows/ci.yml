@@ -7,7 +7,11 @@
 # to a full commit SHA; the comment names the release that SHA belongs to. `workflow_dispatch`
 # runs it on a branch: the daily tool version check (tool-versions.yml) dispatches it on its
 # bump branch, because a pull request opened with GITHUB_TOKEN starts no `pull_request` run
-# without a person's approval. A dispatched run has the same read-only token.
+# without a person's approval. A dispatched run has the same read-only token, except for its two
+# status jobs: GitHub does not show a dispatched run's checks on the branch's pull request (only
+# the `pull_request` run awaiting approval), so `dispatch-start` and `dispatch-result` set one
+# commit status, "CI (dispatched)", with `statuses: write` and nothing else. A pull request shows
+# commit statuses, so the bump PR says whether it is safe to merge.
 #
 # Jobs:
 #   node    Biome lint; typecheck, including `wrangler types --check`; the Vitest suites
@@ -27,6 +31,9 @@
 #   computer-image
 #           Build the computer image's computer and test targets (the CLIs' installed trees
 #           checked against their pinned digests); run its in-image suite.
+#   dispatch-start, dispatch-result
+#           Dispatched runs only: the "CI (dispatched)" commit status, pending while the jobs
+#           run, then success only if every job above succeeded.
 #
 # Still to come, as the work packages that need them land: deterministic simulation tests (M3)
 # and Stryker mutation thresholds (75%) for the state machines and the schedule cache.
@@ -234,3 +241,50 @@ jobs:
       # cases need --privileged and skip here (docs/testing.md).
       - name: Run the image's in-image suite
         run: docker run --rm --network none --hostname "$(openssl rand -hex 32)" cfo-computer:ci-test
+
+  # Dispatched runs only (see the header): the run's result as one commit status on the commit
+  # it tested, which the branch's pull request shows. A re-run of failed jobs re-runs
+  # `dispatch-result` too, so the status follows the latest attempt.
+  dispatch-start:
+    name: Report a dispatched run as pending
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Set the commit status to pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state=pending -f context="CI (dispatched)" \
+            -f description="Running" -f target_url="$RUN_URL" >/dev/null
+
+  dispatch-result:
+    name: Report a dispatched run's result
+    if: always() && github.event_name == 'workflow_dispatch'
+    needs: [node, python, canary, images, computer-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Set the commit status to the run's result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          total=$(jq 'length' <<<"$RESULTS")
+          passed=$(jq '[.[] | select(.result == "success")] | length' <<<"$RESULTS")
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")' <<<"$RESULTS")
+          if [ "$passed" -eq "$total" ]; then
+            state=success description="All $total jobs passed"
+          else
+            state=failure description="Not passed: $failed"
+          fi
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$state" -f context="CI (dispatched)" \
+            -f description="$description" -f target_url="$RUN_URL" >/dev/null
