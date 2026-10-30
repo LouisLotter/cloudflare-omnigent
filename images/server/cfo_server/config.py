@@ -52,6 +52,7 @@ from typing import Literal
 from urllib.parse import SplitResult, urlsplit
 
 from cfo_server import mcp
+from cfo_server import restore_point as restore_points
 
 # ── Fixed paths inside the image ─────────────────────────────────────────
 
@@ -297,6 +298,11 @@ class ServerImageConfig:
     github: GitHubLinking = field(default_factory=GitHubLinking)
     #: Omnigent's MCP registry (WP5.10).
     mcp: mcp.McpRegistrySettings = field(default_factory=mcp.McpRegistrySettings)
+    #: The restore point an update names (``CFO_RESTORE_POINT``, WP3.41): taken at the first
+    #: start under it, before Omnigent starts (:mod:`cfo_server.restore_point`).
+    restore_point: str | None = None
+    #: A rollback to that restore point, ordered inside the update's window (``CFO_ROLLBACK_TO``).
+    rollback_to: str | None = None
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -442,6 +448,30 @@ def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:
         force_path_style=parse_bool(env, "CFO_REPLICA_FORCE_PATH_STYLE", True),
         sync_interval=interval,
     )
+
+
+def parse_restore_point(
+    env: Mapping[str, str], replica: ReplicaSettings | None
+) -> tuple[str | None, str | None]:
+    """The update's restore point and a rollback to it (WP3.41): each a restore point's name
+    (``rp-<UTC time>-<8 hex>``), the rollback only to the restore point this configuration
+    names, and both only with a replica that has room beside it (a path, not the bucket root)."""
+    point = _get(env, "CFO_RESTORE_POINT")
+    rollback = _get(env, "CFO_ROLLBACK_TO")
+    for name, value in (("CFO_RESTORE_POINT", point), ("CFO_ROLLBACK_TO", rollback)):
+        if value is not None and not restore_points.RESTORE_POINT_ID.fullmatch(value):
+            raise ConfigError(f"{name} must be a restore point's name (rp-<time>-<8 hex digits>)")
+    if rollback is not None and rollback != point:
+        raise ConfigError(
+            "CFO_ROLLBACK_TO must name the restore point of the update it rolls back "
+            "(CFO_RESTORE_POINT)"
+        )
+    if point is not None and replica is not None:
+        try:
+            restore_points.places(replica.url)
+        except ValueError as exc:
+            raise ConfigError(f"CFO_RESTORE_POINT: {exc}") from None
+    return point, rollback
 
 
 def _key_service_url(env: Mapping[str, str]) -> str:
@@ -742,6 +772,7 @@ def load(
     initialized = parse_bool(env, "CFO_INSTALLATION_INITIALIZED", None)
     replica = None if for_app else parse_replica(env)
     artifacts = parse_artifacts(env, replica, warnings)
+    restore_point, rollback_to = parse_restore_point(env, replica)
     return ServerImageConfig(
         installation_initialized=initialized,
         replica=replica,
@@ -764,6 +795,8 @@ def load(
         key_service=key_service,
         github=github,
         mcp=mcp_registry,
+        restore_point=restore_point,
+        rollback_to=rollback_to,
         warnings=tuple(warnings),
     )
 

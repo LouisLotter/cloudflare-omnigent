@@ -12,7 +12,8 @@ the forwarding path and the computers reach port 8000 alone.
   boot reaches a ``txid`` read after ``/v1/info`` first showed the owner (G1BR-002).
 - ``GET /status`` is for the watchdog and the platform page: the phase, recovery mode with its
   reason, the app's start and first health answer, the final sync's outcome, the replication
-  lag, and the image's build (the fork commit its Omnigent was built from). The phases, in
+  lag, the update's restore point and a rollback's progress (WP3.41), and the image's build
+  (the fork commit its Omnigent was built from). The phases, in
   order: ``starting``; ``restoring`` (the restore, the database check and Litestream's
   start); ``initializing`` (the app starts: imports, migrations, ``create_app``, the owner
   check) until the app answers ``GET /health``; ``running``; or ``recovery`` instead of a
@@ -80,6 +81,11 @@ class StatusBoard:
             "recovery": None,
             "app": None,
             "finalSync": None,
+            # The update's restore point once it exists (WP3.41): its name, when it was taken,
+            # how many objects and bytes. Never a key or a credential.
+            "restorePoint": None,
+            # Rollback mode's progress (WP3.41): the restore point, and whether it is done.
+            "rollback": None,
         }
         #: Opens a control-socket client while Litestream runs; ``None`` otherwise.
         self.litestream: Callable[[], BlockingClient] | None = None
