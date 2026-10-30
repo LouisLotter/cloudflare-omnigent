@@ -1,6 +1,6 @@
 // OmnigentServer in an update's read-only window and its rollback (WP3.41, ADR 0007), in workerd
 // with real storage, alarms and eviction, and a fake server container. A version holding
-// `CFO_MAINTENANCE_WINDOW` passes nothing to the server (reads, writes, WebSockets, the password
+// `SERVER_ENV_CFO_MAINTENANCE_WINDOW` passes nothing to the server (reads, writes, WebSockets, the password
 // page's change) while its watchdog still checks it; its status line says so and names the
 // restore point the server reports; the installer's reading of it (events.ts) agrees. A rollback
 // order replaces the server, even one in recovery mode; the server's exit 79 is held and logged
@@ -24,6 +24,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseLogs } from "../../../scripts/bootstrap/events.ts";
 import platform from "../../src/index.ts";
+import { PlatformInternal } from "../../src/internal/entrypoints.ts";
 import {
   MAINTENANCE_WINDOW_SECRET,
   RESTORE_POINT_VAR,
@@ -154,8 +155,8 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
     await release(stub, { [MAINTENANCE_WINDOW_SECRET]: RP, [RESTORE_POINT_VAR]: RP });
     for (let i = 0; i < 4; i++) await nextCheck(stub); // replaced, then started with it
     expect(fake.starts.at(-1)?.env.CFO_RESTORE_POINT).toBe(RP);
-    // The window never reaches the server's environment.
-    expect(Object.keys(fake.starts.at(-1)?.env ?? {})).not.toContain(MAINTENANCE_WINDOW_SECRET);
+    // The server receives the window too: it starts Omnigent without its scheduler.
+    expect(fake.starts.at(-1)?.env.CFO_MAINTENANCE_WINDOW).toBe(RP);
     fake.restorePoint = { id: RP, takenAt: TAKEN, objects: 5, bytes: 4096 };
     await nextCheck(stub);
     const before = fake.forwarded().length;
@@ -193,17 +194,19 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
       maintenance: RP,
       restorePoint: { id: RP, takenAt: TAKEN },
     });
-    // Accepted: the window's secret is deleted; that version passes requests again, and the
-    // server is not restarted for it.
+    // Accepted: the window's secret is deleted. That version passes requests again, and its
+    // watchdog restarts the server once without the window (its scheduler on again).
     const starts = fake.starts.length;
     await release(stub, { [MAINTENANCE_WINDOW_SECRET]: null });
     expect((await forward(stub, "/v1/sessions", { method: "POST", body: "{}" })).status).toBe(200);
     expect(await setPassword(stub)).not.toMatchObject({ outcome: "unavailable" });
     expect(calls()).toBe(1);
-    await nextCheck(stub);
-    expect(fake.starts).toHaveLength(starts);
-    expect(fake.signals).toEqual([15]);
+    for (let i = 0; i < 4; i++) await nextCheck(stub);
+    expect(fake.starts).toHaveLength(starts + 1);
+    expect(fake.starts.at(-1)?.env.CFO_MAINTENANCE_WINDOW).toBeUndefined();
+    expect(fake.signals).toEqual([15, 15]);
     expect(events("bootstrap", "status").at(-1)).toMatchObject({
+      configApplied: true,
       maintenance: null,
       restorePoint: null,
     });
@@ -230,9 +233,6 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
     expect(await environmentFingerprint(withWindow)).not.toBe(
       await environmentFingerprint(without),
     );
-    expect(await environmentFingerprint({ ...without, [MAINTENANCE_WINDOW_SECRET]: "" })).toBe(
-      await environmentFingerprint(without),
-    );
     // The cron runs on the newest version, and the object on an older one yields to it.
     const stub = env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME) as Stub;
     testServers.create(stub.id);
@@ -242,6 +242,36 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
     await platform.scheduled(createScheduledController(), env as never, ctx);
     await waitOnExecutionContext(ctx);
     expect(events("watchdog", "version_yield")).toHaveLength(1);
+  });
+});
+
+describe("platform.internal in an update's window (WP3.41)", () => {
+  it("refuses every launcher call while the version holds the window, and keeps the key service", async () => {
+    const ctx = createExecutionContext() as ExecutionContext & { props: unknown };
+    const withProps = Object.assign(Object.create(ctx), {
+      props: { propsVersion: 1, caller: "omnigent-server" },
+    });
+    const internal = (windowed: boolean) =>
+      new PlatformInternal(
+        withProps as never,
+        { ...env, ...(windowed ? { [MAINTENANCE_WINDOW_SECRET]: RP } : {}) } as never,
+      );
+    const launcher = new Request("http://platform.internal/launcher/v1/computers", {
+      method: "POST",
+      body: "{}",
+    });
+    const refused = await internal(true).fetch(launcher.clone());
+    expect(refused.status).toBe(503);
+    expect(await refused.text()).toMatch(/being updated/);
+    expect(events("launcher_api", "refused").at(-1)).toMatchObject({ refused: "maintenance" });
+    // Outside the window the same call reaches the launcher API's own checks.
+    const open = await internal(false).fetch(launcher.clone());
+    expect(await open.text()).not.toMatch(/being updated/);
+    // The key service is not paused: it answers with its own checks.
+    const keyService = await internal(true).fetch(
+      new Request("http://platform.internal/key-service/v1/seal", { method: "POST", body: "{}" }),
+    );
+    expect(await keyService.text()).not.toMatch(/being updated/);
   });
 });
 
@@ -266,14 +296,20 @@ describe("OmnigentServer: an update's rollback (WP3.41)", () => {
     const starts = fake.starts.length;
     for (let i = 0; i < 5; i++) await nextCheck(stub);
     expect(fake.starts).toHaveLength(starts); // held: never started again under the order
+    // Said at every check while held, after an eviction too: a lost line recurs.
+    await evictDurableObject(stub);
+    await nextCheck(stub);
     const rolled = events("watchdog", "rolled_back");
-    expect(rolled).toHaveLength(1);
-    expect(rolled[0]).toMatchObject({ exitCode: 79, held: true, restorePoint: RP });
+    expect(rolled.length).toBeGreaterThanOrEqual(6);
+    for (const line of rolled) {
+      expect(line).toMatchObject({ exitCode: 79, held: true, restorePoint: RP });
+    }
     expect(events("watchdog", "config_error")).toEqual([]);
     const read = parseLogs(delivered(since, "v3"), "cloudflare-omnigent");
-    expect(read.rollbacks).toEqual([
+    expect(read.rollbacks.length).toBe(rolled.length);
+    expect(read.rollbacks[0]).toEqual(
       expect.objectContaining({ versionId: "v3", held: true, restorePoint: RP }),
-    ]);
+    );
     // Still the window: nothing passes.
     expect((await forward(stub, "/v1/sessions")).status).toBe(503);
     // The previous release's version: no window, no order, no restore point. It starts.

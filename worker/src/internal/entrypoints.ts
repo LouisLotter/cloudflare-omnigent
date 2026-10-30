@@ -24,6 +24,7 @@ import {
 } from "@cfo/contracts";
 import type { PlatformEnv } from "../env.ts";
 import { RateLimiter } from "../ingress/limits.ts";
+import { maintenanceWindowOf } from "../server/maintenance.ts";
 import { isServerProps, type PlatformInternalProps } from "../server/platform-internal.ts";
 import { logEvent } from "../server/responses.ts";
 import {
@@ -126,6 +127,19 @@ export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInte
       return keyService
         ? keyServiceError("unavailable")
         : launcherError("unavailable", "This platform service is not available.");
+    }
+    if (!keyService && maintenanceWindowOf(this.env as unknown as Record<string, unknown>)) {
+      // An update's read-only window (WP3.41): the server starts and stops no computer until the
+      // update is accepted or rolled back. The key service writes nothing, and stays.
+      logEvent("launcher_api", "refused", {
+        path: pathname.slice(0, 64),
+        status: 503,
+        refused: "maintenance",
+      });
+      return launcherError(
+        "unavailable",
+        "Omnigent is being updated: this platform service is paused until the update is checked.",
+      );
     }
     if (keyService) {
       return handleKeyServiceRequest(request, {

@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 
-from conftest import BUCKET, Server, Stack
 from test_image import _schedule, _schedule_names
 
+from conftest import BUCKET, Server, Stack
+
 RP = "rp-20261030T120000Z-0a1b2c3d"
+#: A rollback's environment: the order, inside the update's window, to its restore point.
+ROLLBACK = {"CFO_RESTORE_POINT": RP, "CFO_ROLLBACK_TO": RP, "CFO_MAINTENANCE_WINDOW": RP}
 
 
 def _write(server: Server, name: str) -> None:
@@ -83,9 +86,7 @@ def test_an_update_takes_its_restore_point_and_a_rollback_gives_back_the_databas
     assert _listing(link, replica) != before
 
     # The rollback: checked, put back, exit 79; nothing else starts.
-    rollback = link.server(
-        replica, initialized=True, CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP
-    ).start()
+    rollback = link.server(replica, initialized=True, **ROLLBACK).start()
     assert rollback.wait_exit() == 79, rollback.logs()[-3000:]
     done = rollback.events("rollback.done")
     assert done and done[0]["restored"] is True
@@ -106,9 +107,7 @@ def test_an_update_takes_its_restore_point_and_a_rollback_gives_back_the_databas
     _stop(back)
 
     # A lingering order never puts the restore point back again.
-    again = link.server(
-        replica, initialized=True, CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP
-    ).start()
+    again = link.server(replica, initialized=True, **ROLLBACK).start()
     assert again.wait_exit() == 79
     assert again.events("rollback.done")[0]["already"] is True
     again.remove()

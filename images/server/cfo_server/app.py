@@ -264,7 +264,9 @@ def build_app(
         permission_store=permission_store,
         policy_store=policy_store,
         host_store=host_store,
-        scheduled_task_store=scheduled_task_store,
+        # An update's read-only window (WP3.41): no scheduler, so no scheduled task fires (and
+        # no computer starts) until the update is accepted, which restarts the server with it.
+        scheduled_task_store=None if config.maintenance else scheduled_task_store,
         project_store=project_store,
         auth_provider=auth_provider,
         account_store=account_store,

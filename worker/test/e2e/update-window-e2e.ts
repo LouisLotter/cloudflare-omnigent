@@ -684,6 +684,15 @@ async function main(): Promise<number> {
       "inside the window, nothing reaches Omnigent: reads, sign-in and writes get 503",
       await refusedInWindow("inside window A"),
     );
+    const bootLines = () =>
+      docker("logs", CONTAINER)
+        .stderr.split("\n")
+        .filter((l) => l.includes('"cfo.boot"'));
+    check(
+      "inside the window, the server started Omnigent without its scheduler",
+      bootLines().at(-1)?.includes('"maintenance": true') === true,
+      bootLines().at(-1)?.slice(0, 120),
+    );
     check("no write landed inside the window", names() === beforeA, names());
     const acceptedA = await runUpdate(context(CODE.a), options);
     check(
@@ -695,6 +704,10 @@ async function main(): Promise<number> {
       JSON.stringify(acceptedA),
     );
     await serverAnswers();
+    check(
+      "acceptance restarted the server without the window, its scheduler on",
+      bootLines().at(-1)?.includes('"maintenance": false') === true,
+    );
     check("after acceptance, writes work again", (await schedule("2 after update A")).ok);
     check(
       "restoring update A's restore point gives back the database from before it",

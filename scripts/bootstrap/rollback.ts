@@ -6,15 +6,17 @@
 // In order; each step's outcome is recorded in the window's journal record (`rollback`) once it
 // lands, and a run that finds a rollback under way continues it:
 //   1. refuses unless an update's window is open: with none, there is nothing to go back to; once
-//      the update was accepted, Omnigent has taken changes, so problems are fixed forward. The
-//      platform Worker must still hold the window: otherwise it was ended outside the installer,
-//      and changes may have landed since the restore point. A window whose first deploy never
-//      landed has nothing to undo: it is closed, and nothing is deployed.
+//      the update was accepted, Omnigent has taken changes, so problems are fixed forward. Until
+//      the server has put the restore point back, the platform Worker must still hold the window,
+//      on every run: otherwise it was ended outside the installer, changes may have landed since
+//      the restore point, and the rollback is called off (its order deleted, the window recorded
+//      as ended; the server refuses an order outside a window too). A window whose first deploy
+//      never landed has nothing to undo: it is closed, and nothing is deployed.
 //   2. orders the rollback: one secrets change sets `SERVER_ENV_CFO_ROLLBACK_TO` to the restore
 //      point (the window's ID). The platform's object replaces the update's server with one
 //      started with the order (even one in recovery mode), which restores the restore point to a
 //      scratch file and checks it against its manifest before anything changes, puts it back as
-//      the live replica, and exits 79. The watchdog holds it and logs `rolled_back`.
+//      the live replica, and exits 79. The watchdog holds it and logs `rolled_back` at every check.
 //   3. waits for that line, naming the window's restore point: the replica is the restore point.
 //   4. deploys the web Worker's version from before the update, then the platform Worker's: each
 //      as it was, with its code, configuration, images and secrets (`deployVersion`). The previous
@@ -99,27 +101,49 @@ export async function runRollback(
   }
   const names = new Set(listed);
   const previous = open.previous;
-  if (open.rollback === undefined) {
-    if (!names.has(MAINTENANCE_WINDOW_SECRET)) {
-      const active = await ctx.cloud.activeVersion(plan.platformWorker);
-      if (open.heldSince === undefined && active === previous.platformVersionId) {
-        // The update's first deploy never landed: the previous release runs, untouched.
-        const { update: _u, ...journal } = state.journal;
-        setJournal(
-          closeWindow(
-            journal,
-            restorePointRecord(plan, open, "rolled back", iso(ctx.now()), undefined),
-          ),
-        );
-        ctx.log(
-          `nothing to roll back: the update never deployed the platform Worker, so https://${plan.hostname} still runs the version from before it, with its data`,
-        );
-        return { kind: "nothing" };
+  // Until the server has put the restore point back, the window must hold, on every run: once it
+  // ended outside the installer, Omnigent may have taken changes since the restore point, and
+  // putting it back would lose them (Codex WP3.41 r1).
+  if (!names.has(MAINTENANCE_WINDOW_SECRET) && open.rollback?.restoredAt === undefined) {
+    const active = await ctx.cloud.activeVersion(plan.platformWorker);
+    if (open.rollback === undefined && active === previous.platformVersionId) {
+      // The update's first deploy never landed: the previous release runs, untouched.
+      const { update: _u, ...journal } = state.journal;
+      setJournal(
+        closeWindow(
+          journal,
+          restorePointRecord(plan, open, "rolled back", iso(ctx.now()), undefined),
+        ),
+      );
+      ctx.log(
+        `nothing to roll back: the update never deployed the platform Worker, so https://${plan.hostname} still runs the version from before it, with its data`,
+      );
+      return { kind: "nothing" };
+    }
+    if (open.rollback !== undefined) {
+      // A rollback under way, called off: its order goes (the server, which refuses an order
+      // outside a window, starts normally again), and the window is recorded as ended.
+      if (names.has(ROLLBACK_SECRET)) {
+        await ctx.cloud.updateSecrets(plan.platformWorker, { [ROLLBACK_SECRET]: null });
       }
-      throw new BootstrapRefusal(
-        `the update's read-only window was ended outside this installer (${plan.platformWorker} no longer holds ${MAINTENANCE_WINDOW_SECRET}): Omnigent may have taken changes since the restore point, and going back would lose them. A problem is fixed with a newer update instead${nothing}`,
+      setJournal(
+        closeWindow(
+          state.journal,
+          restorePointRecord(
+            plan,
+            open,
+            "ended outside the installer",
+            iso(ctx.now()),
+            state.journal.update?.code,
+          ),
+        ),
       );
     }
+    throw new BootstrapRefusal(
+      `the update's read-only window was ended outside this installer (${plan.platformWorker} no longer holds ${MAINTENANCE_WINDOW_SECRET}): Omnigent may have taken changes since the restore point, and going back would lose them. A problem is fixed with a newer update instead: run bootstrap.ts update${open.rollback === undefined ? nothing : "; the rollback was called off"}`,
+    );
+  }
+  if (open.rollback === undefined) {
     setJournal({ ...state.journal, window: { ...open, rollback: { startedAt: iso(ctx.now()) } } });
     ctx.log(
       `rolling back https://${plan.hostname} to the version from before the update, with Omnigent's data as it was ${dataTime(open)} (restore point ${open.id})`,

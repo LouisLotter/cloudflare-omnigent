@@ -35,10 +35,11 @@
 //     (`mcpRegistry`) and which revision of the installation's MCP choices the version holds
 //     (`mcpRevision`), which the installer's `services` step waits for.
 //   - An update's read-only window (WP3.41, maintenance.ts): while the version holds
-//     `CFO_MAINTENANCE_WINDOW`, nothing is passed to the server (`fetch` answers 503, and so does
-//     the password page's change), the watchdog still checks it directly, and the status line
-//     says so (`maintenance`) with the restore point the server reports (`restorePoint`). A
-//     server held after its rollback is logged as `rolled_back`, with the restore point ordered.
+//     `SERVER_ENV_CFO_MAINTENANCE_WINDOW`, nothing is passed to the server (`fetch` answers 503,
+//     and so does the password page's change), the watchdog still checks it directly, and the
+//     status line says so (`maintenance`) with the restore point the server reports
+//     (`restorePoint`). A server held after its rollback is logged as `rolled_back`, with the
+//     restore point ordered, at every check while it is held.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.

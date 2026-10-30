@@ -25,6 +25,8 @@ from cfo_server import restore_point as rp
 from cfo_server.entrypoint import Ready, prepare_database
 
 RP = "rp-20261030T120000Z-0a1b2c3d"
+#: A rollback's environment: the order, inside the update's window, to its restore point.
+ROLLBACK = {"CFO_RESTORE_POINT": RP, "CFO_ROLLBACK_TO": RP, "CFO_MAINTENANCE_WINDOW": RP}
 OLDER = ["rp-20261001T000000Z-00000001", "rp-20261002T000000Z-00000002"]
 
 
@@ -79,13 +81,23 @@ def test_a_replica_without_room_beside_it_is_refused(url: str) -> None:
 
 def test_settings_name_restore_points_strictly(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
-    good = rig.env(CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP)
+    good = rig.env(CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP, CFO_MAINTENANCE_WINDOW=RP)
     config = image_config.load(good)
-    assert (config.restore_point, config.rollback_to) == (RP, RP)
-    assert image_config.load(rig.env()).restore_point is None
+    assert (config.restore_point, config.rollback_to, config.maintenance) == (RP, RP, True)
+    plain = image_config.load(rig.env())
+    assert (plain.restore_point, plain.maintenance) == (None, False)
     for extra, message in [
         ({"CFO_RESTORE_POINT": "rp-yesterday"}, "CFO_RESTORE_POINT must be a restore point"),
         ({"CFO_ROLLBACK_TO": RP}, "CFO_ROLLBACK_TO must name the restore point"),
+        # Never outside that update's window: what was written since would be erased.
+        (
+            {"CFO_RESTORE_POINT": RP, "CFO_ROLLBACK_TO": RP},
+            "only carried out inside that update's read-only window",
+        ),
+        (
+            {"CFO_RESTORE_POINT": RP, "CFO_ROLLBACK_TO": RP, "CFO_MAINTENANCE_WINDOW": OLDER[0]},
+            "only carried out inside that update's read-only window",
+        ),
         (
             {"CFO_RESTORE_POINT": RP, "CFO_ROLLBACK_TO": OLDER[0]},
             "CFO_ROLLBACK_TO must name the restore point",
@@ -414,7 +426,7 @@ def test_the_update_server_takes_its_restore_point_before_the_app_starts(rig: Ri
     assert json.loads(manifest_path.read_text()) == manifest
 
     # The rollback: the replica as the restore point recorded it, checked, then exit 79.
-    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP))
+    rig.start(rig.env(initialized="true", **ROLLBACK))
     assert rig.wait(60) == entrypoint.EXIT_ROLLED_BACK
     assert rig.events("rollback.done")[0]["restored"] is True
     assert _replica_files(rig) == before
@@ -432,7 +444,7 @@ def test_the_update_server_takes_its_restore_point_before_the_app_starts(rig: Ri
     after = _replica_files(rig)
     rig.db.unlink(missing_ok=True)
     entrypoint.remove_local_database_state(rig.layout())
-    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP))
+    rig.start(rig.env(initialized="true", **ROLLBACK))
     assert rig.wait(60) == entrypoint.EXIT_ROLLED_BACK
     assert rig.events("rollback.done")[0]["already"] is True
     assert _replica_files(rig) == after
@@ -457,7 +469,7 @@ def test_without_its_restore_point_the_app_never_starts(rig: Rig) -> None:
 def test_a_rollback_without_a_restore_point_leaves_the_replica(rig: Rig) -> None:
     rig.seed(with_owner=True)
     before = _replica_files(rig)
-    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP))
+    rig.start(rig.env(initialized="true", **ROLLBACK))
     assert rig.wait(60) == entrypoint.EXIT_ROLLED_BACK
     assert rig.events("rollback.done")[0]["restored"] is False
     assert _replica_files(rig) == before
@@ -476,10 +488,41 @@ def test_a_restore_point_that_restores_another_database_is_never_put_back(rig: R
     manifest = json.loads(manifest_path.read_text())
     manifest["database"]["sha256"] = "0" * 64
     manifest_path.write_text(json.dumps(manifest))
-    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP))
+    rig.start(rig.env(initialized="true", **ROLLBACK))
     assert rig.wait(60) == entrypoint.EXIT_ROLLBACK_FAILED
     assert "not the one recorded" in rig.events("rollback.failed")[0]["error"]
     assert _replica_files(rig) == migrated
+
+
+@requires_litestream
+def test_a_rollback_order_without_its_window_is_refused_and_changes_nothing(rig: Rig) -> None:
+    rig.seed(with_owner=True)
+    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP))
+    rig.wait_app()
+    rig.write("written after the window ended")
+    assert rig.stop() == entrypoint.EXIT_OK
+    after = _replica_files(rig)
+    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, CFO_ROLLBACK_TO=RP))
+    assert rig.wait(60) == entrypoint.EXIT_CONFIG
+    assert _replica_files(rig) == after
+
+
+def test_inside_the_window_omnigent_starts_without_its_scheduler(tmp_path: Path) -> None:
+    """Nothing fires inside the window: the app has no scheduled tasks (WP3.41)."""
+    from conftest import omnigent_available, serve_app
+
+    if not omnigent_available():
+        pytest.skip("needs the pinned Omnigent build")
+    (tmp_path / "window").mkdir()
+    with serve_app(tmp_path / "window", {"CFO_MAINTENANCE_WINDOW": RP}) as inside:
+        assert getattr(inside.app.state, "scheduled_task_scheduler", None) is None
+        assert inside.client.get("/v1/scheduled-tasks", headers=inside.bearer()).status_code == 404
+    (tmp_path / "open").mkdir()
+    with serve_app(tmp_path / "open") as outside:
+        assert outside.app.state.scheduled_task_scheduler is not None
+        assert (
+            outside.client.get("/v1/scheduled-tasks", headers=outside.bearer()).status_code == 200
+        )
 
 
 def test_the_apps_own_exit_79_is_never_taken_for_a_rollback(rig: Rig) -> None:

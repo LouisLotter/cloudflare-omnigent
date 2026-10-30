@@ -771,6 +771,17 @@ describe("watchdog: an update's rollback (WP3.41)", () => {
     expect(fields).toEqual([{ exitCode: EXIT_ROLLED_BACK, held: true }]);
     const later = step(held.state, STOPPED, T0 + 3_600_000, T, nextId, "rollback");
     expect(types(later)).not.toContain("start");
+    // Said again at every check while held, so a lost line recurs; a 78's hold says nothing.
+    expect(events(later)).toEqual(["rolled_back"]);
+    const configHeld = step(
+      answered(T0),
+      { kind: "stopped", exitCode: EXIT_CONFIG, ranWith: "rollback" },
+      T0 + 10_000,
+      T,
+      nextId,
+      "rollback",
+    );
+    expect(events(step(configHeld.state, STOPPED, T0 + 70_000, T, nextId, "rollback"))).toEqual([]);
     // The previous release's configuration starts it.
     const previous = step(later.state, STOPPED, T0 + 3_700_000, T, nextId, "previous");
     expect(events(previous)).toEqual(["config_changed", "start"]);

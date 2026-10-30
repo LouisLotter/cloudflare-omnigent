@@ -166,7 +166,6 @@ describe("an update's read-only window (WP3.41)", () => {
     expect(h.journal().window).toEqual({
       id,
       openedAt: expect.any(String),
-      heldSince: expect.any(String),
       // Reported by the server even while the check waits for a durable owner.
       restorePointTakenAt: expect.any(String),
       previous: { platformVersionId: platformBefore, webVersionId: webBefore },
@@ -287,7 +286,7 @@ describe("an update's read-only window (WP3.41)", () => {
     const outcome = await h.update(CODE_A, { acceptWaitMs: 60_000 });
     expect(outcome).toEqual({
       kind: "deployed",
-      why: expect.stringMatching(/has not switched to the version without the window/),
+      why: expect.stringMatching(/has not run on the released version yet|not yet applied/),
       window: "closing",
     });
     expect(h.journal().window?.acceptVersionId).toBe(h.world.latest(h.plan.platformWorker)?.id);
@@ -318,7 +317,7 @@ describe("an update's read-only window (WP3.41)", () => {
     // A newer checkout cannot overtake it: it finishes the acceptance first.
     expect(await h.update(CODE_B, short)).toEqual({
       kind: "deployed",
-      why: expect.stringMatching(/has not switched to the version without the window/),
+      why: expect.stringMatching(/has not run on the released version yet|not yet applied/),
       window: "closing",
     });
     expect(count(h, "deployPlatform")).toBe(1);
@@ -359,6 +358,56 @@ describe("an update's read-only window (WP3.41)", () => {
       run: () => h.world.versions.delete(h.plan.platformWorker),
     };
     await expect(h.update()).rejects.toThrow(/no longer exists/);
+  });
+
+  it("a window ended outside the installer after a deploy whose confirmation was lost is never reused (Codex r1-3)", async () => {
+    const h = await installed();
+    h.world.crash = {
+      call: "activeVersion",
+      nth: (h.world.counts.get("activeVersion") ?? 0) + 1,
+      when: "before",
+    };
+    await expect(h.update()).rejects.toThrow(Crash);
+    const first = h.journal().window?.id as string;
+    expect(h.journal().update?.platformDeployedAt).toBeUndefined();
+    expect(secrets(h).get(MAINTENANCE_WINDOW_SECRET)).toBe(first);
+    // Someone ends the window by hand; Omnigent takes changes.
+    await h.world
+      .cloud()
+      .updateSecrets(h.plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
+    expect(await h.update()).toEqual({ kind: "done" });
+    const points = h.journal().restorePoints ?? [];
+    expect(points.map((p) => [p.id === first, p.outcome])).toEqual([
+      [true, "ended outside the installer"],
+      [false, "accepted"],
+    ]);
+  });
+
+  it("after finishing an acceptance, the next window goes back to the accepted release (Codex r1)", async () => {
+    const h = await installed();
+    await openWindow(h);
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "after" };
+    await expect(h.update()).rejects.toThrow(Crash);
+    const accepted = h.world.latest(h.plan.platformWorker);
+    expect(accepted?.secrets.has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
+    h.world.now += SWITCH_MS;
+    expect((await h.update(CODE_B, { verify: false })).kind).toBe("deployed");
+    expect(h.journal().window?.previous.platformVersionId).toBe(accepted?.id);
+  });
+
+  it("refuses, before any effect, a replica with no room beside it for a restore point", async () => {
+    const plan = await accountPlan();
+    const h = await installed(plan);
+    const root = {
+      ...h.store.state,
+      installation: { ...plan, replica: { ...plan.replica, url: "s3://cfo-canary-replica" } },
+    };
+    h.store.state = root as BootstrapState;
+    await expect(h.update()).rejects.toThrow(
+      /cannot be updated: its replica \(s3:\/\/cfo-canary-replica\) is at the root of its bucket.*nothing was changed/,
+    );
+    expect(count(h, "deployPlatform") + count(h, "secretNames")).toBe(0);
   });
 
   it("keeps the last three restore points", async () => {
@@ -606,6 +655,43 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
     expect(count(h, "deployVersion")).toBe(2);
   });
 
+  it("never orders a rollback once the window ended outside the installer, on any run (Codex r1-2)", async () => {
+    const h = await installed();
+    await openWindow(h);
+    // Started, then interrupted before the order; the window then ended by hand.
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "before" };
+    await expect(h.rollback()).rejects.toThrow(Crash);
+    expect(h.journal().window?.rollback?.startedAt).toBeDefined();
+    await h.world
+      .cloud()
+      .updateSecrets(h.plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
+    await expect(h.rollback()).rejects.toThrow(
+      /ended outside this installer.*the rollback was called off/,
+    );
+    expect(h.world.secretChanges.some((c) => ROLLBACK_SECRET in c.changes)).toBe(false);
+    expect(h.journal().window).toBeUndefined();
+    expect(h.journal().restorePoints?.at(-1)?.outcome).toBe("ended outside the installer");
+    expect(count(h, "deployVersion")).toBe(0);
+    // The update goes on from there, with a restore point of now.
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    expect(await h.update()).toEqual({ kind: "done" });
+  });
+
+  it("calls off an order already sent when the window ends before the restore point is back", async () => {
+    const h = await installed();
+    await openWindow(h);
+    h.world.rollbackWorks = false;
+    expect((await h.rollback({ verifyWaitMs: 60_000 })).kind).toBe("waiting");
+    expect(secrets(h).has(ROLLBACK_SECRET)).toBe(true);
+    await h.world
+      .cloud()
+      .updateSecrets(h.plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
+    await expect(h.rollback()).rejects.toThrow(/the rollback was called off/);
+    expect(secrets(h).has(ROLLBACK_SECRET)).toBe(false);
+    expect(h.journal().window).toBeUndefined();
+    expect(count(h, "deployVersion")).toBe(0);
+  });
+
   it("a staging installation goes back the same way", async () => {
     const h = await installed(await stagingPlan());
     await openWindow(h);
@@ -814,7 +900,6 @@ describe("the window's pieces", () => {
     const window = {
       id,
       openedAt: "2026-10-30T12:00:00.000Z",
-      heldSince: "2026-10-30T12:01:00.000Z",
       previous: {
         platformVersionId: "v1",
         webVersionId: "v2",

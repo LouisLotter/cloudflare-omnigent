@@ -303,6 +303,9 @@ class ServerImageConfig:
     restore_point: str | None = None
     #: A rollback to that restore point, ordered inside the update's window (``CFO_ROLLBACK_TO``).
     rollback_to: str | None = None
+    #: The update's read-only window is open (``CFO_MAINTENANCE_WINDOW``, any value): the app
+    #: starts without Omnigent's scheduler, so nothing fires until the update is accepted.
+    maintenance: bool = False
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -454,8 +457,10 @@ def parse_restore_point(
     env: Mapping[str, str], replica: ReplicaSettings | None
 ) -> tuple[str | None, str | None]:
     """The update's restore point and a rollback to it (WP3.41): each a restore point's name
-    (``rp-<UTC time>-<8 hex>``), the rollback only to the restore point this configuration
-    names, and both only with a replica that has room beside it (a path, not the bucket root)."""
+    (``rp-<UTC time>-<8 hex>``), the rollback only to the restore point this configuration names
+    and only inside that update's read-only window (a rollback after the window ended would erase
+    what was written since), and both only with a replica that has room beside it (a path, not
+    the bucket root)."""
     point = _get(env, "CFO_RESTORE_POINT")
     rollback = _get(env, "CFO_ROLLBACK_TO")
     for name, value in (("CFO_RESTORE_POINT", point), ("CFO_ROLLBACK_TO", rollback)):
@@ -465,6 +470,11 @@ def parse_restore_point(
         raise ConfigError(
             "CFO_ROLLBACK_TO must name the restore point of the update it rolls back "
             "(CFO_RESTORE_POINT)"
+        )
+    if rollback is not None and _get(env, "CFO_MAINTENANCE_WINDOW") != rollback:
+        raise ConfigError(
+            "CFO_ROLLBACK_TO is only carried out inside that update's read-only window "
+            "(CFO_MAINTENANCE_WINDOW)"
         )
     if point is not None and replica is not None:
         try:
@@ -797,6 +807,7 @@ def load(
         mcp=mcp_registry,
         restore_point=restore_point,
         rollback_to=rollback_to,
+        maintenance=_get(env, "CFO_MAINTENANCE_WINDOW") is not None,
         warnings=tuple(warnings),
     )
 

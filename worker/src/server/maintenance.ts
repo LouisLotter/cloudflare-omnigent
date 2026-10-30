@@ -1,15 +1,19 @@
 // The read-only window of an update (WP3.41, ADR 0007). Pure: no Workers runtime import (the
 // bootstrap, a Node script, imports it).
 //
-// `bootstrap.ts update` deploys a release with the secret `CFO_MAINTENANCE_WINDOW` holding the
-// window's ID (also its restore point's), and the release's server environment naming the same
-// restore point (`SERVER_ENV_CFO_RESTORE_POINT`). While a version of the platform Worker holds the
-// secret, OmnigentServer passes nothing to the server: every request through it (the browser's,
-// through the web Worker, and every computer's runners and sessions, through the computers'
-// route) gets 503, and so does the password page's change. Its watchdog still checks the server
-// directly, so the release can be checked; its status line says the window is open and names the
-// restore point the server reports. The update accepts the release by deleting the secret: the
-// version that makes has no window. Deleting it is the only way the window ends.
+// `bootstrap.ts update` deploys a release with the secret `SERVER_ENV_CFO_MAINTENANCE_WINDOW`
+// holding the window's ID (also its restore point's), and the release's server environment naming
+// the same restore point (`SERVER_ENV_CFO_RESTORE_POINT`). While a version of the platform Worker
+// holds the secret, OmnigentServer passes nothing to the server: every request through it (the
+// browser's, through the web Worker, and every computer's runners and sessions, through the
+// computers' route) gets 503, and so does the password page's change; `platform.internal`'s
+// launcher refuses every call, so the server starts and stops no computer. The server receives
+// the window too (`CFO_MAINTENANCE_WINDOW`) and starts Omnigent without its scheduler, so nothing
+// fires inside the window. The watchdog still checks the server directly, so the release can be
+// checked; its status line says the window is open and names the restore point the server
+// reports. The update accepts the release by deleting the secret: the version that makes has no
+// window, and its watchdog restarts the server without it. Deleting it is the only way the window
+// ends.
 //
 // The rollback (`bootstrap.ts update --rollback`, inside the window only) sets
 // `SERVER_ENV_CFO_ROLLBACK_TO` to the same ID: the server started with it puts the restore point
@@ -20,8 +24,8 @@
 // Neither name is a credential; both are secrets so that every later deploy keeps them (Wrangler
 // keeps secrets and replaces variables) until the update itself removes them.
 
-/** The window's secret on the platform Worker. Not `SERVER_ENV_`: it never reaches the server. */
-export const MAINTENANCE_WINDOW_SECRET = "CFO_MAINTENANCE_WINDOW";
+/** The window's secret on the platform Worker, which the server receives too. */
+export const MAINTENANCE_WINDOW_SECRET = "SERVER_ENV_CFO_MAINTENANCE_WINDOW";
 /** The restore point the update's server takes, in the server's environment. */
 export const RESTORE_POINT_VAR = "SERVER_ENV_CFO_RESTORE_POINT";
 /** The rollback's order, in the server's environment (a secret). */

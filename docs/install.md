@@ -133,7 +133,7 @@ It deploys the new release to both parts of your installation, with the same nam
 Every update can be undone until it is checked, and not after:
 
 - **A restore point first.** Before the new version can change anything, its server copies Omnigent's data aside, in your own storage, where nothing deletes it automatically. The last three restore points are kept. A new Omnigent version may change how it stores its data in a way the old one cannot read; the restore point is what makes going back possible.
-- **Paused until checked.** From the moment the new version takes over until the update is checked, Omnigent takes no request from anyone, so nothing can change: opening it shows "Omnigent is being updated", and your cloud computers wait. Nothing can be lost in that time. The update checks the new version, accepts it, and says "updated, checked and accepted: Omnigent takes changes again". Accepting takes up to 5 more minutes.
+- **Paused until checked.** From the moment the new version takes over until the update is checked, Omnigent takes no request from anyone, so nothing can change: opening it shows "Omnigent is being updated", your cloud computers wait, and scheduled tasks do not run. Nothing can be lost in that time. The update checks the new version, accepts it, and says "updated, checked and accepted: Omnigent takes changes again". Accepting restarts the server once more and takes up to 5 more minutes.
 - **Going back, only before it is accepted.** If the update ends with "not checked yet", Omnigent stays paused. Run `update` again to keep checking, or go back to the version from before the update, with its data exactly as it was then:
 
   ```bash

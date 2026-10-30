@@ -837,6 +837,11 @@ function stopped(
 
   if (state.phase === "held") {
     if (config === state.heldConfig) {
+      // A rollback's hold says so at every check (WP3.41): the installer waits for that line
+      // before it deploys the previous release, so a lost one must recur.
+      if (state.outage?.exitCode === EXIT_ROLLED_BACK) {
+        b.event("rolled_back", { exitCode: EXIT_ROLLED_BACK, held: true });
+      }
       b.recordOutage();
       return b.done(state, now + timing.intervalMs);
     }

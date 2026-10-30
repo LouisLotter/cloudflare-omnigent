@@ -410,7 +410,7 @@ function parseWindow(value: unknown): WindowRecord {
     id: windowIdOf(w, "id", where),
     openedAt: requiredTime(w, "openedAt", where),
     previous,
-    ...optionalTimes(w, ["heldSince", "restorePointTakenAt", "acceptStartedAt"], where),
+    ...optionalTimes(w, ["restorePointTakenAt", "acceptStartedAt"], where),
     ...(w.acceptVersionId === undefined
       ? {}
       : { acceptVersionId: str(w, "acceptVersionId", where) }),

@@ -8,7 +8,6 @@
 // container, as `<NAME>`. The server image (WP2.3) and the installer (WP2.4) choose the names.
 
 import { InstallationId } from "@cfo/contracts";
-import { maintenanceWindowOf } from "./maintenance.ts";
 
 export const SERVER_ENV_PREFIX = "SERVER_ENV_";
 
@@ -215,14 +214,11 @@ export function startFingerprint(
  * The fingerprint of the server environment alone (no image): what the platform Worker's cron
  * sends OmnigentServer with `ensureStarted` (WP3.36). The cron runs on the newest deployed
  * version at once, and has no `images` map of its own, so the two compare environments only.
- * An update's read-only window counts too (WP3.41), though it never reaches the server: the
- * version that ends it reaches the object as soon as a yield allows. A digest, never logged.
+ * An update's read-only window is part of it (WP3.41: the server receives it). A digest, never
+ * logged.
  */
 export function environmentFingerprint(env: Readonly<Record<string, unknown>>): Promise<string> {
-  const { vars } = serverContainerEnv(env);
-  const window = maintenanceWindowOf(env);
-  // A name no environment variable can have (`NAME`), so it never meets a real one.
-  return configFingerprint(window === null ? vars : { ...vars, " maintenance": window }, {
+  return configFingerprint(serverContainerEnv(env).vars, {
     image: null,
     instance: SERVER_INSTANCE,
   });

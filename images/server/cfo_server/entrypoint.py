@@ -814,6 +814,8 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
             if config.mcp.enabled
             else f"off: {config.mcp.off_reason}"
         ),
+        # An update's read-only window (WP3.41): Omnigent starts without its scheduler.
+        maintenance=config.maintenance,
     )
     supervisor = Supervisor(config, layout, env, board)
     supervisor.install_signal_handlers()

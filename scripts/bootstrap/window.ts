@@ -5,23 +5,27 @@
 //
 //   - Opening: before the update's first platform deploy, the journal records the window (`window`:
 //     its ID, and the versions and code that ran before), persist before effect. The deploy then
-//     carries the window as a secret (`CFO_MAINTENANCE_WINDOW`) and the restore point's name in
-//     the server's environment (`SERVER_ENV_CFO_RESTORE_POINT`). From the moment the platform's
-//     objects run that version, nothing reaches the server (worker/src/server/maintenance.ts). Its
-//     watchdog replaces the previous server (a final sync), and the new server copies the replica
-//     beside it before Litestream or Omnigent starts (images/server/cfo_server/restore_point.py).
+//     carries the window as a secret (`SERVER_ENV_CFO_MAINTENANCE_WINDOW`, which the server
+//     receives too) and the restore point's name (`SERVER_ENV_CFO_RESTORE_POINT`). From the moment
+//     the platform's objects run that version, nothing reaches the server and the server starts no
+//     computer (worker/src/server/maintenance.ts). Its watchdog replaces the previous server (a
+//     final sync), and the new server copies the replica beside it before Litestream or Omnigent
+//     starts (images/server/cfo_server/restore_point.py), then starts Omnigent without its
+//     scheduler. A window whose secret is gone after the version from before stopped serving was
+//     ended outside the installer: it is closed, and the update starts again with a new one.
 //   - The check: the update's own check (events.ts, verifyRelease) and, from a line of the
 //     update's version, the window held and the restore point the server reports (`windowCheck`).
 //   - Accepting (`acceptWindow`): the journal records the decision first; then one secrets change
-//     deletes the window's secret, and the update waits until the platform's object runs a version
-//     without it. From the decision on, rollback is refused: problems are fixed forward.
+//     deletes the window's secret, and the update waits for the release check of the version that
+//     makes: its object runs it, and its watchdog has restarted the server without the window. From
+//     the decision on, rollback is refused: problems are fixed forward.
 //   - The rollback (rollback.ts), inside the window only.
 //
 // The journal keeps the last `RESTORE_POINTS_KEPT` restore points (`restorePoints`), as the server
 // keeps their copies; names, times and places only.
 
 import { MAINTENANCE_WINDOW_SECRET } from "../../worker/src/server/maintenance.ts";
-import { parseLogs } from "./events.ts";
+import { parseLogs, type Verification, verifyRelease } from "./events.ts";
 import { type BootstrapCloud, type BootstrapState, type Journal, slicedLogs } from "./machine.ts";
 import type { Installation } from "./settings.ts";
 
@@ -53,8 +57,6 @@ export interface WindowRecord {
   readonly id: string;
   /** Recorded before the deploy that opens it. */
   readonly openedAt: string;
-  /** When a deploy carrying the window's secret was first confirmed: the window holds since. */
-  readonly heldSince?: string;
   readonly previous: PreviousRelease;
   /** When the server took the restore point, as it reported it. */
   readonly restorePointTakenAt?: string;
@@ -122,6 +124,23 @@ export function restorePointRecord(
     outcome,
     closedAt,
   };
+}
+
+/**
+ * Why the installation's replica leaves no room for restore points beside it, or undefined: the
+ * server keeps them in the replica's parent folder, so the replica needs a path of its own (the
+ * default, `s3://<bucket>/omnigent`, has one), as the server image checks too.
+ */
+export function restorePointProblem(plan: Pick<Installation, "replica">): string | undefined {
+  const url = plan.replica.url;
+  const rest = url.replace(/^(s3|file):\/\//, "");
+  const segments = (url.startsWith("s3://") ? rest.split("/").slice(1) : rest.split("/")).filter(
+    (s) => s !== "",
+  );
+  if (segments.length === 0 || segments.at(-1) === "cfo-restore-points") {
+    return `its replica (${url}) is at the root of its bucket, where the restore point an update takes has no room beside it; the update needs a replica with a path, such as s3://<bucket>/omnigent`;
+  }
+  return undefined;
 }
 
 /** The journal with the window closed: its restore point recorded, the newest few kept. */
@@ -209,8 +228,10 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /**
  * Accepts the update in the window: records the decision (persist before effect), deletes the
  * window's secret (one secrets change, a new version without it), and waits until the platform's
- * object runs that version, which passes requests to the server again. A later run finishes it.
- * Returns whether the window is closed and the journal says so.
+ * object runs that version, which passes requests to the server again, and its watchdog has
+ * restarted the server without the window (its scheduler on again) with a durable owner: the
+ * release check (events.ts, verifyRelease) of that version. A later run finishes it. Returns
+ * whether the window is closed and the journal says so.
  */
 export async function acceptWindow(
   ctx: WindowContext,
@@ -248,13 +269,17 @@ export async function acceptWindow(
       versionId = await ctx.cloud.activeVersion(plan.platformWorker);
       if (versionId !== undefined) update({ acceptVersionId: versionId });
     }
+    let checked: Verification = {
+      verified: false,
+      why: "Cloudflare does not say yet which version serves the platform Worker",
+    };
     if (versionId !== undefined) {
-      const logs = parseLogs(await logsSince(since, ctx.now()), plan.platformWorker);
-      const runs = logs.invocations.some(
-        (i) =>
-          i.entrypoint === "OmnigentServer" && i.versionId === versionId && i.loggedAt >= since,
-      );
-      if (runs) {
+      checked = verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
+        installationId: plan.installationId,
+        releasedVersionId: versionId,
+        releasedAt: since,
+      });
+      if (checked.verified) {
         const w = window();
         setJournal(
           closeWindow(
@@ -268,10 +293,7 @@ export async function acceptWindow(
         return { closed: true };
       }
     }
-    const why =
-      versionId === undefined
-        ? "Cloudflare does not say yet which version serves the platform Worker"
-        : "the platform's object has not switched to the version without the window yet (it switches within about 5 minutes)";
+    const why = checked.verified ? "" : checked.why;
     if (why !== said) {
       said = why;
       ctx.log(`waiting: ${why}`);

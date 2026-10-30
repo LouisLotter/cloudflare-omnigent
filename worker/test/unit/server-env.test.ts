@@ -226,11 +226,12 @@ describe("the environment fingerprint the cron sends (WP3.36, WP3.41)", () => {
     expect(await environmentFingerprint({ ...env, SERVER_ENV_X: "y" })).not.toBe(base);
   });
 
-  it("counts an update's read-only window, which never reaches the server", async () => {
+  it("counts an update's read-only window, which the server receives too", async () => {
     const base = await environmentFingerprint(env);
-    const window = { ...env, CFO_MAINTENANCE_WINDOW: "rp-20261030T120000Z-0a1b2c3d" };
+    const window = { ...env, SERVER_ENV_CFO_MAINTENANCE_WINDOW: "rp-20261030T120000Z-0a1b2c3d" };
     expect(await environmentFingerprint(window)).not.toBe(base);
-    expect(await environmentFingerprint({ ...env, CFO_MAINTENANCE_WINDOW: "" })).toBe(base);
-    expect(serverContainerEnv(window).vars).toEqual(serverContainerEnv(env).vars);
+    expect(serverContainerEnv(window).vars.CFO_MAINTENANCE_WINDOW).toBe(
+      "rp-20261030T120000Z-0a1b2c3d",
+    );
   });
 });

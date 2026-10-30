@@ -10,7 +10,7 @@
 // and whether Omnigent lists GitHub linking (WP3.36), and the revision of the MCP choices and
 // whether Omnigent lists MCP (WP5.10); a server whose settings it refuses exits 78, logs no
 // status, and the watchdog logs `config_error` once.
-// An update's read-only window (WP3.41): a version holding `CFO_MAINTENANCE_WINDOW` says so on its
+// An update's read-only window (WP3.41): a version holding `SERVER_ENV_CFO_MAINTENANCE_WINDOW` says so on its
 // status lines (`maintenance`), with the restore point a server started with
 // `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`); a server started with a
 // rollback order (`SERVER_ENV_CFO_ROLLBACK_TO`) never answers, and the watchdog logs `rolled_back`

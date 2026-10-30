@@ -114,6 +114,7 @@ import {
   closeWindow,
   newWindowId,
   type PreviousRelease,
+  restorePointProblem,
   restorePointRecord,
   type WindowRecord,
   windowCheck,
@@ -255,6 +256,14 @@ export async function runUpdate(
   if (problems.length > 0) {
     throw new BootstrapRefusal(`the plan is not usable: ${problems.join("; ")}`);
   }
+  // Every update takes a restore point beside the replica (WP3.41): refused before any effect
+  // when there is no room for one, rather than opening a window it could not close.
+  const noRoom = restorePointProblem(plan);
+  if (noRoom !== undefined) {
+    throw new BootstrapRefusal(
+      `this installation cannot be updated: ${noRoom}; nothing was changed`,
+    );
+  }
   const record = (change: Partial<Journal>) => {
     state = { ...state, journal: { ...state.journal, ...change } };
     ctx.store.save(state);
@@ -335,9 +344,9 @@ export async function runUpdate(
       );
     }
   };
-  const platformIdentity = await ours(plan.platformWorker);
+  let platformIdentity = await ours(plan.platformWorker);
   const platformHeld = platformIdentity.vars ?? {};
-  const webIdentity = await ours(plan.webWorker);
+  let webIdentity = await ours(plan.webWorker);
 
   // 2. What this release needs that the Worker lacks: made here, or refused by name. Half a
   // pair is never completed or replaced: the half held may be in use (Codex WP3.35 r1-1).
@@ -398,13 +407,22 @@ export async function runUpdate(
     const updatedTo = (state.journal.update as UpdateRecord).code;
     const closed = await acceptWindow(ctx, () => state, setJournal, updatedTo, acceptWait(options));
     if (!closed.closed) return { kind: "deployed", why: closed.why, window: "closing" };
+    // What runs now is the accepted release: the next window goes back to it (Codex WP3.41 r1).
     present.delete(MAINTENANCE_WINDOW_SECRET);
+    platformIdentity = await ours(plan.platformWorker);
+    webIdentity = await ours(plan.webWorker);
     accepted = true;
   }
   const opened = state.journal.window;
-  if (opened?.heldSince !== undefined && !present.has(MAINTENANCE_WINDOW_SECRET)) {
-    // Ended outside the installer: Omnigent may have taken changes since its restore point, so
-    // it can no longer go back to it. The update starts afresh, with a restore point of now.
+  if (
+    opened !== undefined &&
+    !present.has(MAINTENANCE_WINDOW_SECRET) &&
+    platformIdentity.versionId !== opened.previous.platformVersionId
+  ) {
+    // The window's secret is gone, and the version from before the update no longer serves: the
+    // update's deploy landed (its confirmation perhaps lost) and the window was ended outside the
+    // installer. Omnigent may have taken changes since its restore point, so it can no longer go
+    // back to it: the update starts afresh, with a restore point of now (Codex WP3.41 r1).
     setJournal(
       closeWindow(
         state.journal,
@@ -532,10 +550,7 @@ export async function runUpdate(
         platformDeployedAt: iso(ctx.now()),
         ...(versionId === undefined ? {} : { platformVersionId: versionId }),
       },
-      {
-        platformCode: code,
-        window: { ...currentWindow(), heldSince: currentWindow().heldSince ?? iso(ctx.now()) },
-      },
+      { platformCode: code },
     );
     ctx.log(
       `deployed the platform Worker: it kept all ${present.size} of its secrets${adding.length > 0 ? ` and holds ${adding.join(", ")} now` : ""}`,
