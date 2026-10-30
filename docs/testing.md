@@ -192,6 +192,17 @@ node worker/test/e2e/github-setup-e2e.ts
 
 It creates and removes a `cfo-wp336-e2e-server` container; `CFO_E2E_DIR` chooses its directory (default `~/.pt/wp336-e2e`). The object's version switch on Cloudflare (and its yield to a newer version), real Workers Logs, a real GitHub App and Access remain staging work.
 
+## An update's restore point, window and rollback end to end — local Docker
+
+[`worker/test/e2e/update-window-e2e.ts`](../worker/test/e2e/update-window-e2e.ts) runs the installer's real `update` and `update --rollback` (WP3.41) on the same harness: the production OmnigentServer under `wrangler dev`, whose watchdog starts, replaces and holds the server image's real container, with Litestream on a file replica in a Docker volume. Cloudflare is a stand-in: each deploy, secrets change or version rollback restarts `wrangler dev` with that version's variables and secrets. It checks that the window opens before the deploy, that the new server takes its restore point before Omnigent starts, that inside the window reads, sign-in and writes get 503 and no write lands, that the update is accepted and writes work again, that restoring the restore point gives the database from before the update; then, for an update whose check does not pass in time, with a write reaching the database directly inside the window, that the rollback ends with the database from before that update and the write gone, and it scans the logs for the run's secrets.
+
+```bash
+docker build -f images/server/Dockerfile --target server -t cfo-wp341-server:runtime .
+node worker/test/e2e/update-window-e2e.ts
+```
+
+It creates and removes a `cfo-wp341-e2e-server` container, its helper and the `cfo-wp341-e2e-replica` volume; `CFO_E2E_DIR` chooses its directory (default `~/.pt/wp341-e2e`). The same paths on an S3 stand-in are in [`test_restore_point_image.py`](../images/server/tests/integration/test_restore_point_image.py) (the image suite). R2, a real version rollback and the object's switch on Cloudflare remain staging work.
+
 ## Certificate trust checks
 
 Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.

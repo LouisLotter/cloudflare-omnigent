@@ -49,6 +49,19 @@ A saved session's 201 response is distinct from `runner_launch: started|failed|u
 | GitHub linking is off (exit 1) | A server started with the App's settings answers, but Omnigent does not list GitHub in `/v1/info`'s `enabled_connections`: the image turned linking off, so a setting it needs is missing. | The server's `boot` line says `github_linking: off: incomplete`, and its `config.warning` line names what is missing (both in the platform Worker's Workers Logs). Run the step again with `--replace`, then delete the old App on GitHub. |
 | The server does not start with the App's settings (exit 1), or the setup page says the server cannot start | The server exited 78 with a malformed setting and the watchdog holds it until the configuration changes: Omnigent is down. | The server's `config.error` line names the setting. Run the step again with `--replace` (a new App, freshly stored), then delete the old App on GitHub. |
 
+## Updates
+
+`bootstrap.ts update` opens a window in which Omnigent takes no request, takes a restore point, checks the new version, and accepts it ([install guide](../install.md#updating-your-installation)).
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| "Omnigent is being updated" (503, `retry-after: 60`) on every page and API call | The update's window is open: the platform Worker holds `CFO_MAINTENANCE_WINDOW`, and its object passes nothing to the server. Cloud computers wait and reconnect afterwards. | Let the update finish; if it stopped, `bootstrap.ts update` continues it, or `bootstrap.ts update --rollback` goes back. `bootstrap.ts status` says which. |
+| Not checked yet (exit 3), the window open | The new server has not answered with a durable owner, or has not reported its restore point. | `bootstrap.ts status --logs` shows `window=` and `restorePoint=` on the status lines. The server's `cfo.restore_point.failed` line (exit 74, retried at each start) says why a restore point could not be taken; Omnigent never starts without it. |
+| Accepted, closing (exit 3) | The window's secret is deleted; the platform's object has not switched to that version yet (up to about 5 minutes). | Run `bootstrap.ts update` again to confirm. |
+| Rollback not finished (exit 3) | The server has not reported the restore point back (`rolled_back`), or the previous version's server has not answered yet. | Run `bootstrap.ts update --rollback` again. The server's `cfo.rollback.failed` line (exit 76, retried) names the cause; a restore point that does not restore as its manifest records is never put back, and the replica stays as it was. |
+| "The update's read-only window was ended outside this installer" | `CFO_MAINTENANCE_WINDOW` was deleted by hand: Omnigent may have taken changes since the restore point. | Going back would lose them, so rollback refuses; `update` starts again with a new restore point. |
+| `services` or `github-app` refuses: an update is waiting | A change made inside the window would be undone, unseen, by a rollback. | Finish the update first. |
+
 ## MCP services
 
 `bootstrap.ts services add <id>` stores the service's settings and waits until a server started with them answers.
