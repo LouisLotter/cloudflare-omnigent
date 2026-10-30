@@ -5,6 +5,7 @@ import {
   bootstrapSecretPresent,
   configFingerprint,
   DATABASE_CHECK_ALLOWANCE_S,
+  environmentFingerprint,
   imageIdentity,
   SERVER_INSTANCE,
   serverContainerEnv,
@@ -208,5 +209,28 @@ describe("configFingerprint", () => {
     // A setting the container never gets changes nothing.
     expect(await startFingerprint({ ...env, ACCESS_AUD: "changed" }, image)).toBe(expected);
     expect(await startFingerprint(env, pinned("x-omnigentserver-server", "b"))).not.toBe(expected);
+  });
+});
+
+describe("the environment fingerprint the cron sends (WP3.36, WP3.41)", () => {
+  const env = {
+    SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL: "https://omnigent.example.test",
+    CFO_INSTALLATION_ID: "ins_01hs3f9q2m8z4w7k6t5r1n0ybc",
+    ACCESS_AUD: "not the server's",
+  };
+
+  it("follows the server's environment, not the Worker's other settings", async () => {
+    const base = await environmentFingerprint(env);
+    expect(base).toMatch(/^[0-9a-f]{32}$/);
+    expect(await environmentFingerprint({ ...env, ACCESS_AUD: "another" })).toBe(base);
+    expect(await environmentFingerprint({ ...env, SERVER_ENV_X: "y" })).not.toBe(base);
+  });
+
+  it("counts an update's read-only window, which never reaches the server", async () => {
+    const base = await environmentFingerprint(env);
+    const window = { ...env, CFO_MAINTENANCE_WINDOW: "rp-20261030T120000Z-0a1b2c3d" };
+    expect(await environmentFingerprint(window)).not.toBe(base);
+    expect(await environmentFingerprint({ ...env, CFO_MAINTENANCE_WINDOW: "" })).toBe(base);
+    expect(serverContainerEnv(window).vars).toEqual(serverContainerEnv(env).vars);
   });
 });

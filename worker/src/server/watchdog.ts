@@ -17,11 +17,16 @@
 //     entrypoint retries a transient cause itself. What protects it is the current observation
 //     (kept while its status is unreadable), not the outage's recorded cause: once the
 //     entrypoint reports anything else, the start that follows gets the budgets of any start
-//     (AIR2-009);
+//     (AIR2-009). The one exception is an update's rollback (WP3.41): while the Worker orders one,
+//     a server in recovery mode started without that order is replaced once, as an answering
+//     one is, since only a start can apply it (the Durable Object reports the configuration a
+//     silent server ran with only then); nothing in recovery mode replicates, so the stop loses
+//     nothing;
 //   - a restart stops the container with SIGTERM, so the entrypoint can confirm a final sync,
 //     and kills it only after the stop's grace (about twice the final-sync timeout);
 //   - an exit with code 78 (a setting missing or malformed) is not restarted until the
-//     configuration changes;
+//     configuration changes, and neither is an exit 79 (WP3.41: a rollback put the update's
+//     restore point back, and the previous release's configuration starts the server);
 //   - a server that answers but was started with another configuration than the Worker now
 //     holds is replaced once, through the same graceful restart (G2-SEC-001): a container gets
 //     its environment only at its start, so a secret or setting release (the bootstrap's, a key
@@ -89,6 +94,8 @@ export const WATCHDOG_TIMING: WatchdogTiming = {
 
 /** The server image's exit code for a missing or malformed setting (WP2.3). */
 export const EXIT_CONFIG = 78;
+/** The server image's exit code after a rollback put the restore point back (WP3.41). */
+export const EXIT_ROLLED_BACK = 79;
 
 export type OutageCause = OutageRecord["cause"];
 
@@ -110,8 +117,8 @@ export interface OngoingOutage {
  * - `starting`: `start()` was called at `phaseSince`; waiting for the server to answer.
  * - `stopping`: the watchdog sent SIGTERM at `phaseSince`; waiting for the container to stop.
  * - `waiting`: the next `start()` is due at `startDueAt`.
- * - `held`: the server exited with 78; no start until the configuration's fingerprint differs
- *   from `heldConfig`.
+ * - `held`: the server exited with 78 (or 79, after a rollback); no start until the
+ *   configuration's fingerprint differs from `heldConfig`.
  */
 export type WatchdogPhase = "idle" | "starting" | "stopping" | "waiting" | "held";
 
@@ -126,7 +133,7 @@ export interface WatchdogState {
   readonly lastAnsweredAt: number | null;
   /** The first `start()` since the server last answered (or ever): the breakdown's origin. */
   readonly startsSince: number | null;
-  /** The configuration fingerprint an exit 78 was seen with, while `held`. */
+  /** The configuration fingerprint an exit 78 or 79 was seen with, while `held`. */
   readonly heldConfig: string | null;
   /**
    * While `stopping`: when SIGTERM reached the container (or the platform's own stop was first
@@ -215,7 +222,17 @@ export type Observation =
       /** The configuration fingerprint the exited container was started with, when known. */
       readonly ranWith?: string | null;
     }
-  | { readonly kind: "silent"; readonly entrypoint: EntrypointReport | null };
+  | {
+      readonly kind: "silent";
+      readonly entrypoint: EntrypointReport | null;
+      /**
+       * The configuration the silent container was started with, as for an answering one:
+       * compared only while the entrypoint reports recovery mode, and given by the Durable
+       * Object only while the Worker orders an update's rollback (WP3.41). Absent: never
+       * replaced for its configuration.
+       */
+      readonly ranWith?: string | null;
+    };
 
 export const ANSWERING: Observation = { kind: "answering" };
 
@@ -236,6 +253,7 @@ export type WatchdogEventName =
   | "recovery_mode"
   | "recovery_left"
   | "config_error"
+  | "rolled_back"
   | "config_changed"
   | "server_ready"
   | "outage_started"
@@ -371,11 +389,14 @@ export function step(
     state.recoverySince !== null && observation.kind !== "silent"
       ? { ...state, recoverySince: null }
       : state;
-  // A server that answers with another configuration than the Worker's (G2-SEC-001).
-  const outdated =
-    observation.kind === "answering" &&
-    observation.ranWith !== undefined &&
-    observation.ranWith !== config;
+  // A server that answers with another configuration than the Worker's (G2-SEC-001), or one in
+  // recovery mode with another (WP3.41).
+  const ranWith =
+    observation.kind === "answering" ||
+    (observation.kind === "silent" && observation.entrypoint?.phase === "recovery")
+      ? observation.ranWith
+      : undefined;
+  const outdated = ranWith !== undefined && ranWith !== config;
   if (current.phase === "stopping") {
     return stopping(current, observation, now, timing, b, config, outdated);
   }
@@ -385,7 +406,9 @@ export function step(
         ? replaceOutdated(current, now, timing, b)
         : answering(current, now, timing, b);
     case "silent":
-      return silent(current, observation.entrypoint, now, timing, b);
+      return outdated
+        ? replaceInRecovery(current, now, timing, b)
+        : silent(current, observation.entrypoint, now, timing, b);
     case "stopped":
       return stopped(current, observation.exitCode, now, timing, b, config, observation.ranWith);
   }
@@ -457,6 +480,33 @@ function replaceOutdated(
 }
 
 /**
+ * A server in recovery mode, started without the rollback the Worker now orders (WP3.41; the
+ * observation carries its configuration only then): replaced once, gracefully, so that the order
+ * reaches it, since a container gets its environment only at its start. Nothing in recovery mode
+ * replicates or serves, so the stop loses nothing; the outage it is in continues. A replacement
+ * started with the current configuration is never replaced again for it: recovery mode stays a
+ * state, never a loop.
+ */
+function replaceInRecovery(
+  state: WatchdogState,
+  now: number,
+  timing: WatchdogTiming,
+  b: Builder,
+): Step {
+  b.openFor(state, "recovery_mode", now);
+  b.event("config_changed", { action: "replace", phase: "recovery" });
+  return stopForRestart(
+    { ...state, recoverySince: null },
+    now,
+    timing,
+    b,
+    "the configuration changed",
+    0,
+    false,
+  );
+}
+
+/**
  * The watchdog is stopping the server. The phase lasts until the container is seen stopped, so
  * no request is passed on meanwhile, the kill after the grace included.
  * - Intended but not yet delivered (`signalledAt` null: the instance was reset, or the signal
@@ -485,7 +535,7 @@ function stopping(
       signalledAt: null,
       killedAt: null,
     };
-    if (observation.exitCode === EXIT_CONFIG) {
+    if (observation.exitCode === EXIT_CONFIG || observation.exitCode === EXIT_ROLLED_BACK) {
       return stopped(waiting, observation.exitCode, now, timing, b, config, observation.ranWith);
     }
     b.update({ exitCode: observation.exitCode ?? b.outage?.exitCode ?? null });
@@ -800,8 +850,9 @@ function stopped(
     );
   }
 
-  if (exitCode === EXIT_CONFIG) {
-    // A setting is missing or malformed: restarting cannot help until the configuration
+  if (exitCode === EXIT_CONFIG || exitCode === EXIT_ROLLED_BACK) {
+    // A setting is missing or malformed (78), or a rollback put the update's restore point back
+    // (79, WP3.41): restarting cannot help, or must not happen, until the configuration
     // changes. The hold belongs to the configuration the container ran with; when that is
     // already not the current one, the corrected configuration is started (Codex WP2.2 r4-2).
     b.openFor(state, state.lastAnsweredAt === null ? "start_failed" : "container_stopped", now);
@@ -809,7 +860,10 @@ function stopped(
     const held = ranWith ?? config;
     // `held`: whether the current configuration is the one held (WP3.36, Codex r1-2). An exit
     // of a container started with an older one is not: the current one starts at once.
-    b.event("config_error", { exitCode, held: held === config });
+    b.event(exitCode === EXIT_CONFIG ? "config_error" : "rolled_back", {
+      exitCode,
+      held: held === config,
+    });
     if (held !== config) {
       b.event("config_changed");
       return start({ ...state, heldConfig: null }, now, timing, b, exitCode);
