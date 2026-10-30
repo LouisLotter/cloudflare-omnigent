@@ -65,6 +65,7 @@ ORIGIN = "https://mcp-demo.example.test"
 PUBLIC_URL = "https://omnigent.example.test"
 LOOPBACK_URL = "http://localhost"
 CLIENT_SECRET = "cfo-test-mcp-client-secret-0000"
+STATE_SECRET_NAME = "OMNIGENT_MCP_OAUTH_STATE_SECRET"
 
 
 def key_service_env(**over: str) -> dict[str, str]:
@@ -306,6 +307,63 @@ def test_a_missing_prerequisite_is_off_with_a_warning(
     (warning,) = [w for w in config.warnings if w.startswith("MCP services are off")]
     assert named in warning and STATE_SECRET not in warning
     assert "OMNIGENT_MCP_OAUTH_STATE_SECRET" not in app_environment(config, env)
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [
+        ("OMNIGENT_MCP_OAUTH_STATE_SECRET",),
+        ("OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY", "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY_ID"),
+    ],
+)
+def test_off_survives_the_app_process_own_parse(
+    env: dict[str, str], tmp_path: Path, drop: tuple[str, ...]
+) -> None:
+    """MCP off for a missing prerequisite stays off in the app process, which parses the
+    environment again without the secrets the image removed (Codex WP5.10 r1-2)."""
+    directory = write_manifests(
+        tmp_path / "services",
+        manifest(
+            "mail",
+            asks=["client_id", "client_secret"],
+            auth="oauth",
+            oauth={
+                "authorize_url": "https://login.example.com/authorize",
+                "token_url": "https://login.example.com/token",
+            },
+        ),
+    )
+    settings_ = tracker_env(
+        CFO_MCP_SERVICES="mail",
+        CFO_MCP_CLIENT_ID_MAIL="client-123",
+        CFO_MCP_CLIENT_SECRET_MAIL=CLIENT_SECRET,
+    )
+    for name in drop:
+        del settings_[name]
+    env.update(settings_)
+    config = load(env, manifests_dir=directory)
+    assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
+    app_env = app_environment(config, env)
+    for name in ("CFO_MCP_SERVICES", "CFO_MCP_CLIENT_SECRET_MAIL", STATE_SECRET_NAME):
+        assert name not in app_env, name
+    again = load(app_env, for_app=True, manifests_dir=directory)
+    assert again.mcp.enabled is False
+
+
+def test_the_app_process_exits_78_on_a_setting_it_refuses(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cfo_server import app as image_app
+
+    for key in list(os.environ):
+        if key.startswith(("OMNIGENT_", "CFO_")):
+            monkeypatch.delenv(key)
+    env.update(tracker_env(CFO_MCP_ORIGIN_TRACKER="http://10.0.0.1"))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(SystemExit) as caught:
+        image_app.main()
+    assert caught.value.code == 78
 
 
 def test_a_github_service_needs_no_key_service_and_warns_while_linking_is_off(

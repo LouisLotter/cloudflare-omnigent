@@ -813,7 +813,11 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
         if name.startswith(mcp.CLIENT_SECRET_ENV) and name not in kept:
             del out[name]
     if not config.mcp.enabled:
+        # MCP is off: the app process reads no choice either, so its own parse of this
+        # environment comes to the same decision without the secrets just removed (Codex WP5.10
+        # r1-2).
         out.pop(mcp.STATE_SECRET_ENV, None)
+        out.pop(mcp.SERVICES_ENV, None)
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
         for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():

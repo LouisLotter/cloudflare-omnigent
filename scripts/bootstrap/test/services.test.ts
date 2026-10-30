@@ -436,6 +436,68 @@ describe("when the server does not take the change", () => {
   });
 });
 
+describe("after a change whose outcome is unknown (Codex r1-1)", () => {
+  const github = async (h: { world: FakeWorld }) =>
+    h.world.cloud().updateSecrets(h.world.plan.platformWorker, {
+      SERVER_ENV_OMNIGENT_GITHUB_APP_CLIENT_ID: "Iv23liCanaryClient00",
+    });
+
+  it("a lost answer after the change was applied: remove still removes", async () => {
+    const h = await installed();
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "after" };
+    await expect(step(h, { kind: "add", id: "tracker", origin: ORIGIN })).rejects.toThrow(Crash);
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("tracker");
+    expect(h.store.load().journal.mcpServices).toMatchObject({
+      on: [],
+      pending: { on: ["tracker"] },
+    });
+    const changes = h.world.secretChanges.length;
+    const { outcome } = await step(h, { kind: "remove", id: "tracker" });
+    expect(outcome).toEqual({ kind: "ready", on: [] });
+    expect(h.world.secretChanges).toHaveLength(changes + 1);
+    expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
+    expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(false);
+  });
+
+  it("adding again after an interrupted removal writes again", async () => {
+    const h = await installed();
+    await github(h);
+    expect((await step(h, { kind: "add", id: "github" })).outcome.kind).toBe("ready");
+    // The App's settings were the first change, the add the second: the removal is the third.
+    h.world.crash = { call: "updateSecrets", nth: 3, when: "after" };
+    await expect(step(h, { kind: "remove", id: "github" })).rejects.toThrow(Crash);
+    expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
+    const { outcome } = await step(h, { kind: "add", id: "github" });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
+  });
+
+  it("never lists a service whose values an interrupted change left out", async () => {
+    const h = await installed();
+    await github(h);
+    h.world.crash = { call: "updateSecrets", nth: 2, when: "before" };
+    await expect(step(h, { kind: "add", id: "tracker", origin: ORIGIN })).rejects.toThrow(Crash);
+    // The intent names tracker, but its origin never reached the Worker: the next change leaves
+    // it off rather than list it without one (which the server would refuse).
+    const { outcome, logs } = await step(h, { kind: "add", id: "github" });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(logs.join("\n")).toContain("tracker is left off");
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
+  });
+
+  it("removes from a list set elsewhere with --replace, with the values it held", async () => {
+    const h = await installed();
+    await h.world.cloud().updateSecrets(h.world.plan.platformWorker, {
+      [MCP_SERVICES_SECRET]: "tracker",
+      SERVER_ENV_CFO_MCP_ORIGIN_TRACKER: ORIGIN,
+    });
+    const { outcome } = await step(h, { kind: "remove", id: "tracker" }, { replace: true });
+    expect(outcome).toEqual({ kind: "ready", on: [] });
+    expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
+    expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(false);
+  });
+});
+
 describe("the listing", () => {
   it("names each shipped service, on or off, and what it asks for", () => {
     expect(servicesListing(SHIPPED, undefined)).toEqual([

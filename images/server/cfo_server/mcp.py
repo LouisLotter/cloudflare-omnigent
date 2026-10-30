@@ -132,6 +132,10 @@ def destination_problem(url: str, *, allow_loopback: bool = False) -> str | None
         return "it must be a plain URL"
     try:
         parts = urlsplit(url)
+        # At most five digits, as the installer reads them (Codex WP5.10 r1-3).
+        host_port = parts.netloc.rpartition("@")[2]
+        if ":" in host_port and "]" not in host_port and len(host_port.rpartition(":")[2]) > 5:
+            return "it must be a well-formed URL"
         port = parts.port
     except ValueError:
         return "it must be a well-formed URL"

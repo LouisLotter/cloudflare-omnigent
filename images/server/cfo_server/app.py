@@ -310,7 +310,12 @@ def main() -> None:
     # (WP2.5's diagnosis needed py-spy for that); the entrypoint logs ``app.ready``.
     started = time.monotonic()
     install_sql_hooks()
-    config = image_config.load(for_app=True)
+    try:
+        config = image_config.load(for_app=True)
+    except image_config.ConfigError as exc:
+        # The entrypoint checked the same settings; any difference is still a setting (exit 78).
+        log("config.error", message=str(exc))
+        sys.exit(78)
     db_path = os.environ.get("CFO_DB_PATH", str(image_config.DB_PATH))
     socket_path = os.environ.get("CFO_LITESTREAM_SOCKET", str(image_config.LITESTREAM_SOCKET))
     ep = load_docker_entrypoint()

@@ -145,7 +145,8 @@ export function destinationProblem(url: string): string | undefined {
   if (colon >= 0) {
     port = host.slice(colon + 1);
     host = host.slice(0, colon);
-    if (!/^[0-9]*$/.test(port) || (port !== "" && Number(port) > 65535)) {
+    // At most five digits, as the image reads them (Codex WP5.10 r1-3).
+    if (!/^[0-9]{0,5}$/.test(port) || (port !== "" && Number(port) > 65535)) {
       return "it must be a well-formed URL";
     }
     if (port !== "" && Number(port) === 0) return "it must not use port 0";
@@ -343,12 +344,32 @@ export async function changeServices(
     );
   }
   const present = await preflight(plan, ports, record, options.replace === true);
-  const before = servicesOn(record);
+  // Whether the Worker's list is known: not after a change whose outcome is unknown (an
+  // interrupted upload, a lost answer), nor when --replace overrides a list set elsewhere. Then no
+  // shortcut is taken: the whole list is written again (Codex WP5.10 r1-1).
+  const uncertain =
+    record?.pending !== undefined || (record === undefined && present.has(MCP_SERVICES_SECRET));
   if (record?.pending !== undefined) {
     ports.log(
       "an earlier change of the MCP services may not have reached the installation; this one writes the whole list again",
     );
   }
+  // The list this change starts from: the last intent, keeping only services this release ships
+  // whose asked values the Worker holds (an earlier change that never arrived, or a removal that
+  // did, may have left a service without them, which the server would refuse).
+  const intended = record?.pending?.on ?? servicesOn(record);
+  const before = intended.filter((id) => {
+    if (id === manifest.id) return true;
+    const other = ports.manifests.get(id);
+    const why =
+      other === undefined
+        ? "this release does not ship it"
+        : other.asks.every((ask) => present.has(askedSecrets(other)[ask]))
+          ? undefined
+          : "the installation does not hold the values it was given";
+    if (why !== undefined) ports.log(`${id} is left off: ${why}; add it again to turn it on`);
+    return why === undefined;
+  });
   const changes: Record<string, string | null> = {};
   let on: string[];
   if (change.kind === "add") {
@@ -357,20 +378,24 @@ export async function changeServices(
         `${manifest.title} uses Omnigent's GitHub linking, which this installation has not set up: run bootstrap.ts github-app first; nothing was changed`,
       );
     }
-    if (before.includes(manifest.id) && manifest.asks.length === 0) {
+    if (!uncertain && before.includes(manifest.id) && manifest.asks.length === 0) {
       ports.log(`${manifest.title} (${manifest.id}) is on already; nothing was changed`);
       return { kind: "unchanged", on: before };
     }
     Object.assign(changes, await askFor(manifest, ports, change));
     on = [...new Set([...before, manifest.id])].sort();
   } else {
-    if (!before.includes(manifest.id)) {
+    if (!uncertain && !before.includes(manifest.id)) {
       ports.log(`${manifest.title} (${manifest.id}) is not on; nothing was changed`);
       return { kind: "unchanged", on: before };
     }
     on = before.filter((id) => id !== manifest.id);
-    // The values it was given go with it.
-    for (const name of Object.values(askedSecrets(manifest))) {
+  }
+  // The values a service was given go with it: those of every shipped service that is not on,
+  // also any an interrupted change left behind.
+  for (const other of ports.manifests.values()) {
+    if (on.includes(other.id)) continue;
+    for (const name of Object.values(askedSecrets(other))) {
       if (present.has(name)) changes[name] = null;
     }
   }
