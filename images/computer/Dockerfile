@@ -168,11 +168,11 @@ FROM runtime-base AS runtime
 # (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
 # above, from an install whose registry signatures (and Codex's provenance) it has checked, and
 # this build then checks them in an independent install.
-ARG CLAUDE_CODE_VERSION=2.1.312
-ARG CODEX_VERSION=0.165.0
-ARG CLAUDE_CODE_TREE_SHA256=f00906ff0780be1e70d7621eb613940cd414ef1e793267ed0ec44d7fcd4378da
-ARG CLAUDE_CODE_INSTALLED_SHA256=e26ada69f224f6dec551ab1f8e3fb312d4d34bca4296df091438eed789ac2c3b
-ARG CODEX_TREE_SHA256=2ec784a4081832034cbbd34813cfdde73a6d99b9b91942ffba1b25e3a33869e7
+ARG CLAUDE_CODE_VERSION=2.1.314
+ARG CODEX_VERSION=0.166.0
+ARG CLAUDE_CODE_TREE_SHA256=a9ecf3cd3e13556dbb71768794fd43b973f704fb714b0bde73207dd286376c93
+ARG CLAUDE_CODE_INSTALLED_SHA256=011bf8a73152d367d5c1ba876110ba7ef3dbb91760d5f49d8cefa1d61de296f9
+ARG CODEX_TREE_SHA256=9293cf0b1c9aa7aa61f3eee4cfd25295cbc35f3f196552a7b53671fb224cb8e0
 RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
     sh /cfo-build/install_clis.sh check
 
