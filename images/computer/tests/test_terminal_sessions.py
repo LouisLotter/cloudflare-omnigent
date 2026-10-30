@@ -7,6 +7,8 @@ over a WebSocket as WorkspaceDO's bridge reaches it (``ttyd_client.py``):
 - a reconnect after the bridge's connection is cut prints the same ``$$``;
 - ``attach`` to a session that does not exist ends the stream and starts nothing, and nothing
   but WorkspaceDO's two forms starts a session; an older WorkspaceDO's dial gets a plain shell;
+- each such ending is a close frame, and the wrapper's own endings exit 0 (run as ttyd runs it:
+  ttyd's close code cannot show the exit status, see ``_ended``);
 - ``new`` for the next window ends the previous window's session;
 - the supervisor's backstops each leave no session: ``terminal_end``, a sign-out, a stop's final
   capture, the credential barrier, a sign-in from the page, the 45-second reaper with its real
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import socket
 import subprocess
 import threading
@@ -32,6 +35,7 @@ from ttyd_client import Closed, TtydClient, shell_pid
 from cfo_computer import procs as P
 from cfo_computer.main import terminal_argv
 from cfo_computer.paths import Account
+from cfo_computer.procutil import workload_argv
 from cfo_computer.supervisor import Tools
 from cfo_computer.terminals import TerminalSessions
 
@@ -67,6 +71,22 @@ def _listening(port: int) -> bool:
     with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", port), timeout=0.2):
         return True
     return False
+
+
+def _ended(client: TtydClient) -> None:
+    """ttyd ended the stream with a close frame. WorkspaceDO's bridge reads any close frame from
+    ttyd as the session's end, whatever its code: it tells the page so (4002) and does not
+    reconnect. Only a close without a frame is a dropped link.
+
+    The code is 1000 for a command that exited 0, but not always (WP3.38). ttyd 1.7.7 picks the
+    code in two places. The handler for the terminal's end of file checks whether the command is
+    still running, and if it has already been reaped it reads the exit status. The thread that
+    reaps the command stores that status a moment after the reap, though. A handler that runs in
+    between reads the initial -1 and sends 1006. That happened in 16 of 1,000 streams of
+    ``/bin/true`` and 62 of 1,000 of the wrapper's refusal. A non-zero exit also gives 1006, so the
+    code cannot show the exit status: ``test_the_wrappers_own_endings_exit_0`` checks that.
+    """
+    assert client.wait_closed() in (1000, 1006)
 
 
 class Computer:
@@ -142,7 +162,7 @@ def test_the_shell_is_a_login_shell_in_tmux_with_nothing_to_get_stuck_in(
     time.sleep(0.5)
     assert computer.sessions.sessions()[0].attached == 1
     client.type("\x15exit\r")  # Ctrl-u clears the line; the shell's exit ends the stream
-    assert client.wait_closed() == 1000
+    _ended(client)
     assert computer.names() == []
 
 
@@ -150,37 +170,78 @@ def test_attach_without_a_session_ends_the_stream_and_starts_nothing(
     computer: Computer,
 ) -> None:
     client = computer.connect("attach", "5")
-    # A normal close (1000): the bridge tells the page the session ended, and it does not
-    # reconnect. ttyd would close with 1006 for a non-zero exit (Codex r2-2).
-    assert client.wait_closed() == 1000
+    # A close frame: the bridge tells the page the session ended, and it does not reconnect.
+    _ended(client)
     assert computer.names() == []
     first = computer.connect("new", "12")
     shell_pid(first, "a")
     first.close()
     # An exact match only: w1 is not w12.
     client = computer.connect("attach", "1")
-    assert client.wait_closed() == 1000
+    _ended(client)
     assert computer.names() == ["w12"]
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["new", "0"],
-        ["new", "1;id"],
-        ["new", "1", "x"],
-        ["attach", "=w1"],
-        ["kill-server", "1"],
-        ["new", "-c", "id"],
-        ["attach", "1&arg=2"],
-    ],
-)
+#: Dials that are not WorkspaceDO's two forms.
+FOREIGN = [
+    ["new", "0"],
+    ["new", "1;id"],
+    ["new", "1", "x"],
+    ["attach", "=w1"],
+    ["kill-server", "1"],
+    ["new", "-c", "id"],
+    ["attach", "1&arg=2"],
+]
+
+
+@pytest.mark.parametrize("args", FOREIGN)
 def test_nothing_but_workspacedos_two_forms_starts_a_session(
     computer: Computer, args: list[str]
 ) -> None:
     client = computer.connect(*args)
-    assert client.wait_closed() == 1000
+    _ended(client)
     assert b"uid=" not in client.output
+    assert computer.names() == []
+
+
+@pytest.mark.parametrize("args", [*FOREIGN, ["attach", "5"]])
+def test_the_wrappers_own_endings_exit_0(computer: Computer, args: list[str]) -> None:
+    """ttyd's command, run as ttyd runs it (the account, its environment, a terminal on every
+    stream), exits 0 for an ending the wrapper decides on: a refusal, or an attach with no session
+    to join. Otherwise ttyd would close with 1006 every time (Codex WP3.28 r2-2). ttyd's close
+    code alone cannot show the exit status (``_ended``), so it is checked here."""
+    argv = terminal_argv(computer.port)
+    command = argv[argv.index("--url-arg") + 1 :]
+    sup = computer.rig.sup
+    leader, follower = os.openpty()
+    try:
+        try:
+            done = subprocess.run(
+                workload_argv([*command, *args], uid=UID, gid=UID, cgroup_dir=None),
+                env=sup._env({"TERM": "xterm-256color"}),
+                cwd=sup.account.home,
+                stdin=follower,
+                stdout=follower,
+                stderr=follower,
+                start_new_session=True,
+                timeout=30,
+                check=False,
+            )
+        finally:
+            os.close(follower)
+        # What it printed, for the failure message: bounded, in case something kept the terminal.
+        output = b""
+        end = time.monotonic() + 5
+        with contextlib.suppress(OSError):  # EIO once the terminal has nothing more
+            while select.select([leader], [], [], max(0.0, end - time.monotonic()))[0]:
+                chunk = os.read(leader, 4096)
+                if not chunk:
+                    break
+                output += chunk
+    finally:
+        os.close(leader)
+    assert done.returncode == 0, output
+    assert b"uid=" not in output
     assert computer.names() == []
 
 

@@ -71,8 +71,9 @@ def test_a_refused_call_runs_nothing(capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_an_ending_the_wrapper_decides_on_exits_0(monkeypatch) -> None:
-    """ttyd closes with 1006 for a non-zero exit, which the bridge reads as a dropped link and
-    the page reconnects after: a refusal or an attach with nothing to attach to is final."""
+    """ttyd closes with 1006 for a non-zero exit, which clients and proxies take for a dropped
+    link: a refusal or an attach with nothing to attach to is final. The image's suite runs the
+    real command as ttyd does (``test_the_wrappers_own_endings_exit_0``)."""
     assert TS.exit_status(TS.GONE) == 0 and TS.exit_status(TS.USAGE) == 0
     assert TS.exit_status(7) == 7
     monkeypatch.setattr(TS, "TMUX", "/nonexistent/tmux")  # tmux cannot even be asked

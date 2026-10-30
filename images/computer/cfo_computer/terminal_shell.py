@@ -117,11 +117,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def exit_status(answer: int) -> int:
-    """The process's exit status for ``main``'s answer. ttyd 1.7.7 closes the stream with 1000
-    when its command exits 0 and with 1006 otherwise, and WorkspaceDO's bridge reads 1006 as a
-    dropped link, after which the page reconnects (Codex WP3.28 r2-2). An ending the wrapper
-    decides on (no session to attach to, or a refusal) is final, so it exits 0: the page then says
-    the session on the computer ended."""
+    """The process's exit status for ``main``'s answer. ttyd 1.7.7 closes the stream with 1006
+    when its command exits non-zero, a code that clients and proxies take for a dropped link
+    (Codex WP3.28 r2-2). An ending the wrapper decides on (no session to attach to, or a refusal)
+    is final, so it exits 0, and ttyd closes with 1000, apart from an occasional 1006 caused by a
+    race in ttyd (WP3.38). WorkspaceDO's bridge reads any close frame from ttyd as the session's
+    end, whatever its code, and the page then says the session on the computer ended."""
     return 0 if answer in (GONE, USAGE) else answer
 
 

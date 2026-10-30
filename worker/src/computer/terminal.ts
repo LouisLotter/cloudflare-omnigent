@@ -686,7 +686,8 @@ export class TerminalBridge {
   /**
    * The computer's side of `session` closed. ttyd's own close (its command ended: the shell
    * exited, or an `attach` found no session) is a close frame, whatever its code (ttyd sends 1006
-   * for a command that exited non-zero): the session ended, and the browser is told so (4002). A
+   * for a command that exited non-zero, and, because of a race in ttyd, now and then for one
+   * that exited 0: WP3.38): the session ended, and the browser is told so (4002). A
    * dropped connection (no close frame: workerd's 1006 with `wasClean` false, or an error) is
    * not: the shell may still be there, so it is not ended, and the browser reconnects (4003).
    * Without this, a shutdown of this object that ran the close callback before it went would owe
