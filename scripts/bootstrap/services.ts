@@ -47,6 +47,8 @@ export const MCP_REVISION_SECRET = MCP_REVISION_ENV;
 const ORIGIN_SECRET = `${SERVER_ENV}CFO_MCP_ORIGIN_`;
 const CLIENT_ID_SECRET = `${SERVER_ENV}CFO_MCP_CLIENT_ID_`;
 const CLIENT_SECRET_SECRET = `${SERVER_ENV}CFO_MCP_CLIENT_SECRET_`;
+/** The Worker secrets that hold asked values, whichever service they belong to. */
+const ASKED_PREFIXES = [ORIGIN_SECRET, CLIENT_ID_SECRET, CLIENT_SECRET_SECRET] as const;
 /** The GitHub App's client ID, as github-app.ts stores it: GitHub linking is set up. */
 const GITHUB_APP_CLIENT_ID = `${SERVER_ENV}OMNIGENT_GITHUB_APP_CLIENT_ID`;
 /** Omnigent's Settings → MCP, on the installation's hostname. */
@@ -370,6 +372,9 @@ export async function changeServices(
     if (why !== undefined) ports.log(`${id} is left off: ${why}; add it again to turn it on`);
     return why === undefined;
   });
+  // A service left off is a change the Worker's list needs, whatever else this one asks
+  // (Codex WP5.10 r2-1): no shortcut then either.
+  const rewrite = uncertain || before.length !== intended.length;
   const changes: Record<string, string | null> = {};
   let on: string[];
   if (change.kind === "add") {
@@ -378,25 +383,27 @@ export async function changeServices(
         `${manifest.title} uses Omnigent's GitHub linking, which this installation has not set up: run bootstrap.ts github-app first; nothing was changed`,
       );
     }
-    if (!uncertain && before.includes(manifest.id) && manifest.asks.length === 0) {
+    if (!rewrite && before.includes(manifest.id) && manifest.asks.length === 0) {
       ports.log(`${manifest.title} (${manifest.id}) is on already; nothing was changed`);
       return { kind: "unchanged", on: before };
     }
     Object.assign(changes, await askFor(manifest, ports, change));
     on = [...new Set([...before, manifest.id])].sort();
   } else {
-    if (!uncertain && !before.includes(manifest.id)) {
+    if (!rewrite && !before.includes(manifest.id)) {
       ports.log(`${manifest.title} (${manifest.id}) is not on; nothing was changed`);
       return { kind: "unchanged", on: before };
     }
     on = before.filter((id) => id !== manifest.id);
   }
-  // The values a service was given go with it: those of every shipped service that is not on,
-  // also any an interrupted change left behind.
-  for (const other of ports.manifests.values()) {
-    if (on.includes(other.id)) continue;
-    for (const name of Object.values(askedSecrets(other))) {
-      if (present.has(name)) changes[name] = null;
+  // The values a service was given go with it: every asked value the Worker holds for a service
+  // that is not on, shipped or not, also any an interrupted change left behind.
+  const keep = new Set(
+    on.flatMap((id) => Object.values(askedSecrets({ id, title: "", auth: "", asks: [] }))),
+  );
+  for (const name of present) {
+    if (ASKED_PREFIXES.some((prefix) => name.startsWith(prefix)) && !keep.has(name)) {
+      changes[name] = null;
     }
   }
   if (on.length > 0) changes[MCP_SERVICES_SECRET] = on.join(",");

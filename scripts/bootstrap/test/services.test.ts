@@ -498,6 +498,43 @@ describe("after a change whose outcome is unknown (Codex r1-1)", () => {
   });
 });
 
+describe("a settled list with a service that can no longer stay on (Codex r2-1)", () => {
+  it("rewrites the list when a service's values are gone, though the change asks nothing new", async () => {
+    const h = await installed();
+    await h.world.cloud().updateSecrets(h.world.plan.platformWorker, {
+      SERVER_ENV_OMNIGENT_GITHUB_APP_CLIENT_ID: "Iv23liCanaryClient00",
+    });
+    await step(h, { kind: "add", id: "github" });
+    await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github,tracker");
+    await h.world
+      .cloud()
+      .updateSecrets(h.world.plan.platformWorker, { SERVER_ENV_CFO_MCP_ORIGIN_TRACKER: null });
+    const { outcome, logs } = await step(h, { kind: "add", id: "github" });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(logs.join("\n")).toContain("tracker is left off");
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
+  });
+
+  it("rewrites the list when the release no longer ships a service, and drops its values", async () => {
+    const h = await installed();
+    await step(
+      h,
+      { kind: "add", id: "mail" },
+      { manifests: WITH_MAIL, answers: [CLIENT_ID, CLIENT_SECRET] },
+    );
+    await step(h, { kind: "add", id: "tracker", origin: ORIGIN }, { manifests: WITH_MAIL });
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("mail,tracker");
+    // A later release without "mail": removing something that is not on still rewrites the list.
+    const { outcome } = await step(h, { kind: "remove", id: "github" });
+    expect(outcome).toEqual({ kind: "ready", on: ["tracker"] });
+    expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("tracker");
+    expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_CLIENT_SECRET_MAIL")).toBe(false);
+    expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_CLIENT_ID_MAIL")).toBe(false);
+    expect(secrets(h.world).get("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(ORIGIN);
+  });
+});
+
 describe("the listing", () => {
   it("names each shipped service, on or off, and what it asks for", () => {
     expect(servicesListing(SHIPPED, undefined)).toEqual([
