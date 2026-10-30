@@ -1,6 +1,6 @@
 """The Omnigent server image for Omnigent on Cloudflare (WP2.3).
 
-The image runs Omnigent, built from the fork's ``cfo/integration`` branch, with Litestream
+The image runs Omnigent, built from the Dockerfile's pinned fork commit, with Litestream
 replicating its SQLite database to R2. This package is the image's own code:
 
 - :mod:`cfo_server.entrypoint`, the container's main process: restore, recovery mode,
