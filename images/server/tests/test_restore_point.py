@@ -558,3 +558,19 @@ def test_the_platform_and_the_installer_use_the_same_names_and_exit() -> None:
     assert f"export const EXIT_ROLLED_BACK = {entrypoint.EXIT_ROLLED_BACK};" in text
     assert f"/^{rp.RESTORE_POINT_ID.pattern}$/" in text
     assert '"SERVER_ENV_CFO_RESTORE_POINT"' in text and '"SERVER_ENV_CFO_ROLLBACK_TO"' in text
+
+
+def test_inside_the_window_the_managed_sandbox_reaper_is_off(tmp_path: Path) -> None:
+    """Its cleanup writes the database before it calls the launcher (Codex WP3.41 r2-4)."""
+    from conftest import omnigent_available
+
+    if not omnigent_available():
+        pytest.skip("needs the pinned Omnigent build")
+    from cfo_server.launcher import sandbox_deployment
+
+    rig = Rig(tmp_path)
+    for window, enabled in ((None, True), (RP, False)):
+        env = rig.env(**({} if window is None else {"CFO_MAINTENANCE_WINDOW": window}))
+        config = image_config.load(env, for_app=True)
+        deployment = sandbox_deployment(config, durability_wait=None, env=env)
+        assert deployment.reaper.enabled is enabled

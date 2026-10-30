@@ -192,7 +192,7 @@ export type UpdateOutcome =
   /**
    * Deployed; the check has not passed yet (run update again: it checks, deploying nothing).
    * `window`: the update's read-only window is open (not accepted, rollback possible), or
-   * accepted and closing (WP3.41).
+   * accepted and closed, with the server's restart without it not seen yet (WP3.41).
    */
   | { readonly kind: "deployed"; readonly why: string; readonly window: "open" | "closing" };
 
@@ -406,7 +406,7 @@ export async function runUpdate(
     // The window's update record is written with it, and stays while it is open.
     const updatedTo = (state.journal.update as UpdateRecord).code;
     const closed = await acceptWindow(ctx, () => state, setJournal, updatedTo, acceptWait(options));
-    if (!closed.closed) return { kind: "deployed", why: closed.why, window: "closing" };
+    if (!closed.confirmed) return { kind: "deployed", why: closed.why, window: "closing" };
     // What runs now is the accepted release: the next window goes back to it (Codex WP3.41 r1).
     present.delete(MAINTENANCE_WINDOW_SECRET);
     platformIdentity = await ours(plan.platformWorker);
@@ -415,28 +415,33 @@ export async function runUpdate(
   }
   const opened = state.journal.window;
   if (
-    opened !== undefined &&
-    !present.has(MAINTENANCE_WINDOW_SECRET) &&
-    platformIdentity.versionId !== opened.previous.platformVersionId
+    opened?.deployStartedAt !== undefined &&
+    opened.acceptStartedAt === undefined &&
+    !present.has(MAINTENANCE_WINDOW_SECRET)
   ) {
-    // The window's secret is gone, and the version from before the update no longer serves: the
-    // update's deploy landed (its confirmation perhaps lost) and the window was ended outside the
-    // installer. Omnigent may have taken changes since its restore point, so it can no longer go
-    // back to it: the update starts afresh, with a restore point of now (Codex WP3.41 r1).
+    // The window's secret is gone after a deploy carrying it was sent: whether that deploy's
+    // confirmation was lost or another version was deployed since (Codex WP3.41 r1-3, r2-1), the
+    // window may have opened and been ended outside the installer, and Omnigent may have taken
+    // changes since its restore point, so it can no longer go back to it: the update starts
+    // afresh, with a restore point of now.
+    // The version from before serving: the deploy did not land, or it was deployed again.
+    const before = platformIdentity.versionId === opened.previous.platformVersionId;
     setJournal(
       closeWindow(
         state.journal,
         restorePointRecord(
           plan,
           opened,
-          "ended outside the installer",
+          before ? "abandoned" : "ended outside the installer",
           iso(ctx.now()),
           (state.journal.update as UpdateRecord).code,
         ),
       ),
     );
     ctx.log(
-      `the update's read-only window was ended outside this installer (${plan.platformWorker} no longer holds ${MAINTENANCE_WINDOW_SECRET}), so Omnigent may have taken changes since its restore point and cannot go back to it: the update starts again, with a restore point of Omnigent's data as it is now`,
+      before
+        ? "the update's earlier deploy did not land (or the version from before it was deployed again), so its read-only window does not hold: the update starts again, with a restore point of Omnigent's data as it is now"
+        : `the update's read-only window was ended outside this installer (${plan.platformWorker} no longer holds ${MAINTENANCE_WINDOW_SECRET}), so Omnigent may have taken changes since its restore point and cannot go back to it: the update starts again, with a restore point of Omnigent's data as it is now`,
     );
   }
 
@@ -503,6 +508,8 @@ export async function runUpdate(
   if (current().platformDeployedAt === undefined || adding.length > 0) {
     const { platformDeployedAt: _d, platformVersionId: _v, ...rest } = current();
     const deployId = hex(ctx.random(8));
+    // With the update's intent, the window's: from here it may open (Codex WP3.41 r2-1).
+    const opening = currentWindow();
     record({
       update: {
         ...rest,
@@ -510,6 +517,7 @@ export async function runUpdate(
         platformDeployStartedAt: iso(ctx.now()),
         ...(adding.length > 0 ? { addedSecrets: adding } : {}),
       },
+      window: { ...opening, deployStartedAt: opening.deployStartedAt ?? iso(ctx.now()) },
     });
     const rendered = renderPlatformConfig(ctx.baseConfigs.platform, plan);
     const open = currentWindow();
@@ -628,7 +636,7 @@ async function accept(
   options: UpdateOptions,
 ): Promise<UpdateOutcome> {
   const closed = await acceptWindow(ctx, state, setJournal, code, acceptWait(options));
-  return closed.closed
+  return closed.confirmed
     ? { kind: "done" }
     : { kind: "deployed", why: closed.why, window: "closing" };
 }

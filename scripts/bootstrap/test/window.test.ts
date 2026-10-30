@@ -166,6 +166,7 @@ describe("an update's read-only window (WP3.41)", () => {
     expect(h.journal().window).toEqual({
       id,
       openedAt: expect.any(String),
+      deployStartedAt: expect.any(String),
       // Reported by the server even while the check waits for a durable owner.
       restorePointTakenAt: expect.any(String),
       previous: { platformVersionId: platformBefore, webVersionId: webBefore },
@@ -279,7 +280,7 @@ describe("an update's read-only window (WP3.41)", () => {
     );
   });
 
-  it("acceptance waits for the object to run without the window, and says so when it has not", async () => {
+  it("acceptance closes the window once its secret is gone, and says when the restart was not seen (Codex r2-3)", async () => {
     const h = await installed();
     await openWindow(h);
     h.world.truth = () => ({ initialized: true, reason: "durable" });
@@ -289,9 +290,12 @@ describe("an update's read-only window (WP3.41)", () => {
       why: expect.stringMatching(/has not run on the released version yet|not yet applied/),
       window: "closing",
     });
-    expect(h.journal().window?.acceptVersionId).toBe(h.world.latest(h.plan.platformWorker)?.id);
+    // Closed whatever the logs say later: no evidence lost or late can hold it open.
+    expect(h.journal().window).toBeUndefined();
+    expect(h.journal().restorePoints?.[0]?.outcome).toBe("accepted");
+    expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
     h.world.now += SWITCH_MS;
-    expect(await h.update()).toEqual({ kind: "done" });
+    expect(await h.update()).toEqual({ kind: "current" });
     expect(count(h, "updateSecrets")).toBe(1);
   });
 
@@ -308,14 +312,14 @@ describe("an update's read-only window (WP3.41)", () => {
     expect(await h.update()).toEqual({ kind: "done" });
   });
 
-  it("an acceptance still switching is finished first, and says so until it is", async () => {
+  it("an acceptance decided and interrupted is finished first by a newer checkout", async () => {
     const h = await installed();
     await openWindow(h);
     h.world.truth = () => ({ initialized: true, reason: "durable" });
-    const short = { acceptWaitMs: 60_000 };
-    expect((await h.update(CODE_A, short)).kind).toBe("deployed");
-    // A newer checkout cannot overtake it: it finishes the acceptance first.
-    expect(await h.update(CODE_B, short)).toEqual({
+    h.world.crash = { call: "updateSecrets", nth: 1, when: "before" };
+    await expect(h.update()).rejects.toThrow(Crash);
+    expect(h.journal().window?.acceptStartedAt).toBeDefined();
+    expect(await h.update(CODE_B, { acceptWaitMs: 60_000 })).toEqual({
       kind: "deployed",
       why: expect.stringMatching(/has not run on the released version yet|not yet applied/),
       window: "closing",
@@ -343,8 +347,17 @@ describe("an update's read-only window (WP3.41)", () => {
       why: "Cloudflare does not say yet which version serves the platform Worker",
       window: "closing",
     });
-    expect(h.journal().window?.acceptVersionId).toBeUndefined();
-    h.world.noVersions = false;
+    expect(h.journal().window).toBeUndefined();
+  });
+
+  it("acceptance stops, the window kept, when the window's secret is not seen deleted", async () => {
+    const h = await installed();
+    await openWindow(h);
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    h.world.bulkKeeps = true;
+    await expect(h.update()).rejects.toThrow(/still holds the update's read-only window/);
+    expect(h.journal().window?.acceptStartedAt).toBeDefined();
+    h.world.bulkKeeps = false;
     expect(await h.update()).toEqual({ kind: "done" });
   });
 
@@ -379,6 +392,21 @@ describe("an update's read-only window (WP3.41)", () => {
     const points = h.journal().restorePoints ?? [];
     expect(points.map((p) => [p.id === first, p.outcome])).toEqual([
       [true, "ended outside the installer"],
+      [false, "accepted"],
+    ]);
+  });
+
+  it("a window ended by redeploying the version from before is never reused (Codex r2-1)", async () => {
+    const h = await installed();
+    const { id } = await openWindow(h);
+    const previous = h.journal().window?.previous.platformVersionId as string;
+    await h.world.cloud().deployVersion(h.plan.platformWorker, previous);
+    expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
+    await expect(h.rollback()).rejects.toThrow(/the version from before the update serves/);
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(h.journal().restorePoints?.map((p) => [p.id === id, p.outcome])).toEqual([
+      [true, "abandoned"],
       [false, "accepted"],
     ]);
   });
@@ -487,16 +515,33 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
     expect(count(h, "deployVersion")).toBe(0);
   });
 
-  it("has nothing to undo when the update's deploy never landed", async () => {
+  it("has nothing to undo when no deploy of the window was ever sent", async () => {
     const h = await installed();
-    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    // The window recorded; the run stops before its deploy's intent is written.
+    h.store.crash = { nth: h.store.saves + 2 };
     await expect(h.update()).rejects.toThrow(Crash);
     expect(h.journal().window).toBeDefined();
+    expect(h.journal().window?.deployStartedAt).toBeUndefined();
     expect(await h.rollback()).toEqual({ kind: "nothing" });
     expect(h.journal().window).toBeUndefined();
     expect(h.journal().update).toBeUndefined();
     expect(count(h, "deployVersion") + count(h, "updateSecrets")).toBe(0);
     expect(await h.update()).toEqual({ kind: "done" });
+  });
+
+  it("says so when a deploy was sent but the version from before serves, and update starts again", async () => {
+    const h = await installed();
+    h.world.crash = { call: "deployPlatform", nth: 1, when: "before" };
+    await expect(h.update()).rejects.toThrow(Crash);
+    await expect(h.rollback()).rejects.toThrow(
+      /not held, and the version from before the update serves: the update's deploy did not land.*run bootstrap\.ts update to try the update again.*nothing was changed/,
+    );
+    expect(count(h, "deployVersion") + count(h, "updateSecrets")).toBe(0);
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(h.journal().restorePoints?.map((p) => p.outcome)).toEqual(["abandoned", "accepted"]);
+    expect(h.lines).toContainEqual(
+      expect.stringMatching(/^the update's earlier deploy did not land/),
+    );
   });
 
   it("waits, and says why, until the server puts the restore point back; a later run continues", async () => {
@@ -677,7 +722,7 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
     expect(await h.update()).toEqual({ kind: "done" });
   });
 
-  it("calls off an order already sent when the window ends before the restore point is back", async () => {
+  it("keeps an order already sent, and the server held, when the window ends before the restore point is back (Codex r2-2)", async () => {
     const h = await installed();
     await openWindow(h);
     h.world.rollbackWorks = false;
@@ -686,10 +731,11 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
     await h.world
       .cloud()
       .updateSecrets(h.plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
-    await expect(h.rollback()).rejects.toThrow(/the rollback was called off/);
-    expect(secrets(h).has(ROLLBACK_SECRET)).toBe(false);
-    expect(h.journal().window).toBeUndefined();
+    await expect(h.rollback()).rejects.toThrow(/may be partly put back.*get help/);
+    expect(secrets(h).has(ROLLBACK_SECRET)).toBe(true);
+    expect(h.journal().window?.rollback?.startedAt).toBeDefined();
     expect(count(h, "deployVersion")).toBe(0);
+    await expect(h.update()).rejects.toThrow(/being rolled back/);
   });
 
   it("a staging installation goes back the same way", async () => {
@@ -757,9 +803,10 @@ describe("a crash at any point of the acceptance or the rollback", () => {
       const outcome = await runUntil(
         h,
         () => h.update(),
-        (o) => o.kind === "done",
+        (o) => o.kind === "done" || o.kind === "current",
       );
-      expect(outcome, JSON.stringify(point)).toEqual({ kind: "done" });
+      // Done; or, interrupted after the window closed, up to date on the next run.
+      expect(["done", "current"], JSON.stringify(point)).toContain(outcome?.kind);
       expect(h.world.crash).toBeUndefined();
       expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
       expect(h.journal().window).toBeUndefined();
@@ -908,7 +955,7 @@ describe("the window's pieces", () => {
       },
       restorePointTakenAt: "2026-10-30T12:06:00.000Z",
       acceptStartedAt: "2026-10-30T12:10:00.000Z",
-      acceptVersionId: "v4",
+      deployStartedAt: "2026-10-30T12:00:30.000Z",
       rollback: {
         startedAt: "2026-10-30T12:11:00.000Z",
         restoredAt: "2026-10-30T12:12:00.000Z",

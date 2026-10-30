@@ -751,7 +751,7 @@ export async function runBootstrap(
     const why =
       updated.window === "open"
         ? `${updated.why} (Omnigent stays paused until the update is checked; bootstrap.ts update --rollback goes back to the version from before it)`
-        : `accepted, and Omnigent is available again once the platform switches: ${updated.why}`;
+        : `accepted, and the read-only window is closed; the server's restart without it was not seen yet: ${updated.why}`;
     return { kind: "released", why, updated: true };
   }
 }

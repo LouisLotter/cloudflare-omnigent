@@ -47,7 +47,7 @@
 // (rollback.ts) goes back to the versions from before the update and puts the restore point back
 // as Omnigent's data; once accepted, a problem is fixed with a newer update.
 // Exit status: 0 updated and accepted (or already up to date; with --rollback, rolled back);
-// 3 not finished yet: deployed and not checked, accepted and not yet switched, or a rollback under
+// 3 not finished yet: deployed and not checked, accepted with its restart not seen yet, or a rollback under
 // way (run the same command again); 1 an error or a refusal.
 //
 // `install` is the one command for an installation in the installer's own account (WP3.31):

@@ -298,11 +298,14 @@ describe("runUpdate: a finished installation moves to new code", () => {
       expect(h.lines[checked + 1]).toMatch(
         /^accepting the update: Omnigent will be available again/,
       );
-      expect(h.lines.at(-1)).toBe(
-        `accepted: Omnigent is available again. The restore point ${id} is kept (${journal.restorePoints?.[0]?.where})`,
+      expect(h.lines[checked + 2]).toBe(
+        `accepted: the read-only window is closed. The restore point ${id} is kept (${journal.restorePoints?.[0]?.where})`,
       );
-      for (const line of h.lines.slice(checked + 2, -1)) expect(line).toMatch(/^waiting: /);
-      expect(h.lines.length).toBeLessThanOrEqual(14);
+      expect(h.lines.at(-1)).toBe(
+        "checked: the server restarted without the window and answers; Omnigent is available again",
+      );
+      for (const line of h.lines.slice(checked + 3, -1)) expect(line).toMatch(/^waiting: /);
+      expect(h.lines.length).toBeLessThanOrEqual(16);
       const log = h.lines.join("\n");
       for (const value of before.values()) {
         if (value.length > 8) expect(log).not.toContain(value);
@@ -1007,9 +1010,13 @@ describe("runUpdate: a crash at any point", () => {
         h.world.versions.get(plan.platformWorker)?.at(-2)?.id,
       );
       expect(journal).toMatchObject({ platformCode: CODE_A, webCode: CODE_A });
-      // Accepted: the window closed, its restore point recorded once, the secret gone.
+      // Accepted: the window closed, its restore point recorded (a window whose deploy may not
+      // have landed is abandoned first, never reused), the secret gone.
       expect(journal.window).toBeUndefined();
-      expect(journal.restorePoints).toHaveLength(1);
+      expect(journal.restorePoints?.at(-1)?.outcome).toBe("accepted");
+      expect(journal.restorePoints?.slice(0, -1).every((p) => p.outcome === "abandoned")).toBe(
+        true,
+      );
       expect(platformSecrets(h).has(WINDOW_SECRETS.window)).toBe(false);
     },
   );

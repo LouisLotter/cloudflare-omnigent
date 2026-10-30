@@ -57,13 +57,17 @@ export interface WindowRecord {
   readonly id: string;
   /** Recorded before the deploy that opens it. */
   readonly openedAt: string;
+  /**
+   * When a deploy carrying the window was first sent, recorded before it (Codex WP3.41 r2-1):
+   * from then on the window may have opened, so a window whose secret is gone was ended outside
+   * the installer, whatever version serves now. Absent: no deploy of the window was ever sent.
+   */
+  readonly deployStartedAt?: string;
   readonly previous: PreviousRelease;
   /** When the server took the restore point, as it reported it. */
   readonly restorePointTakenAt?: string;
   /** The decision to accept, recorded before the window's secret is deleted. */
   readonly acceptStartedAt?: string;
-  /** The version the deletion made, once Cloudflare names it. */
-  readonly acceptVersionId?: string;
   readonly rollback?: RollbackRecord;
 }
 
@@ -77,7 +81,8 @@ export interface RestorePointRecord {
   /** The code that ran before (the database's release), and the code the update deployed. */
   readonly before?: string;
   readonly updatedTo?: string;
-  readonly outcome: "accepted" | "rolled back" | "ended outside the installer";
+  /** `abandoned`: replaced by a new window before it held for sure (its deploy may not have landed). */
+  readonly outcome: "accepted" | "rolled back" | "ended outside the installer" | "abandoned";
   readonly closedAt: string;
 }
 
@@ -227,11 +232,14 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
  * Accepts the update in the window: records the decision (persist before effect), deletes the
- * window's secret (one secrets change, a new version without it), and waits until the platform's
- * object runs that version, which passes requests to the server again, and its watchdog has
- * restarted the server without the window (its scheduler on again) with a durable owner: the
- * release check (events.ts, verifyRelease) of that version. A later run finishes it. Returns
- * whether the window is closed and the journal says so.
+ * window's secret (one secrets change, a new version without it) and sees it gone, and closes the
+ * window in the journal: from the decision on, there is no going back. Then it waits for the
+ * restart without the window: the release check (events.ts, verifyRelease) of the version the
+ * deletion made, whose object passes requests to the server again and whose watchdog has
+ * restarted the server without the window (its scheduler on again) with a durable owner. That
+ * wait never holds the journal (Codex WP3.41 r2-3): a check that is not seen in time is reported,
+ * and the window stays closed. Throws when the secret could not be seen deleted (a later run
+ * finishes it).
  */
 export async function acceptWindow(
   ctx: WindowContext,
@@ -239,66 +247,64 @@ export async function acceptWindow(
   setJournal: (journal: Journal) => void,
   code: string,
   options: WaitOptions,
-): Promise<{ readonly closed: true } | { readonly closed: false; readonly why: string }> {
+): Promise<{ readonly confirmed: true } | { readonly confirmed: false; readonly why: string }> {
   const plan = state().installation;
-  const window = (): WindowRecord => state().journal.window as WindowRecord;
-  const update = (change: Partial<WindowRecord>) =>
-    setJournal({ ...state().journal, window: { ...window(), ...change } });
-  if (window().acceptStartedAt === undefined) {
-    update({ acceptStartedAt: iso(ctx.now()) });
+  const opened = state().journal.window as WindowRecord;
+  if (opened.acceptStartedAt === undefined) {
+    setJournal({ ...state().journal, window: { ...opened, acceptStartedAt: iso(ctx.now()) } });
   }
+  const window = state().journal.window as WindowRecord;
   ctx.log(
     "accepting the update: Omnigent will be available again, and from now on a problem is fixed by a newer update rather than by going back",
   );
-  const since = Date.parse(String(window().acceptStartedAt));
-  if (window().acceptVersionId === undefined) {
-    const names = await ctx.cloud.secretNames(plan.platformWorker);
-    if (names === null) throw new Error(`${plan.platformWorker} no longer exists`);
-    if (names.includes(MAINTENANCE_WINDOW_SECRET)) {
-      await ctx.cloud.updateSecrets(plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
+  const since = Date.parse(String(window.acceptStartedAt));
+  const names = await ctx.cloud.secretNames(plan.platformWorker);
+  if (names === null) throw new Error(`${plan.platformWorker} no longer exists`);
+  if (names.includes(MAINTENANCE_WINDOW_SECRET)) {
+    await ctx.cloud.updateSecrets(plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
+    const after = await ctx.cloud.secretNames(plan.platformWorker);
+    if (after === null || after.includes(MAINTENANCE_WINDOW_SECRET)) {
+      throw new Error(
+        `${plan.platformWorker} still holds the update's read-only window; run update again`,
+      );
     }
-    const versionId = await ctx.cloud.activeVersion(plan.platformWorker);
-    if (versionId !== undefined) update({ acceptVersionId: versionId });
   }
+  setJournal(
+    closeWindow(
+      state().journal,
+      restorePointRecord(plan, window, "accepted", iso(ctx.now()), code),
+    ),
+  );
+  ctx.log(
+    `accepted: the read-only window is closed. The restore point ${window.id} is kept (${restorePointWhere(plan, window.id)})`,
+  );
   const logsSince = slicedLogs(ctx, plan.platformWorker);
   let said: string | undefined;
   const deadline = ctx.now() + options.waitMs;
   for (;;) {
-    let versionId = window().acceptVersionId;
-    if (versionId === undefined) {
-      versionId = await ctx.cloud.activeVersion(plan.platformWorker);
-      if (versionId !== undefined) update({ acceptVersionId: versionId });
+    const versionId = await ctx.cloud.activeVersion(plan.platformWorker);
+    const checked: Verification =
+      versionId === undefined
+        ? {
+            verified: false,
+            why: "Cloudflare does not say yet which version serves the platform Worker",
+          }
+        : verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
+            installationId: plan.installationId,
+            releasedVersionId: versionId,
+            releasedAt: since,
+          });
+    if (checked.verified) {
+      ctx.log(
+        "checked: the server restarted without the window and answers; Omnigent is available again",
+      );
+      return { confirmed: true };
     }
-    let checked: Verification = {
-      verified: false,
-      why: "Cloudflare does not say yet which version serves the platform Worker",
-    };
-    if (versionId !== undefined) {
-      checked = verifyRelease(parseLogs(await logsSince(since, ctx.now()), plan.platformWorker), {
-        installationId: plan.installationId,
-        releasedVersionId: versionId,
-        releasedAt: since,
-      });
-      if (checked.verified) {
-        const w = window();
-        setJournal(
-          closeWindow(
-            state().journal,
-            restorePointRecord(plan, w, "accepted", iso(ctx.now()), code),
-          ),
-        );
-        ctx.log(
-          `accepted: Omnigent is available again. The restore point ${w.id} is kept (${restorePointWhere(plan, w.id)})`,
-        );
-        return { closed: true };
-      }
+    if (checked.why !== said) {
+      said = checked.why;
+      ctx.log(`waiting: ${checked.why}`);
     }
-    const why = checked.verified ? "" : checked.why;
-    if (why !== said) {
-      said = why;
-      ctx.log(`waiting: ${why}`);
-    }
-    if (ctx.now() + options.pollMs > deadline) return { closed: false, why };
+    if (ctx.now() + options.pollMs > deadline) return { confirmed: false, why: checked.why };
     await ctx.sleep(options.pollMs);
   }
 }

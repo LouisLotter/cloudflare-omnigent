@@ -156,15 +156,6 @@ describe("updateCommand", () => {
     expect(await updateCommand(path, rollback, ports())).toBe(0);
     expect(lines.at(-1)).toBe(`rolled back. Open https://${plan.hostname}`);
     expect(world.calls.filter((c) => c === "deployVersion")).toHaveLength(2);
-    // Nothing deployed by the update: nothing to roll back.
-    world.crash = {
-      call: "deployPlatform",
-      nth: (world.counts.get("deployPlatform") ?? 0) + 1,
-      when: "before",
-    };
-    await expect(updateCommand(path, { root: ROOT, verify: true }, ports())).rejects.toThrow();
-    expect(await updateCommand(path, rollback, ports())).toBe(0);
-    expect(lines.at(-1)).toBe(`nothing to roll back. Open https://${plan.hostname}`);
     await expect(updateCommand(path, rollback, ports())).rejects.toThrow(/nothing to go back to/);
   });
 
@@ -179,9 +170,10 @@ describe("updateCommand", () => {
       ),
     ).toBe(3);
     expect(lines.at(-1)).toMatch(
-      /^accepted: .*Omnigent is available again as soon as the platform switches .*Run bootstrap\.ts update again to confirm\. Open/,
+      /^accepted, and the read-only window is closed; the server's restart without it was not seen yet: .*bootstrap\.ts status --logs shows it\. Open/,
     );
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(0);
+    expect(lines.at(-1)).toMatch(/^up to date/);
   });
 
   it("passes Access in the installer's account and the owner's address on", async () => {

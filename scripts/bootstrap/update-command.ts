@@ -7,8 +7,8 @@
 //
 // Exit status: 0 updated, checked and accepted, or already up to date (with --rollback: rolled
 // back and checked, or nothing to roll back); 3 not finished yet: deployed, but the check after
-// the switch has not passed yet (Omnigent stays read-only meanwhile), or accepted and the window
-// still closing, or a rollback under way (run the same command again: it repeats nothing that
+// the switch has not passed yet (Omnigent stays paused meanwhile), or accepted with the server's
+// restart without the window not seen yet, or a rollback under way (run the same command again: it repeats nothing that
 // landed); 1 an error or a refusal.
 
 import { spawnSync } from "node:child_process";
@@ -132,7 +132,7 @@ export async function updateCommand(
     if (outcome.kind === "deployed") {
       if (outcome.window === "closing") {
         ports.log(
-          `accepted: ${outcome.why}. Omnigent is available again as soon as the platform switches (within a few minutes). Run bootstrap.ts update again to confirm. ${open}`,
+          `accepted, and the read-only window is closed; the server's restart without it was not seen yet: ${outcome.why}. Omnigent is available again once it has restarted (a few minutes); bootstrap.ts status --logs shows it. ${open}`,
         );
         return 3;
       }

@@ -410,15 +410,12 @@ function parseWindow(value: unknown): WindowRecord {
     id: windowIdOf(w, "id", where),
     openedAt: requiredTime(w, "openedAt", where),
     previous,
-    ...optionalTimes(w, ["restorePointTakenAt", "acceptStartedAt"], where),
-    ...(w.acceptVersionId === undefined
-      ? {}
-      : { acceptVersionId: str(w, "acceptVersionId", where) }),
+    ...optionalTimes(w, ["deployStartedAt", "restorePointTakenAt", "acceptStartedAt"], where),
     ...(rollback === undefined ? {} : { rollback }),
   };
 }
 
-const OUTCOMES = ["accepted", "rolled back", "ended outside the installer"] as const;
+const OUTCOMES = ["accepted", "rolled back", "ended outside the installer", "abandoned"] as const;
 
 /** The last few restore points (WP3.41). */
 function parseRestorePoints(value: unknown): RestorePointRecord[] {

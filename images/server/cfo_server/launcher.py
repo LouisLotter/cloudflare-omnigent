@@ -79,4 +79,8 @@ def sandbox_deployment(
     )
     if launcher_factory is not None:
         entry.launcher_factory = launcher_factory
-    return ManagedSandboxDeployment.single(entry, reaper=ManagedSandboxReaperConfig(enabled=True))
+    # Not inside an update's read-only window (WP3.41, Codex r2-4): its cleanup writes the database
+    # before it calls the launcher, and a rollback would discard that unseen.
+    return ManagedSandboxDeployment.single(
+        entry, reaper=ManagedSandboxReaperConfig(enabled=not config.maintenance)
+    )
