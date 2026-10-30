@@ -21,14 +21,23 @@ accounts mode, the release-feature set (``OMNIGENT_FEATURES``, which must never 
 managed-sandbox reaper. Variables that would select integrations the image does not wire
 (Databricks, AWS KMS, Vault) are removed from the app's environment.
 
-**GitHub linking** (D22, WP5.9) is Omnigent's own, with its credential store encrypted by the
-platform Worker's key service on ``platform.internal`` (core change 19). It is on when, and only
-when, the GitHub App's client ID, client secret and redirect URI and the key service's signing
-key and key ID are all set (:func:`parse_github_linking`). Then exactly those settings, the
-App's optional ID and slug, and the key service's URL reach the app, with the credential cipher
-pinned to ``http``; nothing else under ``OMNIGENT_GITHUB_APP_`` or ``OMNIGENT_CREDENTIAL_``
-does. The App's private key in particular never does: Omnigent's linking does not use it, and it
-would let the server act as the App on every repository the App is installed on.
+**The credential store's cipher** is the platform Worker's key service on ``platform.internal``
+(core change 19), on whenever its signing key and key ID are both set (:func:`parse_key_service`,
+WP5.10): then they and the key service's URL reach the app, with the cipher pinned to ``http``,
+whatever else is configured. Omnigent's GitHub linking and its MCP registry both store logins
+through it; no other cipher is ever wired.
+
+**GitHub linking** (D22, WP5.9) is Omnigent's own. It is on when, and only when, the GitHub
+App's client ID, client secret and redirect URI are set and the key service is on
+(:func:`parse_github_linking`). Then exactly those settings and the App's optional ID and slug
+reach the app; nothing else under ``OMNIGENT_GITHUB_APP_`` or ``OMNIGENT_CREDENTIAL_`` does. The
+App's private key in particular never does: Omnigent's linking does not use it, and it would let
+the server act as the App on every repository the App is installed on.
+
+**Omnigent's MCP registry** (WP5.10) is on when the installation turns on at least one of the
+services the image ships (:mod:`cfo_server.mcp`): the app gets the registry, the OAuth state
+secret and the chosen services' client secrets, and nothing names a registry file
+(``OMNIGENT_MCP_REGISTRY`` is removed: the app builds the registry itself).
 """
 
 from __future__ import annotations
@@ -41,6 +50,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 from urllib.parse import SplitResult, urlsplit
+
+from cfo_server import mcp
 
 # ── Fixed paths inside the image ─────────────────────────────────────────
 
@@ -77,8 +88,9 @@ SENDER_ACK_TIMEOUT_S = 5.0
 MIN_PASSWORD_LENGTH = 8
 
 #: Environment variables the image removes before starting Omnigent: Databricks Connect, the
-#: credential-store ciphers (AWS KMS, Vault, the HTTP key service) and the GitHub App. GitHub
-#: linking adds back only :data:`GITHUB_APP_ENV` and :data:`KEY_SERVICE_ENV`, when it is on.
+#: credential-store ciphers (AWS KMS, Vault, the HTTP key service) and the GitHub App. The key
+#: service adds back :data:`KEY_SERVICE_ENV` when it is on, and GitHub linking
+#: :data:`GITHUB_APP_ENV` when it is on.
 SCRUBBED_ENV_PREFIXES: tuple[str, ...] = (
     "OMNIGENT_DATABRICKS_",
     "OMNIGENT_CREDENTIAL_",
@@ -107,7 +119,7 @@ KEY_SERVICE_ENV: tuple[str, ...] = (
     KEY_SERVICE_SIGNING_KEY_ENV,
     KEY_SERVICE_SIGNING_KEY_ID_ENV,
 )
-#: Omnigent's cipher selector, pinned to the key service while GitHub linking is on.
+#: Omnigent's cipher selector, pinned to the key service while it is on.
 CREDENTIAL_CIPHER_ENV = "OMNIGENT_CREDENTIAL_CIPHER"
 CREDENTIAL_CIPHER = "http"
 #: The platform Worker's key service, on the server container's private intercept.
@@ -151,6 +163,8 @@ REMOVED_APP_ENV: tuple[str, ...] = (
     "LITESTREAM_ACCESS_KEY_ID",
     "LITESTREAM_SECRET_ACCESS_KEY",
     "OMNIGENT_ARTIFACT_URI",
+    # The app builds the MCP registry itself (WP5.10); a registry file would bypass the checks.
+    mcp.REGISTRY_ENV,
 )
 #: The artifact store's credentials, read by ``boto3`` in the app process only.
 ARTIFACT_CREDENTIALS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
@@ -223,6 +237,17 @@ class ArtifactSettings:
 
 
 @dataclass(frozen=True)
+class KeyService:
+    """The credential store's cipher: the platform Worker's key service (core change 19).
+
+    Secret values are not kept here: :func:`app_environment` copies them from the environment.
+    """
+
+    url: str
+    signing_key_id: str
+
+
+@dataclass(frozen=True)
 class GitHubLinking:
     """Omnigent's GitHub linking (D22): on only with the App and the key service both set.
 
@@ -266,8 +291,12 @@ class ServerImageConfig:
     #: Whether the bootstrap owner's username and password are set, so Omnigent creates the
     #: owner on a database without one instead of offering first-visitor setup.
     bootstrap_credentials: bool = False
-    #: Omnigent's GitHub linking and its key service (D22, WP5.9).
+    #: The credential store's key service, or ``None`` while its signing pair is not set.
+    key_service: KeyService | None = None
+    #: Omnigent's GitHub linking (D22, WP5.9).
     github: GitHubLinking = field(default_factory=GitHubLinking)
+    #: Omnigent's MCP registry (WP5.10).
+    mcp: mcp.McpRegistrySettings = field(default_factory=mcp.McpRegistrySettings)
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -449,32 +478,64 @@ def _secret_value(env: Mapping[str, str], name: str, *, max_length: int = 4096) 
         raise ConfigError(f"{name} is malformed")
 
 
+def parse_key_service(env: Mapping[str, str], warnings: list[str]) -> KeyService | None:
+    """The credential store's key service (core change 19): on when, and only when, its signing
+    key and key ID are both set; the installer makes them at install (WP5.10).
+
+    - Neither: off, quietly. Omnigent then stores no logins.
+    - One of them: off, with a warning that names the other (never a value).
+    - Both: every value is checked, and a malformed one stops the start (exit 78); the service
+      must be on ``platform.internal``.
+    """
+    names = (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
+    present = [name for name in names if _get(env, name) is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        missing = next(name for name in names if name not in present)
+        warnings.append(f"the credential store's key service is off: {missing} not set")
+        return None
+    signing_key = _get(env, KEY_SERVICE_SIGNING_KEY_ENV) or ""
+    if len(signing_key.encode("utf-8")) < MIN_KEY_SERVICE_SIGNING_KEY_BYTES:
+        raise ConfigError(
+            f"{KEY_SERVICE_SIGNING_KEY_ENV} must be at least "
+            f"{MIN_KEY_SERVICE_SIGNING_KEY_BYTES} bytes"
+        )
+    _secret_value(env, KEY_SERVICE_SIGNING_KEY_ENV)
+    signing_key_id = _get(env, KEY_SERVICE_SIGNING_KEY_ID_ENV) or ""
+    if not _KEY_ID.fullmatch(signing_key_id):
+        raise ConfigError(
+            f"{KEY_SERVICE_SIGNING_KEY_ID_ENV} must be 1-128 letters, digits, '.', '_' or '-'"
+        )
+    return KeyService(url=_key_service_url(env), signing_key_id=signing_key_id)
+
+
 def parse_github_linking(
-    env: Mapping[str, str], base_origin: str, warnings: list[str]
+    env: Mapping[str, str],
+    base_origin: str,
+    warnings: list[str],
+    key_service: KeyService | None,
 ) -> GitHubLinking:
-    """Omnigent's GitHub linking (D22): on when, and only when, the App and the key service are
-    both fully set.
+    """Omnigent's GitHub linking (D22): on when, and only when, the App is fully set and the key
+    service is on (:func:`parse_key_service`).
 
     - None of the App's required settings: off, quietly.
     - Some of them, or the App without the key service: off, with a warning that names what is
       missing (never a value). A half-configured optional feature does not stop the server.
     - All of them: every value is checked, and a malformed one stops the start (exit 78), as
       every other malformed setting does. The redirect URI must be Omnigent's callback on this
-      installation's own origin, and the key service must be on ``platform.internal``.
+      installation's own origin.
     """
     app_set = [name for name in GITHUB_APP_REQUIRED if _get(env, name) is not None]
-    service_set = [
-        name
-        for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
-        if _get(env, name) is not None
-    ]
     if not app_set:
         return GitHubLinking(off_reason="not configured")
-    missing = [name for name in GITHUB_APP_REQUIRED if name not in app_set] + [
-        name
-        for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
-        if name not in service_set
-    ]
+    missing = [name for name in GITHUB_APP_REQUIRED if name not in app_set]
+    if key_service is None:
+        missing += [
+            name
+            for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV)
+            if _get(env, name) is None
+        ] or ["the key service"]
     if missing:
         warnings.append(f"GitHub linking is off: {', '.join(missing)} not set")
         return GitHubLinking(off_reason="incomplete")
@@ -498,27 +559,43 @@ def parse_github_linking(
     slug = _get(env, "OMNIGENT_GITHUB_APP_SLUG")
     if slug is not None and not _GITHUB_SLUG.fullmatch(slug):
         raise ConfigError("OMNIGENT_GITHUB_APP_SLUG must be the App's slug")
-
-    signing_key = _get(env, KEY_SERVICE_SIGNING_KEY_ENV) or ""
-    if len(signing_key.encode("utf-8")) < MIN_KEY_SERVICE_SIGNING_KEY_BYTES:
-        raise ConfigError(
-            f"{KEY_SERVICE_SIGNING_KEY_ENV} must be at least "
-            f"{MIN_KEY_SERVICE_SIGNING_KEY_BYTES} bytes"
-        )
-    _secret_value(env, KEY_SERVICE_SIGNING_KEY_ENV)
-    signing_key_id = _get(env, KEY_SERVICE_SIGNING_KEY_ID_ENV) or ""
-    if not _KEY_ID.fullmatch(signing_key_id):
-        raise ConfigError(
-            f"{KEY_SERVICE_SIGNING_KEY_ID_ENV} must be 1-128 letters, digits, '.', '_' or '-'"
-        )
+    assert key_service is not None
     return GitHubLinking(
         enabled=True,
         off_reason=None,
         client_id=client_id,
         redirect_uri=redirect_uri,
-        key_service_url=_key_service_url(env),
-        signing_key_id=signing_key_id,
+        key_service_url=key_service.url,
+        signing_key_id=key_service.signing_key_id,
     )
+
+
+def parse_mcp_registry(
+    env: Mapping[str, str],
+    base_url: str,
+    warnings: list[str],
+    *,
+    key_service: KeyService | None,
+    github: GitHubLinking,
+    manifests_dir: Path | None = None,
+) -> mcp.McpRegistrySettings:
+    """Omnigent's MCP registry from the shipped manifests and the installation's choices
+    (:func:`cfo_server.mcp.build_settings`); a malformed choice is a :class:`ConfigError`."""
+    # Omnigent's OAuth callbacks: the installation's own URL, under Omnigent's base path.
+    base_path = (_get(env, "OMNIGENT_WEB_BASE_PATH") or "").strip("/")
+    public_url = base_url.rstrip("/") + (f"/{base_path}" if base_path else "")
+    try:
+        return mcp.build_settings(
+            env,
+            public_url=public_url,
+            key_service=key_service is not None,
+            github_linking=github.enabled,
+            warnings=warnings,
+            manifests=None if manifests_dir is None else mcp.load_manifests(manifests_dir),
+            allow_loopback=parse_bool(env, mcp.ALLOW_LOOPBACK_ENV, False),
+        )
+    except mcp.ManifestError as exc:
+        raise ConfigError(str(exc)) from None
 
 
 def parse_artifacts(
@@ -573,11 +650,17 @@ def parse_artifacts(
     return ArtifactSettings(uri=uri)
 
 
-def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> ServerImageConfig:
+def load(
+    env: Mapping[str, str] | None = None,
+    *,
+    for_app: bool = False,
+    manifests_dir: Path | None = None,
+) -> ServerImageConfig:
     """Parse and check every setting; raise :class:`ConfigError` on the first problem.
 
     :param for_app: Parse for the Omnigent app process, whose environment no longer holds the
         replica's credentials (only Litestream gets them); the replica is then not parsed.
+    :param manifests_dir: The MCP manifests to read instead of the image's (tests only).
     """
     env = os.environ if env is None else env
     warnings: list[str] = []
@@ -628,9 +711,21 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
     features = _get(env, "OMNIGENT_FEATURES")
     if features is not None:
         warnings.append(f"OMNIGENT_FEATURES={features!r} ignored: the image pins every feature off")
-    github = parse_github_linking(env, base_origin, warnings)
+    key_service = parse_key_service(env, warnings)
+    github = parse_github_linking(env, base_origin, warnings, key_service)
+    mcp_registry = parse_mcp_registry(
+        env,
+        base_url,
+        warnings,
+        key_service=key_service,
+        github=github,
+        manifests_dir=manifests_dir,
+    )
+    passed = _passed_env(key_service, github)
     for name in sorted(env):
-        if name.startswith(SCRUBBED_ENV_PREFIXES) and name not in _linking_env(github):
+        if (name.startswith(SCRUBBED_ENV_PREFIXES) and name not in passed) or name == (
+            mcp.REGISTRY_ENV
+        ):
             warnings.append(f"{name} removed: this image does not wire that integration")
 
     sandbox_server_url = _get(env, "CFO_SANDBOX_SERVER_URL") or "http://omnigent.internal"
@@ -664,16 +759,22 @@ def load(env: Mapping[str, str] | None = None, *, for_app: bool = False) -> Serv
         litestream_ready_timeout_s=parse_seconds(env, "CFO_LITESTREAM_READY_TIMEOUT_S", 60.0),
         installation_id=installation_id,
         bootstrap_credentials=bootstrap_password is not None,
+        key_service=key_service,
         github=github,
+        mcp=mcp_registry,
         warnings=tuple(warnings),
     )
 
 
-def _linking_env(github: GitHubLinking) -> frozenset[str]:
-    """The scrubbed-prefix variables GitHub linking passes to the app: none while it is off."""
-    if not github.enabled:
-        return frozenset()
-    return frozenset((*GITHUB_APP_ENV, *KEY_SERVICE_ENV, CREDENTIAL_CIPHER_ENV))
+def _passed_env(key_service: KeyService | None, github: GitHubLinking) -> frozenset[str]:
+    """The scrubbed-prefix variables passed to the app: the key service's while it is on, and
+    the GitHub App's while GitHub linking is on."""
+    names: set[str] = set()
+    if key_service is not None:
+        names |= {*KEY_SERVICE_ENV, CREDENTIAL_CIPHER_ENV}
+    if github.enabled:
+        names |= set(GITHUB_APP_ENV)
+    return frozenset(names)
 
 
 def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[str, str]:
@@ -688,13 +789,9 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
         if not k.startswith(SCRUBBED_ENV_PREFIXES) and k not in REMOVED_APP_ENV
     }
     out.update(PINNED_ENV)
-    if config.github.enabled:
-        # Exactly the App's settings Omnigent reads, the key service's, and the pinned cipher.
-        for name in GITHUB_APP_ENV:
-            value = _get(env, name)
-            if value is not None:
-                out[name] = value
-        out[KEY_SERVICE_URL_ENV] = config.github.key_service_url or DEFAULT_KEY_SERVICE_URL
+    if config.key_service is not None:
+        # The key service's settings and the pinned cipher: the only credential cipher.
+        out[KEY_SERVICE_URL_ENV] = config.key_service.url
         for name in (KEY_SERVICE_SIGNING_KEY_ENV, KEY_SERVICE_SIGNING_KEY_ID_ENV):
             out[name] = _get(env, name) or ""
         out[CREDENTIAL_CIPHER_ENV] = CREDENTIAL_CIPHER
@@ -703,6 +800,24 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
             hosts = [h for h in out.get(name, "").split(",") if h.strip()]
             if KEY_SERVICE_HOST not in hosts:
                 out[name] = ",".join([*hosts, KEY_SERVICE_HOST])
+    if config.github.enabled:
+        # Exactly the App's settings Omnigent reads.
+        for name in GITHUB_APP_ENV:
+            value = _get(env, name)
+            if value is not None:
+                out[name] = value
+    # The MCP choices stay where the app reads them (cfo_server.mcp); the client secrets of
+    # services that are off, and the OAuth state secret while no service needs it, do not.
+    kept = set(config.mcp.secret_env)
+    for name in list(out):
+        if name.startswith(mcp.CLIENT_SECRET_ENV) and name not in kept:
+            del out[name]
+    if not config.mcp.enabled:
+        # MCP is off: the app process reads no choice either, so its own parse of this
+        # environment comes to the same decision without the secrets just removed (Codex WP5.10
+        # r1-2).
+        out.pop(mcp.STATE_SECRET_ENV, None)
+        out.pop(mcp.SERVICES_ENV, None)
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
         for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():

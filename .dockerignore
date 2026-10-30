@@ -8,6 +8,7 @@
 *
 # The server image (images/server/Dockerfile.dockerignore).
 !images/server/cfo_server/
+!images/server/services/
 !python/cloudflare_omnigent/
 !images/server/tests/
 !images/server/Dockerfile

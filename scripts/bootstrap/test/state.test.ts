@@ -88,7 +88,7 @@ describe("the state file", () => {
     const cases: [unknown, RegExp][] = [
       ["not json {", /not JSON/],
       [[], /top level is not an object/],
-      [{ ...good, stateVersion: 5 }, /unknown version/],
+      [{ ...good, stateVersion: 6 }, /unknown version/],
       [{ ...good, stateVersion: "1" }, /unknown version/],
       // D33: version 2 records the bucket tag, and only version 2 does.
       [{ ...good, stateVersion: 2 }, /version 2 plan records no bucket tag/],
@@ -427,6 +427,42 @@ describe("the state file", () => {
       [{ updatedAt: "later" }, /journal.updatedAt is not a time/],
     ] as const) {
       expect(() => parseState(JSON.stringify({ ...good, journal }))).toThrow(message);
+    }
+  });
+
+  it("keeps the MCP services' record as version 5, and names a broken one (WP5.10)", async () => {
+    const state = await fullState();
+    const path = join(dir, "mcp.json");
+    const record = {
+      on: ["github", "tracker"],
+      revision: "0a".repeat(16),
+      changedAt: "2026-10-30T10:00:00.000Z",
+      confirmedAt: "2026-10-30T10:07:00.000Z",
+      registry: true,
+      pending: {
+        on: ["tracker"],
+        revision: "0b".repeat(16),
+        startedAt: "2026-10-30T11:00:00.000Z",
+      },
+    };
+    const withServices = { ...state, journal: { ...state.journal, mcpServices: record } };
+    fileStateStore(path).save(withServices);
+    // A bootstrap from before WP5.10 refuses it rather than drop which services are on.
+    expect(JSON.parse(readFileSync(path, "utf8")).stateVersion).toBe(5);
+    expect(fileStateStore(path).load()).toEqual({ ...withServices, stateVersion: 5 });
+    const good = JSON.parse(JSON.stringify({ ...withServices, stateVersion: 5 }));
+    for (const [mcpServices, message] of [
+      ["x", /journal.mcpServices is not an object/],
+      [{ on: "tracker" }, /journal.mcpServices.on is not a list of service IDs/],
+      [{ on: ["Tracker"] }, /journal.mcpServices.on is not a list of service IDs/],
+      [{ on: [], revision: "short" }, /journal.mcpServices.revision is malformed/],
+      [{ on: [], registry: "yes" }, /journal.mcpServices.registry is not true or false/],
+      [{ on: [], changedAt: "soon" }, /journal.mcpServices.changedAt is not a time/],
+      [{ on: [], pending: { on: [], revision: "0c".repeat(16) } }, /pending is malformed/],
+    ] as const) {
+      expect(() =>
+        parseState(JSON.stringify({ ...good, journal: { ...good.journal, mcpServices } })),
+      ).toThrow(message);
     }
   });
 

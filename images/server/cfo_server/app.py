@@ -10,7 +10,8 @@ Run by the entrypoint as ``python -m cfo_server.app``, once Litestream is replic
 3. wires the stores exactly as that module's ``build_app`` does, and calls ``create_app``
    itself with what the platform adds: static sharing values (Omnigent's sharing settings
    become authoritative, D4), the launcher registration through ``sandbox_config``, the
-   pinned release features, and the transcript barrier (``durability_barrier``);
+   pinned release features, the transcript barrier (``durability_barrier``), and Omnigent's
+   MCP registry with its logins in the credential store, through the key service (WP5.10);
 4. adds the owner's password handler (``POST /_cfo/owner-password``, WP3.34) outside Omnigent's
    own middleware, and the response barrier outside it as the outermost middleware, and serves
    the app the way that module's ``main`` does.
@@ -112,6 +113,48 @@ def github_linking(config: image_config.ServerImageConfig, database_url: str) ->
     return github_config, GithubConnectionStore(database_url, cipher)
 
 
+def mcp_registry(config: image_config.ServerImageConfig, database_url: str) -> Any:
+    """Omnigent's MCP registry (WP5.10), or ``None`` while no service is on.
+
+    Built as Omnigent's own server command builds it (``omnigent/cli.py``: ``McpRegistry`` over a
+    ``CredentialStore`` with the deployment's cipher), from the configuration the image checked
+    (:mod:`cfo_server.mcp`) rather than a file. Omnigent's own model checks it again; a refusal
+    there is a configuration error (exit 78) whose words never repeat a value. The store's cipher
+    must be core change 19's key service, never another backend: logins are never stored under a
+    cipher the platform did not choose.
+    """
+    if not config.mcp.enabled:
+        return None
+    from omnigent.server.mcp_registry import McpRegistry, McpRegistryConfig
+    from omnigent.stores.credential_store import build_secret_cipher
+    from omnigent.stores.credential_store.http_cipher import HttpSecretCipher
+    from omnigent.stores.credential_store.sqlalchemy_store import CredentialStore
+    from pydantic import ValidationError
+
+    try:
+        registry_config = McpRegistryConfig.model_validate(config.mcp.registry)
+    except ValidationError:
+        # Pydantic's message repeats the input: never logged.
+        raise image_config.ConfigError(
+            "Omnigent refused the MCP services' configuration (check the manifests and the "
+            "CFO_MCP_ settings)"
+        ) from None
+    cipher = None
+    if config.key_service is not None:
+        cipher = build_secret_cipher()
+        if not isinstance(cipher, HttpSecretCipher):
+            raise RuntimeError("the credential store's cipher is not the platform's key service")
+    try:
+        return McpRegistry(
+            registry_config, None if cipher is None else CredentialStore(database_url, cipher)
+        )
+    except ValueError:
+        raise image_config.ConfigError(
+            "Omnigent refused the MCP registry: the key service or "
+            "OMNIGENT_MCP_OAUTH_STATE_SECRET is not as it needs them"
+        ) from None
+
+
 def build_app(
     config: image_config.ServerImageConfig,
     resolved_config: Any,
@@ -196,6 +239,7 @@ def build_app(
         raise RuntimeError("accounts mode did not resolve; refusing to start without it")
 
     github_config, github_store = github_linking(config, database_url)
+    registry = mcp_registry(config, database_url)
     # The launcher's own durability fence reads the same Litestream position as the barriers.
     sandbox_config = sandbox_deployment(
         config,
@@ -225,6 +269,7 @@ def build_app(
         github_store=github_store,
         databricks_config=None,
         databricks_store=None,
+        mcp_registry=registry,
         # The platform's additions:
         sharing_mode=SharingMode(config.sharing.sharing_mode),
         public_sharing=config.sharing.public_sharing,
@@ -265,7 +310,12 @@ def main() -> None:
     # (WP2.5's diagnosis needed py-spy for that); the entrypoint logs ``app.ready``.
     started = time.monotonic()
     install_sql_hooks()
-    config = image_config.load(for_app=True)
+    try:
+        config = image_config.load(for_app=True)
+    except image_config.ConfigError as exc:
+        # The entrypoint checked the same settings; any difference is still a setting (exit 78).
+        log("config.error", message=str(exc))
+        sys.exit(78)
     db_path = os.environ.get("CFO_DB_PATH", str(image_config.DB_PATH))
     socket_path = os.environ.get("CFO_LITESTREAM_SOCKET", str(image_config.LITESTREAM_SOCKET))
     ep = load_docker_entrypoint()
@@ -286,7 +336,12 @@ def main() -> None:
     log("app.migrated", seconds=round(time.monotonic() - started, 2))
 
     waiter = ReplicationWaiter(socket_path, db_path)
-    app = build_app(config, resolved, waiter=waiter, docker_entrypoint=ep)
+    try:
+        app = build_app(config, resolved, waiter=waiter, docker_entrypoint=ep)
+    except image_config.ConfigError as exc:
+        # As the entrypoint's own refusal: the watchdog holds the configuration (exit 78).
+        log("config.error", message=str(exc))
+        sys.exit(78)
     # create_app ran Omnigent's bootstrap. Without an owner, Omnigent would offer
     # first-visitor setup; the entrypoint already refuses that case, and this checks it with
     # the owner query alone: the entrypoint's full integrity check of the same file came just

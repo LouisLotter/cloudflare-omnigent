@@ -25,6 +25,11 @@
 // or malformed setting (78), whether that holds the current configuration (`held`) and the App
 // that configuration holds.
 //
+// Likewise for Omnigent's MCP registry (WP5.10): the revision of the MCP choices the logging
+// version holds (`mcpRevision`, a random marker the `services` step writes with each change) and
+// whether Omnigent lists its registry (`mcpRegistry`); `config_error` names the revision held
+// too (`checkMcpServices`).
+//
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
 // one, a contradictory one, or one that does not parse as the contract is never accepted.
@@ -55,6 +60,16 @@ export interface StatusEvent {
    * (worker/src/server/github-linking.ts, `githubAppTag`), null for none; undefined: unsaid.
    */
   readonly githubApp?: string | null | undefined;
+  /**
+   * Whether Omnigent's `/v1/info` listed its MCP registry (WP5.10): null when its answer did not
+   * say, undefined from a build that does not report it.
+   */
+  readonly mcpRegistry?: boolean | null | undefined;
+  /**
+   * The revision of the MCP choices the logging version holds (WP5.10,
+   * worker/src/server/mcp-services.ts), null for none; undefined: unsaid.
+   */
+  readonly mcpRevision?: string | null | undefined;
 }
 
 /** The watchdog's `config_error` line: a server exited with a missing or malformed setting. */
@@ -65,6 +80,8 @@ export interface ConfigErrorEvent {
   readonly held: boolean | undefined;
   /** The GitHub App the current configuration holds, as on a status line. */
   readonly githubApp: string | null | undefined;
+  /** The revision of the MCP choices the current configuration holds (WP5.10). */
+  readonly mcpRevision?: string | null | undefined;
 }
 
 function appTag(value: unknown): string | null | undefined {
@@ -166,6 +183,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
         versionId,
         held: typeof line.held === "boolean" ? line.held : undefined,
         githubApp: appTag(line.githubApp),
+        mcpRevision: appTag(line.mcpRevision),
       });
       continue;
     }
@@ -191,6 +209,11 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
           ? line.githubLinking
           : undefined,
       githubApp: appTag(line.githubApp),
+      mcpRegistry:
+        typeof line.mcpRegistry === "boolean" || line.mcpRegistry === null
+          ? line.mcpRegistry
+          : undefined,
+      mcpRevision: appTag(line.mcpRevision),
     });
   }
   return { statuses, invocations, configErrors, configChanges, malformed };
@@ -477,5 +500,85 @@ export function checkGitHubLinking(
   return {
     state: "waiting",
     why: "the restarted server answers, but its status does not say whether GitHub linking is on",
+  };
+}
+
+export type McpServicesCheck =
+  /**
+   * A server started with the revision's settings answers: Omnigent lists its MCP registry
+   * (`registry: true`) or not.
+   */
+  | { readonly state: "applied"; readonly registry: boolean }
+  /** The server exited with a missing or malformed setting and is held (exit 78). */
+  | { readonly state: "held" }
+  | { readonly state: "waiting"; readonly why: string };
+
+/**
+ * After the `services` step's secrets change (WP5.10): whether a server started with the
+ * revision of the MCP choices the step stored answers, and what Omnigent lists. Exactly
+ * `checkGitHubLinking`'s rule, with the revision in place of the App's tag: the newest word of
+ * the object about this installation since the change decides, and only when it names this
+ * revision; anything newer that says the server is changing or runs other choices overrides an
+ * earlier verdict.
+ */
+export function checkMcpServices(
+  logs: ParsedLogs,
+  rules: {
+    readonly installationId: string;
+    /** The revision the step stored (`CFO_MCP_REVISION`). */
+    readonly revision: string;
+    readonly since: number;
+  },
+): McpServicesCheck {
+  type Word =
+    | { readonly at: number; readonly kind: "status"; readonly event: StatusEvent }
+    | { readonly at: number; readonly kind: "held"; readonly ours: boolean }
+    | { readonly at: number; readonly kind: "changed" };
+  const words: Word[] = [
+    ...logs.statuses
+      .filter((e) => e.status.installationId === rules.installationId && e.loggedAt >= rules.since)
+      .map((event): Word => ({ at: event.loggedAt, kind: "status", event })),
+    ...logs.configErrors
+      .filter((e) => e.held === true && e.loggedAt >= rules.since)
+      .map((e): Word => ({ at: e.loggedAt, kind: "held", ours: e.mcpRevision === rules.revision })),
+    ...logs.configChanges
+      .filter((at) => at >= rules.since)
+      .map((at): Word => ({ at, kind: "changed" })),
+  ];
+  const rank = { changed: 0, held: 1, status: 2 } as const;
+  const latest = words.reduce<Word | undefined>(
+    (a, b) =>
+      a === undefined || b.at > a.at || (b.at === a.at && rank[b.kind] < rank[a.kind]) ? b : a,
+    undefined,
+  );
+  const restarting = "the server is restarting with the new MCP settings (a few minutes)";
+  if (latest === undefined) {
+    return {
+      state: "waiting",
+      why: "the platform has not switched the server's object to the new MCP settings yet",
+    };
+  }
+  if (latest.kind === "changed") return { state: "waiting", why: restarting };
+  if (latest.kind === "held") {
+    return latest.ours
+      ? { state: "held" }
+      : { state: "waiting", why: "the server holds other settings (a later change?)" };
+  }
+  const status = latest.event;
+  if (status.mcpRevision !== rules.revision) {
+    return status.mcpRevision === undefined || status.configApplied !== true
+      ? { state: "waiting", why: restarting }
+      : {
+          state: "waiting",
+          why: "the server still runs other MCP settings (the platform has not switched to the new ones yet, or a later change replaced them)",
+        };
+  }
+  if (status.configApplied !== true) return { state: "waiting", why: restarting };
+  if (typeof status.mcpRegistry === "boolean") {
+    return { state: "applied", registry: status.mcpRegistry };
+  }
+  return {
+    state: "waiting",
+    why: "the restarted server answers, but its status does not say whether Omnigent lists MCP",
   };
 }

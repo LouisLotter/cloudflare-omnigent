@@ -7,8 +7,9 @@
 // of `REPLACE_MS`) when its configuration differs.
 // The server then logs its status without the password until it shows a durable owner, and for
 // `NOTICE_MS` after (G2-SEC-001). Each status line says whether the version holds a GitHub App
-// and whether Omnigent lists GitHub linking (WP3.36); a server whose settings it refuses exits
-// 78, logs no status, and the watchdog logs `config_error` once.
+// and whether Omnigent lists GitHub linking (WP3.36), and the revision of the MCP choices and
+// whether Omnigent lists MCP (WP5.10); a server whose settings it refuses exits 78, logs no
+// status, and the watchdog logs `config_error` once.
 // The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
 // Access in the installer's account (WP3.31): the organization, the applications and the login
 // methods, as cf answers for them.
@@ -42,6 +43,15 @@ export const REPLACE_MS = 90_000;
 export const NOTICE_MS = 15 * 60_000;
 /** The GitHub App's client ID as the platform Worker holds it (github-app.ts). */
 const GITHUB_CLIENT_ID = "SERVER_ENV_OMNIGENT_GITHUB_APP_CLIENT_ID";
+/** The MCP choices as the platform Worker holds them (services.ts, WP5.10). */
+const MCP_SERVICES = "SERVER_ENV_CFO_MCP_SERVICES";
+const MCP_REVISION = "SERVER_ENV_CFO_MCP_REVISION";
+
+/** The revision OmnigentServer logs for a version's MCP choices (mcp-services.ts). */
+export function fakeMcpRevision(secrets: ReadonlyMap<string, string>): string | null {
+  const value = secrets.get(MCP_REVISION)?.trim() ?? "";
+  return /^[0-9a-f]{16,64}$/.test(value) ? value : null;
+}
 
 /**
  * The tag OmnigentServer logs for the App a version holds (worker/src/server/github-linking.ts,
@@ -136,6 +146,13 @@ export class FakeWorld {
   refusesSettings: (v: Version) => boolean = () => false;
   /** Whether status lines carry the GitHub fields; false models a build from before WP3.36. */
   reportsGitHub = true;
+  /**
+   * Whether Omnigent lists its MCP registry on a server started with a version's configuration
+   * (WP5.10): by default, when the version turns on a service.
+   */
+  mcpListed: (v: Version) => boolean | null = (v) => (v.secrets.get(MCP_SERVICES) ?? "") !== "";
+  /** Whether status lines carry the MCP fields; false models a build from before WP5.10. */
+  reportsMcp = true;
   readonly counts = new Map<string, number>();
   /** The installer's user API tokens, with the value each has now. */
   readonly tokens = new Map<string, { token: ApiToken; value: string }>();
@@ -545,6 +562,7 @@ export class FakeWorld {
               exitCode: 78,
               held: true,
               githubApp: fakeAppTag(container.version.secrets),
+              mcpRevision: fakeMcpRevision(container.version.secrets),
             },
           });
         }
@@ -576,6 +594,12 @@ export class FakeWorld {
             ? {
                 githubApp: fakeAppTag(version.secrets),
                 githubLinking: this.githubLinks(version),
+              }
+            : {}),
+          ...(this.reportsMcp
+            ? {
+                mcpRevision: fakeMcpRevision(version.secrets),
+                mcpRegistry: this.mcpListed(version),
               }
             : {}),
         },

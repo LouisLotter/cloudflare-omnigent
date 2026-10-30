@@ -15,12 +15,17 @@ import {
   ARTIFACTS_KEY_ID_SECRET,
   ARTIFACTS_SECRET_KEY_SECRET,
   COOKIE_SECRET,
+  CREDENTIAL_STORE_SECRETS,
   INITIALIZED_SECRET,
   type Installation,
+  KEY_SERVICE_KEY_ID_SECRET,
+  KEY_SERVICE_KEY_SECRET,
   LAUNCHER_KEY_ID_SECRET,
   LAUNCHER_KEY_SECRET,
+  MCP_STATE_SECRET,
   OWNER_PASSWORD_ON_PAGE_SECRET,
   PASSWORD_SECRET,
+  RECORD_KEYS_SECRET,
   RELEASE_CHANGES,
   REPLICA_KEY_ID_SECRET,
   REPLICA_SECRET_KEY_SECRET,
@@ -182,8 +187,17 @@ describe("runBootstrap: the whole bootstrap", () => {
         REPLICA_SECRET_KEY_SECRET,
         ARTIFACTS_KEY_ID_SECRET,
         ARTIFACTS_SECRET_KEY_SECRET,
+        ...CREDENTIAL_STORE_SECRETS,
       ].sort(),
     );
+    // The credential store's keys and the MCP state secret, made at install (WP5.10).
+    expect(first?.get(KEY_SERVICE_KEY_SECRET)).toMatch(/^[0-9a-f]{64}$/);
+    expect(first?.get(KEY_SERVICE_KEY_ID_SECRET)).toMatch(/^ks-[0-9a-f]{8}$/);
+    expect(first?.get(MCP_STATE_SECRET)).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(first?.get(RECORD_KEYS_SECRET) ?? "")).toMatchObject({
+      keyId: `${plan.installationId}.records`,
+      current: 1,
+    });
     // The launcher's key (found missing on the owner's first real install): made by the run.
     expect(first?.get(LAUNCHER_KEY_SECRET)).toMatch(/^[A-Za-z0-9_-]{64}$/);
     expect(first?.get(LAUNCHER_KEY_ID_SECRET)).toMatch(/^k-\d{8}$/);

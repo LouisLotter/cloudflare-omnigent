@@ -1,0 +1,26 @@
+{
+  "manifest": 1,
+  "asks": [],
+  "service": {
+    "id": "github",
+    "title": "GitHub",
+    "description": "GitHub's MCP server, with the GitHub account you linked in Omnigent (Settings, Integrations).",
+    "url": "https://api.githubcopilot.com/mcp/",
+    "auth": "github",
+    "tools": [
+      "get_me",
+      "get_file_contents",
+      "list_branches",
+      "list_commits",
+      "get_commit",
+      "search_repositories",
+      "search_code",
+      "list_pull_requests",
+      "pull_request_read",
+      "search_pull_requests",
+      "create_pull_request",
+      "update_pull_request"
+    ],
+    "timeout": 60
+  }
+}

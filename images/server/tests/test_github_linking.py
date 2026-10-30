@@ -157,8 +157,13 @@ def test_half_configured_is_off_with_a_warning_naming_what_is_missing(
     for name in missing:
         assert name in warning
     app_env = app_environment(config, env)
-    for name in (*GITHUB_APP_ENV, *KEY_SERVICE_ENV, CREDENTIAL_CIPHER_ENV):
+    for name in GITHUB_APP_ENV:
         assert name not in app_env, name
+    # The key service is independent of GitHub (WP5.10): on whenever its pair is set.
+    key_service_set = "OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY" not in missing
+    assert (config.key_service is not None) is key_service_set
+    for name in (*KEY_SERVICE_ENV, CREDENTIAL_CIPHER_ENV):
+        assert (name in app_env) is key_service_set, name
     for value in linking.values():
         assert value not in warning
 

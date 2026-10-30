@@ -49,6 +49,8 @@ PLATFORM_KWARGS = {
     "default_public_sessions",
     "feature_flags",
     "durability_barrier",
+    # Omnigent's own server command passes it; its Docker entrypoint does not (WP5.10).
+    "mcp_registry",
 }
 LITESTREAM_VERSION = "0.5.17"
 

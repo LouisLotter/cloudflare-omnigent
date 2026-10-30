@@ -154,6 +154,25 @@ uv run --no-project --with pytest==9.1.1 --with httpx==0.28.1 --with cryptograph
 
 Every value is generated for the run. It creates and removes `cfo-wp59-e2e-*` containers and a network; `CFO_E2E_TMP` chooses its temporary directory and `CFO_E2E_KEEP=1` keeps it, with each container's log. It is a local qualification only: the intercept, Access in front of the callback and a real GitHub App remain staging work.
 
+## MCP registry end to end — local Docker
+
+[`images/server/tests/integration/mcp_registry/`](../images/server/tests/integration/mcp_registry/) runs Omnigent's MCP registry across every boundary but Cloudflare's: the platform Worker's real key service under `wrangler dev` (as for GitHub linking), the server image's final target with the settings `bootstrap.ts services add tracker` stores (the shipped manifest, the installation's choices, no test switch), Omnigent's own demo OAuth MCP service over HTTPS under a public-looking name with a certificate from the test's own authority ([`run_demo.py`](../images/server/tests/integration/mcp_registry/run_demo.py) runs it unchanged and lets it accept its own name), and the computer image, where the runner's own MCP client calls the gateway with a runner's delegated token. It connects the service as the owner (refusing a forged state and a reused code), checks that the database and a restore of its replica hold only ciphertext, calls from the computer (the allowlist hides a tool the service has), forces a refresh that rotates the tokens, scans the computer's files and every process's argv and environment, exactly what a checkpoint of the computer would hold (its own scan under the checkpoint policy) and every container's log for the logins, disconnects, and checks that the next call from the computer fails at once and the record is gone from the replica. The runner's token is minted in the server container with Omnigent's own `mint_runner_token`, and the computer reaches the server directly.
+
+```bash
+docker build -f images/server/Dockerfile -t cfo-wp510-server:runtime .
+docker build -f images/computer/Dockerfile --target runtime -t cfo-wp510-computer:runtime .
+uv run --no-project --with pytest==9.1.1 --with httpx==0.28.1 --with cryptography==46.0.3 \
+  pytest -p no:cacheprovider images/server/tests/integration/mcp_registry
+```
+
+It creates and removes `cfo-wp510-e2e-*` containers and a network; `CFO_E2E_TMP` and `CFO_E2E_KEEP=1` work as for GitHub linking. The callback through Access, the computer's private route and a real provider remain Cloudflare work.
+
+[`worker/test/e2e/mcp-services-e2e.ts`](../worker/test/e2e/mcp-services-e2e.ts) runs the installer's real `services` step on the GitHub setup flow's harness (below): the production OmnigentServer under `wrangler dev`, whose watchdog restarts the server image's real container after each secrets change. It checks a refused origin changes nothing; `add tracker` ends ready once the restarted server reports the change's revision and Omnigent lists `mcp`; Settings → MCP is Omnigent's page; a choice the image refuses ends held (a real exit 78 the watchdog holds) and `remove` brings the server back; removing the last service turns MCP off; and it scans the logs for the run's secrets.
+
+```bash
+node worker/test/e2e/mcp-services-e2e.ts
+```
+
 ## GitHub setup flow end to end — local Docker
 
 [`worker/test/e2e/github-setup-e2e.ts`](../worker/test/e2e/github-setup-e2e.ts) runs the installer's real GitHub step (`createGitHubApp`: its local page, its progress page and its wait for GitHub linking) against the production web Worker and OmnigentServer under `wrangler dev`, whose watchdog starts and, after the step's secrets change, replaces the server image's real container through Docker ([`github-setup-platform-e2e.ts`](../worker/test/e2e/github-setup-platform-e2e.ts)). GitHub is a scripted browser that does what GitHub does, and the conversion's answer; the secrets change restarts `wrangler dev` with the new settings, as a new version; Workers Logs are the platform Worker's own lines, labelled with the version that printed them; Access is a local stand-in for the team's keys. It checks the setup page's refusals (no Access, a stranger, a foreign origin, `/_cfo/`, another hostname), that the progress page goes on to GitHub's install page only once the restarted server reports GitHub linking on, that GitHub's return to the setup URL opens Omnigent's Integrations page, that an expired local page says so and stores nothing, and scans every log and page for the run's secrets.

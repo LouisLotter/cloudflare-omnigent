@@ -49,6 +49,19 @@ A saved session's 201 response is distinct from `runner_launch: started|failed|u
 | GitHub linking is off (exit 1) | A server started with the App's settings answers, but Omnigent does not list GitHub in `/v1/info`'s `enabled_connections`: the image turned linking off, so a setting it needs is missing. | The server's `boot` line says `github_linking: off: incomplete`, and its `config.warning` line names what is missing (both in the platform Worker's Workers Logs). Run the step again with `--replace`, then delete the old App on GitHub. |
 | The server does not start with the App's settings (exit 1), or the setup page says the server cannot start | The server exited 78 with a malformed setting and the watchdog holds it until the configuration changes: Omnigent is down. | The server's `config.error` line names the setting. Run the step again with `--replace` (a new App, freshly stored), then delete the old App on GitHub. |
 
+## MCP services
+
+`bootstrap.ts services add <id>` stores the service's settings and waits until a server started with them answers.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| Not confirmed yet (exit 3) | The settings are stored; no server started with them has answered yet, usually because the restart is still under way. | Run `bootstrap.ts services` or `bootstrap.ts status --logs` in a few minutes. |
+| Omnigent lists no MCP services (exit 1) | The server restarted with the change, but the image turned MCP off: a prerequisite is missing (the key service's keys or the OAuth state secret). | The server's `boot` line says `mcp_registry: off: incomplete` and its `config.warning` line names what is missing. Run `bootstrap.ts update`, which adds them, then the step again. |
+| The server does not start with the change (exit 1) | The server exited 78 with a malformed choice or manifest, and the watchdog holds it until the configuration changes: Omnigent is down. | The `config.error` line names the setting, never its value. Run the `services remove <id>` the step names to undo the change. |
+| A call fails with "Connect this MCP account" | The account is not connected, or it was disconnected. | Settings → MCP, **Connect**. |
+| Settings → MCP says "Reconnect needed" | The service rejected the saved sign-in (a 401, or a refresh it refused): access removed on its site, or expired. The next call tries a refresh first. | Settings → MCP, **Reconnect**. |
+| Settings → MCP says the registry is not configured | No service is on, or the server started without the change. | `bootstrap.ts services` lists what is on; `status --logs` shows the server's status lines. |
+
 ## Evidence to collect
 
 Keep source/fork/image identities, affected generation/operation, timestamped phase transitions, error code, save cut/publication/proof metadata and a description of the user action. Avoid full headers, query strings, tokens, login files, terminal output or transcript contents unless necessary and access-controlled. Existing structured logs may provide enough. The [recovery guide](recovery.md) explains the implemented bootstrap observation command and private control-port boundary; the [test guide](../testing.md) separates local checks from account qualification.

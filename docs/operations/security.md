@@ -18,7 +18,7 @@ Distinguish the material at risk:
 | Server/Worker authority | Server cookie/storage/bridge credentials or Worker encryption keys can affect the whole installation. The storage credentials reach the replica's and the artifacts' buckets (uploaded files), never the checkpoint buckets. Worker-held encryption keys do not prevent authorized server plaintext use. |
 | Checkpoint read access | Credential checkpoints contain login files. Version one has no application-level checkpoint encryption; Cloudflare account/Worker control defeats the intended storage boundary. |
 
-Main and the server candidate still disable native GitHub/cipher wiring; the Worker key service and connected-account service remain unfinished. Diagnose what is actually installed rather than assuming every planned credential class exists.
+Main wires Omnigent's GitHub linking and MCP registry with the Worker's key service in source; none of it has run on Cloudflare yet. Diagnose what is actually installed rather than assuming every credential class exists.
 
 ## Respond to a suspected computer compromise
 
@@ -27,7 +27,7 @@ The following is the accepted response sequence, not an implemented one-command 
 1. Invalidate the owner's Omnigent account generation so existing sessions/tokens cease to authorize work. Check the selected fork's account-revocation behavior; a cookie-secret change alone is not equivalent to complete authority invalidation.
 2. Review schedules, agents, policies and MCP-server settings; remove unexpected persistent instructions. Delegated runners may add session policies and manage user agents, so a clean computer alone is insufficient.
 3. Revoke the relevant Claude and ChatGPT provider sessions through their account controls. Verify the replacement computer asks for the expected sign-ins; do not treat local logout as proof that a copied refresh token was revoked.
-4. If native GitHub linking was enabled, revoke the Omnigent GitHub App authorization at GitHub, then unlink/relink as needed. Unlinking only stops future token vending. Revoke/reconnect the platform's connected accounts if that planned service is present in the installed release.
+4. If native GitHub linking was enabled, revoke the Omnigent GitHub App authorization at GitHub, then unlink/relink as needed. Unlinking only stops future token vending. For each MCP service connected in Settings → MCP, disconnect it there and remove the app's access on the provider's own site: Omnigent's disconnect deletes the stored login but does not revoke the provider's grant. The login never reached a computer, but code on a computer could have replaced it with another account's, so connect it again yourself.
 5. Rotate any affected provider API key and installation credentials according to their audience/scope. After preserving the evidence needed for diagnosis, replace the affected runtime through the reviewed lifecycle/recovery path.
 
 Do not restore potentially compromised instructions/configuration blindly. Restore and account cleanup have different purposes. The full account-generation/recovery workflow is still an integration obligation; do not invent routes or bypass private controls when a required operator action is unavailable.
@@ -46,7 +46,7 @@ A client that still trusts a compromised certificate authority can be shown a fo
 
 The implemented fork delegation checks refuse approval answers, policy edits/deletes, default-policy creation, replacement of a session's agent and account/credential administration. The accepted platform design additionally requires the private computer route to restrict sharing mutations, protected administrative/approval paths and another computer's identity; that production route is not yet implemented. A recorded human verdict binds a permitted runner MCP retry to its exact call and is consumed once.
 
-Delegated runners can add session policies, set sub-agent cost budgets and manage user agents. Added policy state can affect another policy and bypass an approval; this remains an accepted risk. The planned connected-account service uses installation-wide default approval policies. Do not describe these controls as general confinement of hostile code.
+Delegated runners can add session policies, set sub-agent cost budgets and manage user agents. Added policy state can affect another policy and bypass an approval; this remains an accepted risk. Connected accounts are Omnigent's MCP registry under Omnigent's own policies as they are, with no generated default approval policy ([ADR 0008](../decisions/0008-connected-accounts-omnigent-mcp-registry.md)). Omnigent refuses a delegated runner's token only under `/auth` and `/oauth`, so a runner can also list the MCP catalog and disconnect or replace one of the owner's MCP logins, never read one; the owner accepted this with the rest of an agent's reach on its own computer (decision D44), and the computer route blocks none of those endpoints. Do not describe these controls as general confinement of hostile code.
 
 ## Rotation and logging
 
