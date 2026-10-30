@@ -24,8 +24,9 @@ Flow: Settings → MCP's connect (Omnigent's redirect with PKCE, the provider's 
 callback); the login only as ciphertext through the key service, in the database and its
 replica; a session with the service selected; calls from the computer (the allowlist, a refresh
 that rotates the tokens); a canary scan of the computer, of exactly what a checkpoint of it would
-hold, and of every container's log: no MCP login anywhere; disconnect; the next call from the
-computer fails at once; the record gone from the replica.
+hold, and of every container's log: no MCP login anywhere; a provider that forgets its tokens
+marks the login "Reconnect needed" (Omnigent's F1); disconnect; the next call from the computer
+fails at once; the record gone from the replica.
 
 Run from the repository root, after building the images and installing the worker's packages:
 
@@ -449,7 +450,7 @@ def stack() -> Iterator[Stack]:
 
 #: The login as Omnigent's own store holds it: read in the server container with the key
 #: service, so the test knows the values to look for everywhere else. ``expire`` makes the next
-#: use refresh it, as an access token near its end does.
+#: use refresh it, as an access token near its end does; ``extend`` makes it look current.
 LOGIN = r"""
 import json, sys, time
 from omnigent.stores.credential_store import build_secret_cipher
@@ -460,9 +461,10 @@ conn = store.get("owner", "mcp:tracker", with_secret=True)
 if conn is None:
     print(json.dumps({"connected": False}))
     raise SystemExit
-if given.get("expire"):
+if given.get("expire") or given.get("extend"):
+    expires_at = 0 if given.get("expire") else time.time() + 3600
     assert store.update_secret("owner", "mcp:tracker", secret=conn.secret,
-                               metadata={"expires_at": 0})
+                               metadata={"expires_at": expires_at})
 print(json.dumps({"connected": True, "access": conn.secret["access_token"],
                   "refresh": conn.secret.get("refresh_token")}))
 """
@@ -757,6 +759,31 @@ def test_connect_call_from_a_computer_and_disconnect(stack: Stack) -> None:
     ks_log = _docker("logs", f"{PREFIX}-key-service", check=False)
     ks_text = ks_log.stdout + ks_log.stderr
     assert "encrypt" in ks_text and "decrypt" in ks_text
+
+    # ── F1: a provider that no longer accepts the login marks it "Reconnect needed". ──
+    # The access token looks current, then the provider forgets every token it issued (as a
+    # revocation on its site would): the computer's next call gets a 401, which marks the login,
+    # and the refresh the mark asks for is refused too. Nothing is replayed.
+    stack.server_python(LOGIN, {"extend": True}, *KEY_SERVICE_ENV)
+    _docker("restart", f"{PREFIX}-demo")
+    _until(
+        "the demo service after its restart",
+        lambda: httpx.get(f"{stack.demo_url}/health", verify=False, timeout=5).status_code == 200,
+    )
+    rejected = stack.computer_python(
+        RUNNER_CALLS,
+        {
+            "server": "http://server:8000",
+            "token": runner,
+            "session": session,
+            "calls": [["tracker__whoami", {}]],
+        },
+    )
+    assert "reconnect" in rejected["results"][0]["text"].lower(), rejected["results"][0]["text"][
+        :200
+    ]
+    (entry,) = client.get("/v1/mcp-registry/services").json()["data"]
+    assert entry["connected"] is True and entry["needs_reconnect"] is True, entry
 
     # ── Disconnect: durable at once; the next call from the computer fails at once. ──
     gone = client.delete("/v1/mcp-registry/services/tracker/connection")

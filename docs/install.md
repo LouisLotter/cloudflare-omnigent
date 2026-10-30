@@ -116,7 +116,7 @@ node scripts/bootstrap/bootstrap.ts services add github
 3. It ends with "Ready" and the link to Omnigent's **Settings → MCP**. There, click **Connect** next to the service and sign in at the service. **Test connection** lists the tools it offers.
 4. In a new conversation, turn the service on in the **MCPs** picker above the message box. Your choice is remembered for the next conversation.
 
-To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
+If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
 
 ## Updating your installation
 

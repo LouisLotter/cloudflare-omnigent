@@ -16,7 +16,7 @@ The earlier plan built connected accounts on the platform: a Worker connection s
 
 **Approvals.** Writes go through Omnigent's policies as they are. No default approval policy is generated, and manifests carry no read/write split for policy purposes. An ask rule can be added in Omnigent later. The approval-bypass risk ADR 0004 records for policies added by runner tokens is unchanged.
 
-**Disconnect** deletes the login; the next call fails at once, and a call already authorized may finish. It does not revoke the grant at the provider.
+**Disconnect** deletes the login; the next call fails at once, and a call already authorized may finish. It does not revoke the grant at the provider. A login the provider rejects shows "Reconnect needed" (above).
 
 ## Alternatives and consequences
 
@@ -25,7 +25,7 @@ The platform connection service would have given the same guarantee to computers
 Consequences:
 - A service the installation turns on, or a change to it, restarts the server once.
 - A tool a service adds later stays hidden until its manifest lists it.
-- Version one has no OAuth discovery or dynamic client registration, no refresh after a provider's 401, and "connected" only means that a record exists; a dead login shows "Reconnect" only with the fork change that adds it.
+- Version one has no OAuth discovery or dynamic client registration. A login the provider rejects is marked rather than silently kept: a 401 to its access token, or `invalid_grant` when it is refreshed, makes Settings → MCP and the picker show "Reconnect needed"; a marked login refreshes before its next use, and nothing is replayed. A fresh connect clears the mark (Omnigent's F1, in the pinned build `afb809aa6`).
 - Code on a computer holds a runner's delegated owner token, which Omnigent refuses only under `/auth` and `/oauth`: it can list the catalog and disconnect or replace one of the owner's logins, never read one. The owner accepted this with the rest of an agent's reach on its own computer (decision D44, 30 October 2026): what must not leak are the logins and keys shared with Omnigent, and none of these calls returns one. The computer route therefore blocks none of Omnigent's MCP account endpoints.
 - Whoever controls the Worker or the account can use the logins, as for GitHub's.
 

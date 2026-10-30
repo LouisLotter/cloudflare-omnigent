@@ -59,6 +59,7 @@ A saved session's 201 response is distinct from `runner_launch: started|failed|u
 | Omnigent lists no MCP services (exit 1) | The server restarted with the change, but the image turned MCP off: a prerequisite is missing (the key service's keys or the OAuth state secret). | The server's `boot` line says `mcp_registry: off: incomplete` and its `config.warning` line names what is missing. Run `bootstrap.ts update`, which adds them, then the step again. |
 | The server does not start with the change (exit 1) | The server exited 78 with a malformed choice or manifest, and the watchdog holds it until the configuration changes: Omnigent is down. | The `config.error` line names the setting, never its value. Run the `services remove <id>` the step names to undo the change. |
 | A call fails with "Connect this MCP account" | The account is not connected, or it was disconnected. | Settings → MCP, **Connect**. |
+| Settings → MCP says "Reconnect needed" | The service rejected the saved sign-in (a 401, or a refresh it refused): access removed on its site, or expired. The next call tries a refresh first. | Settings → MCP, **Reconnect**. |
 | Settings → MCP says the registry is not configured | No service is on, or the server started without the change. | `bootstrap.ts services` lists what is on; `status --logs` shows the server's status lines. |
 
 ## Evidence to collect

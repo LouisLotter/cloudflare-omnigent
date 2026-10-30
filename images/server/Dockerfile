@@ -12,7 +12,10 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned `cfo/integration`
 #     commit, which the image carries: /opt/cfo/build.json, the image labels, and the
-#     entrypoint's GET /status (`build`) and boot log line. 3d7f7d08c (28 Oct 2026, WP3.24) adds a
+#     entrypoint's GET /status (`build`) and boot log line. afb809aa6 (30 Oct 2026, WP5.11) adds
+#     F1 to 3d7f7d08c: a provider's 401 or a refresh's invalid_grant marks an MCP login, which
+#     Settings and the picker show as "Reconnect needed" and which refreshes before its next
+#     use. 3d7f7d08c (28 Oct 2026, WP3.24) adds a
 #     Codex policy hook that fails closed (UC-110), Claude's renderer named in its hook settings
 #     (UC-107), certifi 2026.10.19 in the lock and gh 2.103.3 to 3228d4de3 (26 Oct), which has the
 #     Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes 20 and 21,
@@ -34,7 +37,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=3d7f7d08c99344a5835516e059d5c15b8b78f37f
+ARG OMNIGENT_COMMIT=afb809aa62414e20142059a30b7576e41f595916
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
