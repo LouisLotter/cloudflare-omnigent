@@ -183,7 +183,9 @@ def test_publication_is_repeated_unchanged_until_answered(rig: Rig) -> None:
     sent = rig.workspace.of("credential_checkpoint")
     assert len(sent) >= 4
     assert len({m["operationId"] for m in sent[:4]}) == 1, "one operation ID for the repeats"
-    assert rig.sup.creds.pending() == []
+    # The fake workspace records the publication before its reply reaches the supervisor, which
+    # counts the bundle acknowledged only on that reply: wait for it rather than assert at once.
+    _until(lambda: rig.sup.creds.pending() == [], what="the acknowledgement recorded")
 
 
 def test_unpublished_changes_are_reported_pending(rig: Rig) -> None:
