@@ -882,6 +882,7 @@ describe("accountCloud: Wrangler with the installer's login", () => {
       id(102),
       "--worker-id",
       plan.platformWorker,
+      "--force",
     ]);
     await expect(cloud.deleteVersion(plan.platformWorker, "v1; rm")).rejects.toThrow(
       "not a Worker version's ID",
