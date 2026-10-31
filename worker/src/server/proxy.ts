@@ -4,14 +4,17 @@
 // Exact origins (design: "Browser origins (E4)", SEC-09). Omnigent's own origin check covers only
 // its WebSocket handlers, so the forwarding path also refuses an unsafe method (anything but GET,
 // HEAD and OPTIONS) or a WebSocket upgrade whose `Origin` is present and not this installation's
-// exact origin, `null` and same-site siblings included. Ingress refuses the same requests first
-// (WP2.1); this check keeps the forwarding path safe on its own.
+// exact origin, `null` and same-site siblings included. Omnigent's own non-browser marker,
+// `omnigent://internal`, which no browser sends, is admitted like no `Origin` at all: a personal
+// machine's host, its runners and Omnigent's CLI send it (WP3.43). Ingress refuses the same
+// requests first (WP2.1); this check keeps the forwarding path safe on its own.
 //
 // Everything else passes through unchanged in both directions, so Omnigent's own protections
 // reach the browser as Omnigent sets them: attachments with `Content-Disposition: attachment` and
 // `nosniff`, sandboxed previews, framing headers (RC-07's proxy part).
 
 import type { Admitted } from "../ingress/index.ts";
+import { OMNIGENT_INTERNAL_ORIGIN } from "../ingress/origin.ts";
 import { forwardToServer, type ServerBinding } from "./forward.ts";
 import { isSafeMethod, isUpgrade } from "./headers.ts";
 import { errorResponse, logEvent } from "./responses.ts";
@@ -25,10 +28,13 @@ export function needsOriginCheck(request: Request): boolean {
   return !isSafeMethod(request.method) || isUpgrade(request);
 }
 
-/** True when the request's `Origin` is present and is not exactly `origin`. */
+/**
+ * True when the request's `Origin` is present and is neither exactly `origin` nor Omnigent's own
+ * non-browser marker (`OMNIGENT_INTERNAL_ORIGIN`).
+ */
 export function hasForeignOrigin(request: Request, origin: string): boolean {
   const presented = request.headers.get("origin");
-  return presented !== null && presented !== origin;
+  return presented !== null && presented !== origin && presented !== OMNIGENT_INTERNAL_ORIGIN;
 }
 
 export async function proxyToOmnigent(admitted: Admitted, env: ProxyEnv): Promise<Response> {

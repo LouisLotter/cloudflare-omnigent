@@ -21,7 +21,8 @@
 //      (503 while the team's keys cannot be loaded at all);
 //   5. any identity other than the pinned owner, even when Access admitted it: 403;
 //   6. an unsafe method (anything but GET, HEAD and OPTIONS) or a WebSocket upgrade whose
-//      `Origin` is present and not this installation's exact origin, `null` included: 403.
+//      `Origin` is present and is neither this installation's exact origin nor Omnigent's own
+//      non-browser marker `omnigent://internal` (origin.ts), `null` included: 403.
 // Then it strips identity headers and the `CF_Authorization` cookie, and only that cookie.
 // A refusal answers with an `ErrorBody` that names no reason; the reason is logged, with the
 // path but never the query string, the assertion or the email.

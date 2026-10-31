@@ -249,6 +249,45 @@ describe("createIngress", () => {
     expect(a.request.headers.get("origin")).toBe(ORIGIN);
   });
 
+  it("admits a personal machine's host tunnel and runner calls with Omnigent's own Origin (WP3.43)", async () => {
+    // Omnigent's host and runners send `Origin: omnigent://internal` on their tunnel upgrades
+    // and REST calls; through the Cloudflare One Client they carry the owner's assertion.
+    const tunnel = await admitted(
+      harness(),
+      request("/v1/hosts/0b7c6a4e-2f7e-4d4e-9a55-1f0c3e2d1a10/tunnel", {
+        headers: {
+          "cf-access-jwt-assertion": genuine,
+          upgrade: "websocket",
+          origin: "omnigent://internal",
+          authorization: "Bearer omnigent-session-for-the-test",
+        },
+      }),
+    );
+    expect(tunnel.request.headers.get("upgrade")).toBe("websocket");
+    // Omnigent's own bearer passes on; only Access's identity is stripped.
+    expect(tunnel.request.headers.get("authorization")).toBe(
+      "Bearer omnigent-session-for-the-test",
+    );
+    expect(tunnel.request.headers.get("cf-access-jwt-assertion")).toBeNull();
+    const mint = await admitted(
+      harness(),
+      request("/v1/runners/token", {
+        method: "POST",
+        body: "{}",
+        headers: { "cf-access-jwt-assertion": genuine, origin: "omnigent://internal" },
+      }),
+    );
+    expect(mint.request.method).toBe("POST");
+    // Without the owner's assertion the marker opens nothing.
+    const h = harness();
+    const anonymous = await h.admit(
+      request("/v1/hosts/x/tunnel", {
+        headers: { upgrade: "websocket", origin: "omnigent://internal" },
+      }),
+    );
+    expect(anonymous.ok ? "ok" : anonymous.reason).toBe("missing_assertion");
+  });
+
   it("derives one session ID per Access session", async () => {
     const h = harness();
     const id = async (token: string) =>

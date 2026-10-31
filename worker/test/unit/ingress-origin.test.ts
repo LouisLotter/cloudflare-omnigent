@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { originAllowed } from "../../src/ingress/origin.ts";
+import { OMNIGENT_INTERNAL_ORIGIN, originAllowed } from "../../src/ingress/origin.ts";
 
 const ORIGIN = "https://cfo.example.com";
 const req = (method: string, headers: Record<string, string> = {}) =>
@@ -55,11 +55,42 @@ describe("originAllowed", () => {
     expect(originAllowed(req("GET", { upgrade: "h2c", origin: "null" }), ORIGIN)).toBe(true);
   });
 
-  it("property: an unsafe request with an Origin passes exactly when it is this origin", () => {
+  it("allows Omnigent's own non-browser marker, exactly, on unsafe methods and upgrades (WP3.43)", () => {
+    // A personal machine's host tunnel, its runners' tunnels and REST calls, and Omnigent's SDK.
+    expect(OMNIGENT_INTERNAL_ORIGIN).toBe("omnigent://internal");
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      expect(originAllowed(req(method, { origin: OMNIGENT_INTERNAL_ORIGIN }), ORIGIN)).toBe(true);
+    }
+    expect(
+      originAllowed(req("GET", { upgrade: "websocket", origin: OMNIGENT_INTERNAL_ORIGIN }), ORIGIN),
+    ).toBe(true);
+    // Only the exact marker: no other spelling, scheme or host passes.
+    for (const origin of [
+      "omnigent://internal/",
+      "omnigent://Internal",
+      "OMNIGENT://internal",
+      "omnigent://internal.attacker.example",
+      "omnigent://attacker",
+      "omnigent:internal",
+      "https://internal",
+    ]) {
+      expect(originAllowed(req("POST", { origin }), ORIGIN), origin).toBe(false);
+      expect(originAllowed(req("GET", { upgrade: "websocket", origin }), ORIGIN), origin).toBe(
+        false,
+      );
+    }
+  });
+
+  it("property: an unsafe request with an Origin passes exactly when it is this origin or the marker", () => {
     fc.assert(
       fc.property(
         fc.constantFrom("POST", "PUT", "PATCH", "DELETE"),
-        fc.oneof(fc.constant(ORIGIN), fc.webUrl(), fc.string()),
+        fc.oneof(
+          fc.constant(ORIGIN),
+          fc.constant(OMNIGENT_INTERNAL_ORIGIN),
+          fc.webUrl(),
+          fc.string(),
+        ),
         (method, origin) => {
           let request: Request;
           try {
@@ -67,7 +98,10 @@ describe("originAllowed", () => {
           } catch {
             return; // not a valid header value
           }
-          expect(originAllowed(request, ORIGIN)).toBe(request.headers.get("origin") === ORIGIN);
+          const sent = request.headers.get("origin");
+          expect(originAllowed(request, ORIGIN)).toBe(
+            sent === ORIGIN || sent === OMNIGENT_INTERNAL_ORIGIN,
+          );
         },
       ),
     );
