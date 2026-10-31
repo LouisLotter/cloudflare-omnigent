@@ -12,7 +12,12 @@
 // An update's rollback (WP3.41) deploys an earlier version of each Worker again, as it was, with
 // `cf workers deployments create`; nothing else ever deploys a version other than the newest.
 //
-// What it never does: change an Access application, create or change a policy or service token;
+// The devices step (WP3.43, cfDevicesApi) is the one exception to "never changes Access": it
+// turns on Cloudflare One Client authentication on the application the bootstrap created, sets
+// the organization's client session, creates or restores the owner-only device enrollment
+// application, and puts the default device profile's split tunnel in include mode (devices.ts).
+//
+// What it never does otherwise: change an Access application, create or change a policy or service token;
 // send a request to the installation's hostname; create a Worker by a secret change; delete or
 // empty an R2 bucket. Outside the deploys it creates only a missing R2 bucket of the plan; the
 // installation's own R2 user API tokens (r2-token.ts, through `cf user tokens`), which it also
@@ -48,6 +53,7 @@ import {
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "./access-app.ts";
+import type { DevicesApi } from "./devices.ts";
 import { type BootstrapCloud, VersionNotDeleted, type WorkerIdentity } from "./machine.ts";
 import type { PreflightApi } from "./preflight.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
@@ -699,6 +705,69 @@ export function cfAccessApi(run: Runner): AccessApi {
       throw new Error(
         `cf zero-trust access applications delete failed: ${diagnostic(result.stderr)}`,
       );
+    },
+  };
+}
+
+/** A cf answer that must be an object, or an error naming the command only. */
+function cfObject(run: Runner, args: readonly string[]): Record<string, unknown> {
+  const answer = accessCf(run, args);
+  if (answer === null || typeof answer !== "object" || Array.isArray(answer)) {
+    throw new Error(`cf ${args.slice(0, 4).join(" ")} answered without an object`);
+  }
+  return answer as Record<string, unknown>;
+}
+
+/**
+ * The devices step's Cloudflare (WP3.43, devices.ts) through the installer's `cf` login: the
+ * Access applications as cfAccessApi reads and creates them, plus the full-object updates of
+ * an application and of the Zero Trust organization (PUT), and the default device profile's
+ * split tunnel (a PATCH of that field alone). Bodies travel as `--body` JSON, which holds the
+ * owner's address in an enrollment policy and nothing secret; answers are captured, never shown.
+ */
+export function cfDevicesApi(run: Runner): DevicesApi {
+  const access = cfAccessApi(run);
+  return {
+    teamDomain: () => access.teamDomain(),
+    organization: () => cfObject(run, ["zero-trust", "organization", "get"]),
+    updateOrganization: (body) => {
+      accessCf(run, ["zero-trust", "organization", "update", "--body", JSON.stringify(body)]);
+    },
+    apps: () => access.apps(),
+    app: (id) => access.app(id),
+    createApp: (body) => access.create(body),
+    updateApp: (id, body) => {
+      accessCf(run, [
+        "zero-trust",
+        "access",
+        "applications",
+        "update",
+        id,
+        "--body",
+        JSON.stringify(body),
+      ]);
+    },
+    identityProviders: () => access.identityProviders(),
+    defaultProfile: () => cfObject(run, ["zero-trust", "devices", "profiles", "default", "get"]),
+    updateDefaultProfile: (patch) => {
+      accessCf(run, [
+        "zero-trust",
+        "devices",
+        "profiles",
+        "default",
+        "update",
+        "--body",
+        JSON.stringify(patch),
+      ]);
+    },
+    // The listing holds the default profile too.
+    customProfiles: () => {
+      const listed = accessCf(run, ["zero-trust", "devices", "profiles", "custom", "list"]);
+      if (!Array.isArray(listed)) {
+        throw new Error("cf zero-trust devices profiles custom list answered no list");
+      }
+      return listed.filter((p: unknown) => (p as { default?: unknown } | null)?.default !== true)
+        .length;
     },
   };
 }

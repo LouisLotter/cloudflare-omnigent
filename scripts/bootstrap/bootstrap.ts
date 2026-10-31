@@ -26,6 +26,18 @@
 //       [--owner-email <address>] [--no-verify] [--rollback]
 //   node scripts/bootstrap/bootstrap.ts services [add <id> [--origin <url>] [--replace] |
 //       remove <id>] [--platform-worker <name> | --state <file>]
+//   node scripts/bootstrap/bootstrap.ts devices [--platform-worker <name> | --state <file>]
+//       [--owner-email <address>] [--client-session-days 30]
+//
+// `devices` lets the owner's personal machines in as Omnigent hosts through the Cloudflare One
+// Client (WP3.43, devices.ts and devices-command.ts; owner decisions D47, D48): it turns on
+// Cloudflare One Client authentication for this installation's Access application only, sets the
+// organization's client session (30 days unless one is set already or asked for, at most 90) and
+// its 401 for command-line tools, makes device enrollment owner-only (creating it with the
+// owner's address, given with --owner-email), and puts the default device profile's split tunnel
+// in include mode with the hostname and the team's sign-in domain. Each is read first and changed
+// only when it differs. Then each machine runs scripts/host/omnigent-host.sh setup. Exit status:
+// 0 ready; 1 an error or a refusal (the person's step is named).
 //
 // `services` turns on or off the MCP services the server image ships (WP5.10, services.ts and
 // services-command.ts): Omnigent's own MCP registry, whose Settings → MCP page then connects the
@@ -161,6 +173,8 @@ import {
   soleAccount,
   workerInstallation,
 } from "./cloud.ts";
+import { devicesStatus } from "./devices.ts";
+import { devicesCommand } from "./devices-command.ts";
 import { decide, parseLogs } from "./events.ts";
 import { githubAppCommand } from "./github-app-command.ts";
 import {
@@ -658,6 +672,8 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   for (const line of servicesListing(shippedManifests(ROOT), journal.mcpServices)) {
     console.log(`  ${line}`);
   }
+  // The owner's personal devices (WP3.43).
+  for (const line of devicesStatus(journal.devices)) console.log(line);
   // An update's read-only window and the restore points (WP3.41).
   const window = journal.window;
   console.log(
@@ -735,6 +751,7 @@ async function main(): Promise<number> {
       "no-open": { type: "boolean" },
       origin: { type: "string" },
       rollback: { type: "boolean" },
+      "client-session-days": { type: "string" },
     },
   });
   // Only `services` takes words after the command (its action and the service).
@@ -789,9 +806,16 @@ async function main(): Promise<number> {
         ...(values.origin === undefined ? {} : { origin: values.origin }),
         replace: values.replace === true,
       });
+    case "devices":
+      return devicesCommand(statePath(), {
+        ...(values["owner-email"] === undefined ? {} : { ownerEmail: values["owner-email"] }),
+        ...(values["client-session-days"] === undefined
+          ? {}
+          : { sessionDays: values["client-session-days"] }),
+      });
     default:
       throw new Error(
-        "usage: bootstrap.ts install|plan|run|update|status|buckets|remove-r2-token|remove-access|github-app|services (see the header comment)",
+        "usage: bootstrap.ts install|plan|run|update|status|buckets|remove-r2-token|remove-access|github-app|services|devices (see the header comment)",
       );
   }
 }

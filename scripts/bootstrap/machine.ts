@@ -63,6 +63,7 @@ import {
   type RecordedAccessApp,
   type RecordedLoginMethod,
 } from "./access-app.ts";
+import type { DevicesRecord } from "./devices.ts";
 import {
   decide,
   FRESH_MS,
@@ -242,6 +243,8 @@ export interface Journal {
   readonly restorePoints?: readonly RestorePointRecord[];
   /** The MCP services this installation turned on (WP5.10, services.ts). */
   readonly mcpServices?: McpServicesRecord;
+  /** The owner's personal devices, through the Cloudflare One Client (WP3.43, devices.ts). */
+  readonly devices?: DevicesRecord;
 }
 
 /**
@@ -270,9 +273,10 @@ export interface BootstrapState {
   /**
    * 2 when the plan records its bucket tag (D33), 1 for a plan from before it, 3 once the journal
    * records WP3.34's fields, 4 once it records an update, 5 once it records the MCP services, 6
-   * once it records an update's window or restore points (state.ts, stateVersionFor).
+   * once it records an update's window or restore points, 7 once it records the devices step
+   * (state.ts, stateVersionFor).
    */
-  readonly stateVersion: 1 | 2 | 3 | 4 | 5 | 6;
+  readonly stateVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   readonly installation: Installation;
   readonly journal: Journal;
 }

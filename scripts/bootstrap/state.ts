@@ -15,6 +15,8 @@
 // bootstrap from before WP3.34 refuses it ("unknown version") rather than drop those fields
 // (Codex WP3.34 r2-1). One that records the MCP services (WP5.10) is version 5, for the same
 // reason, and one that records an update's read-only window or restore points (WP3.41) version 6.
+// One that records the devices step (WP3.43, `bootstrap.ts devices`) is version 7: a bootstrap
+// from before it would drop which enrollment application it created and the saved split tunnel.
 
 import {
   closeSync,
@@ -30,6 +32,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
+import type { DevicesRecord } from "./devices.ts";
 import type { BootstrapState, Journal, McpServicesRecord, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
 import type { UpdateRecord } from "./update.ts";
@@ -251,6 +254,7 @@ function parseJournal(value: unknown): Journal {
   if (j.mcpServices !== undefined) journal.mcpServices = parseMcpServices(j.mcpServices);
   if (j.window !== undefined) journal.window = parseWindow(j.window);
   if (j.restorePoints !== undefined) journal.restorePoints = parseRestorePoints(j.restorePoints);
+  if (j.devices !== undefined) journal.devices = parseDevices(j.devices);
   if (j.r2Token !== undefined) {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
@@ -439,6 +443,67 @@ function parseRestorePoints(value: unknown): RestorePointRecord[] {
   });
 }
 
+/** A split tunnel route as Cloudflare lists it: an address or a host, and a description. */
+function parseRoute(value: unknown, where: string): Record<string, string> {
+  const r = object(value, where);
+  const route: Record<string, string> = {};
+  for (const [key, field] of Object.entries(r)) {
+    if (typeof field !== "string") throw new Error(`the state file's ${where}.${key} is not text`);
+    route[key] = field;
+  }
+  return route;
+}
+
+/** The devices step's record (WP3.43, devices.ts). Names, IDs, routes and times; no address. */
+function parseDevices(value: unknown): DevicesRecord {
+  const where = "journal.devices";
+  const d = object(value, where);
+  const out: Record<string, unknown> = optionalTimes(
+    d,
+    [
+      "appStartedAt",
+      "appChangedAt",
+      "organizationStartedAt",
+      "organizationChangedAt",
+      "enrollmentStartedAt",
+      "enrollmentChangedAt",
+      "splitTunnelStartedAt",
+      "splitTunnelChangedAt",
+      "checkedAt",
+    ],
+    where,
+  );
+  if (d.sessionDuration !== undefined) {
+    const duration = str(d, "sessionDuration", where);
+    if (!/^[0-9]+[mh]$/.test(duration)) {
+      throw new Error(`the state file's ${where}.sessionDuration is not a duration`);
+    }
+    out.sessionDuration = duration;
+  }
+  if (d.enrollment !== undefined) {
+    const ew = `${where}.enrollment`;
+    const e = object(d.enrollment, ew);
+    out.enrollment = {
+      name: str(e, "name", ew),
+      ...(e.id === undefined ? {} : { id: str(e, "id", ew) }),
+      ...optionalTimes(e, ["createStartedAt", "createdAt"], ew),
+    };
+  }
+  if (d.previousSplitTunnel !== undefined) {
+    const pw = `${where}.previousSplitTunnel`;
+    const p = object(d.previousSplitTunnel, pw);
+    if (p.mode !== "exclude" || !Array.isArray(p.entries)) {
+      throw new Error(`the state file's ${pw} is malformed`);
+    }
+    out.previousSplitTunnel = {
+      mode: "exclude",
+      entries: p.entries.map((entry: unknown) => parseRoute(entry, `${pw}.entries`)),
+      savedAt: requiredTime(p, "savedAt", pw),
+    };
+  }
+  return out as DevicesRecord;
+}
+
 const SERVICE_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const REVISION = /^[0-9a-f]{16,64}$/;
 
@@ -496,12 +561,15 @@ function parseMcpServices(value: unknown): McpServicesRecord {
  * (WP5.10, `bootstrap.ts services`): a bootstrap from before it would drop which services are on.
  * Version 6 is either, with a journal that records an update's read-only window or restore
  * points (WP3.41): a bootstrap from before it would drop an open window and deploy over it.
+ * Version 7 is either, with a journal that records the devices step (WP3.43): a bootstrap from
+ * before it would drop the enrollment application it created and the saved split tunnel.
  */
 export function stateVersionFor(
   plan: Pick<Installation, "bucketTag">,
   journal: Readonly<Record<string, unknown>> = {},
-): 1 | 2 | 3 | 4 | 5 | 6 {
+): 1 | 2 | 3 | 4 | 5 | 6 | 7 {
   const j = journal as Partial<Journal>;
+  if (j.devices !== undefined) return 7;
   if (j.window !== undefined || j.restorePoints !== undefined) return 6;
   if ((journal as Partial<Journal>).mcpServices !== undefined) return 5;
   // The last update's record (WP3.35), which a bootstrap from before it would drop.
@@ -519,13 +587,13 @@ export function parseState(text: string): BootstrapState {
     throw new Error("the state file is not JSON");
   }
   const o = object(raw, "top level");
-  if (![1, 2, 3, 4, 5, 6].includes(o.stateVersion as number)) {
+  if (![1, 2, 3, 4, 5, 6, 7].includes(o.stateVersion as number)) {
     throw new Error("the state file has an unknown version");
   }
   const installation = parseInstallation(o.installation);
-  // Versions 3 to 6 hold a plan with or without a tag; 1 and 2 as their plans say.
+  // Versions 3 to 7 hold a plan with or without a tag; 1 and 2 as their plans say.
   if (
-    ![3, 4, 5, 6].includes(o.stateVersion as number) &&
+    ![3, 4, 5, 6, 7].includes(o.stateVersion as number) &&
     stateVersionFor(installation) !== o.stateVersion
   ) {
     throw new Error(
