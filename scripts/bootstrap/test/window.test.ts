@@ -1293,7 +1293,7 @@ describe("the window's pieces", () => {
     }
     // A bootstrap from before WP3.41 never reads it: it is version 6.
     expect(() =>
-      parseState(state({ window }).replace('"stateVersion":6', '"stateVersion":7')),
+      parseState(state({ window }).replace('"stateVersion":6', '"stateVersion":8')),
     ).toThrow(/unknown version/);
   });
 

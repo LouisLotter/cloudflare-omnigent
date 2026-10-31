@@ -5,7 +5,11 @@
 //     service tokens or policies; besides its deploys it creates only a missing R2 bucket of the
 //     plan, the installation's own R2 user API token, which it may also delete (WP3.25), and the
 //     hostname's owner-only Access application and the one-time PIN login method (WP3.31), only
-//     through cloud.ts's cfAccessApi, which may also delete the application for removal.
+//     through cloud.ts's cfAccessApi, which may also delete the application for removal;
+//   - the one exception, the devices step (WP3.43), changes exactly three things through
+//     cloud.ts's cfDevicesApi: the installation's application (a full-object update), the Zero
+//     Trust organization (a full-object update) and the default device profile's split tunnel,
+//     and creates the owner-only device enrollment application through cfAccessApi's create.
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -243,6 +247,8 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "access.ts",
       "bootstrap.ts",
       "cloud.ts",
+      "devices-command.ts",
+      "devices.ts",
       "events.ts",
       "github-app-command.ts",
       "github-app.ts",
@@ -301,6 +307,10 @@ describe("the bootstrap never talks to the installation, changes Access or makes
         /"user",\s*"tokens",\s*"(create|roll|delete)"/g,
         /"zero-trust",\s*"access",\s*"applications",\s*"(create|delete)"/g,
         /"zero-trust",\s*"identity-providers",\s*"create"/g,
+        // The devices step's three updates (WP3.43), in cloud.ts's cfDevicesApi only.
+        /"zero-trust",\s*"organization",\s*"update"/g,
+        /"zero-trust",\s*"access",\s*"applications",\s*"update"/g,
+        /"zero-trust",\s*"devices",\s*"profiles",\s*"default",\s*"update"/g,
         // The installer's own command (bootstrap.ts update, WP3.35), not a call of a CLI.
         /case "update":/g,
       ];
@@ -337,5 +347,34 @@ describe("the bootstrap never talks to the installation, changes Access or makes
     expect(app.match(/api\.create\(/g)).toHaveLength(1);
     expect(app).toMatch(/api\.create\(\s*ownerOnlyAppBody\(/);
     expect(app).not.toMatch(/api\.remove\(/);
+  });
+
+  it("changes Access for devices only in cloud.ts's cfDevicesApi, as devices.ts asks (WP3.43)", () => {
+    const cloud = sources.find(([f]) => f === "cloud.ts")?.[1] ?? "";
+    for (const update of [
+      /"organization",\s*"update"/g,
+      /"applications",\s*"update"/g,
+      /"default",\s*"update"/g,
+    ]) {
+      expect(cloud.match(update), String(update)).toHaveLength(1);
+    }
+    const devices = (sources.find(([f]) => f === "devices.ts")?.[1] ?? "").replace(
+      /^\s*\/\/.*$/gm,
+      "",
+    );
+    // The installation's application: the flag, on the whole object Cloudflare reported.
+    expect(devices).toMatch(
+      /api\.updateApp\(recordedId, \{ \.\.\.writableApp\(app\), allow_authenticate_via_warp: true \}\)/,
+    );
+    // The enrollment application this step created: the whole object, its policies owner-only.
+    expect(devices).toMatch(
+      /api\.updateApp\(id, \{ \.\.\.writableApp\(app\), \.\.\.ownerOnlyBody\(email\) \}\)/,
+    );
+    expect(devices.match(/api\.updateApp\(/g)).toHaveLength(2);
+    expect(devices.match(/api\.createApp\(/g)).toHaveLength(1);
+    // The split tunnel alone; the organization whole, with the org-wide default as it was read.
+    expect(devices).toMatch(/api\.updateDefaultProfile\(\{ include: /);
+    expect(devices).not.toMatch(/allow_authenticate_via_warp: true,?\s*\n?\s*warp_auth/);
+    expect(devices).not.toMatch(/service_token|non_identity|bypass/);
   });
 });

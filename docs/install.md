@@ -118,6 +118,10 @@ node scripts/bootstrap/bootstrap.ts services add github
 
 If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
 
+## Your own machines as hosts (optional)
+
+Besides the cloud computers, your own Linux machines can run agents as hosts of the same installation, reached through the Cloudflare One Client and still behind your Access sign-in: run `bootstrap.ts devices` once, then `scripts/host/omnigent-host.sh setup` on each machine. See [Connect your own machine as a host](operations/personal-hosts.md).
+
 ## Updating your installation
 
 When a new release comes out, get it, with the tools it pins, and run the update, in the folder you installed from:
