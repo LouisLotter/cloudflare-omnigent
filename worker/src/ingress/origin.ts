@@ -7,10 +7,12 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * The `Origin` Omnigent's own non-browser clients announce themselves with (Omnigent's
  * `OMNIGENT_INTERNAL_WS_ORIGIN`): its host's tunnel, its runners' tunnels and REST calls, and
  * its Python SDK, which a personal machine connected as a host sends through Access (WP3.43).
- * Browsers never send it: `Origin` is a header page scripts cannot set, and a browser writes
- * its document's own origin, which for a non-special scheme such as `omnigent:` is `null`. So it
- * proves nothing about the caller, who must still pass Access as the owner; it only says the
- * request is not a browser's cross-site request. Omnigent's own origin policy admits it too.
+ * Ordinary web content cannot send it: `Origin` is a header page scripts cannot set, and a
+ * browser writes its document's own origin, which for a non-special scheme such as `omnigent:`
+ * is `null`. A privileged browser extension can rewrite `Origin`, but could already write this
+ * installation's own. So it proves nothing about the caller, who must still pass Access as the
+ * owner; it only says the request is not a web page's cross-site request. Omnigent's own origin
+ * policy admits it too.
  */
 export const OMNIGENT_INTERNAL_ORIGIN = "omnigent://internal";
 

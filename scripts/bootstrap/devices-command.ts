@@ -1,4 +1,4 @@
-// `bootstrap.ts devices [--client-session-days <n>] [--owner-email <address>]` (WP3.43): wires
+// `bootstrap.ts devices [--client-session 30d] [--owner-email <address>]` (WP3.43): wires
 // the devices step (devices.ts) to the installation's state file, its locks and the installer's
 // `cf` login. The settings it changes are the account's (the Zero Trust organization and the
 // default device profile), so besides the installation's own locks it holds one for the
@@ -15,8 +15,8 @@ import { fileStateStore, locksDir, resourceLockPaths, workerLockPath } from "./s
 
 export interface DevicesCommandOptions {
   readonly ownerEmail?: string;
-  /** The client session in days, as given; undefined keeps one already set. */
-  readonly sessionDays?: string;
+  /** The client session as given (`30d`, `12h`, `15m`); undefined keeps one already set. */
+  readonly session?: string;
   /** For tests: the Cloudflare to use instead of the installer's cf login. */
   readonly api?: DevicesApi;
   readonly lockDir?: string;
@@ -32,13 +32,6 @@ export async function devicesCommand(
   path: string,
   options: DevicesCommandOptions,
 ): Promise<number> {
-  let days: number | undefined;
-  if (options.sessionDays !== undefined) {
-    if (!/^[0-9]+$/.test(options.sessionDays.trim())) {
-      throw new Error("--client-session-days takes a whole number of days, 1 to 90");
-    }
-    days = Number(options.sessionDays);
-  }
   const store = fileStateStore(path);
   const plan = store.load().installation;
   const releases: (() => void)[] = [];
@@ -55,7 +48,7 @@ export async function devicesCommand(
       plan,
       accessApp: store.load().journal.accessApp,
       ownerEmail: options.ownerEmail,
-      sessionDays: days,
+      session: options.session,
       recorded: () => store.load().journal.devices ?? {},
       record: (devices) => {
         const state = store.load();

@@ -17,11 +17,13 @@ import {
 } from "../access-app.ts";
 import { cfDevicesApi } from "../cloud.ts";
 import {
+  cloudflareDuration,
   type DevicesApi,
   type DevicesContext,
   type DevicesRecord,
   devicesNextSteps,
   devicesStatus,
+  durationMinutes,
   ensureDevices,
   sessionDuration,
   writableApp,
@@ -415,11 +417,26 @@ describe("ensureDevices: the owner's account as it is today", () => {
     const bad = await harness(await accountPlan({ ownerPin: "nope" }));
     await expect(bad.run()).rejects.toThrow("owner pin is malformed");
     const h = await harness();
-    for (const days of [0, 91, 1.5]) {
-      await expect(h.run({ sessionDays: days })).rejects.toThrow("1 to 90 days");
+    for (const session of ["0d", "91d", "2161h", "1.5d", "two", "30s", "", "0m"]) {
+      await expect(h.run({ session }), session).rejects.toThrow("at most 90 days");
     }
     expect(h.zt.calls).toEqual([]);
-    expect(sessionDuration(90)).toBe("2160h");
+    expect(sessionDuration("90d")).toBe("2160h");
+    expect(sessionDuration(" 15m ")).toBe("15m");
+    expect(sessionDuration("2h45m")).toBe("2h45m");
+    expect(sessionDuration("90m")).toBe("1h30m");
+    expect(sessionDuration("120s")).toBe("2m");
+  });
+
+  it("reads Cloudflare's duration forms, Go's included, as the same session", () => {
+    expect(durationMinutes("720h")).toBe(43_200);
+    expect(durationMinutes("720h0m0s")).toBe(43_200);
+    expect(durationMinutes("30d")).toBe(43_200);
+    expect(durationMinutes("2h45m")).toBe(165);
+    expect(durationMinutes("45m30s")).toBeUndefined();
+    expect(durationMinutes("1h-5m")).toBeUndefined();
+    expect(cloudflareDuration(0)).toBe("0m");
+    expect(cloudflareDuration(60)).toBe("1h");
   });
 });
 
@@ -536,11 +553,46 @@ describe("ensureDevices: the organization", () => {
     expect(h.lines.join("\n")).toContain(
       "keeping the organization's Cloudflare One Client session of 168h",
     );
-    const asked = await h.run({ sessionDays: 7 });
+    const asked = await h.run({ session: "7d" });
     expect(asked.changed).toEqual([]);
-    const longer = await h.run({ sessionDays: 60 });
+    const longer = await h.run({ session: "60d" });
     expect(longer.sessionDuration).toBe("1440h");
     expect(h.zt.organizationValue.warp_auth_session_duration).toBe("1440h");
+    // A short one, to see a lapse within a sitting, and back.
+    await h.run({ session: "15m" });
+    expect(h.zt.organizationValue.warp_auth_session_duration).toBe("15m");
+  });
+
+  it("takes Cloudflare's own spelling of a session as the same one, and keeps the record readable", async () => {
+    const h = await harness();
+    h.zt.organizationValue.warp_auth_session_duration = "2h45m0s";
+    h.zt.organizationValue.warp_auth_non_browser_401 = true;
+    const kept = await h.run();
+    expect(kept.sessionDuration).toBe("2h45m");
+    expect(h.zt.calls).not.toContain("updateOrganization");
+    // Cloudflare answers in Go's form after a write: still the session asked for.
+    const update = h.zt.updateOrganization;
+    h.zt.updateOrganization = (body) =>
+      update({
+        ...body,
+        warp_auth_session_duration: `${body.warp_auth_session_duration as string}0m0s`,
+      });
+    await h.run({ session: "30d" });
+    expect(h.zt.organizationValue.warp_auth_session_duration).toBe("720h0m0s");
+    await h.run();
+    expect(h.zt.calls.filter((c) => c === "updateOrganization")).toHaveLength(1);
+    const plan = await accountPlan();
+    const text = JSON.stringify({
+      ...freshState(plan),
+      stateVersion: 7,
+      journal: { devices: h.record },
+    });
+    expect(parseState(text).journal.devices?.sessionDuration).toBe("720h");
+    const odd = await harness();
+    odd.zt.organizationValue.warp_auth_session_duration = "forever";
+    await expect(odd.run()).rejects.toThrow('session is "forever"');
+    await odd.run({ session: "30d" });
+    expect(odd.zt.organizationValue.warp_auth_session_duration).toBe("720h");
   });
 
   it("says, and leaves, an organization that lets every application use the client", async () => {
@@ -730,16 +782,22 @@ describe("ensureDevices: the split tunnel", () => {
     expect(outcome.changed.at(-1)).toContain(`also sends ${HOST}`);
   });
 
-  it("keeps the first saved exclude list when a switch is retried", async () => {
+  it("keeps the first saved exclude list when a switch is retried, and never takes a profile with both lists as ready (Codex r1-6)", async () => {
     const h = await harness();
     h.zt.keepsExclude = true;
     await expect(h.run()).rejects.toThrow("not in include mode");
     const saved = h.record.previousSplitTunnel;
     expect(saved?.entries).toHaveLength(3);
+    // Run again with Cloudflare unchanged: both lists still there, so not ready.
+    await expect(h.run()).rejects.toThrow("not in include mode");
+    expect(h.record.checkedAt).toBeUndefined();
+    // Once Cloudflare drops the exclude list, the same run repairs it; the first copy is kept.
     h.zt.keepsExclude = false;
-    h.zt.profile = { ...h.zt.profile, include: [] };
     await h.run();
+    expect(h.zt.profile.exclude).toBeUndefined();
+    expect(hostsOf(h.zt.profile.include)).toEqual([HOST, TEAM]);
     expect(h.record.previousSplitTunnel).toEqual(saved);
+    expect(h.record.checkedAt).toBeDefined();
   });
 
   it("refuses a profile whose client cannot route a domain, and names the step on a 403", async () => {
@@ -878,7 +936,7 @@ describe("devicesCommand", () => {
       api: zt,
       lockDir: locks,
       ownerEmail: OWNER_EMAIL,
-      sessionDays: " 14 ",
+      session: "14d",
     });
     expect(code).toBe(0);
     const saved = store.load();
@@ -889,10 +947,21 @@ describe("devicesCommand", () => {
       join(locks, `${plan.accountId}.zero-trust-devices.lock`),
     );
 
+    // Run again: nothing to change, and it says so.
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      expect(await devicesCommand(path, { api: zt, lockDir: locks })).toBe(0);
+    } finally {
+      console.log = log;
+    }
+    expect(lines).toContain("bootstrap: every setting was in place already");
+
     // A person's step is a refusal; an argument out of form an error.
-    await expect(
-      devicesCommand(path, { api: zt, lockDir: locks, sessionDays: "two" }),
-    ).rejects.toThrow("whole number of days");
+    await expect(devicesCommand(path, { api: zt, lockDir: locks, session: "two" })).rejects.toThrow(
+      "at most 90 days",
+    );
     zt.organizationValue.warp_auth_non_browser_401 = false;
     zt.forbidden.add("updateOrganization");
     await expect(devicesCommand(path, { api: zt, lockDir: locks })).rejects.toBeInstanceOf(

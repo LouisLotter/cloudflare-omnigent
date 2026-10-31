@@ -5,9 +5,9 @@
 // its WebSocket handlers, so the forwarding path also refuses an unsafe method (anything but GET,
 // HEAD and OPTIONS) or a WebSocket upgrade whose `Origin` is present and not this installation's
 // exact origin, `null` and same-site siblings included. Omnigent's own non-browser marker,
-// `omnigent://internal`, which no browser sends, is admitted like no `Origin` at all: a personal
-// machine's host, its runners and Omnigent's CLI send it (WP3.43). Ingress refuses the same
-// requests first (WP2.1); this check keeps the forwarding path safe on its own.
+// `omnigent://internal`, which no web page can send, is admitted like no `Origin` at all: a
+// personal machine's host, its runners and Omnigent's CLI send it (WP3.43). Ingress refuses the
+// same requests first (WP2.1); this check keeps the forwarding path safe on its own.
 //
 // Everything else passes through unchanged in both directions, so Omnigent's own protections
 // reach the browser as Omnigent sets them: attachments with `Content-Disposition: attachment` and

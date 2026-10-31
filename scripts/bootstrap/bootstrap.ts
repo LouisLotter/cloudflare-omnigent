@@ -27,12 +27,13 @@
 //   node scripts/bootstrap/bootstrap.ts services [add <id> [--origin <url>] [--replace] |
 //       remove <id>] [--platform-worker <name> | --state <file>]
 //   node scripts/bootstrap/bootstrap.ts devices [--platform-worker <name> | --state <file>]
-//       [--owner-email <address>] [--client-session-days 30]
+//       [--owner-email <address>] [--client-session 30d]
 //
 // `devices` lets the owner's personal machines in as Omnigent hosts through the Cloudflare One
 // Client (WP3.43, devices.ts and devices-command.ts; owner decisions D47, D48): it turns on
 // Cloudflare One Client authentication for this installation's Access application only, sets the
-// organization's client session (30 days unless one is set already or asked for, at most 90) and
+// organization's client session (30 days unless one is set already or asked for with
+// --client-session, such as 30d, 12h or 15m, at most 90 days) and
 // its 401 for command-line tools, makes device enrollment owner-only (creating it with the
 // owner's address, given with --owner-email), and puts the default device profile's split tunnel
 // in include mode with the hostname and the team's sign-in domain. Each is read first and changed
@@ -751,7 +752,7 @@ async function main(): Promise<number> {
       "no-open": { type: "boolean" },
       origin: { type: "string" },
       rollback: { type: "boolean" },
-      "client-session-days": { type: "string" },
+      "client-session": { type: "string" },
     },
   });
   // Only `services` takes words after the command (its action and the service).
@@ -809,9 +810,7 @@ async function main(): Promise<number> {
     case "devices":
       return devicesCommand(statePath(), {
         ...(values["owner-email"] === undefined ? {} : { ownerEmail: values["owner-email"] }),
-        ...(values["client-session-days"] === undefined
-          ? {}
-          : { sessionDays: values["client-session-days"] }),
+        ...(values["client-session"] === undefined ? {} : { session: values["client-session"] }),
       });
     default:
       throw new Error(

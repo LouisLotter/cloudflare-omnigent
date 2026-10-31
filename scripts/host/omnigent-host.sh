@@ -15,13 +15,16 @@
 #      in the browser that opens) and connected; then that Access lets this machine through to
 #      Omnigent (the installation's `bootstrap.ts devices` step must have run);
 #   2. installs the Omnigent build the installation's images pin (images/computer/Dockerfile:
-#      the fork's commit, its uv.lock exported with hashes and installed with --require-hashes,
-#      and the images' certifi pin), side by side with any other Omnigent: its own virtual
-#      environment, data and configuration, under the command `omnigent-cfo`. It never touches
-#      another `omnigent` command, ~/.omnigent or an `omnigent-host.service`;
-#   3. signs that command line in to the installation: Omnigent asks for the owner's Omnigent
-#      username and password in this terminal and keeps its session in its own store. Nothing here
-#      reads, prints or keeps a password or a token;
+#      the fork's commit; its uv.lock exported with hashes, installed from wheels only with
+#      --require-hashes; Omnigent's own three packages built without build isolation, with the
+#      hash-pinned backends in build-requirements.txt and without the server's web UI; and the
+#      images' certifi pin), side by side with any other Omnigent: its own virtual environment,
+#      data and configuration, under the command `omnigent-cfo`. Each build is a directory named
+#      for everything that went into it, never changed once complete. It never touches another
+#      `omnigent` command, ~/.omnigent or an `omnigent-host.service`;
+#   3. signs that command line in to the installation, unless the installation accepts the one it
+#      has: Omnigent asks for the owner's Omnigent username and password in this terminal and keeps
+#      its session in its own store. Nothing here reads, prints or keeps a password or a token;
 #   4. installs `omnigent-cfo-host.service`, a systemd user service that runs Omnigent's host for
 #      https://<host> and restarts it whenever it stops (a reboot, a dropped connection, a lapsed
 #      client session), checks that the process it runs is the build installed in step 2, and
@@ -38,6 +41,9 @@ umask 077
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DOCKERFILE="$ROOT/images/computer/Dockerfile"
+BUILD_PINS="$ROOT/scripts/host/build-requirements.txt"
+# The way a build is made: a change here makes a new build directory.
+RECIPE=2
 NAME=omnigent-cfo
 UNIT=omnigent-cfo-host.service
 MARKER="# omnigent-cfo, written by cloudflare-omnigent's scripts/host/omnigent-host.sh"
@@ -95,6 +101,11 @@ read_pins() {
   [[ $REPO =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.git$ ]] || fail "could not read the Omnigent repository from $DOCKERFILE"
   [[ -n $COMMIT ]] || fail "could not read the pinned Omnigent commit from $DOCKERFILE"
   [[ -n $CERTIFI_PIN ]] || fail "could not read the certifi pin from $DOCKERFILE"
+  [[ -f $BUILD_PINS ]] || fail "run this from a checkout of cloudflare-omnigent: $BUILD_PINS is missing"
+  # Everything that goes into a build names it: the commit, the trust pin, the build backends
+  # and this recipe. A build directory is complete once and never changed afterwards.
+  BUILD_ID="$COMMIT-$({ printf '%s\n%s\n' "$RECIPE" "$CERTIFI_PIN"; cat "$BUILD_PINS"; } | sha256sum | cut -c1-12)"
+  BUILD="$CFO_HOME/venvs/$BUILD_ID"
 }
 
 # --- The installation ---------------------------------------------------------------------------
@@ -219,14 +230,13 @@ ensure_access() {
 
 # --- The pinned Omnigent, side by side ----------------------------------------------------------
 
-venv_commit() { [[ -f $CFO_HOME/venv/cfo-commit ]] && head -n1 "$CFO_HOME/venv/cfo-commit"; }
+# The build the `venv` link names, as its record says: its ID, or nothing.
+venv_build() { [[ -f $CFO_HOME/venv/cfo-build ]] && sed -n 's/^build=//p' "$CFO_HOME/venv/cfo-build"; }
 
 ensure_build() {
-  local venv="$CFO_HOME/venvs/$COMMIT" src="$CFO_HOME/src/$COMMIT" stage
-  if [[ -f $venv/cfo-commit && $(head -n1 "$venv/cfo-commit") == "$COMMIT" ]] &&
-    "$venv/bin/python" -I -c 'import omnigent.host.service_entry' >/dev/null 2>&1; then
-    BUILT=0
-  else
+  local src="$CFO_HOME/src/$COMMIT" stage
+  BUILT=0
+  if [[ ! -f $BUILD/cfo-build ]] || ! "$BUILD/bin/python" -I -c 'import omnigent.host.service_entry' >/dev/null 2>&1; then
     say "installing Omnigent ${COMMIT:0:12} from its lock file (a few minutes the first time)"
     if [[ ! -f $src/.cfo-fetched ]]; then
       rm -rf "$src"
@@ -237,33 +247,36 @@ ensure_build() {
       [[ $(git -C "$src" rev-parse HEAD) == "$COMMIT" ]] || fail "the fetched Omnigent is not commit $COMMIT"
       : >"$src/.cfo-fetched"
     fi
-    rm -rf "$venv"
+    rm -rf "$BUILD"
     stage=$(mktemp -d)
-    (cd "$src" && uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-editable -o "$stage/requirements.txt" >/dev/null) ||
+    # The lock's dependencies, without Omnigent's own packages (built below), with their hashes.
+    (cd "$src" && uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-emit-local --no-editable -o "$stage/requirements.txt" >/dev/null) ||
       fail "uv could not export Omnigent's locked dependencies"
     printf '%s\n' "$CERTIFI_PIN" >"$stage/trust-pins.txt"
-    uv venv -q --python 3.12 "$venv" || fail "uv could not make a Python 3.12 environment"
-    uv pip install -q --python "$venv/bin/python" --require-hashes -r "$stage/requirements.txt" ||
+    uv venv -q --python 3.12 "$BUILD" || fail "uv could not make a Python 3.12 environment"
+    uv pip install -q --python "$BUILD/bin/python" --require-hashes --only-binary :all: -r "$stage/requirements.txt" ||
       fail "installing Omnigent's locked dependencies failed (above)"
-    uv pip install -q --python "$venv/bin/python" --no-deps "$src" "$src/sdks/python-client" "$src/sdks/ui" ||
-      fail "installing Omnigent failed (above)"
-    uv pip install -q --python "$venv/bin/python" --no-deps --require-hashes -r "$stage/trust-pins.txt" ||
+    uv pip install -q --python "$BUILD/bin/python" --require-hashes --only-binary :all: -r "$BUILD_PINS" ||
+      fail "installing the pinned build backends failed (above)"
+    # Omnigent's own packages, from the fetched commit, with those backends and no other download;
+    # a host has no use for the server's web UI, whose build needs Node.
+    OMNIGENT_SKIP_WEB_UI=true uv pip install -q --python "$BUILD/bin/python" --no-deps --no-build-isolation \
+      "$src" "$src/sdks/python-client" "$src/sdks/ui" || fail "installing Omnigent failed (above)"
+    uv pip install -q --python "$BUILD/bin/python" --no-deps --require-hashes --only-binary :all: -r "$stage/trust-pins.txt" ||
       fail "installing the certifi pin failed (above)"
-    "$venv/bin/python" -I -c 'import omnigent.host.connect, omnigent.host.service_entry' ||
+    "$BUILD/bin/python" -I -c 'import omnigent.host.connect, omnigent.host.service_entry' ||
       fail "the installed Omnigent does not load (above)"
     # What was installed: the lock's export (with its hashes) and what the environment holds.
-    cp "$stage/requirements.txt" "$venv/cfo-requirements.txt"
-    uv pip freeze -q --python "$venv/bin/python" >"$venv/cfo-freeze.txt"
-    "$venv/bin/python" -I -c 'import platform; print(platform.python_version())' >"$venv/cfo-python"
+    cp "$stage/requirements.txt" "$BUILD/cfo-requirements.txt"
+    uv pip freeze -q --python "$BUILD/bin/python" >"$BUILD/cfo-freeze.txt"
+    "$BUILD/bin/python" -I -c 'import platform; print(platform.python_version())' >"$BUILD/cfo-python"
     rm -rf "$stage"
     # Written last: the build is complete.
-    printf '%s\n%s\n' "$COMMIT" "$REPO" >"$venv/cfo-commit"
+    printf 'build=%s\ncommit=%s\nrepository=%s\ncertifi=%s\n' "$BUILD_ID" "$COMMIT" "$REPO" "${CERTIFI_PIN%% *}" >"$BUILD/cfo-build"
     BUILT=1
   fi
-  PREVIOUS=$(readlink "$CFO_HOME/venv" 2>/dev/null || true)
-  ln -sfn "venvs/$COMMIT" "$CFO_HOME/venv"
-  [[ $PREVIOUS == "venvs/$COMMIT" ]] || BUILT=1
-  say "Omnigent $COMMIT is installed: $CFO_HOME/venv"
+  ln -sfn "venvs/$BUILD_ID" "$CFO_HOME/venv"
+  say "Omnigent $COMMIT is installed: $BUILD"
 }
 
 # Removes builds other than the current one, once the service runs on it.
@@ -271,7 +284,7 @@ prune_builds() {
   local dir
   for dir in "$CFO_HOME"/venvs/* "$CFO_HOME"/src/*; do
     [[ -e $dir ]] || continue
-    [[ $(basename "$dir") == "$COMMIT" ]] && continue
+    case $(basename "$dir") in "$BUILD_ID" | "$COMMIT") continue ;; esac
     rm -rf "$dir"
   done
 }
@@ -291,7 +304,7 @@ $MARKER
 export OMNIGENT_DATA_DIR='$CFO_DATA'
 export OMNIGENT_CONFIG_HOME='$CFO_CONFIG'
 export OMNIGENT_WRAPPER_COMMAND=$NAME
-exec '$CFO_HOME/venv/bin/omnigent' "\$@"
+exec '$BUILD/bin/omnigent' "\$@"
 EOF
   chmod 0755 "$tmp"
   mv -f "$tmp" "$WRAPPER"
@@ -302,22 +315,35 @@ EOF
   esac
 }
 
-# The command line's sign-in: ok, or what is missing. Never shows the token.
+# The command line's sign-in, as the installation judges it: ok; absent, expired or rejected
+# (sign in again); or unknown (the installation did not answer). The token stays in Python.
 signin_state() {
-  OMNIGENT_DATA_DIR=$CFO_DATA OMNIGENT_CONFIG_HOME=$CFO_CONFIG "$CFO_HOME/venv/bin/python" -I -c '
+  OMNIGENT_DATA_DIR=$CFO_DATA OMNIGENT_CONFIG_HOME=$CFO_CONFIG "$BUILD/bin/python" -I -c '
 import sys
-from omnigent.cli_auth import refresh_stored_token, stored_token_status
+import httpx
+from omnigent.cli_auth import load_token, refresh_stored_token, stored_token_status
 url = sys.argv[1]
-state = stored_token_status(url)
-if state == "expired" and refresh_stored_token(url):
-    state = "ok"
-print(state)
+if stored_token_status(url) == "absent":
+    sys.exit(print("absent"))
+def answer(token):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    return httpx.get(f"{url}/v1/me", headers=headers, timeout=20).status_code
+token = load_token(url, min_remaining_seconds=60) or refresh_stored_token(url)
+if not token:
+    sys.exit(print("expired"))
+status = answer(token)
+if status == 401:
+    # Revoked, for instance by a password change; a refresh grant may still be good.
+    token = refresh_stored_token(url)
+    status = answer(token) if token else 401
+print("ok" if status == 200 else "rejected" if status == 401 else f"unknown {status}")
 ' "$SERVER" 2>/dev/null || echo unknown
 }
 
 ensure_signin() {
   local state
   state=$(signin_state)
+  [[ $state != unknown* ]] || fail "could not ask $SERVER whether this machine's sign-in is good ($state); run this again"
   if [[ $state != ok ]]; then
     say "signing Omnigent's command line in to $SERVER: Omnigent asks for your Omnigent username and password (the ones for the web page, not your email's)"
     "$WRAPPER" login "$SERVER" || fail "the sign-in did not finish (above); run this again"
@@ -354,7 +380,7 @@ Environment="OMNIGENT_DATA_DIR=$CFO_DATA"
 Environment="OMNIGENT_CONFIG_HOME=$CFO_CONFIG"
 Environment="OMNIGENT_WRAPPER_COMMAND=$NAME"
 Environment="PATH=$(service_path)"
-ExecStart="$CFO_HOME/venv/bin/python" -P -m omnigent.host.service_entry --server "$SERVER"
+ExecStart="$BUILD/bin/python" -P -m omnigent.host.service_entry --server "$SERVER"
 # Omnigent's host stops for good (exit 0) on a refusal it cannot fix itself, such as a lapsed
 # client session at start; it is started again until the person fixes it.
 Restart=always
@@ -376,23 +402,23 @@ ensure_service() {
   fi
   systemctl --user daemon-reload
   systemctl --user enable --now "$UNIT" >/dev/null 2>&1 || fail "systemctl --user enable --now $UNIT failed: see systemctl --user status $UNIT"
-  if ((changed || BUILT)); then
+  # A changed unit or build, or a process from before them (an earlier run stopped in between).
+  if ((changed || BUILT)) || ! running_build; then
     systemctl --user restart "$UNIT"
   fi
   say "the service $UNIT runs, and starts with your session"
 }
 
-# Whether the service runs the build installed here: its command line names this setup's
-# environment, which links to the pinned commit's build.
+# Whether the service runs the build installed here: its command line is exactly the unit's,
+# with this build's own interpreter (a directory never changed once complete).
 running_build() {
-  local pid argv0
+  local pid argv
   pid=$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   [[ -r $PROC/$pid/cmdline ]] || return 1
-  argv0=$(tr '\0' '\n' <"$PROC/$pid/cmdline" | head -n1)
-  [[ $argv0 == "$CFO_HOME/venv/bin/python" ]] || return 1
-  [[ $(readlink "$CFO_HOME/venv") == "venvs/$COMMIT" ]] || return 1
-  [[ $(venv_commit) == "$COMMIT" ]]
+  argv=$(tr '\0' '\n' <"$PROC/$pid/cmdline")
+  [[ $argv == "$(printf '%s\n' "$BUILD/bin/python" -P -m omnigent.host.service_entry --server "$SERVER")" ]] || return 1
+  [[ -f $BUILD/cfo-build ]]
 }
 
 host_online() {
@@ -435,8 +461,8 @@ setup() {
     running_build && break
     sleep 1
   done
-  running_build || fail "the service does not run the Omnigent build installed here ($CFO_HOME/venv, $COMMIT): see systemctl --user status $UNIT"
-  say "the service runs Omnigent $COMMIT from $CFO_HOME/venv"
+  running_build || fail "the service does not run the Omnigent build installed here ($BUILD): see systemctl --user status $UNIT"
+  say "the service runs Omnigent $COMMIT from $BUILD"
   prune_builds
   if wait_online; then
     say "ready: this machine is an Omnigent host of $SERVER. Open $SERVER to start agents on it."
@@ -461,15 +487,15 @@ status() {
   probe_access
   say "Access to $SERVER: $ACCESS"
   local installed
-  installed=$(venv_commit || true)
+  installed=$(venv_build || true)
   if [[ -z $installed ]]; then
     say "Omnigent build: not installed"
-  elif [[ $installed == "$COMMIT" ]]; then
-    say "Omnigent build: $installed, as pinned ($CFO_HOME/venv; its locked dependencies in cfo-requirements.txt)"
+  elif [[ $installed == "$BUILD_ID" ]]; then
+    say "Omnigent build: $installed, as pinned ($BUILD; its locked dependencies in cfo-requirements.txt)"
   else
-    say "Omnigent build: $installed; this checkout pins $COMMIT (run setup to update)"
+    say "Omnigent build: $installed; this checkout makes $BUILD_ID (run setup to update)"
   fi
-  [[ -x $CFO_HOME/venv/bin/python ]] && say "command line sign-in: $(signin_state)"
+  [[ -x $BUILD/bin/python ]] && say "command line sign-in: $(signin_state)"
   say "service: $(systemctl --user is-active "$UNIT" 2>/dev/null || true)$(running_build && printf ', running the installed build')"
   if [[ -x $WRAPPER ]] && host_online; then say "host: online"; else say "host: not online"; fi
 }
@@ -498,11 +524,16 @@ remove() {
   say "removed. The Cloudflare One Client stays registered; warp-cli registration delete removes this machine from the team. In Omnigent, the host stays listed as offline until you remove it there."
 }
 
-command=${1:-}
-[[ $# -gt 0 ]] && shift
-case $command in
-setup) setup "$@" ;;
-status) status "$@" ;;
-remove) remove "$@" ;;
-*) usage ;;
-esac
+main() {
+  local command=${1:-}
+  [[ $# -gt 0 ]] && shift
+  case $command in
+  setup) setup "$@" ;;
+  status) status "$@" ;;
+  remove) remove "$@" ;;
+  *) usage ;;
+  esac
+}
+
+# Run, unless sourced (a manual check of one step).
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

@@ -3,6 +3,7 @@
 // is allowed to use are on its PATH, so a call to anything else fails the test.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -18,8 +19,9 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const ROOT = resolve(import.meta.dirname, "..", "..", "..");
-const SCRIPT = join(ROOT, "scripts", "host", "omnigent-host.sh");
+const REAL_SCRIPT = join(ROOT, "scripts", "host", "omnigent-host.sh");
 const DOCKERFILE = readFileSync(join(ROOT, "images", "computer", "Dockerfile"), "utf8");
+const BUILD_PINS = readFileSync(join(ROOT, "scripts", "host", "build-requirements.txt"), "utf8");
 const COMMIT = /^ARG OMNIGENT_COMMIT=([0-9a-f]{40})$/m.exec(DOCKERFILE)?.[1] as string;
 const SERVER = "https://omnigent.example.test";
 const UNIT = "omnigent-cfo-host.service";
@@ -48,6 +50,8 @@ const UTILITIES = [
   "uname",
   "cp",
   "touch",
+  "sha256sum",
+  "cut",
 ];
 
 const FAKES: Record<string, string> = {
@@ -120,7 +124,7 @@ esac
 `,
   uv: `#!/bin/bash
 w=$FAKE_WORLD
-echo "uv $* (in $PWD)" >>"$w/calls"
+echo "uv $* (in $PWD) skip_web=$OMNIGENT_SKIP_WEB_UI" >>"$w/calls"
 case $1 in
 export) while (($#)); do [[ $1 == -o ]] && echo 'a-dependency==1.0 --hash=sha256:00' >"$2"; shift; done ;;
 venv)
@@ -134,13 +138,27 @@ pip)
 esac
 exit 0
 `,
+  // Starts the unit's ExecStart as systemd would: /proc then shows that command line.
   systemctl: `#!/bin/bash
 w=$FAKE_WORLD
+unit="$HOME/.config/systemd/user/${UNIT}"
 echo "systemctl $*" >>"$w/calls"
+start() {
+  [[ -f $w/stale-process ]] && return 0
+  local line
+  line=$(sed -n 's/^ExecStart=//p' "$unit")
+  eval "set -- $line"
+  mkdir -p "$w/proc/${PID}"
+  printf '%s\\0' "$@" >"$w/proc/${PID}/cmdline"
+  echo ${PID} >"$w/pid"
+}
 case "$*" in
 "--user show -p MainPID --value ${UNIT}") cat "$w/pid" 2>/dev/null || echo 0 ;;
 "--user is-active ${UNIT}") echo active ;;
-"--user enable --now ${UNIT}") [[ -f $w/enable-fails ]] && exit 1; echo ${PID} >"$w/pid" ;;
+"--user enable --now ${UNIT}")
+  [[ -f $w/enable-fails ]] && exit 1
+  [[ -f $w/pid ]] || start ;;
+"--user restart ${UNIT}") start ;;
 esac
 exit 0
 `,
@@ -177,7 +195,11 @@ interface Env {
   flag(name: string, content?: string): void;
   unflag(name: string): void;
   /** The running service's command line, as /proc shows it. */
-  proc(argv0: string): void;
+  proc(argv: readonly string[]): void;
+  /** The copy of the repository's files the script runs from. */
+  readonly dockerfile: string;
+  /** The build directory the current pins make. */
+  build(): string;
 }
 
 let env: Env | undefined;
@@ -199,9 +221,28 @@ function makeEnv(): Env {
     if (found === "") throw new Error(`no ${util} on this machine`);
     symlinkSync(found, join(sys, util));
   }
+  // The script runs from a copy of the files it reads, which a test may change.
+  const root = join(dir, "root");
+  const script = join(root, "scripts", "host", "omnigent-host.sh");
+  const dockerfile = join(root, "images", "computer", "Dockerfile");
+  mkdirSync(dirname(script), { recursive: true });
+  mkdirSync(dirname(dockerfile), { recursive: true });
+  writeFileSync(script, readFileSync(REAL_SCRIPT), { mode: 0o755 });
+  writeFileSync(join(root, "scripts", "host", "build-requirements.txt"), BUILD_PINS);
+  writeFileSync(dockerfile, DOCKERFILE);
   const cfoHome = join(home, ".local", "share", "omnigent-cfo");
   const cfoConfig = join(home, ".config", "omnigent-cfo");
   const e: Env = {
+    dockerfile,
+    build: () => {
+      const recipe = /^RECIPE=([0-9]+)$/m.exec(readFileSync(script, "utf8"))?.[1] as string;
+      const certifi = /^ARG CERTIFI_PIN="(.*)"$/m.exec(readFileSync(dockerfile, "utf8"))?.[1];
+      const digest = createHash("sha256")
+        .update(`${recipe}\n${certifi}\n${BUILD_PINS}`)
+        .digest("hex")
+        .slice(0, 12);
+      return join(cfoHome, "venvs", `${COMMIT}-${digest}`);
+    },
     dir,
     home,
     world,
@@ -211,7 +252,7 @@ function makeEnv(): Env {
     unitFile: join(home, ".config", "systemd", "user", UNIT),
     wrapper: join(home, ".local", "bin", "omnigent-cfo"),
     run: (...args) => {
-      const result = spawnSync(join(sys, "bash"), [SCRIPT, ...args], {
+      const result = spawnSync(join(sys, "bash"), [script, ...args], {
         encoding: "utf8",
         input: "",
         env: {
@@ -235,12 +276,10 @@ function makeEnv(): Env {
         : [],
     flag: (name, content = "") => writeFileSync(join(world, name), content),
     unflag: (name) => rmSync(join(world, name), { force: true }),
-    proc: (argv0) => {
+    proc: (argv) => {
       mkdirSync(join(world, "proc", PID), { recursive: true });
-      writeFileSync(
-        join(world, "proc", PID, "cmdline"),
-        [argv0, "-P", "-m", "omnigent.host.service_entry", "--server", SERVER, ""].join("\0"),
-      );
+      writeFileSync(join(world, "proc", PID, "cmdline"), [...argv, ""].join("\0"));
+      writeFileSync(join(world, "pid"), `${PID}\n`);
     },
   };
   // The machine's retired Omnigent: never touched.
@@ -249,7 +288,6 @@ function makeEnv(): Env {
   mkdirSync(dirname(e.unitFile), { recursive: true });
   writeFileSync(join(dirname(e.unitFile), "omnigent-host.service"), "[Unit]\nDescription=old\n");
   mkdirSync(join(home, ".omnigent"));
-  e.proc(join(cfoHome, "venv", "bin", "python"));
   return e;
 }
 
@@ -277,7 +315,9 @@ describe("omnigent-host.sh setup", () => {
     // 1. The client: registered with the team Access names, then connected.
     expect(calls).toContain("warp-cli registration new team");
     expect(calls).toContain("warp-cli connect");
-    // 2. The pinned commit, its lock exported with hashes and installed with them checked.
+    // 2. The pinned commit; its lock exported with hashes, without Omnigent's own (local)
+    // packages, and installed from wheels with the hashes checked; the build backends pinned the
+    // same way; Omnigent's packages built without isolation or the web UI (Codex r1-1, -3, -4).
     expect(calls).toContainEqual(
       expect.stringMatching(
         new RegExp(
@@ -286,26 +326,32 @@ describe("omnigent-host.sh setup", () => {
       ),
     );
     expect(calls).toContainEqual(
-      expect.stringMatching(/^uv export --frozen --no-dev .* \(in .*\/src\/[0-9a-f]{40}\)$/),
+      expect.stringMatching(
+        /^uv export --frozen --no-dev --no-emit-project --no-emit-workspace --no-emit-local --no-editable .* \(in .*\/src\/[0-9a-f]{40}\)/,
+      ),
     );
     expect(calls).toContainEqual(expect.stringMatching(/^uv venv -q --python 3\.12 /));
-    expect(calls).toContainEqual(
-      expect.stringMatching(
-        /^uv pip install -q --python \S+ --require-hashes -r \S+requirements\.txt/,
-      ),
+    const installs = calls.filter((c) => c.startsWith("uv pip install"));
+    expect(installs).toHaveLength(4);
+    expect(installs[0]).toMatch(
+      /^uv pip install -q --python \S+ --require-hashes --only-binary :all: -r \S+\/requirements\.txt/,
     );
-    expect(calls).toContainEqual(
-      expect.stringMatching(
-        /^uv pip install -q --python \S+ --no-deps --require-hashes -r \S+trust-pins\.txt/,
-      ),
+    expect(installs[1]).toMatch(
+      /^uv pip install -q --python \S+ --require-hashes --only-binary :all: -r \S+\/scripts\/host\/build-requirements\.txt/,
     );
-    const venv = join(e.cfoHome, "venvs", COMMIT);
-    expect(readlinkSync(join(e.cfoHome, "venv"))).toBe(`venvs/${COMMIT}`);
-    expect(readFileSync(join(venv, "cfo-commit"), "utf8")).toBe(
-      `${COMMIT}\nhttps://github.com/LouisLotter/omnigent.git\n`,
+    expect(installs[2]).toMatch(
+      /^uv pip install -q --python \S+ --no-deps --no-build-isolation \S+\/src\/[0-9a-f]{40} \S+\/sdks\/python-client \S+\/sdks\/ui .* skip_web=true$/,
     );
-    expect(readFileSync(join(venv, "cfo-requirements.txt"), "utf8")).toContain("--hash=sha256:");
-    expect(readFileSync(join(venv, "cfo-freeze.txt"), "utf8")).toContain("omnigent==");
+    expect(installs[3]).toMatch(
+      /^uv pip install -q --python \S+ --no-deps --require-hashes --only-binary :all: -r \S+trust-pins\.txt/,
+    );
+    const build = e.build();
+    expect(readlinkSync(join(e.cfoHome, "venv"))).toBe(`venvs/${build.split("/").at(-1)}`);
+    expect(readFileSync(join(build, "cfo-build"), "utf8")).toBe(
+      `build=${build.split("/").at(-1)}\ncommit=${COMMIT}\nrepository=https://github.com/LouisLotter/omnigent.git\ncertifi=certifi==2026.10.23\n`,
+    );
+    expect(readFileSync(join(build, "cfo-requirements.txt"), "utf8")).toContain("--hash=sha256:");
+    expect(readFileSync(join(build, "cfo-freeze.txt"), "utf8")).toContain("omnigent==");
     // 3. The sign-in, by Omnigent itself, with this build's own data and configuration.
     const data = join(e.cfoHome, "data");
     expect(calls).toContain(
@@ -313,8 +359,9 @@ describe("omnigent-host.sh setup", () => {
     );
     // 4. The service: Omnigent's own service entry, from this build, restarted whenever it stops.
     const unit = readFileSync(e.unitFile, "utf8");
+    // The build's own directory, never changed once complete (Codex r1-2).
     expect(unit).toContain(
-      `ExecStart="${e.cfoHome}/venv/bin/python" -P -m omnigent.host.service_entry --server "${SERVER}"`,
+      `ExecStart="${build}/bin/python" -P -m omnigent.host.service_entry --server "${SERVER}"`,
     );
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("StartLimitIntervalSec=0");
@@ -326,7 +373,7 @@ describe("omnigent-host.sh setup", () => {
     expect(out).toContain(`the service runs Omnigent ${COMMIT}`);
     // The command, side by side.
     const wrapper = readFileSync(e.wrapper, "utf8");
-    expect(wrapper).toContain(`exec '${e.cfoHome}/venv/bin/omnigent' "$@"`);
+    expect(wrapper).toContain(`exec '${build}/bin/omnigent' "$@"`);
     expect(wrapper).toContain(`export OMNIGENT_DATA_DIR='${data}'`);
     expect(readFileSync(join(e.cfoConfig, "server"), "utf8")).toBe(`${SERVER}\n`);
     // The retired Omnigent and its service are left alone; nothing reads ~/.omnigent.
@@ -361,21 +408,54 @@ describe("omnigent-host.sh setup", () => {
     }
   });
 
-  it("builds a newly pinned commit, switches the service to it and removes the old build", () => {
+  it("builds again for a new trust pin, switches the service to it and removes the old build (Codex r1-7)", () => {
     const e = current();
     expect(e.run("setup", "--server", SERVER).status).toBe(0);
-    const old = "1".repeat(40);
-    mkdirSync(join(e.cfoHome, "venvs", old, "bin"), { recursive: true });
-    writeFileSync(join(e.cfoHome, "venvs", old, "cfo-commit"), `${old}\n`);
-    mkdirSync(join(e.cfoHome, "src", old), { recursive: true });
-    rmSync(join(e.cfoHome, "venv"));
-    symlinkSync(`venvs/${old}`, join(e.cfoHome, "venv"));
+    const first = e.build();
+    const pin = /^ARG CERTIFI_PIN="(.*)"$/m.exec(readFileSync(e.dockerfile, "utf8"))?.[1] as string;
+    writeFileSync(
+      e.dockerfile,
+      readFileSync(e.dockerfile, "utf8").replace(pin, pin.replace(/[0-9a-f]{64}/, "f".repeat(64))),
+    );
+    const second = e.build();
+    expect(second).not.toBe(first);
     reset();
     expect(e.run("setup", "--server", SERVER).status).toBe(0);
-    expect(readlinkSync(join(e.cfoHome, "venv"))).toBe(`venvs/${COMMIT}`);
+    expect(e.calls().filter((c) => c.startsWith("uv pip install"))).toHaveLength(4);
+    expect(readlinkSync(join(e.cfoHome, "venv"))).toBe(`venvs/${second.split("/").at(-1)}`);
     expect(e.calls()).toContain(`systemctl --user restart ${UNIT}`);
-    expect(existsSync(join(e.cfoHome, "venvs", old))).toBe(false);
-    expect(existsSync(join(e.cfoHome, "src", old))).toBe(false);
+    expect(readFileSync(e.unitFile, "utf8")).toContain(`ExecStart="${second}/bin/python"`);
+    expect(existsSync(first)).toBe(false);
+    // The fetched source of the same commit is kept.
+    expect(existsSync(join(e.cfoHome, "src", COMMIT))).toBe(true);
+  });
+
+  it("restarts a service still running an earlier build, and keeps that build until it has (Codex r1-2)", () => {
+    const e = current();
+    expect(e.run("setup", "--server", SERVER).status).toBe(0);
+    // An earlier run stopped after the new build and unit were in place, before the restart:
+    // the process still runs the old build, whose directory is still there.
+    const old = join(e.cfoHome, "venvs", `${"1".repeat(40)}-000000000000`);
+    mkdirSync(join(old, "bin"), { recursive: true });
+    e.proc([
+      join(old, "bin", "python"),
+      "-P",
+      "-m",
+      "omnigent.host.service_entry",
+      "--server",
+      SERVER,
+    ]);
+    e.flag("stale-process");
+    reset();
+    let r = e.run("setup", "--server", SERVER);
+    expect(e.calls()).toContain(`systemctl --user restart ${UNIT}`);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("does not run the Omnigent build installed here");
+    expect(existsSync(old)).toBe(true);
+    e.unflag("stale-process");
+    r = e.run("setup", "--server", SERVER);
+    expect(r.status).toBe(0);
+    expect(existsSync(old)).toBe(false);
   });
 
   it("restarts the service when its unit changes", () => {
@@ -398,10 +478,42 @@ describe("omnigent-host.sh setup", () => {
 
   it("refuses a service that runs anything but the build installed here", () => {
     const e = current();
-    e.proc("/usr/bin/python3");
+    e.proc(["/usr/bin/python3", "-P", "-m", "omnigent.host.service_entry", "--server", SERVER]);
+    e.flag("stale-process");
     const { status, out } = e.run("setup", "--server", SERVER);
     expect(status).toBe(1);
     expect(out).toContain("does not run the Omnigent build installed here");
+    // The right interpreter with other arguments is not the unit's process either.
+    e.unflag("stale-process");
+    expect(e.run("setup", "--server", SERVER).status).toBe(0);
+    e.proc([
+      join(e.build(), "bin", "python"),
+      "-P",
+      "-m",
+      "omnigent.host.service_entry",
+      "--server",
+      "https://other.example.test",
+    ]);
+    e.flag("stale-process");
+    expect(e.run("setup", "--server", SERVER).status).toBe(1);
+  });
+
+  it("signs in again when the installation rejects the stored sign-in, and stops when it cannot ask (Codex r1-8)", () => {
+    const e = current();
+    expect(e.run("setup", "--server", SERVER).status).toBe(0);
+    // The password changed: the token is still unexpired locally, but the installation says no.
+    e.flag("token", "rejected");
+    reset();
+    expect(e.run("setup", "--server", SERVER).status).toBe(0);
+    expect(e.calls().filter((c) => c.startsWith("omnigent login"))).toHaveLength(1);
+    e.flag("token", "unknown 502");
+    reset();
+    const r = e.run("setup", "--server", SERVER);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(
+      "could not ask https://omnigent.example.test whether this machine's sign-in is good",
+    );
+    expect(e.calls().filter((c) => c.startsWith("omnigent login"))).toHaveLength(0);
   });
 
   it("names what to fix for the Cloudflare One Client", () => {
@@ -532,13 +644,13 @@ describe("omnigent-host.sh status and remove", () => {
     expect(out).toContain("Cloudflare One Client: installed: warp-cli 2026.9.1234.0");
     expect(out).toContain("registered; connected");
     expect(out).toContain(`Access to ${SERVER}: ok`);
-    expect(out).toContain(`Omnigent build: ${COMMIT}, as pinned`);
+    expect(out).toContain(`Omnigent build: ${e.build().split("/").at(-1)}, as pinned`);
     expect(out).toContain("command line sign-in: ok");
     expect(out).toContain("service: active, running the installed build");
     expect(out).toContain("host: online");
     const changing = ["registration new", "connect", "uv ", "git ", "login", "enable", "restart"];
     expect(e.calls().filter((c) => changing.some((w) => c.includes(w)))).toEqual([]);
-    writeFileSync(join(e.cfoHome, "venv", "cfo-commit"), `${"3".repeat(40)}\n`);
+    writeFileSync(join(e.cfoHome, "venv", "cfo-build"), `build=${"3".repeat(40)}-000000000000\n`);
     expect(e.run("status").out).toContain("run setup to update");
   });
 
@@ -562,6 +674,6 @@ describe("omnigent-host.sh status and remove", () => {
   });
 
   it("is executable", () => {
-    expect(spawnSync("test", ["-x", SCRIPT]).status).toBe(0);
+    expect(spawnSync("test", ["-x", REAL_SCRIPT]).status).toBe(0);
   });
 });

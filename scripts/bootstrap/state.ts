@@ -32,7 +32,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BootstrapStatus } from "../../contracts/src/index.ts";
-import type { DevicesRecord } from "./devices.ts";
+import { type DevicesRecord, durationMinutes } from "./devices.ts";
 import type { BootstrapState, Journal, McpServicesRecord, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
 import type { UpdateRecord } from "./update.ts";
@@ -475,7 +475,7 @@ function parseDevices(value: unknown): DevicesRecord {
   );
   if (d.sessionDuration !== undefined) {
     const duration = str(d, "sessionDuration", where);
-    if (!/^[0-9]+[mh]$/.test(duration)) {
+    if (durationMinutes(duration) === undefined) {
       throw new Error(`the state file's ${where}.sessionDuration is not a duration`);
     }
     out.sessionDuration = duration;

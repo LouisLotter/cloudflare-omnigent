@@ -120,8 +120,11 @@ export interface DevicesContext {
   readonly accessApp?: RecordedAccessApp | undefined;
   /** The owner's address, given to this run; needed only to write the enrollment policy. */
   readonly ownerEmail?: string | undefined;
-  /** The client session asked for, in days (1 to 90); undefined keeps one already set. */
-  readonly sessionDays?: number | undefined;
+  /**
+   * The client session asked for, as given (`30d`, `12h`, `15m`, `2h45m`; at most 90 days);
+   * undefined keeps one already set.
+   */
+  readonly session?: string | undefined;
   readonly recorded: () => DevicesRecord;
   /** Replaces the record whole, before the step that follows. */
   readonly record: (record: DevicesRecord) => void;
@@ -141,9 +144,9 @@ export interface DevicesOutcome {
   readonly changed: readonly string[];
 }
 
-export const DEFAULT_SESSION_DAYS = 30;
-/** Cloudflare's longest client session: 90 days. */
-export const MAX_SESSION_DAYS = 90;
+export const DEFAULT_SESSION = "30d";
+/** Cloudflare's longest client session: 90 days, in minutes. */
+export const MAX_SESSION_MINUTES = 90 * 24 * 60;
 export const ENROLLMENT_TYPE = "warp";
 
 /** The organization's fields Cloudflare reports but an update does not take. */
@@ -172,12 +175,35 @@ function without(value: Record<string, unknown>, keys: readonly string[]): Recor
   return copy;
 }
 
-/** The client session for `days` days, as Cloudflare writes it (hours). */
-export function sessionDuration(days: number): string {
-  if (!Number.isInteger(days) || days < 1 || days > MAX_SESSION_DAYS) {
-    throw new Error(`the client session is 1 to ${MAX_SESSION_DAYS} days, in whole days`);
+/**
+ * A duration in whole minutes, from Cloudflare's form (`720h`, `2h45m`, `30m`, and Go's
+ * `720h0m0s`) or a number of days (`30d`); undefined when it is neither, or not whole minutes.
+ */
+export function durationMinutes(value: string): number | undefined {
+  const days = /^([0-9]{1,3})d$/.exec(value.trim());
+  if (days !== null) return Number(days[1]) * 24 * 60;
+  const parts = /^(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?$/.exec(value.trim());
+  if (parts === null || parts.slice(1).every((p) => p === undefined)) return undefined;
+  const seconds = Number(parts[1] ?? 0) * 3600 + Number(parts[2] ?? 0) * 60 + Number(parts[3] ?? 0);
+  return seconds % 60 === 0 ? seconds / 60 : undefined;
+}
+
+/** Minutes as Cloudflare writes a session duration: `720h`, `2h45m`, `15m`. */
+export function cloudflareDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${hours > 0 ? `${hours}h` : ""}${rest > 0 || hours === 0 ? `${rest}m` : ""}`;
+}
+
+/** The client session asked for, as Cloudflare writes it; at least a minute, at most 90 days. */
+export function sessionDuration(value: string): string {
+  const minutes = durationMinutes(value);
+  if (minutes === undefined || minutes < 1 || minutes > MAX_SESSION_MINUTES) {
+    throw new Error(
+      `the client session is a duration such as 30d, 12h or 15m, at most 90 days: not "${value}"`,
+    );
   }
-  return `${days * 24}h`;
+  return cloudflareDuration(minutes);
 }
 
 /**
@@ -255,7 +281,7 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
   if (parseOwnerPin(plan.ownerPin) === undefined) {
     throw new Error("the plan's owner pin is malformed");
   }
-  const asked = ctx.sessionDays === undefined ? undefined : sessionDuration(ctx.sessionDays);
+  const asked = ctx.session === undefined ? undefined : sessionDuration(ctx.session);
   const teamDomain = api.teamDomain();
   if (teamDomain === undefined) throw new AccessRefusal(noOrganizationStep());
   const changed: string[] = [];
@@ -344,16 +370,27 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
   // 2. The organization's client session and its 401 for non-browser clients.
   const organization = api.organization();
   const current = text(organization, "warp_auth_session_duration");
-  const duration = asked ?? current ?? sessionDuration(DEFAULT_SESSION_DAYS);
-  if (asked === undefined && current !== undefined) {
-    ctx.log(`keeping the organization's Cloudflare One Client session of ${current}`);
+  const currentMinutes = current === undefined ? undefined : durationMinutes(current);
+  if (current !== undefined && currentMinutes === undefined && asked === undefined) {
+    throw new Error(
+      `the organization's Cloudflare One Client session is "${current}", which this step cannot read: give one with --client-session (for example 30d)`,
+    );
   }
+  const duration =
+    asked ??
+    (currentMinutes === undefined
+      ? sessionDuration(DEFAULT_SESSION)
+      : cloudflareDuration(currentMinutes));
+  if (asked === undefined && current !== undefined) {
+    ctx.log(`keeping the organization's Cloudflare One Client session of ${duration}`);
+  }
+  const minutes = durationMinutes(duration);
   if (organization.allow_authenticate_via_warp === true) {
     ctx.log(
       "the Zero Trust organization lets every Access application use the Cloudflare One Client session (Apply to all Access applications); this step does not change that",
     );
   }
-  if (current !== duration || organization.warp_auth_non_browser_401 !== true) {
+  if (currentMinutes !== minutes || organization.warp_auth_non_browser_401 !== true) {
     const body = {
       ...without(organization, ORGANIZATION_REPORTED),
       warp_auth_session_duration: duration,
@@ -363,7 +400,7 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
     refusedAs(organizationStep(duration), () => api.updateOrganization(body));
     const after = api.organization();
     if (
-      text(after, "warp_auth_session_duration") !== duration ||
+      durationMinutes(text(after, "warp_auth_session_duration") ?? "") !== minutes ||
       after.warp_auth_non_browser_401 !== true
     ) {
       throw new Error(
@@ -601,8 +638,9 @@ function ensureSplitTunnel(
   const exclude = Array.isArray(profile.exclude) ? (profile.exclude as unknown[]) : [];
   const included = new Set(include.map(routeHost));
   const missing = wanted.filter((w) => !included.has(w.host));
-  if (include.length > 0 && missing.length === 0) return;
-  if (include.length === 0 && ctx.recorded().previousSplitTunnel === undefined) {
+  // In place only in include mode: the routes there, and no exclude list beside them.
+  if (include.length > 0 && exclude.length === 0 && missing.length === 0) return;
+  if (exclude.length > 0 && ctx.recorded().previousSplitTunnel === undefined) {
     // Switching modes resets the list: keep the exclude list first, as Cloudflare advises.
     update({ previousSplitTunnel: { mode: "exclude", entries: exclude, savedAt: iso(ctx.now()) } });
   }
