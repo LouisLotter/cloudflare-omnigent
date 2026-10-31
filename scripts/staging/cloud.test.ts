@@ -758,7 +758,7 @@ describe("CLI wiring", () => {
     cloud.deleteLatestSecrets("cfo-stg-a", ["A", "B"]);
     expect(seen[0]).toEqual({
       command: "cf",
-      args: ["workers", "versions", "delete", version, "--worker-id", "cfo-stg-a"],
+      args: ["workers", "versions", "delete", version, "--worker-id", "cfo-stg-a", "--force"],
     });
     expect(seen[1]).toMatchObject({
       command: process.execPath,

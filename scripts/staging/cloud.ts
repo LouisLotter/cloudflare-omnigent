@@ -162,7 +162,9 @@ export function deployVersionArgs(worker: string, versionId: string): string[] {
  */
 export function deleteVersionArgs(worker: string, versionId: string): string[] {
   if (!VERSION_ID.test(versionId)) throw new Error("not a Worker version's ID");
-  return ["workers", "versions", "delete", versionId, "--worker-id", worker];
+  // --force: `cf` otherwise asks "This will permanently delete the Worker version. Continue?",
+  // which a run without a terminal answers no to (the owner's first rollback, 31 Oct).
+  return ["workers", "versions", "delete", versionId, "--worker-id", worker, "--force"];
 }
 
 /** `cf workers versions list`, one page of 100 (WP3.41b). */
