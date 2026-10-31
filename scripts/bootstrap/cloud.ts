@@ -167,14 +167,21 @@ export function bulkSecrets(
 /** At most this many pages of 100 versions are read. */
 const MAX_VERSION_PAGES = 20;
 
-/** The Worker's uploaded versions, newest first (WP3.41b). Read-only. */
+/**
+ * The Worker's uploaded versions, newest first (WP3.41b). Read-only. An answer that is not a list
+ * of versions, each with its ID and number, is an error, never an empty or partial list: which
+ * version is the latest decides what the update and its rollback do.
+ */
 export function workerVersions(run: Runner, worker: string): WorkerVersion[] {
   const versions: WorkerVersion[] = [];
   for (let page = 1; page <= MAX_VERSION_PAGES; page++) {
     const listed = cfJson(run, versionsListArgs(worker, page));
     const found = versionsOf(listed);
+    if (!Array.isArray(listed) || found.length !== listed.length) {
+      throw new Error("cf workers versions list answered something other than versions");
+    }
     versions.push(...found);
-    if (!Array.isArray(listed) || listed.length < 100) break;
+    if (listed.length < 100) break;
   }
   return versions.sort((a, b) => b.number - a.number);
 }

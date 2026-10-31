@@ -580,12 +580,16 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: FEATURES },
     };
     behind.latestVersion = "v2";
+    // Or Cloudflare lists no version though one serves (Codex WP3.41b r2-1).
+    const none = new FakeCloud();
+    none.identity = behind.identity;
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
       [
         behind,
         /refuses to change cloudflare-omnigent's secrets while its latest version is not the one deployed/,
       ],
+      [none, /lists no version of cloudflare-omnigent, though v1 serves/],
       [other, /is not serving installation/],
       [unknown, /is not serving installation/],
       [older, /runs a release from before GitHub linking .*bootstrap\.ts update/],

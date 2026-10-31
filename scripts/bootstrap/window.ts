@@ -218,8 +218,10 @@ async function latestServesForAcceptance(
 /**
  * Why a step that changes the platform Worker's secrets may not begin (WP3.41b): an earlier
  * version serves than its latest, so Cloudflare would refuse the change (10215), after the step
- * had asked the person, or made a GitHub App, for nothing (Codex WP3.41b r1-2). Undefined when the
- * latest version serves, or Cloudflare names either not.
+ * had asked the person, or made a GitHub App, for nothing (Codex WP3.41b r1-2); or Cloudflare
+ * lists no version at all though one serves (r2-1). Undefined when the latest version serves, or
+ * when Cloudflare names no single version serving: the step then runs as it did before WP3.41b
+ * (the GitHub step needs no word about versions, Codex WP5.9 r1-1).
  */
 export async function latestNotServing(
   cloud: Pick<BootstrapCloud, "versions">,
@@ -228,7 +230,10 @@ export async function latestNotServing(
 ): Promise<string | undefined> {
   if (serving === undefined) return undefined;
   const latest = (await cloud.versions(worker))[0]?.id;
-  return latest !== undefined && latest !== serving ? latestNotDeployed(worker) : undefined;
+  if (latest === undefined) {
+    return `Cloudflare lists no version of ${worker}, though ${serving} serves: run this step again later; nothing was changed`;
+  }
+  return latest !== serving ? latestNotDeployed(worker) : undefined;
 }
 
 /**

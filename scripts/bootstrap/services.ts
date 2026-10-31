@@ -268,8 +268,6 @@ async function preflight(
       `${plan.platformWorker} is not serving installation ${plan.installationId}${nothing}`,
     );
   }
-  const refused = await latestNotServing(ports.cloud, plan.platformWorker, identity.versionId);
-  if (refused !== undefined) throw new ServicesRefusal(refused);
   if (!offersPlatformFeature(identity.vars, "mcp-services")) {
     throw new ServicesRefusal(
       `${plan.platformWorker} runs a release from before MCP services: update the installation first with bootstrap.ts update, then run this step again${nothing}`,
@@ -287,6 +285,9 @@ async function preflight(
       `${plan.platformWorker} holds a list of MCP services this state file does not record (set from another laptop?). Run this step where it was set, or run again with --replace to write the list from this state file${nothing}`,
     );
   }
+  // Last, once nothing else refuses: before anything is asked or recorded (WP3.41b).
+  const refused = await latestNotServing(ports.cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new ServicesRefusal(refused);
   return present;
 }
 

@@ -846,10 +846,7 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     const id = (n: number) => `0a1b2c3d-0000-4000-8000-${String(n).padStart(12, "0")}`;
     const page = (from: number, count: number) =>
       Array.from({ length: count }, (_, i) => ({ id: id(from + i), number: from + i }));
-    const answers: unknown[] = [
-      { result: [...page(1, 99), { id: "odd", number: 1000 }] },
-      { result: [...page(100, 3), { id: id(200), number: "2" }] },
-    ];
+    const answers: unknown[] = [{ result: page(1, 100) }, { result: page(101, 2) }];
     const { runner, calls } = fakeRunner((call) =>
       call.command === "cf" && call.args[2] === "list"
         ? { stdout: JSON.stringify(answers.shift()) }
@@ -865,6 +862,16 @@ describe("accountCloud: Wrangler with the installer's login", () => {
       ["workers", "versions", "list", "--page", "2"],
     ]);
     expect(calls[0]?.args).toContain("--per-page");
+    // An answer that is not a list of versions is an error, never a shorter list.
+    for (const odd of [
+      { result: { items: [] } },
+      { result: [...page(1, 2), { id: "odd", number: 3 }] },
+    ]) {
+      answers.push(odd);
+      await expect(cloud.versions(plan.platformWorker)).rejects.toThrow(
+        "cf workers versions list answered something other than versions",
+      );
+    }
     calls.length = 0;
     await cloud.deleteVersion(plan.platformWorker, id(102));
     expect([calls[0]?.command, ...(calls[0]?.args ?? [])]).toEqual([
@@ -1024,6 +1031,7 @@ describe("stagingCloud: through the guarded staging tool", () => {
       if (call.args[2] === "applications") return { stdout: JSON.stringify(apps) };
       if (call.args[0] === "zero-trust")
         return { stdout: '{"auth_domain":"team.cloudflareaccess.com"}' };
+      if (call.args[1] === "versions") return { stdout: '{"result":[]}' };
       return { stdout: '{"events":{"events":[]}}' };
     });
     const cloud = stagingCloud(plan, {

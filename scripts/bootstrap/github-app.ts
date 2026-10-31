@@ -402,8 +402,6 @@ async function preflight(
       `${plan.platformWorker} is not serving installation ${plan.installationId}; nothing was changed`,
     );
   }
-  const refused = await latestNotServing(cloud, plan.platformWorker, identity.versionId);
-  if (refused !== undefined) throw new GitHubAppRefusal(refused);
   // The release running there must have the key service the App's settings need (WP5.9) and
   // the GitHub setup page with the server's GitHub linking report (WP3.36): an installation made
   // before them takes the release with `update` first (WP3.35).
@@ -441,6 +439,9 @@ async function preflight(
       `${plan.platformWorker} holds only half of the key service's signing pair (${KEY_SERVICE_SECRETS.currentId}, ${KEY_SERVICE_SECRETS.current}); nothing was changed`,
     );
   }
+  // Last, once nothing else refuses: before anything is shown or made (WP3.41b).
+  const refused = await latestNotServing(cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new GitHubAppRefusal(refused);
   return present;
 }
 
