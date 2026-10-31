@@ -166,8 +166,8 @@ exit 0
   python: `#!/bin/bash
 w=$FAKE_WORLD
 echo "python $* data=$OMNIGENT_DATA_DIR config=$OMNIGENT_CONFIG_HOME" >>"$w/calls"
-case "$3" in
-*stored_token_status*) cat "$w/token" 2>/dev/null || echo absent ;;
+case "$2:$3" in
+*signin-check.py:*) cat "$w/token" 2>/dev/null || echo absent ;;
 *python_version*) echo 3.12.13 ;;
 esac
 `,
@@ -229,6 +229,10 @@ function makeEnv(): Env {
   mkdirSync(dirname(dockerfile), { recursive: true });
   writeFileSync(script, readFileSync(REAL_SCRIPT), { mode: 0o755 });
   writeFileSync(join(root, "scripts", "host", "build-requirements.txt"), BUILD_PINS);
+  writeFileSync(
+    join(root, "scripts", "host", "signin-check.py"),
+    readFileSync(join(ROOT, "scripts", "host", "signin-check.py")),
+  );
   writeFileSync(dockerfile, DOCKERFILE);
   const cfoHome = join(home, ".local", "share", "omnigent-cfo");
   const cfoConfig = join(home, ".config", "omnigent-cfo");

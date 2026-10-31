@@ -370,10 +370,13 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
   // 2. The organization's client session and its 401 for non-browser clients.
   const organization = api.organization();
   const current = text(organization, "warp_auth_session_duration");
-  const currentMinutes = current === undefined ? undefined : durationMinutes(current);
+  const read = current === undefined ? undefined : durationMinutes(current);
+  // A session this step would not set (none, or over 90 days) is not kept either (Codex r2).
+  const currentMinutes =
+    read !== undefined && read >= 1 && read <= MAX_SESSION_MINUTES ? read : undefined;
   if (current !== undefined && currentMinutes === undefined && asked === undefined) {
     throw new Error(
-      `the organization's Cloudflare One Client session is "${current}", which this step cannot read: give one with --client-session (for example 30d)`,
+      `the organization's Cloudflare One Client session is "${current}", which this step does not keep (it reads 1 minute to 90 days): give one with --client-session (for example 30d)`,
     );
   }
   const duration =
@@ -390,7 +393,7 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
       "the Zero Trust organization lets every Access application use the Cloudflare One Client session (Apply to all Access applications); this step does not change that",
     );
   }
-  if (currentMinutes !== minutes || organization.warp_auth_non_browser_401 !== true) {
+  if (read !== minutes || organization.warp_auth_non_browser_401 !== true) {
     const body = {
       ...without(organization, ORGANIZATION_REPORTED),
       warp_auth_session_duration: duration,

@@ -588,11 +588,15 @@ describe("ensureDevices: the organization", () => {
       journal: { devices: h.record },
     });
     expect(parseState(text).journal.devices?.sessionDuration).toBe("720h");
-    const odd = await harness();
-    odd.zt.organizationValue.warp_auth_session_duration = "forever";
-    await expect(odd.run()).rejects.toThrow('session is "forever"');
-    await odd.run({ session: "30d" });
-    expect(odd.zt.organizationValue.warp_auth_session_duration).toBe("720h");
+    for (const value of ["forever", "0m", "2161h"]) {
+      // Unreadable, or outside what this step sets, is not kept (Codex r2).
+      const odd = await harness();
+      odd.zt.organizationValue.warp_auth_session_duration = value;
+      await expect(odd.run(), value).rejects.toThrow(`session is "${value}"`);
+      expect(odd.record.checkedAt, value).toBeUndefined();
+      await odd.run({ session: "30d" });
+      expect(odd.zt.organizationValue.warp_auth_session_duration).toBe("720h");
+    }
   });
 
   it("says, and leaves, an organization that lets every application use the client", async () => {

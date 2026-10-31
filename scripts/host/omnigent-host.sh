@@ -315,29 +315,11 @@ EOF
   esac
 }
 
-# The command line's sign-in, as the installation judges it: ok; absent, expired or rejected
-# (sign in again); or unknown (the installation did not answer). The token stays in Python.
+# The command line's sign-in, as the installation judges it (signin-check.py): ok; absent,
+# expired or rejected (sign in again); or unknown (it did not answer). The token stays in Python.
 signin_state() {
-  OMNIGENT_DATA_DIR=$CFO_DATA OMNIGENT_CONFIG_HOME=$CFO_CONFIG "$BUILD/bin/python" -I -c '
-import sys
-import httpx
-from omnigent.cli_auth import load_token, refresh_stored_token, stored_token_status
-url = sys.argv[1]
-if stored_token_status(url) == "absent":
-    sys.exit(print("absent"))
-def answer(token):
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    return httpx.get(f"{url}/v1/me", headers=headers, timeout=20).status_code
-token = load_token(url, min_remaining_seconds=60) or refresh_stored_token(url)
-if not token:
-    sys.exit(print("expired"))
-status = answer(token)
-if status == 401:
-    # Revoked, for instance by a password change; a refresh grant may still be good.
-    token = refresh_stored_token(url)
-    status = answer(token) if token else 401
-print("ok" if status == 200 else "rejected" if status == 401 else f"unknown {status}")
-' "$SERVER" 2>/dev/null || echo unknown
+  OMNIGENT_DATA_DIR=$CFO_DATA OMNIGENT_CONFIG_HOME=$CFO_CONFIG \
+    "$BUILD/bin/python" -I "$ROOT/scripts/host/signin-check.py" "$SERVER" 2>/dev/null || echo unknown
 }
 
 ensure_signin() {
