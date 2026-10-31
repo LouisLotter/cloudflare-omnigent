@@ -65,6 +65,7 @@ import {
   SERVER_ENV,
 } from "./settings.ts";
 import { pollServer } from "./update.ts";
+import { latestNotServing } from "./window.ts";
 
 /** The App's settings as the platform Worker holds them; the server receives them unprefixed. */
 export const GITHUB_APP_SECRETS = {
@@ -126,7 +127,7 @@ export class GitHubAppRefusal extends Error {}
 /** What the step needs of Cloudflare: the bootstrap's own adapter (cloud.ts, staging.ts). */
 export type GitHubAppCloud = Pick<
   BootstrapCloud,
-  "secretNames" | "workerInstallation" | "updateSecrets" | "logs"
+  "secretNames" | "workerInstallation" | "updateSecrets" | "logs" | "versions"
 >;
 
 export interface GitHubAppPorts {
@@ -401,6 +402,8 @@ async function preflight(
       `${plan.platformWorker} is not serving installation ${plan.installationId}; nothing was changed`,
     );
   }
+  const refused = await latestNotServing(cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new GitHubAppRefusal(refused);
   // The release running there must have the key service the App's settings need (WP5.9) and
   // the GitHub setup page with the server's GitHub linking report (WP3.36): an installation made
   // before them takes the release with `update` first (WP3.35).

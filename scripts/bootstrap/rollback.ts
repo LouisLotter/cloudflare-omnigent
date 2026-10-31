@@ -25,10 +25,12 @@
 //      neither the window nor the order, so its object starts its own server, which restores the
 //      replica as the previous release left it. Until then the update's version, and the window
 //      with it, serves.
-//   5. deletes the platform Worker's versions newer than the one serving, the update's (WP3.41b):
-//      while they are its latest, Cloudflare refuses every secrets change, and the next deploy
-//      would keep their secrets, the window and the order among them. Should Cloudflare keep one,
-//      the window and the order are deleted from it instead, as a version that is not deployed.
+//   5. while the platform Worker's version from before serves, deletes its versions newer than
+//      it, the update's (WP3.41b): while they are its latest, Cloudflare refuses every secrets
+//      change, and the next deploy would keep their secrets, the window and the order among them.
+//      Should Cloudflare keep one, the window and the order are deleted from it instead, as a
+//      version that is not deployed. Nothing is deployed: its server keeps running. Another
+//      version serving stops the rollback for a person.
 //   6. checks, as the release check does, that the previous version's object runs and its server
 //      answers with a durable owner, from its lines since the restore point was put back; then
 //      closes the window: the journal records each Worker's code as before the update, and the
@@ -44,7 +46,7 @@ import { installationProblems } from "./settings.ts";
 import { pollServer, type UpdateContext, type UpdateOptions } from "./update.ts";
 import {
   closeWindow,
-  latestServes,
+  latestServing,
   type RollbackRecord,
   restorePointRecord,
   type WindowRecord,
@@ -115,11 +117,19 @@ export async function runRollback(
   // ended outside the installer, Omnigent may have taken changes since the restore point, and
   // putting it back would lose them (Codex WP3.41 r1-2). The secrets listed are the latest
   // version's: an earlier version deployed since, outside the installer, may serve without the
-  // window, so the window holds only while the latest version serves (WP3.41b).
-  if (
-    open.rollback?.restoredAt === undefined &&
-    !(names.has(MAINTENANCE_WINDOW_SECRET) && (await latestServes(ctx.cloud, plan.platformWorker)))
-  ) {
+  // window, so the window holds only while the latest version serves (WP3.41b). Unknown, nothing
+  // is decided.
+  const held =
+    open.rollback?.restoredAt !== undefined || !names.has(MAINTENANCE_WINDOW_SECRET)
+      ? undefined
+      : await latestServing(ctx.cloud, plan.platformWorker);
+  if (held === "unknown") {
+    return {
+      kind: "waiting",
+      why: `Cloudflare does not say yet which version serves all of ${plan.platformWorker}'s traffic, so whether the update's window holds is not known${nothing}`,
+    };
+  }
+  if (open.rollback?.restoredAt === undefined && held !== "serves") {
     if (open.deployStartedAt === undefined) {
       // No deploy carrying the window was ever sent: the previous release runs, untouched.
       const { update: _u, ...journal } = state.journal;
@@ -229,17 +239,17 @@ export async function runRollback(
   }
 
   // 5. The update's versions, which serve no more (WP3.41b).
-  const settled = await settleVersions(ctx, plan.platformWorker);
-  if (settled.kind === "waiting") return settled;
-  if (rollback().platformVersionId !== settled.versionId) {
-    progress({ platformVersionId: settled.versionId });
+  const settled = await settleVersions(ctx, plan.platformWorker, previous.platformVersionId);
+  if (settled !== undefined) return settled;
+  if (rollback().platformVersionId === undefined) {
+    progress({ platformVersionId: previous.platformVersionId });
   }
 
   // 6. The previous release's server answers with a durable owner: its lines since the server put
   // the restore point back, which only a version deployed after that can have logged, however
   // long ago (it logs its status for a while once its owner is durable, then no more).
   const from = Date.parse(String(rollback().restoredAt));
-  const released = settled.versionId;
+  const released = previous.platformVersionId;
   ctx.log(
     "waiting for the platform objects to switch back and the server to restart on the previous version (about 5 to 10 minutes)",
   );
@@ -279,24 +289,35 @@ export async function runRollback(
  * the newest holds the window and the rollback order. While the Worker's latest version is not the
  * deployed one, Cloudflare refuses every change of its secrets (10215, "to prevent accidental
  * deployment"): `services`, `github-app` and every later secrets step would fail. And Wrangler's
- * next deploy keeps the latest version's secrets, the window and the order with them. So the
- * versions newer than the one serving are deleted, newest first, and the serving one is the latest
- * again. Should Cloudflare keep one, the window and the order are deleted from the latest version
- * as a new version that is not deployed (Wrangler's `versions secret`), the one secrets change it
- * allows then, and a warning says what stays refused. A window or an order the latest version
- * still holds once it serves (none from before an update can) is deleted as any secret is.
- * Resumable: every run lists the versions again.
+ * next deploy keeps the latest version's secrets, the window and the order with them. So, while
+ * the version from before the update serves, the versions newer than it are deleted, newest
+ * first, and it is the latest again. Should Cloudflare keep one, the window and the order are
+ * deleted from the latest version as a new version that is not deployed (Wrangler's
+ * `versions secret`), the one secrets change it allows then, and a warning says what stays
+ * refused. Nothing here deploys: the server of the version from before keeps running. Another
+ * version serving, or that version holding the window or the order (none from before an update
+ * does), stops the rollback for a person. Undefined once done; resumable: every run lists the
+ * versions again.
  */
 async function settleVersions(
   ctx: UpdateContext,
   worker: string,
-): Promise<{ readonly kind: "settled"; readonly versionId: string } | RollbackWaiting> {
+  previous: string,
+): Promise<RollbackWaiting | undefined> {
   const serving = await ctx.cloud.activeVersion(worker);
   if (serving === undefined) {
     return {
       kind: "waiting",
       why: `Cloudflare does not say yet which version of ${worker} serves all of its traffic`,
     };
+  }
+  if (serving !== previous) {
+    // Deployed outside the installer since this rollback deployed the version from before: its
+    // server may have changed Omnigent's data since the restore point was put back (Codex
+    // WP3.41b r1-1).
+    throw new BootstrapRefusal(
+      `version ${serving} of ${worker} serves, not ${previous}, the version from before the update that this rollback deployed: another version was deployed outside this installer since, and its server may have changed Omnigent's data. Nothing more was changed: get help before going on (docs/operations/recovery.md, "Rollback and destructive restore")`,
+    );
   }
   const listed = await ctx.cloud.versions(worker);
   const at = listed.findIndex((v) => v.id === serving);
@@ -319,12 +340,10 @@ async function settleVersions(
   if (names === null) throw new Error(`after its rollback, ${worker} does not exist`);
   const left = [MAINTENANCE_WINDOW_SECRET, ROLLBACK_SECRET].filter((n) => names.includes(n));
   if (kept === undefined) {
-    if (left.length === 0) return { kind: "settled", versionId: serving };
-    await ctx.cloud.updateSecrets(worker, Object.fromEntries(left.map((n) => [n, null])));
-    const now = await ctx.cloud.activeVersion(worker);
-    return now === undefined
-      ? { kind: "waiting", why: `Cloudflare does not say yet which version of ${worker} serves` }
-      : { kind: "settled", versionId: now };
+    if (left.length === 0) return undefined;
+    throw new BootstrapRefusal(
+      `${previous}, the version of ${worker} from before the update, holds ${left.join(", ")}, which no version from before an update holds. Nothing more was changed: get help before going on (docs/operations/recovery.md, "Rollback and destructive restore")`,
+    );
   }
   if (left.length > 0) {
     await ctx.cloud.deleteLatestSecrets(worker, left);
@@ -337,9 +356,9 @@ async function settleVersions(
     }
   }
   ctx.log(
-    `warning: ${worker}'s latest version is not the one deployed (${kept}). It holds no window or rollback order, so no later deploy takes them up, but Cloudflare refuses changes of its secrets (bootstrap.ts services, github-app) until the next update deploys a version`,
+    `warning: ${worker}'s latest version is not the one deployed (${kept}). It holds no window or rollback order, so no later deploy takes them up, but Cloudflare refuses changes of its secrets (bootstrap.ts services, github-app) until the next update deploys a version (docs/operations/recovery.md, "Latest version not deployed")`,
   );
-  return { kind: "settled", versionId: serving };
+  return undefined;
 }
 
 /** When the restore point's data is from, in words. */

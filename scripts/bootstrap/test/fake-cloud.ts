@@ -35,7 +35,6 @@ import {
   rollbackOrderOf,
 } from "../../../worker/src/server/maintenance.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
-import { latestNotDeployed } from "../cloud.ts";
 import {
   type BootstrapCloud,
   type BootstrapState,
@@ -56,6 +55,7 @@ import {
   PASSWORD_SECRET,
 } from "../settings.ts";
 import { parseState } from "../state.ts";
+import { latestNotDeployed } from "../window.ts";
 
 export const SWITCH_MS = 300_000;
 /** From the platform's first deploy to the server's first answer (the cron starts it). */
@@ -192,11 +192,6 @@ export class FakeWorld {
   rollbackWorks = true;
   /** Status lines name the restore point the server took; false models one it never reports. */
   reportsRestorePoint = true;
-  /**
-   * A rollback uploads a new version, the earlier one's with the latest version's secrets, and
-   * deploys it (Cloudflare deploys the earlier version as it was).
-   */
-  rollbackKeepsSecrets = false;
   /** Every `deployVersion`: the Worker and the version deployed again. */
   readonly redeployed: { worker: string; versionId: string; at: number }[] = [];
   readonly counts = new Map<string, number>();
@@ -413,10 +408,7 @@ export class FakeWorld {
           throw new Error("cf workers deployments create failed: [10007]");
         }
         // The same version again, from now: its secrets, variables and configuration as they were.
-        if (world.rollbackKeepsSecrets) {
-          const kept = world.secretsOf(worker) ?? target.secrets;
-          world.#newVersion(worker, kept, target.serverVars, target.config);
-        } else list.push({ ...target, at: world.now });
+        list.push({ ...target, at: world.now });
         if (target.config !== undefined) {
           world.configs.set(worker, [...(world.configs.get(worker) ?? []), target.config]);
         }

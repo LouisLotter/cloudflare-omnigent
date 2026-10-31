@@ -428,6 +428,10 @@ async function main(): Promise<number> {
         async secretNames() {
           return Object.keys(secrets).sort();
         },
+        // The version that serves is the latest one (WP3.41b).
+        async versions() {
+          return [{ id: `v${version}`, number: version }];
+        },
         async workerInstallation() {
           return {
             exists: true,

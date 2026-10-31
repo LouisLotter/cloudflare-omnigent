@@ -37,7 +37,6 @@ import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { latestNotDeployed } from "../../../scripts/bootstrap/cloud.ts";
 import {
   type BootstrapCloud,
   type BootstrapState,
@@ -57,6 +56,7 @@ import {
   type UpdateContext,
   type UpdateOptions,
 } from "../../../scripts/bootstrap/update.ts";
+import { latestNotDeployed } from "../../../scripts/bootstrap/window.ts";
 import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import {

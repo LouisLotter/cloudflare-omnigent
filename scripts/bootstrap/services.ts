@@ -40,7 +40,7 @@ import {
   SERVER_ENV,
 } from "./settings.ts";
 import { pollServer } from "./update.ts";
-import { windowRefusal } from "./window.ts";
+import { latestNotServing, windowRefusal } from "./window.ts";
 
 /** The settings the server image reads (images/server/cfo_server/mcp.py), as the Worker holds them. */
 export const MCP_SERVICES_SECRET = `${SERVER_ENV}CFO_MCP_SERVICES`;
@@ -196,7 +196,7 @@ function valueProblem(value: string, limit: number): string | undefined {
 export interface ServicesPorts {
   readonly cloud: Pick<
     BootstrapCloud,
-    "secretNames" | "workerInstallation" | "updateSecrets" | "logs"
+    "secretNames" | "workerInstallation" | "updateSecrets" | "logs" | "versions"
   >;
   readonly store: StateStore;
   /** The manifests this checkout ships, by ID: the ones the release's image holds. */
@@ -268,6 +268,8 @@ async function preflight(
       `${plan.platformWorker} is not serving installation ${plan.installationId}${nothing}`,
     );
   }
+  const refused = await latestNotServing(ports.cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new ServicesRefusal(refused);
   if (!offersPlatformFeature(identity.vars, "mcp-services")) {
     throw new ServicesRefusal(
       `${plan.platformWorker} runs a release from before MCP services: update the installation first with bootstrap.ts update, then run this step again${nothing}`,

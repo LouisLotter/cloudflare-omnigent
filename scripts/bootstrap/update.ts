@@ -112,7 +112,7 @@ import {
 import {
   acceptWindow,
   closeWindow,
-  latestServes,
+  latestServing,
   newWindowId,
   type PreviousRelease,
   restorePointProblem,
@@ -415,13 +415,25 @@ export async function runUpdate(
     accepted = true;
   }
   const opened = state.journal.window;
+  // The secrets listed are the latest version's: they say what serves only while it does
+  // (WP3.41b). Unknown, nothing is decided.
+  const held =
+    opened?.deployStartedAt === undefined ||
+    opened.acceptStartedAt !== undefined ||
+    !present.has(MAINTENANCE_WINDOW_SECRET)
+      ? undefined
+      : await latestServing(ctx.cloud, plan.platformWorker, platformIdentity.versionId);
+  if (held === "unknown") {
+    return {
+      kind: "deployed",
+      why: "Cloudflare does not say yet which version serves the platform Worker",
+      window: "open",
+    };
+  }
   if (
     opened?.deployStartedAt !== undefined &&
     opened.acceptStartedAt === undefined &&
-    !(
-      present.has(MAINTENANCE_WINDOW_SECRET) &&
-      (await latestServes(ctx.cloud, plan.platformWorker, platformIdentity.versionId))
-    )
+    held !== "serves"
   ) {
     // The window's secret is gone after a deploy carrying it was sent: whether that deploy's
     // confirmation was lost or another version was deployed since (Codex WP3.41 r1-3, r2-1), the

@@ -84,6 +84,11 @@ class FakeCloud implements GitHubAppCloud {
   async activeVersion() {
     return this.changes.length === 0 ? "v1" : "v2";
   }
+  /** Cloudflare's version list: none named, unless a test says which is the latest. */
+  latestVersion: string | undefined;
+  async versions() {
+    return this.latestVersion === undefined ? [] : [{ id: this.latestVersion, number: 9 }];
+  }
   async logs() {
     if (this.changes.length === 0) return [];
     const $workers = {
@@ -565,8 +570,22 @@ describe("the whole step, with a local page and a browser that behaves as GitHub
       installationId: INSTALLATION,
       vars: { CFO_INSTALLATION_ID: INSTALLATION },
     };
+    // An earlier version serves than the latest (WP3.41b): Cloudflare would refuse the App's
+    // secrets after the App was made (Codex WP3.41b r1-2).
+    const behind = new FakeCloud();
+    behind.identity = {
+      exists: true,
+      installationId: INSTALLATION,
+      versionId: "v1",
+      vars: { CFO_INSTALLATION_ID: INSTALLATION, CFO_PLATFORM_FEATURES: FEATURES },
+    };
+    behind.latestVersion = "v2";
     for (const [cloud, why] of [
       [missing, /does not exist yet/],
+      [
+        behind,
+        /refuses to change cloudflare-omnigent's secrets while its latest version is not the one deployed/,
+      ],
       [other, /is not serving installation/],
       [unknown, /is not serving installation/],
       [older, /runs a release from before GitHub linking .*bootstrap\.ts update/],

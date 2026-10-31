@@ -52,6 +52,7 @@ import { type BootstrapCloud, VersionNotDeleted, type WorkerIdentity } from "./m
 import type { PreflightApi } from "./preflight.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
+import { latestNotDeployed } from "./window.ts";
 
 /** At most this many pages of 100 Workers Logs events per query. */
 const MAX_LOG_PAGES = 20;
@@ -161,14 +162,6 @@ export function bulkSecrets(
     throw new Error(`cf workers secrets bulk failed: ${diagnostic(result.stderr)}`);
   }
   return "sent";
-}
-
-/**
- * Cloudflare's refusal of a secrets change (10214, 10215), which deploys the latest version, while
- * the latest version is not the one deployed, in words (WP3.41b). Nothing was changed.
- */
-export function latestNotDeployed(worker: string): string {
-  return `Cloudflare refuses to change ${worker}'s secrets while its latest version is not the one deployed (as during an update's rollback): finish a rollback under way with bootstrap.ts update --rollback; after a finished one, the next bootstrap.ts update deploys a version that is (docs/operations/recovery.md); nothing was changed`;
 }
 
 /** At most this many pages of 100 versions are read. */
