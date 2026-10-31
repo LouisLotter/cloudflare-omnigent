@@ -6,7 +6,9 @@
 // restore point taken and put back by the image) through Docker (`github-setup-platform-e2e.ts`).
 // Cloudflare is a stand-in: each deploy, secrets change or version rollback restarts `wrangler
 // dev` with that version's variables and secrets (a version), and Workers Logs are the platform
-// Worker's own lines as Wrangler prints them. Access is a local stand-in with a synthetic owner.
+// Worker's own lines as Wrangler prints them. As Cloudflare, it lists, and a deploy keeps, the
+// latest version's secrets, and refuses a secrets change while that is not the one deployed
+// (WP3.41b). Access is a local stand-in with a synthetic owner.
 // No real account or Cloudflare resource is involved; every value is synthetic.
 //
 //   1. An installation, released: its owner, and a write.
@@ -16,8 +18,8 @@
 //      point gives exactly the database from before the update.
 //   3. Update B, whose check does not pass in time: a write lands inside the window by a hand that
 //      reaches the database directly (as a migration would); `update --rollback` puts the restore
-//      point back and the previous versions; the database is the one from before update B, the
-//      migration's write is gone, and writes work again.
+//      point back and the previous versions, and deletes update B's versions; the database is the
+//      one from before update B, the migration's write is gone, and writes work again.
 //
 //   docker build -f images/server/Dockerfile --target server -t cfo-wp341-server:runtime .
 //   node worker/test/e2e/update-window-e2e.ts [results.json]
@@ -35,11 +37,12 @@ import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  BootstrapCloud,
-  BootstrapState,
-  StateStore,
-  WorkerIdentity,
+import {
+  type BootstrapCloud,
+  type BootstrapState,
+  type StateStore,
+  VersionNotDeleted,
+  type WorkerIdentity,
 } from "../../../scripts/bootstrap/machine.ts";
 import { runRollback } from "../../../scripts/bootstrap/rollback.ts";
 import {
@@ -53,6 +56,7 @@ import {
   type UpdateContext,
   type UpdateOptions,
 } from "../../../scripts/bootstrap/update.ts";
+import { latestNotDeployed } from "../../../scripts/bootstrap/window.ts";
 import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import {
@@ -408,20 +412,26 @@ async function main(): Promise<number> {
     [INITIALIZED_SECRET]: "false",
   };
 
-  // Cloudflare's versions, as the stand-in keeps them: each a variable and secret set.
+  // Cloudflare's versions, as the stand-in keeps them: each a variable and secret set. As on
+  // Cloudflare (WP3.41b), deploying an earlier version leaves the newer ones uploaded; the secrets
+  // listed, and kept by a deploy, are the latest upload's, and a secrets change is refused while
+  // it is not the deployed one.
   interface Version {
     readonly id: string;
     readonly vars: Record<string, string>;
     readonly secrets: Record<string, string>;
   }
   const versions: Version[] = [];
+  let uploads: Version[] = [];
+  const latest = () => uploads.at(-1) as Version;
   let next = 1;
   let current: Version = { id: `v${next++}`, vars: { ...plain }, secrets: { ...installed } };
   let webVersion = "w1";
   let wrangler: Wrangler | null = null;
-  const activate = async (version: Version) => {
+  const activate = async (version: Version, uploaded = true) => {
     current = version;
     versions.push(version);
+    if (uploaded) uploads.push(version);
     await stopWrangler(wrangler);
     wrangler = startWrangler(port, configs(version.vars), ingressVars, version.secrets, version.id);
     await waitFor("wrangler dev", async () => (await fetch(`${local}/__e2e/cron`)).ok, 120_000);
@@ -543,7 +553,7 @@ async function main(): Promise<number> {
           };
     const cloud: BootstrapCloud = {
       async secretNames(worker) {
-        return worker === plan.platformWorker ? Object.keys(current.secrets).sort() : [];
+        return worker === plan.platformWorker ? Object.keys(latest().secrets).sort() : [];
       },
       async access() {
         return { teamDomain: TEAM, aud: AUD };
@@ -560,7 +570,7 @@ async function main(): Promise<number> {
         await activate({
           id: `v${next++}`,
           vars: { ...plain, ...picked },
-          secrets: { ...current.secrets, ...secrets },
+          secrets: { ...latest().secrets, ...secrets },
         });
       },
       async deployWeb() {
@@ -571,6 +581,7 @@ async function main(): Promise<number> {
       },
       async updateSecrets(worker, changes) {
         if (worker !== plan.platformWorker) throw new Error("only the platform Worker's");
+        if (latest().id !== current.id) throw new Error(latestNotDeployed(worker));
         const secrets = { ...current.secrets };
         for (const [name, value] of Object.entries(changes)) {
           if (value === null) delete secrets[name];
@@ -589,7 +600,22 @@ async function main(): Promise<number> {
         }
         const version = versions.findLast((v) => v.id === versionId);
         if (version === undefined) throw new Error(`no version ${versionId}`);
-        await activate({ ...version });
+        await activate({ ...version }, false);
+      },
+      async versions(worker) {
+        if (worker !== plan.platformWorker) throw new Error("only the platform Worker's");
+        return uploads.map((v) => ({ id: v.id, number: Number(v.id.slice(1)) })).reverse();
+      },
+      async deleteVersion(_worker, versionId) {
+        if (versionId === current.id || !uploads.some((v) => v.id === versionId)) {
+          throw new VersionNotDeleted(`no version ${versionId} to delete`);
+        }
+        uploads = uploads.filter((v) => v.id !== versionId);
+      },
+      async deleteLatestSecrets(_worker, names) {
+        const secrets = { ...latest().secrets };
+        for (const name of names) delete secrets[name];
+        uploads.push({ id: `v${next++}`, vars: latest().vars, secrets });
       },
       async logs(_worker, fromMs, toMs) {
         return printed
@@ -755,6 +781,7 @@ async function main(): Promise<number> {
       rolled.kind === "done" &&
         state.journal.window === undefined &&
         current.id === previousPlatform &&
+        latest().id === current.id &&
         current.secrets[ROLLBACK_SECRET] === undefined &&
         current.secrets[MAINTENANCE_WINDOW_SECRET] === undefined &&
         state.journal.platformCode === CODE.a &&

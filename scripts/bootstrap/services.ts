@@ -40,7 +40,7 @@ import {
   SERVER_ENV,
 } from "./settings.ts";
 import { pollServer } from "./update.ts";
-import { windowRefusal } from "./window.ts";
+import { latestNotServing, windowRefusal } from "./window.ts";
 
 /** The settings the server image reads (images/server/cfo_server/mcp.py), as the Worker holds them. */
 export const MCP_SERVICES_SECRET = `${SERVER_ENV}CFO_MCP_SERVICES`;
@@ -196,7 +196,7 @@ function valueProblem(value: string, limit: number): string | undefined {
 export interface ServicesPorts {
   readonly cloud: Pick<
     BootstrapCloud,
-    "secretNames" | "workerInstallation" | "updateSecrets" | "logs"
+    "secretNames" | "workerInstallation" | "updateSecrets" | "logs" | "versions"
   >;
   readonly store: StateStore;
   /** The manifests this checkout ships, by ID: the ones the release's image holds. */
@@ -285,6 +285,9 @@ async function preflight(
       `${plan.platformWorker} holds a list of MCP services this state file does not record (set from another laptop?). Run this step where it was set, or run again with --replace to write the list from this state file${nothing}`,
     );
   }
+  // Last, once nothing else refuses: before anything is asked or recorded (WP3.41b).
+  const refused = await latestNotServing(ports.cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new ServicesRefusal(refused);
   return present;
 }
 

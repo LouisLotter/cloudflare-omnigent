@@ -16,6 +16,11 @@
 // rollback order (`SERVER_ENV_CFO_ROLLBACK_TO`) never answers, and the watchdog logs `rolled_back`
 // once and holds it. A rollback deploys an earlier version again (`deployVersion`), with its own
 // secrets and configuration.
+// Uploaded versions apart from deployments (WP3.41b): a deploy or a secrets change uploads a new
+// version and deploys it; deploying an earlier one leaves the newer ones uploaded. As Cloudflare
+// does, the secrets listed, and kept by the next deploy, are the latest uploaded version's, and a
+// secrets change is refused (10215) while that is not the deployed one. A version that serves no
+// traffic may be deleted, and secrets deleted from the latest one as a new version not deployed.
 // The installer's user API tokens (WP3.25) live here too, with the same crash points, and so does
 // Access in the installer's account (WP3.31): the organization, the applications and the login
 // methods, as cf answers for them.
@@ -30,7 +35,12 @@ import {
   rollbackOrderOf,
 } from "../../../worker/src/server/maintenance.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
-import type { BootstrapCloud, BootstrapState, StateStore } from "../machine.ts";
+import {
+  type BootstrapCloud,
+  type BootstrapState,
+  type StateStore,
+  VersionNotDeleted,
+} from "../machine.ts";
 import {
   type ApiToken,
   R2_WRITE_GROUP,
@@ -45,6 +55,7 @@ import {
   PASSWORD_SECRET,
 } from "../settings.ts";
 import { parseState } from "../state.ts";
+import { latestNotDeployed } from "../window.ts";
 
 export const SWITCH_MS = 300_000;
 /** From the platform's first deploy to the server's first answer (the cron starts it). */
@@ -109,7 +120,14 @@ export interface CrashPoint {
 
 export class FakeWorld {
   now = Date.UTC(2026, 9, 22, 12, 0, 0);
+  /** Each Worker's deployments in order: the version each made serve, from when. */
   readonly versions = new Map<string, Version[]>();
+  /** Versions uploaded but never deployed (`deleteLatestSecrets`). */
+  readonly drafts = new Map<string, Version[]>();
+  /** Versions deleted (`deleteVersion`): no longer listed, nor anyone's latest. */
+  readonly deleted = new Set<string>();
+  /** Cloudflare refuses to delete versions: `deleteVersion` fails, nothing deleted. */
+  keepsVersions = false;
   readonly calls: string[] = [];
   readonly configs = new Map<string, Readonly<Record<string, unknown>>[]>();
   /** Every secret change, with the time it took effect. */
@@ -174,8 +192,6 @@ export class FakeWorld {
   rollbackWorks = true;
   /** Status lines name the restore point the server took; false models one it never reports. */
   reportsRestorePoint = true;
-  /** A rollback keeps the current secrets instead of the version's own (Cloudflare does not). */
-  rollbackKeepsSecrets = false;
   /** Every `deployVersion`: the Worker and the version deployed again. */
   readonly redeployed: { worker: string; versionId: string; at: number }[] = [];
   readonly counts = new Map<string, number>();
@@ -255,12 +271,23 @@ export class FakeWorld {
     }
   }
 
+  /** The version deployed now: the last deployment's. */
   latest(worker: string): Version | undefined {
     return this.versions.get(worker)?.at(-1);
   }
 
+  /** The Worker's uploaded versions not deleted, newest (highest number) first. */
+  uploads(worker: string): Version[] {
+    const seen = new Map<string, Version>();
+    for (const v of [...(this.versions.get(worker) ?? []), ...(this.drafts.get(worker) ?? [])]) {
+      if (!seen.has(v.id) && !this.deleted.has(v.id)) seen.set(v.id, v);
+    }
+    return [...seen.values()].sort((a, b) => numberOf(b) - numberOf(a));
+  }
+
+  /** The latest uploaded version's secrets, as Cloudflare lists them; none once the Worker is gone. */
   secretsOf(worker: string): ReadonlyMap<string, string> | undefined {
-    return this.latest(worker)?.secrets;
+    return this.versions.has(worker) ? this.uploads(worker)[0]?.secrets : undefined;
   }
 
   #newVersion(
@@ -348,6 +375,10 @@ export class FakeWorld {
         const current = world.secretsOf(worker);
         // Like cf workers secrets bulk: a missing Worker is an error, never created.
         if (current === undefined) throw new Error("cf workers secrets bulk failed: [10007]");
+        // And a change while the latest version is not the deployed one is refused (WP3.41b).
+        if (world.uploads(worker)[0]?.id !== world.latest(worker)?.id) {
+          throw new Error(latestNotDeployed(worker));
+        }
         const next = new Map(current);
         for (const [key, value] of Object.entries(world.bulkKeeps ? {} : changes)) {
           if (value === null) next.delete(key);
@@ -377,19 +408,45 @@ export class FakeWorld {
           throw new Error("cf workers deployments create failed: [10007]");
         }
         // The same version again, from now: its secrets, variables and configuration as they were.
-        const latest = list.at(-1);
-        list.push({
-          ...target,
-          at: world.now,
-          ...(world.rollbackKeepsSecrets && latest !== undefined
-            ? { secrets: latest.secrets }
-            : {}),
-        });
+        list.push({ ...target, at: world.now });
         if (target.config !== undefined) {
           world.configs.set(worker, [...(world.configs.get(worker) ?? []), target.config]);
         }
         world.redeployed.push({ worker, versionId, at: world.now });
         world.#leave("deployVersion", n);
+      },
+      async versions(worker) {
+        const n = world.#enter("versions");
+        if (!world.versions.has(worker))
+          throw new Error("cf workers versions list failed: [10007]");
+        const listed = world.noVersions
+          ? []
+          : world.uploads(worker).map((v) => ({ id: v.id, number: numberOf(v) }));
+        world.#leave("versions", n);
+        return listed;
+      },
+      async deleteVersion(worker, versionId) {
+        const n = world.#enter("deleteVersion");
+        const found = world.uploads(worker).some((v) => v.id === versionId);
+        // Never the deployed one; and none when Cloudflare keeps them.
+        if (!found || versionId === world.latest(worker)?.id || world.keepsVersions) {
+          throw new VersionNotDeleted("cf workers versions delete failed: [10000]");
+        }
+        world.deleted.add(versionId);
+        world.#leave("deleteVersion", n);
+      },
+      async deleteLatestSecrets(worker, names) {
+        const n = world.#enter("deleteLatestSecrets");
+        const latest = world.versions.has(worker) ? world.uploads(worker)[0] : undefined;
+        if (latest === undefined) throw new Error("wrangler versions secret bulk exited with 1");
+        const next = new Map(latest.secrets);
+        for (const name of names) next.delete(name);
+        const { at: _at, ...rest } = latest;
+        world.drafts.set(worker, [
+          ...(world.drafts.get(worker) ?? []),
+          { ...rest, id: `v${world.#nextVersion++}`, at: world.now, secrets: next },
+        ]);
+        world.#leave("deleteLatestSecrets", n);
       },
       async logs(worker, fromMs, toMs) {
         const n = world.#enter("logs");
@@ -713,6 +770,11 @@ export class FakeWorld {
     const secrets = this.secretsOf(this.plan.platformWorker);
     return secrets?.get(INITIALIZED_SECRET) === "true" && !secrets.has(PASSWORD_SECRET);
   }
+}
+
+/** A version's number, as Cloudflare counts a Worker's uploads: in order. */
+function numberOf(v: Version): number {
+  return Number(v.id.slice(1));
 }
 
 function sameSecrets(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {

@@ -9,6 +9,8 @@
 //                                      [--secrets-stdin]
 //   node scripts/staging/stg.ts secrets --suffix <s> --owner <wp> [--not-after <ms>]
 //   node scripts/staging/stg.ts deploy-version --suffix <s> --owner <wp> --version <version ID>
+//   node scripts/staging/stg.ts delete-version --suffix <s> --owner <wp> --version <version ID>
+//   node scripts/staging/stg.ts delete-latest-secrets --suffix <s> --owner <wp> --secret <name>…
 //                                                                    (changes as JSON on stdin)
 //   node scripts/staging/stg.ts secret-names --suffix <s>
 //   node scripts/staging/stg.ts list
@@ -20,6 +22,9 @@
 // new deployed version (one bulk request): {"NAME": "value"} sets one, {"NAME": null} deletes one.
 // deploy-version deploys an earlier version of a deployed Worker to all of its traffic, its secrets
 // as they were (WP3.41: `bootstrap.ts update --rollback` of a staging installation).
+// delete-version deletes one uploaded version of a deployed Worker, and delete-latest-secrets the
+// named secrets from its latest version as a new version that is not deployed (WP3.41b: the
+// rollback's cleanup once the earlier version serves). Both take names and IDs only.
 // Values come only from stdin and never reach argv, the output or a file that stays; names are
 // logged. With --not-after (Unix milliseconds), the change is sent only if that time has not
 // passed once every check is done; otherwise nothing is sent and the tool exits with 3.
@@ -106,6 +111,8 @@ import { assertAccount, resourceName, type StagingConfig } from "./guard.ts";
 import { acquireLock, sleepSync } from "./lock.ts";
 import {
   type Context,
+  deleteLatestSecrets,
+  deleteVersion,
   deploy,
   deployVersion,
   listSecretNames,
@@ -252,6 +259,7 @@ function main(): void {
       "secrets-stdin": { type: "boolean", default: false },
       "not-after": { type: "string" },
       version: { type: "string" },
+      secret: { type: "string", multiple: true },
     },
   });
 
@@ -315,6 +323,28 @@ function main(): void {
         suffix: values.suffix,
         owner: values.owner,
         versionId: values.version,
+      });
+      return;
+    }
+    case "delete-version": {
+      if (!values.suffix || !values.owner || !values.version) {
+        throw new Error("delete-version needs --suffix, --owner and --version");
+      }
+      deleteVersion(context(loadConfig(), command), {
+        suffix: values.suffix,
+        owner: values.owner,
+        versionId: values.version,
+      });
+      return;
+    }
+    case "delete-latest-secrets": {
+      if (!values.suffix || !values.owner || !values.secret?.length) {
+        throw new Error("delete-latest-secrets needs --suffix, --owner and --secret");
+      }
+      deleteLatestSecrets(context(loadConfig(), command), {
+        suffix: values.suffix,
+        owner: values.owner,
+        names: values.secret,
       });
       return;
     }

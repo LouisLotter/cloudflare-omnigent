@@ -26,7 +26,13 @@
 
 import { MAINTENANCE_WINDOW_SECRET } from "../../worker/src/server/maintenance.ts";
 import { parseLogs, type Verification, verifyRelease } from "./events.ts";
-import { type BootstrapCloud, type BootstrapState, type Journal, slicedLogs } from "./machine.ts";
+import {
+  type BootstrapCloud,
+  BootstrapRefusal,
+  type BootstrapState,
+  type Journal,
+  slicedLogs,
+} from "./machine.ts";
 import type { Installation } from "./settings.ts";
 
 /** How many restore points the server keeps, and the journal records (the newest). */
@@ -161,6 +167,83 @@ export function closeWindow(
   return { ...rest, ...also, restorePoints: kept };
 }
 
+/**
+ * Whether the Worker's latest version is the one serving all of its traffic (`serves`), as it is
+ * unless an earlier version was deployed since (`other`), or `unknown` when Cloudflare names
+ * either not (WP3.41b). The secrets Cloudflare lists, and a deploy keeps, are the latest
+ * version's: only when it serves do they say what serves, the window among them; and only then
+ * does Cloudflare take a secrets change (otherwise 10215).
+ */
+export async function latestServing(
+  cloud: Pick<BootstrapCloud, "versions" | "activeVersion">,
+  worker: string,
+  serving?: string,
+): Promise<"serves" | "other" | "unknown"> {
+  const latest = (await cloud.versions(worker))[0]?.id;
+  const active = serving ?? (await cloud.activeVersion(worker));
+  if (latest === undefined || active === undefined) return "unknown";
+  return latest === active ? "serves" : "other";
+}
+
+/**
+ * Before the acceptance deletes the window's secret: Cloudflare takes that change only while the
+ * latest version serves (WP3.41b). Should an earlier version have been deployed since, outside the
+ * installer, the update's own version, the one accepted, is deployed again when it is the latest;
+ * anything else stops the acceptance, which stays decided, for a person (Codex WP3.41b r1-3).
+ */
+async function latestServesForAcceptance(
+  ctx: WindowContext,
+  worker: string,
+  updated: string | undefined,
+): Promise<void> {
+  const serving = await latestServing(ctx.cloud, worker);
+  if (serving === "serves") return;
+  if (serving === "unknown") {
+    throw new Error(
+      `Cloudflare does not say yet which version serves all of ${worker}'s traffic, so the window cannot be ended yet; run update again`,
+    );
+  }
+  const latest = (await ctx.cloud.versions(worker))[0]?.id;
+  if (latest === undefined || latest !== updated) {
+    throw new BootstrapRefusal(
+      `an earlier version of ${worker} was deployed outside this installer while the update was being accepted, and its latest version is not the update's. ${latestNotDeployed(worker)}`,
+    );
+  }
+  ctx.log(
+    `deploying the update's version of ${worker} again: an earlier one was deployed outside this installer while the update was being accepted, and Cloudflare ends the window only on the version that serves`,
+  );
+  await ctx.cloud.deployVersion(worker, latest);
+}
+
+/**
+ * Why a step that changes the platform Worker's secrets may not begin (WP3.41b): an earlier
+ * version serves than its latest, so Cloudflare would refuse the change (10215), after the step
+ * had asked the person, or made a GitHub App, for nothing (Codex WP3.41b r1-2); or Cloudflare
+ * lists no version at all though one serves (r2-1). Undefined when the latest version serves, or
+ * when Cloudflare names no single version serving: the step then runs as it did before WP3.41b
+ * (the GitHub step needs no word about versions, Codex WP5.9 r1-1).
+ */
+export async function latestNotServing(
+  cloud: Pick<BootstrapCloud, "versions">,
+  worker: string,
+  serving: string | undefined,
+): Promise<string | undefined> {
+  if (serving === undefined) return undefined;
+  const latest = (await cloud.versions(worker))[0]?.id;
+  if (latest === undefined) {
+    return `Cloudflare lists no version of ${worker}, though ${serving} serves: run this step again later; nothing was changed`;
+  }
+  return latest !== serving ? latestNotDeployed(worker) : undefined;
+}
+
+/**
+ * Cloudflare's refusal of a secrets change (10214, 10215), which deploys the latest version, while
+ * the latest version is not the one deployed, in words (WP3.41b). Nothing was changed.
+ */
+export function latestNotDeployed(worker: string): string {
+  return `Cloudflare refuses to change ${worker}'s secrets while its latest version is not the one deployed (an earlier version was deployed again, as an update's rollback does): finish a rollback under way with bootstrap.ts update --rollback; otherwise see docs/operations/recovery.md, "Latest version not deployed"; nothing was changed`;
+}
+
 /** Why another step may not change the installation now, or undefined (WP3.41). */
 export function windowRefusal(journal: Journal): string | undefined {
   const window = journal.window;
@@ -261,6 +344,11 @@ export async function acceptWindow(
   const names = await ctx.cloud.secretNames(plan.platformWorker);
   if (names === null) throw new Error(`${plan.platformWorker} no longer exists`);
   if (names.includes(MAINTENANCE_WINDOW_SECRET)) {
+    await latestServesForAcceptance(
+      ctx,
+      plan.platformWorker,
+      state().journal.update?.platformVersionId,
+    );
     await ctx.cloud.updateSecrets(plan.platformWorker, { [MAINTENANCE_WINDOW_SECRET]: null });
     const after = await ctx.cloud.secretNames(plan.platformWorker);
     if (after === null || after.includes(MAINTENANCE_WINDOW_SECRET)) {

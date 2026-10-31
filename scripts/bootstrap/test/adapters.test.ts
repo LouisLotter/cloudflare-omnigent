@@ -11,6 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  MAINTENANCE_WINDOW_SECRET,
+  ROLLBACK_SECRET,
+} from "../../../worker/src/server/maintenance.ts";
 import type { CommandResult, RunOptions } from "../../staging/cloud.ts";
 import { acquireLock } from "../../staging/lock.ts";
 import { AccessUnavailable } from "../access-app.ts";
@@ -26,6 +30,7 @@ import {
   soleAccount,
   workerMissing,
 } from "../cloud.ts";
+import { VersionNotDeleted } from "../machine.ts";
 import { R2_WRITE_GROUP, r2TokenRequest, TokensUnavailable } from "../r2-token.ts";
 import { INITIALIZED_SECRET, PASSWORD_SECRET, RELEASE_CHANGES } from "../settings.ts";
 import { stagingCloud, stagingToolStdio } from "../staging.ts";
@@ -836,6 +841,108 @@ describe("accountCloud: Wrangler with the installer's login", () => {
     );
   });
 
+  it("lists, deletes and trims versions through cf and Wrangler, names only (WP3.41b)", async () => {
+    const plan = await accountPlan();
+    const id = (n: number) => `0a1b2c3d-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: id(from + i), number: from + i }));
+    const answers: unknown[] = [{ result: page(1, 100) }, { result: page(101, 2) }];
+    const { runner, calls } = fakeRunner((call) =>
+      call.command === "cf" && call.args[2] === "list"
+        ? { stdout: JSON.stringify(answers.shift()) }
+        : call.command === "cf"
+          ? { stdout: "{}" }
+          : {},
+    );
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner });
+    const listed = await cloud.versions(plan.platformWorker);
+    expect(listed.map((v) => v.number)).toEqual(Array.from({ length: 102 }, (_, i) => 102 - i));
+    expect(calls.map((c) => c.args.slice(0, 3).concat(c.args.slice(-2)))).toEqual([
+      ["workers", "versions", "list", "--page", "1"],
+      ["workers", "versions", "list", "--page", "2"],
+    ]);
+    expect(calls[0]?.args).toContain("--per-page");
+    // An answer that is not a list of versions is an error, never a shorter list.
+    for (const odd of [
+      { result: { items: [] } },
+      { result: [...page(1, 2), { id: "odd", number: 3 }] },
+    ]) {
+      answers.push(odd);
+      await expect(cloud.versions(plan.platformWorker)).rejects.toThrow(
+        "cf workers versions list answered something other than versions",
+      );
+    }
+    calls.length = 0;
+    await cloud.deleteVersion(plan.platformWorker, id(102));
+    expect([calls[0]?.command, ...(calls[0]?.args ?? [])]).toEqual([
+      "cf",
+      "workers",
+      "versions",
+      "delete",
+      id(102),
+      "--worker-id",
+      plan.platformWorker,
+    ]);
+    await expect(cloud.deleteVersion(plan.platformWorker, "v1; rm")).rejects.toThrow(
+      "not a Worker version's ID",
+    );
+    calls.length = 0;
+    await cloud.deleteLatestSecrets(plan.platformWorker, [
+      MAINTENANCE_WINDOW_SECRET,
+      ROLLBACK_SECRET,
+    ]);
+    const trim = calls[0] as Call;
+    expect(trim.command).toBe(process.execPath);
+    expect(wranglerArgs(trim)).toEqual([
+      "versions",
+      "secret",
+      "bulk",
+      "/dev/fd/3",
+      "--config",
+      expect.any(String),
+      "--name",
+      plan.platformWorker,
+    ]);
+    expect(JSON.parse(trim.fd3 ?? "{}")).toEqual({
+      [MAINTENANCE_WINDOW_SECRET]: null,
+      [ROLLBACK_SECRET]: null,
+    });
+    expect(JSON.parse(trim.files[trim.args[7] as string]?.text ?? "{}")).toEqual({
+      name: plan.platformWorker,
+      account_id: plan.accountId,
+    });
+  });
+
+  it("tells a deletion Cloudflare refused, and a secrets change it refuses after a rollback (WP3.41b)", async () => {
+    const plan = await accountPlan();
+    const refused = fakeRunner(() => ({
+      status: 1,
+      stderr: "[10021] cannot delete this version, account 0123456789abcdef0123456789abcdef",
+    }));
+    const cloud = accountCloud(plan, { workerDir: WORKER, runner: refused.runner });
+    const deleting = cloud.deleteVersion("w", "0a1b2c3d-0000-4000-8000-000000000001");
+    await expect(deleting).rejects.toBeInstanceOf(VersionNotDeleted);
+    await expect(deleting).rejects.toThrow(
+      "cf workers versions delete failed: [10021] cannot delete this version, account <id>",
+    );
+    await expect(cloud.deleteLatestSecrets("w", [ROLLBACK_SECRET])).rejects.toThrow(
+      "wrangler versions secret bulk exited with 1",
+    );
+    for (const code of ["10214", "10215"]) {
+      const latest = fakeRunner(() => ({
+        status: 1,
+        stderr: `✘ [ERROR] A request to the Cloudflare API failed. [${code}] Secret edit failed. You attempted to modify a secret, but the latest version of your Worker isn't currently deployed.`,
+      }));
+      await expect(
+        accountCloud(plan, { workerDir: WORKER, runner: latest.runner }).updateSecrets("w", {
+          [ROLLBACK_SECRET]: null,
+        }),
+      ).rejects.toThrow(
+        /^Cloudflare refuses to change w's secrets while its latest version is not the one deployed .*update --rollback.*nothing was changed$/,
+      );
+    }
+  });
+
   it("reads the version serving all traffic from the newest deployment", async () => {
     const plan = await accountPlan();
     const answers: unknown[] = [
@@ -924,6 +1031,7 @@ describe("stagingCloud: through the guarded staging tool", () => {
       if (call.args[2] === "applications") return { stdout: JSON.stringify(apps) };
       if (call.args[0] === "zero-trust")
         return { stdout: '{"auth_domain":"team.cloudflareaccess.com"}' };
+      if (call.args[1] === "versions") return { stdout: '{"result":[]}' };
       return { stdout: '{"events":{"events":[]}}' };
     });
     const cloud = stagingCloud(plan, {
@@ -1031,6 +1139,44 @@ describe("stagingCloud: through the guarded staging tool", () => {
       "WP2.4",
       "--version",
       version,
+    ]);
+  });
+
+  it("deletes versions and trims the latest one's secrets through the tool; lists with cf (WP3.41b)", async () => {
+    const { plan, cloud, tool, calls } = await staging((args) => ({
+      status: args[0] === "delete-version" && args.includes("refused") ? 1 : 0,
+      stdout: "",
+    }));
+    const version = "0a1b2c3d-0000-4000-8000-000000000003";
+    await cloud.deleteVersion(plan.platformWorker, version);
+    await cloud.deleteLatestSecrets(plan.platformWorker, [
+      MAINTENANCE_WINDOW_SECRET,
+      ROLLBACK_SECRET,
+    ]);
+    expect(tool.map((t) => t.args)).toEqual([
+      ["delete-version", "--suffix", "wp24-platform", "--owner", "WP2.4", "--version", version],
+      [
+        "delete-latest-secrets",
+        "--suffix",
+        "wp24-platform",
+        "--owner",
+        "WP2.4",
+        "--secret",
+        MAINTENANCE_WINDOW_SECRET,
+        "--secret",
+        ROLLBACK_SECRET,
+      ],
+    ]);
+    await expect(cloud.deleteVersion(plan.platformWorker, "refused")).rejects.toBeInstanceOf(
+      VersionNotDeleted,
+    );
+    expect(await cloud.versions(plan.platformWorker)).toEqual([]);
+    expect(calls.at(-1)?.args.slice(0, 5)).toEqual([
+      "workers",
+      "versions",
+      "list",
+      "--worker-id",
+      plan.platformWorker,
     ]);
   });
 

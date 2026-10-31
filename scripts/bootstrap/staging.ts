@@ -22,8 +22,9 @@ import {
   readAccess,
   withRenderedConfig,
   workerInstallation,
+  workerVersions,
 } from "./cloud.ts";
-import type { BootstrapCloud } from "./machine.ts";
+import { type BootstrapCloud, VersionNotDeleted } from "./machine.ts";
 import { type Installation, renderWebConfig } from "./settings.ts";
 
 export interface StagingCloudOptions {
@@ -163,6 +164,25 @@ export function stagingCloud(plan: Installation, options: StagingCloudOptions): 
         target.owner,
         "--version",
         versionId,
+      ]);
+    },
+    versions: async (worker) => workerVersions(run, worker),
+    // The rollback's cleanup (WP3.41b), through the tool's guards as well.
+    deleteVersion: async (worker, versionId) => {
+      const args = ["delete-version", "--suffix", suffixOf(worker), "--owner", target.owner];
+      const result = stg([...args, "--version", versionId]);
+      if (result.status !== 0) {
+        throw new VersionNotDeleted(`stg delete-version exited with ${result.status}`);
+      }
+    },
+    deleteLatestSecrets: async (worker, names) => {
+      tool([
+        "delete-latest-secrets",
+        "--suffix",
+        suffixOf(worker),
+        "--owner",
+        target.owner,
+        ...names.flatMap((name) => ["--secret", name]),
       ]);
     },
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),

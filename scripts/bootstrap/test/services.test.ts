@@ -367,6 +367,28 @@ describe("refusals, before anything is asked or changed", () => {
     expect(replaced.outcome.kind).toBe("ready");
   });
 
+  it("refuses before anything changes while an earlier version serves than the latest (Codex WP3.41b r1-2)", async () => {
+    const h = await installed();
+    // As after a rollback whose newer versions Cloudflare kept: the latest is not deployed.
+    await h.world.cloud().deleteLatestSecrets(h.world.plan.platformWorker, ["SERVER_ENV_CFO_X"]);
+    const before = h.store.load().journal;
+    await expect(step(h, { kind: "add", id: "tracker", origin: ORIGIN })).rejects.toThrow(
+      /refuses to change .*'s secrets while its latest version is not the one deployed.*nothing was changed/,
+    );
+    expect(h.store.load().journal).toEqual(before);
+    expect(h.world.calls).not.toContain("updateSecrets");
+    // Nor when Cloudflare lists no version though one serves (Codex WP3.41b r2-1).
+    const fresh = await installed();
+    const cloud = fresh.world.cloud();
+    fresh.world.cloud = () => ({ ...cloud, versions: async () => [] });
+    const untouched = fresh.store.load().journal;
+    const asking = step(fresh, { kind: "add", id: "tracker", origin: ORIGIN }, { answers: ["x"] });
+    await expect(asking).rejects.toThrow(
+      /lists no version of .*, though .* serves: run this step again later; nothing was changed/,
+    );
+    expect(fresh.store.load().journal).toEqual(untouched);
+  });
+
   it("a platform Worker that is not there, or another installation's", async () => {
     const h = await installed();
     h.world.versions.delete(h.world.plan.platformWorker);

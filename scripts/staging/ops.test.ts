@@ -26,6 +26,8 @@ import {
 import {
   type Cloud,
   type Context,
+  deleteLatestSecrets,
+  deleteVersion,
   deploy,
   deployVersion,
   listSecretNames,
@@ -460,6 +462,14 @@ class FakeCloud implements Cloud {
   deployVersion(name: string, versionId: string): void {
     this.tick();
     this.calls.push(`worker.deploy-version ${name} ${versionId}`);
+  }
+  deleteVersion(name: string, versionId: string): void {
+    this.tick();
+    this.calls.push(`worker.delete-version ${name} ${versionId}`);
+  }
+  deleteLatestSecrets(name: string, names: readonly string[]): void {
+    this.tick();
+    this.calls.push(`worker.delete-latest-secrets ${name} ${names.join(",")}`);
   }
   bucketExists(name: string): boolean {
     this.tick();
@@ -2559,6 +2569,47 @@ describe("WP2.4: the caller's secrets, on deploy and afterwards", () => {
     expect(again("a")).toThrow("cfo-stg-a is recorded, but the staging account has no such Worker");
     store.update((all) => all.map((d) => ({ ...d, state: "pending" as const })));
     expect(again("a")).toThrow("cfo-stg-a is not deployed; deploy it first");
+    expect(locks.held.size).toBe(0);
+  });
+
+  it("deletes a version, or secrets from the latest one, for a deployed Worker of the same owner only (WP3.41b)", () => {
+    const version = "0a1b2c3d-0000-4000-8000-000000000002";
+    const drop =
+      (suffix: string, owner = "wp0.4") =>
+      () =>
+        deleteVersion(ctx, { suffix, owner, versionId: version });
+    const trim =
+      (suffix: string, owner = "wp0.4", names = ["B", "A", "B"]) =>
+      () =>
+        deleteLatestSecrets(ctx, { suffix, owner, names });
+    expect(drop("none")).toThrow("cfo-stg-none is not a recorded staging deployment");
+    expect(trim("none")).toThrow("cfo-stg-none is not a recorded staging deployment");
+    deploy(ctx, request("a", 7, withManifest("a", TOKEN_MANIFEST)));
+    cloud.calls.length = 0;
+    expect(drop("a", "wp9.9")).toThrow("cfo-stg-a belongs to wp0.4, not wp9.9");
+    expect(trim("a", "wp9.9")).toThrow("cfo-stg-a belongs to wp0.4, not wp9.9");
+    expect(trim("a", "wp0.4", [])).toThrow("no secret to delete");
+    expect(trim("a", "wp0.4", ["A B"])).toThrow('invalid secret names: "A B"');
+    expect(trim("a", "wp0.4", ["X1_ACCESS_CLIENT_ID"])).toThrow(
+      "the secrets X1_ACCESS_CLIENT_ID are the staging tool's own",
+    );
+    cloud.calls.length = 0;
+    drop("a")();
+    trim("a")();
+    expect(cloud.calls).toEqual([
+      "accounts",
+      "worker.exists",
+      `worker.delete-version cfo-stg-a ${version}`,
+      "accounts",
+      "worker.exists",
+      "worker.delete-latest-secrets cfo-stg-a A,B",
+    ]);
+    expect(logs.slice(-2)).toEqual([
+      `deleted version ${version} of cfo-stg-a`,
+      "deleted from the latest version of cfo-stg-a, not deployed: A, B",
+    ]);
+    cloud.workers.delete("cfo-stg-a");
+    expect(drop("a")).toThrow("cfo-stg-a is recorded, but the staging account has no such Worker");
     expect(locks.held.size).toBe(0);
   });
 

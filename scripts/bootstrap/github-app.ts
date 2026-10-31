@@ -65,6 +65,7 @@ import {
   SERVER_ENV,
 } from "./settings.ts";
 import { pollServer } from "./update.ts";
+import { latestNotServing } from "./window.ts";
 
 /** The App's settings as the platform Worker holds them; the server receives them unprefixed. */
 export const GITHUB_APP_SECRETS = {
@@ -126,7 +127,7 @@ export class GitHubAppRefusal extends Error {}
 /** What the step needs of Cloudflare: the bootstrap's own adapter (cloud.ts, staging.ts). */
 export type GitHubAppCloud = Pick<
   BootstrapCloud,
-  "secretNames" | "workerInstallation" | "updateSecrets" | "logs"
+  "secretNames" | "workerInstallation" | "updateSecrets" | "logs" | "versions"
 >;
 
 export interface GitHubAppPorts {
@@ -438,6 +439,9 @@ async function preflight(
       `${plan.platformWorker} holds only half of the key service's signing pair (${KEY_SERVICE_SECRETS.currentId}, ${KEY_SERVICE_SECRETS.current}); nothing was changed`,
     );
   }
+  // Last, once nothing else refuses: before anything is shown or made (WP3.41b).
+  const refused = await latestNotServing(cloud, plan.platformWorker, identity.versionId);
+  if (refused !== undefined) throw new GitHubAppRefusal(refused);
   return present;
 }
 

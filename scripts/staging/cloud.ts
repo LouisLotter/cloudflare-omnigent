@@ -154,6 +154,49 @@ export function deployVersionArgs(worker: string, versionId: string): string[] {
   ];
 }
 
+/**
+ * `cf workers versions delete`: one uploaded version of the Worker, by ID (WP3.41b). An update's
+ * rollback deletes the versions newer than the one it deployed again, so that the deployed
+ * version is the Worker's latest once more: Cloudflare refuses every secret change (10215) while
+ * the latest version is not the deployed one, and a later deploy keeps the latest one's secrets.
+ */
+export function deleteVersionArgs(worker: string, versionId: string): string[] {
+  if (!VERSION_ID.test(versionId)) throw new Error("not a Worker version's ID");
+  return ["workers", "versions", "delete", versionId, "--worker-id", worker];
+}
+
+/** `cf workers versions list`, one page of 100 (WP3.41b). */
+export function versionsListArgs(worker: string, page: number): string[] {
+  return [
+    "workers",
+    "versions",
+    "list",
+    "--worker-id",
+    worker,
+    "--per-page",
+    "100",
+    "--page",
+    String(page),
+  ];
+}
+
+/** One version as `cf workers versions list` answers it: its ID and number. */
+export interface WorkerVersion {
+  readonly id: string;
+  readonly number: number;
+}
+
+/** The versions in one page of `cf workers versions list`'s answer (its `result`). */
+export function versionsOf(listed: unknown): WorkerVersion[] {
+  const items = Array.isArray(listed) ? listed : [];
+  return items.flatMap((item: unknown) => {
+    const v = item as { id?: unknown; number?: unknown } | null;
+    return typeof v?.id === "string" && VERSION_ID.test(v.id) && Number.isSafeInteger(v.number)
+      ? [{ id: v.id, number: v.number as number }]
+      : [];
+  });
+}
+
 function errorCodes(stderr: string): string {
   const codes = [...new Set(stderr.match(/\[\d{3,6}\]/g) ?? [])];
   return codes.length > 0 ? `: ${codes.join(" ")}` : "";
@@ -741,6 +784,29 @@ export function cliCloud(config: StagingConfig, workerDir: string, runner?: Runn
       if (result.status !== 0) {
         throw new Error(`cf workers deployments create failed${errorCodes(result.stderr)}`);
       }
+    },
+    // One uploaded version, by ID (WP3.41b's rollback), through cf, which fails for a missing
+    // Worker or version.
+    deleteVersion: (name, versionId) => {
+      const result = run("cf", deleteVersionArgs(name, versionId), { inherit: false });
+      if (result.status !== 0) {
+        throw new Error(`cf workers versions delete failed${errorCodes(result.stderr)}`);
+      }
+    },
+    // Secrets deleted from the latest version as a new version that is not deployed
+    // (`PATCH …/versions/latest`, WP3.41b), through Wrangler with the same pinned configuration:
+    // names only, as JSON nulls on descriptor 3.
+    deleteLatestSecrets: (name, names) => {
+      pinnedConfig(name, (file, dir) =>
+        withSecretsDescriptor(Object.fromEntries(names.map((n) => [n, null])), (fd) =>
+          wrangler(
+            ["versions", "secret", "bulk", "/dev/fd/3", "--config", file, "--name", name],
+            dir,
+            {},
+            [fd],
+          ),
+        ),
+      );
     },
     bucketExists: (name) =>
       bucketLookup(run("cf", ["r2", "buckets", "get", name], { inherit: false }), name),
