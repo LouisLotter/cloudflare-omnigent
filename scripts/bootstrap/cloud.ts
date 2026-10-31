@@ -32,19 +32,23 @@ import { join } from "node:path";
 import {
   bucketLookup,
   type CommandResult,
+  deleteVersionArgs,
   deployVersionArgs,
   diagnostic,
   type Runner,
   secretNamesOf,
   secretsBulkBody,
   spawnRunner,
+  versionsListArgs,
+  versionsOf,
+  type WorkerVersion,
   WRANGLER_QUIET_LOGS,
   withSecretsDescriptor,
   wranglerCli,
 } from "../staging/cloud.ts";
 import { ownerOnlyAccess } from "./access.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "./access-app.ts";
-import type { BootstrapCloud, WorkerIdentity } from "./machine.ts";
+import { type BootstrapCloud, VersionNotDeleted, type WorkerIdentity } from "./machine.ts";
 import type { PreflightApi } from "./preflight.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
@@ -153,9 +157,33 @@ export function bulkSecrets(
     }),
   );
   if (result.status !== 0) {
+    if (/\[1021[45]\]/.test(result.stderr)) throw new Error(latestNotDeployed(worker));
     throw new Error(`cf workers secrets bulk failed: ${diagnostic(result.stderr)}`);
   }
   return "sent";
+}
+
+/**
+ * Cloudflare's refusal of a secrets change (10214, 10215), which deploys the latest version, while
+ * the latest version is not the one deployed, in words (WP3.41b). Nothing was changed.
+ */
+export function latestNotDeployed(worker: string): string {
+  return `Cloudflare refuses to change ${worker}'s secrets while its latest version is not the one deployed (as during an update's rollback): finish a rollback under way with bootstrap.ts update --rollback; after a finished one, the next bootstrap.ts update deploys a version that is (docs/operations/recovery.md); nothing was changed`;
+}
+
+/** At most this many pages of 100 versions are read. */
+const MAX_VERSION_PAGES = 20;
+
+/** The Worker's uploaded versions, newest first (WP3.41b). Read-only. */
+export function workerVersions(run: Runner, worker: string): WorkerVersion[] {
+  const versions: WorkerVersion[] = [];
+  for (let page = 1; page <= MAX_VERSION_PAGES; page++) {
+    const listed = cfJson(run, versionsListArgs(worker, page));
+    const found = versionsOf(listed);
+    versions.push(...found);
+    if (!Array.isArray(listed) || listed.length < 100) break;
+  }
+  return versions.sort((a, b) => b.number - a.number);
 }
 
 /** Whether the account holds the R2 bucket; read-only (`cf r2 buckets get`). */
@@ -508,6 +536,30 @@ export function accountCloud(plan: Installation, options: AccountCloudOptions): 
     deployVersion: async (worker, versionId) => {
       cfJson(run, deployVersionArgs(worker, versionId));
     },
+    versions: async (worker) => workerVersions(run, worker),
+    deleteVersion: async (worker, versionId) => {
+      const result = run("cf", deleteVersionArgs(worker, versionId), { inherit: false });
+      if (result.status !== 0) {
+        throw new VersionNotDeleted(
+          `cf workers versions delete failed: ${diagnostic(result.stderr)}`,
+        );
+      }
+    },
+    // Wrangler's own way to change secrets without deploying (`PATCH …/versions/latest`).
+    deleteLatestSecrets: async (worker, names) =>
+      pinned(worker, (file, dir) =>
+        withSecretsDescriptor(Object.fromEntries(names.map((name) => [name, null])), (fd) => {
+          const result = wrangler(
+            ["versions", "secret", "bulk", "/dev/fd/3", "--config", file, "--name", worker],
+            dir,
+            [fd],
+            false,
+          );
+          if (result.status !== 0) {
+            throw new Error(`wrangler versions secret bulk exited with ${result.status}`);
+          }
+        }),
+      ),
     logs: async (worker, fromMs, toMs) => queryWorkerLogs(run, worker, fromMs, toMs),
   };
 }

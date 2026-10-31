@@ -161,6 +161,22 @@ export function closeWindow(
   return { ...rest, ...also, restorePoints: kept };
 }
 
+/**
+ * Whether the Worker's latest version is the one serving all of its traffic, as it is unless an
+ * earlier version was deployed since (WP3.41b). The secrets Cloudflare lists, and a deploy keeps,
+ * are the latest version's: only then do they say what serves, the window among them. True when
+ * Cloudflare names neither.
+ */
+export async function latestServes(
+  cloud: Pick<BootstrapCloud, "versions" | "activeVersion">,
+  worker: string,
+  serving?: string,
+): Promise<boolean> {
+  const latest = (await cloud.versions(worker))[0]?.id;
+  const active = serving ?? (await cloud.activeVersion(worker));
+  return latest === undefined || active === undefined || latest === active;
+}
+
 /** Why another step may not change the installation now, or undefined (WP3.41). */
 export function windowRefusal(journal: Journal): string | undefined {
   const window = journal.window;

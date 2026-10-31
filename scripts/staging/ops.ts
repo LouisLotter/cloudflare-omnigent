@@ -163,6 +163,16 @@ export interface Cloud {
    * differ from the current version's (WP3.41's rollback). Fails for a missing Worker or version.
    */
   deployVersion(name: string, versionId: string): void;
+  /**
+   * Deletes one uploaded version of the Worker (WP3.41b's rollback: the versions newer than the
+   * one it deployed again). Fails for a missing Worker or version, or one Cloudflare keeps.
+   */
+  deleteVersion(name: string, versionId: string): void;
+  /**
+   * Deletes secrets from the Worker's latest version as a new version that is not deployed
+   * (`PATCH …/versions/latest`, WP3.41b). Names only.
+   */
+  deleteLatestSecrets(name: string, names: readonly string[]): void;
   /** True or false only when Cloudflare answered; throws when the answer is unknown. */
   bucketExists(name: string): boolean;
   /** The names of every R2 bucket whose name starts with `prefix`. */
@@ -1430,6 +1440,58 @@ export interface DeployVersionRequest {
  * registry's bindings: a Worker's versions all bind what its deploys bound.
  */
 export function deployVersion(ctx: Context, request: DeployVersionRequest): void {
+  ownDeployed(ctx, request, (name) => {
+    ctx.cloud.deployVersion(name, request.versionId);
+    ctx.log(`deployed version ${request.versionId} of ${name} to all of its traffic`);
+  });
+}
+
+/**
+ * Deletes one uploaded version of a deployed staging Worker (WP3.41b's rollback: the versions
+ * newer than the one it deployed again), with deployVersion's guards.
+ */
+export function deleteVersion(ctx: Context, request: DeployVersionRequest): void {
+  ownDeployed(ctx, request, (name) => {
+    ctx.cloud.deleteVersion(name, request.versionId);
+    ctx.log(`deleted version ${request.versionId} of ${name}`);
+  });
+}
+
+export interface LatestSecretsRequest {
+  readonly suffix: string;
+  readonly owner: string;
+  readonly names: readonly string[];
+}
+
+/**
+ * Deletes secrets from the latest version of a deployed staging Worker as a new version that is
+ * not deployed (WP3.41b's rollback, when Cloudflare keeps a version newer than the deployed one),
+ * with deployVersion's guards; never one of the secrets the tool delivers itself.
+ */
+export function deleteLatestSecrets(ctx: Context, request: LatestSecretsRequest): void {
+  const names = [...new Set(request.names)].sort();
+  if (names.length === 0) throw new Error("no secret to delete");
+  const problems = secretNameProblems(names);
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  ownDeployed(ctx, request, (name, record) => {
+    const reserved = record.serviceToken?.deliveredTo ?? [];
+    const clash = names.filter((n) => reserved.includes(n));
+    if (clash.length > 0)
+      throw new Error(`the secrets ${clash.join(", ")} are the staging tool's own`);
+    ctx.cloud.deleteLatestSecrets(name, names);
+    ctx.log(`deleted from the latest version of ${name}, not deployed: ${names.join(", ")}`);
+  });
+}
+
+/**
+ * Runs `use` under the deployment's lock, only for a deployment the registry shows deployed, by
+ * the owner that deployed it, in the staging account, whose Worker Cloudflare confirms.
+ */
+function ownDeployed(
+  ctx: Context,
+  request: { readonly suffix: string; readonly owner: string },
+  use: (name: string, record: Deployment) => void,
+): void {
   const name = resourceName(request.suffix);
   locked(ctx, name, () => {
     const record = ctx.store.load().find((d) => d.name === name);
@@ -1444,8 +1506,7 @@ export function deployVersion(ctx: Context, request: DeployVersionRequest): void
     if (!ctx.cloud.workerExists(name)) {
       throw new Error(`${name} is recorded, but the staging account has no such Worker`);
     }
-    ctx.cloud.deployVersion(name, request.versionId);
-    ctx.log(`deployed version ${request.versionId} of ${name} to all of its traffic`);
+    use(name, record);
   });
 }
 

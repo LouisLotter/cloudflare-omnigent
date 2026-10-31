@@ -112,6 +112,7 @@ import {
 import {
   acceptWindow,
   closeWindow,
+  latestServes,
   newWindowId,
   type PreviousRelease,
   restorePointProblem,
@@ -417,13 +418,17 @@ export async function runUpdate(
   if (
     opened?.deployStartedAt !== undefined &&
     opened.acceptStartedAt === undefined &&
-    !present.has(MAINTENANCE_WINDOW_SECRET)
+    !(
+      present.has(MAINTENANCE_WINDOW_SECRET) &&
+      (await latestServes(ctx.cloud, plan.platformWorker, platformIdentity.versionId))
+    )
   ) {
     // The window's secret is gone after a deploy carrying it was sent: whether that deploy's
     // confirmation was lost or another version was deployed since (Codex WP3.41 r1-3, r2-1), the
     // window may have opened and been ended outside the installer, and Omnigent may have taken
     // changes since its restore point, so it can no longer go back to it: the update starts
-    // afresh, with a restore point of now.
+    // afresh, with a restore point of now. So too when an earlier version serves: the secrets
+    // listed are the latest version's, which then does not serve (WP3.41b).
     // The version from before serving: the deploy did not land, or it was deployed again.
     const before = platformIdentity.versionId === opened.previous.platformVersionId;
     setJournal(

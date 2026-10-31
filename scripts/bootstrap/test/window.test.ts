@@ -401,7 +401,9 @@ describe("an update's read-only window (WP3.41)", () => {
     const { id } = await openWindow(h);
     const previous = h.journal().window?.previous.platformVersionId as string;
     await h.world.cloud().deployVersion(h.plan.platformWorker, previous);
-    expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
+    // As on Cloudflare, the secrets listed are still the latest version's, the update's, with the
+    // window, though the version from before serves without it (WP3.41b).
+    expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(true);
     await expect(h.rollback()).rejects.toThrow(/the version from before the update serves/);
     h.world.truth = () => ({ initialized: true, reason: "durable" });
     expect(await h.update()).toEqual({ kind: "done" });
@@ -738,6 +740,157 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
     await expect(h.update()).rejects.toThrow(/being rolled back/);
   });
 
+  it("resumes the rollback stopped where the first real one stopped, hours later (WP3.41b)", async () => {
+    const h = await installed();
+    const { id, before } = await openWindow(h);
+    const previous = h.journal().window?.previous.platformVersionId as string;
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    // The owner's installation on 30 Oct: the restore point back, both versions from before
+    // deployed, then the run failed before recording the platform Worker's.
+    h.world.crash = { call: "deployVersion", nth: 2, when: "after" };
+    await expect(h.rollback()).rejects.toThrow(Crash);
+    const rollback = h.journal().window?.rollback;
+    expect(rollback?.restoredAt).toBeDefined();
+    expect(rollback?.webRolledBackAt).toBeDefined();
+    expect(rollback?.platformRolledBackAt).toBeUndefined();
+    expect(h.world.latest(h.plan.platformWorker)?.id).toBe(previous);
+    // The latest version is the order's, with the window and the order, and not deployed: as on
+    // Cloudflare, every secrets change is refused (10215) and a deploy would keep them.
+    const order = h.world.uploads(h.plan.platformWorker)[0];
+    expect(order?.id).not.toBe(previous);
+    expect(order?.secrets.get(MAINTENANCE_WINDOW_SECRET)).toBe(id);
+    expect(order?.secrets.get(ROLLBACK_SECRET)).toBe(id);
+    await expect(
+      h.world.cloud().updateSecrets(h.plan.platformWorker, { [ROLLBACK_SECRET]: null }),
+    ).rejects.toThrow(
+      /refuses to change .*'s secrets while its latest version is not the one deployed/,
+    );
+    // Hours later: the server long since durable, its status no longer logged.
+    h.world.now += 6 * 3600_000;
+    h.world.calls.length = 0;
+    const deployed = h.world.redeployed.length;
+    expect(await h.rollback()).toEqual({ kind: "done" });
+    // Not deployed again; the update's versions deleted, and the version from before is the
+    // latest again, with its own secrets.
+    expect(h.world.redeployed).toHaveLength(deployed);
+    expect(count(h, "deleteVersion")).toBeGreaterThanOrEqual(2);
+    expect(count(h, "deleteLatestSecrets") + count(h, "updateSecrets")).toBe(0);
+    expect(h.world.uploads(h.plan.platformWorker)[0]?.id).toBe(previous);
+    expect(new Map(secrets(h))).toEqual(before);
+    expect(h.journal().window).toBeUndefined();
+    expect(h.journal().restorePoints?.at(-1)).toMatchObject({ id, outcome: "rolled back" });
+    // Secrets changes work again (services, github-app), and so does the next update.
+    expect(
+      await h.world.cloud().updateSecrets(h.plan.platformWorker, { SERVER_ENV_CFO_X: "1" }),
+    ).toBe("sent");
+    expect(await h.update()).toEqual({ kind: "done" });
+  });
+
+  it("when Cloudflare keeps the update's versions, deletes the window and the order from the latest, and says what stays refused (WP3.41b)", async () => {
+    const h = await installed();
+    const { before } = await openWindow(h);
+    const previous = h.journal().window?.previous.platformVersionId as string;
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    h.world.keepsVersions = true;
+    expect(await h.rollback()).toEqual({ kind: "done" });
+    expect(h.world.latest(h.plan.platformWorker)?.id).toBe(previous);
+    // The latest version is a new one, not deployed, without the window and the order: no later
+    // deploy takes them up.
+    const latest = h.world.uploads(h.plan.platformWorker)[0];
+    expect(latest?.id).not.toBe(previous);
+    expect(latest?.secrets.has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
+    expect(latest?.secrets.has(ROLLBACK_SECRET)).toBe(false);
+    expect(count(h, "deleteLatestSecrets")).toBe(1);
+    expect(h.lines).toContainEqual(
+      expect.stringMatching(
+        /^warning: .*'s latest version is not the one deployed \(cf workers versions delete failed: \[10000\]\)\. It holds no window or rollback order.*refuses changes of its secrets/,
+      ),
+    );
+    await expect(
+      h.world.cloud().updateSecrets(h.plan.platformWorker, { SERVER_ENV_CFO_X: "1" }),
+    ).rejects.toThrow(/latest version is not the one deployed/);
+    // The next update deploys a version: its window is its own, and secrets changes work again.
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(h.journal().restorePoints?.map((p) => p.outcome)).toEqual(["rolled back", "accepted"]);
+    expect(secrets(h).has(ROLLBACK_SECRET)).toBe(false);
+    expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET)).toBe(false);
+    expect(new Map([...secrets(h)].filter(([n]) => before.has(n)))).toEqual(before);
+    expect(
+      await h.world.cloud().updateSecrets(h.plan.platformWorker, { SERVER_ENV_CFO_X: "1" }),
+    ).toBe("sent");
+  });
+
+  it("falls back the same way when Cloudflare does not list the version that serves, or still lists a newer one (WP3.41b)", async () => {
+    for (const how of ["unlisted", "kept"] as const) {
+      const h = await installed();
+      await openWindow(h);
+      h.world.truth = () => ({ initialized: true, reason: "durable" });
+      const previous = h.journal().window?.previous.platformVersionId;
+      const cloud = h.world.cloud();
+      const stand = { ...cloud };
+      if (how === "unlisted") {
+        stand.versions = async (worker) =>
+          (await cloud.versions(worker)).filter((v) => v.id !== previous);
+      } else stand.deleteVersion = async () => undefined;
+      const outcome = await runRollback(
+        {
+          cloud: stand,
+          store: h.store,
+          baseConfigs: BASE,
+          codeVersion: CODE_A,
+          random: counter(),
+          now: () => h.world.now,
+          sleep: async (ms) => {
+            h.world.now += Math.max(0, ms);
+          },
+          log: (line) => h.lines.push(line),
+        },
+        OPTIONS,
+      );
+      expect(outcome, how).toEqual({ kind: "done" });
+      expect(h.lines, how).toContainEqual(
+        expect.stringMatching(
+          how === "unlisted"
+            ? /^warning: .*\(Cloudflare does not list the version that serves, v\d+\)/
+            : /^warning: .*\(Cloudflare still lists version v\d+ first\)/,
+        ),
+      );
+      expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET), how).toBe(false);
+      expect(secrets(h).has(ROLLBACK_SECRET), how).toBe(false);
+    }
+  });
+
+  it("stops when the window or the order outlasts its deletion from the latest version (WP3.41b)", async () => {
+    const h = await installed();
+    await openWindow(h);
+    h.world.truth = () => ({ initialized: true, reason: "durable" });
+    h.world.keepsVersions = true;
+    const cloud = h.world.cloud();
+    const outcome = runRollback(
+      {
+        cloud: { ...cloud, deleteLatestSecrets: async () => undefined },
+        store: h.store,
+        baseConfigs: BASE,
+        codeVersion: CODE_A,
+        random: counter(),
+        now: () => h.world.now,
+        sleep: async (ms) => {
+          h.world.now += Math.max(0, ms);
+        },
+        log: () => undefined,
+      },
+      OPTIONS,
+    );
+    await expect(outcome).rejects.toThrow(
+      /latest version still holds SERVER_ENV_CFO_MAINTENANCE_WINDOW, SERVER_ENV_CFO_ROLLBACK_TO after deleting them; run bootstrap\.ts update --rollback again/,
+    );
+    h.world.keepsVersions = false;
+    expect(await h.rollback()).toEqual({ kind: "done" });
+    expect(h.world.uploads(h.plan.platformWorker)[0]?.id).toBe(
+      h.world.latest(h.plan.platformWorker)?.id,
+    );
+  });
+
   it("a staging installation goes back the same way", async () => {
     const h = await installed(await stagingPlan());
     await openWindow(h);
@@ -815,40 +968,65 @@ describe("a crash at any point of the acceptance or the rollback", () => {
     }
   });
 
-  it("rollback: a new run finishes it, orders it once, and goes back to the same versions", {
-    timeout: 120_000,
-  }, async () => {
-    const points = await crashPoints(checkedOpen, (h) => h.rollback());
-    expect(points.length).toBeGreaterThan(20);
-    for (const point of points) {
-      const h = await checkedOpen();
-      const platformBefore = h.journal().window?.previous.platformVersionId;
-      if ("journal" in point) h.store.crash = { nth: h.store.saves + point.journal };
-      else h.world.crash = point;
-      const outcome = await runUntil(
-        h,
-        () => h.rollback(),
-        (o) => o.kind === "done",
+  it.each([
+    ["", false],
+    [", Cloudflare keeping the update's versions (WP3.41b)", true],
+  ])(
+    "rollback%s: a new run finishes it, orders it once, and goes back to the same versions",
+    {
+      timeout: 120_000,
+    },
+    async (_how, keepsVersions) => {
+      const setup = async () => {
+        const h = await checkedOpen();
+        h.world.keepsVersions = keepsVersions;
+        return h;
+      };
+      // A deletion Cloudflare refuses has no effect to lose the answer of.
+      const points = (await crashPoints(setup, (h) => h.rollback())).filter(
+        (p) => !(keepsVersions && "call" in p && p.call === "deleteVersion" && p.when === "after"),
       );
-      expect(outcome, JSON.stringify(point)).toEqual({ kind: "done" });
-      expect(h.world.crash).toBeUndefined();
-      const orders = h.world.secretChanges.filter((c) => c.changes[ROLLBACK_SECRET] !== undefined);
-      expect(orders.length, JSON.stringify(point)).toBeLessThanOrEqual(2);
-      expect(new Set(orders.map((o) => o.changes[ROLLBACK_SECRET])).size).toBe(1);
-      expect(h.world.latest(h.plan.platformWorker)?.id).toBe(platformBefore);
-      expect(h.world.redeployed.every((r) => r.at >= (h.world.redeployed[0]?.at ?? 0))).toBe(true);
-      expect(h.journal().window).toBeUndefined();
-      expect(h.journal().restorePoints?.[0]?.outcome).toBe("rolled back");
-      // Never the platform Worker's version from before while the server had not said the
-      // restore point is the replica again.
-      const logs = parseLogs(
-        h.world.logEvents(h.plan.platformWorker, 0, h.world.now),
-        h.plan.platformWorker,
-      );
-      const first = Math.min(...logs.rollbacks.map((r) => r.loggedAt));
-      for (const r of h.world.redeployed) expect(r.at).toBeGreaterThanOrEqual(first);
-    }
-  });
+      expect(points.length).toBeGreaterThan(20);
+      for (const point of points) {
+        const h = await setup();
+        const platformBefore = h.journal().window?.previous.platformVersionId;
+        if ("journal" in point) h.store.crash = { nth: h.store.saves + point.journal };
+        else h.world.crash = point;
+        const outcome = await runUntil(
+          h,
+          () => h.rollback(),
+          (o) => o.kind === "done",
+        );
+        expect(outcome, JSON.stringify(point)).toEqual({ kind: "done" });
+        expect(h.world.crash).toBeUndefined();
+        const orders = h.world.secretChanges.filter(
+          (c) => c.changes[ROLLBACK_SECRET] !== undefined,
+        );
+        expect(orders.length, JSON.stringify(point)).toBeLessThanOrEqual(2);
+        expect(new Set(orders.map((o) => o.changes[ROLLBACK_SECRET])).size).toBe(1);
+        expect(h.world.latest(h.plan.platformWorker)?.id).toBe(platformBefore);
+        expect(h.world.redeployed.every((r) => r.at >= (h.world.redeployed[0]?.at ?? 0))).toBe(
+          true,
+        );
+        // Neither the window nor the order where a later deploy would take them up (WP3.41b).
+        expect(secrets(h).has(MAINTENANCE_WINDOW_SECRET), JSON.stringify(point)).toBe(false);
+        expect(secrets(h).has(ROLLBACK_SECRET), JSON.stringify(point)).toBe(false);
+        expect(h.world.uploads(h.plan.platformWorker)[0]?.id === platformBefore).toBe(
+          !keepsVersions,
+        );
+        expect(h.journal().window).toBeUndefined();
+        expect(h.journal().restorePoints?.[0]?.outcome).toBe("rolled back");
+        // Never the platform Worker's version from before while the server had not said the
+        // restore point is the replica again.
+        const logs = parseLogs(
+          h.world.logEvents(h.plan.platformWorker, 0, h.world.now),
+          h.plan.platformWorker,
+        );
+        const first = Math.min(...logs.rollbacks.map((r) => r.loggedAt));
+        for (const r of h.world.redeployed) expect(r.at).toBeGreaterThanOrEqual(first);
+      }
+    },
+  );
 });
 
 describe("the window's pieces", () => {

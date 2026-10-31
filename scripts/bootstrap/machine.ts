@@ -54,6 +54,7 @@
 // in the journal or the log.
 
 import type { BootstrapStatus } from "../../contracts/src/index.ts";
+import type { WorkerVersion } from "../staging/cloud.ts";
 import {
   type AccessApi,
   type AccessRecords,
@@ -152,6 +153,19 @@ export interface BootstrapCloud {
    * when the Worker or the version does not exist.
    */
   deployVersion(worker: string, versionId: string): Promise<void>;
+  /** The Worker's uploaded versions, newest (highest number) first. Read-only (WP3.41b). */
+  versions(worker: string): Promise<readonly WorkerVersion[]>;
+  /**
+   * Deletes one uploaded version that serves no traffic (WP3.41b). Throws `VersionNotDeleted`
+   * when Cloudflare does not delete it.
+   */
+  deleteVersion(worker: string, versionId: string): Promise<void>;
+  /**
+   * Deletes secrets from the Worker's latest version as a new version that is not deployed
+   * (`wrangler versions secret bulk`): the one secret change Cloudflare allows while the latest
+   * version is not the deployed one (WP3.41b). Names only: no value takes this path.
+   */
+  deleteLatestSecrets(worker: string, names: readonly string[]): Promise<void>;
   /** Workers Logs events of the Worker between two times, in milliseconds. */
   logs(worker: string, fromMs: number, toMs: number): Promise<unknown[]>;
 }
@@ -438,6 +452,9 @@ function eventOf(seen: SeenStatus | undefined): StatusEvent | undefined {
 
 /** A deliberate stop: the installer must look before anything else happens. */
 export class BootstrapRefusal extends Error {}
+
+/** Cloudflare did not delete a Worker version (`deleteVersion`, WP3.41b). */
+export class VersionNotDeleted extends Error {}
 
 export async function runBootstrap(
   ctx: RunContext,

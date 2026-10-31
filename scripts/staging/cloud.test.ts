@@ -23,6 +23,7 @@ import {
   childStdio,
   cliCloud,
   DIAGNOSTIC_LIMIT,
+  deleteVersionArgs,
   deployVersionArgs,
   diagnostic,
   dnsRecordsOf,
@@ -40,6 +41,8 @@ import {
   secretsBulkBody,
   spawnRunner,
   tunnelsOf,
+  versionsListArgs,
+  versionsOf,
   vpcServicesOf,
   WRANGLER_QUIET_LOGS,
   withSecretsDescriptor,
@@ -735,6 +738,76 @@ describe("CLI wiring", () => {
     expect(() => failing.deployVersion("cfo-stg-a", version)).toThrow(
       /^cf workers deployments create failed: \[10007\]$/,
     );
+  });
+
+  it("deletes a version through cf, and secrets from the latest one through a pinned Wrangler (WP3.41b)", () => {
+    const seen: { command: string; args: readonly string[]; config?: unknown; fd3?: string }[] = [];
+    const version = "0a1b2c3d-0000-4000-8000-000000000002";
+    const cloud = cliCloud(config, WORKER, (command, args, options) => {
+      const at = args.indexOf("--config");
+      const fd = options.fds?.[0];
+      seen.push({
+        command,
+        args: command === "cf" ? args : args.slice(2),
+        ...(at < 0 ? {} : { config: JSON.parse(readFileSync(args[at + 1] ?? "", "utf8")) }),
+        ...(fd === undefined ? {} : { fd3: readFileSync(`/proc/self/fd/${fd}`, "utf8") }),
+      });
+      return ok("{}");
+    });
+    cloud.deleteVersion("cfo-stg-a", version);
+    cloud.deleteLatestSecrets("cfo-stg-a", ["A", "B"]);
+    expect(seen[0]).toEqual({
+      command: "cf",
+      args: ["workers", "versions", "delete", version, "--worker-id", "cfo-stg-a"],
+    });
+    expect(seen[1]).toMatchObject({
+      command: process.execPath,
+      args: [
+        "versions",
+        "secret",
+        "bulk",
+        "/dev/fd/3",
+        "--config",
+        expect.any(String),
+        "--name",
+        "cfo-stg-a",
+      ],
+      config: { name: "cfo-stg-a", account_id: "a".repeat(32) },
+    });
+    expect(JSON.parse(seen[1]?.fd3 ?? "{}")).toEqual({ A: null, B: null });
+    expect(() => deleteVersionArgs("cfo-stg-a", "v1; rm -rf")).toThrow("not a Worker version's ID");
+    const failing = cliCloud(config, WORKER, () => failed("[10007] no such version"));
+    expect(() => failing.deleteVersion("cfo-stg-a", version)).toThrow(
+      /^cf workers versions delete failed: \[10007\]$/,
+    );
+    expect(() => failing.deleteLatestSecrets("cfo-stg-a", ["A"])).toThrow(
+      "wrangler versions exited with 1",
+    );
+  });
+
+  it("reads one page of a Worker's versions: IDs and numbers only (WP3.41b)", () => {
+    const id = "0a1b2c3d-0000-4000-8000-000000000004";
+    expect(versionsListArgs("cfo-stg-a", 2)).toEqual([
+      "workers",
+      "versions",
+      "list",
+      "--worker-id",
+      "cfo-stg-a",
+      "--per-page",
+      "100",
+      "--page",
+      "2",
+    ]);
+    expect(
+      versionsOf([
+        { id, number: 4, metadata: {} },
+        { id: "v5", number: 5 },
+        { id, number: "4" },
+        { id, number: 1.5 },
+        null,
+      ]),
+    ).toEqual([{ id, number: 4 }]);
+    expect(versionsOf({ items: [] })).toEqual([]);
   });
 
   it("writes the bulk body as Cloudflare's merge patch", () => {
