@@ -57,6 +57,12 @@ const UTILITIES = [
 const FAKES: Record<string, string> = {
   "warp-cli": `#!/bin/bash
 w=$FAKE_WORLD
+# As a fresh install answers without a terminal (2026.8.2115.0): the terms of service first.
+if [[ $1 == --accept-tos ]]; then shift
+elif [[ $* != --version ]]; then
+  echo "Please accept the WARP Terms of Service by running this command in a TTY or by passing the --accept-tos flag." >&2
+  exit 1
+fi
 echo "warp-cli $*" >>"$w/calls"
 [[ -f $w/warp-down ]] && { echo "Error: Unable to connect to the CloudflareWARP daemon" >&2; exit 1; }
 case "$*" in
@@ -268,6 +274,7 @@ function makeEnv(): Env {
           CFO_HOST_PROC: join(world, "proc"),
           CFO_HOST_ONLINE_WAIT: "0",
           CFO_HOST_CONNECT_WAIT: "0",
+          CFO_HOST_REGISTER_WAIT: "0",
           CFO_HOST_SERVICE_WAIT: "0",
           LANG: "C.UTF-8",
         },
