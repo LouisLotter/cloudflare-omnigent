@@ -3,7 +3,9 @@
 // owner, and run Omnigent's host there. Pure apart from the DevicesApi port, which cloud.ts
 // implements with the installer's `cf` login and the tests with a fake Cloudflare.
 //
-// Four settings, each read first and changed only when it differs:
+// Four settings, each read first and changed only when it differs. The organization's (2) is
+// changed before the application's (1): Cloudflare refuses an application's switch until the
+// organization has a client session ([12130]).
 //   1. the installation's Access application lets a device signed in to the client in as the
 //      owner ("Authenticate with Cloudflare One Client", `allow_authenticate_via_warp`). Only
 //      this application: never the organization's default for every application, never another
@@ -25,7 +27,8 @@
 //
 // Cloudflare's updates of an organization and of an application replace the whole object
 // (PUT): each is read in full, only this step's fields are changed, and the rest is written
-// back as read, minus the fields Cloudflare only reports (IDs, times). What Cloudflare holds
+// back as read: for an application, minus the fields Cloudflare only reports (IDs, times); for
+// the organization, only the fields its update takes. What Cloudflare holds
 // afterwards, read back, decides; an organization field the write changed besides this step's is
 // reported. The device profile's update is a PATCH of the split tunnel alone.
 //
@@ -151,6 +154,33 @@ export const ENROLLMENT_TYPE = "warp";
 
 /** The organization's fields Cloudflare reports but an update does not take. */
 const ORGANIZATION_REPORTED = ["created_at", "updated_at"] as const;
+/**
+ * The organization's fields its update takes (`cf schema zero-trust organization update`, cf
+ * 1.0.0-beta.18). The read also reports others (`trusted_accounts`, `has_migrated_private_apps`,
+ * `cache_device_posture`), which are not sent; the read back still checks that none moved.
+ */
+const ORGANIZATION_WRITABLE = [
+  "allow_authenticate_via_warp",
+  "auth_domain",
+  "auto_redirect_to_identity",
+  "custom_pages",
+  "deny_unmatched_requests",
+  "deny_unmatched_requests_exempted_zone_names",
+  "disable_end_user_app_creation",
+  "is_ui_read_only",
+  "login_design",
+  "mfa_config",
+  "mfa_piv_key_requirements",
+  "mfa_required_for_all_apps",
+  "name",
+  "service_token_inactivity",
+  "session_duration",
+  "strict_service_token_auth",
+  "ui_read_only_toggle_reason",
+  "user_seat_expiration_inactive_time",
+  "warp_auth_non_browser_401",
+  "warp_auth_session_duration",
+] as const;
 /** An application's fields Cloudflare reports but an update does not take. */
 const APP_REPORTED = ["id", "aud", "uid", "created_at", "updated_at"] as const;
 /** An inline policy's fields Cloudflare reports but an update does not take. */
@@ -167,6 +197,24 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function text(value: unknown, key: string): string | undefined {
   const v = record(value)?.[key];
   return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/** Whether a service-token inactivity setting has all three of its fields. */
+function complete(setting: unknown): boolean {
+  const value = record(setting);
+  return (
+    value !== undefined &&
+    ["enabled", "inactivity_threshold_days", "action"].every(
+      (key) => value[key] !== null && value[key] !== undefined,
+    )
+  );
+}
+
+/** A copy of `value` with only `keys`, those it has. */
+function only(value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  const copy: Record<string, unknown> = {};
+  for (const key of keys) if (key in value) copy[key] = structuredClone(value[key]);
+  return copy;
 }
 
 function without(value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
@@ -335,39 +383,16 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
       `the Access application on ${host} uses a binding cookie, which Cloudflare One Client authentication does not work with: in ${ZERO_TRUST_DASHBOARD}, edit it, and under Settings, Cookie settings, turn off Binding Cookie; then run again`,
     );
   }
-  const aud = text(app, "aud");
-  if (app.allow_authenticate_via_warp !== true) {
-    if (recordedId === undefined) {
-      throw new AccessRefusal(
-        `the Access application on ${host} was not created by the bootstrap, which never changes one it did not create. ${appStep(host)}`,
-      );
-    }
-    update({ appStartedAt: iso(ctx.now()) });
-    refusedAs(appStep(host), () =>
-      api.updateApp(recordedId, { ...writableApp(app), allow_authenticate_via_warp: true }),
+  // Refused before anything changes, the organization included.
+  if (app.allow_authenticate_via_warp !== true && recordedId === undefined) {
+    throw new AccessRefusal(
+      `the Access application on ${host} was not created by the bootstrap, which never changes one it did not create. ${appStep(host)}`,
     );
-    const after = record(api.app(recordedId));
-    if (after?.allow_authenticate_via_warp !== true) {
-      throw new Error(
-        `Cloudflare did not keep Authenticate with Cloudflare One Client on the application for ${host}; run again`,
-      );
-    }
-    if (text(after, "aud") !== aud) {
-      throw new Error(
-        `the application for ${host} has another AUD tag after its update, which ingress does not accept: run bootstrap.ts update to deploy it`,
-      );
-    }
-    const problems = ownerOnlyProblems(after, await pinCheck(after, host, plan.ownerPin));
-    if (problems.length > 0) {
-      throw new AccessRefusal(
-        describeProblems(`after its update, the Access application on ${host}`, problems, true),
-      );
-    }
-    update({ appChangedAt: iso(ctx.now()) });
-    changed.push(`the Access application for ${host} now lets the owner's enrolled devices in`);
   }
 
-  // 2. The organization's client session and its 401 for non-browser clients.
+  // 2. The organization's client session and its 401 for non-browser clients. Before the
+  // application's switch: Cloudflare refuses that switch until the organization has a client
+  // session ([12130]).
   const organization = api.organization();
   const current = text(organization, "warp_auth_session_duration");
   const read = current === undefined ? undefined : durationMinutes(current);
@@ -394,11 +419,14 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
     );
   }
   if (read !== minutes || organization.warp_auth_non_browser_401 !== true) {
-    const body = {
-      ...without(organization, ORGANIZATION_REPORTED),
+    const body: Record<string, unknown> = {
+      ...only(organization, ORGANIZATION_WRITABLE),
       warp_auth_session_duration: duration,
       warp_auth_non_browser_401: true,
     };
+    // Never set, it reads back with nulls, which the update refuses ([12062] "service_token_inactivity
+    // must include enabled, inactivity_threshold_days, and action"). Left out, it stays as it is.
+    if (!complete(body.service_token_inactivity)) delete body.service_token_inactivity;
     update({ organizationStartedAt: iso(ctx.now()) });
     refusedAs(organizationStep(duration), () => api.updateOrganization(body));
     const after = api.organization();
@@ -429,6 +457,34 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
     );
   } else {
     update({ sessionDuration: duration });
+  }
+
+  // 1, continued: the application's switch.
+  const aud = text(app, "aud");
+  if (app.allow_authenticate_via_warp !== true && recordedId !== undefined) {
+    update({ appStartedAt: iso(ctx.now()) });
+    refusedAs(appStep(host), () =>
+      api.updateApp(recordedId, { ...writableApp(app), allow_authenticate_via_warp: true }),
+    );
+    const after = record(api.app(recordedId));
+    if (after?.allow_authenticate_via_warp !== true) {
+      throw new Error(
+        `Cloudflare did not keep Authenticate with Cloudflare One Client on the application for ${host}; run again`,
+      );
+    }
+    if (text(after, "aud") !== aud) {
+      throw new Error(
+        `the application for ${host} has another AUD tag after its update, which ingress does not accept: run bootstrap.ts update to deploy it`,
+      );
+    }
+    const problems = ownerOnlyProblems(after, await pinCheck(after, host, plan.ownerPin));
+    if (problems.length > 0) {
+      throw new AccessRefusal(
+        describeProblems(`after its update, the Access application on ${host}`, problems, true),
+      );
+    }
+    update({ appChangedAt: iso(ctx.now()) });
+    changed.push(`the Access application for ${host} now lets the owner's enrolled devices in`);
   }
 
   // 3. Device enrollment: only the owner may connect a device.
