@@ -40,6 +40,8 @@ jobs:
     timeout-minutes: 75
     env:
       CFO_IT_IMAGE: cfo-server:nightly
+      CFO_E2E_SERVER_IMAGE: cfo-server:nightly
+      CFO_E2E_COMPUTER_IMAGE: cfo-computer:nightly
       CFO_DRILL_IMAGE: cfo-drill:nightly
       CFO_FENCE_IMAGE: cfo-server:nightly-test
       CFO_OMNIGENT_FORK: ${{ github.workspace }}/omnigent-fork
@@ -49,13 +51,17 @@ jobs:
         with:
           persist-credentials: false
 
-      # The suites scan every server's log with scripts/canary-scan.ts, on Node's built-in
-      # TypeScript support; no dependencies are installed.
+      - name: Set up pnpm (version from package.json "packageManager")
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Set up Node.js (version from .node-version)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-          package-manager-cache: false
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Set up uv
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -90,6 +96,9 @@ jobs:
       - name: Build the image's test target
         run: docker build --platform linux/amd64 -f images/server/Dockerfile --target test -t "$CFO_FENCE_IMAGE" .
 
+      - name: Build the computer target
+        run: docker build --platform linux/amd64 -f images/computer/Dockerfile --target computer -t "$CFO_E2E_COMPUTER_IMAGE" .
+
       - name: Build the drill image
         run: >-
           docker build --platform linux/amd64 -f scripts/restore-drill/staging/Dockerfile
@@ -98,7 +107,7 @@ jobs:
       - name: Image tests (images/server/tests/integration)
         run: |
           uv run --python 3.12 --no-project --with pytest==9.1.1 --with httpx==0.28.1 \
-            --with boto3==1.40.0 --with jsonschema==4.26.0 \
+            --with boto3==1.40.0 --with jsonschema==4.26.0 --with cryptography==46.0.3 \
             pytest -p no:cacheprovider -rA --basetemp "$RUNNER_TEMP/it" \
             images/server/tests/integration 2>&1 | tee "$RUNNER_TEMP/it.txt"
           if grep -qE '[0-9]+ skipped' "$RUNNER_TEMP/it.txt"; then
