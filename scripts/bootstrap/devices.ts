@@ -27,7 +27,8 @@
 //
 // Cloudflare's updates of an organization and of an application replace the whole object
 // (PUT): each is read in full, only this step's fields are changed, and the rest is written
-// back as read, minus the fields Cloudflare only reports (IDs, times). What Cloudflare holds
+// back as read: for an application, minus the fields Cloudflare only reports (IDs, times); for
+// the organization, only the fields its update takes. What Cloudflare holds
 // afterwards, read back, decides; an organization field the write changed besides this step's is
 // reported. The device profile's update is a PATCH of the split tunnel alone.
 //
@@ -153,6 +154,33 @@ export const ENROLLMENT_TYPE = "warp";
 
 /** The organization's fields Cloudflare reports but an update does not take. */
 const ORGANIZATION_REPORTED = ["created_at", "updated_at"] as const;
+/**
+ * The organization's fields its update takes (`cf schema zero-trust organization update`, cf
+ * 1.0.0-beta.18). The read also reports others (`trusted_accounts`, `has_migrated_private_apps`,
+ * `cache_device_posture`), which are not sent; the read back still checks that none moved.
+ */
+const ORGANIZATION_WRITABLE = [
+  "allow_authenticate_via_warp",
+  "auth_domain",
+  "auto_redirect_to_identity",
+  "custom_pages",
+  "deny_unmatched_requests",
+  "deny_unmatched_requests_exempted_zone_names",
+  "disable_end_user_app_creation",
+  "is_ui_read_only",
+  "login_design",
+  "mfa_config",
+  "mfa_piv_key_requirements",
+  "mfa_required_for_all_apps",
+  "name",
+  "service_token_inactivity",
+  "session_duration",
+  "strict_service_token_auth",
+  "ui_read_only_toggle_reason",
+  "user_seat_expiration_inactive_time",
+  "warp_auth_non_browser_401",
+  "warp_auth_session_duration",
+] as const;
 /** An application's fields Cloudflare reports but an update does not take. */
 const APP_REPORTED = ["id", "aud", "uid", "created_at", "updated_at"] as const;
 /** An inline policy's fields Cloudflare reports but an update does not take. */
@@ -169,6 +197,24 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function text(value: unknown, key: string): string | undefined {
   const v = record(value)?.[key];
   return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/** Whether a service-token inactivity setting has all three of its fields. */
+function complete(setting: unknown): boolean {
+  const value = record(setting);
+  return (
+    value !== undefined &&
+    ["enabled", "inactivity_threshold_days", "action"].every(
+      (key) => value[key] !== null && value[key] !== undefined,
+    )
+  );
+}
+
+/** A copy of `value` with only `keys`, those it has. */
+function only(value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  const copy: Record<string, unknown> = {};
+  for (const key of keys) if (key in value) copy[key] = structuredClone(value[key]);
+  return copy;
 }
 
 function without(value: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
@@ -373,11 +419,14 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
     );
   }
   if (read !== minutes || organization.warp_auth_non_browser_401 !== true) {
-    const body = {
-      ...without(organization, ORGANIZATION_REPORTED),
+    const body: Record<string, unknown> = {
+      ...only(organization, ORGANIZATION_WRITABLE),
       warp_auth_session_duration: duration,
       warp_auth_non_browser_401: true,
     };
+    // Never set, it reads back with nulls, which the update refuses ([12062] "service_token_inactivity
+    // must include enabled, inactivity_threshold_days, and action"). Left out, it stays as it is.
+    if (!complete(body.service_token_inactivity)) delete body.service_token_inactivity;
     update({ organizationStartedAt: iso(ctx.now()) });
     refusedAs(organizationStep(duration), () => api.updateOrganization(body));
     const after = api.organization();

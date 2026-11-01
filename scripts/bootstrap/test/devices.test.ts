@@ -62,6 +62,11 @@ const WRITES: readonly Call[] = [
 ];
 
 /** A Zero Trust account as the owner's looked on 31 October: nothing for devices yet. */
+/** Organization fields the read reports and the update's schema does not list. */
+const REPORT_ONLY = ["trusted_accounts", "has_migrated_private_apps", "cache_device_posture"];
+/** What an update that leaves these out keeps (the owner's account, 1 Nov 2026). */
+const KEPT_WHEN_LEFT_OUT = [...REPORT_ONLY, "service_token_inactivity"];
+
 class FakeZeroTrust implements DevicesApi {
   now = Date.UTC(2026, 9, 31, 12, 0, 0);
   team: string | undefined = TEAM;
@@ -77,7 +82,8 @@ class FakeZeroTrust implements DevicesApi {
     is_ui_read_only: false,
     login_design: { background_color: "#000000" },
     name: TEAM,
-    service_token_inactivity: { action: "disable", enabled: false },
+    // As an account that never set it reads.
+    service_token_inactivity: { enabled: false, inactivity_threshold_days: null, action: null },
     session_duration: "8h",
     strict_service_token_auth: true,
     trusted_accounts: [],
@@ -190,9 +196,29 @@ class FakeZeroTrust implements DevicesApi {
       for (const key of ["created_at", "updated_at"]) {
         if (key in body) throw new Error(`[12000] ${key} is read-only`);
       }
-      // A PUT: what is not sent is gone.
+      // Stricter than Cloudflare is known to be: the fields its schema lists, nothing else.
+      for (const key of REPORT_ONLY) {
+        if (key in body) throw new Error(`[fake] the update does not take ${key}`);
+      }
+      // Cloudflare's rule (the owner's account, 1 Nov 2026).
+      const inactivity = body.service_token_inactivity as Record<string, unknown> | undefined;
+      if (
+        inactivity !== undefined &&
+        ["enabled", "inactivity_threshold_days", "action"].some((key) => inactivity[key] == null)
+      ) {
+        throw new Error(
+          "[12062] access.api.error.invalid_org_config: service_token_inactivity must include enabled, inactivity_threshold_days, and action",
+        );
+      }
+      // A PUT: what is not sent is gone, but for what Cloudflare keeps.
+      const kept = Object.fromEntries(
+        KEPT_WHEN_LEFT_OUT.filter((key) => key in this.organizationValue && !(key in body)).map(
+          (key) => [key, this.organizationValue[key]],
+        ),
+      );
       const next: Record<string, unknown> = {
         ...structuredClone(body),
+        ...kept,
         created_at: this.organizationValue.created_at,
         updated_at: new Date(this.now).toISOString(),
       };
@@ -845,6 +871,31 @@ describe("ensureDevices: the split tunnel", () => {
       throw new Error("network");
     };
     await expect(e.run()).rejects.toThrow("network");
+  });
+});
+
+describe("ensureDevices: the organization's service-token inactivity", () => {
+  it("leaves it out while unset, and writes it back whole once set", async () => {
+    const unset = await harness();
+    await unset.run();
+    expect(unset.zt.organizationValue.service_token_inactivity).toEqual({
+      enabled: false,
+      inactivity_threshold_days: null,
+      action: null,
+    });
+
+    const set = await harness();
+    const setting = { enabled: true, inactivity_threshold_days: 30, action: "disable" };
+    set.zt.organizationValue.service_token_inactivity = setting;
+    let sent: Record<string, unknown> | undefined;
+    const update = set.zt.updateOrganization;
+    set.zt.updateOrganization = (body) => {
+      sent = body;
+      return update(body);
+    };
+    await set.run();
+    expect(sent?.service_token_inactivity).toEqual(setting);
+    expect(set.zt.organizationValue.service_token_inactivity).toEqual(setting);
   });
 });
 
