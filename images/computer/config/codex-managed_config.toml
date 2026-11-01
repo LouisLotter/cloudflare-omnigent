@@ -1,7 +1,9 @@
 # Codex settings managed by the computer image (design, "Signing in" and "Network"). Managed
-# settings win over ~/.codex/config.toml, which travels in the workspace checkpoint.
+# settings win over ~/.codex/config.toml, which travels in the workspace checkpoint. The
+# computer container is the security boundary, so Codex must not add a nested command sandbox.
 cli_auth_credentials_store = "file"
 check_for_update_on_startup = false
+sandbox_mode = "danger-full-access"
 
 [analytics]
 enabled = false
