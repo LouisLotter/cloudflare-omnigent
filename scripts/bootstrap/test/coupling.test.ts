@@ -375,6 +375,9 @@ describe("the bootstrap never talks to the installation, changes Access or makes
     // The split tunnel alone; the organization whole, with the org-wide default as it was read.
     expect(devices).toMatch(/api\.updateDefaultProfile\(\{ include: /);
     expect(devices).not.toMatch(/allow_authenticate_via_warp: true,?\s*\n?\s*warp_auth/);
-    expect(devices).not.toMatch(/service_token|non_identity|bypass/);
+    // Two organization settings it writes back as read (or leaves out while unset), never sets.
+    const passedThrough = /strict_service_token_auth|service_token_inactivity/g;
+    expect(devices).not.toMatch(/(strict_service_token_auth|service_token_inactivity)\s*:/);
+    expect(devices.replace(passedThrough, "")).not.toMatch(/service_token|non_identity|bypass/);
   });
 });
