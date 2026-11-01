@@ -231,6 +231,16 @@ class FakeZeroTrust implements DevicesApi {
           if (key in p) throw new Error(`[12000] policy ${key} is read-only`);
         }
       }
+      // Cloudflare's rule, seen on the owner's account 1 Nov 2026.
+      if (
+        body.allow_authenticate_via_warp === true &&
+        before.allow_authenticate_via_warp !== true &&
+        this.organizationValue.warp_auth_session_duration === undefined
+      ) {
+        throw new Error(
+          "[12130] allow_authenticate_via_warp cannot be set until a Cloudflare One Client Authentication session duration is set for the account",
+        );
+      }
       const aud = this.newAudOnUpdate ? "b".repeat(64) : (before.aud as string | undefined);
       this.appsById.set(id, this.withReported(structuredClone(body), id, aud));
     });
@@ -312,6 +322,10 @@ describe("ensureDevices: the owner's account as it is today", () => {
     const outcome = await h.run();
     expect(outcome).toMatchObject({ teamDomain: TEAM, team: "team", sessionDuration: "720h" });
     expect(outcome.changed).toHaveLength(4);
+    // The organization's session first: Cloudflare refuses the application's switch without one.
+    expect(h.zt.writes().indexOf("updateOrganization")).toBeLessThan(
+      h.zt.writes().indexOf("updateApp"),
+    );
 
     // 1. Only this installation's application, with everything else it had.
     const app = h.zt.appsById.get(APP_ID) as Record<string, unknown>;
