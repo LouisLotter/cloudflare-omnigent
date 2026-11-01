@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 #: The image's Dockerfile, whose build arguments pin the CLIs (the daily tool version check,
@@ -43,6 +44,8 @@ def test_pinned_versions() -> None:
     assert _run("/usr/local/bin/gh", "--version").split()[2] == _pin("GH_VERSION")
     assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith(_pin("TTYD_VERSION"))
     assert _run("/usr/bin/tmux", "-V").strip() == "tmux 3.5a"  # WP3.28
+    assert shutil.which("rg") == "/usr/bin/rg"
+    assert _run("/usr/bin/rg", "--version").splitlines()[0].startswith("ripgrep ")
     # Debian's NSS myhostname (WP3.27), pinned: a point release that moves systemd on fails it.
     version = _run("dpkg-query", "-W", "-f=${Version}", "libnss-myhostname")
     assert version == "257.13-1~deb13u1"
@@ -65,9 +68,14 @@ def test_codex_managed_settings() -> None:
     for line in (
         'cli_auth_credentials_store = "file"',
         "check_for_update_on_startup = false",
+        'sandbox_mode = "danger-full-access"',
         "enabled = false",
     ):
         assert line in text
+    settings = tomllib.loads(text)
+    assert settings["sandbox_mode"] == "danger-full-access"
+    assert "approval_policy" not in settings
+    assert "approvals_reviewer" not in settings
 
 
 def test_claude_code_managed_settings() -> None:

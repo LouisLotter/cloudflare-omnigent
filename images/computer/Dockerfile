@@ -105,11 +105,12 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}" \
     IS_SANDBOX=1
 # As Omnigent's host image (git, tmux, procps, lsof, bubblewrap, curl, CA certificates, unzip),
-# plus tini (PID 1), iproute2 (ss, for counting runners), sudo, and util-linux's setpriv.
+# plus ripgrep for agent searches, tini (PID 1), iproute2 (ss, for counting runners), sudo, and
+# util-linux's setpriv.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git tmux procps lsof bubblewrap curl ca-certificates unzip \
-      tini iproute2 sudo util-linux \
+      ripgrep tini iproute2 sudo util-linux \
  && rm -rf /var/lib/apt/lists/*
 # The hostname resolves without /etc/hosts (WP3.27). A durable_object container's hostname is
 # its Durable Object's ID (64 hex characters), and Cloudflare mounts /etc/hosts read-only without
