@@ -172,18 +172,19 @@ export class FakeWorld {
   appliesReleases = true;
   /**
    * Whether Omnigent lists GitHub linking on a server started with a version's configuration
-   * (WP3.36): by default, when the version holds the GitHub App's client ID.
+   * (WP3.36), at the check's time: by default, when the version holds the GitHub App's client ID.
    */
-  githubLinks: (v: Version) => boolean | null = (v) => v.secrets.has(GITHUB_CLIENT_ID);
+  githubLinks: (v: Version, t: number) => boolean | null = (v) => v.secrets.has(GITHUB_CLIENT_ID);
   /** Whether a server started with a version's configuration exits 78 and is held. */
   refusesSettings: (v: Version) => boolean = () => false;
   /** Whether status lines carry the GitHub fields; false models a build from before WP3.36. */
   reportsGitHub = true;
   /**
    * Whether Omnigent lists its MCP registry on a server started with a version's configuration
-   * (WP5.10): by default, when the version turns on a service.
+   * (WP5.10), at the check's time: by default, when the version turns on a service.
    */
-  mcpListed: (v: Version) => boolean | null = (v) => (v.secrets.get(MCP_SERVICES) ?? "") !== "";
+  mcpListed: (v: Version, t: number) => boolean | null = (v) =>
+    (v.secrets.get(MCP_SERVICES) ?? "") !== "";
   /** Whether status lines carry the MCP fields; false models a build from before WP5.10. */
   reportsMcp = true;
   /** A server started with a restore point to take cannot take it (WP3.41): it never answers. */
@@ -741,13 +742,13 @@ export class FakeWorld {
           ...(this.reportsGitHub
             ? {
                 githubApp: fakeAppTag(version.secrets),
-                githubLinking: this.githubLinks(version),
+                githubLinking: this.githubLinks(version, t),
               }
             : {}),
           ...(this.reportsMcp
             ? {
                 mcpRevision: fakeMcpRevision(version.secrets),
-                mcpRegistry: this.mcpListed(version),
+                mcpRegistry: this.mcpListed(version, t),
               }
             : {}),
           // WP3.41: the window this version holds, and the restore point the server took.

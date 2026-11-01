@@ -36,6 +36,10 @@
 // release. The watchdog's `rolled_back` line says a server ordered to roll back put the restore
 // point back and is held (`held`), naming the restore point ordered (`restorePoint`).
 //
+// The same status that passes an update's release check must also show the integrations the
+// installation has set up still working (WP3.44, `integrationsOff`): GitHub linking, and the MCP
+// registry with the installation's own MCP choices.
+//
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
 // one, a contradictory one, or one that does not parse as the contract is never accepted.
@@ -390,6 +394,35 @@ export type Verification =
   | { readonly verified: true }
   | { readonly verified: false; readonly why: string };
 
+/** What the release check is about: an installation, the version a release deployed, and when. */
+export interface ReleaseRules {
+  readonly installationId: string;
+  /** The version the release deployed, as Cloudflare listed it right after. */
+  readonly releasedVersionId: string | undefined;
+  /** When the release's change was confirmed, in milliseconds. */
+  readonly releasedAt: number;
+}
+
+/**
+ * The status the release check judges: the newest of this installation's from the released
+ * version, logged since the release by a server started with its configuration (`configApplied`),
+ * without the password. Undefined while there is none, or without the released version.
+ */
+export function appliedStatus(logs: ParsedLogs, rules: ReleaseRules): StatusEvent | undefined {
+  const released = rules.releasedVersionId;
+  if (released === undefined) return undefined;
+  return newest(
+    logs.statuses.filter(
+      (e) =>
+        e.status.installationId === rules.installationId &&
+        e.versionId === released &&
+        e.loggedAt >= rules.releasedAt &&
+        e.secretPresent === false &&
+        e.configApplied === true,
+    ),
+  );
+}
+
 /**
  * After the release (R-27): the OmnigentServer object runs the version the release deployed
  * (objects switch about 300 s after a version is deployed), that version has never reported
@@ -405,16 +438,7 @@ export type Verification =
  * password, showing this installation's owner initialized and durable. Until then the release is
  * "released, not yet applied".
  */
-export function verifyRelease(
-  logs: ParsedLogs,
-  rules: {
-    readonly installationId: string;
-    /** The version the release deployed, as Cloudflare listed it right after. */
-    readonly releasedVersionId: string | undefined;
-    /** When the release's change was confirmed, in milliseconds. */
-    readonly releasedAt: number;
-  },
-): Verification {
+export function verifyRelease(logs: ParsedLogs, rules: ReleaseRules): Verification {
   const released = rules.releasedVersionId;
   if (released === undefined) {
     return { verified: false, why: "Cloudflare did not say which version the release deployed" };
@@ -444,22 +468,14 @@ export function verifyRelease(
   if (reported.some((e) => e.loggedAt >= firstRun)) {
     return { verified: false, why: "the bootstrap password was reported after the switch" };
   }
-  const applied = logs.statuses.filter(
-    (e) =>
-      e.status.installationId === rules.installationId &&
-      e.versionId === released &&
-      e.loggedAt >= rules.releasedAt &&
-      e.secretPresent === false &&
-      e.configApplied === true,
-  );
-  if (applied.length === 0) {
+  const latest = appliedStatus(logs, rules);
+  if (latest === undefined) {
     return {
       verified: false,
       why: "released, not yet applied: the server still runs with its configuration from before the release (the watchdog replaces it, a restart of a few minutes)",
     };
   }
-  const latest = newest(applied);
-  if (latest !== undefined && !(latest.status.initialized && latest.reason === "durable")) {
+  if (!(latest.status.initialized && latest.reason === "durable")) {
     const why = REASONS[latest.reason ?? ""] ?? "the owner is not initialized and durable yet";
     return {
       verified: false,
@@ -467,6 +483,74 @@ export function verifyRelease(
     };
   }
   return { verified: true };
+}
+
+/**
+ * The integrations an update requires still working before it accepts its release (WP3.44):
+ * those this installation has set up, as the installer knows them without asking the
+ * installation.
+ */
+export interface RequiredIntegrations {
+  /** GitHub linking is set up: the platform Worker holds the GitHub App's client ID (its name). */
+  readonly github: boolean;
+  /**
+   * The MCP choices the server may run (services.ts): the journal's last change, and one begun
+   * but not confirmed sent, which may or may not have reached the Worker. Each by its revision
+   * (undefined: none written) and whether it turns a service on.
+   */
+  readonly mcp: readonly { readonly revision: string | undefined; readonly on: boolean }[];
+}
+
+/**
+ * What of the required integrations a status does not show working, in words for the installer;
+ * undefined when it shows all of them. The status is the one the release check accepted
+ * (`appliedStatus`): the update's own version, from a server started with its configuration.
+ *   - GitHub linking, when set up: the version holds an App (`githubApp`, its tag) and Omnigent
+ *     lists GitHub linking (`githubLinking`).
+ *   - MCP, when choices that turn a service on may run: the status names the revision of choices
+ *     the journal records (`mcpRevision`, null for none), and when those turn a service on,
+ *     Omnigent lists its MCP registry (`mcpRegistry`).
+ * A field a status does not carry (undefined: a build from before it was reported) or whose
+ * answer did not say (null) never counts as on. With neither set up, nothing is required.
+ */
+export function integrationsOff(
+  status: StatusEvent,
+  required: RequiredIntegrations,
+): string | undefined {
+  const off: string[] = [];
+  if (required.github) {
+    if (status.githubApp === null) {
+      off.push(
+        "GitHub linking is off: this installation has a GitHub App set up, but the restarted server does not hold it",
+      );
+    } else if (status.githubLinking === false) {
+      off.push(
+        "GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking",
+      );
+    } else if (typeof status.githubApp !== "string" || status.githubLinking !== true) {
+      off.push(
+        "GitHub linking is not confirmed: the restarted server's status does not say whether it is on",
+      );
+    }
+  }
+  if (required.mcp.some((choices) => choices.on)) {
+    // Undefined (unsaid) never matches: a revision is a string, and none is null.
+    const runs = required.mcp.find((choices) => (choices.revision ?? null) === status.mcpRevision);
+    if (runs === undefined) {
+      off.push(
+        status.mcpRevision === undefined
+          ? "MCP services are not confirmed: the restarted server's status does not say which MCP choices it runs"
+          : "MCP services are not confirmed: the restarted server runs other MCP choices than this state file records",
+      );
+    } else if (runs.on && status.mcpRegistry !== true) {
+      off.push(
+        status.mcpRegistry === false
+          ? "MCP services are off: services are on in this installation, but Omnigent on the restarted server does not list its MCP registry"
+          : "MCP services are not confirmed: the restarted server's status does not say whether Omnigent lists its MCP registry",
+      );
+    }
+  }
+  return off.length === 0 ? undefined : off.join("; ");
 }
 
 export type GitHubLinkingCheck =

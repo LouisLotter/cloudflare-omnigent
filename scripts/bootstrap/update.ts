@@ -30,7 +30,10 @@
 //   5. waits for the platform objects to switch to the new version and the server to restart on
 //      it, then checks with the release's check (events.ts, verifyRelease): the server's object
 //      runs the new version, a server started with the new configuration answers, without the
-//      bootstrap password, and shows the owner initialized and durable. Every platform deploy of
+//      bootstrap password, and shows the owner initialized and durable. The same status must also
+//      show the integrations the installation has set up still on (WP3.44): GitHub linking when
+//      the platform Worker holds the GitHub App, and the MCP registry with the journal's MCP
+//      choices when services are on; until it does, nothing is accepted. Every platform deploy of
 //      an update carries its own `DEPLOY_ID_VAR`, which reaches the server: the configuration
 //      changes, so the watchdog restarts the server once and its status lines are the proof.
 //      Logs count only while the version serving is positively the update's own (its version
@@ -61,6 +64,7 @@
 // own), the bootstrap password, a request to the installation, a Worker deployed over one this
 // plan did not create.
 
+import { GITHUB_APP_CLIENT_ID_ENV } from "../../worker/src/server/github-linking.ts";
 import {
   MAINTENANCE_WINDOW_SECRET,
   RESTORE_POINT_VAR,
@@ -72,7 +76,15 @@ import {
   AccessRefusal,
   ensureOwnerAccess,
 } from "./access-app.ts";
-import { parseLogs, type Verification, verifyRelease } from "./events.ts";
+import {
+  appliedStatus,
+  integrationsOff,
+  parseLogs,
+  type RequiredIntegrations,
+  type StatusEvent,
+  type Verification,
+  verifyRelease,
+} from "./events.ts";
 // machine.ts's step 7 calls runUpdate, and this module uses machine.ts's refusal, generator and
 // log reader: a cycle between the two modules, which neither uses at load time.
 import {
@@ -81,6 +93,7 @@ import {
   type BootstrapState,
   generatedSecrets,
   type Journal,
+  type McpServicesRecord,
   type RunContext,
   type StateStore,
   slicedLogs,
@@ -236,6 +249,24 @@ export function secretsToEnsure(
 const LAUNCHER_PAIR = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET] as const;
 /** The key service's signing pair (WP5.10): the same rule. */
 const KEY_SERVICE_PAIR = [KEY_SERVICE_KEY_SECRET, KEY_SERVICE_KEY_ID_SECRET] as const;
+
+/**
+ * The integrations this installation has set up, which an update requires still working before
+ * it accepts (WP3.44): GitHub linking when the platform Worker holds the GitHub App's client ID
+ * (by name; github-app.ts sets it), and the MCP choices the journal records (services.ts), with a
+ * change begun but not confirmed sent, which may or may not have reached the Worker.
+ */
+export function requiredIntegrations(
+  present: ReadonlySet<string>,
+  mcp: McpServicesRecord | undefined,
+): RequiredIntegrations {
+  return {
+    github: present.has(GITHUB_APP_CLIENT_ID_ENV),
+    mcp: [mcp, mcp?.pending].flatMap((choices) =>
+      choices === undefined ? [] : [{ revision: choices.revision, on: choices.on.length > 0 }],
+    ),
+  };
+}
 
 /** The secrets a finished installation holds: `run`'s required ones, the password long gone. */
 export function requiredAfterRelease(plan: Installation): string[] {
@@ -625,6 +656,7 @@ export async function runUpdate(
     progress,
     (update) => record({ update }),
     (change) => record({ window: { ...currentWindow(), ...change } }),
+    requiredIntegrations(present, state.journal.mcpServices),
     options,
   );
   if (checkedUpdate.kind !== "done") return checkedUpdate;
@@ -762,7 +794,9 @@ export function serving(
  * After the deploys: the platform objects switch to the new version (about 300 s), the watchdog
  * finds the server started with another configuration and replaces it once, and the server
  * started with the new one logs its status without the bootstrap password. The release's own
- * check (verifyRelease), with the update's platform version and the start of its deploy.
+ * check (verifyRelease), with the update's platform version and the start of its deploy; then
+ * the window held, and, from the status that check accepted, the integrations the installation
+ * has set up (WP3.44, events.ts integrationsOff).
  */
 async function checkUpdate(
   ctx: UpdateContext,
@@ -770,6 +804,7 @@ async function checkUpdate(
   progress: (change: Partial<UpdateRecord>) => void,
   replace: (update: UpdateRecord) => void,
   setWindow: (change: Partial<WindowRecord>) => void,
+  required: RequiredIntegrations,
   options: UpdateOptions,
 ): Promise<UpdateOutcome> {
   const plan = state().installation;
@@ -824,16 +859,29 @@ async function checkUpdate(
       if (held.ok && open.restorePointTakenAt !== held.takenAt) {
         setWindow({ restorePointTakenAt: held.takenAt });
       }
-      const result: Verification = verifyRelease(logs, {
+      const release = {
         installationId: plan.installationId,
         releasedVersionId: update().platformVersionId,
         releasedAt: since,
-      });
+      };
+      const result: Verification = verifyRelease(logs, release);
       if (!result.verified) return { why: result.why };
       if (!held.ok) return { why: held.why };
+      // From the very status the release check accepted: the integrations still on (WP3.44).
+      const status = appliedStatus(logs, release) as StatusEvent;
+      const off = integrationsOff(status, required);
+      if (off !== undefined) return { why: off };
       progress({ verifiedAt: iso(ctx.now()) });
+      // Said only of what was required and the status shows on: a change that turned the last
+      // MCP service off may be what runs.
+      const on = [
+        ...(required.github ? ["GitHub linking"] : []),
+        ...(required.mcp.some((choices) => choices.on) && status.mcpRegistry === true
+          ? ["MCP services"]
+          : []),
+      ];
       ctx.log(
-        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable; its restore point ${open.id} was taken at ${held.takenAt}`,
+        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable${on.length > 0 ? `, with ${on.join(" and ")} on` : ""}; its restore point ${open.id} was taken at ${held.takenAt}`,
       );
       return { decided: { kind: "done" } };
     },
