@@ -8,7 +8,7 @@ const pure = { lines: 90, branches: 90, functions: 90, statements: 90 };
 const io = { lines: 85, branches: 75, functions: 80, statements: 85 };
 
 // Tests for the repository tools in scripts/: the canary scanner, the staging tool, the
-// bootstrap script, the daily tool version check and the restore drill's staging harness
+// bootstrap script, the per-machine host setup, the daily tool version check and the restore drill's staging harness
 // Worker (its pure parts).
 export default defineConfig({
   root: import.meta.dirname,
@@ -20,6 +20,8 @@ export default defineConfig({
       "test/**/*.test.ts",
       "staging/**/*.test.ts",
       "bootstrap/**/*.test.ts",
+      // The per-machine host setup (WP3.43), a shell script run against fake commands.
+      "host/**/*.test.ts",
       "tool-versions/**/*.test.ts",
       "restore-drill/staging/**/*.test.ts",
     ],
@@ -66,6 +68,9 @@ export default defineConfig({
         "bootstrap/r2-token.ts": pure,
         "bootstrap/github-app.ts": pure,
         "bootstrap/services.ts": pure,
+        // The devices step (WP3.43) and its command, which the tests run on a real state file.
+        "bootstrap/devices.ts": pure,
+        "bootstrap/devices-command.ts": io,
         "bootstrap/update.ts": pure,
         // The update's window, its acceptance and its rollback (WP3.41).
         "bootstrap/window.ts": pure,

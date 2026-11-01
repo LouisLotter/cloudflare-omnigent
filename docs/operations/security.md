@@ -42,6 +42,19 @@ A client that still trusts a compromised certificate authority can be shown a fo
 4. **Replace running containers.** A running container keeps the image it started with, so stop running servers and computers and let them start on the refreshed image. Anything installed in a workspace, such as a project's own virtual environment with its own certifi, is outside the image and travels with checkpoints. Tell the person.
 5. **Assess exposure.** If credentials may have crossed a forged connection, follow the compromise response above.
 
+## Personal hosts
+
+A personal machine connected as a host ([the guide](personal-hosts.md)) reaches the installation through the Cloudflare One Client, signed in to the installation's Zero Trust team as the owner. These boundaries hold:
+
+- **Who gets in is unchanged.** The hostname's Access application still admits only the owner's email, and the web Worker still checks every assertion (issuer, audience, `app` type, a user rather than a service token) and the owner pin. Cloudflare One Client authentication is a way to sign in to Access, turned on for this installation's application only; the organization's default for every other application is left as it is.
+- **Only the owner enrolls a device.** Device enrollment's only policy is the owner's email. The step refuses an enrollment policy someone else made that admits anyone else.
+- **Nothing public.** A personal host connects out to `https://<hostname>`; it opens no port, tunnel or public route, and uses no service token. Its requests carry `Origin: omnigent://internal`, the marker Omnigent's own host, runners and command line send; ingress admits that exact value where it requires the installation's origin, because no web page can set it (a privileged browser extension could, as it could already set the installation's own origin), and the platform pages still require their exact origin.
+- **The client's session is finite.** It lasts 30 days unless the installation chose otherwise (at most 90), then the person signs in again. A non-browser client whose session lapsed gets a `401`, never a login page it could hang on.
+
+**An accepted exception to the cloud-computer custody rules.** [ADR 0004](../decisions/0004-identity-credential-authority.md) keeps long-lived Omnigent logins off cloud computers. A personal host is the owner's own machine: its Omnigent command line holds the owner's Omnigent session and refresh grant (in its own store, mode 0600), and its host runs agents with the owner's local account and files. Treat a personal machine's compromise as a compromise of the owner's Omnigent account.
+
+**A lost or stolen machine:** revoke its registration in Zero Trust (Team & Resources → Devices → Revoke), which stops new connections through Access; change the owner's Omnigent password on `/platform/password` from another device, which rotates the account's generation and so invalidates every session, CLI sign-in and refresh grant, the lost machine's included; then remove its host in Omnigent. An open connection is not cut by Access's revocation: confirm the host shows offline. Then follow the compromise response above.
+
 ## Preserve approval and identity controls
 
 The implemented fork delegation checks refuse approval answers, policy edits/deletes, default-policy creation, replacement of a session's agent and account/credential administration. The accepted platform design additionally requires the private computer route to restrict sharing mutations, protected administrative/approval paths and another computer's identity; that production route is not yet implemented. A recorded human verdict binds a permitted runner MCP retry to its exact call and is consumed once.

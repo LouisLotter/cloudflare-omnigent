@@ -119,6 +119,9 @@ describe("proxyToOmnigent: exact origins on the forwarding path", () => {
     ["POST, http scheme", { origin: "http://omnigent.example.test" }, false],
     ["POST, trailing slash", { origin: `${ORIGIN}/` }, false],
     ["POST, exact origin", { origin: ORIGIN }, true],
+    // Omnigent's own non-browser marker: a personal machine's runners and CLI (WP3.43).
+    ["POST, Omnigent's own marker", { origin: "omnigent://internal" }, true],
+    ["POST, the marker misspelled", { origin: "omnigent://internal/" }, false],
     ["POST, no origin", {}, true],
   ];
   for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
@@ -153,11 +156,13 @@ describe("proxyToOmnigent: exact origins on the forwarding path", () => {
     expect((await proxyToOmnigent(admitted(upgrade("null")), env)).status).toBe(403);
     expect(binding.requests).toHaveLength(0);
     await proxyToOmnigent(admitted(upgrade(ORIGIN)), env);
+    // A personal machine's host tunnel (WP3.43).
+    await proxyToOmnigent(admitted(upgrade("omnigent://internal")), env);
     await proxyToOmnigent(
       admitted(new Request(`${ORIGIN}/`, { headers: { origin: "https://evil.example" } })),
       env,
     );
-    expect(binding.requests).toHaveLength(2);
+    expect(binding.requests).toHaveLength(3);
     expect(needsOriginCheck(new Request(`${ORIGIN}/`, { method: "OPTIONS" }))).toBe(false);
     expect(hasForeignOrigin(new Request(`${ORIGIN}/`), ORIGIN)).toBe(false);
   });
