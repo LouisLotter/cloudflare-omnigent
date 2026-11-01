@@ -129,7 +129,7 @@ describe("updateCommand", () => {
     world.githubLinks = () => false;
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(3);
     expect(lines.at(-1)).toBe(
-      `updated, but not checked yet: GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking. Omnigent stays paused until the update is checked, so nothing can be lost meanwhile. Run bootstrap.ts update again to check; it deploys nothing again. Or go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback. Open https://${plan.hostname}`,
+      `updated, but not checked yet: GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking. Omnigent stays paused, so nothing can be lost meanwhile, and its server is checked every minute: run bootstrap.ts update again to check, and it accepts the update once that is on (it deploys nothing again). If it stays off, go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback; bootstrap.ts github-app and services work again after that. Open https://${plan.hostname}`,
     );
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(3);
     expect(await updateCommand(path, { root: ROOT, verify: true, rollback: true }, ports())).toBe(

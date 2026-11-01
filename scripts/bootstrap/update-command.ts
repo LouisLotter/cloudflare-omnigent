@@ -136,6 +136,14 @@ export async function updateCommand(
         );
         return 3;
       }
+      if (outcome.integrationsOff === true) {
+        // WP3.44: the server is checked every minute while the window holds, so a run sees an
+        // integration come on; github-app and services refuse inside the window.
+        ports.log(
+          `updated, but not checked yet: ${outcome.why}. Omnigent stays paused, so nothing can be lost meanwhile, and its server is checked every minute: run bootstrap.ts update again to check, and it accepts the update once that is on (it deploys nothing again). If it stays off, go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback; bootstrap.ts github-app and services work again after that. ${open}`,
+        );
+        return 3;
+      }
       const again =
         store.load().journal.update?.platformDeployedAt === undefined
           ? "Run bootstrap.ts update again."

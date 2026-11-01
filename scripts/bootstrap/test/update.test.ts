@@ -18,7 +18,12 @@ import {
   type WorkerIdentity,
 } from "../machine.ts";
 import { runRollback } from "../rollback.ts";
-import { changeServices, MCP_REVISION_SECRET, type ServicesChange } from "../services.ts";
+import {
+  changeServices,
+  MCP_REVISION_SECRET,
+  MCP_SERVICES_SECRET,
+  type ServicesChange,
+} from "../services.ts";
 import { shippedManifests } from "../services-command.ts";
 import {
   bucketTagOf,
@@ -39,6 +44,7 @@ import {
 } from "../settings.ts";
 import { fileStateStore, parseState } from "../state.ts";
 import {
+  mcpServicesUnrecorded,
   requiredAfterRelease,
   requiredIntegrations,
   runUpdate,
@@ -55,6 +61,7 @@ import {
   type CrashPoint,
   FakeWorld,
   MemoryStore,
+  NOTICE_MS,
   REPLACE_MS,
   SWITCH_MS,
   WINDOW_SECRETS,
@@ -1170,7 +1177,12 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
     await withGitHub(h);
     h.world.githubLinks = () => false;
     const outcome = await h.update();
-    expect(outcome).toEqual({ kind: "deployed", why: GITHUB_OFF, window: "open" });
+    expect(outcome).toEqual({
+      kind: "deployed",
+      why: GITHUB_OFF,
+      window: "open",
+      integrationsOff: true,
+    });
     expect(h.lines).toContain(`waiting: ${GITHUB_OFF}`);
     notAccepted(h);
     // Run again later: checked again, nothing deployed again, still not accepted.
@@ -1194,11 +1206,34 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       kind: "deployed",
       why: GITHUB_OFF,
       window: "open",
+      integrationsOff: true,
     });
     notAccepted(h);
     h.world.now = from + 15 * 60_000;
     expect(await h.update()).toEqual({ kind: "done" });
     expect(count(h, "deployPlatform")).toBe(1);
+  });
+
+  it("GitHub linking that comes on long after the notice: the server is still checked in the window, and the next run accepts without deploying again", async () => {
+    const h = await installed(await accountPlan());
+    await withGitHub(h);
+    const from = h.world.now;
+    // The deploy, the switch, the restart, then the notice from the first durable line: all over
+    // well before this.
+    const comesOn = from + 30 * 60_000;
+    expect(comesOn).toBeGreaterThan(from + SWITCH_MS + 2 * REPLACE_MS + NOTICE_MS);
+    h.world.githubLinks = (_version, t) => t >= comesOn;
+    expect(await h.update()).toEqual({
+      kind: "deployed",
+      why: GITHUB_OFF,
+      window: "open",
+      integrationsOff: true,
+    });
+    notAccepted(h);
+    h.world.now = from + 45 * 60_000;
+    expect(await h.update()).toEqual({ kind: "done" });
+    expect(count(h, "deployPlatform")).toBe(1);
+    expect(checkedLine(h)).toMatch(/with GitHub linking on; /);
   });
 
   it("a status that does not say (a build from before it reported GitHub linking) never counts as on", async () => {
@@ -1209,6 +1244,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       kind: "deployed",
       why: "GitHub linking is not confirmed: the restarted server's status does not say whether it is on",
       window: "open",
+      integrationsOff: true,
     });
     notAccepted(h);
   });
@@ -1224,7 +1260,12 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
     const h = await installed(await accountPlan());
     expect((await services(h, ADD, 0x52)).kind).toBe("ready");
     h.world.mcpListed = () => false;
-    expect(await h.update()).toEqual({ kind: "deployed", why: MCP_OFF, window: "open" });
+    expect(await h.update()).toEqual({
+      kind: "deployed",
+      why: MCP_OFF,
+      window: "open",
+      integrationsOff: true,
+    });
     notAccepted(h);
   });
 
@@ -1240,6 +1281,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       kind: "deployed",
       why: "MCP services are not confirmed: the restarted server runs other MCP choices than this state file records",
       window: "open",
+      integrationsOff: true,
     });
     notAccepted(h);
   });
@@ -1252,6 +1294,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       kind: "deployed",
       why: "MCP services are not confirmed: the restarted server's status does not say which MCP choices it runs",
       window: "open",
+      integrationsOff: true,
     });
     notAccepted(h);
   });
@@ -1282,8 +1325,79 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       kind: "deployed",
       why: `${GITHUB_OFF}; ${MCP_OFF}`,
       window: "open",
+      integrationsOff: true,
     });
     notAccepted(h);
+  });
+
+  describe("a list of MCP services the state file does not record: refused before anything is deployed", () => {
+    const refusal =
+      /holds a list of MCP services \(SERVER_ENV_CFO_MCP_SERVICES\) that this state file does not record as on .*run it with the installation's own state file, or first write the list from this one with bootstrap\.ts services \(add <id> --replace\); nothing was deployed$/;
+
+    /** Nothing deployed, no window opened, the journal's last update untouched. */
+    function nothingDeployed(h: Harness, journal: ReturnType<typeof journalOf>) {
+      expect(count(h, "deployPlatform")).toBe(0);
+      expect(count(h, "deployWeb")).toBe(0);
+      expect(journalOf(h)).toEqual(journal);
+      expect(platformSecrets(h).has(WINDOW_SECRETS.window)).toBe(false);
+    }
+
+    it("no record at all: another copy of the state file turned them on (Codex WP3.44 r1-1)", async () => {
+      const h = await installed(await accountPlan());
+      const copy = h.store.load();
+      expect(copy.journal.mcpServices).toBeUndefined();
+      expect((await services(h, ADD, 0x58)).kind).toBe("ready");
+      // The update from the first copy, with a candidate that would not list MCP.
+      h.store.save(copy);
+      h.world.mcpListed = () => false;
+      h.world.calls.length = 0;
+      await expect(h.update()).rejects.toThrow(refusal);
+      nothingDeployed(h, copy.journal);
+    });
+
+    it("a stale record of every service off: another copy turned one on since", async () => {
+      const h = await installed(await accountPlan());
+      expect((await services(h, ADD, 0x59)).kind).toBe("ready");
+      expect((await services(h, { kind: "remove", id: "tracker" }, 0x5a)).kind).toBe("ready");
+      const copy = h.store.load();
+      expect(copy.journal.mcpServices?.on).toEqual([]);
+      expect((await services(h, ADD, 0x5b)).kind).toBe("ready");
+      h.store.save(copy);
+      h.world.calls.length = 0;
+      await expect(h.update()).rejects.toThrow(refusal);
+      nothingDeployed(h, copy.journal);
+      // Nothing to deploy is still said to be up to date: nothing is checked or accepted.
+      const current = await installed(await accountPlan());
+      expect(await current.update()).toEqual({ kind: "done" });
+      expect((await services(current, ADD, 0x5c)).kind).toBe("ready");
+      const { mcpServices: _record, ...older } = current.store.load().journal;
+      current.store.save({ ...current.store.load(), journal: older });
+      expect(await current.update()).toEqual({ kind: "current" });
+    });
+
+    it("a change begun but not confirmed sent that turns one on accounts for the list: checked as usual", async () => {
+      const h = await installed(await accountPlan());
+      h.world.counts.clear();
+      h.world.crash = { call: "updateSecrets", nth: 1, when: "after" };
+      await expect(services(h, ADD, 0x5d)).rejects.toThrow(Crash);
+      expect(journalOf(h).mcpServices).toMatchObject({ on: [], pending: { on: ["tracker"] } });
+      expect(await h.update()).toEqual({ kind: "done" });
+      expect(checkedLine(h)).toMatch(/with MCP services on; /);
+    });
+
+    it("inside a window opened before the check: refused, and going back stays possible", async () => {
+      const h = await installed(await accountPlan());
+      expect((await services(h, ADD, 0x5e)).kind).toBe("ready");
+      expect((await h.update(CODE_A, { verify: false })).kind).toBe("deployed");
+      const { mcpServices: _record, ...older } = journalOf(h);
+      h.store.save({ ...h.store.load(), journal: older });
+      await expect(h.update()).rejects.toThrow(
+        /does not record as on, so the update could not check that they still work; its read-only window stays open: go back with bootstrap\.ts update --rollback, then write the list from this state file with bootstrap\.ts services \(add <id> --replace\) and update again; nothing was deployed$/,
+      );
+      expect(count(h, "deployPlatform")).toBe(1);
+      expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+      expect(journalOf(h).window).toBeUndefined();
+    });
   });
 
   it("requires what the installation set up: the App's client ID by name, and the MCP choices with any change begun", () => {
@@ -1306,5 +1420,16 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       github: false,
       mcp: [{ revision: undefined, on: false }],
     });
+    // A list on the Worker is accounted for only by a recorded list that turns a service on.
+    const list = new Set([MCP_SERVICES_SECRET]);
+    const R = "c3".repeat(16);
+    expect(mcpServicesUnrecorded(new Set(), undefined)).toBe(false);
+    expect(mcpServicesUnrecorded(new Set([MCP_REVISION_SECRET]), undefined)).toBe(false);
+    expect(mcpServicesUnrecorded(list, undefined)).toBe(true);
+    expect(mcpServicesUnrecorded(list, { on: [], revision: R })).toBe(true);
+    expect(mcpServicesUnrecorded(list, { on: ["tracker"], revision: R })).toBe(false);
+    const pending = { on: ["tracker"], revision: R, startedAt: "2026-11-01T00:00:00.000Z" };
+    expect(mcpServicesUnrecorded(list, { on: [], pending })).toBe(false);
+    expect(mcpServicesUnrecorded(list, { on: [], pending: { ...pending, on: [] } })).toBe(true);
   });
 });
