@@ -1332,7 +1332,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
 
   describe("a list of MCP services the state file does not record: refused before anything is deployed", () => {
     const refusal =
-      /holds a list of MCP services \(SERVER_ENV_CFO_MCP_SERVICES\) that this state file does not record as on .*run it with the installation's own state file, or first write the list from this one with bootstrap\.ts services \(add <id> --replace\); nothing was deployed$/;
+      /holds a list of MCP services \(SERVER_ENV_CFO_MCP_SERVICES\) that this state file does not record as on .*run it with the installation's own state file, or first write the list from this one with bootstrap\.ts services \(add <id> --replace\), or, if no service should be on .*wrangler secret delete SERVER_ENV_CFO_MCP_SERVICES --name \S+; nothing was deployed$/;
 
     /** Nothing deployed, no window opened, the journal's last update untouched. */
     function nothingDeployed(h: Harness, journal: ReturnType<typeof journalOf>) {

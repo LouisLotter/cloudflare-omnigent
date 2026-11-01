@@ -549,7 +549,7 @@ export async function runUpdate(
   if (mcpServicesUnrecorded(present, state.journal.mcpServices)) {
     throw new BootstrapRefusal(
       window === undefined
-        ? `${plan.platformWorker} holds a list of MCP services (${MCP_SERVICES_SECRET}) that this state file does not record as on (set from another laptop, or with another copy of this state file?), so the update could not check that they still work: run it with the installation's own state file, or first write the list from this one with bootstrap.ts services (add <id> --replace); nothing was deployed`
+        ? `${plan.platformWorker} holds a list of MCP services (${MCP_SERVICES_SECRET}) that this state file does not record as on (set from another laptop, or with another copy of this state file?), so the update could not check that they still work: run it with the installation's own state file, or first write the list from this one with bootstrap.ts services (add <id> --replace), or, if no service should be on (an empty list, or one no state file records), delete it: pnpm --filter @cfo/worker exec wrangler secret delete ${MCP_SERVICES_SECRET} --name ${plan.platformWorker}; nothing was deployed`
         : `${plan.platformWorker} holds a list of MCP services (${MCP_SERVICES_SECRET}) that this state file does not record as on, so the update could not check that they still work; its read-only window stays open: go back with bootstrap.ts update --rollback, then write the list from this state file with bootstrap.ts services (add <id> --replace) and update again; nothing was deployed`,
     );
   }
