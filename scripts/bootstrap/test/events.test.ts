@@ -1,9 +1,11 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
+  appliedStatus,
   checkGitHubLinking,
   checkMcpServices,
   decide,
+  integrationsOff,
   parseLogs,
   type StatusEvent,
   verifyRelease,
@@ -455,6 +457,236 @@ describe("verifyRelease", () => {
       verified: false,
       why: expect.stringContaining("did not say which version"),
     });
+  });
+});
+
+describe("appliedStatus: the status the release check judges (WP3.44)", () => {
+  const released = NOW;
+  const rules = { installationId: INSTALLATION, releasedVersionId: "v2", releasedAt: released };
+  const logsOf = (events: unknown[]) => parseLogs(events, SCRIPT);
+
+  it("is the newest applied line of this installation from the released version, after the release", () => {
+    const first = event(released + 400_000, appliedLine(released + 400_000), "v2");
+    const second = event(released + 460_000, appliedLine(released + 460_000), "v2");
+    const ignored = [
+      event(released + 500_000, appliedLine(released + 500_000), "v3"),
+      event(released + 500_000, appliedLine(released + 500_000, true, "durable", OTHER), "v2"),
+      event(released - 1, appliedLine(released - 1), "v2"),
+      event(
+        released + 500_000,
+        line(released + 500_000, true, "durable", { secretPresent: false }),
+        "v2",
+      ),
+      event(released + 500_000, line(released + 500_000, true, "durable"), "v2"),
+    ];
+    const logs = logsOf([first, second, ...ignored]);
+    expect(appliedStatus(logs, rules)?.loggedAt).toBe(released + 460_000);
+    expect(verifyRelease(logs, rules)).toEqual({
+      verified: false,
+      why: "the released version still reports the bootstrap password",
+    });
+    expect(appliedStatus(logsOf(ignored), rules)).toBeUndefined();
+    expect(appliedStatus(logs, { ...rules, releasedVersionId: undefined })).toBeUndefined();
+  });
+
+  it("is never one without a version, even when the release names none", () => {
+    const unnamed = {
+      ...event(released + 400_000, appliedLine(released + 400_000)),
+      $workers: { scriptName: SCRIPT, eventType: "alarm", entrypoint: "OmnigentServer" },
+    };
+    expect(
+      appliedStatus(logsOf([unnamed]), { ...rules, releasedVersionId: undefined }),
+    ).toBeUndefined();
+  });
+});
+
+describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
+  const R1 = "a1".repeat(16);
+  const R2 = "b2".repeat(16);
+  const APP = "1a2b3c4d5e6f7081";
+  const NONE = { github: false, mcp: [] } as const;
+  const GITHUB = { github: true, mcp: [] } as const;
+  const MCP = { github: false, mcp: [{ revision: R1, on: true }] } as const;
+  /** The applied status of a server that reports both integrations on. */
+  const on: StatusEvent = {
+    ...status(NOW, true, "durable"),
+    secretPresent: false,
+    githubApp: APP,
+    githubLinking: true,
+    mcpRevision: R1,
+    mcpRegistry: true,
+  };
+  /** A status from a build that reports neither (every field unsaid). */
+  const older: StatusEvent = { ...status(NOW, true, "durable"), secretPresent: false };
+
+  it("requires nothing of an installation with neither, whatever the status says", () => {
+    expect(integrationsOff(on, NONE)).toBeUndefined();
+    expect(integrationsOff(older, NONE)).toBeUndefined();
+    expect(
+      integrationsOff({ ...on, githubApp: null, githubLinking: false, mcpRegistry: false }, NONE),
+    ).toBeUndefined();
+    // Choices that turn nothing on (every service removed) require nothing either.
+    expect(
+      integrationsOff(
+        { ...older, mcpRevision: R2 },
+        { github: false, mcp: [{ revision: R1, on: false }] },
+      ),
+    ).toBeUndefined();
+  });
+
+  it("GitHub linking, when set up: the App held and linking listed", () => {
+    expect(integrationsOff(on, GITHUB)).toBeUndefined();
+    expect(integrationsOff({ ...on, githubLinking: false }, GITHUB)).toBe(
+      "GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking",
+    );
+    expect(integrationsOff({ ...on, githubApp: null }, GITHUB)).toBe(
+      "GitHub linking is off: this installation has a GitHub App set up, but the restarted server does not hold it",
+    );
+    const unsaid =
+      "GitHub linking is not confirmed: the restarted server's status does not say whether it is on";
+    for (const over of [
+      { githubLinking: null },
+      { githubLinking: undefined },
+      { githubApp: undefined },
+    ]) {
+      expect(integrationsOff({ ...on, ...over }, GITHUB)).toBe(unsaid);
+    }
+    expect(integrationsOff(older, GITHUB)).toBe(unsaid);
+  });
+
+  it("MCP, when services are on: the journal's revision, and the registry listed", () => {
+    expect(integrationsOff(on, MCP)).toBeUndefined();
+    expect(integrationsOff({ ...on, mcpRegistry: false }, MCP)).toBe(
+      "MCP services are off: services are on in this installation, but Omnigent on the restarted server does not list its MCP registry",
+    );
+    for (const mcpRegistry of [null, undefined]) {
+      expect(integrationsOff({ ...on, mcpRegistry }, MCP)).toBe(
+        "MCP services are not confirmed: the restarted server's status does not say whether Omnigent lists its MCP registry",
+      );
+    }
+    // A revision mismatch: other choices (set from another laptop, or none at all).
+    for (const mcpRevision of [R2, null]) {
+      expect(integrationsOff({ ...on, mcpRevision }, MCP)).toBe(
+        "MCP services are not confirmed: the restarted server runs other MCP choices than this state file records",
+      );
+    }
+    expect(integrationsOff({ ...on, mcpRevision: undefined }, MCP)).toBe(
+      "MCP services are not confirmed: the restarted server's status does not say which MCP choices it runs",
+    );
+    expect(integrationsOff(older, MCP)).toMatch(/^MCP services are not confirmed: /);
+  });
+
+  it("a change begun but not confirmed sent: either list may run, each with its own requirement", () => {
+    // Turning the first service on: before it arrived, no revision and nothing on.
+    const adding = {
+      github: false,
+      mcp: [
+        { revision: undefined, on: false },
+        { revision: R1, on: true },
+      ],
+    };
+    expect(integrationsOff({ ...older, mcpRevision: null, mcpRegistry: false }, adding)).toBe(
+      undefined,
+    );
+    expect(integrationsOff(on, adding)).toBeUndefined();
+    expect(integrationsOff({ ...on, mcpRegistry: false }, adding)).toMatch(/^MCP services are off/);
+    // Never unsaid, which matches neither.
+    expect(integrationsOff(older, adding)).toMatch(/does not say which MCP choices/);
+    // Turning the last service off: once it arrived, nothing is required.
+    const removing = {
+      github: false,
+      mcp: [
+        { revision: R1, on: true },
+        { revision: R2, on: false },
+      ],
+    };
+    expect(integrationsOff({ ...on, mcpRevision: R2, mcpRegistry: false }, removing)).toBe(
+      undefined,
+    );
+    expect(integrationsOff({ ...on, mcpRegistry: false }, removing)).toMatch(
+      /^MCP services are off/,
+    );
+  });
+
+  it("names every integration that is off, GitHub first", () => {
+    expect(
+      integrationsOff(
+        { ...on, githubLinking: false, mcpRegistry: false },
+        { github: true, mcp: MCP.mcp },
+      ),
+    ).toBe(
+      "GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking; MCP services are off: services are on in this installation, but Omnigent on the restarted server does not list its MCP registry",
+    );
+  });
+
+  const revision = fc.constantFrom(R1, R2);
+  const statusArb = fc.record({
+    githubApp: fc.constantFrom(undefined, null, APP),
+    githubLinking: fc.constantFrom(undefined, null, true, false),
+    mcpRevision: fc.oneof(fc.constantFrom(undefined, null), revision),
+    mcpRegistry: fc.constantFrom(undefined, null, true, false),
+  });
+  const requiredArb = fc.record({
+    github: fc.boolean(),
+    mcp: fc.array(
+      fc.record({ revision: fc.option(revision, { nil: undefined }), on: fc.boolean() }),
+      { maxLength: 3 },
+    ),
+  });
+
+  it("accepts only what the status positively shows on (property)", () => {
+    fc.assert(
+      fc.property(statusArb, requiredArb, (fields, required) => {
+        const off = integrationsOff({ ...older, ...fields }, required);
+        const mcpOn = required.mcp.some((choices) => choices.on);
+        if (off === undefined) {
+          if (required.github) {
+            expect(typeof fields.githubApp).toBe("string");
+            expect(fields.githubLinking).toBe(true);
+          }
+          if (mcpOn) {
+            // The status names choices the journal records; when those turn a service on,
+            // Omnigent lists its registry.
+            const runs = required.mcp.filter(
+              (choices) => (choices.revision ?? null) === fields.mcpRevision,
+            );
+            expect(runs.length).toBeGreaterThan(0);
+            if (runs.every((choices) => choices.on)) expect(fields.mcpRegistry).toBe(true);
+          }
+        } else {
+          // Something required was not on, and the message names it.
+          expect(required.github || mcpOn).toBe(true);
+          expect(off).toMatch(/^(GitHub linking|MCP services) /);
+        }
+      }),
+    );
+  });
+
+  it("never counts an unsaid field as on (property)", () => {
+    fc.assert(
+      fc.property(statusArb, requiredArb, (fields, required) => {
+        const unsaidGitHub =
+          required.github && (fields.githubApp === undefined || fields.githubLinking === undefined);
+        const unsaidMcp =
+          required.mcp.some((choices) => choices.on) &&
+          (fields.mcpRevision === undefined || fields.mcpRegistry === undefined) &&
+          !required.mcp.some(
+            (choices) => !choices.on && (choices.revision ?? null) === fields.mcpRevision,
+          );
+        const off = integrationsOff({ ...older, ...fields }, required);
+        if (unsaidGitHub) expect(off).toContain("GitHub linking");
+        if (unsaidMcp) expect(off).toContain("MCP services");
+      }),
+    );
+  });
+
+  it("requires nothing without GitHub or services on (property)", () => {
+    fc.assert(
+      fc.property(statusArb, requiredArb, (fields, required) => {
+        const none = { github: false, mcp: required.mcp.map((c) => ({ ...c, on: false })) };
+        expect(integrationsOff({ ...older, ...fields }, none)).toBeUndefined();
+      }),
+    );
   });
 });
 

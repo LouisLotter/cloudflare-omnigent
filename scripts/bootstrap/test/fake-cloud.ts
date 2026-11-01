@@ -12,7 +12,8 @@
 // status, and the watchdog logs `config_error` once.
 // An update's read-only window (WP3.41): a version holding `SERVER_ENV_CFO_MAINTENANCE_WINDOW` says so on its
 // status lines (`maintenance`), with the restore point a server started with
-// `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`); a server started with a
+// `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`), on every check while it
+// holds the window, past the notice too (WP3.44); a server started with a
 // rollback order (`SERVER_ENV_CFO_ROLLBACK_TO`) never answers, and the watchdog logs `rolled_back`
 // once and holds it. A rollback deploys an earlier version again (`deployVersion`), with its own
 // secrets and configuration.
@@ -172,18 +173,19 @@ export class FakeWorld {
   appliesReleases = true;
   /**
    * Whether Omnigent lists GitHub linking on a server started with a version's configuration
-   * (WP3.36): by default, when the version holds the GitHub App's client ID.
+   * (WP3.36), at the check's time: by default, when the version holds the GitHub App's client ID.
    */
-  githubLinks: (v: Version) => boolean | null = (v) => v.secrets.has(GITHUB_CLIENT_ID);
+  githubLinks: (v: Version, t: number) => boolean | null = (v) => v.secrets.has(GITHUB_CLIENT_ID);
   /** Whether a server started with a version's configuration exits 78 and is held. */
   refusesSettings: (v: Version) => boolean = () => false;
   /** Whether status lines carry the GitHub fields; false models a build from before WP3.36. */
   reportsGitHub = true;
   /**
    * Whether Omnigent lists its MCP registry on a server started with a version's configuration
-   * (WP5.10): by default, when the version turns on a service.
+   * (WP5.10), at the check's time: by default, when the version turns on a service.
    */
-  mcpListed: (v: Version) => boolean | null = (v) => (v.secrets.get(MCP_SERVICES) ?? "") !== "";
+  mcpListed: (v: Version, t: number) => boolean | null = (v) =>
+    (v.secrets.get(MCP_SERVICES) ?? "") !== "";
   /** Whether status lines carry the MCP fields; false models a build from before WP5.10. */
   reportsMcp = true;
   /** A server started with a restore point to take cannot take it (WP3.41): it never answers. */
@@ -604,7 +606,8 @@ export class FakeWorld {
 
   /**
    * What Workers Logs answers: the watchdog's alarms and its status while the running version
-   * holds the password, or for a while after a server started with a new configuration answers.
+   * holds the password or an update's window, or for a while after a server started with a new
+   * configuration answers.
    */
   logEvents(worker: string, fromMs: number, toMs: number): unknown[] {
     const first = this.versions.get(worker)?.[0];
@@ -720,7 +723,12 @@ export class FakeWorld {
         container !== undefined && t >= container.since && sameConfig(container.version, version);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
       const durableAt = container === undefined ? undefined : durableSince.get(container.since);
-      const announcing = !truth.initialized || durableAt === undefined || t - durableAt < NOTICE_MS;
+      // And for as long as the version holds an update's window (WP3.44).
+      const announcing =
+        !truth.initialized ||
+        durableAt === undefined ||
+        t - durableAt < NOTICE_MS ||
+        maintenanceWindowOf(Object.fromEntries(version.secrets)) !== null;
       if (!applied || !(secretPresent || (announcing && this.appliesReleases))) continue;
       events.push({
         timestamp: t,
@@ -741,13 +749,13 @@ export class FakeWorld {
           ...(this.reportsGitHub
             ? {
                 githubApp: fakeAppTag(version.secrets),
-                githubLinking: this.githubLinks(version),
+                githubLinking: this.githubLinks(version, t),
               }
             : {}),
           ...(this.reportsMcp
             ? {
                 mcpRevision: fakeMcpRevision(version.secrets),
-                mcpRegistry: this.mcpListed(version),
+                mcpRegistry: this.mcpListed(version, t),
               }
             : {}),
           // WP3.41: the window this version holds, and the restore point the server took.

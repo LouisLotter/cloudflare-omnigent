@@ -15,7 +15,9 @@
 //   2. reads the platform Worker's secret names (never a value) and makes what this release needs
 //      that it lacks (`secretsToEnsure`: the cookie secret, WP3.34's launcher signing key, and
 //      WP5.10's credential store keys and MCP state secret, each pair whole), with `run`'s own
-//      generator; what only a person can give is refused, by name;
+//      generator; what only a person can give is refused, by name. A list of MCP services the
+//      Worker holds that the journal does not record as on is refused too, before anything is
+//      deployed (WP3.44): the check could not require what those services need;
 //   3. when the checkout's code is not what the journal records for both Workers (or an update to
 //      it is unfinished, or a secret is missing), deploys the platform Worker from this checkout
 //      with the plan's own configuration (the same names, the plan's buckets with its D33 tag or
@@ -30,7 +32,10 @@
 //   5. waits for the platform objects to switch to the new version and the server to restart on
 //      it, then checks with the release's check (events.ts, verifyRelease): the server's object
 //      runs the new version, a server started with the new configuration answers, without the
-//      bootstrap password, and shows the owner initialized and durable. Every platform deploy of
+//      bootstrap password, and shows the owner initialized and durable. The same status must also
+//      show the integrations the installation has set up still on (WP3.44): GitHub linking when
+//      the platform Worker holds the GitHub App, and the MCP registry with the journal's MCP
+//      choices when services are on; until it does, nothing is accepted. Every platform deploy of
 //      an update carries its own `DEPLOY_ID_VAR`, which reaches the server: the configuration
 //      changes, so the watchdog restarts the server once and its status lines are the proof.
 //      Logs count only while the version serving is positively the update's own (its version
@@ -61,6 +66,7 @@
 // own), the bootstrap password, a request to the installation, a Worker deployed over one this
 // plan did not create.
 
+import { GITHUB_APP_CLIENT_ID_ENV } from "../../worker/src/server/github-linking.ts";
 import {
   MAINTENANCE_WINDOW_SECRET,
   RESTORE_POINT_VAR,
@@ -72,7 +78,15 @@ import {
   AccessRefusal,
   ensureOwnerAccess,
 } from "./access-app.ts";
-import { parseLogs, type Verification, verifyRelease } from "./events.ts";
+import {
+  appliedStatus,
+  integrationsOff,
+  parseLogs,
+  type RequiredIntegrations,
+  type StatusEvent,
+  type Verification,
+  verifyRelease,
+} from "./events.ts";
 // machine.ts's step 7 calls runUpdate, and this module uses machine.ts's refusal, generator and
 // log reader: a cycle between the two modules, which neither uses at load time.
 import {
@@ -81,11 +95,15 @@ import {
   type BootstrapState,
   generatedSecrets,
   type Journal,
+  type McpServicesRecord,
   type RunContext,
   type StateStore,
   slicedLogs,
   type WorkerIdentity,
 } from "./machine.ts";
+// services.ts waits with pollServer, and this module names its list of services: a cycle, which
+// neither uses at load time.
+import { MCP_SERVICES_SECRET } from "./services.ts";
 import {
   type AccessSettings,
   accessProblems,
@@ -195,7 +213,16 @@ export type UpdateOutcome =
    * `window`: the update's read-only window is open (not accepted, rollback possible), or
    * accepted and closed, with the server's restart without it not seen yet (WP3.41).
    */
-  | { readonly kind: "deployed"; readonly why: string; readonly window: "open" | "closing" };
+  | {
+      readonly kind: "deployed";
+      readonly why: string;
+      readonly window: "open" | "closing";
+      /**
+       * The check passed but for an integration the installation set up (WP3.44): `why` says
+       * which is off.
+       */
+      readonly integrationsOff?: true;
+    };
 
 /** A clean checkout's commit, as codeVersionFrom gives it and the journal keeps it. */
 const CODE = /^[0-9a-f]{40}$/;
@@ -236,6 +263,40 @@ export function secretsToEnsure(
 const LAUNCHER_PAIR = [LAUNCHER_KEY_SECRET, LAUNCHER_KEY_ID_SECRET] as const;
 /** The key service's signing pair (WP5.10): the same rule. */
 const KEY_SERVICE_PAIR = [KEY_SERVICE_KEY_SECRET, KEY_SERVICE_KEY_ID_SECRET] as const;
+
+/**
+ * The integrations this installation has set up, which an update requires still working before
+ * it accepts (WP3.44): GitHub linking when the platform Worker holds the GitHub App's client ID
+ * (by name; github-app.ts sets it), and the MCP choices the journal records (services.ts), with a
+ * change begun but not confirmed sent, which may or may not have reached the Worker.
+ */
+export function requiredIntegrations(
+  present: ReadonlySet<string>,
+  mcp: McpServicesRecord | undefined,
+): RequiredIntegrations {
+  return {
+    github: present.has(GITHUB_APP_CLIENT_ID_ENV),
+    mcp: [mcp, mcp?.pending].flatMap((choices) =>
+      choices === undefined ? [] : [{ revision: choices.revision, on: choices.on.length > 0 }],
+    ),
+  };
+}
+
+/**
+ * Whether the platform Worker holds a list of MCP services (by name) that the journal cannot
+ * account for: no list it records, the last change's or one begun but not confirmed sent, turns a
+ * service on. So with no record at all, or one of every service off: an older copy of the state
+ * file, or another laptop's (WP3.44). The update could not tell what to require of them.
+ */
+export function mcpServicesUnrecorded(
+  present: ReadonlySet<string>,
+  mcp: McpServicesRecord | undefined,
+): boolean {
+  return (
+    present.has(MCP_SERVICES_SECRET) &&
+    !requiredIntegrations(present, mcp).mcp.some((choices) => choices.on)
+  );
+}
 
 /** The secrets a finished installation holds: `run`'s required ones, the password long gone. */
 export function requiredAfterRelease(plan: Installation): string[] {
@@ -482,6 +543,16 @@ export async function runUpdate(
     // Checked in its window, not accepted yet: accepted now.
     return accept(ctx, () => state, setJournal, code, options);
   }
+  // MCP services the state file does not record (WP3.44): the check could not require what they
+  // need, so nothing is deployed or checked. Before the window opens; inside one (opened by an
+  // installer from before this check), going back stays possible.
+  if (mcpServicesUnrecorded(present, state.journal.mcpServices)) {
+    throw new BootstrapRefusal(
+      window === undefined
+        ? `${plan.platformWorker} holds a list of MCP services (${MCP_SERVICES_SECRET}) that this state file does not record as on (set from another laptop, or with another copy of this state file?), so the update could not check that they still work: run it with the installation's own state file, or first write the list from this one with bootstrap.ts services (add <id> --replace), or, if no service should be on (an empty list, or one no state file records), delete it: pnpm --filter @cfo/worker exec wrangler secret delete ${MCP_SERVICES_SECRET} --name ${plan.platformWorker}; nothing was deployed`
+        : `${plan.platformWorker} holds a list of MCP services (${MCP_SERVICES_SECRET}) that this state file does not record as on, so the update could not check that they still work; its read-only window stays open: go back with bootstrap.ts update --rollback, then write the list from this state file with bootstrap.ts services (add <id> --replace) and update again; nothing was deployed`,
+    );
+  }
   if (resuming) {
     ctx.log(`continuing the update of https://${plan.hostname} to ${shortCode(code)}`);
   } else if (window === undefined) {
@@ -625,6 +696,7 @@ export async function runUpdate(
     progress,
     (update) => record({ update }),
     (change) => record({ window: { ...currentWindow(), ...change } }),
+    requiredIntegrations(present, state.journal.mcpServices),
     options,
   );
   if (checkedUpdate.kind !== "done") return checkedUpdate;
@@ -762,7 +834,9 @@ export function serving(
  * After the deploys: the platform objects switch to the new version (about 300 s), the watchdog
  * finds the server started with another configuration and replaces it once, and the server
  * started with the new one logs its status without the bootstrap password. The release's own
- * check (verifyRelease), with the update's platform version and the start of its deploy.
+ * check (verifyRelease), with the update's platform version and the start of its deploy; then
+ * the window held, and, from the status that check accepted, the integrations the installation
+ * has set up (WP3.44, events.ts integrationsOff).
  */
 async function checkUpdate(
   ctx: UpdateContext,
@@ -770,6 +844,7 @@ async function checkUpdate(
   progress: (change: Partial<UpdateRecord>) => void,
   replace: (update: UpdateRecord) => void,
   setWindow: (change: Partial<WindowRecord>) => void,
+  required: RequiredIntegrations,
   options: UpdateOptions,
 ): Promise<UpdateOutcome> {
   const plan = state().installation;
@@ -783,6 +858,8 @@ async function checkUpdate(
     await ctx.sleep(switchAt - ctx.now());
   }
   const logsSince = slicedLogs(ctx, plan.platformWorker);
+  // The last integration found off (WP3.44): the outcome says so when the wait ends on it.
+  let integrationOff: string | undefined;
   const seen = await pollServer<UpdateOutcome>(
     ctx,
     { pollMs: options.pollMs, deadline: ctx.now() + options.verifyWaitMs },
@@ -824,21 +901,43 @@ async function checkUpdate(
       if (held.ok && open.restorePointTakenAt !== held.takenAt) {
         setWindow({ restorePointTakenAt: held.takenAt });
       }
-      const result: Verification = verifyRelease(logs, {
+      const release = {
         installationId: plan.installationId,
         releasedVersionId: update().platformVersionId,
         releasedAt: since,
-      });
+      };
+      const result: Verification = verifyRelease(logs, release);
       if (!result.verified) return { why: result.why };
       if (!held.ok) return { why: held.why };
+      // From the very status the release check accepted: the integrations still on (WP3.44).
+      const status = appliedStatus(logs, release) as StatusEvent;
+      const off = integrationsOff(status, required);
+      if (off !== undefined) {
+        integrationOff = off;
+        return { why: off };
+      }
       progress({ verifiedAt: iso(ctx.now()) });
+      // Said only of what was required and the status shows on: a change that turned the last
+      // MCP service off may be what runs.
+      const on = [
+        ...(required.github ? ["GitHub linking"] : []),
+        ...(required.mcp.some((choices) => choices.on) && status.mcpRegistry === true
+          ? ["MCP services"]
+          : []),
+      ];
       ctx.log(
-        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable; its restore point ${open.id} was taken at ${held.takenAt}`,
+        `checked: the server restarted on the new version, answers, and shows the owner initialized and durable${on.length > 0 ? `, with ${on.join(" and ")} on` : ""}; its restore point ${open.id} was taken at ${held.takenAt}`,
       );
       return { decided: { kind: "done" } };
     },
   );
-  return "decided" in seen ? seen.decided : { kind: "deployed", why: seen.why, window: "open" };
+  if ("decided" in seen) return seen.decided;
+  return {
+    kind: "deployed",
+    why: seen.why,
+    window: "open",
+    ...(seen.why === integrationOff ? { integrationsOff: true } : {}),
+  };
 }
 
 /**

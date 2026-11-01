@@ -132,13 +132,13 @@ pnpm install --frozen-lockfile
 node scripts/bootstrap/bootstrap.ts update
 ```
 
-It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key or the keys Omnigent stores your service sign-ins with. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers and that your account is still there and stored safely, and ends with the link to open.
+It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key or the keys Omnigent stores your service sign-ins with. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers, that your account is still there and stored safely, and that GitHub linking and your MCP services, if you set them up, still work; then it ends with the link to open.
 
 Every update can be undone until it is checked, and not after:
 
 - **A restore point first.** Before the new version can change anything, its server copies Omnigent's data aside, in your own storage, where nothing deletes it automatically. The last three restore points are kept. A new Omnigent version may change how it stores its data in a way the old one cannot read; the restore point is what makes going back possible.
 - **Paused until checked.** From the moment the new version takes over until the update is checked, Omnigent takes no request from anyone, so nothing can change: opening it shows "Omnigent is being updated", your cloud computers wait, and scheduled tasks do not run. Nothing can be lost in that time. The update checks the new version, accepts it, and says "updated, checked and accepted: Omnigent takes changes again". Accepting restarts the server once more and takes up to 5 more minutes.
-- **Going back, only before it is accepted.** If the update ends with "not checked yet", Omnigent stays paused. Run `update` again to keep checking, or go back to the version from before the update, with its data exactly as it was then:
+- **Going back, only before it is accepted.** If the update ends with "not checked yet" (for example "GitHub linking is off"), Omnigent stays paused. Run `update` again to keep checking, or go back to the version from before the update, with its data exactly as it was then:
 
   ```bash
   node scripts/bootstrap/bootstrap.ts update --rollback

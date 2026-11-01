@@ -703,7 +703,7 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   const logs = parseLogs(events, installation.platformWorker);
   for (const e of [...logs.statuses].sort((a, b) => a.loggedAt - b.loggedAt)) {
     console.log(
-      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
+      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} github=${e.githubLinking ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
     );
   }
   if (journal.releasedAt !== undefined) {

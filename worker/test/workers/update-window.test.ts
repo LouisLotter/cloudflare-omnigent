@@ -30,7 +30,7 @@ import {
   RESTORE_POINT_VAR,
   ROLLBACK_SECRET,
 } from "../../src/server/maintenance.ts";
-import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
+import { APPLIED_NOTICE_MS, type OmnigentServer } from "../../src/server/OmnigentServer.ts";
 import { environmentFingerprint } from "../../src/server/server-env.ts";
 import {
   FORWARD_VERSION_HEADER,
@@ -38,7 +38,7 @@ import {
   OMNIGENT_SERVER_OBJECT_NAME,
 } from "../../src/shared/rpc.ts";
 import type { FakeServerContainer } from "../support/fake-server-container.ts";
-import { testServers } from "../support/server-harness.ts";
+import { TEST_TIMING as T, testServers } from "../support/server-harness.ts";
 
 const ORIGIN = "https://omnigent.example.test";
 const call = { interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION };
@@ -210,6 +210,64 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
       maintenance: null,
       restorePoint: null,
     });
+  });
+
+  it("checks and logs its status past the notice while the window holds, and stops once it is gone (WP3.44)", async () => {
+    // A released installation: without the bootstrap password, which is logged on every check.
+    const { stub, fake } = await runningServer({
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD: null,
+      SERVER_ENV_CFO_INSTALLATION_INITIALIZED: "true",
+    });
+    await release(stub, { [MAINTENANCE_WINDOW_SECRET]: RP, [RESTORE_POINT_VAR]: RP });
+    for (let i = 0; i < 4; i++) await nextCheck(stub); // replaced, then started with it
+    fake.restorePoint = { id: RP, takenAt: TAKEN, objects: 5, bytes: 4096 };
+    await nextCheck(stub); // durable under the window's configuration: the notice starts
+    const durableAt = testServers.clock.now();
+    const before = events("bootstrap", "status").length;
+    // Twice the notice: a line on every check, each from a fresh read of the server.
+    while (testServers.clock.now() - durableAt < 2 * APPLIED_NOTICE_MS) await nextCheck(stub);
+    const inWindow = events("bootstrap", "status").slice(before);
+    expect(inWindow.length).toBeGreaterThanOrEqual((2 * APPLIED_NOTICE_MS) / T.intervalMs);
+    expect(
+      inWindow.every(
+        (e) =>
+          e.maintenance === RP &&
+          e.secretPresent === false &&
+          e.configApplied === true &&
+          e.mcpRegistry === false,
+      ),
+    ).toBe(true);
+    // Omnigent lists its MCP registry only now, long after the notice: the next line says so.
+    fake.info = { ...DURABLE, enabled_connections: ["mcp"] };
+    await nextCheck(stub);
+    expect(events("bootstrap", "status").at(-1)).toMatchObject({
+      maintenance: RP,
+      mcpRegistry: true,
+      restorePoint: { id: RP, takenAt: TAKEN },
+    });
+    // Accepted: the window's secret is gone. The server restarts once without it and logs for
+    // the notice under that configuration, then no more.
+    const accepted = events("bootstrap", "status").length;
+    await release(stub, { [MAINTENANCE_WINDOW_SECRET]: null });
+    const withoutWindow = () =>
+      events("bootstrap", "status")
+        .slice(accepted)
+        .filter((e) => e.maintenance === null && e.configApplied);
+    for (let i = 0; i < 10 && withoutWindow().length === 0; i++) await nextCheck(stub);
+    expect(fake.starts.at(-1)?.env.CFO_MAINTENANCE_WINDOW).toBeUndefined();
+    const first = withoutWindow()[0]?.bootstrapStatus as {
+      checkedAt: string;
+      initialized: boolean;
+    };
+    expect(first.initialized).toBe(true);
+    const reopenedAt = Date.parse(first.checkedAt);
+    while (testServers.clock.now() - reopenedAt < APPLIED_NOTICE_MS) await nextCheck(stub);
+    expect(withoutWindow().length).toBeGreaterThanOrEqual(APPLIED_NOTICE_MS / T.intervalMs);
+    const settled = events("bootstrap", "status").length;
+    const reads = fake.requests.length;
+    for (let i = 0; i < 3; i++) await nextCheck(stub);
+    expect(events("bootstrap", "status")).toHaveLength(settled);
+    expect(fake.requests.length).toBe(reads + 3); // the health checks only
   });
 
   it("holds a window whose ID is malformed, and reads no restore point it cannot trust", async () => {
