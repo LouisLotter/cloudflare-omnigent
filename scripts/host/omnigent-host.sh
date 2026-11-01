@@ -12,7 +12,9 @@
 # `setup`, idempotent, run again at any time (also after an update of this checkout):
 #   1. checks the Cloudflare One Client: installed, its service running, registered with the
 #      installation's team (it runs `warp-cli registration new <team>`, and the person signs in
-#      in the browser that opens) and connected; then that Access lets this machine through to
+#      in the browser that opens; it waits for that) and connected. It accepts the client's terms
+#      of service for the person who installed it (`warp-cli --accept-tos`), which the client
+#      otherwise asks for in a terminal and refuses everything until then; then that Access lets this machine through to
 #      Omnigent (the installation's `bootstrap.ts devices` step must have run);
 #   2. installs the Omnigent build the installation's images pin (images/computer/Dockerfile:
 #      the fork's commit; its uv.lock exported with hashes, installed from wheels only with
@@ -23,8 +25,10 @@
 #      for everything that went into it, never changed once complete. It never touches another
 #      `omnigent` command, ~/.omnigent or an `omnigent-host.service`;
 #   3. signs that command line in to the installation, unless the installation accepts the one it
-#      has: Omnigent asks for the owner's Omnigent username and password in this terminal and keeps
-#      its session in its own store. Nothing here reads, prints or keeps a password or a token;
+#      has: Omnigent asks for the owner's Omnigent username and password, in this terminal or, when
+#      standard input is not a terminal, as its first two lines (so a password can be piped in
+#      from a file, never put on a command line), and keeps its session in its own store. Nothing
+#      here reads, prints or keeps a password or a token;
 #   4. installs `omnigent-cfo-host.service`, a systemd user service that runs Omnigent's host for
 #      https://<host> and restarts it whenever it stops (a reboot, a dropped connection, a lapsed
 #      client session), checks that the process it runs is the build installed in step 2, and
@@ -62,6 +66,8 @@ PROC=${CFO_HOST_PROC:-/proc}
 # How long `setup` waits, in seconds, for the client to connect, the service to start and the
 # host to come online (a test shortens them).
 CONNECT_WAIT=${CFO_HOST_CONNECT_WAIT:-20}
+# How long `setup` waits for the browser sign-in that registers the client (a test shortens it).
+REGISTER_WAIT=${CFO_HOST_REGISTER_WAIT:-600}
 SERVICE_WAIT=${CFO_HOST_SERVICE_WAIT:-10}
 ONLINE_WAIT=${CFO_HOST_ONLINE_WAIT:-90}
 
@@ -123,15 +129,19 @@ load_server() {
 
 # --- The Cloudflare One Client ------------------------------------------------------------------
 
+# The client's command line. A fresh install refuses every command until its terms of service
+# are accepted, which it asks for only in a terminal.
+warp() { warp-cli --accept-tos "$@"; }
+
 client_state() {
-  CLIENT_STATUS=$(warp-cli status 2>&1) || return 1
+  CLIENT_STATUS=$(warp status 2>&1) || return 1
   return 0
 }
 
 client_registered() {
   local shown
   CONSUMER=0
-  shown=$(warp-cli registration show 2>&1) || return 1
+  shown=$(warp registration show 2>&1) || return 1
   grep -qi 'missing' <<<"$shown" && return 1
   # A Zero Trust registration, not the consumer WARP app's.
   if grep -qi 'account type' <<<"$shown" && ! grep -qi 'account type: *team' <<<"$shown"; then
@@ -166,18 +176,21 @@ ensure_client() {
     [[ -n $team ]] || team=$(discover_team)
     [[ $team =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "could not tell the installation's Zero Trust team from $SERVER: run setup again with --team <team name> (the first part of <team>.cloudflareaccess.com)"
     say "registering the Cloudflare One Client with the team $team: sign in with your email in the browser that opens"
-    warp-cli registration new "$team" || fail "warp-cli registration new $team failed (above); run this again"
+    warp registration new "$team" || fail "warp-cli registration new $team failed (above); run this again"
     if ! client_registered; then
-      if [[ -t 0 ]]; then
-        read -r -p "omnigent-host: when the browser says you are signed in (and you chose Open Link), press Enter " _
-      fi
+      say "waiting for the sign-in in the browser (choose Open Link at the end)"
+      local waited
+      for ((waited = 0; waited < REGISTER_WAIT; waited += 2)); do
+        client_registered && break
+        sleep 2
+      done
       client_registered || fail "the Cloudflare One Client is not registered with $team yet: finish the sign-in in the browser (choose Open Link at the end), then run this again"
     fi
     say "the Cloudflare One Client is registered with $team"
   fi
   if ! client_connected; then
     say "connecting the Cloudflare One Client"
-    warp-cli connect >/dev/null || fail "warp-cli connect failed (above)"
+    warp connect >/dev/null || fail "warp-cli connect failed (above)"
     local i
     for ((i = 0; i < CONNECT_WAIT; i++)); do
       client_connected && break
