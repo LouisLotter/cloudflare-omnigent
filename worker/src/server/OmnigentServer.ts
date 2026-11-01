@@ -262,7 +262,8 @@ const CONFIG_APPLIED_KEY = "config_applied";
 /**
  * How long after a configuration seen applied first shows a durable owner the bootstrap status
  * is still logged without the bootstrap secret: a check a minute, so a lost line recurs, and long
- * enough for the bootstrap's check after its release to find one.
+ * enough for the bootstrap's check after its release to find one. Inside an update's window, for
+ * as long as the window holds (WP3.44).
  */
 export const APPLIED_NOTICE_MS = 15 * 60_000;
 /**
@@ -939,8 +940,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
    * `APPLIED_NOTICE_MS` after that: after the bootstrap's
    * release, the lines from the replaced server are its proof that the release reached the
    * running server, not only the Worker (G2-SEC-001). The last line under a configuration always
-   * shows the owner durable, however late that came (Codex r1-2). No line carries a secret or a
-   * digest of one.
+   * shows the owner durable, however late that came (Codex r1-2). And for as long as this version
+   * holds an update's read-only window (WP3.41), on every check under a configuration seen
+   * applied, however long that lasts: the update accepts only from such a line, which must show
+   * the integrations still on (WP3.44), so a later run of the update can see one come on. No line
+   * carries a secret or a digest of one.
    */
   async #bootstrapCheck(
     container: ServerContainer,
@@ -954,7 +958,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const recent =
       notice !== null &&
       (notice.durableAt === null || this.now() - notice.durableAt < APPLIED_NOTICE_MS);
-    if (!secretPresent && !recent && stored.status?.initialized === true) return;
+    // An update's window (WP3.41): its status is checked and logged on every check while this
+    // version holds it, past the notice too (WP3.44).
+    const window = this.#window();
+    const held = notice !== null && window !== null;
+    if (!secretPresent && !recent && !held && stored.status?.initialized === true) return;
     // In this order: the position, /v1/info, the position again (see bootstrap.ts).
     const before = await this.#read(
       container,
@@ -964,7 +972,6 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const info = await this.#read(container, OMNIGENT_PORT, "/v1/info");
     const after = await this.#read(container, REPLICATION_POSITION_PORT, REPLICATION_POSITION_PATH);
     // In an update's window (WP3.41), the restore point the server reports: read only then.
-    const window = this.#window();
     const restorePoint =
       window === null
         ? null
@@ -1005,8 +1012,9 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         );
       }
     });
-    // Past the notice, a check runs here only when the stored status was not initialized: its
-    // line is logged too, so the change back to durable is always published.
+    // Past the notice, a check runs here only inside an update's window, or when the stored
+    // status was not initialized: its line is logged too, so the change back to durable is
+    // always published.
     const announcing = notice !== null && check.status !== null;
     if (secretPresent || announcing) {
       // The bootstrap script (WP2.4) deletes the secret only after an event with
