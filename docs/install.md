@@ -99,7 +99,7 @@ An installation made before GitHub linking, or before its setup page, needs upda
 
 ## Connected services (MCP), optional
 
-Omnigent can give your agents tools from other services, such as GitHub's, through its own MCP registry: Omnigent's server holds your sign-in to each service and calls the service for your agents, so the sign-in never reaches a cloud computer. This release ships two services: a demo service for testing, and GitHub's MCP server, which uses the GitHub link above. To see them, run:
+Omnigent can give your agents tools from other services, such as GitHub's, through its own MCP registry: Omnigent's server holds your sign-in to each service and calls the service for your agents, so the sign-in never reaches a cloud computer. This release ships three services: a demo service for testing, GitHub's MCP server, which uses the GitHub link above, and OpenRouter's MCP server, which gives agents OpenRouter's model catalog and lets them call other models on your OpenRouter API key. To see them, run:
 
 ```bash
 node scripts/bootstrap/bootstrap.ts services
@@ -113,10 +113,10 @@ node scripts/bootstrap/bootstrap.ts services add github
 
 1. If the service needs something from you, the command asks for it in the terminal: the service's address (or give it with `--origin https://…`), or an OAuth client's ID and secret, which are never shown as you type. It checks them before changing anything.
 2. It stores your choice in Cloudflare and waits while Omnigent's server restarts once to take it up (a few minutes).
-3. It ends with "Ready" and the link to Omnigent's **Settings → MCP**. There, click **Connect** next to the service and sign in at the service. **Test connection** lists the tools it offers.
+3. It ends with "Ready" and the link to Omnigent's **Settings → MCP**. There, click **Connect** next to the service and sign in at the service; for OpenRouter, paste an OpenRouter API key instead (create one with a credit limit at openrouter.ai, under Keys: every model call your agents make is billed to it). **Test connection** lists the tools it offers.
 4. In a new conversation, turn the service on in the **MCPs** picker above the message box. Your choice is remembered for the next conversation.
 
-If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
+If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. For a service connected with a key, such as OpenRouter, click **Update token** instead and save a new key. To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site; a key you pasted, such as OpenRouter's, keeps working elsewhere until you delete it on the service's site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
 
 ## Your own machines as hosts (optional)
 
