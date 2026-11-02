@@ -292,10 +292,14 @@ def test_a_failing_copy_stops_the_rest_and_never_counts(tmp_path: Path) -> None:
                 raise OSError("injected")
             super().copy(source, target)
 
-    r.store = Failing(tmp_path)
+    store = Failing(tmp_path, delay=0.01)
+    r.store = store
     with pytest.raises(OSError, match="injected"):
         r.take()
     assert not (tmp_path / r.where.manifest(RP)).exists()
+    # Copies still waiting were never started, and none is running once take() has returned.
+    assert store.running == 0
+    assert len(store.copies) < 100
 
 
 def test_a_restore_point_past_its_deadline_or_of_an_empty_replica_is_refused(
