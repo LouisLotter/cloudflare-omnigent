@@ -2,16 +2,22 @@
 //
 // The branch is rebuilt from the checked-out main on every run that has something new, and
 // force-pushed with a lease, so the pull request always shows main against the latest releases.
-// It is never rewritten, closed or deleted when it holds a commit the workflow did not make (a
-// person's fix on top): the run stops and says so.
+// It is also rebuilt, with the same bump, when main has moved on since it was built, so the pull
+// request never stays behind main or in conflict with it. A rebuild writes the bump into the
+// checked-out main again (apply), as for a new bump, and commits it on main; it never rebases the
+// old commit. It is never rewritten, closed or deleted when it holds a commit the workflow did not
+// make (a person's fix on top): the run stops and says so.
 //
 // Each bump has an identity (bumpId), kept in its commit's trailer and in its pull request's
 // body, which is updated before the branch is pushed. That makes every run safe to repeat:
-//   - the branch already holds this bump and its pull request is open: nothing is pushed, and
-//     CI is dispatched only if no dispatched CI run exists for the branch's head commit;
-//   - the branch holds it but no pull request is open: one is opened, unless the owner closed
-//     one with this identity unmerged (declined: not proposed again until a newer release
-//     changes the bump, even if the branch was deleted);
+//   - the branch already holds this bump on the checked-out main (or a newer one) and its pull
+//     request is open: nothing is pushed, and CI is dispatched only if no dispatched CI run
+//     exists for the branch's head commit;
+//   - the branch holds this bump on an older main: it is rebuilt on main and CI is dispatched;
+//     the pull request's title and body already describe the bump, so they are left as they are;
+//   - the branch holds it but no pull request is open: one is opened (once the branch is rebuilt,
+//     if main has moved on), unless the owner closed one with this identity unmerged (declined:
+//     not proposed again until a newer release changes the bump, even if the branch was deleted);
 //   - main already has every pin: the open pull request is closed and the branch deleted, with a
 //     lease, so a push made in between is never lost.
 // Only pull requests from this repository's own branch count, never a fork's branch that
@@ -56,7 +62,7 @@ export interface ProposeInput {
 export type Outcome =
   | { readonly kind: "nothing" }
   | {
-      readonly kind: "created" | "updated" | "unchanged" | "closed";
+      readonly kind: "created" | "updated" | "rebuilt" | "unchanged" | "closed";
       readonly pr: string;
       /** Whether this run dispatched CI on the branch. */
       readonly ci?: boolean;
@@ -78,18 +84,28 @@ export function marker(id: string): string {
   return `<!-- ${TRAILER}: ${id} -->`;
 }
 
+function failed(command: string, args: readonly string[], result: RunResult): never {
+  const detail = result.stderr.trim() || result.stdout.trim();
+  if (/not permitted to create or approve pull requests/i.test(detail)) {
+    throw new Error(
+      `${detail}\nAllow it once (repository admin): gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true`,
+    );
+  }
+  throw new Error(`${command} ${args.join(" ")} failed (${result.status}): ${detail}`);
+}
+
 function must(run: Runner, command: string, args: readonly string[]): string {
   const result = run(command, args);
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim();
-    if (/not permitted to create or approve pull requests/i.test(detail)) {
-      throw new Error(
-        `${detail}\nAllow it once (repository admin): gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true`,
-      );
-    }
-    throw new Error(`${command} ${args.join(" ")} failed (${result.status}): ${detail}`);
-  }
+  if (result.status !== 0) failed(command, args, result);
   return result.stdout;
+}
+
+/** Whether `commit` is built on `base`: `base` is `commit` or one of its ancestors. */
+function builtOn(run: Runner, commit: string, base: string): boolean {
+  const args = ["merge-base", "--is-ancestor", base, commit];
+  const result = run("git", args);
+  if (result.status !== 0 && result.status !== 1) failed("git", args, result);
+  return result.status === 0;
 }
 
 interface Pr {
@@ -184,7 +200,9 @@ function create(run: Runner, input: ProposeInput): Outcome {
 /** Proposes the bump already written into the working tree. */
 export function propose(run: Runner, input: ProposeInput): Outcome {
   if (input.bump.changes.length > 0 && input.files.length === 0) {
-    throw new Error("a bump with changes must change a Dockerfile");
+    throw new Error(
+      "a bump with changes must change a Dockerfile; this one changes nothing on the checked-out main, which may already pin it: run the check again",
+    );
   }
   const allowed = new Set<string>(DOCKERFILES);
   for (const file of input.files) {
@@ -206,6 +224,7 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
   const remote = must(run, "git", ["ls-remote", "--heads", "origin", ref]).split(/\s/)[0] ?? "";
   let manual: string[] = [];
   let previous = "";
+  let onMain = false;
   if (remote !== "") {
     must(run, "git", ["fetch", "--no-tags", "origin", `+${ref}:${tracking}`]);
     must(run, "git", [
@@ -227,8 +246,14 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
       `--format=%(trailers:key=${TRAILER},valueonly)`,
       tracking,
     ]).trim();
+    // Whether the branch is built on the checked-out main (HEAD); if not, main has moved on.
+    onMain = builtOn(run, tracking, "HEAD");
   }
   const open = prs(run, input, "open")[0];
+  // The branch holds this bump, on the checked-out main or a newer one.
+  const proposed = remote !== "" && previous === id && onMain;
+  // The branch holds this bump on an older main: it is rebuilt, with the same identity.
+  const behind = remote !== "" && previous === id && !onMain;
 
   if (input.bump.changes.length === 0) {
     if (open === undefined) return { kind: "nothing" };
@@ -248,14 +273,12 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
   }
   if (manual.length > 0) return { kind: "held", commits: manual };
 
-  if (remote !== "" && previous === id) {
-    if (open !== undefined) {
-      // A body that names another bump (an earlier run failed part way) is put right.
-      if (!open.body.includes(marker(id))) edit(run, input, open);
-      const ci = !ciDispatched(run, input, remote);
-      if (ci) dispatchCi(run, input);
-      return { kind: "unchanged", pr: open.url, ci };
-    }
+  if (proposed && open !== undefined) {
+    // A body that names another bump (an earlier run failed part way) is put right.
+    if (!open.body.includes(marker(id))) edit(run, input, open);
+    const ci = !ciDispatched(run, input, remote);
+    if (ci) dispatchCi(run, input);
+    return { kind: "unchanged", pr: open.url, ci };
   }
   if (open === undefined) {
     const declined = prs(run, input, "closed").some(
@@ -263,7 +286,7 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
     );
     if (declined) return { kind: "declined" };
     // The branch already holds this bump, but no pull request was opened (a failed run).
-    if (remote !== "" && previous === id) return create(run, input);
+    if (proposed) return create(run, input);
   }
 
   must(run, "git", [
@@ -280,13 +303,14 @@ export function propose(run: Runner, input: ProposeInput): Outcome {
     "--",
     ...input.files,
   ]);
-  // An open pull request names the new bump before the branch changes, so its body never
-  // describes an older bump than its branch holds, even if the push then fails.
-  if (open !== undefined) edit(run, input, open);
+  // An open pull request names the bump before the branch changes, so its body never describes
+  // an older bump than its branch holds, even if the push then fails. A body that already names
+  // it (a rebuild, or a run that failed after the edit) is left as it is.
+  if (open !== undefined && !open.body.includes(marker(id))) edit(run, input, open);
   must(run, "git", ["push", `--force-with-lease=${ref}:${remote}`, "origin", `HEAD:${ref}`]);
   if (open === undefined) return create(run, input);
   dispatchCi(run, input);
-  return { kind: "updated", pr: open.url, ci: true };
+  return { kind: behind ? "rebuilt" : "updated", pr: open.url, ci: true };
 }
 
 function edit(run: Runner, input: ProposeInput, pr: Pr): void {

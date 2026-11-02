@@ -1,7 +1,8 @@
 // Proposing a bump (WP3.37) with real git against a bare "origin" made for the test, and a
 // fake gh that keeps pull requests and CI runs: one branch, one pull request, rebuilt from main
-// on each new bump, never rewritten or deleted over a person's commit, every step safe to
-// repeat after a failure, and a fork's same-named branch ignored.
+// on each new bump and whenever main moves on (WP3.51), never rewritten or deleted over a
+// person's commit, every step safe to repeat after a failure, and a fork's same-named branch
+// ignored.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -190,6 +191,20 @@ function personPushes() {
   git(clone, "push", "-q", "origin", `HEAD:refs/heads/${BRANCH}`);
 }
 
+/** Main moves on: a person's change merged into main, from their own clone. */
+function mainMoves(file: string, change: (text: string) => string) {
+  people += 1;
+  const clone = join(dir, `person-${people}`);
+  git(dir, "clone", "-q", "-b", "main", origin, clone);
+  writeFileSync(join(clone, file), change(readFileSync(join(clone, file), "utf8")));
+  git(clone, "commit", "-q", "-am", "main moves on");
+  git(clone, "push", "-q", "origin", "HEAD:refs/heads/main");
+}
+/** A line added right above the Codex pin: rebasing a commit that bumps it would conflict. */
+const nextToCodex = (text: string) =>
+  text.replace(/^ARG CODEX_VERSION=/m, "# Codex, pinned by the daily check.\nARG CODEX_VERSION=");
+const rev = (name: string) => git(origin, "rev-parse", name);
+
 describe("propose", () => {
   it("opens one pull request from a bot commit on the branch, then dispatches CI", () => {
     expect(run(bumpFor("0.165.0"))).toEqual({
@@ -252,6 +267,125 @@ describe("propose", () => {
     expect(calls()).toEqual(["pr list", "pr edit", "workflow run"]);
     expect(gh.calls[1]).toContain("7");
     expect(gh.prs[0]?.body).toContain(marker(bumpId(bumpFor("0.166.0"))));
+  });
+
+  it("rebuilds a branch main has left behind, with the same bump, and dispatches CI", () => {
+    run(bumpFor("0.165.0"));
+    const old = branchHead() as string;
+    const body = gh.prs[0]?.body;
+    mainMoves(COMPUTER, nextToCodex);
+    const merge = spawnSync("git", ["merge-tree", "--write-tree", "main", BRANCH], {
+      cwd: origin,
+      env: env(),
+    });
+    expect(merge.status, "the old commit conflicts with main").toBe(1);
+    gh.calls = [];
+    expect(run(bumpFor("0.165.0"))).toEqual({
+      kind: "rebuilt",
+      pr: "https://github.com/o/r/pull/7",
+      ci: true,
+    });
+    const head = branchHead() as string;
+    expect(head).not.toBe(old);
+    // One commit on main: the workflow's, with the same identity, changing only the pin.
+    expect(rev(`${head}^`)).toBe(rev("main"));
+    expect(git(origin, "log", "-1", "--format=%an <%ae>", head)).toBe(`${BOT.name} <${BOT.email}>`);
+    expect(git(origin, "log", "-1", `--format=%(trailers:key=${TRAILER},valueonly)`, head)).toBe(
+      bumpId(bumpFor("0.165.0")),
+    );
+    expect(git(origin, "diff", "--name-only", "main", head)).toBe(COMPUTER);
+    const lines = git(origin, "diff", "-U0", "main", head)
+      .split("\n")
+      .filter((l) => /^[-+]ARG /.test(l));
+    expect(lines).toEqual([
+      expect.stringMatching(/^-ARG CODEX_VERSION=/),
+      "+ARG CODEX_VERSION=0.165.0",
+    ]);
+    // The same pull request, its title and body untouched; CI on the new head.
+    expect(gh.prs).toHaveLength(1);
+    expect(gh.prs[0]?.body).toBe(body);
+    expect(calls()).toEqual(["pr list", "workflow run"]);
+    expect(gh.runs).toEqual([old, head]);
+  });
+
+  it("pushes nothing again once the branch is on the checked-out main, or a newer one", () => {
+    run(bumpFor("0.165.0"));
+    const older = rev("main");
+    mainMoves(SERVER, (t) => `${t}# main moves on\n`);
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "rebuilt" });
+    const head = branchHead();
+    gh.calls = [];
+    expect(run(bumpFor("0.165.0"))).toEqual({
+      kind: "unchanged",
+      pr: "https://github.com/o/r/pull/7",
+      ci: false,
+    });
+    expect(branchHead()).toBe(head);
+    expect(calls()).toEqual(["pr list", "run list"]);
+    // A run from an older checkout of main never moves the branch back onto it.
+    git(work, "checkout", "-q", "--force", "--detach", older);
+    const bump = bumpFor("0.165.0");
+    expect(propose(runner, input(bump, applyBump(work, bump, files)))).toMatchObject({
+      kind: "unchanged",
+    });
+    expect(branchHead()).toBe(head);
+  });
+
+  it("never rebuilds a branch main has left behind when it holds a person's commit", () => {
+    run(bumpFor("0.165.0"));
+    personPushes();
+    mainMoves(COMPUTER, nextToCodex);
+    const head = branchHead();
+    gh.calls = [];
+    expect(run(bumpFor("0.165.0"))).toEqual({
+      kind: "held",
+      commits: [expect.stringMatching(/ cfo-test@example\.test$/)],
+    });
+    expect(branchHead()).toBe(head);
+    expect(calls()).toEqual(["pr list"]);
+  });
+
+  it("keeps a commit pushed between the inspection and a rebuild's push", () => {
+    run(bumpFor("0.165.0"));
+    mainMoves(COMPUTER, nextToCodex);
+    before = { match: "HEAD:refs/heads/", act: personPushes };
+    expect(() => run(bumpFor("0.165.0"))).toThrow(/git push .* failed/);
+    expect(git(origin, "log", "-1", "--format=%s", `refs/heads/${BRANCH}`)).toBe(
+      "fix the tests for the new Codex",
+    );
+    expect(gh.runs).toHaveLength(1);
+    expect(run(bumpFor("0.165.0")).kind).toBe("held");
+  });
+
+  it("opens the pull request on a rebuilt branch when the branch it left is behind main", () => {
+    gh.fail["pr create"] = "HTTP 502";
+    expect(() => run(bumpFor("0.165.0"))).toThrow(/pr create .* failed/);
+    const old = branchHead();
+    mainMoves(COMPUTER, nextToCodex);
+    expect(run(bumpFor("0.165.0"))).toMatchObject({ kind: "created", ci: true });
+    expect(branchHead()).not.toBe(old);
+    expect(rev(`${BRANCH}^`)).toBe(rev("main"));
+    expect(gh.runs).toEqual([branchHead()]);
+  });
+
+  it("does not rebuild a declined bump's branch when main moves on", () => {
+    run(bumpFor("0.165.0"));
+    (gh.prs[0] as FakePr).state = "closed";
+    const head = branchHead();
+    mainMoves(COMPUTER, nextToCodex);
+    expect(run(bumpFor("0.165.0"))).toEqual({ kind: "declined" });
+    expect(branchHead()).toBe(head);
+  });
+
+  it("fails, pushing nothing, when the bump no longer changes the checked-out main", () => {
+    run(bumpFor("0.165.0"));
+    const head = branchHead();
+    // Main pinned the version by hand; this bump is older than main.
+    mainMoves(COMPUTER, (t) => t.replace(/^ARG CODEX_VERSION=.*$/m, "ARG CODEX_VERSION=0.165.0"));
+    gh.calls = [];
+    expect(() => run(bumpFor("0.165.0"))).toThrow(/changes nothing on the checked-out main/);
+    expect(branchHead()).toBe(head);
+    expect(gh.calls).toEqual([]);
   });
 
   it("never lets a pull request's body name an older bump than its branch holds", () => {
@@ -350,6 +484,15 @@ describe("propose", () => {
         : runner(command, args);
     expect(() => propose(failing, input(CURRENT, []))).toThrow(
       /git status .* failed \(128\): not a git repository/,
+    );
+    run(bumpFor("0.165.0"));
+    const broken: Runner = (command, args) =>
+      command === "git" && args[0] === "merge-base"
+        ? { status: 128, stdout: "", stderr: "bad object" }
+        : runner(command, args);
+    const bump = bumpFor("0.165.0");
+    expect(() => propose(broken, input(bump, checkout(bump)))).toThrow(
+      /git merge-base --is-ancestor HEAD .* failed \(128\): bad object/,
     );
   });
 

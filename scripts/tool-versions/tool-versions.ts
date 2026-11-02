@@ -168,6 +168,8 @@ async function main(argv: string[]): Promise<number> {
       nothing: "every tool is current; no pull request is open",
       created: "opened the pull request and started CI on its branch",
       updated: "updated the pull request and started CI on its branch",
+      rebuilt:
+        "rebuilt the pull request's branch on main, with the same bump, and started CI on it",
       unchanged: "the open pull request already proposes exactly this",
       closed: "main already pins these versions; closed the pull request",
       declined: "the same bump was closed unmerged; not reopening it until a newer release",
