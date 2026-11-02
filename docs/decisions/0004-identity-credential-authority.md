@@ -37,7 +37,7 @@ The checkpoint buckets have only Worker-binding access, without a computer S3 to
 
 **Credential-entry warning.** A key pasted into a conversation, tool argument, repository file or upload does not enter the encrypted MCP credential store. It can reach model providers, transcripts, artifacts or checkpoints. Connect service keys only through **Settings → MCP**. Native Claude/Codex sign-ins and the native GitHub flow follow their separate custody paths above.
 
-Service destinations remain operator-controlled under the fixed-manifest model. Validation rejects obvious local destinations and Omnigent refuses redirects, but validation does not inspect DNS results. A public-looking name that resolves to a private address is therefore a known limitation; manifests and operator-supplied origins must be reviewed accordingly.
+Service destinations remain operator-controlled under the fixed-manifest model. Validation rejects obvious local destinations and Omnigent refuses redirects, but validation does not inspect DNS results. A public-looking name that resolves to a private address is therefore a known limitation; manifests and operator-supplied origins must be reviewed accordingly. An authorized service receives its own credential in the request and must be trusted not to disclose it in its tool results: encryption and destination validation do not sanitize what a service sends back. Making service destinations editable beyond this operator-controlled model needs a fresh review of which destination receives which credential.
 
 ## Alternatives and consequences
 
