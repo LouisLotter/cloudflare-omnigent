@@ -171,9 +171,14 @@ def test_the_shipped_manifests_load() -> None:
     assert shipped["openrouter"].asks == () and shipped["openrouter"].service["auth"] == "bearer"
     assert shipped["openrouter"].service["url"] == "https://mcp.openrouter.ai/mcp"
     # Ori's install and eval instructions are for a person's own machine, not a gateway tool.
-    assert not {"install-ori-harness", "spawn-ori-eval"} & set(
-        shipped["openrouter"].service["tools"]
-    )
+    # Image and speech results are left out while Omnigent's gateway turns non-text MCP
+    # content into JSON text (the agent would get base64, not an image or audio).
+    assert not {
+        "install-ori-harness",
+        "spawn-ori-eval",
+        "generate-image",
+        "generate-speech",
+    } & set(shipped["openrouter"].service["tools"])
 
 
 def test_off_without_choices_and_nothing_mcp_reaches_the_app(env: dict[str, str]) -> None:
