@@ -33,7 +33,7 @@ On your own machines (personal hosts), the Cloudflare One Client is registered t
 
 **Whose account:** yours. Cloudflare is the operator, under your account's terms. R2 encrypts stored data, but the saves have no encryption of their own: anyone who controls your Cloudflare account can read the saved logins ([secret custody](secrets.md)). Omnigent's stored sign-ins (the GitHub link, connected services) are in the database only as ciphertext sealed by the platform Worker's key service.
 
-**How we know:** in source ([Worker configuration](../worker/wrangler.jsonc), [server image settings](../images/server/cfo_server/config.py)), and tested locally. The cloud computers have not run on Cloudflare yet ([architecture](architecture.md)).
+**How we know:** in source ([Worker configuration](../worker/wrangler.jsonc), [server image settings](../images/server/cfo_server/config.py)), and tested locally. The owner's installation has run the server and cloud computers on Cloudflare since 29 October 2026; that is one installation's experience, not a qualified release ([architecture](architecture.md)).
 
 ## The model providers: Anthropic and OpenAI
 
@@ -55,7 +55,7 @@ On your own machines, the CLIs use whatever logins and settings they already hav
 
 **Whose account:** yours. The App can read and write repository contents and pull requests, and nothing else.
 
-**How we know:** in source and tested locally; not yet run on Cloudflare.
+**How we know:** in source and tested locally, and the owner's installation has used GitHub linking on Cloudflare since 29 October 2026.
 
 ## Connected services (MCP)
 
