@@ -2,7 +2,7 @@
 
 Your installation runs Omnigent on Cloudflare, with cloud computers it starts for you. You can also connect your own machines (a desktop, a laptop) as Omnigent hosts of the same installation. Then you sign in to `https://<your hostname>` and start and manage agents on any of them from one place. No Omnigent server runs on your machine, and nothing on it is reachable from the internet: each machine reaches your installation through the **Cloudflare One Client** (formerly WARP), signed in to your Zero Trust team as you, and Cloudflare Access still admits only you.
 
-Status: built and tested in source (31 October 2026, WP3.43); not yet run on a real installation. Linux with systemd only for now; on a Mac, Omnigent's own `omnigent host enable` does the service part.
+Status: built and tested in source (31 October 2026, WP3.43), then run on the owner's installation on 1 November 2026. Reboot, a lapsed Cloudflare One Client session and a revoked device have not yet been qualified. Linux with systemd only for now; on a Mac, Omnigent's own `omnigent host enable` does the service part.
 
 ## Once, for your installation
 
