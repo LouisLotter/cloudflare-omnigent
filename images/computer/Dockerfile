@@ -34,12 +34,12 @@
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
 ARG OMNIGENT_COMMIT=dc4cff99895fc8890b46ee03c963cddc8d66fae0
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
-ARG PIP_PIN="pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+ARG PIP_PIN="pip==26.3 --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13"
 # uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
 ARG UV_PIN="uv==0.13.6 --hash=sha256:22759b8895e1103578de6fb4cd27e94b4399d021023378d29f01333717751fba --hash=sha256:d1efed1d15102ffdbf5e0fd49a440643dda2d921a2ad856792ae42ccd43c253f"
 
@@ -170,10 +170,10 @@ FROM runtime-base AS runtime
 # (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
 # above, from an install whose registry signatures (and Codex's provenance) it has checked, and
 # this build then checks them in an independent install.
-ARG CLAUDE_CODE_VERSION=2.1.314
+ARG CLAUDE_CODE_VERSION=2.1.316
 ARG CODEX_VERSION=0.166.0
-ARG CLAUDE_CODE_TREE_SHA256=a9ecf3cd3e13556dbb71768794fd43b973f704fb714b0bde73207dd286376c93
-ARG CLAUDE_CODE_INSTALLED_SHA256=011bf8a73152d367d5c1ba876110ba7ef3dbb91760d5f49d8cefa1d61de296f9
+ARG CLAUDE_CODE_TREE_SHA256=6664834bb7d0ad17f8c176bdf0a3aa01c4d7a5b6f89924f5f63b306d07e7efbf
+ARG CLAUDE_CODE_INSTALLED_SHA256=9b25921ea887f2600f9dec5074457882467b0e010e843523069eb72083908cd1
 ARG CODEX_TREE_SHA256=9293cf0b1c9aa7aa61f3eee4cfd25295cbc35f3f196552a7b53671fb224cb8e0
 RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
     sh /cfo-build/install_clis.sh check
