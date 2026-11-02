@@ -185,7 +185,7 @@ esac
 `,
   omnigent: `#!/bin/bash
 w=$FAKE_WORLD
-echo "omnigent $* data=$OMNIGENT_DATA_DIR config=$OMNIGENT_CONFIG_HOME wrapper=$OMNIGENT_WRAPPER_COMMAND analytics=$OMNIGENT_ANALYTICS" >>"$w/calls"
+echo "omnigent $* data=$OMNIGENT_DATA_DIR config=$OMNIGENT_CONFIG_HOME wrapper=$OMNIGENT_WRAPPER_COMMAND analytics=$OMNIGENT_ANALYTICS passthrough=$OMNIGENT_RUNNER_ENV_PASSTHROUGH" >>"$w/calls"
 case $1 in
 login) [[ -f $w/login-fails ]] && exit 1; echo ok >"$w/token" ;;
 host) if [[ -f $w/offline ]]; then echo '[{"host_status": "offline"}]'; else echo '[{"host_status": "online"}]'; fi ;;
@@ -372,7 +372,7 @@ describe("omnigent-host.sh setup", () => {
     // 3. The sign-in, by Omnigent itself, with this build's own data and configuration.
     const data = join(e.cfoHome, "data");
     expect(calls).toContain(
-      `omnigent login ${SERVER} data=${data} config=${e.cfoConfig} wrapper=omnigent-cfo analytics=0`,
+      `omnigent login ${SERVER} data=${data} config=${e.cfoConfig} wrapper=omnigent-cfo analytics=0 passthrough=OMNIGENT_ANALYTICS`,
     );
     // 4. The service: Omnigent's own service entry, from this build, restarted whenever it stops.
     const unit = readFileSync(e.unitFile, "utf8");
@@ -393,7 +393,9 @@ describe("omnigent-host.sh setup", () => {
     expect(environ).toContain("OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_ANALYTICS");
     expect(environ).toContain(`OMNIGENT_DATA_DIR=${data}`);
     expect(calls).toContainEqual(
-      expect.stringMatching(/^omnigent host status --server \S+ --json .* analytics=0$/),
+      expect.stringMatching(
+        /^omnigent host status --server \S+ --json .* analytics=0 passthrough=OMNIGENT_ANALYTICS$/,
+      ),
     );
     expect(calls).toContain(`systemctl --user enable --now ${UNIT}`);
     expect(calls).toContain(`systemctl --user restart ${UNIT}`);
@@ -403,6 +405,21 @@ describe("omnigent-host.sh setup", () => {
     expect(wrapper).toContain(`exec '${build}/bin/omnigent' "$@"`);
     expect(wrapper).toContain(`export OMNIGENT_DATA_DIR='${data}'`);
     expect(wrapper).toContain("export OMNIGENT_ANALYTICS=0");
+    // A host started from the command passes it on to its runners too, keeping the person's own
+    // pass-through names (Codex r1-1).
+    reset();
+    const own = spawnSync(e.wrapper, ["host", "--server", SERVER], {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+        FAKE_WORLD: e.world,
+        OMNIGENT_RUNNER_ENV_PASSTHROUGH: "MY_VAR",
+      },
+    });
+    expect(own.status).toBe(0);
+    expect(e.calls()).toEqual([
+      `omnigent host --server ${SERVER} data=${data} config=${e.cfoConfig} wrapper=omnigent-cfo analytics=0 passthrough=MY_VAR,OMNIGENT_ANALYTICS`,
+    ]);
     expect(readFileSync(join(e.cfoConfig, "server"), "utf8")).toBe(`${SERVER}\n`);
     // The retired Omnigent and its service are left alone; nothing reads ~/.omnigent.
     expect(readFileSync(join(e.home, ".local", "bin", "omnigent"), "utf8")).toBe(

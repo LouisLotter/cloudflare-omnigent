@@ -318,8 +318,10 @@ $MARKER
 export OMNIGENT_DATA_DIR='$CFO_DATA'
 export OMNIGENT_CONFIG_HOME='$CFO_CONFIG'
 export OMNIGENT_WRAPPER_COMMAND=$NAME
-# Omnigent's product analytics off (D49).
+# Omnigent's product analytics off (D49), also in the runners (and a background host) that a host
+# started from here starts: Omnigent passes them only the names listed here. Yours are kept.
 export OMNIGENT_ANALYTICS=0
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH="\${OMNIGENT_RUNNER_ENV_PASSTHROUGH:+\$OMNIGENT_RUNNER_ENV_PASSTHROUGH,}OMNIGENT_ANALYTICS"
 exec '$BUILD/bin/omnigent' "\$@"
 EOF
   chmod 0755 "$tmp"

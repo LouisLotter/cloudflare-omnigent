@@ -27,7 +27,7 @@ None of this has been checked by watching a running installation's network traff
 
 **What:** the whole installation. Omnigent's server runs in a container in your account, with its database on the container's disk and a continuous copy in an R2 bucket. Files people upload to Omnigent go to a second R2 bucket. Each cloud computer is a container too; its saves (its files, and its Claude and Codex logins) go to a third R2 bucket. The installation's Durable Objects keep the computers' and the server's state. The server's logs go to Workers Logs in your account; the cloud computers' logs and the per-request logs are off. Cloudflare Access checks every visit and knows who signed in: for example your email address, with the one-time PIN sign-in the installer sets up when your account has no sign-in method.
 
-On your own machines (personal hosts), the Cloudflare One Client is registered to your installation's Zero Trust team. Only traffic to your installation's address goes through Cloudflare; the rest of the machine's traffic is untouched (an include-mode split tunnel).
+On your own machines (personal hosts), the Cloudflare One Client is registered to your installation's Zero Trust team. The setup routes two addresses through Cloudflare: your installation's address and its Access sign-in page (an include-mode split tunnel, which keeps any routes already in the list). Connections to other sites do not go through Cloudflare. The machine's DNS lookups do, though: in the client's "Traffic and DNS" mode, which the setup needs, the client asks Cloudflare's resolver for the names of the sites the machine visits, on your Zero Trust organization, unless the client's local domain fallback covers them. (The setup's settings are tested; the DNS behaviour is Cloudflare's documentation.)
 
 **Why:** Cloudflare runs the installation.
 
@@ -83,11 +83,11 @@ On your own machines, the CLIs use whatever logins and settings they already hav
 |---|---|---|
 | The server | The image sets it for Omnigent, and an installation's settings cannot turn it back on. | Tested: the settings test, and a test that runs Omnigent's own analytics start-up with the server's environment. The analytics never start, and the same test shows they would start without the switch. |
 | Cloud computers | Set for everything the computer runs as the person: Omnigent's host, every runner the host starts (Omnigent drops it from runners unless the host names it in Omnigent's own pass-through list, which the computer does), the setup terminal and the sign-ins. | Tested in the image: the running host's environment, and Omnigent's own runner set-up and off-switch check. |
-| Your own machines (personal hosts) | Set in the host's service and its runners (the same pass-through), and in the `omnigent-cfo` command. A machine set up before this change gets it the next time `scripts/host/omnigent-host.sh setup` runs there. | Tested: the setup's tests check the service's environment as its unit file sets it, and the command's. |
+| Your own machines (personal hosts) | Set in the host's service and its runners (the same pass-through), and in the `omnigent-cfo` command and any host it starts. A machine set up before this change gets it the next time `scripts/host/omnigent-host.sh setup` runs there. | Tested: the setup's tests check the service's environment as its unit file sets it (not a real systemd), and the command's. |
 
 **With it off:** only Omnigent's server ever sends analytics, and with the switch it never starts them, so it contacts neither address. Hosts and runners send nothing to the analytics service themselves; they only tell the server that analytics are off. (In source.)
 
-**How to check:** on your own machine, `systemctl --user show -p Environment omnigent-cfo-host.service` lists `OMNIGENT_ANALYTICS=0`. For the server and the cloud computers no page shows it yet; the image tests check it in every build.
+**How to check:** on your own machine, `systemctl --user show -p Environment omnigent-cfo-host.service` lists `OMNIGENT_ANALYTICS=0`. For the server and the cloud computers no page shows it yet; CI runs the image tests that check it on every change.
 
 **Later:** sending these events to a store in your own account instead is planned. Omnigent can already be pointed at a settings file of your own (`OMNIGENT_TELEMETRY_CONFIG_URL`).
 
