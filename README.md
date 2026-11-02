@@ -2,17 +2,17 @@
 
 A Cloudflare deployment layer for [Omnigent](https://github.com/omnigent-ai/omnigent): authenticated ingress, a durable server, and an intended fleet of persistent cloud computers in one person's own Cloudflare account. This is an independent open-source project, not an official Omnigent or Cloudflare service.
 
-## Status — 24 October 2026
+## Status — 2 November 2026
 
 | Component | Current state |
 |---|---|
-| Server base | Integrated source for owner-only ingress, two Worker configurations, server lifecycle/recovery, SQLite replication with Litestream, durability barriers, bootstrap and restore-drill tools. Production qualification remains incomplete. |
-| Cloud computers | Version-one contracts and the Cloudflare launcher (Omnigent's provider plugin, registered by the server image) are integrated. Controller, private routes and supervisor remain separate partial drafts; there is no qualified end-to-end computer assembly. |
-| Connected accounts | Omnigent's own MCP registry and gateway (services shipped as manifests, turned on with the installer's `services` step) and its GitHub linking (the installation's GitHub App, made by the installer), with logins sealed by the platform Worker's key service; tested locally, not yet on Cloudflare. |
+| Installation | The owner's installation has run on Cloudflare since 29 October and on Omnigent 0.20 since 31 October. This is one personal installation, not completion of the staging release gates (G3/G5), multi-user qualification or disaster recovery from scratch. |
+| Cloud computers | The owner's installation runs Claude Code and Codex sessions on cloud computers. PRs #62 and #63 were written by Codex on one. Several users per installation are not qualified. |
+| Personal hosts | Personal machines can join through the Cloudflare One Client; the first run on the owner's installation was 1 November (WP3.43). Reboot, a lapsed client session and a revoked device remain open lifecycle cases. |
+| Updates | `update` takes a restore point, holds a read-only acceptance window and can roll back before acceptance. Since PR #64 it accepts only when the GitHub and MCP integrations that were enabled remain enabled. The owner's successful update does not qualify every release or recovery check. |
+| Connected services | GitHub and, since PR #65, OpenRouter run through Omnigent's MCP gateway: it holds their keys, and agents get tool results rather than the keys. Each service still receives its own key and is trusted not to return it in results ([ADR 0004](docs/decisions/0004-identity-credential-authority.md)). Native GitHub tokens are still available to local processes while its broker runs; native Claude/Codex logins use their separate computer credential stores. |
 
-Main registers the [Cloudflare launcher](python/cloudflare_omnigent/sandbox/), but its [private platform bridge](worker/src/server/platform-internal.ts) still returns unavailable and no deployment sets the launcher's signing key, so no physical computer effect can happen yet. The presence of fork capabilities, contracts or the launcher does not make cloud computers usable.
-
-The [compatibility snapshot](docs/compatibility.md) identifies exact revisions and pins. The default server image uses an older fork commit than current fork integration and lacks later Stop and history-resume corrections. No production-ready release or selected, fully qualified image pair is claimed here.
+The [compatibility snapshot](docs/compatibility.md) identifies exact revisions and pins. Implemented source, packaged artifacts and the owner's runtime experience are evidence at different levels; none of the status above claims a fully qualified release or completion of the open gates.
 
 ## Install
 
