@@ -163,10 +163,17 @@ def test_a_malformed_key_service_stops_the_start_without_github(
 
 def test_the_shipped_manifests_load() -> None:
     shipped = mcp.load_manifests()
-    assert set(shipped) == {"tracker", "github"}
+    assert set(shipped) == {"tracker", "github", "openrouter"}
     assert shipped["tracker"].asks == ("origin",)
     assert shipped["tracker"].service["auth"] == "oauth"
     assert shipped["github"].asks == () and shipped["github"].service["auth"] == "github"
+    # A personal API key pasted in Settings → MCP: nothing to ask at install.
+    assert shipped["openrouter"].asks == () and shipped["openrouter"].service["auth"] == "bearer"
+    assert shipped["openrouter"].service["url"] == "https://mcp.openrouter.ai/mcp"
+    # Ori's install and eval instructions are for a person's own machine, not a gateway tool.
+    assert not {"install-ori-harness", "spawn-ori-eval"} & set(
+        shipped["openrouter"].service["tools"]
+    )
 
 
 def test_off_without_choices_and_nothing_mcp_reaches_the_app(env: dict[str, str]) -> None:

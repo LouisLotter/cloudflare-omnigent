@@ -130,10 +130,11 @@ async function step(
 const secrets = (world: FakeWorld) => world.secretsOf(world.plan.platformWorker) ?? new Map();
 
 describe("the manifests and the destination rules", () => {
-  it("reads the shipped manifests: the test service asks for its origin, GitHub for nothing", () => {
-    expect([...SHIPPED.keys()].sort()).toEqual(["github", "tracker"]);
+  it("reads the shipped manifests: the test service asks for its origin, GitHub and OpenRouter for nothing", () => {
+    expect([...SHIPPED.keys()].sort()).toEqual(["github", "openrouter", "tracker"]);
     expect(SHIPPED.get("tracker")).toMatchObject({ auth: "oauth", asks: ["origin"] });
     expect(SHIPPED.get("github")).toMatchObject({ auth: "github", asks: [] });
+    expect(SHIPPED.get("openrouter")).toMatchObject({ auth: "bearer", asks: [] });
     expect(() => readManifest("other", { manifest: 1, asks: [], service: { id: "x" } })).toThrow(
       /does not name its service/,
     );
@@ -326,7 +327,7 @@ describe("refusals, before anything is asked or changed", () => {
   it("a service this release does not ship", async () => {
     const h = await installed();
     await expect(step(h, { kind: "add", id: "nonesuch" })).rejects.toThrow(
-      /no MCP service "nonesuch" ships with this release \(it has: github, tracker\)/,
+      /no MCP service "nonesuch" ships with this release \(it has: github, openrouter, tracker\)/,
     );
   });
 
@@ -561,6 +562,7 @@ describe("the listing", () => {
   it("names each shipped service, on or off, and what it asks for", () => {
     expect(servicesListing(SHIPPED, undefined)).toEqual([
       "off  github: GitHub",
+      "off  openrouter: OpenRouter",
       "off  tracker: Demo work tracker (test service) (asks for: origin)",
     ]);
     const state: BootstrapState["journal"]["mcpServices"] = {
@@ -572,6 +574,7 @@ describe("the listing", () => {
     };
     expect(servicesListing(SHIPPED, state)).toEqual([
       "off  github: GitHub",
+      "off  openrouter: OpenRouter",
       "on   tracker: Demo work tracker (test service) (asks for: origin)",
       "last changed at 2026-10-30T10:00:00.000Z; confirmed at 2026-10-30T10:07:00.000Z",
     ]);

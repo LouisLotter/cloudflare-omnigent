@@ -1,0 +1,37 @@
+{
+  "manifest": 1,
+  "asks": [],
+  "service": {
+    "id": "openrouter",
+    "title": "OpenRouter",
+    "description": "OpenRouter's MCP server: the model catalog, prices, rankings and benchmarks, the credit balance, and calls to other models (chat, images, speech, transcription, batches). Connect it in Settings, MCP with an OpenRouter API key; the calls are billed to that key. Use a key with a credit limit.",
+    "url": "https://mcp.openrouter.ai/mcp",
+    "auth": "bearer",
+    "tools": [
+      "ping",
+      "get-credits",
+      "list-models",
+      "get-model",
+      "list-model-endpoints",
+      "get-endpoint-uptime-history",
+      "list-providers",
+      "list-daily-model-rankings",
+      "list-app-rankings",
+      "list-benchmarks",
+      "list-task-classifications",
+      "list-presets",
+      "get-preset",
+      "search-docs",
+      "send-message",
+      "generate-image",
+      "generate-speech",
+      "transcribe-audio",
+      "send-batch",
+      "get-batch",
+      "list-batches",
+      "get-generation",
+      "send-feedback"
+    ],
+    "timeout": 300
+  }
+}
