@@ -180,19 +180,25 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
       fake.requests.filter((r) => new URL(r.url).pathname === OWNER_PASSWORD_CALL_PATH).length;
     expect(await setPassword(stub)).toMatchObject({ action: "set", outcome: "unavailable" });
     expect(calls()).toBe(0);
-    // The watchdog still checks it: its status line says the window holds, and which restore
-    // point the server took.
+    // The watchdog still checks it: its status line says the window holds, which restore point
+    // the server took, and how many MCP servers added on Omnigent's page it counted (WP8.14).
+    // Before the image reports them the line says null, never a guess.
+    await nextCheck(stub);
+    expect(events("bootstrap", "status").at(-1)).toMatchObject({ mcpAdminServices: null });
+    fake.mcpAdminServices = { stored: 2, served: 2 };
     await nextCheck(stub);
     const status = events("bootstrap", "status").at(-1);
     expect(status).toMatchObject({
       configApplied: true,
       maintenance: RP,
       restorePoint: { id: RP, takenAt: TAKEN },
+      mcpAdminServices: { stored: 2, served: 2 },
     });
     const read = parseLogs(delivered(0, "v2"), "cloudflare-omnigent");
     expect(read.statuses.at(-1)).toMatchObject({
       maintenance: RP,
       restorePoint: { id: RP, takenAt: TAKEN },
+      mcpAdminServices: { stored: 2, served: 2 },
     });
     // Accepted: the window's secret is deleted. That version passes requests again, and its
     // watchdog restarts the server once without the window (its scheduler on again).
@@ -205,10 +211,12 @@ describe("OmnigentServer in an update's read-only window (WP3.41)", () => {
     expect(fake.starts).toHaveLength(starts + 1);
     expect(fake.starts.at(-1)?.env.CFO_MAINTENANCE_WINDOW).toBeUndefined();
     expect(fake.signals).toEqual([15, 15]);
+    // Outside the window the counts are not read at all.
     expect(events("bootstrap", "status").at(-1)).toMatchObject({
       configApplied: true,
       maintenance: null,
       restorePoint: null,
+      mcpAdminServices: null,
     });
   });
 

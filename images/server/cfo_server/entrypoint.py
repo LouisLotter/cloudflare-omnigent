@@ -15,7 +15,11 @@ In order (code-structure plan, ``images/server``):
    domains, an empty server config; stale sharing override files are removed. Omnigent's
    artifacts go to their own S3 bucket (``OMNIGENT_ARTIFACT_URI``, checked in step 1): the
    local artifact directory holds only Omnigent's cache.
-5. **Litestream, then Omnigent.** ``litestream replicate`` starts first; once its control
+5. **Litestream, then Omnigent.** Before either starts, ``/status`` records how many services
+   administrators added on Omnigent's MCP page the database holds (``mcpAdminServices.stored``,
+   WP8.14); the app reports how many it serves once it is built (``served``, from the file
+   ``CFO_MCP_REPORT`` names), so an update can tell whether its restart lost any.
+   ``litestream replicate`` starts first; once its control
    socket lists the database, the app starts (:mod:`cfo_server.app`). Both are supervised: if
    either exits, the other is stopped. ``/status`` says ``initializing`` while the app starts
    (Python's imports, Omnigent's migrations, ``create_app``, the owner check) and ``running``
@@ -63,7 +67,7 @@ from urllib.parse import urlsplit
 from cfo_server import buildinfo
 from cfo_server import config as image_config
 from cfo_server import restore_point as restore_points
-from cfo_server.dbcheck import check_database
+from cfo_server.dbcheck import check_database, count_admin_services
 from cfo_server.events import log
 from cfo_server.httpd import (
     REPLICATION_POSITION_PORT,
@@ -84,6 +88,9 @@ EXIT_CONFIG = 78
 #: The rollback put the restore point back: the watchdog holds the server until the
 #: configuration changes. Only rollback mode exits with it (an app's own 79 is reported as 71).
 EXIT_ROLLED_BACK = 79
+
+#: The app's report of the page's MCP services it serves, in the run directory (WP8.14).
+MCP_REPORT_NAME = "mcp-services.json"
 
 #: Sharing override files Omnigent's own ``PUT /v1/sharing`` would write. Authoritative mode
 #: never reads them; any found at start are removed so nothing stale lingers.
@@ -528,6 +535,11 @@ class Supervisor:
         app_env = image_config.app_environment(self.config, self.env)
         app_env["CFO_DB_PATH"] = str(layout.db_path)
         app_env["CFO_LITESTREAM_SOCKET"] = str(layout.litestream_socket)
+        # The app's report of the page's MCP services it serves (WP8.14): never an earlier app's.
+        report = layout.run_dir / MCP_REPORT_NAME
+        report.unlink(missing_ok=True)
+        app_env["CFO_MCP_REPORT"] = str(report)
+        self.board.app_report = report
         app_env.update(dict(layout.app_env_overrides))
         # Until the app answers its health check it is initializing: imports, migrations,
         # create_app and the owner check, which take minutes on a large database (AIR2-010).
@@ -809,11 +821,7 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         # The credential store's key service, and Omnigent's MCP registry with the services on
         # (WP5.10). Names only.
         key_service="on" if config.key_service is not None else "off",
-        mcp_registry=(
-            f"on: {', '.join(config.mcp.services)}"
-            if config.mcp.enabled
-            else f"off: {config.mcp.off_reason}"
-        ),
+        mcp_registry=config.mcp.summary(),
         # An update's read-only window (WP3.41): Omnigent starts without its scheduler.
         maintenance=config.maintenance,
     )
@@ -866,6 +874,11 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
 
         if supervisor.stop_requested:
             return EXIT_OK
+        # The page's MCP services in the database this start begins from (WP8.14), before
+        # Omnigent or its migrations run: an update's restart compares the app's count with it.
+        # A new installation has no database file yet, and so none.
+        stored = count_admin_services(layout.db_path) if decision.source != "fresh" else 0
+        board.update(mcpAdminServices={"stored": stored, "served": None})
         if config.restore_point is not None:
             failed = take_restore_point(
                 config, layout, env, decision, board, lambda: supervisor.stop_requested

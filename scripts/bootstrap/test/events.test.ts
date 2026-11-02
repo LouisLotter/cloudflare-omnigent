@@ -608,6 +608,68 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
     );
   });
 
+  it("the MCP servers added on the page, when required (WP8.14): all still served", () => {
+    const PAGE = { github: false, mcp: [], adminServices: true } as const;
+    const unconfirmed = "MCP servers added on the page are not confirmed: the restarted server";
+    // None added: nothing more, whatever Omnigent lists.
+    for (const mcpRegistry of [true, false, null, undefined]) {
+      expect(
+        integrationsOff(
+          { ...older, mcpRegistry, mcpAdminServices: { stored: 0, served: 0 } },
+          PAGE,
+        ),
+      ).toBeUndefined();
+    }
+    // All served, or more (nothing lost).
+    expect(integrationsOff({ ...on, mcpAdminServices: { stored: 2, served: 2 } }, PAGE)).toBe(
+      undefined,
+    );
+    expect(integrationsOff({ ...on, mcpAdminServices: { stored: 2, served: 3 } }, PAGE)).toBe(
+      undefined,
+    );
+    // One lost in the restart.
+    expect(integrationsOff({ ...on, mcpAdminServices: { stored: 2, served: 1 } }, PAGE)).toBe(
+      "MCP servers added on the page are off: the restarted server serves 1 of the 2 its database holds (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)",
+    );
+    // Omnigent not listing its registry, or not saying.
+    expect(
+      integrationsOff(
+        { ...on, mcpRegistry: false, mcpAdminServices: { stored: 1, served: 0 } },
+        PAGE,
+      ),
+    ).toBe(
+      "MCP servers added on the page are off: the database holds 1, but Omnigent on the restarted server does not list its MCP registry",
+    );
+    expect(
+      integrationsOff(
+        { ...on, mcpRegistry: null, mcpAdminServices: { stored: 1, served: 1 } },
+        PAGE,
+      ),
+    ).toBe(`${unconfirmed}'s status does not say whether Omnigent lists its MCP registry`);
+    // Not reported yet, or not readable, or not said at all: never counted as on.
+    expect(integrationsOff({ ...on, mcpAdminServices: { stored: 3, served: null } }, PAGE)).toBe(
+      `${unconfirmed} has not said yet how many of its 3 it serves`,
+    );
+    expect(integrationsOff({ ...on, mcpAdminServices: { stored: null, served: 0 } }, PAGE)).toBe(
+      `${unconfirmed} could not read how many its database holds`,
+    );
+    for (const mcpAdminServices of [null, undefined]) {
+      expect(integrationsOff({ ...on, mcpAdminServices }, PAGE)).toBe(
+        `${unconfirmed}'s status does not say how many its database holds`,
+      );
+    }
+    // Not required: nothing is asked of them.
+    expect(
+      integrationsOff({ ...on, mcpAdminServices: { stored: 2, served: 0 } }, NONE),
+    ).toBeUndefined();
+    expect(
+      integrationsOff(
+        { ...on, mcpAdminServices: { stored: 2, served: 0 } },
+        { ...PAGE, adminServices: false },
+      ),
+    ).toBeUndefined();
+  });
+
   it("names every integration that is off, GitHub first", () => {
     expect(
       integrationsOff(
@@ -620,11 +682,16 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
   });
 
   const revision = fc.constantFrom(R1, R2);
+  const countArb = fc.oneof(fc.constant(null), fc.nat({ max: 4 }));
   const statusArb = fc.record({
     githubApp: fc.constantFrom(undefined, null, APP),
     githubLinking: fc.constantFrom(undefined, null, true, false),
     mcpRevision: fc.oneof(fc.constantFrom(undefined, null), revision),
     mcpRegistry: fc.constantFrom(undefined, null, true, false),
+    mcpAdminServices: fc.oneof(
+      fc.constantFrom(undefined, null),
+      fc.record({ stored: countArb, served: countArb }),
+    ),
   });
   const requiredArb = fc.record({
     github: fc.boolean(),
@@ -632,6 +699,7 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
       fc.record({ revision: fc.option(revision, { nil: undefined }), on: fc.boolean() }),
       { maxLength: 3 },
     ),
+    adminServices: fc.boolean(),
   });
 
   it("accepts only what the status positively shows on (property)", () => {
@@ -653,10 +721,19 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
             expect(runs.length).toBeGreaterThan(0);
             if (runs.every((choices) => choices.on)) expect(fields.mcpRegistry).toBe(true);
           }
+          if (required.adminServices) {
+            // The counts are said; any page server the database held is served, with MCP listed.
+            const counts = fields.mcpAdminServices;
+            expect(counts?.stored).toEqual(expect.any(Number));
+            if ((counts?.stored ?? 0) > 0) {
+              expect(fields.mcpRegistry).toBe(true);
+              expect(counts?.served).toBeGreaterThanOrEqual(counts?.stored ?? 0);
+            }
+          }
         } else {
           // Something required was not on, and the message names it.
-          expect(required.github || mcpOn).toBe(true);
-          expect(off).toMatch(/^(GitHub linking|MCP services) /);
+          expect(required.github || mcpOn || required.adminServices).toBe(true);
+          expect(off).toMatch(/^(GitHub linking|MCP services|MCP servers added on the page) /);
         }
       }),
     );
@@ -673,9 +750,15 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
           !required.mcp.some(
             (choices) => !choices.on && (choices.revision ?? null) === fields.mcpRevision,
           );
+        const unsaidPage =
+          required.adminServices &&
+          (fields.mcpAdminServices === undefined ||
+            fields.mcpAdminServices === null ||
+            fields.mcpAdminServices.stored === null);
         const off = integrationsOff({ ...older, ...fields }, required);
         if (unsaidGitHub) expect(off).toContain("GitHub linking");
         if (unsaidMcp) expect(off).toContain("MCP services");
+        if (unsaidPage) expect(off).toContain("MCP servers added on the page");
       }),
     );
   });
@@ -683,7 +766,11 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
   it("requires nothing without GitHub or services on (property)", () => {
     fc.assert(
       fc.property(statusArb, requiredArb, (fields, required) => {
-        const none = { github: false, mcp: required.mcp.map((c) => ({ ...c, on: false })) };
+        const none = {
+          github: false,
+          mcp: required.mcp.map((c) => ({ ...c, on: false })),
+          adminServices: false,
+        };
         expect(integrationsOff({ ...older, ...fields }, none)).toBeUndefined();
       }),
     );
@@ -876,6 +963,33 @@ describe("checkMcpServices (WP5.10)", () => {
     expect(logs.configErrors[0]).toMatchObject({ held: true, mcpRevision: REV });
     const unsaid = parseLogs([mcp(SINCE + 1, "yes", { mcpRevision: 7 })], SCRIPT);
     expect(unsaid.statuses[0]).toMatchObject({ mcpRegistry: undefined, mcpRevision: undefined });
+  });
+
+  it("reads the MCP servers added on the page (WP8.14): both counts, or null, or unsaid", () => {
+    const counted = (value: unknown) =>
+      parseLogs(
+        [event(SINCE + 1, { ...line(SINCE + 1, true, "durable"), mcpAdminServices: value })],
+        SCRIPT,
+      ).statuses[0];
+    expect(counted({ stored: 2, served: 1 })?.mcpAdminServices).toEqual({ stored: 2, served: 1 });
+    expect(counted({ stored: null, served: null })?.mcpAdminServices).toEqual({
+      stored: null,
+      served: null,
+    });
+    expect(counted(null)?.mcpAdminServices).toBeNull();
+    for (const value of [
+      7,
+      [],
+      {},
+      { stored: 1 },
+      { stored: -1, served: 0 },
+      { stored: "2", served: 2 },
+    ]) {
+      expect(counted(value)?.mcpAdminServices).toBeUndefined();
+    }
+    // A line without the member (a release from before it) does not carry it at all.
+    const older = parseLogs([event(SINCE + 1, line(SINCE + 1, true, "durable"))], SCRIPT);
+    expect(older.statuses[0]).not.toHaveProperty("mcpAdminServices");
   });
 
   it("is applied by the newest status naming this revision, with what Omnigent lists", () => {

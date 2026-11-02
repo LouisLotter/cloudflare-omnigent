@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MCP_REVISION_ENV, mcpRegistryOf, mcpRevisionOf } from "../../src/server/mcp-services.ts";
+import {
+  MCP_REVISION_ENV,
+  mcpAdminServicesOf,
+  mcpRegistryOf,
+  mcpRevisionOf,
+} from "../../src/server/mcp-services.ts";
 
 describe("the MCP report's pure parts (WP5.10)", () => {
   it("reads the revision the installer writes, and nothing else", () => {
@@ -29,5 +34,43 @@ describe("the MCP report's pure parts (WP5.10)", () => {
     for (const info of [null, undefined, 7, [], {}, { enabled_connections: "mcp" }]) {
       expect(mcpRegistryOf(info)).toBeNull();
     }
+  });
+
+  it("reads the page's MCP servers the entrypoint counted (WP8.14), or null when it does not say", () => {
+    expect(mcpAdminServicesOf({ mcpAdminServices: { stored: 2, served: 2 } })).toEqual({
+      stored: 2,
+      served: 2,
+    });
+    // Either count may be "cannot say" (null): the database unreadable, the app not reported.
+    expect(mcpAdminServicesOf({ mcpAdminServices: { stored: 3, served: null } })).toEqual({
+      stored: 3,
+      served: null,
+    });
+    expect(mcpAdminServicesOf({ mcpAdminServices: { stored: null, served: 0 } })).toEqual({
+      stored: null,
+      served: 0,
+    });
+    for (const status of [
+      null,
+      undefined,
+      7,
+      [],
+      {},
+      { mcpAdminServices: null },
+      { mcpAdminServices: [] },
+      { mcpAdminServices: { stored: 1 } },
+      { mcpAdminServices: { served: 1 } },
+      { mcpAdminServices: { stored: -1, served: 0 } },
+      { mcpAdminServices: { stored: 1.5, served: 0 } },
+      { mcpAdminServices: { stored: "1", served: 1 } },
+      { mcpAdminServices: { stored: 1, served: true } },
+      { mcpAdminServices: { stored: 1_000_001, served: 0 } },
+    ]) {
+      expect(mcpAdminServicesOf(status)).toBeNull();
+    }
+    // Extra members are ignored, and never repeated: only the two counts come back.
+    expect(
+      mcpAdminServicesOf({ mcpAdminServices: { stored: 1, served: 1, names: ["linear"] } }),
+    ).toEqual({ stored: 1, served: 1 });
   });
 });

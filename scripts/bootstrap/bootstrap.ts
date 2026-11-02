@@ -42,7 +42,9 @@
 //
 // `services` turns on or off the MCP services the server image ships (WP5.10, services.ts and
 // services-command.ts): Omnigent's own MCP registry, whose Settings → MCP page then connects the
-// owner's accounts. Without an action it lists them. `add` asks, in the terminal, for what the
+// owner's accounts. Optional: that page adds any MCP server itself (Add MCP server, WP8.14), and
+// offers the shipped ones as presets; GitHub's, through the GitHub link, comes only from this
+// step. Without an action it lists them. `add` asks, in the terminal, for what the
 // service's manifest asks (its address, unless --origin gives it; an OAuth client's ID and
 // secret, never shown), stores it with the list in one secrets change, and waits until a server
 // started with the change answers. Exit status: 0 ready (or the list); 3 stored, not confirmed
@@ -703,7 +705,7 @@ async function status(path: string, withLogs: boolean): Promise<void> {
   const logs = parseLogs(events, installation.platformWorker);
   for (const e of [...logs.statuses].sort((a, b) => a.loggedAt - b.loggedAt)) {
     console.log(
-      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} github=${e.githubLinking ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
+      `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} github=${e.githubLinking ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} mcpPage=${e.mcpAdminServices ? `${e.mcpAdminServices.served ?? "?"}/${e.mcpAdminServices.stored ?? "?"}` : "?"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
     );
   }
   if (journal.releasedAt !== undefined) {

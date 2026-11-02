@@ -12,13 +12,15 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which the
 #     image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
-#     (`build`) and boot log line. 0116b9f53 (`cfo/upgrade-0.20.0`, 2 Nov 2026) is Omnigent
+#     (`build`) and boot log line. dc4cff998 (`cfo/upgrade-0.20.0`, 2 Nov 2026) is Omnigent
 #     0.20.0 merged into the fork's 3d7f7d08c (WP3.24), then fork integration afb809aa6 (WP5.11)
 #     merged in, then WP3.40c's crash-safe database upgrade (one SQLite transaction, every
 #     Alembic head read at start), then WP3.49 (UC-134: a Claude Code session shows the effort
 #     its status line reports, kept apart from the requested effort; no migration), then cc24
 #     (UC-135: images and audio from MCP registry tools saved as workspace files, images passed
-#     to the agent natively), keeping the fork's changes: the Codex policy
+#     to the agent natively), then WP8.13 (D57: administrators add MCP servers in Settings → MCP,
+#     live without a restart, under a destination policy; migration mr1a2b3c4d5e, additive, one
+#     way once complete), keeping the fork's changes: the Codex policy
 #     hook that fails closed (UC-110), Claude's renderer named in its hook settings (UC-107), gh
 #     2.103.3, the Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes
 #     12 to 21, the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable
@@ -44,7 +46,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=0116b9f5303a8e2718efe9f1f03826dedf89cb9f
+ARG OMNIGENT_COMMIT=dc4cff99895fc8890b46ee03c963cddc8d66fae0
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
@@ -164,7 +166,8 @@ COPY --from=builder /build /build
 COPY --from=omnigent-src /deploy/docker/entrypoint.py /app/entrypoint.py
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY images/server/cfo_server/ /opt/cfo/cfo_server/
-# Omnigent's MCP registry entries the installation can turn on (WP5.10, cfo_server.mcp).
+# Omnigent's MCP registry entries the installation can turn on (WP5.10, cfo_server.mcp), also
+# offered as presets on Omnigent's page (WP8.14).
 COPY images/server/services/ /opt/cfo/services/
 # The Cloudflare launcher (WP3.6), which cfo_server registers through sandbox_config.
 COPY python/cloudflare_omnigent/ /opt/cfo/cloudflare_omnigent/

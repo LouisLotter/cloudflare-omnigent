@@ -6,6 +6,8 @@ whether Litestream's control socket already answered, to pin the start order. Ex
 SIGTERM, or at once with ``FAKE_APP_EXIT_CODE`` when that is set. ``FAKE_APP_START_DELAY_S``
 delays its listening, as Omnigent's imports and migrations do; ``FAKE_APP_HANG`` keeps it from
 ever listening, as a hung initialization would (it still exits on SIGTERM).
+``FAKE_APP_MCP_SERVED`` is the number of page MCP servers it reports serving, written to the file
+``CFO_MCP_REPORT`` names before it listens, as the image's app does (WP8.14).
 """
 
 from __future__ import annotations
@@ -70,6 +72,9 @@ def main() -> None:
         while True:
             time.sleep(1)
     time.sleep(float(os.environ.get("FAKE_APP_START_DELAY_S", "0")))
+    served = os.environ.get("FAKE_APP_MCP_SERVED")
+    if served is not None:
+        Path(os.environ["CFO_MCP_REPORT"]).write_text(json.dumps({"served": int(served)}))
     conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE IF NOT EXISTS t (value TEXT)")

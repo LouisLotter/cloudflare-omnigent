@@ -1,16 +1,25 @@
-"""Omnigent's MCP registry in the server image (WP5.10).
+"""Omnigent's MCP registry in the server image (WP5.10, WP8.14).
 
 - **The key service** is on whenever its signing pair is set, with or without GitHub, and is
   then the credential store's only cipher.
+- **The page** (WP8.14): the registry is built whenever the key service is on, with Omnigent's
+  service store, so administrators add MCP servers on its page with no service chosen;
+  ``OMNIGENT_MCP_ADMIN_SERVICES=0`` turns the page off. The shipped manifests the page can take
+  are its presets, unless chosen.
 - **Manifests and choices.** The shipped manifests load; the installation's choices
   (``CFO_MCP_SERVICES`` and each service's asked values) become Omnigent's registry
   configuration, with the destination rules; a malformed one stops the start (exit 78) without
-  repeating a value; a missing prerequisite turns MCP off with a warning.
+  repeating a value; a missing prerequisite turns the chosen services off with a warning.
+- **Destination rules for the page** (``PlatformDestinationPolicy``): the platform's rules and
+  Omnigent's default ones on every URL, public addresses only, at save and on every connection.
 - **Coupling.** The names are the pinned Omnigent's own, and Omnigent accepts what the image
   builds; the image's destination rules are never looser than Omnigent's.
 - **The app.** Built by the image's ``build_app`` with a loopback key service and Omnigent's demo
   OAuth MCP service: connect, the login only as ciphertext, a runner's call through the gateway,
-  a refresh, disconnect and the call failing at once; every login write held by the barrier.
+  a refresh, disconnect and the call failing at once; every login write held by the barrier. And
+  a server added on the page: OAuth discovery and client registration, the client secret and the
+  login sealed, the tool allowlist, a runner's call, its redirects refused, private destinations
+  refused, the count the update compares, and a chosen service of the same name hiding it.
 
 The end-to-end test with the real key service, the images and HTTPS is
 ``tests/integration/mcp_registry``.
@@ -177,24 +186,131 @@ def test_the_shipped_manifests_load() -> None:
     assert {"generate-image", "generate-speech"} <= tools
 
 
-def test_off_without_choices_and_nothing_mcp_reaches_the_app(env: dict[str, str]) -> None:
+def test_off_without_the_key_service_or_choices_and_nothing_mcp_reaches_the_app(
+    env: dict[str, str],
+) -> None:
     env.update(
-        key_service_env(
-            OMNIGENT_MCP_REGISTRY="/tmp/registry.yaml",
-            OMNIGENT_MCP_OAUTH_STATE_SECRET=STATE_SECRET,
-            CFO_MCP_CLIENT_SECRET_TRACKER=CLIENT_SECRET,
-        )
+        OMNIGENT_MCP_REGISTRY="/tmp/registry.yaml",
+        OMNIGENT_MCP_OAUTH_STATE_SECRET=STATE_SECRET,
+        OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS="1",
+        CFO_MCP_CLIENT_SECRET_TRACKER=CLIENT_SECRET,
     )
     config = load(env)
-    assert config.mcp.enabled is False and config.mcp.off_reason == "no services chosen"
+    assert config.mcp.enabled is False
+    assert config.mcp.off_reason == "no key service and no services chosen"
+    assert config.mcp.summary() == "off: no key service and no services chosen"
     app_env = app_environment(config, env)
     for name in (
         "OMNIGENT_MCP_REGISTRY",
         "OMNIGENT_MCP_OAUTH_STATE_SECRET",
+        "OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS",
         "CFO_MCP_CLIENT_SECRET_TRACKER",
     ):
         assert name not in app_env, name
     assert any("OMNIGENT_MCP_REGISTRY removed" in w for w in config.warnings)
+    assert any("OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS removed" in w for w in config.warnings)
+
+
+def test_the_page_is_on_with_the_key_service_and_no_choice(env: dict[str, str]) -> None:
+    """D57: administrators add MCP servers on Omnigent's page; no service needs choosing."""
+    env.update(
+        key_service_env(
+            OMNIGENT_ACCOUNTS_BASE_URL=PUBLIC_URL,
+            OMNIGENT_MCP_OAUTH_STATE_SECRET=STATE_SECRET,
+            OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS="1",
+            CFO_MCP_CLIENT_SECRET_TRACKER=CLIENT_SECRET,
+        )
+    )
+    config = load(env)
+    assert config.mcp.enabled and config.mcp.admin_services and config.mcp.services == ()
+    assert config.mcp.summary() == "on: the page"
+    registry = config.mcp.registry
+    assert registry is not None
+    assert registry["public_url"] == PUBLIC_URL and registry["services"] == []
+    # The shipped manifests the page can take, as starting points; not GitHub's own link.
+    assert [p["id"] for p in registry["presets"]] == ["openrouter", "tracker"]
+    app_env = app_environment(config, env)
+    # The page's OAuth sign-ins are signed with Omnigent's state secret.
+    assert app_env["OMNIGENT_MCP_OAUTH_STATE_SECRET"] == STATE_SECRET
+    for name in (
+        "CFO_MCP_SERVICES",
+        "CFO_MCP_CLIENT_SECRET_TRACKER",
+        "OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS",
+        "OMNIGENT_MCP_REGISTRY",
+    ):
+        assert name not in app_env, name
+    again = load(app_env, for_app=True)
+    assert again.mcp == config.mcp and again.mcp.registry == config.mcp.registry
+
+
+def test_omnigents_own_switch_turns_the_page_off(env: dict[str, str]) -> None:
+    env.update(key_service_env(OMNIGENT_MCP_ADMIN_SERVICES="0"))
+    config = load(env)
+    assert config.mcp.enabled and not config.mcp.admin_services
+    assert config.mcp.registry["presets"] == []
+    assert config.mcp.summary() == "on: no page"
+    # The app reads the same switch, and decides alike.
+    app_env = app_environment(config, env)
+    assert app_env["OMNIGENT_MCP_ADMIN_SERVICES"] == "0"
+    assert load(app_env, for_app=True).mcp == config.mcp
+    # Any other value leaves the page on, as in Omnigent.
+    env["OMNIGENT_MCP_ADMIN_SERVICES"] = "1"
+    assert load(env).mcp.admin_services
+
+
+def test_the_presets_are_the_shipped_manifests_the_page_can_take() -> None:
+    shipped = mcp.load_manifests()
+    presets = {p["id"]: p for p in mcp.presets(shipped)}
+    assert set(presets) == {"openrouter", "tracker"}
+    openrouter = presets["openrouter"]
+    service = shipped["openrouter"].service
+    assert openrouter == {
+        "id": "openrouter",
+        "title": service["title"],
+        "description": service["description"],
+        "url": "https://mcp.openrouter.ai/mcp",
+        "auth": "bearer",
+        "tools": service["tools"],
+        "timeout": 300,
+    }
+    tracker = presets["tracker"]
+    # The origin is a placeholder for the administrator, which the rules refuse until replaced;
+    # the endpoints that used it are discovered from the URL entered.
+    assert tracker["url"] == "https://<your-host>/mcp"
+    assert mcp.destination_problem(tracker["url"]) is not None
+    assert tracker["oauth"] == {
+        "scopes": ["tickets:read", "offline_access"],
+        "client_id": "omnigent-local-demo",
+    }
+    # A chosen service is a registry entry, read-only on the page: no preset for it.
+    assert [p["id"] for p in mcp.presets(shipped, ("openrouter",))] == ["tracker"]
+
+
+def test_a_preset_never_carries_a_client_secret_or_an_asked_client(tmp_path: Path) -> None:
+    directory = write_manifests(
+        tmp_path / "services",
+        manifest(
+            "mail",
+            asks=["client_id", "client_secret"],
+            auth="oauth",
+            oauth={
+                "authorize_url": "https://login.example.com/authorize",
+                "token_url": "https://login.example.com/token",
+                "scopes": ["mail.read"],
+                "resource": "https://mail.example.com/",
+            },
+        ),
+        manifest("none-svc", auth="none"),
+    )
+    (mail, plain) = mcp.presets(mcp.load_manifests(directory))
+    assert mail["id"] == "mail" and plain["id"] == "none-svc" and "oauth" not in plain
+    # Fixed endpoints are offered; the client is the administrator's to enter (or registered).
+    assert mail["oauth"] == {
+        "scopes": ["mail.read"],
+        "resource": "https://mail.example.com/",
+        "authorize_url": "https://login.example.com/authorize",
+        "token_url": "https://login.example.com/token",
+    }
 
 
 def test_the_test_service_with_its_origin(env: dict[str, str]) -> None:
@@ -303,7 +419,7 @@ def test_a_malformed_choice_stops_the_start_without_repeating_it(
         (("OMNIGENT_MCP_OAUTH_STATE_SECRET",), "OMNIGENT_MCP_OAUTH_STATE_SECRET"),
     ],
 )
-def test_a_missing_prerequisite_is_off_with_a_warning(
+def test_a_missing_prerequisite_turns_the_chosen_services_off_with_a_warning(
     env: dict[str, str], drop: tuple[str, ...], named: str
 ) -> None:
     settings_ = tracker_env()
@@ -311,10 +427,19 @@ def test_a_missing_prerequisite_is_off_with_a_warning(
         del settings_[name]
     env.update(settings_)
     config = load(env)
-    assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
-    (warning,) = [w for w in config.warnings if w.startswith("MCP services are off")]
+    assert config.mcp.services == ()
+    (warning,) = [w for w in config.warnings if w.startswith("the chosen MCP services are off")]
     assert named in warning and STATE_SECRET not in warning
-    assert "OMNIGENT_MCP_OAUTH_STATE_SECRET" not in app_environment(config, env)
+    app_env = app_environment(config, env)
+    assert "CFO_MCP_SERVICES" not in app_env
+    if config.key_service is None:
+        # Without the key service there is no page either.
+        assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
+        assert "OMNIGENT_MCP_OAUTH_STATE_SECRET" not in app_env
+    else:
+        # The page stays: its own OAuth servers then say the state secret is missing.
+        assert config.mcp.enabled and config.mcp.admin_services
+        assert config.mcp.registry["services"] == []
 
 
 @pytest.mark.parametrize(
@@ -327,8 +452,9 @@ def test_a_missing_prerequisite_is_off_with_a_warning(
 def test_off_survives_the_app_process_own_parse(
     env: dict[str, str], tmp_path: Path, drop: tuple[str, ...]
 ) -> None:
-    """MCP off for a missing prerequisite stays off in the app process, which parses the
-    environment again without the secrets the image removed (Codex WP5.10 r1-2)."""
+    """Chosen services off for a missing prerequisite stay off in the app process, which parses
+    the environment again without the secrets the image removed (Codex WP5.10 r1-2); the page
+    is on in both exactly when the key service is."""
     directory = write_manifests(
         tmp_path / "services",
         manifest(
@@ -350,12 +476,14 @@ def test_off_survives_the_app_process_own_parse(
         del settings_[name]
     env.update(settings_)
     config = load(env, manifests_dir=directory)
-    assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
+    assert config.mcp.services == ()
+    assert config.mcp.enabled is (config.key_service is not None)
     app_env = app_environment(config, env)
     for name in ("CFO_MCP_SERVICES", "CFO_MCP_CLIENT_SECRET_MAIL", STATE_SECRET_NAME):
         assert name not in app_env, name
     again = load(app_env, for_app=True, manifests_dir=directory)
-    assert again.mcp.enabled is False
+    assert again.mcp.services == () and again.mcp.enabled is config.mcp.enabled
+    assert again.mcp.admin_services is config.mcp.admin_services
 
 
 def test_the_app_process_exits_78_on_a_setting_it_refuses(
@@ -383,6 +511,9 @@ def test_a_github_service_needs_no_key_service_and_warns_while_linking_is_off(
     assert any("GitHub linking, which is off" in w for w in config.warnings)
     (entry,) = config.mcp.registry["services"]
     assert entry["auth"] == "github" and entry["url"] == "https://api.githubcopilot.com/mcp/"
+    # GitHub's own link is no preset: the page cannot add it.
+    assert "github" not in [p["id"] for p in config.mcp.registry["presets"]]
+    assert config.mcp.summary() == "on: services github; the page"
 
 
 def test_the_loopback_switch_is_for_tests_and_marks_the_entry(env: dict[str, str]) -> None:
@@ -390,8 +521,19 @@ def test_the_loopback_switch_is_for_tests_and_marks_the_entry(env: dict[str, str
     with pytest.raises(ConfigError):
         load(env)
     env[mcp.ALLOW_LOOPBACK_ENV] = "1"
-    entry = load(env).mcp.registry["services"][0]
+    config = load(env)
+    entry = config.mcp.registry["services"][0]
     assert entry["url"] == "http://127.0.0.1:18782/mcp" and entry["allow_http"] is True
+    assert config.mcp.allow_loopback
+
+
+def test_a_plain_http_installation_gives_omnigent_no_callback_base(env: dict[str, str]) -> None:
+    """A test's plain-http installation: the page's OAuth servers are refused by Omnigent itself
+    (no public URL), and nothing else stops."""
+    env.update(key_service_env())
+    assert load(env).mcp.registry["public_url"] is None
+    env["OMNIGENT_ACCOUNTS_BASE_URL"] = LOOPBACK_URL
+    assert load(env).mcp.registry["public_url"] == LOOPBACK_URL
 
 
 def test_an_oauth_service_needs_an_https_installation(env: dict[str, str]) -> None:
@@ -533,8 +675,26 @@ def test_the_names_are_omnigents_own(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert set(McpService.model_fields) >= mcp._SERVICE_KEYS
     assert mcp._OAUTH_KEYS | {"client_secret_env"} <= set(OAuthConfig.model_fields)
     assert set(mcp.AUTH_MODES) <= set(McpService.model_fields["auth"].annotation.__args__)
-    assert set(McpRegistryConfig.model_fields) == {"public_url", "services"}
-    assert list(inspect.signature(McpRegistry).parameters) == ["config", "store"]
+    assert set(McpRegistryConfig.model_fields) == {"public_url", "services", "presets"}
+    assert list(inspect.signature(McpRegistry).parameters) == [
+        "config",
+        "store",
+        "service_store",
+        "destination_policy",
+        "refresh_seconds",
+    ]
+    # The page's switches are Omnigent's own names.
+    from omnigent.server import mcp_destinations
+    from omnigent.server.mcp_registry import McpServicePreset
+
+    assert registry_module.ADMIN_SERVICES_ENV == mcp.ADMIN_SERVICES_ENV
+    assert mcp_destinations.ALLOW_PRIVATE_DESTINATIONS_ENV == mcp.ALLOW_PRIVATE_ENV
+    assert set(mcp.PAGE_AUTH_MODES) == set(
+        McpServicePreset.model_fields["auth"].annotation.__args__
+    )
+    # Omnigent's page takes every preset the image offers.
+    for preset in mcp.presets(mcp.load_manifests()):
+        McpServicePreset.model_validate(preset)
     # Logins are the `connections` rows of provider mcp:<id>; pending flows mcp-pending:<id>.
     assert McpConnectionStore(object(), "tracker").provider == "mcp:tracker"  # type: ignore[arg-type]
     assert 'f"mcp-pending:{self.service.id}"' in source
@@ -578,6 +738,129 @@ def test_the_image_never_allows_a_destination_omnigent_refuses(url: str) -> None
     if mcp.destination_problem(url) is not None:
         return
     McpService(id="x", title="x", url=url, auth="none", tools=["t"])
+
+
+# ── The page's destination rules (WP8.14) ───────────────────────────────────────────────
+
+
+@requires_omnigent
+@pytest.mark.parametrize("url", VECTORS["refused"])
+def test_the_page_refuses_every_destination_the_platform_refuses(url: str) -> None:
+    problem = mcp.PlatformDestinationPolicy().url_problem(url)
+    assert problem is not None
+    if url:
+        assert url not in problem
+
+
+@requires_omnigent
+@pytest.mark.parametrize("url", VECTORS["allowed"])
+def test_the_page_allows_what_the_platform_allows(url: str) -> None:
+    assert mcp.PlatformDestinationPolicy().url_problem(url) is None
+
+
+@requires_omnigent
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://router.home.arpa/mcp",
+        "https://nas.localdomain/mcp",
+        "https://mcp.example.com/" + "a" * 2048,
+    ],
+    ids=["home-arpa", "localdomain", "longer-than-2048"],
+)
+def test_the_page_also_keeps_omnigents_own_rules(url: str) -> None:
+    """Hosts the platform's rules let through and Omnigent's default refuses: refused."""
+    assert mcp.destination_problem(url) is None
+    assert mcp.PlatformDestinationPolicy().url_problem(url) is not None
+
+
+@requires_omnigent
+@settings(max_examples=300, deadline=None)
+@given(
+    st.text(
+        alphabet=st.sampled_from("abcxyz019-.:/@?#[]%_ \\HTPShtps"),
+        min_size=0,
+        max_size=40,
+    ).map(lambda s: "https://" + s)
+)
+def test_the_page_rules_are_never_looser_than_either(url: str) -> None:
+    from omnigent.server.mcp_destinations import DefaultMcpDestinationPolicy
+
+    if mcp.PlatformDestinationPolicy().url_problem(url) is not None:
+        return
+    assert mcp.destination_problem(url) is None
+    assert DefaultMcpDestinationPolicy().url_problem(url) is None
+
+
+@requires_omnigent
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1",
+        "::1",
+        "10.0.0.5",
+        "172.16.3.4",
+        "192.168.1.1",
+        "169.254.169.254",
+        "100.64.0.1",
+        "0.0.0.0",
+        "fe80::1",
+        "fc00::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",
+        "224.0.0.1",
+    ],
+)
+def test_the_page_never_connects_to_a_private_address(address: str) -> None:
+    import ipaddress
+
+    assert not mcp.PlatformDestinationPolicy().address_allowed(ipaddress.ip_address(address))
+
+
+@requires_omnigent
+def test_the_page_connects_to_public_addresses_and_the_loopback_only_in_tests() -> None:
+    import ipaddress
+
+    policy, testing = mcp.PlatformDestinationPolicy(), mcp.PlatformDestinationPolicy(True)
+    for address in ("1.1.1.1", "2606:4700:4700::1111"):
+        assert policy.address_allowed(ipaddress.ip_address(address))
+    assert not policy.address_allowed(ipaddress.ip_address("127.0.0.1"))
+    assert testing.address_allowed(ipaddress.ip_address("127.0.0.1"))
+    assert testing.address_allowed(ipaddress.ip_address("::1"))
+    # The test switch is the loopback, nothing else private.
+    assert not testing.address_allowed(ipaddress.ip_address("10.0.0.5"))
+    assert testing.url_problem("http://127.0.0.1:8080/mcp") is None
+    assert testing.url_problem("http://10.0.0.5/mcp") is not None
+    assert policy.url_problem("http://127.0.0.1:8080/mcp") is not None
+
+
+@requires_omnigent
+def test_a_name_that_resolves_to_a_private_address_is_refused_at_save_and_at_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public-looking name that resolves to a private address (or later rebinds to one)."""
+    import ipaddress
+
+    import httpx
+    from omnigent.server import mcp_destinations
+
+    async def private(host: str, port: int) -> list[object]:
+        return [ipaddress.ip_address("10.0.0.5")]
+
+    monkeypatch.setattr(mcp_destinations, "resolve", private)
+    policy = mcp.PlatformDestinationPolicy()
+    url = "https://mcp.example.com/mcp"
+    assert policy.url_problem(url) is None
+    with pytest.raises(mcp_destinations.McpDestinationError, match="resolves to an address"):
+        asyncio.run(mcp_destinations.check_destination(policy, url, what="The server URL"))
+
+    async def connect() -> None:
+        async with mcp_destinations.guarded_client(policy) as client:
+            await client.get(url)
+
+    with pytest.raises(httpx.ConnectError) as caught:
+        asyncio.run(connect())
+    assert mcp_destinations.destination_refused(caught.value)
 
 
 # ── The app, with a loopback key service and Omnigent's demo service ─────────────────────
@@ -798,10 +1081,295 @@ def test_the_app_connects_calls_and_disconnects_through_the_key_service(
 
 
 @requires_omnigent
-def test_the_app_without_services_offers_no_mcp(tmp_path: Path) -> None:
-    with serve_app(tmp_path, key_service_env()) as h:
+def test_the_app_without_the_key_service_or_services_offers_no_mcp(tmp_path: Path) -> None:
+    from cfo_server import app as image_app
+
+    with serve_app(tmp_path) as h:
         assert getattr(h.app.state, "mcp_registry", None) is None
         assert "mcp" not in h.client.get("/v1/info").json()["enabled_connections"]
+        assert image_app.admin_services_served(None) == 0
+
+
+def _admin_login(h: object) -> None:
+    response = h.client.post(  # type: ignore[attr-defined]
+        "/auth/login", json={"username": OWNER, "password": OWNER_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+
+
+@requires_omnigent
+def test_the_app_offers_the_page_with_the_platforms_rules_and_no_service_chosen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ipaddress
+
+    from omnigent.server import mcp_destinations
+
+    from cfo_server import app as image_app
+
+    stub = KeyServiceStub(SIGNING_KEY, SIGNING_KEY_ID)
+    with stub.serve() as url:
+        overrides = key_service_env(
+            OMNIGENT_CREDENTIAL_HTTP_URL=url,
+            CFO_ALLOW_LOOPBACK_KEY_SERVICE="1",
+            OMNIGENT_ACCOUNTS_BASE_URL=LOOPBACK_URL,
+            OMNIGENT_MCP_OAUTH_STATE_SECRET=STATE_SECRET,
+        )
+        with serve_app(tmp_path, overrides) as h:
+            registry = h.app.state.mcp_registry
+            assert registry is not None and registry.services == {}
+            assert registry.service_store is not None
+            assert registry.destination_policy == mcp.PlatformDestinationPolicy()
+            assert "mcp" in h.client.get("/v1/info").json()["enabled_connections"]
+            _admin_login(h)
+            presets = h.client.get("/v1/mcp-registry/admin/presets").json()["data"]
+            assert [p["id"] for p in presets] == ["openrouter", "tracker"]
+            assert presets[1]["url"] == "https://<your-host>/mcp"
+
+            def create(service_url: str, **over: object) -> object:
+                body = {"id": "svc", "title": "A server", "url": service_url, "auth": "none"}
+                return h.client.post("/v1/mcp-registry/admin/services", json={**body, **over})
+
+            # The platform's rules, before anything is stored, in words that never repeat it.
+            for refused, words in [
+                ("https://10.0.0.5/mcp", "not an IP address"),
+                ("http://mcp.example.com/mcp", "https"),
+                ("https://mcp.example.com/mcp?key=v", "query"),
+                ("https://u:p@mcp.example.com/mcp", "credentials"),
+                ("https://platform.internal/mcp", "internal"),
+                ("https://router.home.arpa/mcp", "local or internal"),
+                ("http://127.0.0.1:9/mcp", "https"),
+                ("https://<your-host>/mcp", "host"),
+            ]:
+                answer = create(refused)
+                assert answer.status_code == 400, (refused, answer.text)
+                assert words in answer.json()["detail"], (refused, answer.text)
+                assert refused not in answer.text
+
+            # A public-looking name that resolves to a private address.
+            async def private(host: str, port: int) -> list[object]:
+                return [ipaddress.ip_address("192.168.1.10")]
+
+            monkeypatch.setattr(mcp_destinations, "resolve", private)
+            answer = create("https://mcp.example.com/mcp")
+            assert answer.status_code == 400 and "resolves to an address" in answer.text
+            assert image_app.admin_services_served(registry) == 0
+
+
+class _RedirectingService:
+    """An MCP server that answers every request with a redirect to the same origin."""
+
+    def __enter__(self) -> str:
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:
+                pass
+
+            def _redirect(self) -> None:
+                self.send_response(307)
+                self.send_header("Location", "/mcp/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST = do_DELETE = _redirect  # noqa: N815
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def __exit__(self, *exc: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@requires_omnigent
+def test_a_page_server_signs_in_calls_and_is_counted_and_a_chosen_one_hides_it(
+    tmp_path: Path, demo_service: str
+) -> None:
+    """Omnigent's demo OAuth MCP service added on the page, as the owner would: discovery and
+    dynamic client registration, the sign-in, the tools, a runner's call; every secret sealed
+    by the key service; the count the update compares; then a chosen service of the same name."""
+    import httpx
+    from omnigent.runner.proxy_mcp_manager import ProxyMcpManager
+    from omnigent.spec.types import AgentSpec, MCPServerConfig
+    from omnigent.stores.mcp_service_store import SERVICE_PRINCIPAL
+
+    from cfo_server import app as image_app
+    from cfo_server.dbcheck import count_admin_services
+
+    stub = KeyServiceStub(SIGNING_KEY, SIGNING_KEY_ID)
+    with stub.serve() as url, _RedirectingService() as redirecting:
+        overrides = key_service_env(
+            OMNIGENT_CREDENTIAL_HTTP_URL=url,
+            CFO_ALLOW_LOOPBACK_KEY_SERVICE="1",
+            CFO_ALLOW_LOOPBACK_MCP="1",
+            OMNIGENT_ACCOUNTS_BASE_URL=LOOPBACK_URL,
+            OMNIGENT_MCP_OAUTH_STATE_SECRET=STATE_SECRET,
+        )
+        oauth = {"scopes": ["tickets:read", "offline_access"]}
+        with serve_app(tmp_path, overrides) as h:
+            client = h.client
+            registry = h.app.state.mcp_registry
+            _admin_login(h)
+            created = client.post(
+                "/v1/mcp-registry/admin/services",
+                json={
+                    "id": "tracker",
+                    "title": "Demo work tracker",
+                    "url": f"{demo_service}/mcp",
+                    "auth": "oauth",
+                    "oauth": oauth,
+                },
+            )
+            assert created.status_code == 201, created.text
+            # Stored only once the replica held it, with the registered client's secret.
+            assert created.headers["x-cfo-durability"] == "confirmed"
+            view = created.json()
+            assert view["source"] == "admin" and view["draft"] is True
+            assert view["oauth"]["registration"] == "dynamic"
+            assert view["oauth"]["has_client_secret"] is True
+            assert view["oauth"]["authorize_url"] == f"{demo_service}/authorize"
+
+            # The sign-in: Omnigent's redirect with PKCE, the provider's consent, the callback.
+            started = client.get("/v1/connections/mcp-tracker/connect", follow_redirects=False)
+            assert started.status_code in (302, 307), started.text
+            location = urlsplit(started.headers["location"])
+            fields = {k: v[0] for k, v in parse_qs(location.query).items()}
+            assert fields["redirect_uri"] == f"{LOOPBACK_URL}/v1/connections/mcp-tracker/callback"
+            consent = httpx.post(
+                f"{demo_service}/authorize",
+                data={**fields, "user": "alice@example.test"},
+                follow_redirects=False,
+            )
+            assert consent.status_code == 303, consent.text
+            back = urlsplit(consent.headers["location"])
+            done = client.get(f"{back.path}?{back.query}", follow_redirects=False)
+            assert "mcp-tracker=connected" in done.headers["location"], done.headers
+            assert done.headers["x-cfo-durability"] == "confirmed"
+
+            # Every tool the server offers, with the administrator's login; agents get two.
+            found = client.post("/v1/mcp-registry/admin/services/tracker/discover")
+            assert found.status_code == 200, found.text
+            names = {t["name"] for t in found.json()["tools"]}
+            assert {"whoami", "read_ticket"} <= names
+            saved = client.put(
+                "/v1/mcp-registry/admin/services/tracker",
+                json={
+                    "title": "Demo work tracker",
+                    "url": f"{demo_service}/mcp",
+                    "auth": "oauth",
+                    "oauth": oauth,
+                    "tools": ["whoami", "read_ticket"],
+                },
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["credentials_reset"] is False and saved.json()["draft"] is False
+            assert saved.headers["x-cfo-durability"] == "confirmed"
+
+            # Only ciphertext at rest, the client secret and the login alike.
+            grant = registry.store.get(OWNER, "mcp:tracker", with_secret=True)
+            secret = registry.store.get(SERVICE_PRINCIPAL, "mcp-client:tracker", with_secret=True)
+            plaintexts = [
+                grant.secret["access_token"],
+                grant.secret["refresh_token"],
+                secret.secret["client_secret"],
+            ]
+            # No answer carries the client secret either.
+            listing = client.get("/v1/mcp-registry/admin/services")
+            for answer in (created, saved, listing):
+                assert secret.secret["client_secret"] not in answer.text
+            for path in h.db_path.parent.glob(f"{h.db_path.name}*"):
+                data = path.read_bytes()
+                for plaintext in plaintexts:
+                    assert plaintext.encode() not in data, path
+            with sqlite3.connect(h.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT provider, secret_enc FROM connections ORDER BY provider"
+                ).fetchall()
+            assert [p for p, _ in rows] == ["mcp-client:tracker", "mcp:tracker"]
+            assert all(enc.startswith("oshttp1:cfo-test-records:1:") for _, enc in rows)
+
+            # A runner's call through the gateway, with the page's allowlist.
+            created_session = client.post(
+                "/v1/sessions",
+                data={"metadata": json.dumps({"mcp_registry_services": ["tracker"]})},
+                files={"bundle": ("agent.tar.gz", agent_bundle("mcp-page"), "application/gzip")},
+            )
+            assert created_session.status_code == 201, created_session.text
+            sid = created_session.json()["session_id"]
+            runner = {"Authorization": f"Bearer {mint_runner_token(h.app, h.login()['token'])}"}
+            # A runner's delegated token cannot manage the page's servers.
+            refused = client.get("/v1/mcp-registry/admin/services", headers=runner)
+            assert refused.status_code == 403
+            spec = AgentSpec(
+                spec_version=1,
+                name="mcp-page",
+                mcp_servers=[MCPServerConfig(name="tracker", transport="registry")],
+            )
+
+            async def whoami() -> tuple[set[str], str]:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=h.app), base_url=BASE_URL, headers=runner
+                ) as http:
+                    proxy = ProxyMcpManager(sid, http)
+                    schemas = await proxy.schemas_for(spec)
+                    return set(schemas.tool_names), await proxy.call_tool(
+                        spec, "tracker__whoami", {}
+                    )
+
+            tools, answer = asyncio.run(whoami())
+            assert tools == {"tracker__whoami", "tracker__read_ticket"}
+            assert "alice@example.test" in answer
+
+            # A server that redirects: Omnigent never follows it for a page server.
+            _admin_login(h)
+            moved = client.post(
+                "/v1/mcp-registry/admin/services",
+                json={
+                    "id": "moved",
+                    "title": "Moved",
+                    "url": f"{redirecting}/mcp",
+                    "auth": "none",
+                    "tools": ["anything"],
+                },
+            )
+            assert moved.status_code == 201, moved.text
+            # No login to seal, yet held until the replica has it: a page server is a security
+            # change (where agents' calls may go), as is its allowlist.
+            assert moved.headers["x-cfo-durability"] == "confirmed"
+            tested = client.post("/v1/mcp-registry/services/moved/test")
+            assert tested.status_code == 502 and "redirect" in tested.text, tested.text
+
+            # What the update compares: the database's count and what Omnigent serves.
+            assert count_admin_services(h.db_path) == 2
+            assert image_app.admin_services_served(registry) == 2
+            report = tmp_path / "report.json"
+            image_app.write_mcp_report(report, registry)
+            assert json.loads(report.read_text()) == {"served": 2}
+            removed = client.delete("/v1/mcp-registry/admin/services/moved")
+            assert removed.status_code == 200 and removed.headers["x-cfo-durability"] == "confirmed"
+            assert count_admin_services(h.db_path) == 1
+
+        # A restart that turns on the shipped service of the same name: Omnigent hides the page's
+        # server, and the count says the restart serves one fewer than the database holds.
+        chosen = {
+            **overrides,
+            "CFO_MCP_SERVICES": "tracker",
+            "CFO_MCP_ORIGIN_TRACKER": demo_service,
+        }
+        with serve_app(tmp_path, chosen) as h:
+            registry = h.app.state.mcp_registry
+            assert list(registry.services) == ["tracker"]
+            assert count_admin_services(h.db_path) == 1
+            assert image_app.admin_services_served(registry) == 0
+            _admin_login(h)
+            (listed,) = h.client.get("/v1/mcp-registry/admin/services").json()["data"]
+            assert listed["source"] == "config" and listed["editable"] is False
+            # The page's login is never sent to the chosen service: it is not connected.
+            catalog = h.client.get("/v1/mcp-registry/services").json()["data"]
+            assert [(s["id"], s["connected"]) for s in catalog] == [("tracker", False)]
 
 
 @requires_omnigent

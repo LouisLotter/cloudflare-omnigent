@@ -17,7 +17,7 @@ None of this has been checked by watching a running installation's network traff
 | Cloudflare | Everything the installation stores: conversations, the database copy, uploaded files, cloud computers' saves (including their Claude and Codex logins), logs, your Access sign-in | Yours: the installation's Cloudflare account | In source; partly tested locally ([below](#cloudflare)) |
 | Anthropic and OpenAI | What agents send to the models: your messages, and the files and command output the agents read | The person whose Claude or ChatGPT login the computer uses | Documented |
 | GitHub | Code agents clone and push, pull requests; the GitHub link's sign-in | Yours: the installation's own GitHub App, and your GitHub account | In source; tested locally |
-| Connected services (MCP), only those you turn on | The agents' tool calls to that service | Yours: your sign-in or key at that service | Destinations tested; the rest documented |
+| Connected services (MCP): the servers an administrator adds, and those you turn on | The agents' tool calls to that server, at the address the administrator chose | Yours: your sign-in or key at that service | The destination rules tested; the rest documented |
 | Omnigent's product analytics | Nothing: off in every Omnigent process this project runs | (Omnigent's makers, if it were on) | The switch tested; that nothing else sends, in source |
 | Claude Code's and Codex's own telemetry | On cloud computers: their telemetry and update checks off, and Claude Code's error reports. On your own machines: your own settings decide | The CLIs' makers | Settings tested; their effect documented |
 | Package registries | Download requests while images are built, a machine is set up, or CI runs | Public registries; no account | In source |
@@ -59,7 +59,9 @@ On your own machines, the CLIs use whatever logins and settings they already hav
 
 ## Connected services (MCP)
 
-**What:** none, unless you turn a service on ([installing](install.md#connected-services-mcp-optional)). When one is on, Omnigent's server calls it for the agents, at the address the image's manifest fixes, with the tools the manifest lists. The agents' tool calls go there, with whatever the agent puts in them, which may include parts of the conversation.
+**What:** none, until an administrator adds an MCP server on Omnigent's page or a service is turned on with the installer ([adding one](install.md#add-an-mcp-server)). Then Omnigent's server calls it for the agents, with the tools allowed for it. The agents' tool calls go there, with whatever the agent puts in them, which may include parts of the conversation.
+
+**Where:** wherever the administrator chose. A server added on the page goes to the address the administrator entered, and its OAuth sign-in to the pages the service names; nothing in this project fixes them. What fixes is the boundary: only `https`, a public host name that resolves only to public addresses (never a private network, the loopback or link-local addresses such as a cloud's metadata service), checked when the server is saved and again on every connection, and no redirects followed, so a server cannot send the calls somewhere the check did not see. A service turned on with the installer goes where its manifest fixes:
 
 | Service | Address (fixed by its manifest) | Signed in with |
 |---|---|---|
@@ -67,11 +69,13 @@ On your own machines, the CLIs use whatever logins and settings they already hav
 | [OpenRouter's MCP server](../images/server/services/openrouter.json) | `https://mcp.openrouter.ai/mcp` | Your OpenRouter API key. Its tools include sending a message to another model, so those prompts go to OpenRouter and the model provider it routes them to, billed to your key. |
 | [Demo work tracker](../images/server/services/tracker.json) (for testing) | The address you give when you turn it on | The demo service's own sign-in |
 
+OpenRouter's and the demo service are also the page's presets: a server saved from one goes to the address in the form, and is a page server like any other.
+
 **Why:** to give agents tools from those services.
 
-**Whose account:** yours, at each service. The sign-in stays in Omnigent's server and never reaches a computer.
+**Whose account:** yours, at each service. The sign-in, and a page server's OAuth client secret, stay in Omnigent's server, sealed by the platform's key service, and never reach a computer.
 
-**How we know:** the destinations and the server's settings are tested ([ADR 0008](decisions/0008-connected-accounts-omnigent-mcp-registry.md)). What each service does with the calls is its own documentation.
+**How we know:** the destination rules, for page servers at save and on connection, and the server's settings are tested ([ADR 0008](decisions/0008-connected-accounts-omnigent-mcp-registry.md)). What each service does with the calls is its own documentation, and choosing a service is choosing to send it what agents put in their calls.
 
 ## Omnigent's product analytics: off
 

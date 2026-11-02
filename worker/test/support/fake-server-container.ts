@@ -86,6 +86,8 @@ export class FakeServerContainer implements ServerContainer {
   replication: unknown = null;
   /** The `restorePoint` member of the entrypoint's `/status` (WP3.41). */
   restorePoint: unknown = null;
+  /** The `mcpAdminServices` member of the entrypoint's `/status` (WP8.14); undefined: absent. */
+  mcpAdminServices: unknown = undefined;
   #onExit: ((exit: ContainerExit) => void) | null = null;
   #positionReads = 0;
 
@@ -187,6 +189,9 @@ export class FakeServerContainer implements ServerContainer {
             finalSync: null,
             replication: this.replication,
             restorePoint: this.restorePoint,
+            ...(this.mcpAdminServices === undefined
+              ? {}
+              : { mcpAdminServices: this.mcpAdminServices }),
           });
     }
     // Port 8000 refuses connections until the app listens: through the restore and while it

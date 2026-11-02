@@ -15,6 +15,7 @@ import {
   MCP_REVISION_SECRET,
   MCP_SERVICES_SECRET,
   originProblem,
+  pageHint,
   readManifest,
   type ServiceManifest,
   type ServicesChange,
@@ -181,7 +182,7 @@ describe("turning a service on and off, on a simulated Cloudflare", () => {
     const h = await installed();
     const changes = h.world.secretChanges.length;
     const { outcome, logs, asked } = await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
-    expect(outcome).toEqual({ kind: "ready", on: ["tracker"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["tracker"], page: true });
     expect(asked).toEqual([]); // --origin gave it
     expect(h.world.secretChanges).toHaveLength(changes + 1);
     const change = h.world.secretChanges.at(-1)?.changes ?? {};
@@ -244,7 +245,7 @@ describe("turning a service on and off, on a simulated Cloudflare", () => {
       { kind: "add", id: "mail" },
       { manifests: WITH_MAIL, answers: [CLIENT_ID, CLIENT_SECRET] },
     );
-    expect(outcome).toEqual({ kind: "ready", on: ["mail"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["mail"], page: true });
     expect(asked.map((a) => a.secret)).toEqual([true, true]);
     expect(secrets(h.world).get("SERVER_ENV_CFO_MCP_CLIENT_ID_MAIL")).toBe(CLIENT_ID);
     expect(secrets(h.world).get("SERVER_ENV_CFO_MCP_CLIENT_SECRET_MAIL")).toBe(CLIENT_SECRET);
@@ -272,7 +273,7 @@ describe("turning a service on and off, on a simulated Cloudflare", () => {
     );
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("mail,tracker");
     const { outcome } = await step(h, { kind: "remove", id: "mail" }, { manifests: WITH_MAIL });
-    expect(outcome).toEqual({ kind: "ready", on: ["tracker"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["tracker"], page: true });
     const change = h.world.secretChanges.at(-1)?.changes ?? {};
     expect(change).toMatchObject({
       [MCP_SERVICES_SECRET]: "tracker",
@@ -280,16 +281,76 @@ describe("turning a service on and off, on a simulated Cloudflare", () => {
       SERVER_ENV_CFO_MCP_CLIENT_SECRET_MAIL: null,
     });
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_CLIENT_SECRET_MAIL")).toBe(false);
-    // The last one: the list goes, and Omnigent lists no MCP, which is what "ready" means then.
+    // The last one: the list goes, and Omnigent still lists MCP, for its own page (WP8.14),
+    // which is what "ready" means on a release with the page.
     const last = await step(h, { kind: "remove", id: "tracker" });
-    expect(last.outcome).toEqual({ kind: "ready", on: [] });
+    expect(last.outcome).toEqual({ kind: "ready", on: [], page: true });
     expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(false);
-    expect(h.store.load().journal.mcpServices).toMatchObject({ on: [], registry: false });
+    expect(h.store.load().journal.mcpServices).toMatchObject({ on: [], registry: true });
+    const words = servicesMessage(
+      h.world.plan,
+      { kind: "remove", id: "tracker" },
+      SHIPPED,
+      last.outcome,
+    );
+    expect(words.lines[0]).toBe("Demo work tracker (test service) (tracker) is off.");
+    // The page offers it as a preset.
+    expect(words.lines[1]).toBe(
+      `To use it without this step, add it on Omnigent's page: Settings → MCP → Add MCP server, https://${h.world.plan.hostname}/settings/mcp, and start from its preset.`,
+    );
+    expect(words.exitCode).toBe(0);
+  });
+
+  it("on a release from before the page: Omnigent lists MCP only while a service is on", async () => {
+    const h = await installed();
+    const versions = h.world.configs.get(h.world.plan.platformWorker) ?? [];
+    const last = versions.at(-1) as Record<string, unknown>;
+    versions.push({
+      ...last,
+      vars: {
+        ...(last.vars as object),
+        [PLATFORM_FEATURES_VAR]: "key-service github-setup mcp-services",
+      },
+    });
+    // The image from before WP8.14: a registry only for chosen services.
+    h.world.mcpListed = (v) => (v.secrets.get(MCP_SERVICES_SECRET) ?? "") !== "";
+    const added = await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
+    expect(added.outcome).toEqual({ kind: "ready", on: ["tracker"], page: false });
+    const removed = await step(h, { kind: "remove", id: "tracker" });
+    expect(removed.outcome).toEqual({ kind: "ready", on: [], page: false });
+    // No page: no word of it.
     expect(
-      servicesMessage(h.world.plan, { kind: "remove", id: "tracker" }, SHIPPED, last.outcome)
+      servicesMessage(h.world.plan, { kind: "remove", id: "tracker" }, SHIPPED, removed.outcome)
+        .lines,
+    ).toEqual(["Demo work tracker (test service) (tracker) is off.", "MCP services on: none."]);
+    // That image still listing MCP with nothing on would be off.
+    h.world.mcpListed = () => true;
+    await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
+    const listed = await step(h, { kind: "remove", id: "tracker" });
+    expect(listed.outcome).toEqual({ kind: "off", on: [], page: false });
+    expect(
+      servicesMessage(h.world.plan, { kind: "remove", id: "tracker" }, SHIPPED, listed.outcome)
         .lines[0],
-    ).toBe("Demo work tracker (test service) (tracker) is off.");
+    ).toBe("The server restarted with the change, but Omnigent still lists MCP services.");
+  });
+
+  it("on a release with the page, Omnigent listing no MCP with nothing on is off", async () => {
+    const h = await installed();
+    await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
+    h.world.mcpListed = () => false;
+    const { outcome } = await step(h, { kind: "remove", id: "tracker" });
+    expect(outcome).toEqual({ kind: "off", on: [], page: true });
+    const words = servicesMessage(
+      h.world.plan,
+      { kind: "remove", id: "tracker" },
+      SHIPPED,
+      outcome,
+    );
+    expect(words.exitCode).toBe(1);
+    expect(words.lines[0]).toBe(
+      "The server restarted with the change, but Omnigent does not list its MCP services: a setting it needs is missing.",
+    );
   });
 
   it("changes nothing for a service already on that asks for nothing, or one that is not on", async () => {
@@ -404,7 +465,7 @@ describe("when the server does not take the change", () => {
     const h = await installed();
     h.world.refusesSettings = (v) => v.secrets.has(MCP_SERVICES_SECRET);
     const { outcome } = await step(h, { kind: "add", id: "tracker", origin: ORIGIN });
-    expect(outcome).toEqual({ kind: "held", on: ["tracker"] });
+    expect(outcome).toEqual({ kind: "held", on: ["tracker"], page: true });
     const words = servicesMessage(h.world.plan, { kind: "add", id: "tracker" }, SHIPPED, outcome);
     expect(words.exitCode).toBe(1);
     expect(words.lines.join(" ")).toContain("exit code 78");
@@ -476,7 +537,7 @@ describe("after a change whose outcome is unknown (Codex r1-1)", () => {
     });
     const changes = h.world.secretChanges.length;
     const { outcome } = await step(h, { kind: "remove", id: "tracker" });
-    expect(outcome).toEqual({ kind: "ready", on: [] });
+    expect(outcome).toEqual({ kind: "ready", on: [], page: true });
     expect(h.world.secretChanges).toHaveLength(changes + 1);
     expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(false);
@@ -491,7 +552,7 @@ describe("after a change whose outcome is unknown (Codex r1-1)", () => {
     await expect(step(h, { kind: "remove", id: "github" })).rejects.toThrow(Crash);
     expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
     const { outcome } = await step(h, { kind: "add", id: "github" });
-    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"], page: true });
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
   });
 
@@ -503,7 +564,7 @@ describe("after a change whose outcome is unknown (Codex r1-1)", () => {
     // The intent names tracker, but its origin never reached the Worker: the next change leaves
     // it off rather than list it without one (which the server would refuse).
     const { outcome, logs } = await step(h, { kind: "add", id: "github" });
-    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"], page: true });
     expect(logs.join("\n")).toContain("tracker is left off");
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
   });
@@ -515,7 +576,7 @@ describe("after a change whose outcome is unknown (Codex r1-1)", () => {
       SERVER_ENV_CFO_MCP_ORIGIN_TRACKER: ORIGIN,
     });
     const { outcome } = await step(h, { kind: "remove", id: "tracker" }, { replace: true });
-    expect(outcome).toEqual({ kind: "ready", on: [] });
+    expect(outcome).toEqual({ kind: "ready", on: [], page: true });
     expect(secrets(h.world).has(MCP_SERVICES_SECRET)).toBe(false);
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_ORIGIN_TRACKER")).toBe(false);
   });
@@ -534,7 +595,7 @@ describe("a settled list with a service that can no longer stay on (Codex r2-1)"
       .cloud()
       .updateSecrets(h.world.plan.platformWorker, { SERVER_ENV_CFO_MCP_ORIGIN_TRACKER: null });
     const { outcome, logs } = await step(h, { kind: "add", id: "github" });
-    expect(outcome).toEqual({ kind: "ready", on: ["github"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["github"], page: true });
     expect(logs.join("\n")).toContain("tracker is left off");
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("github");
   });
@@ -550,7 +611,7 @@ describe("a settled list with a service that can no longer stay on (Codex r2-1)"
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("mail,tracker");
     // A later release without "mail": removing something that is not on still rewrites the list.
     const { outcome } = await step(h, { kind: "remove", id: "github" });
-    expect(outcome).toEqual({ kind: "ready", on: ["tracker"] });
+    expect(outcome).toEqual({ kind: "ready", on: ["tracker"], page: true });
     expect(secrets(h.world).get(MCP_SERVICES_SECRET)).toBe("tracker");
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_CLIENT_SECRET_MAIL")).toBe(false);
     expect(secrets(h.world).has("SERVER_ENV_CFO_MCP_CLIENT_ID_MAIL")).toBe(false);
@@ -559,6 +620,12 @@ describe("a settled list with a service that can no longer stay on (Codex r2-1)"
 });
 
 describe("the listing", () => {
+  it("points at Omnigent's own page first, the happy path (WP8.14)", () => {
+    expect(pageHint({ hostname: "omnigent.example.com" })).toBe(
+      "Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://omnigent.example.com/settings/mcp (the services below are offered there as presets, but GitHub's).",
+    );
+  });
+
   it("names each shipped service, on or off, and what it asks for", () => {
     expect(servicesListing(SHIPPED, undefined)).toEqual([
       "off  github: GitHub",

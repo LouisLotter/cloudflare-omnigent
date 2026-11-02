@@ -12,7 +12,8 @@
 // status, and the watchdog logs `config_error` once.
 // An update's read-only window (WP3.41): a version holding `SERVER_ENV_CFO_MAINTENANCE_WINDOW` says so on its
 // status lines (`maintenance`), with the restore point a server started with
-// `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`), on every check while it
+// `SERVER_ENV_CFO_RESTORE_POINT` took when it started (`restorePoint`) and the MCP servers added on
+// Omnigent's page it counted (`mcpAdminServices`, WP8.14), on every check while it
 // holds the window, past the notice too (WP3.44); a server started with a
 // rollback order (`SERVER_ENV_CFO_ROLLBACK_TO`) never answers, and the watchdog logs `rolled_back`
 // once and holds it. A rollback deploys an earlier version again (`deployVersion`), with its own
@@ -36,6 +37,7 @@ import {
   rollbackOrderOf,
 } from "../../../worker/src/server/maintenance.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
+import type { McpAdminServices } from "../events.ts";
 import {
   type BootstrapCloud,
   type BootstrapState,
@@ -53,6 +55,8 @@ import {
   type AccessSettings,
   INITIALIZED_SECRET,
   type Installation,
+  KEY_SERVICE_KEY_SECRET,
+  offersPlatformFeature,
   PASSWORD_SECRET,
 } from "../settings.ts";
 import { parseState } from "../state.ts";
@@ -182,10 +186,25 @@ export class FakeWorld {
   reportsGitHub = true;
   /**
    * Whether Omnigent lists its MCP registry on a server started with a version's configuration
-   * (WP5.10), at the check's time: by default, when the version turns on a service.
+   * (WP5.10), at the check's time: by default, when the version turns on a service, or is a
+   * release with Omnigent's page (`mcp-page`, WP8.14) and holds the key service's key.
    */
   mcpListed: (v: Version, t: number) => boolean | null = (v) =>
-    (v.secrets.get(MCP_SERVICES) ?? "") !== "";
+    (v.secrets.get(MCP_SERVICES) ?? "") !== "" ||
+    (offersPlatformFeature(
+      (v.config?.vars ?? {}) as Readonly<Record<string, string>>,
+      "mcp-page",
+    ) &&
+      v.secrets.has(KEY_SERVICE_KEY_SECRET));
+  /**
+   * The MCP servers added on Omnigent's page that a server started with a version's
+   * configuration counted at its start (WP8.14), on its status lines inside an update's window: by
+   * default none held and none served. Undefined models a build from before it (no member).
+   */
+  adminServices: (v: Version, t: number) => McpAdminServices | null | undefined = () => ({
+    stored: 0,
+    served: 0,
+  });
   /** Whether status lines carry the MCP fields; false models a build from before WP5.10. */
   reportsMcp = true;
   /** A server started with a restore point to take cannot take it (WP3.41): it never answers. */
@@ -758,6 +777,12 @@ export class FakeWorld {
                 mcpRegistry: this.mcpListed(version, t),
               }
             : {}),
+          // WP8.14: inside the window, the page's MCP servers the server counted.
+          ...(maintenanceWindowOf(Object.fromEntries(version.secrets)) === null
+            ? { mcpAdminServices: null }
+            : this.adminServices(version, t) === undefined
+              ? {}
+              : { mcpAdminServices: this.adminServices(version, t) }),
           // WP3.41: the window this version holds, and the restore point the server took.
           maintenance: maintenanceWindowOf(Object.fromEntries(version.secrets)),
           restorePoint:

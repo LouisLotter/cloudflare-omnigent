@@ -267,6 +267,90 @@ def test_initialized_query_names_only_the_pinned_columns() -> None:
     assert re.findall(r"\b(workspace_id|id|deleted_at|password_hash)\b", INITIALIZED_SQL)
 
 
+def test_the_page_count_reads_omnigents_service_table() -> None:
+    """The entrypoint counts the page's MCP servers in Omnigent's own table (WP8.14)."""
+    from omnigent.db.db_models import OmnigentBase, SqlMcpRegistryService
+    from omnigent.stores import mcp_service_store
+
+    from cfo_server.dbcheck import ADMIN_SERVICES_SQL, ADMIN_SERVICES_TABLE
+
+    assert SqlMcpRegistryService.__tablename__ == ADMIN_SERVICES_TABLE
+    columns = OmnigentBase.metadata.tables[ADMIN_SERVICES_TABLE].columns
+    for column in ("workspace_id", "deleted_at"):
+        assert column in columns
+    assert set(re.findall(r"\b(workspace_id|deleted_at)\b", ADMIN_SERVICES_SQL)) == {
+        "workspace_id",
+        "deleted_at",
+    }
+    # Omnigent's own reading of a live service: a row without ``deleted_at``.
+    assert "row.deleted_at is None" in inspect.getsource(mcp_service_store.McpServiceStore.scan)
+
+
+#: Omnigent's head revision at the previous pin (``0116b9f53``), and the MCP page's migration
+#: after it at this pin (WP8.14, docs/compatibility.md).
+PREVIOUS_HEAD = "c0201a2b3c4d"
+PAGE_MIGRATION = "mr1a2b3c4d5e"
+
+
+@requires_omnigent
+def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_tables(
+    tmp_path: Path,
+) -> None:
+    """The first start on this pin runs the page's migration, additive, after the previous
+    head; a database at the new head is the one an earlier server refuses as newer."""
+    from alembic import command
+    from omnigent.db.utils import _build_alembic_config, _get_current_db_heads, _create_engine
+
+    from cfo_server.dbcheck import count_admin_services
+
+    ep = image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT)
+    db = tmp_path / "omnigent.db"
+    url = f"sqlite:///{db}"
+    command.upgrade(_build_alembic_config(url), PREVIOUS_HEAD)
+    engine = _create_engine(url)
+    try:
+        assert _get_current_db_heads(engine) == (PREVIOUS_HEAD,)
+        assert count_admin_services(db) == 0  # no table yet
+        ep.run_migrations(url)
+        assert _get_current_db_heads(engine) == (PAGE_MIGRATION,)
+    finally:
+        engine.dispose()
+    import sqlite3
+
+    with sqlite3.connect(db) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+    assert {"mcp_registry_services", "mcp_registry_service_tools"} <= tables
+    assert count_admin_services(db) == 0
+
+
+@requires_omnigent
+def test_the_page_count_agrees_with_omnigents_store(tmp_path: Path) -> None:
+    from omnigent.db.db_models import workspace_scope
+    from omnigent.stores.mcp_service_store import McpServiceSettings, McpServiceStore
+
+    from cfo_server.dbcheck import count_admin_services
+
+    ep = image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT)
+    db = tmp_path / "omnigent.db"
+    url = f"sqlite:///{db}"
+    assert count_admin_services(db) is None  # no file
+    ep.run_migrations(url)
+    assert count_admin_services(db) == 0
+    store = McpServiceStore(url)
+    settings = McpServiceSettings(
+        title="A", url="https://mcp.example.com/mcp", auth="none", timeout=60
+    )
+    for service_id in ("one", "two", "three"):
+        store.create(service_id, settings, created_by="owner")
+    with workspace_scope(7):  # another workspace's: not this installation's page
+        store.create("elsewhere", settings, created_by="owner")
+    assert count_admin_services(db) == 3
+    assert store.delete("two")
+    assert count_admin_services(db) == 2 == len(store.scan()[0])
+    (tmp_path / "garbage.db").write_bytes(b"not a database" * 100)
+    assert count_admin_services(tmp_path / "garbage.db") is None
+
+
 @requires_omnigent
 def test_cloudflare_launcher_implements_omnigents_launcher_interface() -> None:
     from cfo_server.launcher import PROVIDER, CloudflareLauncher

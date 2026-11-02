@@ -12,6 +12,11 @@ yet?", ``accounts_bootstrap.bootstrap_admin``): at least one user in the default
 not the ``local`` or ``__public__`` sentinel, not deleted, with a password hash. It is read
 with plain SQL, read-only, so it works on a database from an older Omnigent schema before
 migrations run. ``tests/test_coupling.py`` pins it against Omnigent's own check.
+
+**The page's MCP services** (WP8.14): how many services administrators added on Omnigent's MCP
+page the database holds, read the same way before the app starts. On an update's restart that is
+the database the update began from, so the update can tell whether the restarted server still
+serves them all (``GET /status``, ``mcpAdminServices``).
 """
 
 from __future__ import annotations
@@ -27,6 +32,15 @@ DEFAULT_WORKSPACE_ID = 0
 INITIALIZED_SQL = (
     "SELECT COUNT(*) FROM users WHERE workspace_id = ? AND id NOT IN (?, ?) "
     "AND deleted_at IS NULL AND password_hash IS NOT NULL"
+)
+
+
+#: The live run-time MCP services of the default workspace (Omnigent's ``McpServiceStore``: a
+#: removed one keeps its row with ``deleted_at`` until its logins are gone), drafts included, as
+#: its admin list shows them. Pinned against Omnigent's schema by ``tests/test_coupling.py``.
+ADMIN_SERVICES_TABLE = "mcp_registry_services"
+ADMIN_SERVICES_SQL = (
+    f"SELECT COUNT(*) FROM {ADMIN_SERVICES_TABLE} WHERE workspace_id = ? AND deleted_at IS NULL"
 )
 
 
@@ -79,5 +93,28 @@ def has_owner(path: Path) -> bool:
         return count > 0
     except sqlite3.DatabaseError:
         return False
+    finally:
+        conn.close()
+
+
+def count_admin_services(path: Path) -> int | None:
+    """How many services administrators added on Omnigent's MCP page the database holds: 0 before
+    the table exists (a database from before Omnigent's migration ``mr1a2b3c4d5e``), ``None``
+    when the file cannot say. Read-only; never raises for a bad file."""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    except sqlite3.Error:
+        return None
+    try:
+        (tables,) = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (ADMIN_SERVICES_TABLE,),
+        ).fetchone()
+        if tables == 0:
+            return 0
+        (count,) = conn.execute(ADMIN_SERVICES_SQL, (DEFAULT_WORKSPACE_ID,)).fetchone()
+        return int(count)
+    except sqlite3.DatabaseError:
+        return None
     finally:
         conn.close()

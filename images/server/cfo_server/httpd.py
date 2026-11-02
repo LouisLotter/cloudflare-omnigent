@@ -12,8 +12,10 @@ the forwarding path and the computers reach port 8000 alone.
   boot reaches a ``txid`` read after ``/v1/info`` first showed the owner (G1BR-002).
 - ``GET /status`` is for the watchdog and the platform page: the phase, recovery mode with its
   reason, the app's start and first health answer, the final sync's outcome, the replication
-  lag, the update's restore point and a rollback's progress (WP3.41), and the image's build
-  (the fork commit its Omnigent was built from). The phases, in
+  lag, the update's restore point and a rollback's progress (WP3.41), the services added on
+  Omnigent's MCP page at this start (WP8.14: ``mcpAdminServices``, how many the database held
+  before the app started and how many the app serves, ``null`` until it reports), and the
+  image's build (the fork commit its Omnigent was built from). The phases, in
   order: ``starting``; ``restoring`` (the restore, the database check and Litestream's
   start); ``initializing`` (the app starts: imports, migrations, ``create_app``, the owner
   check) until the app answers ``GET /health``; ``running``; or ``recovery`` instead of a
@@ -33,6 +35,7 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from cfo_server.litestream import BlockingClient
@@ -86,9 +89,15 @@ class StatusBoard:
             "restorePoint": None,
             # Rollback mode's progress (WP3.41): the restore point, and whether it is done.
             "rollback": None,
+            # The services added on Omnigent's MCP page at this start (WP8.14): ``stored``, how
+            # many the database held before the app started (``None``: it could not say), and
+            # ``served``, how many the app's registry serves (``None`` until it reports).
+            "mcpAdminServices": None,
         }
         #: Opens a control-socket client while Litestream runs; ``None`` otherwise.
         self.litestream: Callable[[], BlockingClient] | None = None
+        #: Where the app writes its report (``CFO_MCP_REPORT``); ``None`` before it starts.
+        self.app_report: Path | None = None
 
     def update(self, **fields: Any) -> None:
         with self._lock:
@@ -117,7 +126,26 @@ class StatusBoard:
             "replicatedTxid": result.replicated_txid,
         }
 
+    def _served(self) -> int | None:
+        """The app's report, once it wrote one: how many page services it serves."""
+        path = self.app_report
+        if path is None:
+            return None
+        try:
+            served = json.loads(path.read_text()).get("served")
+        except (OSError, ValueError, AttributeError):
+            return None
+        if isinstance(served, bool) or not isinstance(served, int) or not 0 <= served <= 10**6:
+            return None
+        return served
+
     def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            services = self._state.get("mcpAdminServices")
+        if isinstance(services, dict) and services.get("served") is None:
+            served = self._served()
+            if served is not None:
+                self.update(mcpAdminServices={**services, "served": served})
         with self._lock:
             state = dict(self._state)
         replication: dict[str, Any] | None = None
