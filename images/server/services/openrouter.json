@@ -4,7 +4,7 @@
   "service": {
     "id": "openrouter",
     "title": "OpenRouter",
-    "description": "OpenRouter's MCP server: the model catalog, prices, rankings and benchmarks, the credit balance, and calls to other models (chat, transcription, batches). Connect it in Settings, MCP with an OpenRouter API key; the calls are billed to that key. Use a key with a credit limit.",
+    "description": "OpenRouter's MCP server: the model catalog, prices, rankings and benchmarks, the credit balance, and calls to other models (chat, images, speech, transcription, batches). Generated images and audio are saved as files on the computer the agent runs on. Connect it in Settings, MCP with an OpenRouter API key; the calls are billed to that key. Use a key with a credit limit.",
     "url": "https://mcp.openrouter.ai/mcp",
     "auth": "bearer",
     "tools": [
@@ -23,6 +23,8 @@
       "get-preset",
       "search-docs",
       "send-message",
+      "generate-image",
+      "generate-speech",
       "transcribe-audio",
       "send-batch",
       "get-batch",

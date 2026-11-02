@@ -99,7 +99,7 @@ An installation made before GitHub linking, or before its setup page, needs upda
 
 ## Connected services (MCP), optional
 
-Omnigent can give your agents tools from other services, such as GitHub's, through its own MCP registry: Omnigent's server holds your sign-in to each service and calls the service for your agents, so the sign-in never reaches a cloud computer. This release ships three services: a demo service for testing, GitHub's MCP server, which uses the GitHub link above, and OpenRouter's MCP server, which gives agents OpenRouter's model catalog and lets them call other models on your OpenRouter API key. To see them, run:
+Omnigent can give your agents tools from other services, such as GitHub's, through its own MCP registry: Omnigent's server holds your sign-in to each service and calls the service for your agents, so the sign-in never reaches a cloud computer. This release ships three services: a demo service for testing, GitHub's MCP server, which uses the GitHub link above, and OpenRouter's MCP server, which gives agents OpenRouter's model catalog and lets them call other models on your OpenRouter API key, including image and speech models: the pictures and audio they make are saved as files on the computer the agent works on. To see them, run:
 
 ```bash
 node scripts/bootstrap/bootstrap.ts services
