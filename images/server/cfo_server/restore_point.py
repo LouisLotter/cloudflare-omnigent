@@ -301,7 +301,8 @@ def _each(
             future.result()
             check()
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+        # shutdown() waits for the running operations by default.
+        pool.shutdown(cancel_futures=True)
 
 
 # ── Manifests ─────────────────────────────────────────────────────────────────────────
