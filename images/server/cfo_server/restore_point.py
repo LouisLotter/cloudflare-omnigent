@@ -17,6 +17,11 @@ object with its size and the restored database's SHA-256: a restore point exists
 manifest does, and Omnigent never starts under a restore point's name before it exists. The
 newest ``KEPT`` restore points are kept; older ones are deleted when a new one is complete.
 
+A replica holds hundreds to thousands of objects (1539 on 2 Nov 2026, against 628 a day
+earlier), and an S3 copy on R2 can take seconds. So every bulk copy or delete runs
+``WORKERS`` at a time, and an attempt that runs out of time is resumed, not started over: the
+next start keeps what the earlier attempt copied (same key and size) and copies the rest.
+
 The rollback (``CFO_ROLLBACK_TO``, the same name, which only ``bootstrap.ts update --rollback``
 sets inside the update's read-only window) puts the restore point back as the live replica:
 it restores the copy to a scratch file and checks it against the manifest (before anything is
@@ -38,6 +43,7 @@ import re
 import shutil
 import time
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -53,6 +59,8 @@ KEPT = 3
 MANIFEST = "manifest.json"
 ROLLED_BACK = "rolled-back.json"
 MANIFEST_FORMAT = 1
+#: Object copies and deletes in flight at once.
+WORKERS = 32
 
 
 class RestorePointError(RuntimeError):
@@ -180,8 +188,9 @@ class S3Store:
     """The replica's bucket, with Litestream's own credentials (an R2 bucket on Cloudflare).
 
     Checksums only where S3 requires them, as for the artifact store (``config``): a plain
-    request that R2 and the tests' S3 stand-in both accept. One object per delete: a replica
-    holds tens of objects, and ``DeleteObjects`` needs a checksum.
+    request that R2 and the tests' S3 stand-in both accept. One object per delete
+    (``DeleteObjects`` needs a checksum), many at once (:func:`_each`); boto3's clients are
+    safe to share between threads.
     """
 
     def __init__(self, bucket: str, client: Any) -> None:
@@ -215,6 +224,7 @@ class S3Store:
                 retries={"max_attempts": 5, "mode": "standard"},
                 connect_timeout=10,
                 read_timeout=60,
+                max_pool_connections=WORKERS,
             ),
         )
         return cls(bucket, client)
@@ -275,6 +285,23 @@ def open_store(
         access_key_id=env.get("LITESTREAM_ACCESS_KEY_ID", ""),
         secret_access_key=env.get("LITESTREAM_SECRET_ACCESS_KEY", ""),
     )
+
+
+def _each(
+    items: Iterable[str],
+    op: Callable[[str], None],
+    check: Callable[[], None] = lambda: None,
+) -> None:
+    """``op`` on every item, ``WORKERS`` at a time. ``check`` runs after each one finishes and
+    may raise to stop; the first error (``op``'s or ``check``'s) is raised once the operations
+    already running have ended, and none not yet started runs."""
+    pool = ThreadPoolExecutor(max_workers=WORKERS)
+    try:
+        for future in as_completed([pool.submit(op, item) for item in items]):
+            future.result()
+            check()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 # ── Manifests ─────────────────────────────────────────────────────────────────────────
@@ -379,7 +406,7 @@ def take(
 
     ``database`` is the file this start restored from the replica (its digest goes in the
     manifest), or ``None`` for one it found on its disk. Raises :class:`RestorePointError`; a
-    partial copy has no manifest, so it never counts, and the next attempt starts it over.
+    partial copy has no manifest, so it never counts, and the next attempt resumes it.
     """
     if not RESTORE_POINT_ID.fullmatch(rp_id):
         raise RestorePointError("not a restore point's name")
@@ -390,9 +417,6 @@ def take(
     if not objects:
         raise RestorePointError("the replica holds no backup, so there is nothing to protect")
     copy = where.copy(rp_id)
-    # Leftovers of an attempt that never finished: it had no manifest, so nothing relied on it.
-    for item in store.list(copy):
-        store.delete(item.key)
 
     def check_time() -> None:
         if should_stop():
@@ -400,9 +424,16 @@ def take(
         if clock() > deadline:
             raise RestorePointError("the restore point was not complete within its deadline")
 
-    for key in sorted(objects):
-        check_time()
-        store.copy(where.replica + key, copy + key)
+    check_time()
+    # What an attempt that never finished left: it had no manifest, so nothing relied on it.
+    # Nothing writes the replica until a restore point exists, so its objects are the ones that
+    # attempt saw. An object already copied at the same key and size is kept (an S3 copy is all
+    # or nothing, and Litestream never rewrites an LTX file under its name); what the replica
+    # does not hold goes, and the rest is copied.
+    held = _relative(store.list(copy), copy)
+    _each([copy + k for k in sorted(held) if k not in objects], store.delete, check_time)
+    todo = [k for k in sorted(objects) if held.get(k) != objects[k]]
+    _each(todo, lambda key: store.copy(where.replica + key, copy + key), check_time)
     copied = _relative(store.list(copy), copy)
     if copied != objects:
         raise RestorePointError(
@@ -445,8 +476,10 @@ def prune(store: Store, where: Places, current: str, keep: int = KEPT) -> tuple[
     gone = sorted(n for n in names if n < current and n not in kept)
     for rp_id in gone:
         # The manifest first: a restore point stops counting before any of its copy goes.
-        for key in sorted(names[rp_id], key=lambda k: k != where.manifest(rp_id)):
-            store.delete(key)
+        manifest = where.manifest(rp_id)
+        if manifest in names[rp_id]:
+            store.delete(manifest)
+        _each(sorted(k for k in names[rp_id] if k != manifest), store.delete)
     return tuple(gone)
 
 
@@ -508,12 +541,10 @@ def roll_back(
         raise RestorePointError("stopped before the replica was changed")
     # From here the live replica changes. Nothing replicates meanwhile: this start never runs
     # Litestream's replication, and the update's server has stopped.
-    for item in store.list(where.replica):
-        store.delete(item.key)
+    _each([item.key for item in store.list(where.replica)], store.delete)
     if store.list(where.replica):
         raise RestorePointError("the replica's objects could not all be deleted")
-    for key in sorted(manifest.objects):
-        store.copy(copy + key, where.replica + key)
+    _each(sorted(manifest.objects), lambda key: store.copy(copy + key, where.replica + key))
     live = _relative(store.list(where.replica), where.replica)
     if live != manifest.objects:
         raise RestorePointError(

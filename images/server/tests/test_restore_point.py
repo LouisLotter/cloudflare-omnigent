@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -186,7 +188,7 @@ def test_a_restore_point_copies_every_object_and_writes_its_manifest_last(tmp_pa
     assert r.contents(r.where.copy(RP)) == LTX
 
 
-def test_an_unfinished_copy_never_counts_and_is_started_over(tmp_path: Path) -> None:
+def test_an_unfinished_copy_never_counts_and_is_resumed(tmp_path: Path) -> None:
     r = Replica(tmp_path)
     r.put(LTX)
     calls = {"n": 0}
@@ -204,6 +206,96 @@ def test_an_unfinished_copy_never_counts_and_is_started_over(tmp_path: Path) -> 
     stray.write_bytes(b"stray")
     assert r.take().new
     assert r.contents(r.where.copy(RP)) == LTX
+
+
+class CountingStore(rp.FileStore):
+    """Counts copies, and can make each one slow, to see how many run at once."""
+
+    def __init__(self, root: Path, delay: float = 0.0) -> None:
+        super().__init__(root)
+        self.delay = delay
+        self.copies: list[str] = []
+        self.running = 0
+        self.most = 0
+        self._lock = threading.Lock()
+
+    def copy(self, source: str, target: str) -> None:
+        with self._lock:
+            self.copies.append(target)
+            self.running += 1
+            self.most = max(self.most, self.running)
+        try:
+            time.sleep(self.delay)
+            super().copy(source, target)
+        finally:
+            with self._lock:
+                self.running -= 1
+
+
+def many(n: int) -> dict[str, bytes]:
+    return {f"ltx/1/{i:016x}-{i:016x}.ltx": f"object {i}".encode() for i in range(n)}
+
+
+def test_an_attempt_out_of_time_is_resumed_not_started_over(tmp_path: Path) -> None:
+    """2 Nov 2026: 1539 objects, each copy seconds long, and every attempt deleted the last
+    one's copies before running out of time again, so no attempt ever finished."""
+    r = Replica(tmp_path)
+    objects = many(200)
+    r.put(objects)
+    # Slow enough that the deadline passes while copies are still waiting to start.
+    store = CountingStore(tmp_path, delay=0.005)
+    r.store = store
+    ticks = {"n": 0}
+
+    def clock() -> float:
+        # The deadline passes once about half the objects are copied.
+        ticks["n"] += 1
+        return 0.0 if ticks["n"] < 100 else 2.0
+
+    with pytest.raises(rp.RestorePointError, match="deadline"):
+        r.take(deadline=1.0, clock=clock)
+    first = len(store.copies)
+    assert 0 < first < len(objects)
+    assert not (tmp_path / r.where.manifest(RP)).exists()
+    # A copy at the right key but the wrong size (it cannot be one the replica holds) is redone.
+    held = r.contents(r.where.copy(RP))
+    wrong = sorted(held)[0]
+    (tmp_path / r.where.copy(RP) / wrong).write_bytes(b"different length")
+    store.copies.clear()
+    taken = r.take()
+    assert taken.new and r.contents(r.where.copy(RP)) == objects
+    redone = {c[len(r.where.copy(RP)) :] for c in store.copies}
+    assert redone == (set(objects) - set(held)) | {wrong}
+
+
+def test_copies_run_many_at_once(tmp_path: Path) -> None:
+    r = Replica(tmp_path)
+    objects = many(64)
+    r.put(objects)
+    store = CountingStore(tmp_path, delay=0.02)
+    r.store = store
+    started = time.monotonic()
+    assert r.take().new
+    assert store.most > 1 and store.most <= rp.WORKERS
+    # One at a time this would take 64 × 20 ms.
+    assert time.monotonic() - started < 64 * 0.02
+    assert r.contents(r.where.copy(RP)) == objects
+
+
+def test_a_failing_copy_stops_the_rest_and_never_counts(tmp_path: Path) -> None:
+    r = Replica(tmp_path)
+    r.put(many(100))
+
+    class Failing(CountingStore):
+        def copy(self, source: str, target: str) -> None:
+            if source.endswith(f"{5:016x}-{5:016x}.ltx"):
+                raise OSError("injected")
+            super().copy(source, target)
+
+    r.store = Failing(tmp_path)
+    with pytest.raises(OSError, match="injected"):
+        r.take()
+    assert not (tmp_path / r.where.manifest(RP)).exists()
 
 
 def test_a_restore_point_past_its_deadline_or_of_an_empty_replica_is_refused(
