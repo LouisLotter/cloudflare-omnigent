@@ -513,10 +513,10 @@ def build_settings(
       are the shipped manifests it can take that no choice turns on.
     - A chosen service the image does not ship, or a malformed choice: :class:`ManifestError`
       (exit 78).
-    - A chosen service's prerequisite missing: the chosen services are off, with a warning
-      naming it (never a value), as a half-configured GitHub App is (WP5.9); the page stays on
-      with the key service. Logins (``oauth``, ``bearer``) need the key service; OAuth needs the
-      state secret.
+    - A chosen service's prerequisite missing: off, the page too, with a warning naming it
+      (never a value), as a half-configured GitHub App is (WP5.9), so that Omnigent listing MCP
+      always means every chosen service is on. Logins (``oauth``, ``bearer``) need the key
+      service; OAuth needs the state secret. The choices are then not checked further.
     - ``github`` services with GitHub linking off: on, with a warning; Omnigent then asks the
       owner to connect GitHub.
     """
@@ -545,18 +545,19 @@ def build_settings(
             raise ManifestError(
                 f"{STATE_SECRET_ENV} must be {MIN_STATE_SECRET_CHARS}-4096 printable characters"
             )
+    if missing:
+        # The whole registry, the page with it: Omnigent listing MCP then says every chosen
+        # service is on (Codex WP8.14 r1-2). Checked before the entries, which may need the
+        # client secrets the app process no longer gets while MCP is off.
+        warnings.append(f"MCP services are off, Omnigent's page too: {', '.join(missing)} not set")
+        return McpRegistrySettings(off_reason="incomplete")
     entries: list[dict[str, Any]] = []
     secret_env: list[str] = []
     for manifest in picked:
         entry, names = registry_entry(manifest, env, allow_loopback=allow_loopback)
         entries.append(entry)
         secret_env.extend(names)
-    if missing:
-        warnings.append(f"the chosen MCP services are off: {', '.join(missing)} not set")
-        chosen, entries, secret_env = (), [], []
-        if not key_service:
-            return McpRegistrySettings(off_reason="incomplete")
-    if not github_linking and any(m.service.get("auth") == "github" for m in picked) and chosen:
+    if not github_linking and any(m.service.get("auth") == "github" for m in picked):
         warnings.append(
             "an MCP service uses GitHub linking, which is off: it asks to connect GitHub"
         )

@@ -6,8 +6,10 @@ whether Litestream's control socket already answered, to pin the start order. Ex
 SIGTERM, or at once with ``FAKE_APP_EXIT_CODE`` when that is set. ``FAKE_APP_START_DELAY_S``
 delays its listening, as Omnigent's imports and migrations do; ``FAKE_APP_HANG`` keeps it from
 ever listening, as a hung initialization would (it still exits on SIGTERM).
-``FAKE_APP_MCP_SERVED`` is the number of page MCP servers it reports serving, written to the file
-``CFO_MCP_REPORT`` names before it listens, as the image's app does (WP8.14).
+``FAKE_APP_MCP_SERVED`` names the page MCP servers it reports serving, written to the file
+``CFO_MCP_REPORT`` names before it listens, as the image's app does (WP8.14): IDs separated by
+commas, or ``db`` for the live rows of the database's table. ``FAKE_APP_DROP_SERVICE`` deletes
+that service's row first and commits it, as a destructive migration would.
 """
 
 from __future__ import annotations
@@ -72,9 +74,24 @@ def main() -> None:
         while True:
             time.sleep(1)
     time.sleep(float(os.environ.get("FAKE_APP_START_DELAY_S", "0")))
+    dropped = os.environ.get("FAKE_APP_DROP_SERVICE")
+    if dropped:
+        with sqlite3.connect(db_path) as db:
+            db.execute("DELETE FROM mcp_registry_services WHERE service_id = ?", (dropped,))
     served = os.environ.get("FAKE_APP_MCP_SERVED")
     if served is not None:
-        Path(os.environ["CFO_MCP_REPORT"]).write_text(json.dumps({"served": int(served)}))
+        if served == "db":
+            with sqlite3.connect(db_path) as db:
+                ids = [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT service_id FROM mcp_registry_services "
+                        "WHERE workspace_id = 0 AND deleted_at IS NULL"
+                    )
+                ]
+        else:
+            ids = [i for i in served.split(",") if i]
+        Path(os.environ["CFO_MCP_REPORT"]).write_text(json.dumps({"served": ids}))
     conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE IF NOT EXISTS t (value TEXT)")

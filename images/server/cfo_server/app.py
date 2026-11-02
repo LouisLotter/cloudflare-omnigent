@@ -175,19 +175,22 @@ def mcp_registry(config: image_config.ServerImageConfig, database_url: str) -> A
         ) from None
 
 
-def admin_services_served(registry: Any) -> int:
-    """How many services added on Omnigent's MCP page the registry serves (WP8.14): the rows
-    Omnigent's admin list shows with ``source: "admin"``, read again from the database. A stored
-    service it hides (a chosen service with the same ID) or cannot use is not counted, nor is any
-    while the page is off."""
+def admin_services_served(registry: Any) -> list[str]:
+    """The services added on Omnigent's MCP page that the registry serves, by ID (WP8.14): the
+    rows Omnigent's admin list shows with ``source: "admin"``, read again from the database. A
+    stored service it hides (a chosen service with the same ID) or cannot use is not among them,
+    nor is any while the page is off. "Served" means loaded; it says nothing of sign-ins or
+    calls."""
     if registry is None or registry.service_store is None:
-        return 0
-    return len(registry.reload())
+        return []
+    return sorted(registry.reload())
 
 
 def write_mcp_report(path: Path, registry: Any) -> None:
-    """The app's report for the entrypoint's ``GET /status`` (``mcpAdminServices.served``):
-    written once the app is built, before it serves, whole or not at all."""
+    """The app's report for the entrypoint's ``GET /status`` (``mcpAdminServices.served``),
+    which compares it with the services it expects: written once the app is built, before it
+    serves, whole or not at all. A file in the container's run directory; the IDs never reach a
+    log."""
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps({"served": admin_services_served(registry)}))
     temporary.replace(path)

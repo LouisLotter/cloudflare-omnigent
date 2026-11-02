@@ -629,7 +629,7 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
     );
     // One lost in the restart.
     expect(integrationsOff({ ...on, mcpAdminServices: { stored: 2, served: 1 } }, PAGE)).toBe(
-      "MCP servers added on the page are off: the restarted server serves 1 of the 2 its database holds (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)",
+      "MCP servers added on the page are off: the restarted server serves 1 of the 2 the update's restore point recorded (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)",
     );
     // Omnigent not listing its registry, or not saying.
     expect(
@@ -638,7 +638,7 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
         PAGE,
       ),
     ).toBe(
-      "MCP servers added on the page are off: the database holds 1, but Omnigent on the restarted server does not list its MCP registry",
+      "MCP servers added on the page are off: the update's restore point recorded 1, but Omnigent on the restarted server does not list its MCP registry",
     );
     expect(
       integrationsOff(
@@ -651,11 +651,11 @@ describe("integrationsOff: an update's integrations still on (WP3.44)", () => {
       `${unconfirmed} has not said yet how many of its 3 it serves`,
     );
     expect(integrationsOff({ ...on, mcpAdminServices: { stored: null, served: 0 } }, PAGE)).toBe(
-      `${unconfirmed} could not read how many its database holds`,
+      `${unconfirmed} cannot say how many the update's restore point recorded (taken by an earlier release, or its database unreadable): go back with bootstrap.ts update --rollback and update again`,
     );
     for (const mcpAdminServices of [null, undefined]) {
       expect(integrationsOff({ ...on, mcpAdminServices }, PAGE)).toBe(
-        `${unconfirmed}'s status does not say how many its database holds`,
+        `${unconfirmed}'s status does not say how many the update's restore point recorded`,
       );
     }
     // Not required: nothing is asked of them.

@@ -869,13 +869,14 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
     for name in list(out):
         if name.startswith(mcp.CLIENT_SECRET_ENV) and name not in kept:
             del out[name]
-    if not config.mcp.services:
-        # No chosen service is on (none chosen, or a prerequisite missing): the app process reads
-        # no choice either, so its own parse of this environment comes to the same decision
-        # without the secrets just removed (Codex WP5.10 r1-2).
-        out.pop(mcp.SERVICES_ENV, None)
     if not config.mcp.enabled:
         out.pop(mcp.STATE_SECRET_ENV, None)
+    if not config.mcp.services and config.mcp.off_reason != "incomplete":
+        # No chosen service: the app process reads no choice either. A choice whose prerequisite
+        # is missing stays, so the app's own parse of this environment, without the secrets just
+        # removed, finds it missing too and turns MCP off as well, rather than on for the page
+        # (Codex WP5.10 r1-2).
+        out.pop(mcp.SERVICES_ENV, None)
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
         for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():

@@ -13,9 +13,9 @@ the forwarding path and the computers reach port 8000 alone.
 - ``GET /status`` is for the watchdog and the platform page: the phase, recovery mode with its
   reason, the app's start and first health answer, the final sync's outcome, the replication
   lag, the update's restore point and a rollback's progress (WP3.41), the services added on
-  Omnigent's MCP page at this start (WP8.14: ``mcpAdminServices``, how many the database held
-  before the app started and how many the app serves, ``null`` until it reports), and the
-  image's build (the fork commit its Omnigent was built from). The phases, in
+  Omnigent's MCP page this start expects (WP8.14: ``mcpAdminServices``, how many it expects and
+  how many of those the app serves, ``null`` until it reports; counts only, never an ID), and
+  the image's build (the fork commit its Omnigent was built from). The phases, in
   order: ``starting``; ``restoring`` (the restore, the database check and Litestream's
   start); ``initializing`` (the app starts: imports, migrations, ``create_app``, the owner
   check) until the app answers ``GET /health``; ``running``; or ``recovery`` instead of a
@@ -29,10 +29,11 @@ replication of a wrong database can happen.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import socketserver
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +42,10 @@ from typing import Any
 from cfo_server.litestream import BlockingClient
 
 REPLICATION_POSITION_PORT = 8001
+#: An MCP service ID as Omnigent's page accepts it; the app's report names only such.
+_SERVICE_ID = re.compile(r"[a-z][a-z0-9_-]{0,39}")
+#: The most page services a report may name.
+_MAX_SERVICES = 10_000
 POSITION_PROTOCOL_VERSION = 1
 STATUS_PROTOCOL_VERSION = 1
 MAX_SAFE_INTEGER = 2**53 - 1
@@ -89,15 +94,17 @@ class StatusBoard:
             "restorePoint": None,
             # Rollback mode's progress (WP3.41): the restore point, and whether it is done.
             "rollback": None,
-            # The services added on Omnigent's MCP page at this start (WP8.14): ``stored``, how
-            # many the database held before the app started (``None``: it could not say), and
-            # ``served``, how many the app's registry serves (``None`` until it reports).
+            # The services added on Omnigent's MCP page this start expects (WP8.14): ``stored``,
+            # how many (``None``: it could not say), and ``served``, how many of those the app's
+            # registry serves (``None`` until it reports). Counts only.
             "mcpAdminServices": None,
         }
         #: Opens a control-socket client while Litestream runs; ``None`` otherwise.
         self.litestream: Callable[[], BlockingClient] | None = None
         #: Where the app writes its report (``CFO_MCP_REPORT``); ``None`` before it starts.
         self.app_report: Path | None = None
+        #: The page services this start expects, by ID (never reported); ``None``: unknown.
+        self._expected: frozenset[str] | None = None
 
     def update(self, **fields: Any) -> None:
         with self._lock:
@@ -126,18 +133,34 @@ class StatusBoard:
             "replicatedTxid": result.replicated_txid,
         }
 
+    def expect_admin_services(self, ids: Iterable[str] | None) -> None:
+        """The page services this start must find served (WP8.14): the IDs the update's
+        restore point recorded, else the database's at this start; ``None`` when unknown."""
+        expected = None if ids is None else frozenset(ids)
+        with self._lock:
+            self._expected = expected
+            self._state["mcpAdminServices"] = {
+                "stored": None if expected is None else len(expected),
+                "served": None,
+            }
+
     def _served(self) -> int | None:
-        """The app's report, once it wrote one: how many page services it serves."""
-        path = self.app_report
-        if path is None:
+        """How many of the expected page services the app reports serving, once it reported;
+        ``None`` before, for a report it cannot read, or while nothing is expected."""
+        path, expected = self.app_report, self._expected
+        if path is None or expected is None:
             return None
         try:
             served = json.loads(path.read_text()).get("served")
         except (OSError, ValueError, AttributeError):
             return None
-        if isinstance(served, bool) or not isinstance(served, int) or not 0 <= served <= 10**6:
+        if (
+            not isinstance(served, list)
+            or len(served) > _MAX_SERVICES
+            or not all(isinstance(i, str) and _SERVICE_ID.fullmatch(i) for i in served)
+        ):
             return None
-        return served
+        return len(expected & set(served))
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

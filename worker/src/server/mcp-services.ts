@@ -14,8 +14,9 @@
 // no digest of one.
 //
 // The MCP servers administrators add on Omnigent's own page (WP8.14) are in Omnigent's database,
-// which the installer never reads. The server image counts them at each start: how many the
-// database held before Omnigent started, and how many Omnigent's registry then serves (the
+// which the installer never reads. The server image counts them at each start: how many it
+// expects (inside an update's window, those the update's restore point recorded before Omnigent
+// first started on the new release), and how many of those Omnigent's registry serves (the
 // entrypoint's `GET :8001/status`, `mcpAdminServices`). Inside an update's window the watchdog puts
 // both on its status line, so the update can refuse a restart that lost one. Counts only, never a
 // name or a URL.
@@ -47,9 +48,9 @@ export function mcpRegistryOf(info: unknown): boolean | null {
 
 /** The MCP servers added on Omnigent's page at the server's start, as its entrypoint reports them. */
 export interface McpAdminServices {
-  /** How many the database held before Omnigent started; null: it could not say. */
+  /** How many the server expects (the restore point's record in a window); null: unknown. */
   readonly stored: number | null;
-  /** How many Omnigent's registry serves; null: the app has not reported yet. */
+  /** How many of those Omnigent's registry serves; null: the app has not reported yet. */
   readonly served: number | null;
 }
 

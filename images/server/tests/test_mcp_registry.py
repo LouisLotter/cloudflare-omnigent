@@ -9,7 +9,7 @@
 - **Manifests and choices.** The shipped manifests load; the installation's choices
   (``CFO_MCP_SERVICES`` and each service's asked values) become Omnigent's registry
   configuration, with the destination rules; a malformed one stops the start (exit 78) without
-  repeating a value; a missing prerequisite turns the chosen services off with a warning.
+  repeating a value; a missing prerequisite turns MCP off, the page too, with a warning.
 - **Destination rules for the page** (``PlatformDestinationPolicy``): the platform's rules and
   Omnigent's default ones on every URL, public addresses only, at save and on every connection.
 - **Coupling.** The names are the pinned Omnigent's own, and Omnigent accepts what the image
@@ -419,27 +419,25 @@ def test_a_malformed_choice_stops_the_start_without_repeating_it(
         (("OMNIGENT_MCP_OAUTH_STATE_SECRET",), "OMNIGENT_MCP_OAUTH_STATE_SECRET"),
     ],
 )
-def test_a_missing_prerequisite_turns_the_chosen_services_off_with_a_warning(
+def test_a_missing_prerequisite_is_off_with_a_warning(
     env: dict[str, str], drop: tuple[str, ...], named: str
 ) -> None:
+    """The page goes off too, so that Omnigent listing MCP always means every chosen service is
+    on, which is what the installer's step and the update read (Codex WP8.14 r1-2)."""
     settings_ = tracker_env()
     for name in drop:
         del settings_[name]
     env.update(settings_)
     config = load(env)
-    assert config.mcp.services == ()
-    (warning,) = [w for w in config.warnings if w.startswith("the chosen MCP services are off")]
-    assert named in warning and STATE_SECRET not in warning
+    assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
+    assert config.mcp.summary() == "off: incomplete"
+    (warning,) = [w for w in config.warnings if w.startswith("MCP services are off")]
+    assert named in warning and STATE_SECRET not in warning and "page" in warning
     app_env = app_environment(config, env)
-    assert "CFO_MCP_SERVICES" not in app_env
-    if config.key_service is None:
-        # Without the key service there is no page either.
-        assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
-        assert "OMNIGENT_MCP_OAUTH_STATE_SECRET" not in app_env
-    else:
-        # The page stays: its own OAuth servers then say the state secret is missing.
-        assert config.mcp.enabled and config.mcp.admin_services
-        assert config.mcp.registry["services"] == []
+    assert "OMNIGENT_MCP_OAUTH_STATE_SECRET" not in app_env
+    # The choice stays where the app reads it, so its own parse is off as well.
+    assert app_env["CFO_MCP_SERVICES"] == "tracker"
+    assert load(app_env, for_app=True).mcp.enabled is False
 
 
 @pytest.mark.parametrize(
@@ -452,9 +450,9 @@ def test_a_missing_prerequisite_turns_the_chosen_services_off_with_a_warning(
 def test_off_survives_the_app_process_own_parse(
     env: dict[str, str], tmp_path: Path, drop: tuple[str, ...]
 ) -> None:
-    """Chosen services off for a missing prerequisite stay off in the app process, which parses
-    the environment again without the secrets the image removed (Codex WP5.10 r1-2); the page
-    is on in both exactly when the key service is."""
+    """MCP off for a missing prerequisite stays off in the app process, which parses the
+    environment again without the secrets the image removed (Codex WP5.10 r1-2), the page with
+    it (Codex WP8.14 r1-2)."""
     directory = write_manifests(
         tmp_path / "services",
         manifest(
@@ -476,14 +474,14 @@ def test_off_survives_the_app_process_own_parse(
         del settings_[name]
     env.update(settings_)
     config = load(env, manifests_dir=directory)
-    assert config.mcp.services == ()
-    assert config.mcp.enabled is (config.key_service is not None)
+    assert config.mcp.enabled is False and config.mcp.off_reason == "incomplete"
     app_env = app_environment(config, env)
-    for name in ("CFO_MCP_SERVICES", "CFO_MCP_CLIENT_SECRET_MAIL", STATE_SECRET_NAME):
+    for name in ("CFO_MCP_CLIENT_SECRET_MAIL", STATE_SECRET_NAME):
         assert name not in app_env, name
+    # Without the client secret the app is never asked for it: the prerequisite is missing
+    # first, and its parse is off too, not on for the page.
     again = load(app_env, for_app=True, manifests_dir=directory)
-    assert again.mcp.services == () and again.mcp.enabled is config.mcp.enabled
-    assert again.mcp.admin_services is config.mcp.admin_services
+    assert again.mcp.enabled is False and again.mcp.off_reason == "incomplete"
 
 
 def test_the_app_process_exits_78_on_a_setting_it_refuses(
@@ -1087,7 +1085,7 @@ def test_the_app_without_the_key_service_or_services_offers_no_mcp(tmp_path: Pat
     with serve_app(tmp_path) as h:
         assert getattr(h.app.state, "mcp_registry", None) is None
         assert "mcp" not in h.client.get("/v1/info").json()["enabled_connections"]
-        assert image_app.admin_services_served(None) == 0
+        assert image_app.admin_services_served(None) == []
 
 
 def _admin_login(h: object) -> None:
@@ -1153,7 +1151,7 @@ def test_the_app_offers_the_page_with_the_platforms_rules_and_no_service_chosen(
             monkeypatch.setattr(mcp_destinations, "resolve", private)
             answer = create("https://mcp.example.com/mcp")
             assert answer.status_code == 400 and "resolves to an address" in answer.text
-            assert image_app.admin_services_served(registry) == 0
+            assert image_app.admin_services_served(registry) == []
 
 
 class _RedirectingService:
@@ -1344,10 +1342,10 @@ def test_a_page_server_signs_in_calls_and_is_counted_and_a_chosen_one_hides_it(
 
             # What the update compares: the database's count and what Omnigent serves.
             assert count_admin_services(h.db_path) == 2
-            assert image_app.admin_services_served(registry) == 2
+            assert image_app.admin_services_served(registry) == ["moved", "tracker"]
             report = tmp_path / "report.json"
             image_app.write_mcp_report(report, registry)
-            assert json.loads(report.read_text()) == {"served": 2}
+            assert json.loads(report.read_text()) == {"served": ["moved", "tracker"]}
             removed = client.delete("/v1/mcp-registry/admin/services/moved")
             assert removed.status_code == 200 and removed.headers["x-cfo-durability"] == "confirmed"
             assert count_admin_services(h.db_path) == 1
@@ -1363,7 +1361,7 @@ def test_a_page_server_signs_in_calls_and_is_counted_and_a_chosen_one_hides_it(
             registry = h.app.state.mcp_registry
             assert list(registry.services) == ["tracker"]
             assert count_admin_services(h.db_path) == 1
-            assert image_app.admin_services_served(registry) == 0
+            assert image_app.admin_services_served(registry) == []
             _admin_login(h)
             (listed,) = h.client.get("/v1/mcp-registry/admin/services").json()["data"]
             assert listed["source"] == "config" and listed["editable"] is False

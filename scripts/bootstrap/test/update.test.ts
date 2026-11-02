@@ -1314,7 +1314,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
 
   describe("the MCP servers added on Omnigent's page (WP8.14)", () => {
     const PAGE_OFF =
-      "MCP servers added on the page are off: the restarted server serves 1 of the 2 its database holds (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)";
+      "MCP servers added on the page are off: the restarted server serves 1 of the 2 the update's restore point recorded (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)";
 
     it("all served by the restarted server: accepted, and said so", async () => {
       const h = await installed(await accountPlan());
@@ -1353,7 +1353,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       h.world.mcpListed = () => false;
       expect(await h.update()).toEqual({
         kind: "deployed",
-        why: "MCP servers added on the page are off: the database holds 1, but Omnigent on the restarted server does not list its MCP registry",
+        why: "MCP servers added on the page are off: the update's restore point recorded 1, but Omnigent on the restarted server does not list its MCP registry",
         window: "open",
         integrationsOff: true,
       });
@@ -1379,7 +1379,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       h.world.adminServices = () => undefined;
       expect(await h.update()).toEqual({
         kind: "deployed",
-        why: "MCP servers added on the page are not confirmed: the restarted server's status does not say how many its database holds",
+        why: "MCP servers added on the page are not confirmed: the restarted server's status does not say how many the update's restore point recorded",
         window: "open",
         integrationsOff: true,
       });
@@ -1388,7 +1388,7 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
       h.world.now += 30 * 60_000;
       expect(await h.update()).toEqual({
         kind: "deployed",
-        why: "MCP servers added on the page are not confirmed: the restarted server could not read how many its database holds",
+        why: "MCP servers added on the page are not confirmed: the restarted server cannot say how many the update's restore point recorded (taken by an earlier release, or its database unreadable): go back with bootstrap.ts update --rollback and update again",
         window: "open",
         integrationsOff: true,
       });

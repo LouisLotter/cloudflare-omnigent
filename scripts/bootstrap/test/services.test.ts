@@ -622,7 +622,7 @@ describe("a settled list with a service that can no longer stay on (Codex r2-1)"
 describe("the listing", () => {
   it("points at Omnigent's own page first, the happy path (WP8.14)", () => {
     expect(pageHint({ hostname: "omnigent.example.com" })).toBe(
-      "Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://omnigent.example.com/settings/mcp (the services below are offered there as presets, but GitHub's).",
+      "Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://omnigent.example.com/settings/mcp (the services below are offered there as presets, but GitHub's; an installation updated before that page needs bootstrap.ts update first).",
     );
   });
 

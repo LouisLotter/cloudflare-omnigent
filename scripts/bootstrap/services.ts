@@ -563,7 +563,7 @@ export function servicesMessage(
  * The happy path; `services` is for what the page cannot add.
  */
 export function pageHint(plan: Pick<Installation, "hostname">): string {
-  return `Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://${plan.hostname}${SETTINGS_MCP_PATH} (the services below are offered there as presets, but GitHub's).`;
+  return `Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://${plan.hostname}${SETTINGS_MCP_PATH} (the services below are offered there as presets, but GitHub's; an installation updated before that page needs bootstrap.ts update first).`;
 }
 
 /** The list for `bootstrap.ts services` and `status`: each shipped service, on or off. */

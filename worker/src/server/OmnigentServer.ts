@@ -1041,9 +1041,9 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
         mcpRegistry: mcpRegistryOf(info),
         // WP8.14: inside an update's window, how many MCP servers added on Omnigent's page the
-        // server's database held at its start and how many Omnigent serves (counts only; null
-        // outside the window or when the server does not say). The update accepts only a restart
-        // that serves them all.
+        // update's restore point recorded and how many of those Omnigent serves (counts only;
+        // null outside the window or when the server does not say). The update accepts only a
+        // restart that serves them all.
         mcpAdminServices,
         // WP3.41: the update's read-only window this version holds (its ID, null for none), and
         // the restore point the answering server reports while it is open. The update accepts

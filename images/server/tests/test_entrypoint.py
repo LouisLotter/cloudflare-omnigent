@@ -583,16 +583,26 @@ def test_status_counts_the_page_servers_before_the_app_and_then_what_it_serves(r
     assert rig.stop() == entrypoint.EXIT_OK
     # The app's report, as the image's app writes it; an earlier one never counts.
     stale = rig.run_dir / entrypoint.MCP_REPORT_NAME
-    stale.write_text('{"served": 9}')
-    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "1"})
+    stale.write_text('{"served": ["s0", "s1"]}')
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "s1"})
     rig.wait_app()
     assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    # Served counts the expected ones only: another service does not make up for a lost one.
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "s0,other"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    # A report it cannot read says nothing.
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "Not An ID"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": None}
     assert rig.stop() == entrypoint.EXIT_OK
 
 
 @requires_litestream
 def test_status_counts_none_before_omnigents_migration_adds_the_table(rig: Rig) -> None:
-    rig.start(rig.env(), app_env={"FAKE_APP_MCP_SERVED": "0"})
+    rig.start(rig.env(), app_env={"FAKE_APP_MCP_SERVED": ""})
     rig.wait_app()
     assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 0, "served": 0}
     assert rig.stop() == entrypoint.EXIT_OK

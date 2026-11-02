@@ -492,6 +492,57 @@ def _restored_values(rig: Rig) -> list[str]:
 
 
 @requires_litestream
+def test_every_start_in_the_window_expects_the_page_servers_the_restore_point_recorded(
+    rig: Rig,
+) -> None:
+    """WP8.14 (Codex r1-1): a start that loses a page server and replicates the loss is never
+    compared with its own loss. The restore point records the servers when it is taken; a later
+    start under the same name expects those, whatever the database holds by then."""
+    rig.seed(with_owner=True, page_services=2)
+    env = rig.env(initialized="true", CFO_RESTORE_POINT=RP)
+    # The first start: the restore point records s0 and s1; this app drops s1, durably.
+    rig.start(env, app_env={"FAKE_APP_DROP_SERVICE": "s1", "FAKE_APP_MCP_SERVED": "db"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    manifest = json.loads((Path("/") / _where(rig).manifest(RP)).read_text())
+    assert manifest["mcpAdminServices"] == ["s0", "s1"]
+    # The next start in the window finds one in the database, and still expects both.
+    rig.start(env, app_env={"FAKE_APP_MCP_SERVED": "db"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    # Outside a window, a start expects what its database holds.
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "db"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 1, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+
+
+def test_a_manifest_keeps_the_page_servers_and_reads_one_without_them(tmp_path: Path) -> None:
+    manifest = rp.Manifest(
+        rp_id=RP,
+        taken_at="2026-11-02T12:00:00.000Z",
+        objects={"a": 1},
+        database_sha256=None,
+        database_bytes=None,
+        build=None,
+        admin_services=("tracker", "linear"),
+    )
+    again = rp.Manifest.parse(manifest.to_json(), RP)
+    assert again == manifest and again.admin_services == ("linear", "tracker")
+    # One taken by an image from before WP8.14: none recorded, which is unknown, not none.
+    body = json.loads(manifest.to_json())
+    del body["mcpAdminServices"]
+    assert rp.Manifest.parse(json.dumps(body).encode(), RP).admin_services is None
+    body["mcpAdminServices"] = "tracker"
+    with pytest.raises(rp.RestorePointError, match="malformed"):
+        rp.Manifest.parse(json.dumps(body).encode(), RP)
+    # The summary /status reports names no service.
+    assert "tracker" not in json.dumps(manifest.summary())
+
+
+@requires_litestream
 def test_the_update_server_takes_its_restore_point_before_the_app_starts(rig: Rig) -> None:
     rig.seed(with_owner=True)
     before = _replica_files(rig)

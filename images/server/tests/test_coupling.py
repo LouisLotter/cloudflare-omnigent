@@ -299,7 +299,7 @@ def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_table
     """The first start on this pin runs the page's migration, additive, after the previous
     head; a database at the new head is the one an earlier server refuses as newer."""
     from alembic import command
-    from omnigent.db.utils import _build_alembic_config, _get_current_db_heads, _create_engine
+    from omnigent.db.utils import _build_alembic_config, _create_engine, _get_current_db_heads
 
     from cfo_server.dbcheck import count_admin_services
 
@@ -328,7 +328,7 @@ def test_the_page_count_agrees_with_omnigents_store(tmp_path: Path) -> None:
     from omnigent.db.db_models import workspace_scope
     from omnigent.stores.mcp_service_store import McpServiceSettings, McpServiceStore
 
-    from cfo_server.dbcheck import count_admin_services
+    from cfo_server.dbcheck import admin_service_ids, count_admin_services
 
     ep = image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT)
     db = tmp_path / "omnigent.db"
@@ -347,6 +347,9 @@ def test_the_page_count_agrees_with_omnigents_store(tmp_path: Path) -> None:
     assert count_admin_services(db) == 3
     assert store.delete("two")
     assert count_admin_services(db) == 2 == len(store.scan()[0])
+    assert (
+        admin_service_ids(db) == ["one", "three"] == sorted(r.service_id for r in store.scan()[0])
+    )
     (tmp_path / "garbage.db").write_bytes(b"not a database" * 100)
     assert count_admin_services(tmp_path / "garbage.db") is None
 
