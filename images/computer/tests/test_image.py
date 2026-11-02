@@ -94,29 +94,44 @@ def test_claude_code_managed_settings() -> None:
 
 
 def test_runners_get_the_cli_settings_from_omnigents_own_host_env_builder(tmp_path: Path) -> None:
-    """WP3.22: the environment the supervisor gives ``omnigent host``, through the host's own
-    ``_build_runner_env`` (the fork's allowlist), still holds the CLIs' settings."""
+    """WP3.22, D49: the environment the supervisor gives ``omnigent host``, through the host's own
+    ``_build_runner_env`` (the fork's allowlist), still holds the CLIs' settings and Omnigent's
+    analytics opt-out, which Omnigent's own check reads as off in the host and in the runner."""
     from cfo_computer.host import StartParams, host_env
-    from cfo_computer.procutil import CLI_ENV, workload_env
+    from cfo_computer.procutil import CLI_ENV, OMNIGENT_ENV, workload_env
 
-    env = host_env(workload_env(tmp_path, "omnigent"), StartParams(1, "h" * 32, "c", "t", {}))
+    plain = workload_env(tmp_path, "omnigent")
+    env = host_env(plain, StartParams(1, "h" * 32, "c", "t", {}))
     script = (
         "import json, sys\n"
         "from omnigent.host.connect import _build_runner_env\n"
-        "base = json.load(sys.stdin)\n"
-        "print(json.dumps(_build_runner_env(base, server_url='http://omnigent.internal', "
-        "runner_id='runner_1', binding_token='b', workspace=base['HOME'], parent_pid=1)))\n"
+        "from omnigent.telemetry.environment import is_disabled_by_env as off\n"
+        "bases = json.load(sys.stdin)\n"
+        "runners = [_build_runner_env(base, server_url='http://omnigent.internal', "
+        "runner_id='runner_1', binding_token='b', workspace=base['HOME'], parent_pid=1)"
+        " for base in bases]\n"
+        "names = sys.argv[1:]\n"
+        "print(json.dumps({'runners': runners, 'off': [off({n: env[n] for n in names if n in env})"
+        " for env in (bases[0], runners[0], {})]}))\n"
     )
     out = subprocess.run(
-        ["/opt/venv/bin/python", "-I", "-c", script],
-        input=json.dumps(env),
+        ["/opt/venv/bin/python", "-I", "-c", script, *OMNIGENT_ENV],
+        input=json.dumps([env, plain]),
         capture_output=True,
         text=True,
         check=True,
         env={**env, "HOME": str(tmp_path)},
     ).stdout
-    runner = json.loads(out.strip().splitlines()[-1])
+    result = json.loads(out.strip().splitlines()[-1])
+    runner, without_passthrough = result["runners"]
     assert {k: runner.get(k) for k in CLI_ENV} == CLI_ENV
+    assert {k: runner.get(k) for k in OMNIGENT_ENV} == OMNIGENT_ENV == {"OMNIGENT_ANALYTICS": "0"}
+    # Omnigent's own check, on our variable alone (not Claude Code's DISABLE_TELEMETRY, which it
+    # also obeys): off in the host's environment and the runner's; on without it (the control).
+    assert result["off"] == [True, True, False]
+    # Why the host names it: Omnigent's allowlist drops its own opt-out from a runner's
+    # environment (an upstream candidate). If a fork bump keeps it, the passthrough can go.
+    assert not set(OMNIGENT_ENV) & set(without_passthrough)
 
 
 def test_environment_and_account() -> None:

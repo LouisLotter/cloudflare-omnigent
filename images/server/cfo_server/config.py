@@ -17,7 +17,8 @@ allows the disk in tests and local runs only (G2-DUR-001).
 
 Some settings are pinned by the image and cannot be changed by the environment at all:
 accounts mode, the release-feature set (``OMNIGENT_FEATURES``: Omnigent's release defaults,
-never ``harness_install``), default-public sessions off, the database and data paths, and the
+never ``harness_install``), default-public sessions off, Omnigent's product analytics off
+(``OMNIGENT_ANALYTICS=0``, owner decision D49), the database and data paths, and the
 managed-sandbox reaper. Variables that would select integrations the image does not wire
 (Databricks, AWS KMS, Vault) are removed from the app's environment.
 
@@ -140,8 +141,13 @@ _GITHUB_SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 #: tunnel may drop while a capture pauses it, and RC-21 allows such a reconnect 100 s, so the
 #: design's timing budget sets 150 s (core change 12).
 RUNNER_DISCONNECT_GRACE_S = "150"
+#: Omnigent's own opt-out of its product analytics (``omnigent.telemetry``): with it, the server
+#: never starts the analytics client, so it neither fetches the vendor's remote configuration nor
+#: sends events (D49). Omnigent reads exactly ``"0"``.
+ANALYTICS_OFF: Mapping[str, str] = {"OMNIGENT_ANALYTICS": "0"}
 #: Variables the image sets itself; a value from the environment is replaced.
 PINNED_ENV: Mapping[str, str] = {
+    **ANALYTICS_OFF,
     "OMNIGENT_RUNNER_DISCONNECT_GRACE_S": RUNNER_DISCONNECT_GRACE_S,
     "OMNIGENT_AUTH_PROVIDER": "accounts",
     "OMNIGENT_AUTH_ENABLED": "1",

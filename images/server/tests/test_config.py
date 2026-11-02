@@ -131,6 +131,8 @@ def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
             "DATABASE_URL": "postgresql://elsewhere",
             "OMNIGENT_AUTH_PROVIDER": "accounts",
             "OMNIGENT_RUNNER_DISCONNECT_GRACE_S": "90",
+            # An installation cannot turn Omnigent's product analytics back on (D49).
+            "OMNIGENT_ANALYTICS": "1",
         }
     )
     config = load(env)
@@ -142,6 +144,7 @@ def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
     assert app_env["DATABASE_URL"] == "sqlite:////data/omnigent.db"
     assert app_env["OMNIGENT_DEFAULT_PUBLIC_SESSIONS"] == "off"
     assert app_env["OMNIGENT_RUNNER_DISCONNECT_GRACE_S"] == "150"
+    assert app_env["OMNIGENT_ANALYTICS"] == "0"
     for removed in (
         "OMNIGENT_HARNESS_INSTALL_ENABLED",
         "OMNIGENT_DATABRICKS_CLIENT_ID",
