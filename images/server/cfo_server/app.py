@@ -11,9 +11,11 @@ Run by the entrypoint as ``python -m cfo_server.app``, once Litestream is replic
    itself with what the platform adds: static sharing values (Omnigent's sharing settings
    become authoritative, D4), the launcher registration through ``sandbox_config``, the
    pinned release features, the transcript barrier (``durability_barrier``), and Omnigent's
-   MCP registry with its logins in the credential store, through the key service (WP5.10);
+   MCP registry with its logins in the credential store, through the key service (WP5.10), and
+   the services administrators add on its page, under the platform's destination rules (WP8.14);
 4. adds the owner's password handler (``POST /_cfo/owner-password``, WP3.34) outside Omnigent's
-   own middleware, and the response barrier outside it as the outermost middleware, and serves
+   own middleware, and the response barrier outside it as the outermost middleware, reports how
+   many of the page's services Omnigent serves to the entrypoint (``CFO_MCP_REPORT``), and serves
    the app the way that module's ``main`` does.
 
 It never replaces an Omnigent module attribute. The coupling to the Docker entrypoint's
@@ -26,6 +28,7 @@ After uvicorn stops, nothing more is written; the entrypoint then checks the fin
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import os
 import sys
@@ -36,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from cfo_server import config as image_config
 from cfo_server import logfilter
+from cfo_server import mcp as image_mcp
 from cfo_server.barrier import ResponseBarrierMiddleware, install_sql_hooks, make_transcript_barrier
 from cfo_server.dbcheck import has_owner
 from cfo_server.events import log
@@ -121,14 +125,17 @@ def github_linking(config: image_config.ServerImageConfig, database_url: str) ->
 
 
 def mcp_registry(config: image_config.ServerImageConfig, database_url: str) -> Any:
-    """Omnigent's MCP registry (WP5.10), or ``None`` while no service is on.
+    """Omnigent's MCP registry (WP5.10, WP8.14), or ``None`` while it is off.
 
     Built as Omnigent's own server command builds it (``omnigent/cli.py``: ``McpRegistry`` over a
-    ``CredentialStore`` with the deployment's cipher), from the configuration the image checked
-    (:mod:`cfo_server.mcp`) rather than a file. Omnigent's own model checks it again; a refusal
-    there is a configuration error (exit 78) whose words never repeat a value. The store's cipher
-    must be core change 19's key service, never another backend: logins are never stored under a
-    cipher the platform did not choose.
+    ``CredentialStore`` with the deployment's cipher and, for the services administrators add on
+    its page, an ``McpServiceStore`` on the same database), from the configuration the image
+    checked (:mod:`cfo_server.mcp`) rather than a file, and with the platform's destination rules
+    as the registry's policy (:class:`cfo_server.mcp.PlatformDestinationPolicy`), never Omnigent's
+    default read from the environment. Omnigent's own model checks the configuration again; a
+    refusal there is a configuration error (exit 78) whose words never repeat a value. The store's
+    cipher must be core change 19's key service, never another backend: logins are never stored
+    under a cipher the platform did not choose.
     """
     if not config.mcp.enabled:
         return None
@@ -136,6 +143,7 @@ def mcp_registry(config: image_config.ServerImageConfig, database_url: str) -> A
     from omnigent.stores.credential_store import build_secret_cipher
     from omnigent.stores.credential_store.http_cipher import HttpSecretCipher
     from omnigent.stores.credential_store.sqlalchemy_store import CredentialStore
+    from omnigent.stores.mcp_service_store import McpServiceStore
     from pydantic import ValidationError
 
     try:
@@ -153,13 +161,39 @@ def mcp_registry(config: image_config.ServerImageConfig, database_url: str) -> A
             raise RuntimeError("the credential store's cipher is not the platform's key service")
     try:
         return McpRegistry(
-            registry_config, None if cipher is None else CredentialStore(database_url, cipher)
+            registry_config,
+            None if cipher is None else CredentialStore(database_url, cipher),
+            service_store=McpServiceStore(database_url) if config.mcp.admin_services else None,
+            destination_policy=image_mcp.PlatformDestinationPolicy(
+                allow_loopback=config.mcp.allow_loopback
+            ),
         )
     except ValueError:
         raise image_config.ConfigError(
             "Omnigent refused the MCP registry: the key service or "
             "OMNIGENT_MCP_OAUTH_STATE_SECRET is not as it needs them"
         ) from None
+
+
+def admin_services_served(registry: Any) -> list[str]:
+    """The services added on Omnigent's MCP page that the registry serves, by ID (WP8.14): the
+    rows Omnigent's admin list shows with ``source: "admin"``, read again from the database. A
+    stored service it hides (a chosen service with the same ID) or cannot use is not among them,
+    nor is any while the page is off. "Served" means loaded; it says nothing of sign-ins or
+    calls."""
+    if registry is None or registry.service_store is None:
+        return []
+    return sorted(registry.reload())
+
+
+def write_mcp_report(path: Path, registry: Any) -> None:
+    """The app's report for the entrypoint's ``GET /status`` (``mcpAdminServices.served``),
+    which compares it with the services it expects: written once the app is built, before it
+    serves, whole or not at all. A file in the container's run directory; the IDs never reach a
+    log."""
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps({"served": admin_services_served(registry)}))
+    temporary.replace(path)
 
 
 def build_app(
@@ -357,6 +391,9 @@ def main() -> None:
     # before (a second one took 275 s of a 1 GB start on basic, WP2.5).
     if not has_owner(Path(db_path)):
         raise RuntimeError("no owner after Omnigent's bootstrap; refusing to serve setup")
+    report = os.environ.get("CFO_MCP_REPORT")
+    if report:
+        write_mcp_report(Path(report), getattr(app.state, "mcp_registry", None))
     log(
         "app.built",
         sharing_mode=config.sharing.sharing_mode,

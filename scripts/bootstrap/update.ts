@@ -34,8 +34,10 @@
 //      runs the new version, a server started with the new configuration answers, without the
 //      bootstrap password, and shows the owner initialized and durable. The same status must also
 //      show the integrations the installation has set up still on (WP3.44): GitHub linking when
-//      the platform Worker holds the GitHub App, and the MCP registry with the journal's MCP
-//      choices when services are on; until it does, nothing is accepted. Every platform deploy of
+//      the platform Worker holds the GitHub App, the MCP registry with the journal's MCP choices
+//      when services are on, and every MCP server administrators added on Omnigent's page, which
+//      the restarted server counts in the database it started from and in what Omnigent serves
+//      (WP8.14); until it does, nothing is accepted. Every platform deploy of
 //      an update carries its own `DEPLOY_ID_VAR`, which reaches the server: the configuration
 //      changes, so the watchdog restarts the server once and its status lines are the proof.
 //      Logs count only while the version serving is positively the update's own (its version
@@ -267,8 +269,10 @@ const KEY_SERVICE_PAIR = [KEY_SERVICE_KEY_SECRET, KEY_SERVICE_KEY_ID_SECRET] as 
 /**
  * The integrations this installation has set up, which an update requires still working before
  * it accepts (WP3.44): GitHub linking when the platform Worker holds the GitHub App's client ID
- * (by name; github-app.ts sets it), and the MCP choices the journal records (services.ts), with a
- * change begun but not confirmed sent, which may or may not have reached the Worker.
+ * (by name; github-app.ts sets it), the MCP choices the journal records (services.ts), with a
+ * change begun but not confirmed sent, which may or may not have reached the Worker, and the MCP
+ * servers added on Omnigent's page, which only the restarted server can count (WP8.14): every
+ * release this installer deploys reports them.
  */
 export function requiredIntegrations(
   present: ReadonlySet<string>,
@@ -279,6 +283,7 @@ export function requiredIntegrations(
     mcp: [mcp, mcp?.pending].flatMap((choices) =>
       choices === undefined ? [] : [{ revision: choices.revision, on: choices.on.length > 0 }],
     ),
+    adminServices: true,
   };
 }
 
@@ -918,11 +923,16 @@ async function checkUpdate(
       }
       progress({ verifiedAt: iso(ctx.now()) });
       // Said only of what was required and the status shows on: a change that turned the last
-      // MCP service off may be what runs.
+      // MCP service off may be what runs, and Omnigent lists MCP for its page without one.
+      const runs = required.mcp.find(
+        (choices) => (choices.revision ?? null) === status.mcpRevision,
+      );
+      const page = status.mcpAdminServices?.stored ?? 0;
       const on = [
         ...(required.github ? ["GitHub linking"] : []),
-        ...(required.mcp.some((choices) => choices.on) && status.mcpRegistry === true
-          ? ["MCP services"]
+        ...(runs?.on === true && status.mcpRegistry === true ? ["MCP services"] : []),
+        ...(required.adminServices === true && page > 0
+          ? [`the ${page === 1 ? "MCP server" : `${page} MCP servers`} added on the page`]
           : []),
       ];
       ctx.log(

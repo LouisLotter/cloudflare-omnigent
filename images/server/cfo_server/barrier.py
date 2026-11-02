@@ -41,8 +41,21 @@ from cfo_server.litestream import ReplicationWaiter, WaitOutcome
 #: come back undone with a restore. A token refresh writes the same columns as a relink, so it
 #: is held too: a git command that needs one (about every 8 hours) waits for the replica, and
 #: while the replica is blocked that one request is answered 424 and the next one succeeds.
+#: And the MCP servers administrators add on Omnigent's page with their tool allowlists
+#: (WP8.14): where agents' tool calls may go and which tools they may call. A removed server, a
+#: changed address or a narrowed allowlist must not come back undone with a restore either; their
+#: logins are in ``connections``, removed in the same transaction.
 SECURITY_TABLES: frozenset[str] = frozenset(
-    {"users", "device_grants", "account_tokens", "hosts", "scheduled_tasks", "connections"}
+    {
+        "users",
+        "device_grants",
+        "account_tokens",
+        "hosts",
+        "scheduled_tasks",
+        "connections",
+        "mcp_registry_services",
+        "mcp_registry_service_tools",
+    }
 )
 #: Updates that touch only these columns are bookkeeping, not security changes: the login
 #: timestamp and a host's heartbeat. Without this, every browser login would wait for the

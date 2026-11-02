@@ -13,9 +13,11 @@ Nothing writes the replica while the copy is made (the previous server has stopp
 has not started replicating), so the copy is a complete replica of its own, which Litestream
 restores like any other. It lives outside Litestream's path, so Litestream's retention never
 deletes it, and the installation's buckets have no lifecycle rule. The manifest lists every
-object with its size and the restored database's SHA-256: a restore point exists only once its
-manifest does, and Omnigent never starts under a restore point's name before it exists. The
-newest ``KEPT`` restore points are kept; older ones are deleted when a new one is complete.
+object with its size and the restored database's SHA-256, and the MCP servers administrators
+added on Omnigent's page that the database held (their IDs, WP8.14), which every start under the
+same name compares with what Omnigent serves: a restore point exists only once its manifest
+does, and Omnigent never starts under a restore point's name before it exists. The newest
+``KEPT`` restore points are kept; older ones are deleted when a new one is complete.
 
 A replica holds hundreds to thousands of objects (1539 on 2 Nov 2026, against 628 a day
 earlier), and an S3 copy on R2 can take seconds. So every bulk copy or delete runs
@@ -42,7 +44,7 @@ import json
 import re
 import shutil
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -320,6 +322,10 @@ class Manifest:
     database_bytes: int | None
     #: The image that took it (its Omnigent commit), for the record.
     build: Mapping[str, Any] | None
+    #: The MCP servers added on Omnigent's page the database held when it was taken, by ID
+    #: (WP8.14): what an update's every start in its window must still serve. ``None`` when the
+    #: database could not say, or the restore point was taken by an image from before WP8.14.
+    admin_services: tuple[str, ...] | None = None
 
     def to_json(self) -> bytes:
         body = {
@@ -333,6 +339,9 @@ class Manifest:
                 else {"sha256": self.database_sha256, "bytes": self.database_bytes}
             ),
             "build": dict(self.build) if self.build is not None else None,
+            "mcpAdminServices": (
+                None if self.admin_services is None else sorted(self.admin_services)
+            ),
         }
         return (json.dumps(body, indent=2, sort_keys=True) + "\n").encode()
 
@@ -344,6 +353,11 @@ class Manifest:
                 raise ValueError("another format or restore point")
             objects = {str(o["key"]): int(o["size"]) for o in body["objects"]}
             database = body.get("database")
+            services = body.get("mcpAdminServices")
+            if services is not None and not (
+                isinstance(services, list) and all(isinstance(i, str) for i in services)
+            ):
+                raise ValueError("mcpAdminServices is not a list of IDs")
             return cls(
                 rp_id=rp_id,
                 taken_at=str(body["takenAt"]),
@@ -351,6 +365,7 @@ class Manifest:
                 database_sha256=None if database is None else str(database["sha256"]),
                 database_bytes=None if database is None else int(database["bytes"]),
                 build=body.get("build"),
+                admin_services=None if services is None else tuple(sorted(services)),
             )
         except (ValueError, KeyError, TypeError) as exc:
             raise RestorePointError(f"the manifest of {rp_id} is malformed: {exc}") from None
@@ -399,6 +414,7 @@ def take(
     database: Path | None,
     build: Mapping[str, Any] | None,
     deadline: float,
+    admin_services: Sequence[str] | None = None,
     should_stop: Callable[[], bool] = lambda: False,
     clock: Callable[[], float] = time.monotonic,
     log: Callable[..., None] = lambda *_a, **_k: None,
@@ -406,8 +422,10 @@ def take(
     """The restore point ``rp_id`` of the replica as it is now, unless it exists already.
 
     ``database`` is the file this start restored from the replica (its digest goes in the
-    manifest), or ``None`` for one it found on its disk. Raises :class:`RestorePointError`; a
-    partial copy has no manifest, so it never counts, and the next attempt resumes it.
+    manifest), or ``None`` for one it found on its disk. ``admin_services`` are the IDs of the
+    page's MCP servers that database holds, recorded for a new restore point only: an existing
+    one keeps what it recorded. Raises :class:`RestorePointError`; a partial copy has no
+    manifest, so it never counts, and the next attempt resumes it.
     """
     if not RESTORE_POINT_ID.fullmatch(rp_id):
         raise RestorePointError("not a restore point's name")
@@ -448,6 +466,7 @@ def take(
         database_sha256=digest,
         database_bytes=size,
         build=build,
+        admin_services=None if admin_services is None else tuple(sorted(admin_services)),
     )
     check_time()
     store.write(where.manifest(rp_id), manifest.to_json())

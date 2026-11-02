@@ -38,7 +38,10 @@
 //
 // The same status that passes an update's release check must also show the integrations the
 // installation has set up still working (WP3.44, `integrationsOff`): GitHub linking, and the MCP
-// registry with the installation's own MCP choices.
+// registry with the installation's own MCP choices. Inside the window the line also says how many
+// MCP servers administrators added on Omnigent's page the update's restore point recorded, and how
+// many of those the restarted server serves (`mcpAdminServices`, WP8.14): an update accepts only a
+// restart that serves them all.
 //
 // The bootstrap accepts only the newest status of this installation, from this installation's
 // platform Worker, and only while it is fresh. A status from another installation, an older
@@ -85,10 +88,39 @@ export interface StatusEvent {
    * worker/src/server/mcp-services.ts), null for none; undefined: unsaid.
    */
   readonly mcpRevision?: string | null | undefined;
+  /**
+   * The MCP servers added on Omnigent's page the answering server expects (WP8.14,
+   * worker/src/server/mcp-services.ts): how many the update's restore point recorded (`stored`,
+   * null: it could not say) and how many of those Omnigent serves (`served`, null: not reported
+   * yet). Reported inside an update's window; null: not read; undefined: unsaid.
+   */
+  readonly mcpAdminServices?: McpAdminServices | null | undefined;
   /** The update's window the logging version holds (WP3.41), null for none; undefined: unsaid. */
   readonly maintenance?: string | null | undefined;
   /** The restore point the answering server reports (WP3.41), null for none; undefined: unsaid. */
   readonly restorePoint?: ReportedRestorePoint | null | undefined;
+}
+
+/** The MCP servers added on Omnigent's page at a server's start, as its status line says them. */
+export interface McpAdminServices {
+  readonly stored: number | null;
+  readonly served: number | null;
+}
+
+/** A count on a status line: a whole number, null for "cannot say"; anything else unsaid. */
+function countOf(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** `mcpAdminServices` on a status line: both counts said (each may be null), or not at all. */
+function adminServicesOf(value: unknown): McpAdminServices | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const { stored, served } = value as { stored?: unknown; served?: unknown };
+  const counts = { stored: countOf(stored), served: countOf(served) };
+  if (counts.stored === undefined || counts.served === undefined) return undefined;
+  return { stored: counts.stored, served: counts.served };
 }
 
 /** The watchdog's `rolled_back` line (WP3.41): a server's rollback is done, and it is held. */
@@ -259,6 +291,9 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
           ? line.mcpRegistry
           : undefined,
       mcpRevision: appTag(line.mcpRevision),
+      ...("mcpAdminServices" in line
+        ? { mcpAdminServices: adminServicesOf(line.mcpAdminServices) }
+        : {}),
       ...("maintenance" in line ? { maintenance: windowId(line.maintenance) } : {}),
       ...("restorePoint" in line
         ? {
@@ -499,6 +534,13 @@ export interface RequiredIntegrations {
    * (undefined: none written) and whether it turns a service on.
    */
   readonly mcp: readonly { readonly revision: string | undefined; readonly on: boolean }[];
+  /**
+   * The MCP servers administrators added on Omnigent's page (WP8.14), which the installer cannot
+   * know: the restarted server must say how many the update's restore point recorded and serve
+   * every one of them. `update` requires it of every release from WP8.14 on, which reports them;
+   * with it off, nothing is required of them.
+   */
+  readonly adminServices?: boolean;
 }
 
 /**
@@ -510,8 +552,14 @@ export interface RequiredIntegrations {
  *   - MCP, when choices that turn a service on may run: the status names the revision of choices
  *     the journal records (`mcpRevision`, null for none), and when those turn a service on,
  *     Omnigent lists its MCP registry (`mcpRegistry`).
+ *   - The MCP servers added on Omnigent's page, when required (`adminServices`): the status says
+ *     how many the restore point recorded and how many of those Omnigent serves
+ *     (`mcpAdminServices`); when it recorded any, Omnigent lists its MCP registry and serves them
+ *     all. A page service lost in the restart (the page off, a service it cannot use, or one a
+ *     chosen service of the same ID hides) stops the acceptance.
  * A field a status does not carry (undefined: a build from before it was reported) or whose
- * answer did not say (null) never counts as on. With neither set up, nothing is required.
+ * answer did not say (null) never counts as on. With nothing set up or required, nothing is
+ * required.
  */
 export function integrationsOff(
   status: StatusEvent,
@@ -550,7 +598,35 @@ export function integrationsOff(
       );
     }
   }
+  if (required.adminServices === true) {
+    const page = adminServicesOff(status);
+    if (page !== undefined) off.push(page);
+  }
   return off.length === 0 ? undefined : off.join("; ");
+}
+
+/** What a status does not show of the MCP servers added on Omnigent's page (WP8.14). */
+function adminServicesOff(status: StatusEvent): string | undefined {
+  const counts = status.mcpAdminServices;
+  const unconfirmed = "MCP servers added on the page are not confirmed: the restarted server";
+  if (counts === undefined || counts === null) {
+    return `${unconfirmed}'s status does not say how many the update's restore point recorded`;
+  }
+  const { stored, served } = counts;
+  if (stored === null) {
+    return `${unconfirmed} cannot say how many the update's restore point recorded (taken by an earlier release, or its database unreadable): go back with bootstrap.ts update --rollback and update again`;
+  }
+  if (stored === 0) return undefined;
+  if (status.mcpRegistry !== true) {
+    return status.mcpRegistry === false
+      ? `MCP servers added on the page are off: the update's restore point recorded ${stored}, but Omnigent on the restarted server does not list its MCP registry`
+      : `${unconfirmed}'s status does not say whether Omnigent lists its MCP registry`;
+  }
+  if (served === null) return `${unconfirmed} has not said yet how many of its ${stored} it serves`;
+  if (served < stored) {
+    return `MCP servers added on the page are off: the restarted server serves ${served} of the ${stored} the update's restore point recorded (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)`;
+  }
+  return undefined;
 }
 
 export type GitHubLinkingCheck =

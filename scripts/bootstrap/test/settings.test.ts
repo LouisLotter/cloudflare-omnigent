@@ -188,7 +188,7 @@ describe("the platform Worker's settings and secrets", () => {
     const plan = await accountPlan();
     expect(platformVars(plan)).toEqual({
       CFO_INSTALLATION_ID: plan.installationId,
-      CFO_PLATFORM_FEATURES: "key-service github-setup mcp-services",
+      CFO_PLATFORM_FEATURES: "key-service github-setup mcp-services mcp-page",
       SERVER_ENV_OMNIGENT_ACCOUNTS_BASE_URL: "https://omnigent.example.test",
       SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
       SERVER_ENV_CFO_REPLICA_URL: "s3://cfo-canary-replica/omnigent",
@@ -214,8 +214,9 @@ describe("the platform Worker's settings and secrets", () => {
       expect(vars[PLATFORM_FEATURES_VAR]).toBe(PLATFORM_FEATURES.join(" "));
       expect(offersPlatformFeature(vars, "key-service")).toBe(true);
       expect(offersPlatformFeature(vars, "github-setup")).toBe(true);
+      expect(offersPlatformFeature(vars, "mcp-page")).toBe(true);
       expect(renderPlatformConfig(BASE.platform, plan).vars).toMatchObject({
-        [PLATFORM_FEATURES_VAR]: "key-service github-setup mcp-services",
+        [PLATFORM_FEATURES_VAR]: "key-service github-setup mcp-services mcp-page",
       });
     }
     expect(PLATFORM_FEATURES_VAR.startsWith(SERVER_ENV)).toBe(false);

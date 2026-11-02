@@ -8,7 +8,9 @@
 // Worker's own lines as Wrangler prints them. Access is a local stand-in with a synthetic owner.
 // No real account or Cloudflare resource is involved; every value is synthetic. The MCP service
 // itself is not reached here (the image only builds Omnigent's registry from the choices): calls
-// through the gateway are images/server/tests/integration/mcp_registry's.
+// through the gateway are images/server/tests/integration/mcp_registry's. Since WP8.14 the image
+// builds the registry whenever the key service is on, for Omnigent's own page (Settings → MCP →
+// Add MCP server): Omnigent lists MCP from the install on, with or without a chosen service.
 //
 //   docker build -f images/server/Dockerfile --target server -t cfo-wp510-server:runtime .
 //   node worker/test/e2e/mcp-services-e2e.ts [results.json]
@@ -394,7 +396,8 @@ async function main(): Promise<number> {
       return JSON.stringify(info.enabled_connections);
     };
 
-    // 1. The installation after `install`, before any service: the key service is on, MCP off.
+    // 1. The installation after `install`, before any service: the key service is on, and so is
+    // Omnigent's MCP page (WP8.14).
     await restart();
     await waitFor("wrangler dev", async () => (await fetch(`${local}/__e2e/cron`)).ok, 120_000);
     await waitFor(
@@ -402,7 +405,16 @@ async function main(): Promise<number> {
       async () => (await visit("/v1/info")).ok,
       300_000,
     );
-    check("before any service, Omnigent lists no MCP", (await listed()) === "[]", await listed());
+    check(
+      "before any service, Omnigent lists MCP for its own page",
+      (await listed()) === '["mcp"]',
+      await listed(),
+    );
+    check(
+      "the image's boot line says the page is on, with no service chosen",
+      /"mcp_registry": "on: the page"/.test(readServerLog()),
+      "",
+    );
 
     // 2. The installer's services step, with the Cloudflare stand-in.
     let state: BootstrapState = {
@@ -531,7 +543,7 @@ async function main(): Promise<number> {
     check(
       "the image's boot line says the key service and MCP are on (with no GitHub App)",
       /"key_service": "on"/.test(readServerLog()) &&
-        /"mcp_registry": "on: tracker"/.test(readServerLog()),
+        /"mcp_registry": "on: services tracker; the page"/.test(readServerLog()),
       "",
     );
 
@@ -562,11 +574,15 @@ async function main(): Promise<number> {
       `${back.outcome.kind} ${await listed()}`,
     );
 
-    // 2d. The last service off: Omnigent lists no MCP again.
+    // 2d. The last service off: Omnigent still lists MCP, for its page, and the step says where
+    // the service can be added there.
     const removed = await step({ kind: "remove", id: "tracker" });
     check(
-      "services remove tracker ends ready, and Omnigent lists no MCP",
-      removed.outcome.kind === "ready" && (await listed()) === "[]",
+      "services remove tracker ends ready, and Omnigent still lists MCP for its page",
+      removed.outcome.kind === "ready" &&
+        removed.outcome.page === true &&
+        (await listed()) === '["mcp"]' &&
+        removed.lines.join(" ").includes("Add MCP server"),
       `${removed.outcome.kind} ${await listed()}`,
     );
     check(

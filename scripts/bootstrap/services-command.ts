@@ -1,5 +1,6 @@
 // `bootstrap.ts services [add <id> [--origin <url>] | remove <id>]` (WP5.10): wires the MCP
-// services step (services.ts) to the installation's state file, its locks, the manifests this
+// services step (services.ts), optional since Omnigent's own page adds MCP servers (WP8.14), to
+// the installation's state file, its locks, the manifests this
 // checkout ships (images/server/services) and the bootstrap's own Cloudflare adapter, the one
 // `run` uses. Typed values come from the terminal, never an argument; the secrets reach
 // Cloudflare only through that adapter's transport (an unlinked file on a descriptor).
@@ -13,6 +14,7 @@ import { acquireLock } from "../staging/lock.ts";
 import { accountCloud } from "./cloud.ts";
 import {
   changeServices,
+  pageHint,
   readManifest,
   type ServiceManifest,
   type ServicesChange,
@@ -100,6 +102,7 @@ export async function servicesCommand(
   const installation = store.load().installation;
   const manifests = shippedManifests(options.root);
   if (options.action === undefined) {
+    console.log(pageHint(installation));
     console.log(`MCP services of ${installation.platformWorker} (this state file's record):`);
     for (const line of servicesListing(manifests, store.load().journal.mcpServices)) {
       console.log(`  ${line}`);

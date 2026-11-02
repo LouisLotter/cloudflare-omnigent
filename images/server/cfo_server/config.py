@@ -35,10 +35,12 @@ reach the app; nothing else under ``OMNIGENT_GITHUB_APP_`` or ``OMNIGENT_CREDENT
 App's private key in particular never does: Omnigent's linking does not use it, and it would let
 the server act as the App on every repository the App is installed on.
 
-**Omnigent's MCP registry** (WP5.10) is on when the installation turns on at least one of the
+**Omnigent's MCP registry** (WP5.10, WP8.14) is on whenever the key service is on, for the
+services administrators add on Omnigent's own page, and when the installation turns on one of the
 services the image ships (:mod:`cfo_server.mcp`): the app gets the registry, the OAuth state
-secret and the chosen services' client secrets, and nothing names a registry file
-(``OMNIGENT_MCP_REGISTRY`` is removed: the app builds the registry itself).
+secret and the chosen services' client secrets, and nothing names a registry file or loosens the
+destination rules (``OMNIGENT_MCP_REGISTRY`` and ``OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS`` are
+removed: the app builds the registry itself, with the platform's rules).
 """
 
 from __future__ import annotations
@@ -170,8 +172,10 @@ REMOVED_APP_ENV: tuple[str, ...] = (
     "LITESTREAM_ACCESS_KEY_ID",
     "LITESTREAM_SECRET_ACCESS_KEY",
     "OMNIGENT_ARTIFACT_URI",
-    # The app builds the MCP registry itself (WP5.10); a registry file would bypass the checks.
+    # The app builds the MCP registry itself (WP5.10); a registry file would bypass the checks,
+    # and Omnigent's own switch would loosen the page's destination rules (WP8.14).
     mcp.REGISTRY_ENV,
+    mcp.ALLOW_PRIVATE_ENV,
 )
 #: The artifact store's credentials, read by ``boto3`` in the app process only.
 ARTIFACT_CREDENTIALS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
@@ -771,8 +775,9 @@ def load(
     )
     passed = _passed_env(key_service, github)
     for name in sorted(env):
-        if (name.startswith(SCRUBBED_ENV_PREFIXES) and name not in passed) or name == (
-            mcp.REGISTRY_ENV
+        if (name.startswith(SCRUBBED_ENV_PREFIXES) and name not in passed) or name in (
+            mcp.REGISTRY_ENV,
+            mcp.ALLOW_PRIVATE_ENV,
         ):
             warnings.append(f"{name} removed: this image does not wire that integration")
 
@@ -859,16 +864,18 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
             if value is not None:
                 out[name] = value
     # The MCP choices stay where the app reads them (cfo_server.mcp); the client secrets of
-    # services that are off, and the OAuth state secret while no service needs it, do not.
+    # services that are off, and the OAuth state secret while the registry is off, do not.
     kept = set(config.mcp.secret_env)
     for name in list(out):
         if name.startswith(mcp.CLIENT_SECRET_ENV) and name not in kept:
             del out[name]
     if not config.mcp.enabled:
-        # MCP is off: the app process reads no choice either, so its own parse of this
-        # environment comes to the same decision without the secrets just removed (Codex WP5.10
-        # r1-2).
         out.pop(mcp.STATE_SECRET_ENV, None)
+    if not config.mcp.services and config.mcp.off_reason != "incomplete":
+        # No chosen service: the app process reads no choice either. A choice whose prerequisite
+        # is missing stays, so the app's own parse of this environment, without the secrets just
+        # removed, finds it missing too and turns MCP off as well, rather than on for the page
+        # (Codex WP5.10 r1-2).
         out.pop(mcp.SERVICES_ENV, None)
     if config.artifacts.uri is not None:
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri

@@ -512,8 +512,16 @@ export const PLATFORM_FEATURES_VAR = "CFO_PLATFORM_FEATURES";
  * Worker's (`WEB_FEATURES`).
  * `mcp-services`: the server's MCP report on its status line (`mcpRegistry`, `mcpRevision`),
  * which the `services` step waits for, and an image that ships the MCP manifests (WP5.10).
+ * `mcp-page`: an image that builds Omnigent's MCP registry whenever the key service is on, so
+ * Omnigent's own page adds MCP servers with no service chosen (Omnigent lists MCP then too), and
+ * the page's servers counted on the status line in an update's window (WP8.14).
  */
-export const PLATFORM_FEATURES: readonly string[] = ["key-service", "github-setup", "mcp-services"];
+export const PLATFORM_FEATURES: readonly string[] = [
+  "key-service",
+  "github-setup",
+  "mcp-services",
+  "mcp-page",
+];
 
 /**
  * What the web Worker's code offers that an installer step relies on (WP3.36), as for the

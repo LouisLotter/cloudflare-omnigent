@@ -38,8 +38,9 @@
 //     `SERVER_ENV_CFO_MAINTENANCE_WINDOW`, nothing is passed to the server (`fetch` answers 503,
 //     and so does the password page's change), the watchdog still checks it directly, and the
 //     status line says so (`maintenance`) with the restore point the server reports
-//     (`restorePoint`). A server held after its rollback is logged as `rolled_back`, with the
-//     restore point ordered, at every check while it is held.
+//     (`restorePoint`) and the MCP servers added on Omnigent's page it counted at its start
+//     (`mcpAdminServices`, WP8.14). A server held after its rollback is logged as `rolled_back`,
+//     with the restore point ordered, at every check while it is held.
 //
 // Persist before effect: each watchdog step's state and outage records are written in one
 // transaction before the container is started or destroyed.
@@ -94,7 +95,7 @@ import {
   restorePointOf,
   rollbackOrderOf,
 } from "./maintenance.ts";
-import { mcpRegistryOf, mcpRevisionOf } from "./mcp-services.ts";
+import { mcpAdminServicesOf, mcpRegistryOf, mcpRevisionOf } from "./mcp-services.ts";
 import {
   constantTimeEqual,
   cookieSecretOf,
@@ -971,11 +972,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     );
     const info = await this.#read(container, OMNIGENT_PORT, "/v1/info");
     const after = await this.#read(container, REPLICATION_POSITION_PORT, REPLICATION_POSITION_PATH);
-    // In an update's window (WP3.41), the restore point the server reports: read only then.
-    const restorePoint =
-      window === null
-        ? null
-        : restorePointOf(await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH));
+    // In an update's window (WP3.41), the restore point the server reports, and the MCP servers
+    // added on Omnigent's page it counted at its start (WP8.14): read only then.
+    const entrypoint =
+      window === null ? null : await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH);
+    const restorePoint = window === null ? null : restorePointOf(entrypoint);
+    const mcpAdminServices = window === null ? null : mcpAdminServicesOf(entrypoint);
     const check = checkBootstrap(
       this.env.CFO_INSTALLATION_ID,
       stored.target,
@@ -1038,6 +1040,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         // configuration.
         mcpRevision: mcpRevisionOf(this.env as unknown as Record<string, unknown>),
         mcpRegistry: mcpRegistryOf(info),
+        // WP8.14: inside an update's window, how many MCP servers added on Omnigent's page the
+        // update's restore point recorded and how many of those Omnigent serves (counts only;
+        // null outside the window or when the server does not say). The update accepts only a
+        // restart that serves them all.
+        mcpAdminServices,
         // WP3.41: the update's read-only window this version holds (its ID, null for none), and
         // the restore point the answering server reports while it is open. The update accepts
         // its release only from a line of its own version naming both.

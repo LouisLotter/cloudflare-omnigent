@@ -97,26 +97,30 @@ From then on, git and gh on your cloud computers act as you on those repositorie
 
 An installation made before GitHub linking, or before its setup page, needs updating first (below); the command says so, and changes nothing until then.
 
-## Connected services (MCP), optional
+## Add an MCP server
 
-Omnigent can give your agents tools from other services, such as GitHub's, through its own MCP registry: Omnigent's server holds your sign-in to each service and calls the service for your agents, so the sign-in never reaches a cloud computer. This release ships three services: a demo service for testing, GitHub's MCP server, which uses the GitHub link above, and OpenRouter's MCP server, which gives agents OpenRouter's model catalog and lets them call other models on your OpenRouter API key, including image and speech models: the pictures and audio they make are saved as files on the computer the agent works on. To see them, run:
+Omnigent can give your agents tools from other services through MCP servers. Omnigent's server keeps your sign-in to each one and calls it for your agents, so the sign-in never reaches a cloud computer. You add a server in Omnigent itself, with nothing to run:
 
-```bash
-node scripts/bootstrap/bootstrap.ts services
-```
+1. Open your installation and go to **Settings → MCP**, then **Add MCP server**.
+2. Choose **Start from** to begin with a server this release knows (OpenRouter's, or a demo service for testing), or fill in your own: a name, the server's address (an `https://` URL the server's documentation gives), and its **Login**: **None**, **API token** (each person pastes their own), or **Sign in** (each person signs in at the service with OAuth; Omnigent finds the service's sign-in pages and registers itself there, or you enter the client ID and secret the service gave you). Click **Save and continue**.
+3. **Sign in** at the service when it asks (for OAuth), or paste your API token. Then **Discover tools** lists what the server offers: tick the **tools agents may use**, and save. Until you do, only you see the server, so you can set it up first.
+4. In a new conversation, turn the server on in the **MCPs** picker above the message box. Your choice is remembered for the next conversation.
 
-To turn one on (here GitHub's; set up GitHub linking first):
+It is live at once: the server does not restart. Anyone else on your installation connects their own account in Settings → MCP (**Connect**, then sign in or **Save token**). OpenRouter's server, for one, takes an OpenRouter API key: create one with a credit limit at openrouter.ai, under Keys, since every model call your agents make through it is billed to that key; the pictures and audio they make are saved as files on the computer the agent works on.
+
+Omnigent checks every address before it saves it and again on every connection: only `https`, a public server (never your own network, the loopback or a cloud's internal addresses), and no password or query in the address. It does not follow a server's redirects, so give the exact address the server's documentation names (a trailing slash can matter). If you change a server's address, how it signs in or its OAuth settings, Omnigent deletes the sign-ins saved for it, and everyone connects again; changing its name or its tools keeps them.
+
+If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. For a server connected with a token, click **Update token** instead and save a new one. To stop using a server, click **Disconnect** in Settings → MCP; to take it away from everyone, **Remove** it there, which also deletes everyone's sign-ins to it. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site; a token you pasted keeps working elsewhere until you delete it on the service's site. An installation made before this page needs updating first (below).
+
+### GitHub's MCP server, and the command-line way
+
+GitHub's MCP server uses the GitHub link above rather than a sign-in of its own, which the page cannot set up. Turn it on with the installer, once GitHub linking is set up:
 
 ```bash
 node scripts/bootstrap/bootstrap.ts services add github
 ```
 
-1. If the service needs something from you, the command asks for it in the terminal: the service's address (or give it with `--origin https://…`), or an OAuth client's ID and secret, which are never shown as you type. It checks them before changing anything.
-2. It stores your choice in Cloudflare and waits while Omnigent's server restarts once to take it up (a few minutes).
-3. It ends with "Ready" and the link to Omnigent's **Settings → MCP**. There, click **Connect** next to the service and sign in at the service; for OpenRouter, paste an OpenRouter API key instead (create one with a credit limit at openrouter.ai, under Keys: every model call your agents make is billed to it). **Test connection** lists the tools it offers.
-4. In a new conversation, turn the service on in the **MCPs** picker above the message box. Your choice is remembered for the next conversation.
-
-If the service stops accepting your sign-in (you removed Omnigent's access on its site, or it expired), Settings → MCP and the picker say **Reconnect needed**: click **Reconnect** and sign in again. For a service connected with a key, such as OpenRouter, click **Update token** instead and save a new key. To stop using a service, click **Disconnect** in Settings → MCP; to remove it from the installation, run `services remove <name>`. Disconnecting deletes your sign-in from Omnigent at once, but the service still lists Omnigent as allowed until you remove it on the service's own site; a key you pasted, such as OpenRouter's, keeps working elsewhere until you delete it on the service's site. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it. An installation made before this feature needs updating first (below); the command says so.
+It stores your choice in Cloudflare, waits while Omnigent's server restarts once to take it up (a few minutes), and ends with "Ready" and the link to Settings → MCP. `services` without anything after it lists the services this release ships, and `services add <name>` turns on any of them the same way (if one needs something from you, such as the demo service's address, the command asks in the terminal, or take `--origin https://…`; an OAuth client's secret is never shown as you type). A service turned on this way is fixed in the installation: Settings → MCP shows it without an edit button, and `services remove <name>` turns it off. It also takes the place of a server of the same name added on the page, so use one way or the other for each. If the command ends with "held" (exit status 1), the server did not start with the change: run the `services remove` command it names to undo it.
 
 ## Your own machines as hosts (optional)
 
@@ -132,7 +136,7 @@ pnpm install --frozen-lockfile
 node scripts/bootstrap/bootstrap.ts update
 ```
 
-It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key or the keys Omnigent stores your service sign-ins with. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers, that your account is still there and stored safely, and that GitHub linking and your MCP services, if you set them up, still work; then it ends with the link to open.
+It deploys the new release to both parts of your installation, with the same names, storage and settings, and adds anything the release needs that your installation lacks, such as the cloud computers' signing key or the keys Omnigent stores your service sign-ins with. Your data, your password, your sign-ins and your GitHub App stay. The server restarts once on the new release, and the command waits for that (usually 10 to 15 minutes, as the images are built again), checks that the server answers, that your account is still there and stored safely, and that GitHub linking and your MCP servers, if you set them up, still work (every server added on the page among them); then it ends with the link to open.
 
 Every update can be undone until it is checked, and not after:
 

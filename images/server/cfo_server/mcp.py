@@ -1,5 +1,19 @@
-"""Omnigent's MCP registry on the platform (WP5.10): the shipped manifests and the installation's
-choices, checked, as the registry configuration Omnigent's ``McpRegistryConfig`` accepts.
+"""Omnigent's MCP registry on the platform (WP5.10, WP8.14): the services administrators add on
+Omnigent's own page, the shipped manifests as that page's presets, and the installation's choices,
+checked, as the registry configuration Omnigent's ``McpRegistryConfig`` accepts.
+
+**The page** (owner decision D57): Omnigent's Settings → MCP → Add MCP server, where an
+administrator adds a service at run time with its URL, login type and tools; Omnigent keeps it in
+its database (``McpServiceStore``) and its secrets in the credential store, and it is live without
+a restart. The registry is built whenever the key service is on, so the page is there with or
+without a chosen service; Omnigent's own ``OMNIGENT_MCP_ADMIN_SERVICES=0`` turns it off. Page
+services are checked against the platform's destination rules
+(:class:`PlatformDestinationPolicy`), which Omnigent applies when a service is saved and on every
+connection it opens for one, and Omnigent refuses their redirects.
+
+**Presets** are the shipped manifests the page can take (login type none, an API token or OAuth;
+not GitHub's own link), offered as starting points in its Add form unless the installation's
+choices already turn them on. ``${origin}`` becomes a placeholder the administrator replaces.
 
 A **manifest** is one Omnigent registry entry (``McpService``) that ships in the image, under
 ``images/server/services/<id>.json`` in the repository and ``/opt/cfo/services`` in the image,
@@ -32,15 +46,18 @@ The **installation's choices** are server settings the installer stores as Worke
 to (``url``, ``authorize_url``, ``token_url``): ``https`` only; no user name, password, query or
 fragment; a host name, never an IP literal; not ``localhost`` or under ``.localhost``,
 ``.internal`` or ``.local``; a top-level label that is a real one (letters, or ``xn--``), so no
-numeric host like ``2130706433`` either. Omnigent itself refuses redirects. A name that resolves
-to a private address is not caught here: DNS is outside the image's control, and only the
-installer chooses origins.
+numeric host like ``2130706433`` either. For a manifest and the installation's choices they are
+checked here, at every start; Omnigent does not follow their redirects (the MCP SDK's same-origin
+ones aside), and a name that resolves to a private address is not caught, since only the
+installer chooses those origins. For a page service, Omnigent checks the same rules through
+:class:`PlatformDestinationPolicy`, also every address the host resolves to (no loopback,
+private, link-local or other non-public range), and refuses every redirect.
 
 Every problem is a :class:`~cfo_server.config.ConfigError` that names the setting or the
 manifest's field and never repeats a value: the start stops with exit 78. ``CFO_ALLOW_LOOPBACK_MCP``
 allows ``http://127.0.0.1`` and ``http://localhost`` destinations instead, for tests only (the
-entry then carries Omnigent's ``allow_http``), as ``CFO_ALLOW_LOOPBACK_KEY_SERVICE`` does for the
-key service.
+entry then carries Omnigent's ``allow_http``, and the page's rules allow loopback addresses), as
+``CFO_ALLOW_LOOPBACK_KEY_SERVICE`` does for the key service.
 """
 
 from __future__ import annotations
@@ -48,7 +65,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,12 +86,25 @@ STATE_SECRET_ENV = "OMNIGENT_MCP_OAUTH_STATE_SECRET"
 REGISTRY_ENV = "OMNIGENT_MCP_REGISTRY"
 #: Omnigent's minimum for the state secret (``McpRegistry.__init__``).
 MIN_STATE_SECRET_CHARS = 32
+#: Omnigent's own switch for its MCP page (``omnigent/server/mcp_registry.py``): ``0`` turns off
+#: the services administrators add there. The app reads it too, so both decide alike.
+ADMIN_SERVICES_ENV = "OMNIGENT_MCP_ADMIN_SERVICES"
+#: Omnigent's switch that loosens its default destination rules
+#: (``omnigent/server/mcp_destinations.py``). Removed from the app's environment: the image
+#: passes the platform's rules, and nothing else may decide them.
+ALLOW_PRIVATE_ENV = "OMNIGENT_MCP_ALLOW_PRIVATE_DESTINATIONS"
 #: The test switch: loopback HTTP destinations allowed.
 ALLOW_LOOPBACK_ENV = "CFO_ALLOW_LOOPBACK_MCP"
 
 ASKS = ("origin", "client_id", "client_secret")
 #: The auth modes a manifest may use: Omnigent's, without Databricks, which the image never wires.
 AUTH_MODES = ("none", "bearer", "oauth", "github")
+#: The auth modes Omnigent's page takes (``McpServicePreset``, ``AdminServiceSettings``). A
+#: manifest with another (GitHub's own link) is offered only through the installer's ``services``.
+PAGE_AUTH_MODES = ("none", "bearer", "oauth")
+#: What ``${origin}`` becomes in a preset: a placeholder for the administrator to replace, which
+#: the destination rules refuse until then.
+PRESET_ORIGIN = "https://<your-host>"
 #: A service ID: Omnigent's pattern without ``_``, so that ``<KEY>`` names one service only.
 SERVICE_ID = re.compile(r"[a-z][a-z0-9-]{0,39}")
 TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
@@ -112,13 +142,67 @@ class McpRegistrySettings:
     enabled: bool = False
     #: Why it is off, for the start's log (names only); ``None`` when on.
     off_reason: str | None = "not configured"
-    #: The services that are on, in the order chosen.
+    #: The installation's chosen services that are on, in the order chosen (the registry's
+    #: ``services``, read-only on the page).
     services: tuple[str, ...] = ()
-    #: Omnigent's ``McpRegistryConfig`` as data: ``public_url`` and the entries. Client secrets
-    #: appear only as the names of the variables that hold them.
+    #: Whether administrators may add services on Omnigent's MCP page: the registry gets a
+    #: service store (WP8.14).
+    admin_services: bool = False
+    #: The test switch (``CFO_ALLOW_LOOPBACK_MCP``): the page's rules also allow the loopback.
+    allow_loopback: bool = False
+    #: Omnigent's ``McpRegistryConfig`` as data: ``public_url``, the entries and the page's
+    #: presets. Client secrets appear only as the names of the variables that hold them.
     registry: Mapping[str, Any] | None = field(default=None, compare=False)
     #: The variables the app process must keep: the client secrets the entries name.
     secret_env: tuple[str, ...] = ()
+
+    def summary(self) -> str:
+        """For the start's log line: what is on, by name, or why it is off."""
+        if not self.enabled:
+            return f"off: {self.off_reason}"
+        parts = [f"services {', '.join(self.services)}"] if self.services else []
+        parts.append("the page" if self.admin_services else "no page")
+        return f"on: {'; '.join(parts)}"
+
+
+@dataclass(frozen=True)
+class PlatformDestinationPolicy:
+    """The platform's destination rules as Omnigent's ``McpDestinationPolicy``, for the services
+    administrators add on Omnigent's page (WP8.14). Omnigent checks them when a service is saved
+    (its URLs, and every address the host resolves to), on every connection it opens for one (the
+    address again, the connection pinned to it, so a name that later resolves elsewhere is
+    refused), and on the URLs its OAuth discovery and client registration read; it never follows a
+    redirect for these services.
+
+    A URL must pass the platform's rules (:func:`destination_problem`) and Omnigent's own default
+    ones (``DefaultMcpDestinationPolicy``: at most 2048 ASCII characters, and no ``.localdomain``
+    or ``.home.arpa`` host either). An address must be public (Omnigent's ``globally_routable``:
+    no loopback, private, link-local, shared, reserved or multicast range, nor an IPv4 address of
+    one inside an IPv6 address). With ``allow_loopback`` (``CFO_ALLOW_LOOPBACK_MCP``, tests only),
+    ``http://127.0.0.1`` and ``http://localhost`` and loopback addresses are allowed too.
+    """
+
+    allow_loopback: bool = False
+
+    def url_problem(self, url: str) -> str | None:
+        """Why *url* is refused, in words that never repeat it; ``None`` if allowed."""
+        from omnigent.server.mcp_destinations import DefaultMcpDestinationPolicy
+
+        problem = destination_problem(url, allow_loopback=self.allow_loopback)
+        if problem is not None:
+            return problem
+        # Only the loopback names pass the platform's rules over http (the test switch), which
+        # Omnigent's default refuses unless it allows private destinations.
+        loopback = self.allow_loopback and url.lower().startswith("http:")
+        return DefaultMcpDestinationPolicy(allow_private=loopback).url_problem(url)
+
+    def address_allowed(self, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        """Whether the server may connect to *address*."""
+        from omnigent.server.mcp_destinations import globally_routable
+
+        if self.allow_loopback and address.is_loopback:
+            return True
+        return globally_routable(address)
 
 
 def env_key(service_id: str) -> str:
@@ -357,6 +441,60 @@ def registry_entry(
     return entry, secret_env
 
 
+def presets(
+    manifests: Mapping[str, Manifest], chosen: Collection[str] = ()
+) -> list[dict[str, Any]]:
+    """Omnigent's presets for its page's Add form (``McpServicePreset``), from the shipped
+    manifests: each the page can take (:data:`PAGE_AUTH_MODES`) and the installation's choices do
+    not already turn on (a registry entry with that ID would hide a page service of it), by ID.
+
+    ``${origin}`` becomes :data:`PRESET_ORIGIN`; OAuth endpoints with it are left out, so the
+    page discovers them from the URL the administrator enters. Never a secret: a manifest that
+    asks for an OAuth client gives no client ID either.
+    """
+
+    def url(value: str) -> str:
+        if value.startswith(ORIGIN_PLACEHOLDER):
+            return PRESET_ORIGIN + value[len(ORIGIN_PLACEHOLDER) :]
+        return value
+
+    out: list[dict[str, Any]] = []
+    for service_id in sorted(manifests):
+        service = manifests[service_id].service
+        if service["auth"] not in PAGE_AUTH_MODES or service_id in chosen:
+            continue
+        preset: dict[str, Any] = {
+            "id": service_id,
+            "title": service["title"],
+            "description": service.get("description", ""),
+            "url": url(service["url"]),
+            "auth": service["auth"],
+            "tools": list(service["tools"]),
+            "timeout": service.get("timeout", 60),
+        }
+        oauth = service.get("oauth")
+        if oauth is not None:
+            hints: dict[str, Any] = {"scopes": list(oauth.get("scopes", []))}
+            if "client_id" in oauth:
+                hints["client_id"] = oauth["client_id"]
+            if oauth.get("resource"):
+                hints["resource"] = url(oauth["resource"])
+            if not any(oauth[k].startswith(ORIGIN_PLACEHOLDER) for k in _OAUTH_URL_FIELDS):
+                hints.update({k: oauth[k] for k in _OAUTH_URL_FIELDS})
+            preset["oauth"] = hints
+        out.append(preset)
+    return out
+
+
+def _callback_base_ok(public_url: str) -> bool:
+    """Omnigent's own rule for its OAuth callbacks (``McpRegistryConfig``): https, or http on the
+    loopback only."""
+    parts = urlsplit(public_url)
+    return parts.scheme == "https" or (
+        parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
+    )
+
+
 def build_settings(
     env: Mapping[str, str],
     *,
@@ -367,35 +505,31 @@ def build_settings(
     manifests: Mapping[str, Manifest] | None = None,
     allow_loopback: bool = False,
 ) -> McpRegistrySettings:
-    """The registry from the installation's choices.
+    """The registry from the installation's choices and Omnigent's page (WP8.14).
 
-    - No service chosen: off, quietly.
+    - On whenever the key service is on, which Omnigent needs to seal the logins of the services
+      administrators add on its page, or when a service is chosen; off, quietly, with neither.
+    - The page is on with the registry, unless ``OMNIGENT_MCP_ADMIN_SERVICES=0``. Its presets
+      are the shipped manifests it can take that no choice turns on.
     - A chosen service the image does not ship, or a malformed choice: :class:`ManifestError`
       (exit 78).
-    - A prerequisite missing: off, with a warning naming it (never a value), as a
-      half-configured GitHub App is (WP5.9). Logins (``oauth``, ``bearer``) need the key
-      service; OAuth needs the state secret.
+    - A chosen service's prerequisite missing: off, the page too, with a warning naming it
+      (never a value), as a half-configured GitHub App is (WP5.9), so that Omnigent listing MCP
+      always means every chosen service is on. Logins (``oauth``, ``bearer``) need the key
+      service; OAuth needs the state secret. The choices are then not checked further.
     - ``github`` services with GitHub linking off: on, with a warning; Omnigent then asks the
       owner to connect GitHub.
     """
     chosen = parse_services(env.get(SERVICES_ENV))
-    if not chosen:
-        return McpRegistrySettings(off_reason="no services chosen")
+    if not chosen and not key_service:
+        return McpRegistrySettings(off_reason="no key service and no services chosen")
     shipped = load_manifests() if manifests is None else manifests
     unknown = [s for s in chosen if s not in shipped]
     if unknown:
         raise ManifestError(f"{SERVICES_ENV} names a service this image does not ship")
     picked = [shipped[s] for s in chosen]
-    if any(m.service.get("auth") == "oauth" for m in picked):
-        # Omnigent's own rule for its OAuth callbacks (``McpRegistryConfig``): https, or http on
-        # the loopback only.
-        parts = urlsplit(public_url)
-        if parts.scheme != "https" and not (
-            parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
-        ):
-            raise ManifestError(
-                "OMNIGENT_ACCOUNTS_BASE_URL must be https for an MCP service's sign-in"
-            )
+    if any(m.service.get("auth") == "oauth" for m in picked) and not _callback_base_ok(public_url):
+        raise ManifestError("OMNIGENT_ACCOUNTS_BASE_URL must be https for an MCP service's sign-in")
     missing: list[str] = []
     if not key_service and any(m.service.get("auth") in ("oauth", "bearer") for m in picked):
         missing.append("the key service's signing pair (OMNIGENT_CREDENTIAL_HTTP_SIGNING_KEY[_ID])")
@@ -411,23 +545,35 @@ def build_settings(
             raise ManifestError(
                 f"{STATE_SECRET_ENV} must be {MIN_STATE_SECRET_CHARS}-4096 printable characters"
             )
+    if missing:
+        # The whole registry, the page with it: Omnigent listing MCP then says every chosen
+        # service is on (Codex WP8.14 r1-2). Checked before the entries, which may need the
+        # client secrets the app process no longer gets while MCP is off.
+        warnings.append(f"MCP services are off, Omnigent's page too: {', '.join(missing)} not set")
+        return McpRegistrySettings(off_reason="incomplete")
     entries: list[dict[str, Any]] = []
     secret_env: list[str] = []
     for manifest in picked:
         entry, names = registry_entry(manifest, env, allow_loopback=allow_loopback)
         entries.append(entry)
         secret_env.extend(names)
-    if missing:
-        warnings.append(f"MCP services are off: {', '.join(missing)} not set")
-        return McpRegistrySettings(off_reason="incomplete")
     if not github_linking and any(m.service.get("auth") == "github" for m in picked):
         warnings.append(
             "an MCP service uses GitHub linking, which is off: it asks to connect GitHub"
         )
+    admin_services = (env.get(ADMIN_SERVICES_ENV) or "").strip() != "0"
     return McpRegistrySettings(
         enabled=True,
         off_reason=None,
         services=chosen,
-        registry={"public_url": public_url, "services": entries},
+        admin_services=admin_services,
+        allow_loopback=allow_loopback,
+        registry={
+            # Omnigent refuses a callback base it would not use; the page's OAuth services then
+            # say the public URL is missing (a test's plain-http installation only).
+            "public_url": public_url if _callback_base_ok(public_url) else None,
+            "services": entries,
+            "presets": presets(shipped, chosen) if admin_services else [],
+        },
         secret_env=tuple(secret_env),
     )

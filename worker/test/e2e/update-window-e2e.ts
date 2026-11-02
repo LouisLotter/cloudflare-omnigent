@@ -14,8 +14,9 @@
 //   1. An installation, released: its owner, and a write.
 //   2. Update A: the window opens; the new server takes its restore point before Omnigent starts;
 //      while the update is unchecked, no request reaches Omnigent (reads and writes, the password
-//      page); the update then checks and accepts it, and writes work again. Restoring the restore
-//      point gives exactly the database from before the update.
+//      page); the update then checks and accepts it (its status lines counting the MCP servers
+//      added on Omnigent's page, WP8.14), and writes work again. Restoring the restore point gives
+//      exactly the database from before the update.
 //   3. Update B, whose check does not pass in time: a write lands inside the window by a hand that
 //      reaches the database directly (as a migration would); `update --rollback` puts the restore
 //      point back and the previous versions, and deletes update B's versions; the database is the
@@ -728,6 +729,17 @@ async function main(): Promise<number> {
         current.secrets[MAINTENANCE_WINDOW_SECRET] === undefined &&
         state.journal.restorePoints?.[0]?.outcome === "accepted",
       JSON.stringify(acceptedA),
+    );
+    // WP8.14: inside the window, the status lines carried the MCP servers added on Omnigent's page
+    // that the restarted server counted, from the real entrypoint and app: none held, none served.
+    check(
+      "inside window A, the status lines counted the MCP servers added on the page (0 held, 0 served)",
+      printed.some(
+        (p) =>
+          p.line.cfo === "bootstrap" &&
+          p.line.maintenance === idA &&
+          JSON.stringify(p.line.mcpAdminServices) === '{"stored":0,"served":0}',
+      ),
     );
     await serverAnswers();
     check(

@@ -15,7 +15,13 @@ In order (code-structure plan, ``images/server``):
    domains, an empty server config; stale sharing override files are removed. Omnigent's
    artifacts go to their own S3 bucket (``OMNIGENT_ARTIFACT_URI``, checked in step 1): the
    local artifact directory holds only Omnigent's cache.
-5. **Litestream, then Omnigent.** ``litestream replicate`` starts first; once its control
+5. **Litestream, then Omnigent.** Before either starts, ``/status`` records which services
+   administrators added on Omnigent's MCP page this start expects (``mcpAdminServices.stored``,
+   a count, WP8.14): those the update's restore point recorded when it was taken, so every start
+   in the window compares with the same ones, else those the database holds now. The app
+   reports which it serves once it is built (the file ``CFO_MCP_REPORT`` names), and ``served``
+   counts the expected ones among them, so an update can tell whether its restart lost any.
+   ``litestream replicate`` starts first; once its control
    socket lists the database, the app starts (:mod:`cfo_server.app`). Both are supervised: if
    either exits, the other is stopped. ``/status`` says ``initializing`` while the app starts
    (Python's imports, Omnigent's migrations, ``create_app``, the owner check) and ``running``
@@ -63,7 +69,7 @@ from urllib.parse import urlsplit
 from cfo_server import buildinfo
 from cfo_server import config as image_config
 from cfo_server import restore_point as restore_points
-from cfo_server.dbcheck import check_database
+from cfo_server.dbcheck import admin_service_ids, check_database
 from cfo_server.events import log
 from cfo_server.httpd import (
     REPLICATION_POSITION_PORT,
@@ -84,6 +90,9 @@ EXIT_CONFIG = 78
 #: The rollback put the restore point back: the watchdog holds the server until the
 #: configuration changes. Only rollback mode exits with it (an app's own 79 is reported as 71).
 EXIT_ROLLED_BACK = 79
+
+#: The app's report of the page's MCP services it serves, in the run directory (WP8.14).
+MCP_REPORT_NAME = "mcp-services.json"
 
 #: Sharing override files Omnigent's own ``PUT /v1/sharing`` would write. Authoritative mode
 #: never reads them; any found at start are removed so nothing stale lingers.
@@ -528,6 +537,11 @@ class Supervisor:
         app_env = image_config.app_environment(self.config, self.env)
         app_env["CFO_DB_PATH"] = str(layout.db_path)
         app_env["CFO_LITESTREAM_SOCKET"] = str(layout.litestream_socket)
+        # The app's report of the page's MCP services it serves (WP8.14): never an earlier app's.
+        report = layout.run_dir / MCP_REPORT_NAME
+        report.unlink(missing_ok=True)
+        app_env["CFO_MCP_REPORT"] = str(report)
+        self.board.app_report = report
         app_env.update(dict(layout.app_env_overrides))
         # Until the app answers its health check it is initializing: imports, migrations,
         # create_app and the owner check, which take minutes on a large database (AIR2-010).
@@ -654,13 +668,21 @@ def take_restore_point(
     decision: Ready,
     board: StatusBoard,
     should_stop: Callable[[], bool],
+    *,
+    admin_services: list[str] | None = None,
 ) -> int | None:
     """The update's restore point, before anything replicates or the app starts; ``None`` once
-    it exists, else the exit code. A new installation has nothing to protect."""
+    it exists, else the exit code. A new installation has nothing to protect.
+
+    It records the page's MCP services the database holds (``admin_services``, WP8.14) when it
+    is taken, and this start then expects those it recorded: a later start in the same window
+    compares with the services from before the update, never a database a failed start changed.
+    """
     rp_id = config.restore_point
     assert rp_id is not None
     if decision.source == "fresh":
         log("restore_point.skipped", restore_point=rp_id, reason="no backup yet")
+        board.expect_admin_services([])
         return None
     started = time.monotonic()
     try:
@@ -676,6 +698,7 @@ def take_restore_point(
             deadline=started + config.restore_deadline_s,
             should_stop=should_stop,
             log=log,
+            admin_services=admin_services,
         )
     except Exception as exc:  # noqa: BLE001 - any failure: nothing starts, the watchdog retries
         log(
@@ -687,6 +710,8 @@ def take_restore_point(
         return _unless_stopped(should_stop, EXIT_RESTORE_POINT_FAILED)
     summary = taken.manifest.summary()
     board.update(restorePoint=summary)
+    # A restore point from an image before WP8.14 recorded none: unknown, never guessed.
+    board.expect_admin_services(taken.manifest.admin_services)
     log(
         "restore_point.taken" if taken.new else "restore_point.present",
         restore_point=rp_id,
@@ -809,11 +834,7 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         # The credential store's key service, and Omnigent's MCP registry with the services on
         # (WP5.10). Names only.
         key_service="on" if config.key_service is not None else "off",
-        mcp_registry=(
-            f"on: {', '.join(config.mcp.services)}"
-            if config.mcp.enabled
-            else f"off: {config.mcp.off_reason}"
-        ),
+        mcp_registry=config.mcp.summary(),
         # An update's read-only window (WP3.41): Omnigent starts without its scheduler.
         maintenance=config.maintenance,
     )
@@ -866,12 +887,24 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
 
         if supervisor.stop_requested:
             return EXIT_OK
+        # The page's MCP services in the database this start begins from (WP8.14), before
+        # Omnigent or its migrations run. A new installation has no database file yet, and so
+        # none. Inside an update's window, the restore point's record of them is what counts.
+        admin_services = admin_service_ids(layout.db_path) if decision.source != "fresh" else []
         if config.restore_point is not None:
             failed = take_restore_point(
-                config, layout, env, decision, board, lambda: supervisor.stop_requested
+                config,
+                layout,
+                env,
+                decision,
+                board,
+                lambda: supervisor.stop_requested,
+                admin_services=admin_services,
             )
             if failed is not None:
                 return failed
+        else:
+            board.expect_admin_services(admin_services)
         write_settings_files(config, layout)
         return supervisor.run()
     finally:

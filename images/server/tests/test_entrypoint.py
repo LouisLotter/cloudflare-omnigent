@@ -94,8 +94,10 @@ class Rig:
         return image_config.load(env)
 
     # replica seeding ----------------------------------------------------------------------
-    def seed(self, *, with_owner: bool, rows: int = 3) -> None:
-        """Replicate a database into the replica, then lose the local copy."""
+    def seed(self, *, with_owner: bool, rows: int = 3, page_services: int | None = None) -> None:
+        """Replicate a database into the replica, then lose the local copy. ``page_services``:
+        Omnigent's table of MCP servers added on its page, with that many live rows (and one
+        removed, and one of another workspace)."""
         env = self.env()
         layout = self.layout()
         config = self.config(env)
@@ -116,6 +118,15 @@ class Rig:
         conn.execute("CREATE TABLE t (value TEXT)")
         for i in range(rows):
             conn.execute("INSERT INTO t VALUES (?)", (f"seed-{i}",))
+        if page_services is not None:
+            conn.execute(
+                "CREATE TABLE mcp_registry_services "
+                "(workspace_id INTEGER, service_id TEXT, deleted_at INTEGER)"
+            )
+            for i in range(page_services):
+                conn.execute("INSERT INTO mcp_registry_services VALUES (0, ?, NULL)", (f"s{i}",))
+            conn.execute("INSERT INTO mcp_registry_services VALUES (0, 'removed', 1)")
+            conn.execute("INSERT INTO mcp_registry_services VALUES (7, 'elsewhere', NULL)")
         proc = subprocess.Popen(
             [str(self.litestream_bin), "replicate", *entrypoint.litestream_base_args(layout)],
             env=image_config.litestream_environment(env),
@@ -556,6 +567,45 @@ def test_status_and_boot_line_report_the_image_build(rig: Rig) -> None:
     assert rig.stop() == entrypoint.EXIT_OK
     (boot,) = rig.events("boot")
     assert boot["omnigent_commit"] == record["omnigentCommit"]
+
+
+@requires_litestream
+def test_status_counts_the_page_servers_before_the_app_and_then_what_it_serves(rig: Rig) -> None:
+    """WP8.14: how many MCP servers added on Omnigent's page the restored database holds, read
+    before the app starts, and how many the app reports serving once it is built."""
+    rig.seed(with_owner=True, page_services=2)
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_START_DELAY_S": "3"})
+    status = rig.wait_phase("initializing")
+    assert status["mcpAdminServices"] == {"stored": 2, "served": None}
+    rig.wait_app()
+    status = rig.wait_phase("running")
+    assert status["mcpAdminServices"] == {"stored": 2, "served": None}  # this app never reports
+    assert rig.stop() == entrypoint.EXIT_OK
+    # The app's report, as the image's app writes it; an earlier one never counts.
+    stale = rig.run_dir / entrypoint.MCP_REPORT_NAME
+    stale.write_text('{"served": ["s0", "s1"]}')
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "s1"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    # Served counts the expected ones only: another service does not make up for a lost one.
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "s0,other"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    # A report it cannot read says nothing.
+    rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "Not An ID"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": None}
+    assert rig.stop() == entrypoint.EXIT_OK
+
+
+@requires_litestream
+def test_status_counts_none_before_omnigents_migration_adds_the_table(rig: Rig) -> None:
+    rig.start(rig.env(), app_env={"FAKE_APP_MCP_SERVED": ""})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 0, "served": 0}
+    assert rig.stop() == entrypoint.EXIT_OK
 
 
 @requires_litestream

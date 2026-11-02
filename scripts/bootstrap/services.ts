@@ -4,9 +4,14 @@
 //
 // Omnigent's own MCP registry runs on the server (owner decision D43): its Settings → MCP page
 // connects and disconnects accounts, its gateway calls the services, and every login stays on the
-// server, sealed by the platform's key service. The services it may offer ship in the server
-// image as manifests (`images/server/services/<id>.json`); an installation only chooses which are
-// on, and gives what a manifest asks for. This step:
+// server, sealed by the platform's key service. Since WP8.14 (owner decision D57) an administrator
+// adds any MCP server on that page itself (Add MCP server), with its URL, login and tools, live
+// without a restart: that is the main path, and this step is optional. It turns on the services
+// the server image ships as manifests (`images/server/services/<id>.json`, which the page also
+// offers as presets), for example GitHub's MCP server with Omnigent's GitHub link, which the page
+// cannot add; an installation only chooses which are on, and gives what a manifest asks for. A
+// service turned on here is read-only on the page and hides a page server of the same name. This
+// step:
 //   1. checks the plan's platform Worker exists, is this installation's, runs a release with the
 //      MCP manifests and the server's MCP report (`mcp-services`; else: `bootstrap.ts update`
 //      first), and holds the credential store's keys (made at install and by `update`);
@@ -20,6 +25,7 @@
 //   4. waits until a server started with that revision answers (the watchdog's status line, the
 //      reader the GitHub step uses: `checkMcpServices`), and says whether Omnigent lists MCP:
 //      "Ready. Connect it in Omnigent: Settings → MCP", or what is wrong (off, held, not yet).
+//      On a release with the page (`mcp-page`) Omnigent lists MCP with no service on as well.
 //
 // What it never does: print, log, keep or put in an argument an asked secret; talk to the
 // installation itself (Access is in front of it); turn on a service the image does not ship.
@@ -230,7 +236,12 @@ export interface ServicesOptions {
  * is stopped, exit 78), or `waiting` (not confirmed in time; `why` says what was seen last).
  */
 export type ServicesOutcome =
-  | { readonly kind: "ready" | "off" | "held"; readonly on: readonly string[] }
+  | {
+      readonly kind: "ready" | "off" | "held";
+      readonly on: readonly string[];
+      /** The release has Omnigent's page (`mcp-page`), which keeps MCP listed with none on. */
+      readonly page?: boolean;
+    }
   | { readonly kind: "waiting"; readonly on: readonly string[]; readonly why: string }
   | { readonly kind: "unchanged"; readonly on: readonly string[] };
 
@@ -247,14 +258,15 @@ export function servicesOn(record: McpServicesRecord | undefined): readonly stri
 
 /**
  * The checks before anything is asked: this installation's platform Worker, on a release with the
- * MCP manifests and report, holding the credential store's keys. Returns its secret names.
+ * MCP manifests and report, holding the credential store's keys. Returns its secret names, and
+ * whether the release has Omnigent's page (`mcp-page`).
  */
 async function preflight(
   plan: Installation,
   ports: ServicesPorts,
   record: McpServicesRecord | undefined,
   replace: boolean,
-): Promise<Set<string>> {
+): Promise<{ readonly present: Set<string>; readonly page: boolean }> {
   const nothing = "; nothing was changed";
   const names = await ports.cloud.secretNames(plan.platformWorker);
   if (names === null) {
@@ -288,7 +300,7 @@ async function preflight(
   // Last, once nothing else refuses: before anything is asked or recorded (WP3.41b).
   const refused = await latestNotServing(ports.cloud, plan.platformWorker, identity.versionId);
   if (refused !== undefined) throw new ServicesRefusal(refused);
-  return present;
+  return { present, page: offersPlatformFeature(identity.vars, "mcp-page") };
 }
 
 /** Asks for what the manifest asks, checking each answer; never logs one. */
@@ -352,7 +364,7 @@ export async function changeServices(
       `no MCP service ${JSON.stringify(change.id)} ships with this release (it has: ${shipped}); nothing was changed`,
     );
   }
-  const present = await preflight(plan, ports, record, options.replace === true);
+  const { present, page } = await preflight(plan, ports, record, options.replace === true);
   // Whether the Worker's list is known: not after a change whose outcome is unknown (an
   // interrupted upload, a lost answer), nor when --replace overrides a list set elsewhere. Then no
   // shortcut is taken: the whole list is written again (Codex WP5.10 r1-1).
@@ -457,7 +469,7 @@ export async function changeServices(
     },
   );
   if (!("decided" in result)) return { kind: "waiting", on, why: result.why };
-  if ("held" in result.decided) return { kind: "held", on };
+  if ("held" in result.decided) return { kind: "held", on, page };
   save({
     on,
     revision,
@@ -465,7 +477,9 @@ export async function changeServices(
     confirmedAt: iso(ports.now()),
     registry: result.decided.registry,
   });
-  return { kind: result.decided.registry === on.length > 0 ? "ready" : "off", on };
+  // With the page, Omnigent lists MCP whenever the key service is on, services or not.
+  const listed = on.length > 0 || page;
+  return { kind: result.decided.registry === listed ? "ready" : "off", on, page };
 }
 
 /**
@@ -487,7 +501,18 @@ export function servicesMessage(
       return { lines: [on], exitCode: 0 };
     case "ready":
       if (change.kind === "remove") {
-        return { lines: [`${name} is off.`, on], exitCode: 0 };
+        return {
+          lines: [
+            `${name} is off.`,
+            ...(outcome.page === true && manifest !== undefined && manifest.auth !== "github"
+              ? [
+                  `To use it without this step, add it on Omnigent's page: Settings → MCP → Add MCP server, ${site}${SETTINGS_MCP_PATH}, and start from its preset.`,
+                ]
+              : []),
+            on,
+          ],
+          exitCode: 0,
+        };
       }
       return {
         lines: [
@@ -502,7 +527,7 @@ export function servicesMessage(
     case "off":
       return {
         lines: [
-          outcome.on.length > 0
+          outcome.on.length > 0 || outcome.page === true
             ? "The server restarted with the change, but Omnigent does not list its MCP services: a setting it needs is missing."
             : "The server restarted with the change, but Omnigent still lists MCP services.",
           "The server's config.warning line in the platform Worker's Workers Logs names what is missing (bootstrap.ts status --logs shows the status lines).",
@@ -531,6 +556,14 @@ export function servicesMessage(
         exitCode: 3,
       };
   }
+}
+
+/**
+ * Where to add any other MCP server (WP8.14): Omnigent's own page, on the installation's address.
+ * The happy path; `services` is for what the page cannot add.
+ */
+export function pageHint(plan: Pick<Installation, "hostname">): string {
+  return `Add any MCP server on Omnigent's own page: Settings → MCP → Add MCP server, https://${plan.hostname}${SETTINGS_MCP_PATH} (the services below are offered there as presets, but GitHub's; an installation updated before that page needs bootstrap.ts update first).`;
 }
 
 /** The list for `bootstrap.ts services` and `status`: each shipped service, on or off. */

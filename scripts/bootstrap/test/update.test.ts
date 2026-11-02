@@ -1312,6 +1312,98 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
     expect(checkedLine(h)).toMatch(/durable; its restore point /);
   });
 
+  describe("the MCP servers added on Omnigent's page (WP8.14)", () => {
+    const PAGE_OFF =
+      "MCP servers added on the page are off: the restarted server serves 1 of the 2 the update's restore point recorded (the page turned off, a server it cannot use, or a service turned on with bootstrap.ts services that has the same name)";
+
+    it("all served by the restarted server: accepted, and said so", async () => {
+      const h = await installed(await accountPlan());
+      h.world.adminServices = () => ({ stored: 2, served: 2 });
+      expect(await h.update()).toEqual({ kind: "done" });
+      expect(checkedLine(h)).toMatch(
+        /durable, with the 2 MCP servers added on the page on; its restore point /,
+      );
+      expect(journalOf(h).window).toBeUndefined();
+    });
+
+    it("one lost in the restart: not accepted, the window open, and the rollback goes back", async () => {
+      const h = await installed(await accountPlan());
+      h.world.adminServices = () => ({ stored: 2, served: 1 });
+      const outcome = await h.update();
+      expect(outcome).toEqual({
+        kind: "deployed",
+        why: PAGE_OFF,
+        window: "open",
+        integrationsOff: true,
+      });
+      expect(h.lines).toContain(`waiting: ${PAGE_OFF}`);
+      notAccepted(h);
+      // Run again: still not accepted, nothing deployed again.
+      h.world.now += 30 * 60_000;
+      expect(await h.update()).toEqual(outcome);
+      expect(count(h, "deployPlatform")).toBe(1);
+      notAccepted(h);
+      expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+      expect(journalOf(h).window).toBeUndefined();
+    });
+
+    it("Omnigent listing no MCP registry while the database holds some: not accepted", async () => {
+      const h = await installed(await accountPlan());
+      h.world.adminServices = () => ({ stored: 1, served: 0 });
+      h.world.mcpListed = () => false;
+      expect(await h.update()).toEqual({
+        kind: "deployed",
+        why: "MCP servers added on the page are off: the update's restore point recorded 1, but Omnigent on the restarted server does not list its MCP registry",
+        window: "open",
+        integrationsOff: true,
+      });
+      notAccepted(h);
+    });
+
+    it("an app that reports late: the update waits for it, then accepts", async () => {
+      const h = await installed(await accountPlan());
+      const from = h.world.now;
+      h.world.adminServices = (_version, t) => ({
+        stored: 3,
+        served: t >= from + 12 * 60_000 ? 3 : null,
+      });
+      expect(await h.update()).toEqual({ kind: "done" });
+      expect(h.lines).toContain(
+        "waiting: MCP servers added on the page are not confirmed: the restarted server has not said yet how many of its 3 it serves",
+      );
+      expect(checkedLine(h)).toMatch(/with the 3 MCP servers added on the page on; /);
+    });
+
+    it("a restarted server that does not count them, or cannot read them, never counts as on", async () => {
+      const h = await installed(await accountPlan());
+      h.world.adminServices = () => undefined;
+      expect(await h.update()).toEqual({
+        kind: "deployed",
+        why: "MCP servers added on the page are not confirmed: the restarted server's status does not say how many the update's restore point recorded",
+        window: "open",
+        integrationsOff: true,
+      });
+      notAccepted(h);
+      h.world.adminServices = () => ({ stored: null, served: 0 });
+      h.world.now += 30 * 60_000;
+      expect(await h.update()).toEqual({
+        kind: "deployed",
+        why: "MCP servers added on the page are not confirmed: the restarted server cannot say how many the update's restore point recorded (taken by an earlier release, or its database unreadable): go back with bootstrap.ts update --rollback and update again",
+        window: "open",
+        integrationsOff: true,
+      });
+      notAccepted(h);
+    });
+
+    it("with services turned on as well: both are required, and both are named", async () => {
+      const h = await installed(await accountPlan());
+      expect((await services(h, ADD, 0x58)).kind).toBe("ready");
+      h.world.adminServices = () => ({ stored: 1, served: 1 });
+      expect(await h.update()).toEqual({ kind: "done" });
+      expect(checkedLine(h)).toMatch(/with MCP services and the MCP server added on the page on; /);
+    });
+  });
+
   it("both on, both off: names each", async () => {
     const h = await installed(await accountPlan());
     await withGitHub(h);
@@ -1401,7 +1493,12 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
   });
 
   it("requires what the installation set up: the App's client ID by name, and the MCP choices with any change begun", () => {
-    expect(requiredIntegrations(new Set(), undefined)).toEqual({ github: false, mcp: [] });
+    // The page's MCP servers (WP8.14): always, as only the restarted server can count them.
+    expect(requiredIntegrations(new Set(), undefined)).toEqual({
+      github: false,
+      mcp: [],
+      adminServices: true,
+    });
     expect(
       requiredIntegrations(new Set([GITHUB_APP_SECRETS.clientId]), {
         on: ["tracker"],
@@ -1414,11 +1511,13 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
         { revision: "a1".repeat(16), on: true },
         { revision: "b2".repeat(16), on: false },
       ],
+      adminServices: true,
     });
     // Other GitHub App settings without the client ID: not set up.
     expect(requiredIntegrations(new Set([GITHUB_APP_SECRETS.appId]), { on: [] })).toEqual({
       github: false,
       mcp: [{ revision: undefined, on: false }],
+      adminServices: true,
     });
     // A list on the Worker is accounted for only by a recorded list that turns a service on.
     const list = new Set([MCP_SERVICES_SECRET]);
