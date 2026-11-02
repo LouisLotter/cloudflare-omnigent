@@ -42,6 +42,13 @@ CLI_ENV = {
     "DISABLE_AUTOUPDATER": "1",
 }
 
+#: Omnigent's own product analytics off (owner decision D49), in its host, the runners the host
+#: starts and any Omnigent command the person runs. Omnigent would also take
+#: ``DISABLE_TELEMETRY=1`` above, but that is Claude Code's switch; this one is Omnigent's.
+OMNIGENT_ENV = {
+    "OMNIGENT_ANALYTICS": "0",
+}
+
 #: The workload's PATH: Omnigent's environment first (it holds the gh broker wrapper).
 WORKLOAD_PATH = "/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -70,6 +77,7 @@ def workload_env(
         "TMPDIR": "/tmp",
         "IS_SANDBOX": "1",
         **CLI_ENV,
+        **OMNIGENT_ENV,
     }
     env.update(extra or {})
     return env

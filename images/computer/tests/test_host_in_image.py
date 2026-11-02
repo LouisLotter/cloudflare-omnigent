@@ -98,6 +98,9 @@ def test_real_host_starts_with_its_identity_and_is_paused_by_a_capture(rig: Rig)
         and env["IS_SANDBOX"] == "1"
         and env["HOME"] == str(rig.home)
     )
+    # D49: Omnigent's analytics off in the running host, and named for its runners.
+    assert env["OMNIGENT_ANALYTICS"] == "0"
+    assert "OMNIGENT_ANALYTICS" in env["OMNIGENT_RUNNER_ENV_PASSTHROUGH"].split(",")
     assert token.encode() not in Path(f"/proc/{pid}/cmdline").read_bytes()
     assert os.stat(f"/proc/{pid}").st_uid == 1000
     # A capture pauses the host's whole tree, then resumes it.

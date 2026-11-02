@@ -30,7 +30,8 @@
 #      from a file, never put on a command line), and keeps its session in its own store. Nothing
 #      here reads, prints or keeps a password or a token;
 #   4. installs `omnigent-cfo-host.service`, a systemd user service that runs Omnigent's host for
-#      https://<host> and restarts it whenever it stops (a reboot, a dropped connection, a lapsed
+#      https://<host>, with Omnigent's product analytics off in it, its runners and the
+#      `omnigent-cfo` command (D49), and restarts it whenever it stops (a reboot, a dropped connection, a lapsed
 #      client session), checks that the process it runs is the build installed in step 2, and
 #      waits until the installation lists this machine's host as online.
 # Exit status: 0 ready; 3 the service runs but the host is not online yet (run `status` again);
@@ -317,6 +318,10 @@ $MARKER
 export OMNIGENT_DATA_DIR='$CFO_DATA'
 export OMNIGENT_CONFIG_HOME='$CFO_CONFIG'
 export OMNIGENT_WRAPPER_COMMAND=$NAME
+# Omnigent's product analytics off (D49), also in the runners (and a background host) that a host
+# started from here starts: Omnigent passes them only the names listed here. Yours are kept.
+export OMNIGENT_ANALYTICS=0
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH="\${OMNIGENT_RUNNER_ENV_PASSTHROUGH:+\$OMNIGENT_RUNNER_ENV_PASSTHROUGH,}OMNIGENT_ANALYTICS"
 exec '$BUILD/bin/omnigent' "\$@"
 EOF
   chmod 0755 "$tmp"
@@ -374,6 +379,10 @@ Type=simple
 Environment="OMNIGENT_DATA_DIR=$CFO_DATA"
 Environment="OMNIGENT_CONFIG_HOME=$CFO_CONFIG"
 Environment="OMNIGENT_WRAPPER_COMMAND=$NAME"
+# Omnigent's product analytics off (D49), in the host and, through Omnigent's own passthrough
+# (its runners get only an allowlist of the host's environment), in every runner it starts.
+Environment="OMNIGENT_ANALYTICS=0"
+Environment="OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_ANALYTICS"
 Environment="PATH=$(service_path)"
 ExecStart="$BUILD/bin/python" -P -m omnigent.host.service_entry --server "$SERVER"
 # Omnigent's host stops for good (exit 0) on a refusal it cannot fix itself, such as a lapsed

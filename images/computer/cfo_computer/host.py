@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .backoff import capped_backoff
-from .procutil import CLI_ENV
+from .procutil import CLI_ENV, OMNIGENT_ENV
 
 #: Omnigent's host forwards the variables named here to the runners it starts (``host/connect.py``).
 PASSTHROUGH = "OMNIGENT_RUNNER_ENV_PASSTHROUGH"
@@ -176,12 +176,13 @@ def host_env(base: Mapping[str, str], params: StartParams) -> dict[str, str]:
 
     Omnigent's host gives the runners it starts only an allowlist of its environment, which
     leaves out the CLIs' settings (``procutil.CLI_ENV``: telemetry, error reporting and updates
-    off), so Claude Code in a runner's terminal ran with them on (WP3.22). The fork's own
-    passthrough names them, so they reach every runner and every CLI it starts.
+    off), so Claude Code in a runner's terminal ran with them on (WP3.22). It leaves out
+    Omnigent's own analytics opt-out too (``procutil.OMNIGENT_ENV``, D49). The fork's own
+    passthrough names them all, so they reach every runner and every CLI it starts.
     """
     passthrough = [
         *(n.strip() for n in base.get(PASSTHROUGH, "").split(",") if n.strip()),
-        *(n for n in CLI_ENV if n in base),
+        *(n for n in (*CLI_ENV, *OMNIGENT_ENV) if n in base),
     ]
     return {
         **base,

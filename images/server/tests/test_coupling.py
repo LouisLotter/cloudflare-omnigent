@@ -11,9 +11,11 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -118,6 +120,54 @@ def test_omnigent_takes_the_pinned_runner_grace(monkeypatch: pytest.MonkeyPatch)
         common.resolve_runner_disconnect_grace_s.cache_clear()
     assert grace == float(image_config.RUNNER_DISCONNECT_GRACE_S)
     assert grace > 100  # RC-21's bound for a reconnect that overlaps a capture pause
+
+
+#: What Omnigent's server does with its product analytics at start (``create_app``'s lifespan
+#: calls ``init_client``), in a process of its own: the opt-out is read once and cached.
+_ANALYTICS_PROBE = (
+    "import json\n"
+    "from omnigent.telemetry import client\n"
+    "client.init_client(config={})\n"
+    "started = client.get_client() is not None\n"
+    "print(json.dumps({'disabled': client.is_disabled(), 'started': started}))\n"
+)
+
+
+def _analytics_at_start(env: dict[str, str]) -> dict[str, bool]:
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", _ANALYTICS_PROBE],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return json.loads(out.strip().splitlines()[-1])
+
+
+@requires_omnigent
+def test_omnigents_analytics_never_start_with_the_app_environment(tmp_path: Path) -> None:
+    """D49: with the environment the image gives the app, Omnigent's own analytics client never
+    starts (so it neither fetches the vendor's configuration nor sends an event) and writes no
+    installation ID. Without the pinned opt-out the same environment would start it: the check
+    is not vacuous. The clean environment holds none of the CI markers Omnigent also obeys."""
+    home = tmp_path / "home"
+    home.mkdir()
+    container = {"PATH": "/opt/venv/bin:/usr/bin:/bin", "HOME": str(home), **base_env(tmp_path)}
+    # An installation that asks for analytics still gets them off.
+    container["OMNIGENT_ANALYTICS"] = "1"
+    app_env = image_config.app_environment(image_config.load(container), container)
+    assert app_env["OMNIGENT_ANALYTICS"] == "0"
+    assert not set(app_env) & {"CI", "PYTEST_CURRENT_TEST", "DO_NOT_TRACK", "DISABLE_TELEMETRY"}
+
+    assert _analytics_at_start(app_env) == {"disabled": True, "started": False}
+    assert list(tmp_path.rglob("telemetry.json")) == []
+
+    # The control: the same environment without the opt-out starts the client. Its configuration
+    # fetch goes to a closed local port, never to the vendor.
+    control = {k: v for k, v in app_env.items() if k != "OMNIGENT_ANALYTICS"}
+    control["OMNIGENT_TELEMETRY_CONFIG_URL"] = "http://127.0.0.1:9"
+    assert _analytics_at_start(control) == {"disabled": False, "started": True}
 
 
 @requires_omnigent
