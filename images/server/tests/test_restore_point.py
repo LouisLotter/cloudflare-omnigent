@@ -507,11 +507,19 @@ def test_every_start_in_the_window_expects_the_page_servers_the_restore_point_re
     assert rig.stop() == entrypoint.EXIT_OK
     manifest = json.loads((Path("/") / _where(rig).manifest(RP)).read_text())
     assert manifest["mcpAdminServices"] == ["s0", "s1"]
-    # The next start in the window finds one in the database, and still expects both.
+    # The next start in the window finds one in the database it had, and still expects both.
     rig.start(env, app_env={"FAKE_APP_MCP_SERVED": "db"})
     rig.wait_app()
     assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
     assert rig.stop() == entrypoint.EXIT_OK
+    # And a start on a new disk, which restores the replicated loss, expects both as well.
+    entrypoint.remove_local_database_state(rig.layout())
+    rig.db.unlink()
+    rig.start(env, app_env={"FAKE_APP_MCP_SERVED": "db"})
+    rig.wait_app()
+    assert rig.wait_phase("running")["mcpAdminServices"] == {"stored": 2, "served": 1}
+    assert rig.stop() == entrypoint.EXIT_OK
+    assert rig.events("database.ready")[0]["source"] == "restored"
     # Outside a window, a start expects what its database holds.
     rig.start(rig.env(initialized="true"), app_env={"FAKE_APP_MCP_SERVED": "db"})
     rig.wait_app()
@@ -519,7 +527,7 @@ def test_every_start_in_the_window_expects_the_page_servers_the_restore_point_re
     assert rig.stop() == entrypoint.EXIT_OK
 
 
-def test_a_manifest_keeps_the_page_servers_and_reads_one_without_them(tmp_path: Path) -> None:
+def test_a_manifest_keeps_the_page_servers_and_reads_one_without_them() -> None:
     manifest = rp.Manifest(
         rp_id=RP,
         taken_at="2026-11-02T12:00:00.000Z",
@@ -527,10 +535,14 @@ def test_a_manifest_keeps_the_page_servers_and_reads_one_without_them(tmp_path: 
         database_sha256=None,
         database_bytes=None,
         build=None,
-        admin_services=("tracker", "linear"),
+        admin_services=("linear", "tracker"),
     )
     again = rp.Manifest.parse(manifest.to_json(), RP)
-    assert again == manifest and again.admin_services == ("linear", "tracker")
+    assert again == manifest
+    # Written sorted, whatever order it was given in (``take`` sorts them too).
+    unsorted = rp.Manifest(**{**manifest.__dict__, "admin_services": ("tracker", "linear")})
+    assert json.loads(unsorted.to_json())["mcpAdminServices"] == ["linear", "tracker"]
+    assert rp.Manifest.parse(unsorted.to_json(), RP).admin_services == ("linear", "tracker")
     # One taken by an image from before WP8.14: none recorded, which is unknown, not none.
     body = json.loads(manifest.to_json())
     del body["mcpAdminServices"]
