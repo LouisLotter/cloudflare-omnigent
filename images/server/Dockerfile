@@ -12,7 +12,7 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which the
 #     image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
-#     (`build`) and boot log line. dc4cff998 (`cfo/upgrade-0.20.0`, 2 Nov 2026) is Omnigent
+#     (`build`) and boot log line. 9be778d79 (`cfo/upgrade-0.20.0`, 3 Nov 2026) is Omnigent
 #     0.20.0 merged into the fork's 3d7f7d08c (WP3.24), then fork integration afb809aa6 (WP5.11)
 #     merged in, then WP3.40c's crash-safe database upgrade (one SQLite transaction, every
 #     Alembic head read at start), then WP3.49 (UC-134: a Claude Code session shows the effort
@@ -20,7 +20,9 @@
 #     (UC-135: images and audio from MCP registry tools saved as workspace files, images passed
 #     to the agent natively), then WP8.13 (D57: administrators add MCP servers in Settings → MCP,
 #     live without a restart, under a destination policy; migration mr1a2b3c4d5e, additive, one
-#     way once complete), keeping the fork's changes: the Codex policy
+#     way once complete), then WP3.52 (UC-139: a codex-native session starts its tool relay
+#     before Codex lists the bridge's tools, so a new session has Omnigent's tools; no
+#     migration), keeping the fork's changes: the Codex policy
 #     hook that fails closed (UC-110), Claude's renderer named in its hook settings (UC-107), gh
 #     2.103.3, the Stop fix (AIR2-007: a Stop is sent once, its delivery reported), core changes
 #     12 to 21, the main-chat Stop and launch-outcome notices (WP3.16), the history-unavailable
@@ -46,7 +48,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=dc4cff99895fc8890b46ee03c963cddc8d66fae0
+ARG OMNIGENT_COMMIT=9be778d79cf36abbbdd42b5a40d6158e46c0cb5f
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
