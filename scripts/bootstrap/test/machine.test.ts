@@ -1464,7 +1464,8 @@ describe("runBootstrap: properties", () => {
       ),
       { numRuns: 150 },
     );
-  });
+    // 150 generated runs; under coverage instrumentation on CI it takes about 4 s.
+  }, 30_000);
 });
 
 describe("runBootstrap: the owner's password on the site, and updates (WP3.34)", () => {
