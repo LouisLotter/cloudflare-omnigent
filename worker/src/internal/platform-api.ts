@@ -394,13 +394,17 @@ async function dispatch(request: LauncherRequest, deps: LauncherDeps): Promise<R
   return launcherJson(checked.data);
 }
 
+/** The readable refusals Omnigent shows the person (`readable_refusal`). */
+const REFUSAL_TEXT: Partial<Record<ErrorCode, string>> = {
+  at_capacity: "All computers are busy.",
+  // WP8.4: a call naming another owner than the computer's. Nothing about the computer is said.
+  forbidden: "This computer belongs to someone else.",
+};
+
 function failure(error: unknown, _operation: string): Response {
   const code = codeOf(error);
   if (code !== undefined) {
-    return launcherError(
-      code,
-      code === "at_capacity" ? "All computers are busy." : `Refused: ${code}.`,
-    );
+    return launcherError(code, REFUSAL_TEXT[code] ?? `Refused: ${code}.`);
   }
   // No answer from the controller: the call may or may not have taken effect. The launcher
   // repeats it with the same operation ID, which returns the recorded outcome.

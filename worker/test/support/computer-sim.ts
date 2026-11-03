@@ -63,6 +63,8 @@ export interface SimOptions {
   readonly start?: number;
   /** A staging installation: the RC-53 switch is offered and applied (WP3.23). */
   readonly staging?: boolean;
+  /** The installation owner's account (WP8.4); none by default. */
+  readonly installationOwner?: string | null;
 }
 
 /** The running computer's supervisor; fails the test if no container runs. */
@@ -102,6 +104,7 @@ export class ComputerSim {
   readonly #noBucket: boolean;
   readonly #gateway: boolean;
   readonly #staging: boolean;
+  readonly #installationOwner: string | null;
   /** The gateway's checks, in order. */
   readonly gatewayChecks: { readonly key: string; readonly allowed: boolean }[] = [];
 
@@ -118,6 +121,7 @@ export class ComputerSim {
     this.#noBucket = options.noBucket ?? false;
     this.#gateway = options.gateway ?? false;
     this.#staging = options.staging ?? false;
+    this.#installationOwner = options.installationOwner ?? null;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, async (request) => {
@@ -260,6 +264,7 @@ export class ComputerSim {
         this.logs.push({ event, fields });
       },
       stagingChecks: this.#staging,
+      installationOwner: this.#installationOwner,
       terminal: {
         closeNow: (reason) => {
           this.terminal.closes.push(reason);

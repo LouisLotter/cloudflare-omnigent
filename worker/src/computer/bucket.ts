@@ -16,13 +16,21 @@ export interface R2Reader {
   }): Promise<{ objects: readonly { key: string }[]; truncated: boolean; cursor?: string }>;
 }
 
-/** A put through the write fence, for this generation's pending upload. */
-export type FencedPut = (key: string, body: Uint8Array, generation: number) => Promise<void>;
+/**
+ * A put through the write fence, for this generation's pending upload; `owner` is the computer's
+ * owner tag for the object's metadata (WP8.4), absent from callers that have none.
+ */
+export type FencedPut = (
+  key: string,
+  body: Uint8Array,
+  generation: number,
+  owner?: string,
+) => Promise<void>;
 
 export function r2Bucket(bucket: R2Reader, put: FencedPut): CheckpointBucket {
   return {
     async put(key, body, writer) {
-      await put(key, body, writer.generation);
+      await put(key, body, writer.generation, writer.owner);
     },
     async get(key) {
       const object = await bucket.get(key);

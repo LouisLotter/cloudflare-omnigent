@@ -23,9 +23,7 @@ import {
   type ComputerPageState,
   type ComputerStatusView,
   IntentToken,
-  LAUNCHER_PROTOCOL_VERSION,
   type LauncherCall,
-  type LauncherResult,
   PageFrontCall,
   type PageFrontResult,
   PageOwner,
@@ -51,7 +49,11 @@ type SignInAnswer =
 /** What the front needs from the controller: its public RPC answers. */
 export interface FrontController {
   pages(call: unknown): Promise<PagesResult>;
-  launcher(call: unknown): Promise<LauncherResult>;
+  /**
+   * Records a removal intent, as Omnigent's `terminate` does, for the page (WP3.5). Not a launcher
+   * call: it names no launcher owner, since the page front decides who may remove (WP8.4).
+   */
+  removeForPage(): Promise<"pending" | "resolved" | "absent">;
   signInStart(input: {
     readonly service: SignInService;
     readonly session: string;
@@ -158,15 +160,6 @@ export function terminalTarget(state: ComputerPageState, keepsShells = false): T
   }
   if (!RESTORED_RUNNING.has(state.lifecycle)) return { ok: false, reason: "not_running" };
   return { ok: true, generation: state.generation, keepsShells };
-}
-
-/** A 32-hex launcher operation ID derived from a page operation ID, so a repeat maps to it. */
-async function launcherOperationId(pageOperationId: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`cfo-page-remove/v1\n${pageOperationId}`),
-  );
-  return toHex(new Uint8Array(digest)).slice(0, 32);
 }
 
 export class PageFront {
@@ -314,17 +307,8 @@ export class PageFront {
           state.lifecycle !== "removed";
         if (!offered) return { action: "remove", outcome: "refused", reason: "not_offered" };
         await this.#d.terminal.close("the computer is being removed");
-        const result = await this.#d.controller.launcher({
-          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
-          request: {
-            operation: "terminate",
-            protocolVersion: LAUNCHER_PROTOCOL_VERSION,
-            operationId: await launcherOperationId(call.operationId),
-            computerId: this.#computerId,
-          },
-        });
-        if (result.operation !== "terminate") throw platformError("internal", "remove");
-        this.#d.log("page_removal_recorded", { removal: result.removal });
+        const removal = await this.#d.controller.removeForPage();
+        this.#d.log("page_removal_recorded", { removal });
         return { action: "remove", outcome: "accepted" };
       }
       case "sign_in_start":

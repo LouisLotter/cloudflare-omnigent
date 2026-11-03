@@ -14,6 +14,15 @@ How the platform's answers reach Omnigent (core change 13; ``LAUNCHER_ERROR_CLAS
 - An unknown outcome (a lost reply, a timeout, the platform unavailable) raises an ordinary
   exception, which Omnigent treats as a lost reply and repeats; the read-only methods answer
   ``None`` ("cannot tell") instead, and ``suspend`` answers ``unknown``.
+
+**The computer's owner** (WP8.4, owner decision D50). The launcher declares
+``supports_owner_context``; an Omnigent build with that capability passes ``owner=``, its
+``SandboxOwner`` for the host (account, member, team and host ID, from its own records), to every
+call but ``prepare``, and each call then goes out as protocol version 2 naming that owner. The
+platform binds a new computer to it and refuses any call for someone else's computer
+(``forbidden``, a readable refusal). An Omnigent build without owners passes nothing, and the
+calls stay version 1. The owner is read by attribute, so this module needs nothing such a build
+lacks.
 """
 
 from __future__ import annotations
@@ -64,6 +73,21 @@ CHECKPOINT_REFUSAL_TEXT = {
 }
 
 
+def _owner(owner: object | None) -> protocol.Owner | None:
+    """Omnigent's ``SandboxOwner`` as the protocol's :class:`~protocol.Owner`; ``None`` stays."""
+    if owner is None:
+        return None
+    try:
+        return protocol.Owner(
+            user_id=owner.user_id,  # type: ignore[attr-defined]
+            host_id=owner.host_id,  # type: ignore[attr-defined]
+            member_id=getattr(owner, "member_id", None),
+            team_id=getattr(owner, "team_id", None),
+        )
+    except AttributeError:
+        raise InvalidCall("The launcher cannot send this request: malformed owner.") from None
+
+
 @contextmanager
 def _omnigent_errors() -> Iterator[None]:
     """Raise the launcher's failures as the exceptions Omnigent expects."""
@@ -89,6 +113,8 @@ class CloudflareLauncher(SandboxHostLauncher):
     can_resume: ClassVar[bool] = True
     supports_cli_bootstrap: ClassVar[bool] = False
     supports_managed_launch: ClassVar[bool] = True
+    #: Omnigent passes each call's ``owner=`` (fork capability ``owner_context``, WP8.4).
+    supports_owner_context: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -109,14 +135,16 @@ class CloudflareLauncher(SandboxHostLauncher):
         with _omnigent_errors():
             self._core.prepare()
 
-    def provision(self, name: str) -> str:
+    def provision(self, name: str, *, owner: object | None = None) -> str:
         """Record the computer for Omnigent's stable host name; idempotent by that name."""
         with _omnigent_errors():
-            return self._core.provision(name)
+            return self._core.provision(name, owner=_owner(owner))
 
-    def claim_start(self, sandbox_id: str, *, operation_id: str) -> StartClaim:
+    def claim_start(
+        self, sandbox_id: str, *, operation_id: str, owner: object | None = None
+    ) -> StartClaim:
         with _omnigent_errors():
-            result = self._core.claim_start(sandbox_id, operation_id)
+            result = self._core.claim_start(sandbox_id, operation_id, owner=_owner(owner))
         if result.granted:
             return StartClaim(granted=True, attempt=result.start_attempt)
         return StartClaim(granted=False, status=result.status)  # type: ignore[arg-type]
@@ -133,6 +161,7 @@ class CloudflareLauncher(SandboxHostLauncher):
         host_config: dict[str, object] | None = None,
         on_stage: Callable[[str], None] | None = None,
         start_attempt: int | None = None,
+        owner: object | None = None,
     ) -> str:
         """Hand a claimed attempt's start parameters to the computer; return its workspace.
 
@@ -160,21 +189,22 @@ class CloudflareLauncher(SandboxHostLauncher):
                 host_name=host_name,
                 token=token,
                 host_config=host_config if host_config is not None else {},
+                owner=_owner(owner),
             )
 
-    def resume(self, sandbox_id: str) -> None:
+    def resume(self, sandbox_id: str, *, owner: object | None = None) -> None:
         """Start the computer, or nothing if it is starting or up. At the limit, refused."""
         with _omnigent_errors():
-            result = self._core.resume(sandbox_id)
+            result = self._core.resume(sandbox_id, owner=_owner(owner))
         logger.info(
             "resume of %s: %s (generation %d)", sandbox_id, result.outcome, result.generation
         )
 
-    def keep_alive(self, sandbox_id: str) -> bool | None:
+    def keep_alive(self, sandbox_id: str, *, owner: object | None = None) -> bool | None:
         """Renew the activity lease. Soft-fails: ``False`` when not confirmed, never raises."""
         try:
             with _omnigent_errors():
-                result = self._core.keep_alive(sandbox_id)
+                result = self._core.keep_alive(sandbox_id, owner=_owner(owner))
         except Exception as exc:  # noqa: BLE001 - keep_alive must never fail a caller
             logger.warning("keep_alive of %s not confirmed: %s", sandbox_id, exc)
             return False
@@ -182,15 +212,15 @@ class CloudflareLauncher(SandboxHostLauncher):
             logger.info("keep_alive of %s: the computer is not running", sandbox_id)
         return result.renewed
 
-    def is_running(self, sandbox_id: str) -> bool | None:
+    def is_running(self, sandbox_id: str, *, owner: object | None = None) -> bool | None:
         """Whether a container runs (``stopping`` included); ``None`` when unknown."""
         try:
             with _omnigent_errors():
-                return self._core.status(sandbox_id).running
+                return self._core.status(sandbox_id, owner=_owner(owner)).running
         except OutcomeUnknown:
             return None
 
-    def admission(self, sandbox_id: str) -> AdmissionReport | None:
+    def admission(self, sandbox_id: str, *, owner: object | None = None) -> AdmissionReport | None:
         """The typed status and admission, fresh from the platform; ``None`` when unknown.
 
         Never cached here, so a failed refresh is never remembered; Omnigent asks again
@@ -198,7 +228,7 @@ class CloudflareLauncher(SandboxHostLauncher):
         """
         try:
             with _omnigent_errors():
-                answer = self._core.admission(sandbox_id)
+                answer = self._core.admission(sandbox_id, owner=_owner(owner))
         except OutcomeUnknown:
             return None
         result = answer.result
@@ -211,20 +241,24 @@ class CloudflareLauncher(SandboxHostLauncher):
             observed_at=answer.observed_at,
         )
 
-    def checkpoint(self, sandbox_id: str, *, reason: CheckpointReason) -> str | None:
+    def checkpoint(
+        self, sandbox_id: str, *, reason: CheckpointReason, owner: object | None = None
+    ) -> str | None:
         """Ask for a save; return once the platform has recorded the request.
 
         A refusal (nothing can be saved now) is an ordinary error, which Omnigent logs and
         does not repeat; it is never a missing capability.
         """
         with _omnigent_errors():
-            result, operation_id = self._core.checkpoint(sandbox_id, reason)
+            result, operation_id = self._core.checkpoint(sandbox_id, reason, owner=_owner(owner))
         if result.outcome == "refused":
             detail = CHECKPOINT_REFUSAL_TEXT.get(result.reason or "", result.reason)
             raise click.ClickException(f"The computer cannot save now: {detail}.")
         return operation_id
 
-    def suspend(self, sandbox_id: str, *, operation_id: str) -> SuspendResult:
+    def suspend(
+        self, sandbox_id: str, *, operation_id: str, owner: object | None = None
+    ) -> SuspendResult:
         """Stop a quiescent computer for a sleep, under Omnigent's operation ID.
 
         ``refused`` before any stop, ``stopped`` once confirmed, and ``unknown`` whenever the
@@ -234,7 +268,7 @@ class CloudflareLauncher(SandboxHostLauncher):
         """
         try:
             with _omnigent_errors():
-                result = self._core.suspend(sandbox_id, operation_id)
+                result = self._core.suspend(sandbox_id, operation_id, owner=_owner(owner))
         except SandboxGoneError:
             raise
         except Exception as exc:  # noqa: BLE001 - every other failure is "unknown"
@@ -245,7 +279,7 @@ class CloudflareLauncher(SandboxHostLauncher):
             return SuspendResult(outcome="refused", reason=detail)
         return SuspendResult(outcome="stopped")
 
-    def terminate(self, sandbox_id: str) -> None:
+    def terminate(self, sandbox_id: str, *, owner: object | None = None) -> None:
         """Record the removal intent; succeed once it is durable on the platform.
 
         Omnigent calls this only to delete a computer, without an operation ID; repeating it
@@ -253,7 +287,7 @@ class CloudflareLauncher(SandboxHostLauncher):
         """
         try:
             with _omnigent_errors():
-                result = self._core.terminate(sandbox_id)
+                result = self._core.terminate(sandbox_id, owner=_owner(owner))
         except SandboxGoneError:
             logger.info("terminate of %s: already removed or being removed", sandbox_id)
             return

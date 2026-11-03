@@ -26,6 +26,8 @@ from typing import Any, Literal
 # ── Constants (launcher.ts) ─────────────────────────────────────────────────────────────
 
 PROTOCOL_VERSION = 1
+#: The version whose calls name the computer's owner (WP8.4); otherwise identical to version 1.
+OWNER_PROTOCOL_VERSION = 2
 SIGNING_PROTOCOL = "cfo-launcher-v1"
 SIGNING_KEY_ID_HEADER = "X-Omnigent-Signing-Key-Id"
 TIMESTAMP_HEADER = "X-Omnigent-Timestamp"
@@ -162,6 +164,11 @@ _HOST_NAME_REFUSED_RE = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
 #: ``AbsolutePath``: segments that are not empty, ``.`` or ``..``, without NUL or a lone
 #: surrogate (a surrogate pair in the JSON has decoded into one code point here).
 _ABSOLUTE_PATH_RE = re.compile(r"(?:/(?!\.\.?(?:/|$))[^/\x00\ud800-\udfff]+)+")
+#: ``TeamMemberId``: a team's or member's ID, ``uuid.uuid4().hex``.
+TEAM_MEMBER_ID_RE = re.compile(r"[0-9a-f]{32}")
+#: ``AccountId``: no C0 control character or DEL; no lone surrogate (no UTF-8 form).
+_ACCOUNT_ID_REFUSED_RE = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
+MAX_ACCOUNT_ID_UNITS = 255
 MAX_HOST_NAME_UNITS = 128
 MAX_PATH_UNITS = 4096
 MAX_HOST_CONFIG_CHARS = 64 * 1024
@@ -198,34 +205,97 @@ def _require(ok: bool, message: str) -> None:
         raise ProtocolError(message)
 
 
-def _call(operation: Operation, operation_id: str) -> dict[str, Any]:
-    _require(is_operation_id(operation_id), "an operation ID is 32 lowercase hex digits")
+@dataclass(frozen=True)
+class Owner:
+    """``LauncherOwner``: the person a computer belongs to, as Omnigent derived it (WP8.4).
+
+    :param user_id: The Omnigent account (``users.id``), e.g. ``"alice"``. Personal data:
+        never logged.
+    :param host_id: The host's ID, 32 lowercase hex digits.
+    :param member_id: The team member's ID, or ``None`` where Omnigent has no team.
+    :param team_id: The team's ID; ``None`` exactly when ``member_id`` is.
+    """
+
+    user_id: str
+    host_id: str
+    member_id: str | None = None
+    team_id: str | None = None
+
+
+def check_owner(owner: Owner) -> dict[str, Any]:
+    """The owner as the contract's ``LauncherOwner``, or :class:`ProtocolError`."""
+    _require(isinstance(owner, Owner), "the owner is not an Owner")
+    user = owner.user_id
+    _require(
+        isinstance(user, str)
+        and 1 <= utf16_units(user) <= MAX_ACCOUNT_ID_UNITS
+        and _ACCOUNT_ID_REFUSED_RE.search(user) is None,
+        "an owner's account is 1 to 255 characters without control characters",
+    )
+    _require(
+        isinstance(owner.host_id, str) and HOST_ID_RE.fullmatch(owner.host_id) is not None,
+        "an owner's host ID is 32 lowercase hex digits",
+    )
+    for value in (owner.member_id, owner.team_id):
+        _require(
+            value is None or (isinstance(value, str) and TEAM_MEMBER_ID_RE.fullmatch(value)),
+            "a member or team ID is 32 lowercase hex digits",
+        )
+    _require(
+        (owner.member_id is None) == (owner.team_id is None),
+        "a member is named with its team",
+    )
     return {
-        "operation": operation,
-        "operationId": operation_id,
-        "protocolVersion": PROTOCOL_VERSION,
+        "userId": user,
+        "memberId": owner.member_id,
+        "teamId": owner.team_id,
+        "hostId": owner.host_id,
     }
 
 
-def _on_computer(operation: Operation, operation_id: str, computer_id: str) -> dict[str, Any]:
+def _call(
+    operation: Operation, operation_id: str, owner: Owner | None = None
+) -> dict[str, Any]:
+    """The fields every request carries: version 2 with the owner, version 1 without one."""
+    _require(is_operation_id(operation_id), "an operation ID is 32 lowercase hex digits")
+    if owner is None:
+        return {
+            "operation": operation,
+            "operationId": operation_id,
+            "protocolVersion": PROTOCOL_VERSION,
+        }
+    _require(operation != "prepare", "prepare names no owner")
+    return {
+        "operation": operation,
+        "operationId": operation_id,
+        "protocolVersion": OWNER_PROTOCOL_VERSION,
+        "owner": check_owner(owner),
+    }
+
+
+def _on_computer(
+    operation: Operation, operation_id: str, computer_id: str, owner: Owner | None = None
+) -> dict[str, Any]:
     _require(is_computer_id(computer_id), "the sandbox ID is not a computer ID")
-    return {**_call(operation, operation_id), "computerId": computer_id}
+    return {**_call(operation, operation_id, owner), "computerId": computer_id}
 
 
 def prepare_request(operation_id: str) -> dict[str, Any]:
     return _call("prepare", operation_id)
 
 
-def provision_request(operation_id: str, name: str) -> dict[str, Any]:
+def provision_request(operation_id: str, name: str, *, owner: Owner | None = None) -> dict[str, Any]:
     _require(
         isinstance(name, str) and PROVISION_NAME_RE.fullmatch(name) is not None,
         "a computer's name is 1 to 63 lowercase letters, digits and hyphens",
     )
-    return {**_call("provision", operation_id), "name": name}
+    return {**_call("provision", operation_id, owner), "name": name}
 
 
-def claim_start_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("claim_start", operation_id, computer_id)
+def claim_start_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("claim_start", operation_id, computer_id, owner)
 
 
 def check_host_config(host_config: Mapping[str, object]) -> dict[str, object]:
@@ -269,7 +339,12 @@ def start_host_request(
     host_name: str,
     token: str,
     host_config: Mapping[str, object],
+    owner: Owner | None = None,
 ) -> dict[str, Any]:
+    _require(
+        owner is None or owner.host_id == host_id,
+        "the owner names another host than the one being started",
+    )
     _require(
         _is_int(start_attempt) and 1 <= start_attempt <= MAX_SAFE_INTEGER,
         "a start attempt is a positive whole number",
@@ -284,7 +359,7 @@ def start_host_request(
         "the launch token does not have the expected form",
     )
     return {
-        **_on_computer("start_host", operation_id, computer_id),
+        **_on_computer("start_host", operation_id, computer_id, owner),
         "startAttempt": start_attempt,
         "hostId": host_id,
         "hostName": check_host_name(host_name),
@@ -293,33 +368,47 @@ def start_host_request(
     }
 
 
-def resume_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("resume", operation_id, computer_id)
+def resume_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("resume", operation_id, computer_id, owner)
 
 
-def keep_alive_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("keep_alive", operation_id, computer_id)
+def keep_alive_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("keep_alive", operation_id, computer_id, owner)
 
 
-def status_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("status", operation_id, computer_id)
+def status_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("status", operation_id, computer_id, owner)
 
 
-def admission_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("admission", operation_id, computer_id)
+def admission_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("admission", operation_id, computer_id, owner)
 
 
-def checkpoint_request(operation_id: str, computer_id: str, reason: str) -> dict[str, Any]:
+def checkpoint_request(
+    operation_id: str, computer_id: str, reason: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
     _require(reason in CHECKPOINT_REASONS, "a checkpoint reason is turn_completed or long_turn")
-    return {**_on_computer("checkpoint", operation_id, computer_id), "reason": reason}
+    return {**_on_computer("checkpoint", operation_id, computer_id, owner), "reason": reason}
 
 
-def suspend_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("suspend", operation_id, computer_id)
+def suspend_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("suspend", operation_id, computer_id, owner)
 
 
-def terminate_request(operation_id: str, computer_id: str) -> dict[str, Any]:
-    return _on_computer("terminate", operation_id, computer_id)
+def terminate_request(
+    operation_id: str, computer_id: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
+    return _on_computer("terminate", operation_id, computer_id, owner)
 
 
 def encode_body(request: Mapping[str, Any]) -> bytes:

@@ -33,9 +33,9 @@ class FakeController implements FrontController {
     return { action: c.action, outcome: "accepted" } as PagesResult;
   }
 
-  async launcher(call: unknown) {
-    this.launches.push(call);
-    return { operation: "terminate" as const, removal: "pending" as const };
+  async removeForPage() {
+    this.launches.push("remove");
+    return "pending" as const;
   }
 
   // WP3.23: sign-in, status and the staging switch, recorded.
@@ -358,12 +358,8 @@ describe("the page front's answers", () => {
     controller.state = pageState({ noContact: true });
     expect(await remove(3)).toEqual({ action: "remove", outcome: "accepted" });
     expect(await remove(3)).toEqual({ action: "remove", outcome: "accepted" });
-    const [first, second] = controller.launches as {
-      request: { operationId: string; operation: string; computerId: string };
-    }[];
-    expect(first?.request).toMatchObject({ operation: "terminate", computerId: PAGE_CMP });
-    expect(first?.request.operationId).toMatch(/^[0-9a-f]{32}$/);
-    expect(second?.request.operationId).toBe(first?.request.operationId);
+    // A repeat records the same intent again, which is the same intent (semantic idempotency).
+    expect(controller.launches).toEqual(["remove", "remove"]);
   });
 
   it("answers the terminal's upgrade only with a well-formed header", async () => {
@@ -499,20 +495,6 @@ describe("the page front's own failures", () => {
 
   it("reports a controller answer of the wrong kind as internal", async () => {
     const { front, controller } = harness();
-    const intent = await intentOf(front);
-    controller.launcher = async () => ({ operation: "status" }) as never;
-    controller.state = pageState({ noContact: true });
-    expect(
-      await codeOf(
-        front.pages({
-          action: "remove",
-          interfaceVersion: 1,
-          operationId: OP(1),
-          owner: OWNER,
-          intent,
-        }),
-      ),
-    ).toBe("internal");
     controller.pages = async () => ({ action: "set_size", appliesAt: "next_start" });
     expect(await codeOf(front.pages({ action: "state", interfaceVersion: 1 }))).toBe("internal");
   });

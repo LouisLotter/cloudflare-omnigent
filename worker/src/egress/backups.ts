@@ -52,6 +52,8 @@ interface FencedProps {
   readonly binding?: unknown;
   readonly key?: unknown;
   readonly fence?: unknown;
+  /** A credential put's owner tag (WP8.4), set by WorkspaceDO: the object's metadata. */
+  readonly owner?: unknown;
 }
 
 function log(event: string, fields: Readonly<Record<string, unknown>>): void {
@@ -135,11 +137,36 @@ export class FencedBackupGateway extends SdkGateway {
     const bucket = (this.env as Record<string, R2Bucket | undefined>)[props.binding];
     if (!bucket) throw new Error(`env.${props.binding} is not an R2 bucket binding`);
     await withTimeout(
-      bucket.put(props.key, body, { httpMetadata: { contentType: "application/json" } }),
+      bucket.put(props.key, body, {
+        httpMetadata: { contentType: "application/json" },
+        customMetadata: credentialMetadata(props),
+      }),
       GATEWAY_PUT_TIMEOUT_MS,
       "a credential put",
     );
   }
+}
+
+/** Owner tags as `ownerTag` writes them: never an account ID. */
+const OWNER_TAG = /^(installation|account|member:[0-9a-f]{32})$/;
+
+/**
+ * A credential bundle's R2 metadata (WP8.4): the computer, the generation and the owner tag, from
+ * the props WorkspaceDO set. The object's key is unchanged; the metadata records who it belongs to,
+ * and WorkspaceDO's pointer stamp remains what a restore checks.
+ */
+export function credentialMetadata(props: {
+  readonly fence?: unknown;
+  readonly owner?: unknown;
+}): Record<string, string> {
+  const fence = (props.fence ?? {}) as { computerId?: unknown; generation?: unknown };
+  const metadata: Record<string, string> = {};
+  if (typeof fence.computerId === "string") metadata["cfo-computer"] = fence.computerId;
+  if (typeof fence.generation === "number") metadata["cfo-generation"] = String(fence.generation);
+  if (typeof props.owner === "string" && OWNER_TAG.test(props.owner)) {
+    metadata["cfo-owner"] = props.owner;
+  }
+  return metadata;
 }
 
 /** `ctx.exports`, as far as the factories need it. */
@@ -192,13 +219,20 @@ export function credentialWriter(
   exports: GatewayExports,
   writer: WriterIdentity,
   binding: string = CHECKPOINTS_BINDING,
-): { put(key: string, body: Uint8Array): Promise<void> } {
+): { put(key: string, body: Uint8Array, owner?: string): Promise<void> } {
   const fence: BackupFence = { fenceVersion: 1, ...writer, kind: "credential" };
   return {
-    put: (key, body) =>
+    put: (key, body, owner) =>
       exports
         .DirectoryBackupGateway({
-          props: { protocolVersion: 1, mode: "control", binding, key, fence },
+          props: {
+            protocolVersion: 1,
+            mode: "control",
+            binding,
+            key,
+            fence,
+            ...(owner === undefined ? {} : { owner }),
+          },
         })
         .putCredential(body),
   };

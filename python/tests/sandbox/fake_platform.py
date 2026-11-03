@@ -122,6 +122,12 @@ class Computer:
     saves: dict[str, dict[str, Any]] = field(default_factory=dict)
     sleeps: dict[str, dict[str, Any]] = field(default_factory=dict)
     tokens: list[str] = field(default_factory=list)
+    #: The owner a version 2 ``provision`` bound it to (WP8.4): account, member and host.
+    owner: tuple[str, str | None, str] | None = None
+
+
+def _owner_key(owner: dict[str, Any]) -> tuple[str, str | None, str]:
+    return (owner["userId"], owner["memberId"], owner["hostId"])
 
 
 ERROR_STATUS = {
@@ -157,7 +163,7 @@ class FakeLauncherApi:
         self.computers: dict[str, Computer] = {}
         self.by_name: dict[str, str] = {}
         self.capacity = 10
-        self.supported_versions = [1]
+        self.supported_versions = [1, 2]
         self.suspend_polls = 0
         self.suspend_refusal: str | None = None
         self.removal_outcome = "pending"
@@ -380,20 +386,32 @@ class FakeLauncherApi:
         with self.lock:
             if op == "prepare":
                 return {"operation": op, "supportedProtocolVersions": self.supported_versions}, []
+            owner = body.get("owner")
             if op == "provision":
                 computer_id = self.by_name.get(body["name"])
                 if computer_id is None:
-                    computer_id = self.add_computer(body["name"]).computer_id
+                    computer = self.add_computer(body["name"])
+                    if owner is not None:
+                        computer.owner = _owner_key(owner)
+                    computer_id = computer.computer_id
+                self._check_owner(self.computers[computer_id], owner)
                 return {"operation": op, "computerId": computer_id}, []
             c = self.computers.get(body["computerId"])
             if c is None:
                 if op == "terminate":
                     return {"operation": op, "removal": "absent"}, []
                 raise ApiError("not_found", "No such computer.")
+            self._check_owner(c, owner)
             if c.removal and op in ("resume", "claim_start", "start_host", "checkpoint", "suspend"):
                 raise ApiError("gone", "This computer is being removed.")
             result = getattr(self, f"_{op}")(c, body, hooks)
             return {"operation": op, **result}, hooks
+
+    @staticmethod
+    def _check_owner(c: Computer, owner: dict[str, Any] | None) -> None:
+        """WorkspaceDO's owner check, as far as the launcher can see it: another owner is refused."""
+        if owner is not None and c.owner is not None and c.owner != _owner_key(owner):
+            raise ApiError("forbidden", "This computer belongs to someone else.")
 
     def _claim_start(self, c: Computer, body: dict, hooks: list) -> dict[str, Any]:
         recorded = c.claims.get(body["operationId"])

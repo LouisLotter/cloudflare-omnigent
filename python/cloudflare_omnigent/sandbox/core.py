@@ -169,17 +169,28 @@ class LauncherCore:
             raise _unsupported(result.supported_protocol_versions)
         return result
 
-    def provision(self, name: str) -> str:
-        """Record a computer for Omnigent's stable host name; return its computer ID."""
-        request = self._build(protocol.provision_request, protocol.new_operation_id(), name)
+    def provision(self, name: str, *, owner: protocol.Owner | None = None) -> str:
+        """Record a computer for Omnigent's stable host name; return its computer ID.
+
+        With ``owner`` (WP8.4) the call is protocol version 2 and the platform binds a new
+        computer to that person, as it checks every later call against the binding; so does
+        every operation below but ``prepare``.
+        """
+        request = self._build(
+            protocol.provision_request, protocol.new_operation_id(), name, owner=owner
+        )
         self._fence("provision")
         result = self._send(request).result
         assert isinstance(result, protocol.ProvisionResult)
         return result.computer_id
 
-    def claim_start(self, computer_id: str, operation_id: str) -> protocol.ClaimStartResult:
+    def claim_start(
+        self, computer_id: str, operation_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.ClaimStartResult:
         """The fence before any re-arm, under Omnigent's operation ID."""
-        request = self._build(protocol.claim_start_request, operation_id, computer_id)
+        request = self._build(
+            protocol.claim_start_request, operation_id, computer_id, owner=owner
+        )
         result = self._send(request).result
         assert isinstance(result, protocol.ClaimStartResult)
         return result
@@ -193,6 +204,7 @@ class LauncherCore:
         host_name: str,
         token: str,
         host_config: Mapping[str, object],
+        owner: protocol.Owner | None = None,
     ) -> str:
         """Hand attempt N's start parameters to the platform; return the workspace path.
 
@@ -207,50 +219,71 @@ class LauncherCore:
             host_name=host_name,
             token=token,
             host_config=host_config,
+            owner=owner,
         )
         self._fence("start_host")
         result = self._send(request).result
         assert isinstance(result, protocol.StartHostResult)
         return result.workspace_path
 
-    def resume(self, computer_id: str) -> protocol.ResumeResult:
-        request = self._build(protocol.resume_request, protocol.new_operation_id(), computer_id)
+    def resume(
+        self, computer_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.ResumeResult:
+        request = self._build(
+            protocol.resume_request, protocol.new_operation_id(), computer_id, owner=owner
+        )
         result = self._send(request).result
         assert isinstance(result, protocol.ResumeResult)
         return result
 
-    def keep_alive(self, computer_id: str) -> protocol.KeepAliveResult:
-        request = self._build(protocol.keep_alive_request, protocol.new_operation_id(), computer_id)
+    def keep_alive(
+        self, computer_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.KeepAliveResult:
+        request = self._build(
+            protocol.keep_alive_request, protocol.new_operation_id(), computer_id, owner=owner
+        )
         result = self._send(request).result
         assert isinstance(result, protocol.KeepAliveResult)
         return result
 
-    def status(self, computer_id: str) -> protocol.StatusResult:
-        request = self._build(protocol.status_request, protocol.new_operation_id(), computer_id)
+    def status(
+        self, computer_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.StatusResult:
+        request = self._build(
+            protocol.status_request, protocol.new_operation_id(), computer_id, owner=owner
+        )
         result = self._send(request).result
         assert isinstance(result, protocol.StatusResult)
         return result
 
-    def admission(self, computer_id: str) -> Admission:
+    def admission(self, computer_id: str, *, owner: protocol.Owner | None = None) -> Admission:
         """The typed status and admission, never cached here.
 
         ``observed_at`` is when the request that got the answer was sent: the state it reports
         is at least that recent, so Omnigent's 60 s age limit is never overstated.
         """
-        request = self._build(protocol.admission_request, protocol.new_operation_id(), computer_id)
+        request = self._build(
+            protocol.admission_request, protocol.new_operation_id(), computer_id, owner=owner
+        )
         reply = self._send(request)
         assert isinstance(reply.result, protocol.AdmissionResult)
         return Admission(result=reply.result, observed_at=reply.sent_at)
 
-    def checkpoint(self, computer_id: str, reason: str) -> tuple[protocol.CheckpointResult, str]:
+    def checkpoint(
+        self, computer_id: str, reason: str, *, owner: protocol.Owner | None = None
+    ) -> tuple[protocol.CheckpointResult, str]:
         """Ask for a save; return the answer and the operation ID it is recorded under."""
         operation_id = protocol.new_operation_id()
-        request = self._build(protocol.checkpoint_request, operation_id, computer_id, reason)
+        request = self._build(
+            protocol.checkpoint_request, operation_id, computer_id, reason, owner=owner
+        )
         result = self._send(request).result
         assert isinstance(result, protocol.CheckpointResult)
         return result, operation_id
 
-    def suspend(self, computer_id: str, operation_id: str) -> protocol.SuspendResult:
+    def suspend(
+        self, computer_id: str, operation_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.SuspendResult:
         """Start the sleep under Omnigent's operation ID, and follow it while it runs.
 
         Returns ``refused`` or ``stopped``. While the platform answers ``in_progress`` the same
@@ -258,7 +291,7 @@ class LauncherCore:
 
         :raises OutcomeUnknown: Still in progress, or no readable answer, within the budget.
         """
-        request = self._build(protocol.suspend_request, operation_id, computer_id)
+        request = self._build(protocol.suspend_request, operation_id, computer_id, owner=owner)
         self._fence("suspend")
         deadline = self._monotonic() + self._policies["suspend"].budget_s
         while True:
@@ -280,9 +313,13 @@ class LauncherCore:
                 )
             self._sleep(self._suspend_poll_s)
 
-    def terminate(self, computer_id: str) -> protocol.TerminateResult:
+    def terminate(
+        self, computer_id: str, *, owner: protocol.Owner | None = None
+    ) -> protocol.TerminateResult:
         """Record the removal intent. Idempotent by meaning: each call has its own ID."""
-        request = self._build(protocol.terminate_request, protocol.new_operation_id(), computer_id)
+        request = self._build(
+            protocol.terminate_request, protocol.new_operation_id(), computer_id, owner=owner
+        )
         self._fence("terminate")
         result = self._send(request).result
         assert isinstance(result, protocol.TerminateResult)

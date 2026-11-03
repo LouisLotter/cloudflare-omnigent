@@ -31,6 +31,7 @@ import {
   WorkspaceManifest,
 } from "@cfo/contracts";
 import { z } from "zod";
+import { OwnerBinding } from "./ownership.ts";
 import { NO_SIGN_IN, SignInRecord } from "./sign-in.ts";
 import { SaveRecord } from "./status.ts";
 
@@ -352,6 +353,19 @@ export const ComputerRecord = z.strictObject({
       forgetOp: OperationId,
     })
     .nullable(),
+
+  // WP8.4 (D50): the computer's owner. Records from before it read as recorded without an owner,
+  // which is the installation's owner (`ownership.ts`).
+  /** The owner binding: set at a version 2 `provision`, or adopted at the first version 2 call. */
+  owner: OwnerBinding.nullable().default(null),
+  /**
+   * Each checkpoint pointer's owner stamp: the binding when the pointer was published (null when
+   * the computer had none, as for every pointer published before WP8.4). Kept beside the pointer,
+   * not in its manifest, which the supervisor parses strictly. A restore checks it against the
+   * binding (`stampMatches`).
+   */
+  workspaceOwner: OwnerBinding.nullable().default(null),
+  credentialOwner: OwnerBinding.nullable().default(null),
 });
 export type ComputerRecord = z.infer<typeof ComputerRecord>;
 
@@ -458,5 +472,8 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     rc53: null,
     keepAwake: false,
     deletion: null,
+    owner: null,
+    workspaceOwner: null,
+    credentialOwner: null,
   };
 }

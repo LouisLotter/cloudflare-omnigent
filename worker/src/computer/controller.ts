@@ -49,6 +49,7 @@ import {
   type InterceptProps,
   LAUNCHER_OPERATIONS,
   LauncherCall,
+  type LauncherOwner,
   type LauncherRequest,
   type LauncherResult,
   type LifecycleEvent,
@@ -136,6 +137,15 @@ import {
   wouldReserve,
 } from "./machine.ts";
 import {
+  bindingFor,
+  checkLauncherOwner,
+  nameContradictsHost,
+  type OwnerBinding,
+  type OwnerRefusal,
+  ownerTag,
+  stampMatches,
+} from "./ownership.ts";
+import {
   type CaptureRecord,
   ComputerRecord,
   newRecord,
@@ -202,7 +212,15 @@ import { isTransientUploadError } from "./upload-errors.ts";
  * by the generation whose upload it is, so the fence admits only this generation's pending keys.
  */
 export interface CheckpointBucket {
-  put(key: string, body: Uint8Array, writer: { readonly generation: number }): Promise<void>;
+  /**
+   * A credential bundle's put for this generation's pending upload. `owner`: the computer's owner
+   * tag (`ownerTag`, WP8.4), kept as the object's metadata; never the account ID.
+   */
+  put(
+    key: string,
+    body: Uint8Array,
+    writer: { readonly generation: number; readonly owner?: string },
+  ): Promise<void>;
   /** The object's bytes, or null if it does not exist. */
   get(key: string): Promise<Uint8Array | null>;
   /** Deleting a missing object succeeds. */
@@ -327,6 +345,12 @@ export interface ControllerDeps {
    * on production: WorkspaceDO sets it only from the staging tool's variable.
    */
   readonly stagingChecks?: boolean;
+  /**
+   * The installation owner's Omnigent account (WP8.4): the person every computer recorded without
+   * an owner belongs to, and the only one a version 1 launcher call acts for. Null or absent: not
+   * configured, so no computer is adopted and a version 1 call reaches only unbound computers.
+   */
+  readonly installationOwner?: string | null;
 }
 
 /** The soonest the alarm is ever set after now. */
@@ -1226,15 +1250,21 @@ export class WorkspaceController {
         supportedProtocolVersions: [...SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS],
       };
     }
-    if (request.operation === "provision") return this.#provision(request.name);
+    if (request.operation === "provision") return this.#provision(request.name, request.owner);
     const r = this.#load();
     if (r === null) {
       if (request.operation === "terminate") return { operation: "terminate", removal: "absent" };
       throw platformError("not_found", "no such computer");
     }
+    // The owner first (WP8.4): a call for someone else's computer learns nothing about it and
+    // changes nothing, not even the contact time. An adoption or a refinement is persisted with
+    // the contact time, before the call has any effect.
+    const bind = this.#checkOwner(r, request.operation, request.owner);
     this.#write((d) => {
       d.lastContactAt = this.#now();
+      if (bind !== null) d.owner = bind;
     });
+    this.#logBound(r.owner, bind, request.operation);
     if (fingerprint !== null) {
       const prior = this.#opFind("launcher", request.operationId, fingerprint);
       if (prior !== undefined) {
@@ -1348,6 +1378,23 @@ export class WorkspaceController {
     }
   }
 
+  /**
+   * A removal intent the setup page records (WP3.5): what Omnigent's `terminate` records, without a
+   * launcher owner to check. The page front has already decided that the person may remove this
+   * computer, and offers it only while Omnigent no longer calls (WP8.4).
+   */
+  async removeForPage(): Promise<"pending" | "resolved" | "absent"> {
+    try {
+      return await this.#exclusive(() => {
+        if (this.#load() === null) return "absent" as const;
+        const reply = this.#write((d) => this.#step(d, "terminate", {}).reply);
+        return expectReply(reply, "terminate").removal;
+      });
+    } finally {
+      this.#kick();
+    }
+  }
+
   #replyError(code: "gone" | "at_capacity" | "conflict"): Error {
     const messages = {
       gone: "This computer was removed.",
@@ -1374,25 +1421,82 @@ export class WorkspaceController {
     return outcome.result as LauncherResult;
   }
 
-  #provision(name: string): LauncherResult {
+  #provision(name: string, owner: LauncherOwner | undefined): LauncherResult {
     const now = this.#now();
-    this.#d.store.transaction(() => {
+    const bound = this.#d.store.transaction((): [OwnerBinding | null, OwnerBinding | null] => {
       const existing = this.#load();
       if (existing === null) {
+        // A new computer is bound to its owner in the same write that records it (WP8.4).
+        if (owner !== undefined && nameContradictsHost(name, owner.hostId)) {
+          this.#refuseOwner("provision", "other_host");
+        }
         this.#d.store.put(
           RECORD_KEY,
-          ComputerRecord.parse({ ...newRecord(this.#d.computerId, now), name, lastContactAt: now }),
+          ComputerRecord.parse({
+            ...newRecord(this.#d.computerId, now),
+            name,
+            lastContactAt: now,
+            owner: owner === undefined ? null : bindingFor(owner, "provision", now),
+          }),
         );
-        return;
+        return [null, null];
       }
+      const bind = this.#checkOwner(existing, "provision", owner);
       if (existing.lifecycle.context.removalIntent)
         throw platformError("gone", "this computer was removed");
       if (existing.name !== null && existing.name !== name) {
         throw platformError("conflict", "this computer was provisioned under another name");
       }
-      this.#d.store.put(RECORD_KEY, { ...existing, name, lastContactAt: now });
+      this.#d.store.put(
+        RECORD_KEY,
+        ComputerRecord.parse({
+          ...existing,
+          name,
+          lastContactAt: now,
+          owner: bind ?? existing.owner,
+        }),
+      );
+      return [existing.owner, bind];
     });
+    this.#logBound(bound[0], bound[1], "provision");
     return { operation: "provision", computerId: this.#d.computerId };
+  }
+
+  /**
+   * A launcher call's owner against the computer's binding (WP8.4, `ownership.ts`): the binding to
+   * persist before the call has any effect (an adoption or a refinement), or null when it stays.
+   * Refused with `forbidden`, before anything else about the call, when the computer belongs to
+   * someone else or another host; the log names the operation and the reason only.
+   */
+  #checkOwner(
+    r: ComputerRecord,
+    operation: LauncherRequest["operation"],
+    owner: LauncherOwner | undefined,
+  ): OwnerBinding | null {
+    const decision = checkLauncherOwner({
+      binding: r.owner,
+      hostId: r.hostId,
+      name: r.name,
+      owner,
+      installationOwner: this.#d.installationOwner ?? null,
+      now: this.#now(),
+    });
+    if (!decision.ok) this.#refuseOwner(operation, decision.reason);
+    return decision.bind;
+  }
+
+  /** Logs a binding persisted by `#checkOwner`'s decision, once its write committed. */
+  #logBound(before: OwnerBinding | null, bound: OwnerBinding | null, operation: string): void {
+    if (bound === null) return;
+    this.#log(before === null ? "owner_adopted" : "owner_refined", {
+      operation,
+      owner: ownerTag(bound),
+    });
+  }
+
+  #refuseOwner(operation: string, reason: OwnerRefusal): never {
+    this.#log("owner_refused", { operation, reason });
+    throw platformError("forbidden", "This computer belongs to someone else.");
   }
 
   /**
@@ -1652,7 +1756,10 @@ export class WorkspaceController {
     const object = bundleObject(bundle);
     const manifest = await credentialManifestOf({ bundle, checkpointId, object, now: this.#now() });
     try {
-      await bucket.put(manifest.object.key, object, { generation: bundle.generation });
+      await bucket.put(manifest.object.key, object, {
+        generation: bundle.generation,
+        owner: ownerTag(r.owner),
+      });
     } catch (error) {
       this.#log("credential_store_failed", { error: describe(error) });
       throw platformError("unavailable", "the credential checkpoint could not be stored; retry");
@@ -1665,6 +1772,7 @@ export class WorkspaceController {
       }
       if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
       d.credential = manifest;
+      d.credentialOwner = d.owner;
       if (holdsLogin(manifest.files)) d.everHeldLogin = true;
       d.signOut = {
         ...d.signOut,
@@ -2887,6 +2995,16 @@ export class WorkspaceController {
       });
       return false;
     };
+    // Both pointers must belong to this computer's owner (WP8.4): a checkpoint stamped for anyone
+    // else is never restored, and the start fails rather than come up with someone else's files
+    // or logins, or with none.
+    const installationOwner = this.#d.installationOwner ?? null;
+    if (
+      (job.manifest !== null && !stampMatches(r.workspaceOwner, r.owner, installationOwner)) ||
+      (r.credential !== null && !stampMatches(r.credentialOwner, r.owner, installationOwner))
+    ) {
+      return fail("owner_mismatch");
+    }
     const layers = job.manifest?.layers ?? [];
     try {
       if (job.phase === "layers") {
@@ -2950,6 +3068,7 @@ export class WorkspaceController {
         d.credentialFloor = { generation, floor: reply.orderFloor };
         if (read.lost) {
           d.credential = null;
+          d.credentialOwner = null;
           d.signOut = { ...d.signOut, loginPossiblyLost: true };
         }
         d.restoredTo = d.stop?.reason === "unexpected" ? (job.manifest?.cutAt ?? null) : null;
@@ -3223,6 +3342,7 @@ export class WorkspaceController {
             if (outcome.outcome === "published") {
               d.orphans.push(...droppedLayers(d.workspace, outcome.manifest));
               d.workspace = outcome.manifest;
+              d.workspaceOwner = d.owner;
               d.lastSavedAt = outcome.manifest.cutAt;
               d.unchanged = null;
               d.verified = { generation: x.generation, at: x.startedAt, how: "published" };
@@ -3597,6 +3717,7 @@ export class WorkspaceController {
               d.orphans.push(...(d.workspace?.layers.map((l) => l.backup) ?? []));
               if (d.capture?.backup) d.orphans.push(d.capture.backup);
               d.workspace = null;
+              d.workspaceOwner = null;
               d.capture = null;
             });
           }
@@ -3618,6 +3739,7 @@ export class WorkspaceController {
               if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
               for (const u of d.credentialUploads) this.#abandonUpload(d, u.checkpointId);
               d.credential = null;
+              d.credentialOwner = null;
               d.credentialUploads = [];
             });
           }
