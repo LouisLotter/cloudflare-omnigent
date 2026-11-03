@@ -100,6 +100,13 @@ def test_admission_needs_a_mode() -> None:
 class Snapshot:
     revision: int
     emails: tuple[str, ...]
+    owners: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SnapshotWithoutOwners:
+    revision: int
+    emails: tuple[str, ...]
 
 
 KEY = b"k" * 32
@@ -120,16 +127,28 @@ def _adapter(status: int, answer: dict[str, Any]) -> tuple[admission.PlatformAdm
 
 def test_the_adapter_signs_the_exact_body_for_the_admission_route() -> None:
     adapter, sent = _adapter(200, {"outcome": "applied", "revision": 4})
-    adapter.apply(Snapshot(4, ("alice@example.test", "owner@example.test")))
+    adapter.apply(
+        Snapshot(4, ("alice@example.test", "owner@example.test"), ("owner@example.test",))
+    )
     url, body, headers = sent[0]
     assert url == "http://platform.internal/access/v1/admission"
-    assert body == b'{"emails":["alice@example.test","owner@example.test"],"revision":4}'
+    assert body == (
+        b'{"emails":["alice@example.test","owner@example.test"],'
+        b'"owners":["owner@example.test"],"revision":4}'
+    )
     message = "\n".join(
         ("cfo-access-admission/v1", "key-1", "1800000000", hashlib.sha256(body).hexdigest())
     )
     assert headers["X-Omnigent-Signature"] == hmac.new(KEY, message.encode(), "sha256").hexdigest()
     assert headers["X-Omnigent-Signing-Key-Id"] == "key-1"
     assert headers["X-Omnigent-Timestamp"] == "1800000000"
+
+
+def test_a_snapshot_without_owners_is_sent_with_none() -> None:
+    adapter, sent = _adapter(409, {"outcome": "refused", "reason": "owner_missing"})
+    with pytest.raises(admission.AdmissionNotApplied):
+        adapter.apply(SnapshotWithoutOwners(4, ("owner@example.test",)))
+    assert json.loads(sent[0][1])["owners"] == []
 
 
 def test_the_adapter_succeeds_on_applied_or_stale_and_raises_otherwise() -> None:

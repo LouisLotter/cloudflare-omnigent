@@ -21,10 +21,13 @@ describe("teams contracts (WP8.3)", () => {
 
   it("refuses an admission list longer than Omnigent sends, and an uppercase address", () => {
     const emails = Array.from({ length: 1001 }, (_, i) => `p${i}@example.test`);
-    expect(AccessAdmissionCall.safeParse({ revision: 1, emails }).success).toBe(false);
+    const owners = ["p0@example.test"];
+    expect(AccessAdmissionCall.safeParse({ revision: 1, emails, owners }).success).toBe(false);
     expect(
-      AccessAdmissionCall.safeParse({ revision: 1, emails: emails.slice(0, 1000) }).success,
+      AccessAdmissionCall.safeParse({ revision: 1, emails: emails.slice(0, 1000), owners }).success,
     ).toBe(true);
+    // The current owners are part of every list.
+    expect(AccessAdmissionCall.safeParse({ revision: 1, emails: owners }).success).toBe(false);
     const person = {
       issuer: "https://i",
       subject: "s",

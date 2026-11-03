@@ -81,7 +81,6 @@ import {
 } from "@cfo/contracts";
 import { z } from "zod";
 import type { PlatformEnv } from "../env.ts";
-import { parseOwnerPin } from "../ingress/owner.ts";
 import { platformError } from "../shared/errors.ts";
 import { newInstanceId } from "../shared/instance.ts";
 import {
@@ -1325,7 +1324,6 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const run = this.#admissions.then(() =>
       applyAdmission(parsed.data, {
         port: accessGroupPortFrom(env),
-        owner: parseOwnerPin(typeof env.OWNER_EMAIL_HASH === "string" ? env.OWNER_EMAIL_HASH : ""),
         appliedRevision: () => {
           const value = this.#serverState(ADMISSION_APPLIED_KEY);
           return typeof value === "number" && Number.isInteger(value) ? value : null;

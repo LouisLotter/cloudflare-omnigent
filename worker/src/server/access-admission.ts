@@ -3,12 +3,17 @@
 //
 // Omnigent commits each membership change with a higher admission revision, then its admission
 // adapter (the server image's `cfo_server/admission.py`) sends the whole list here
-// (`AccessAdmissionCall`): active members' verified addresses and pending invitations. This writes it
-// into the one Access group the installer created for the installation's members, and nothing
-// else: never another group, an application, a policy or an organization setting. In order:
-//   1. a revision at or below the last applied is answered `stale` and changes nothing;
-//   2. the list must name the installation's owner (the owner pin), so a bad list can never lock
-//      the owner out (`owner_missing`);
+// (`AccessAdmissionCall`): active members' verified addresses and pending invitations, and which of
+// them are the team's current active owners. It sends it again at an invitation's expiry and
+// hourly, at the same revision when nothing changed. This writes it into the one Access group the
+// installer created for the installation's members, and nothing else: never another group, an
+// application, a policy or an organization setting. In order:
+//   1. a revision below the last applied is answered `stale` and changes nothing; an equal one is
+//      compared with the group again, so a list someone changed in the dashboard is repaired;
+//   2. the list must name at least one current owner, and every owner it names must be in it, so
+//      a bad list can never lock every owner out (`owner_missing`); the owners are the team's
+//      now, not the address the installation was planned with, which may have left or been
+//      suspended;
 //   3. the group is read; one that is gone is `group_missing`;
 //   4. every include rule must be one email address: a group someone widened (a domain, everyone,
 //      another group) is refused as it is (`foreign_rules`), never rewritten into shape;
@@ -16,12 +21,11 @@
 //      (Cloudflare's update replaces the whole group);
 //   6. the group is read back: only what Access holds decides; a list it did not keep throws, so
 //      the adapter retries;
-//   7. the revision is recorded as applied.
+//   7. only then is the revision recorded as applied.
 // Omnigent's own membership check never depends on this: a person Access still admits but
 // Omnigent has suspended reaches nothing. Logged by group, revision and count, never an address.
 
 import type { AccessAdmissionCall, AccessAdmissionResult } from "@cfo/contracts";
-import type { OwnerPin } from "../ingress/owner.ts";
 
 /** An Access group's rules, as Cloudflare reports them. */
 export interface AccessGroup {
@@ -44,8 +48,6 @@ export interface AccessGroupPort {
 export interface AdmissionDeps {
   /** Undefined when the platform Worker holds no group, account or token: `not_configured`. */
   readonly port: AccessGroupPort | undefined;
-  /** The owner pin; undefined: `not_configured`. */
-  readonly owner: OwnerPin | undefined;
   /** The last applied revision, or null. */
   appliedRevision(): number | null;
   /** Records the applied revision (after Access confirmed it). */
@@ -83,7 +85,9 @@ export async function applyAdmission(
   call: AccessAdmissionCall,
   deps: AdmissionDeps,
 ): Promise<AccessAdmissionResult> {
-  const { port, owner } = deps;
+  const { port } = deps;
+  // What the outcome's log line adds: a repair of a group changed outside the team page.
+  let extra: Readonly<Record<string, string | number>> = {};
   const done = (result: AccessAdmissionResult): AccessAdmissionResult => {
     deps.log({
       event: "access_admission",
@@ -92,24 +96,26 @@ export async function applyAdmission(
       ...(port === undefined ? {} : { group: port.groupId }),
       revision: call.revision,
       count: call.emails.length,
+      ...extra,
     });
     return result;
   };
-  if (port === undefined || owner === undefined) {
-    return done({ outcome: "refused", reason: "not_configured" });
-  }
+  if (port === undefined) return done({ outcome: "refused", reason: "not_configured" });
   const applied = deps.appliedRevision();
-  if (applied !== null && call.revision <= applied) {
+  if (applied !== null && call.revision < applied) {
     return done({ outcome: "stale", appliedRevision: applied });
   }
-  let ownerListed = false;
-  for (const email of call.emails) if (await owner.matches(email)) ownerListed = true;
-  if (!ownerListed) return done({ outcome: "refused", reason: "owner_missing" });
+  const listed = new Set(call.emails.map((e) => e.toLowerCase()));
+  if (call.owners.length === 0 || !call.owners.every((e) => listed.has(e.toLowerCase()))) {
+    return done({ outcome: "refused", reason: "owner_missing" });
+  }
   const group = await port.read();
   if (group === undefined) return done({ outcome: "refused", reason: "group_missing" });
   const current = emailsOf(group);
   if (current === undefined) return done({ outcome: "refused", reason: "foreign_rules" });
   if (!sameSet(current, call.emails)) {
+    // At the applied revision, the group changed since: someone edited it outside the team page.
+    if (applied === call.revision) extra = { repaired: 1 };
     await port.write({
       name: group.name,
       include: call.emails.map((email) => ({ email: { email } })),

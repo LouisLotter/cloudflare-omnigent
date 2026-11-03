@@ -11,6 +11,15 @@
       "maxItems": 1000,
       "type": "array"
     },
+    "owners": {
+      "items": {
+        "maxLength": 320,
+        "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+        "type": "string"
+      },
+      "maxItems": 1000,
+      "type": "array"
+    },
     "revision": {
       "maximum": 9007199254740991,
       "minimum": 0,
@@ -19,7 +28,8 @@
   },
   "required": [
     "revision",
-    "emails"
+    "emails",
+    "owners"
   ],
   "title": "AccessAdmissionCall",
   "type": "object"

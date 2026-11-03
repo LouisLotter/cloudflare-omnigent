@@ -21,8 +21,8 @@
 //      (503 while the team's keys cannot be loaded at all);
 //   5. any identity other than the pinned owner, even when Access admitted it: 403. With
 //      `TEAM_ADMISSION=members` (WP8.3) Access's member group decides who is admitted, and the
-//      server decides who they are (Omnigent's membership binding); the pin then only marks the
-//      owner;
+//      server decides who they are (Omnigent's membership binding), the owner included; the pin
+//      then only marks the owner's address;
 //   6. an unsafe method (anything but GET, HEAD and OPTIONS) or a WebSocket upgrade whose
 //      `Origin` is present and is neither this installation's exact origin nor Omnigent's own
 //      non-browser marker `omnigent://internal` (origin.ts), `null` included: 403.
@@ -132,6 +132,12 @@ export type IngressFailure =
 export interface Admitted {
   readonly ok: true;
   readonly identity: OwnerIdentity;
+  /**
+   * The admission that let it in (WP8.3). With `members`, the pin only marks an address: who the
+   * person is, the pinned owner included, is their active Omnigent membership (`member-seam.ts`).
+   * Ingress always sets it; absent (a value built by hand) means `owner`.
+   */
+  readonly admission?: "owner" | "members";
   /**
    * The request to pass on: the same method, URL, body and upgrade, with identity headers and
    * the `CF_Authorization` cookie removed. Omnigent's own `Authorization` header and session
@@ -311,6 +317,7 @@ export function createIngress(config: IngressConfig | undefined, deps: IngressDe
         },
         request: new Request(request, { headers: strippedHeaders(request.headers) }),
         origin,
+        admission: config.admission,
       };
     },
   };

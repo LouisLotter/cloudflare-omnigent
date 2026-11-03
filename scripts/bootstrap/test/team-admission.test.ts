@@ -108,7 +108,19 @@ describe("the member group", () => {
     expect(await ensureMemberGroup(ctx)).toBe(id);
     group.include = [{ email: { email: OWNER_EMAIL } }, { everyone: {} }];
     await expect(ensureMemberGroup(ctx)).rejects.toThrow(TeamAdmissionRefusal);
-    group.include = [{ email: { email: "alice@example.test" } }];
+    // The founding owner left or was suspended: the team's current owners are the reconciler's
+    // check, so a later run keeps the group.
+    group.include = [{ email: { email: "second-owner@example.test" } }];
+    expect(await ensureMemberGroup(ctx)).toBe(id);
+  });
+
+  it("checks a new group admits the owner", async () => {
+    const api = new FakeGroups();
+    const create = api.createGroup.bind(api);
+    // Access kept another address than the one created.
+    api.createGroup = (body) =>
+      create({ ...body, include: [{ email: { email: "x@example.test" } }] });
+    const { ctx } = await context(api);
     await expect(ensureMemberGroup(ctx)).rejects.toThrow(/does not admit the owner/);
   });
 
@@ -230,5 +242,7 @@ describe("enabling team admission", () => {
       SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE: "required",
     });
     expect(Object.keys(vars.platform)).not.toContain("CFO_ACCESS_GROUP_TOKEN");
+    // The reconciler checks the team's current owners, not the planned owner's pin.
+    expect(Object.keys(vars.platform)).not.toContain("OWNER_EMAIL_HASH");
   });
 });

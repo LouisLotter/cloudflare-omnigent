@@ -1,8 +1,9 @@
 // OmnigentServer and teams (WP8.3), in workerd with a fake server container: the identity
 // envelope it adds to a forwarded request when `CFO_IDENTITY_ENVELOPE` is on (and never by
-// default), the client headers it strips, the page-person platform call, and the admission
-// route's revision kept across evictions.
+// default), the client headers it strips, the page-person platform call, the admission route's
+// revision kept across evictions, and the web Worker's pages in members admission asking it.
 import {
+  createExecutionContext,
   evictAllDurableObjects,
   evictDurableObject,
   runDurableObjectAlarm,
@@ -14,11 +15,15 @@ import {
   FORWARDED_PERSON_HEADER,
   type ForwardedPerson,
   PAGE_PERSON_CALL_PATH,
+  type PagePersonResult,
 } from "@cfo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WebEnv } from "../../src/env.ts";
+import type { Admitted } from "../../src/ingress/index.ts";
 import { envelopeKey, signEnvelope } from "../../src/server/identity-envelope.ts";
 import type { OmnigentServer } from "../../src/server/OmnigentServer.ts";
 import { FORWARD_VERSION_HEADER, OMNIGENT_SERVER_INTERFACE_VERSION } from "../../src/shared/rpc.ts";
+import { routeAdmitted } from "../../src/web.ts";
 import type { FakeServerContainer } from "../support/fake-server-container.ts";
 import { testServers } from "../support/server-harness.ts";
 
@@ -143,7 +148,7 @@ describe("OmnigentServer: page person and admission", () => {
   it("keeps the applied admission revision across evictions, so a late push is stale", async () => {
     const { stub } = await runningServer();
     // Without the group's settings nothing is written, and the refusal says why.
-    expect(await stub.admission({ revision: 2, emails: [] })).toEqual({
+    expect(await stub.admission({ revision: 2, emails: [], owners: [] })).toEqual({
       outcome: "refused",
       reason: "not_configured",
     });
@@ -165,5 +170,60 @@ describe("OmnigentServer: page person and admission", () => {
         .toArray(),
     );
     expect(kept).toEqual([{ value: "5" }]);
+  });
+});
+
+describe("the web Worker's pages in members admission, through OmnigentServer", () => {
+  it("open to the pinned owner bound to an active owner, and to nobody else", async () => {
+    const { stub, fake } = await runningServer();
+    let person: PagePersonResult = {
+      action: "member",
+      memberId: "0123456789abcdef0123456789abcdef",
+      userId: "owner",
+      role: "owner",
+      state: "active",
+    };
+    fake.handler = (_port: number, request: Request) =>
+      new URL(request.url).pathname === PAGE_PERSON_CALL_PATH
+        ? Response.json(person)
+        : Response.json({ path: new URL(request.url).pathname });
+    const asked = () =>
+      fake.forwarded().filter((r) => r.url.endsWith(PAGE_PERSON_CALL_PATH)).length;
+    const webEnv = { OMNIGENT: { getByName: () => stub } } as unknown as WebEnv;
+    const at = (path: string, pin: boolean, admission?: "owner" | "members"): Admitted => ({
+      ok: true,
+      identity: {
+        sub: "owner-sub",
+        issuer: ALICE.issuer,
+        audience: ALICE.audience,
+        email: "owner@example.test",
+        pin,
+        sessionId: "e".repeat(64),
+        issuedAt: 1,
+        expiresAt: 2,
+      },
+      request: new Request(`${ORIGIN}${path}`),
+      origin: ORIGIN,
+      ...(admission === undefined ? {} : { admission }),
+    });
+    // Each answer's body is read, so no stream outlives the test.
+    const route = async (admitted: Admitted) => {
+      const response = await routeAdmitted(admitted, webEnv, createExecutionContext());
+      await response.arrayBuffer();
+      return response;
+    };
+
+    const opened = await route(at("/platform/", true, "members"));
+    expect(opened.status).toBe(303);
+    expect(asked()).toBe(1);
+    person = { ...person, state: "suspended" };
+    expect((await route(at("/platform/", true, "members"))).status).toBe(403);
+    expect(asked()).toBe(2);
+    // Another identity is refused without asking; Omnigent itself is still its to reach.
+    expect((await route(at("/platform/", false, "members"))).status).toBe(403);
+    expect((await route(at("/v1/me", false, "members"))).status).toBe(200);
+    // Owner admission never admits an unpinned identity; one built by hand is refused too.
+    expect((await route(at("/platform/", false))).status).toBe(403);
+    expect(asked()).toBe(2);
   });
 });

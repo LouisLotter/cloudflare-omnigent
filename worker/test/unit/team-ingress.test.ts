@@ -106,9 +106,12 @@ describe("ingress admission", () => {
       email: "alice@example.invalid",
       pin: false,
     });
+    expect(result.admission).toBe("members");
     const owner = await admit(config("members"), claims(NOW));
     if (!owner.ok) throw new Error(owner.reason);
     expect(owner.identity.pin).toBe(true);
+    // The pin marks the address only: the owner's membership decides the pages.
+    expect(owner.admission).toBe("members");
   });
 
   it("still refuses a bad assertion in members admission", async () => {
@@ -133,20 +136,41 @@ function identity(overrides: Partial<OwnerIdentity> = {}): OwnerIdentity {
   };
 }
 
-function recordingBinding() {
+function recordingBinding(person: PagePersonResult = { action: "none" }) {
   const seen: Request[] = [];
+  const asked: PagePersonCall[] = [];
   return {
     seen,
+    asked,
     binding: {
       getByName: () => ({
         fetch: async (request: Request) => {
           seen.push(request);
           return new Response("ok");
         },
+        pagePerson: async (call: PagePersonCall) => {
+          asked.push(call);
+          return person;
+        },
+        // The owner has no password yet: owner admission's first visit goes to the password page.
+        ownerPassword: async () => ({
+          action: "state",
+          state: "unchosen",
+          username: "owner",
+          intentToken: "a".repeat(64),
+        }),
       }),
     },
   };
 }
+
+const ACTIVE_OWNER: PagePersonResult = {
+  action: "member",
+  memberId: "0123456789abcdef0123456789abcdef",
+  userId: "owner",
+  role: "owner",
+  state: "active",
+};
 
 describe("the forwarded person", () => {
   it("names the Access identity and whether it is the owner", () => {
@@ -195,23 +219,87 @@ describe("the forwarded person", () => {
 });
 
 describe("the pages in members admission", () => {
+  const ctx = {} as ExecutionContext;
+  const at = (
+    path: string,
+    pinned: boolean,
+    admission: "owner" | "members" | "absent" = "members",
+    headers: HeadersInit = {},
+  ): Admitted => ({
+    ok: true,
+    identity: identity(pinned ? { pin: true, sub: OWNER_SUB, email: OWNER_EMAIL } : {}),
+    request: new Request(`${ORIGIN}${path}`, { headers }),
+    origin: ORIGIN,
+    ...(admission === "absent" ? {} : { admission }),
+  });
+
   it("are refused to anyone but the owner until the person seam is wired", async () => {
-    const { seen, binding } = recordingBinding();
+    // Bob is an active owner too, but not the installation's: the pages stay its owner's.
+    const { seen, asked, binding } = recordingBinding({ ...ACTIVE_OWNER, userId: "bob" });
     const env = { OMNIGENT: binding } as unknown as WebEnv;
-    const ctx = {} as ExecutionContext;
-    const at = (path: string, pinned: boolean): Admitted => ({
-      ok: true,
-      identity: identity({ pin: pinned }),
-      request: new Request(`${ORIGIN}${path}`),
-      origin: ORIGIN,
-    });
     const refused = await routeAdmitted(at("/platform/computers", false), env, ctx);
     expect(refused.status).toBe(403);
     expect(seen).toHaveLength(0);
+    expect(asked).toHaveLength(0);
     // Omnigent itself is reached, with the person for the server to bind.
     const forwarded = await routeAdmitted(at("/v1/me", false), env, ctx);
     expect(forwarded.status).toBe(200);
     expect(seen[0]?.headers.get(FORWARDED_PERSON_HEADER)).toContain('"installationOwner":false');
+  });
+
+  it.each<[string, PagePersonResult]>([
+    ["unbound", { action: "none" }],
+    ["suspended", { ...ACTIVE_OWNER, state: "suspended" }],
+    ["removed", { ...ACTIVE_OWNER, state: "removed" }],
+    ["demoted to admin", { ...ACTIVE_OWNER, role: "admin" }],
+    ["on an Omnigent without teams", { action: "unsupported" }],
+    ["while the server does not answer", { action: "unavailable" }],
+  ])("are refused to the pinned address when its identity is %s", async (_name, person) => {
+    const { seen, asked, binding } = recordingBinding(person);
+    const env = { OMNIGENT: binding } as unknown as WebEnv;
+    const refused = await routeAdmitted(at("/platform/", true), env, ctx);
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).toContain("open Omnigent and sign in first");
+    // Asked about this identity, by its own claims.
+    expect(asked).toEqual([
+      expect.objectContaining({ issuer: ISSUER, subject: OWNER_SUB, audience: AUD }),
+    ]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("open to the pinned address bound to an active owner", async () => {
+    const { asked, binding } = recordingBinding(ACTIVE_OWNER);
+    const env = { OMNIGENT: binding } as unknown as WebEnv;
+    const routed = await routeAdmitted(at("/platform/", true), env, ctx);
+    expect(routed.status).toBe(303);
+    expect(routed.headers.get("location")).toBe("/platform/computers");
+    expect(asked).toHaveLength(1);
+  });
+
+  it("send no one to the password page: Omnigent is reached directly", async () => {
+    const { seen, asked, binding } = recordingBinding({ action: "none" });
+    const env = { OMNIGENT: binding } as unknown as WebEnv;
+    const navigation = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+    const forwarded = await routeAdmitted(at("/", true, "members", navigation), env, ctx);
+    expect(forwarded.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(asked).toHaveLength(0);
+    // Owner admission, as before teams, still sends the owner's first visit there.
+    const redirected = await routeAdmitted(at("/", true, "owner", navigation), env, ctx);
+    expect(redirected.status).toBe(303);
+    expect(redirected.headers.get("location")).toBe("/platform/password");
+  });
+
+  it("stay the pinned owner's without asking the server in owner admission", async () => {
+    for (const admission of ["owner", "absent"] as const) {
+      const { asked, binding } = recordingBinding({ action: "none" });
+      const env = { OMNIGENT: binding } as unknown as WebEnv;
+      const routed = await routeAdmitted(at("/platform/", true, admission), env, ctx);
+      expect(routed.status).toBe(303);
+      expect(asked).toHaveLength(0);
+      const refused = await routeAdmitted(at("/platform/", false, admission), env, ctx);
+      expect(refused.status).toBe(403);
+    }
   });
 });
 
@@ -227,11 +315,15 @@ describe("the member seam", () => {
       },
     };
   }
-  const admitted = (overrides: Partial<OwnerIdentity> = {}): Admitted => ({
+  const admitted = (
+    overrides: Partial<OwnerIdentity> = {},
+    admission: "owner" | "members" = "members",
+  ): Admitted => ({
     ok: true,
     identity: identity(overrides),
     request: new Request(`${ORIGIN}/platform/computers`),
     origin: ORIGIN,
+    admission,
   });
   const active: PagePersonResult = {
     action: "member",
@@ -241,12 +333,29 @@ describe("the member seam", () => {
     state: "active",
   };
 
-  it("answers the pinned owner without asking the server", async () => {
+  it("answers the pinned owner without asking the server only in owner admission", async () => {
     const b = backend(new Error("must not be called"));
-    expect(await memberSeam(b)(admitted({ pin: true, sub: OWNER_SUB }))).toEqual({
+    expect(await memberSeam(b)(admitted({ pin: true, sub: OWNER_SUB }, "owner"))).toEqual({
       kind: "installation_owner",
     });
+    expect(await memberSeam(b)(admitted({}, "owner"))).toBeNull();
     expect(b.calls).toHaveLength(0);
+  });
+
+  it("asks the server for the pinned owner too in members admission", async () => {
+    const owner = { pin: true, sub: OWNER_SUB, email: OWNER_EMAIL };
+    const unbound = backend({ action: "none" });
+    expect(await memberSeam(unbound)(admitted(owner))).toBeNull();
+    expect(unbound.calls[0]).toMatchObject({ subject: OWNER_SUB });
+    const suspended = backend({ ...active, role: "owner", state: "suspended" });
+    expect(await memberSeam(suspended)(admitted(owner))).toBeNull();
+    const bound = backend({ ...active, userId: "owner", role: "owner" });
+    expect(await memberSeam(bound)(admitted(owner))).toEqual({
+      kind: "member",
+      memberId: active.memberId,
+      userId: "owner",
+      role: "owner",
+    });
   });
 
   it("answers Alice as her own active membership, asked by her own identity", async () => {
@@ -296,6 +405,7 @@ describe("the member seam's binding", () => {
       identity: identity(),
       request: new Request(`${ORIGIN}/platform/computers`),
       origin: ORIGIN,
+      admission: "members",
     };
     expect(await seam(admitted)).toBeNull();
     expect(names).toEqual(["omnigent-server"]);

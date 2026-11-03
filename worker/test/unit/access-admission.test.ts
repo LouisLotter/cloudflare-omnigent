@@ -1,6 +1,7 @@
 // Who Access admits (WP8.3): the reconciler writes only the recorded member group's include list,
-// refuses a list without the owner or a widened group, and ignores a stale revision; the API port
-// can name only that group's URL; the private route takes only the server's admission signature.
+// refuses a list without a current owner or a widened group, ignores a lower revision and repairs
+// drift at an equal one; the API port can name only that group's URL; the private route takes only
+// the server's admission signature.
 
 import {
   type AccessAdmissionCall,
@@ -10,8 +11,7 @@ import {
   launcherStringToSign,
   sha256Hex,
 } from "@cfo/contracts";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { makeOwnerPin, type OwnerPin, parseOwnerPin } from "../../src/ingress/owner.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleAdmissionRequest,
   isAdmissionPath,
@@ -30,13 +30,7 @@ const OWNER = "owner@example.test";
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 const GROUP = "11111111-2222-4333-8444-555555555555";
 const TOKEN = "synthetic-canary-token-value-0000000000";
-let owner: OwnerPin;
-
-beforeAll(async () => {
-  const pin = parseOwnerPin(await makeOwnerPin(OWNER, new Uint8Array(16).fill(3)));
-  if (pin === undefined) throw new Error("pin");
-  owner = pin;
-});
+const SECOND_OWNER = "second-owner@example.test";
 
 class FakeGroup implements AccessGroupPort {
   readonly groupId = GROUP;
@@ -70,7 +64,6 @@ function deps(port: FakeGroup | undefined, applied: number | null = null) {
     state,
     deps: {
       port,
-      owner,
       appliedRevision: () => state.applied,
       recordApplied: (revision: number) => {
         state.applied = revision;
@@ -80,7 +73,11 @@ function deps(port: FakeGroup | undefined, applied: number | null = null) {
   };
 }
 
-const call = (revision: number, emails: string[]): AccessAdmissionCall => ({ revision, emails });
+const call = (
+  revision: number,
+  emails: string[],
+  owners: string[] = [OWNER],
+): AccessAdmissionCall => ({ revision, emails, owners });
 
 describe("the member group's reconciler", () => {
   it("writes the list into include and keeps the group's other rules", async () => {
@@ -104,30 +101,71 @@ describe("the member group's reconciler", () => {
     expect(logs.at(-1)).toMatchObject({ group: GROUP, revision: 4, count: 2 });
   });
 
-  it("ignores a revision at or below the applied one, and applies a newer one", async () => {
+  it("ignores a lower revision, and applies an equal or newer one", async () => {
     const group = new FakeGroup({ name: "g", include: [emailRule(OWNER)] });
     const { deps: d } = deps(group, 7);
-    expect(await applyAdmission(call(7, [OWNER, "bob@example.test"]), d)).toEqual({
+    expect(await applyAdmission(call(6, [OWNER, "bob@example.test"]), d)).toEqual({
       outcome: "stale",
       appliedRevision: 7,
     });
-    expect(await applyAdmission(call(6, [OWNER]), d)).toEqual({
-      outcome: "stale",
-      appliedRevision: 7,
-    });
+    expect(group.writes).toHaveLength(0);
+    // The same revision again, Access unchanged: compared, nothing written.
+    expect(await applyAdmission(call(7, [OWNER]), d)).toEqual({ outcome: "applied", revision: 7 });
     expect(group.writes).toHaveLength(0);
     expect((await applyAdmission(call(8, [OWNER, "bob@example.test"]), d)).outcome).toBe("applied");
   });
 
-  it("refuses a list without the owner, so the owner is never locked out", async () => {
+  it("repairs a group changed outside the team page at the applied revision", async () => {
+    // The applied revision as the server object keeps it across a restart.
+    const group = new FakeGroup({ name: "g", include: [emailRule(OWNER)] });
+    const { deps: d, state, logs } = deps(group, 5);
+    group.group = { name: "g", include: [emailRule(OWNER), emailRule("mallory@example.test")] };
+    expect(await applyAdmission(call(5, [OWNER]), d)).toEqual({ outcome: "applied", revision: 5 });
+    expect(group.group.include).toEqual([emailRule(OWNER)]);
+    expect(logs.at(-1)).toMatchObject({ outcome: "applied", revision: 5, repaired: 1 });
+    expect(state.applied).toBe(5);
+    // A repair Access does not keep is not recorded either: the next push tries again.
+    group.group = { name: "g", include: [] };
+    group.dropNextWrite = true;
+    await expect(applyAdmission(call(5, [OWNER]), d)).rejects.toThrow(AdmissionUnconfirmed);
+    expect((await applyAdmission(call(5, [OWNER]), d)).outcome).toBe("applied");
+    expect(group.group.include).toEqual([emailRule(OWNER)]);
+  });
+
+  it("refuses a list naming no current owner, or an owner it does not admit", async () => {
     const group = new FakeGroup({ name: "g", include: [emailRule(OWNER)] });
     const { deps: d, state } = deps(group);
-    expect(await applyAdmission(call(1, ["alice@example.test"]), d)).toEqual({
-      outcome: "refused",
-      reason: "owner_missing",
-    });
+    for (const refused of [
+      call(1, ["alice@example.test"], []),
+      call(1, ["alice@example.test"], [OWNER]),
+      call(1, [OWNER, "alice@example.test"], [OWNER, SECOND_OWNER]),
+    ]) {
+      expect(await applyAdmission(refused, d)).toEqual({
+        outcome: "refused",
+        reason: "owner_missing",
+      });
+    }
     expect(group.writes).toHaveLength(0);
     expect(state.applied).toBeNull();
+  });
+
+  it("follows the team's current owners, not the address the installation was planned with", async () => {
+    // Two owners; the founding owner is then suspended, so only the second is listed.
+    const group = new FakeGroup({
+      name: "g",
+      include: [emailRule(OWNER), emailRule(SECOND_OWNER)],
+    });
+    const { deps: d, state } = deps(group, 3);
+    const result = await applyAdmission(
+      call(4, ["alice@example.test", SECOND_OWNER], [SECOND_OWNER]),
+      d,
+    );
+    expect(result).toEqual({ outcome: "applied", revision: 4 });
+    expect(group.group?.include).toEqual([
+      emailRule("alice@example.test"),
+      emailRule(SECOND_OWNER),
+    ]);
+    expect(state.applied).toBe(4);
   });
 
   it("refuses a widened group as it is, and writes one made only of addresses", async () => {
@@ -282,7 +320,7 @@ describe("the admission route", () => {
     };
   }
 
-  const body = JSON.stringify({ emails: [OWNER], revision: 3 });
+  const body = JSON.stringify({ emails: [OWNER], owners: [OWNER], revision: 3 });
   const admission = (sha: string) =>
     admissionStringToSign({ keyId: "key-1", timestamp: String(NOW), bodySha256: sha });
 
@@ -291,7 +329,7 @@ describe("the admission route", () => {
     const response = await r.handle(await signed(body, admission));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "applied", revision: 3 });
-    expect(r.admitted).toEqual([{ emails: [OWNER], revision: 3 }]);
+    expect(r.admitted).toEqual([{ emails: [OWNER], owners: [OWNER], revision: 3 }]);
   });
 
   it("refuses a launcher signature over the same body, and a stale one", async () => {
@@ -389,7 +427,7 @@ describe("the admission route's refusals", () => {
   });
 
   it("accepts the previous key during a rotation, and refuses an unknown one", async () => {
-    const text = JSON.stringify({ emails: [OWNER], revision: 1 });
+    const text = JSON.stringify({ emails: [OWNER], owners: [OWNER], revision: 1 });
     const bytes = new TextEncoder().encode(text);
     expect((await handle(await signedWith("key-1", previous, text, bytes))).status).toBe(200);
     expect((await handle(await signedWith("key-9", previous, text, bytes))).status).toBe(401);

@@ -105,8 +105,16 @@ export function memberPolicy(groupId: string): Record<string, unknown> {
   return { name: MEMBER_POLICY_NAME, decision: "allow", include: [{ group: { id: groupId } }] };
 }
 
-/** Whether a group holds only single-address rules, the owner's among them. */
-async function memberGroupProblems(group: unknown, ownerPin: string): Promise<string[]> {
+/**
+ * Whether a group holds only single-address rules and, just after its create, the owner's among
+ * them. Later the team page keeps its addresses: the founding owner may have left or been
+ * suspended, and the reconciler checks the team's current owners instead.
+ */
+async function memberGroupProblems(
+  group: unknown,
+  ownerPin: string,
+  requireOwner: boolean,
+): Promise<string[]> {
   const pin = parseOwnerPin(ownerPin);
   if (pin === undefined) throw new Error("the plan's owner pin is malformed");
   const include = record(group)?.include;
@@ -121,7 +129,7 @@ async function memberGroupProblems(group: unknown, ownerPin: string): Promise<st
       owner = true;
     }
   }
-  if (!owner) problems.push("does not admit the owner");
+  if (requireOwner && !owner) problems.push("does not admit the owner");
   return [...new Set(problems)];
 }
 
@@ -138,8 +146,8 @@ export async function ensureMemberGroup(ctx: MemberGroupContext): Promise<string
       "the address given with --owner-email is not the owner this installation was planned for",
     );
   }
-  const check = async (group: unknown, name: string): Promise<void> => {
-    const problems = await memberGroupProblems(group, plan.ownerPin);
+  const check = async (group: unknown, name: string, created = false): Promise<void> => {
+    const problems = await memberGroupProblems(group, plan.ownerPin, created);
     if (problems.length > 0) {
       throw new TeamAdmissionRefusal(
         `the Access group "${name}", this installation's member group, ${problems.join(" and ")}: the bootstrap never rewrites its addresses, which the team page keeps; fix it in https://one.dash.cloudflare.com/, Access, Groups, then run again`,
@@ -193,7 +201,7 @@ export async function ensureMemberGroup(ctx: MemberGroupContext): Promise<string
   const created = api.group(id);
   if (created === undefined)
     throw new Error(`the Access group "${name}" is not there after its create`);
-  await check(created, name);
+  await check(created, name, true);
   ctx.log(`created the member group "${name}" with the owner's address`);
   return id;
 }
@@ -258,7 +266,6 @@ export function teamAdmissionVars(
       CFO_IDENTITY_ENVELOPE: "on",
       CFO_ACCESS_ACCOUNT_ID: plan.accountId,
       CFO_ACCESS_GROUP_ID: groupId,
-      OWNER_EMAIL_HASH: plan.ownerPin,
       SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE: "required",
       SERVER_ENV_CFO_ACCESS_ADMISSION: "true",
     },

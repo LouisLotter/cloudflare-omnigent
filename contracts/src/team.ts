@@ -58,16 +58,25 @@ export const MAX_ADMITTED_EMAILS = 1000;
 
 /** Who Access should admit: the team's active members and pending invitations. */
 export const AccessAdmissionCall = z.strictObject({
-  /** Omnigent's admission revision; a lower one than the last applied is ignored. */
+  /**
+   * Omnigent's admission revision. A lower one than the last applied is ignored; an equal one
+   * is compared with the group again, so drift is repaired.
+   */
   revision: z.number().int().min(0),
   /** Sorted lowercase addresses, at most MAX_ADMITTED_EMAILS. */
   emails: z.array(Email).max(MAX_ADMITTED_EMAILS),
+  /**
+   * The team's current active owners' verified addresses, each also in `emails`. A list with
+   * none, or naming one `emails` lacks, is refused (`owner_missing`), so no list locks every
+   * owner out.
+   */
+  owners: z.array(Email).max(MAX_ADMITTED_EMAILS),
 });
 export type AccessAdmissionCall = z.infer<typeof AccessAdmissionCall>;
 
 /**
- * The platform's answer. `applied`: Access holds exactly this list now (read back). `stale`: a
- * newer revision was applied already; nothing changed. `refused`: the list or the group is not
+ * The platform's answer. `applied`: Access holds exactly this list now (read back), also for a
+ * repeated revision. `stale`: a newer revision was applied already; nothing changed. `refused`: the list or the group is not
  * one the platform may write (named by `reason`); nothing changed.
  */
 export const AccessAdmissionResult = z.discriminatedUnion("outcome", [

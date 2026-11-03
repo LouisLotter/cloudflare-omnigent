@@ -1,16 +1,20 @@
 // The membership-aware person seam for the platform pages (WP8.3), behind WP8.4's `PersonSeam`
 // (`pages/person.ts`, `actorOf(admitted) → PagePerson`): who an admitted Access identity is.
 //
-//   - The pinned owner is the installation's owner, without asking the server, so a team of one
-//     behaves as before and the owner's pages work while the server is down or starting.
-//   - Anyone else is whoever Omnigent binds their Access identity to (`pagePerson`, a signed
-//     platform call): an active member gets a person with their role; an unbound, suspended or
+//   - In `owner` admission (the default, a team of one) the pinned owner is the installation's
+//     owner without asking the server, as before teams, so the pages work while the server is
+//     down or starting. Ingress admits nobody else there.
+//   - In `members` admission everyone is whoever Omnigent binds their Access identity to
+//     (`pagePerson`, a signed platform call), the pinned owner included: a matching address is
+//     not membership. An active member gets a person with their role; an unbound, suspended or
 //     removed identity, a server without a team model and a server that does not answer get
 //     null, which the pages refuse. Nothing is cached, so a suspension applies to the next page.
+//     The owner's one way in before a binding is Omnigent's one-time founding binding: they
+//     sign in to Omnigent itself, which binds their identity once.
 //
 // The pages never read the identity themselves. Wired into the router when WP8.4's seam lands
-// (it is the `deps.person` the router takes); until then ingress's `members` admission keeps the
-// pages the pinned owner's (`web.ts`).
+// (it is the `deps.person` the router takes); until then `web.ts` opens the pages in `members`
+// admission only to the pinned owner whose seam answer is an active owner.
 
 import type { PagePersonCall, PagePersonResult } from "@cfo/contracts";
 import type { Admitted } from "../ingress/index.ts";
@@ -45,7 +49,9 @@ export function memberSeam(
 ): (admitted: Admitted) => Promise<SeamPerson | null> {
   return async (admitted) => {
     const { identity } = admitted;
-    if (identity.pin !== false) return { kind: "installation_owner" };
+    if (admitted.admission !== "members") {
+      return identity.pin !== false ? { kind: "installation_owner" } : null;
+    }
     if (identity.issuer === undefined || identity.audience === undefined) return null;
     let answer: PagePersonResult;
     try {

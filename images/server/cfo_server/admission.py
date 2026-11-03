@@ -1,8 +1,9 @@
 """Who Cloudflare Access admits, told to the platform after every membership change (WP8.3).
 
 Omnigent's ``omnigent.server.team_admission`` calls :meth:`PlatformAdmission.apply` with the
-team's admission snapshot (active members' verified addresses and pending invitations) after it
-commits a change, and again periodically. This sends it to the platform Worker's private route,
+team's admission snapshot (active members' verified addresses and pending invitations, and which
+of them are the current active owners) after it commits a change, at the next invitation expiry
+and hourly, at an unchanged revision too, so the platform can repair drift. This sends it to the platform Worker's private route,
 ``POST http://platform.internal/access/v1/admission`` (``contracts/src/team.ts``), which only
 this container's intercept reaches. The body is compact JSON with sorted keys; it is signed with
 the launcher's key (``CFO_LAUNCHER_SIGNING_KEY`` and its ID) under the admission call's own
@@ -43,10 +44,12 @@ def string_to_sign(key_id: str, timestamp: str, body: bytes) -> str:
     return "\n".join((PROTOCOL, key_id, timestamp, hashlib.sha256(body).hexdigest()))
 
 
-def encode_body(revision: int, emails: list[str]) -> bytes:
+def encode_body(revision: int, emails: list[str], owners: list[str]) -> bytes:
     """The exact bytes sent and signed."""
     return json.dumps(
-        {"emails": emails, "revision": revision}, sort_keys=True, separators=(",", ":")
+        {"emails": emails, "owners": owners, "revision": revision},
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("ascii")
 
 
@@ -90,7 +93,10 @@ class PlatformAdmission:
 
     def apply(self, snapshot: Any) -> None:
         """Send the snapshot; return once the platform answered ``applied`` or ``stale``."""
-        body = encode_body(int(snapshot.revision), list(snapshot.emails))
+        # A snapshot without owners (an Omnigent before them) is sent with none; the platform
+        # refuses it (`owner_missing`) and writes nothing.
+        owners = list(getattr(snapshot, "owners", ()))
+        body = encode_body(int(snapshot.revision), list(snapshot.emails), owners)
         timestamp = str(int(self._clock()))
         signature = hmac.new(
             self._key, string_to_sign(self._key_id, timestamp, body).encode("ascii"), hashlib.sha256
