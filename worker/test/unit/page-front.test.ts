@@ -300,12 +300,30 @@ describe("the page front's answers", () => {
       intent,
       window: null,
     });
-    await front.beforeLauncher({ interfaceVersion: 1, request: { operation: "suspend" } });
+    await front.beforeLauncher(
+      { interfaceVersion: 1, request: { operation: "suspend" } },
+      () => undefined,
+    );
     expect(terminal.view().open).toBe(true);
-    await front.beforeLauncher({ interfaceVersion: 1, request: { operation: "terminate" } });
+    // A call its authorization refuses (Codex WP8.4 r1-1) touches nothing: neither a sleep's
+    // window check nor a terminate's close runs.
+    const refuse = () => {
+      throw platformError("forbidden", "someone else's computer");
+    };
+    for (const operation of ["suspend", "terminate", "status"]) {
+      expect(
+        await codeOf(front.beforeLauncher({ interfaceVersion: 1, request: { operation } }, refuse)),
+        operation,
+      ).toBe("forbidden");
+      expect(terminal.view().open, operation).toBe(true);
+    }
+    await front.beforeLauncher(
+      { interfaceVersion: 1, request: { operation: "terminate" } },
+      () => undefined,
+    );
     expect(terminal.view().open).toBe(false);
     expect(events).toContain("terminal_window_closed");
-    await front.beforeLauncher(null);
+    await front.beforeLauncher(null, () => undefined);
     await front.beforeAlarm();
   });
 

@@ -6,9 +6,21 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { PagePerson } from "@cfo/contracts";
-import { type ComputerId, type LauncherOwner, signLauncherRequest } from "@cfo/contracts";
+import {
+  type ComputerId,
+  type LauncherOwner,
+  signLauncherRequest,
+  TERMINAL_SUBPROTOCOL,
+  WORKSPACE_INTERFACE_VERSION,
+} from "@cfo/contracts";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ComputerRecord, RECORD_KEY } from "../../src/computer/record.ts";
+import {
+  ComputerRecord,
+  NO_OWNERSHIP,
+  OWNERSHIP_KEY,
+  OwnershipRecord,
+  RECORD_KEY,
+} from "../../src/computer/record.ts";
 import {
   type WorkspaceDO as ProductionWorkspaceDO,
   SqlStore,
@@ -76,10 +88,18 @@ async function provisionFor(
   return { computerId, stub, container: assembly.container(computerId), client, host };
 }
 
-async function record(stub: WorkspaceStub): Promise<ComputerRecord> {
-  return runInDurableObject(stub, (_i: ProductionWorkspaceDO, state) =>
-    ComputerRecord.parse(new SqlStore(state.storage).get(RECORD_KEY)),
-  );
+/** The computer's record and its ownership, as stored. */
+async function record(
+  stub: WorkspaceStub,
+): Promise<ComputerRecord & { readonly ownership: OwnershipRecord }> {
+  return runInDurableObject(stub, (_i: ProductionWorkspaceDO, state) => {
+    const store = new SqlStore(state.storage);
+    const ownership = store.get(OWNERSHIP_KEY);
+    return {
+      ...ComputerRecord.parse(store.get(RECORD_KEY)),
+      ownership: ownership === undefined ? NO_OWNERSHIP : OwnershipRecord.parse(ownership),
+    };
+  });
 }
 
 /** The launcher's raw answer for a request, as the server's launcher sees it over HTTP. */
@@ -99,7 +119,7 @@ describe("a computer bound to its owner through the assembled chain (T3, T15)", 
     const bob: LauncherOwner = { userId: "bob", memberId: BOB_MEMBER, teamId: TEAM, hostId: host };
     const c = await provisionFor(host, alice);
     await evictDurableObject(c.stub);
-    expect((await record(c.stub)).owner).toMatchObject({ ...alice, how: "provision" });
+    expect((await record(c.stub)).ownership.binding).toMatchObject({ ...alice, how: "provision" });
     await wake(c, { hostId: host, token: TOKEN });
     await evictDurableObject(c.stub);
 
@@ -176,15 +196,18 @@ describe("a computer bound to its owner through the assembled chain (T3, T15)", 
     const c = await provisionFor(host, undefined);
     await wake(c, { hostId: host, token: TOKEN });
     await evictDurableObject(c.stub);
-    expect((await record(c.stub)).owner).toBeNull();
+    expect((await record(c.stub)).ownership.binding).toBeNull();
     const alice = new FakeLauncherClient(c.computerId, transport());
     alice.owner = { userId: "alice", memberId: ALICE_MEMBER, teamId: TEAM, hostId: host };
     expect(await alice.refusal(alice.statusRequest())).toBe("forbidden");
-    expect((await record(c.stub)).owner).toBeNull();
+    expect((await record(c.stub)).ownership.binding).toBeNull();
     c.client.owner = { userId: FOUNDER, memberId: null, teamId: null, hostId: host };
     expect(await c.client.send(c.client.keepAliveRequest())).toMatchObject({ renewed: true });
     await evictDurableObject(c.stub);
-    expect((await record(c.stub)).owner).toMatchObject({ userId: FOUNDER, how: "adopted" });
+    expect((await record(c.stub)).ownership.binding).toMatchObject({
+      userId: FOUNDER,
+      how: "adopted",
+    });
     // A version 1 call still acts for the installation's owner (a rollback).
     const v1 = new FakeLauncherClient(c.computerId, transport());
     expect(await v1.refusal(v1.statusRequest())).toBeUndefined();
@@ -203,7 +226,11 @@ describe("a computer bound to its owner through the assembled chain (T3, T15)", 
     c.container.sim.sup?.signIn("claude");
     await settle(c);
     const r = await record(c.stub);
-    expect(r.credentialOwner).toEqual(r.owner);
+    expect(r.ownership.credential).toEqual({
+      checkpointId: r.credential?.checkpointId,
+      generation: r.credential?.generation,
+      owner: r.ownership.binding,
+    });
     const key = r.credential?.object.key ?? "";
     expect(key).toMatch(new RegExp(`^credentials/${c.computerId}/ckp_`));
     const head = await bucket().head(key);
@@ -377,4 +404,147 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect((await upgrade("carol")).status).toBe(404);
     expect((await upgrade("alice")).status).toBe(403); // hers: the unknown capability is refused
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Codex WP8.4 r1-1: a refused launcher call changes nothing, the setup terminal included. The
+// owner check runs before the page front's hooks (a `terminate` closes the terminal, a sleep
+// closes an expired window), through the signed launcher endpoint, with an open window, a
+// connected stream and an issued capability not yet used.
+
+describe("a refused launcher call leaves the owner's terminal alone (Codex r1-1)", () => {
+  /** A fake ttyd on the computer's terminal port: each dial gets an open shell. */
+  function fakeTtyd(c: Computer): void {
+    c.container.sim.terminal = () => {
+      const pair = new WebSocketPair();
+      pair[1].accept();
+      return new Response(null, {
+        status: 101,
+        webSocket: pair[0],
+        headers: { "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+      });
+    };
+  }
+
+  async function terminalAs(who: Who, page: string, body: Record<string, string>) {
+    const response = await routeAs(who, `${page}/terminal`, {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return (await response.json()) as { outcome?: string; capability?: string; window?: number };
+  }
+
+  /** The browser's end of a bridged stream, and whether it has closed. */
+  async function stream(page: string, capability: string) {
+    const response = await routeAs("alice", `${page}/terminal`, {
+      headers: {
+        upgrade: "websocket",
+        origin: ORIGIN,
+        "sec-websocket-protocol": `${TERMINAL_SUBPROTOCOL}, cfo-capability.${capability}`,
+      },
+    });
+    const socket = response.webSocket;
+    if (socket === null) return { status: response.status, closed: () => true, close: () => {} };
+    socket.accept();
+    let closed = false;
+    socket.addEventListener("close", () => {
+      closed = true;
+    });
+    return {
+      status: response.status,
+      closed: () => closed,
+      close: () => {
+        try {
+          socket.close(1000, "test over");
+        } catch {
+          // already closed
+        }
+      },
+    };
+  }
+
+  const aliceOwner = {
+    sub: "alice-sub",
+    sessionId: SESSIONS.alice,
+    person: PEOPLE.alice,
+  };
+
+  /** What a refused call must leave as it was: the record, its ownership and the terminal. */
+  async function observed(c: Computer) {
+    const state = (await c.stub.pages({
+      action: "state",
+      interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+      owner: aliceOwner,
+    })) as { computer: { terminal?: unknown } };
+    return JSON.stringify([await record(c.stub), state.computer.terminal]);
+  }
+
+  it("refuses Bob's and an owner-less call's terminate and suspend without touching the window, its streams or its capabilities; Alice's terminate closes them", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    fakeTtyd(c);
+    const page = `/platform/computers/${c.computerId}`;
+    const intent = (await intentOn("alice", page)) as string;
+    const opened = await terminalAs("alice", page, {
+      op: "op_01hzy4a7b8c9d0e1f2g3h4j5k6",
+      intent,
+      mode: "open",
+    });
+    expect(opened.outcome).toBe("accepted");
+    const connected = await stream(page, opened.capability as string);
+    expect(connected.status).toBe(101);
+    // A second capability for the same window, issued and not yet used (a reconnect's).
+    const issued = await terminalAs("alice", page, {
+      op: "op_01hzy4a7b8c9d0e1f2g3h4j5k7",
+      intent,
+      mode: "reconnect",
+      window: String(opened.window),
+    });
+    expect(issued.outcome).toBe("accepted");
+    await settle(c);
+    const before = await observed(c);
+    expect(before).toContain('"open":true');
+
+    const bob = new FakeLauncherClient(c.computerId, transport());
+    bob.owner = { ...alice, userId: "bob", memberId: BOB_MEMBER };
+    const ownerless = new FakeLauncherClient(c.computerId, transport());
+    for (const [who, client] of [
+      ["bob", bob],
+      ["owner-less version 1", ownerless],
+    ] as const) {
+      expect(await client.refusal(client.terminateRequest()), `${who} terminate`).toBe("forbidden");
+      expect(await client.refusal(client.suspendRequest()), `${who} suspend`).toBe("forbidden");
+    }
+    await settle(c);
+    expect(await observed(c)).toBe(before);
+    expect(connected.closed()).toBe(false);
+    // The capability issued before the refusals still opens a stream.
+    const reconnected = await stream(page, issued.capability as string);
+    expect(reconnected.status).toBe(101);
+
+    // The allowed neighbour: Alice's own terminate closes the window and every stream in it.
+    expect(await c.client.send(c.client.terminateRequest())).toMatchObject({ removal: "pending" });
+    await settle(c);
+    const after = (await c.stub.pages({
+      action: "state",
+      interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+      owner: aliceOwner,
+    })) as { computer: { terminal?: { open: boolean; streams: number } } };
+    expect(after.computer.terminal).toMatchObject({ open: false, streams: 0 });
+    for (let i = 0; i < 200 && !(connected.closed() && reconnected.closed()); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(connected.closed()).toBe(true);
+    expect(reconnected.closed()).toBe(true);
+    connected.close();
+    reconnected.close();
+  }, 60_000);
 });

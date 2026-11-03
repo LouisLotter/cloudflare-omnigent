@@ -165,26 +165,25 @@ export function bindingFor(
 }
 
 /**
- * Whether a checkpoint pointer published under `stamp` (the binding when it was published; null
- * when the computer had none) may be restored into a computer bound to `binding` now. The
- * binding only ever gains detail, so an older stamp is either the same owner or an ancestor of
- * the binding: no binding (the installation's owner) or one without a member. Anything else is a
- * checkpoint that never belonged to this computer's owner: its restore is refused.
+ * Whether the checkpoint `checkpointId`, the current pointer, may be restored into a computer
+ * bound to `binding`, given the pointer's owner stamp:
+ * - a stamp for this checkpoint names the binding when it was published. The binding only ever
+ *   gains detail, so the same owner, or an ancestor of the binding without a member, matches;
+ *   anyone else (or a stamp on a computer with no binding) is a checkpoint that never belonged to
+ *   this computer's owner, and its restore is refused;
+ * - a pointer no stamp names was published by a Worker without owners: before WP8.4, or the
+ *   previous release during a rollback. It is this computer's own (its manifest names the
+ *   computer, its objects are under the computer's own prefix, and only this computer's
+ *   WorkspaceDO sets its pointers), and a computer's owner never changes, so it restores.
  */
 export function stampMatches(
-  stamp: OwnerBinding | null,
+  stamp: { readonly checkpointId: string; readonly owner: OwnerBinding } | null,
+  checkpointId: string,
   binding: OwnerBinding | null,
-  installationOwner: string | null,
 ): boolean {
-  if (stamp === null) {
-    return (
-      binding === null ||
-      binding.how === "adopted" ||
-      (installationOwner !== null && binding.userId === installationOwner)
-    );
-  }
+  if (stamp === null || stamp.checkpointId !== checkpointId) return true;
   if (binding === null) return false;
-  return matchOwner(stamp, binding) !== "other";
+  return matchOwner(stamp.owner, binding) !== "other";
 }
 
 /**

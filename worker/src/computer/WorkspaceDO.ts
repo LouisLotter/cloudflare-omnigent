@@ -337,8 +337,9 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   }
 
   async launcher(call: LauncherCall): Promise<LauncherResult> {
-    // `terminate` closes the setup terminal first; a sleep finds an expired window closed.
-    await this.front.beforeLauncher(call);
+    // `terminate` closes the setup terminal first; a sleep finds an expired window closed. The call
+    // is validated and its owner authorized before either (WP8.4): a refused call changes nothing.
+    await this.front.beforeLauncher(call, () => this.controller.authorizeLauncher(call));
     return this.controller.launcher(call);
   }
 

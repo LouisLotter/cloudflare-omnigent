@@ -353,19 +353,6 @@ export const ComputerRecord = z.strictObject({
       forgetOp: OperationId,
     })
     .nullable(),
-
-  // WP8.4 (D50): the computer's owner. Records from before it read as recorded without an owner,
-  // which is the installation's owner (`ownership.ts`).
-  /** The owner binding: set at a version 2 `provision`, or adopted at the first version 2 call. */
-  owner: OwnerBinding.nullable().default(null),
-  /**
-   * Each checkpoint pointer's owner stamp: the binding when the pointer was published (null when
-   * the computer had none, as for every pointer published before WP8.4). Kept beside the pointer,
-   * not in its manifest, which the supervisor parses strictly. A restore checks it against the
-   * binding (`stampMatches`).
-   */
-  workspaceOwner: OwnerBinding.nullable().default(null),
-  credentialOwner: OwnerBinding.nullable().default(null),
 });
 export type ComputerRecord = z.infer<typeof ComputerRecord>;
 
@@ -472,8 +459,73 @@ export function newRecord(computerId: ComputerId, now: number): ComputerRecord {
     rc53: null,
     keepAwake: false,
     deletion: null,
-    owner: null,
-    workspaceOwner: null,
-    credentialOwner: null,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The computer's owner (WP8.4, owner decision D50), kept apart from the record.
+//
+// `ComputerRecord` is unchanged by WP8.4, so the previous platform Worker, which parses it as a
+// strict object on every load, still reads a record this one wrote: `update --rollback` deploys
+// the previous Worker without reverting WorkspaceDO's storage. The owner binding and the pointer
+// stamps are under their own key, written in the same transaction as the record; the previous
+// Worker never reads that key, and a record from before WP8.4 has none (no owner, no stamps).
+
+/** The ownership's key, beside RECORD_KEY. */
+export const OWNERSHIP_KEY = "ownership";
+
+/**
+ * A checkpoint pointer's owner stamp: the binding when the pointer was published, with the
+ * checkpoint it was published for. A pointer no stamp names was published by a Worker without
+ * owners (before WP8.4, or the previous release during a rollback). Kept beside the pointer, not
+ * in its manifest, which the supervisor parses strictly.
+ */
+export const PointerStamp = z.strictObject({
+  checkpointId: CheckpointId,
+  generation: Count,
+  owner: OwnerBinding,
+});
+export type PointerStamp = z.infer<typeof PointerStamp>;
+
+export const OwnershipRecord = z.strictObject({
+  /** Set at a version 2 `provision`, or adopted at the first version 2 call; null: none yet. */
+  binding: OwnerBinding.nullable(),
+  workspace: PointerStamp.nullable(),
+  credential: PointerStamp.nullable(),
+});
+export type OwnershipRecord = z.infer<typeof OwnershipRecord>;
+
+export const NO_OWNERSHIP: OwnershipRecord = { binding: null, workspace: null, credential: null };
+
+/** The record and its ownership, as the controller changes them together in one transaction. */
+export type WorkingRecord = ComputerRecord & {
+  owner: OwnerBinding | null;
+  workspaceStamp: PointerStamp | null;
+  credentialStamp: PointerStamp | null;
+};
+
+/** Splits a working record into the record and the ownership, each checked. */
+export function splitWorking(d: WorkingRecord): {
+  readonly record: ComputerRecord;
+  readonly ownership: OwnershipRecord;
+} {
+  const { owner, workspaceStamp, credentialStamp, ...record } = d;
+  return {
+    record: ComputerRecord.parse(record),
+    ownership: OwnershipRecord.parse({
+      binding: owner,
+      workspace: workspaceStamp,
+      credential: credentialStamp,
+    }),
+  };
+}
+
+/** The stamp for a pointer published now: none while the computer has no owner. */
+export function stampFor(
+  owner: OwnerBinding | null,
+  checkpoint: { readonly checkpointId: string; readonly generation: number },
+): PointerStamp | null {
+  return owner === null
+    ? null
+    : { checkpointId: checkpoint.checkpointId, generation: checkpoint.generation, owner };
 }

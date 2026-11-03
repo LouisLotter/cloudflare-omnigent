@@ -28,7 +28,14 @@ import {
   type ControllerTiming,
   WorkspaceController,
 } from "../../src/computer/controller.ts";
-import { ComputerRecord, RECORD_KEY, TOKEN_KEY } from "../../src/computer/record.ts";
+import {
+  ComputerRecord,
+  NO_OWNERSHIP,
+  OWNERSHIP_KEY,
+  OwnershipRecord,
+  RECORD_KEY,
+  TOKEN_KEY,
+} from "../../src/computer/record.ts";
 import type { ComputerContainerPort } from "../../src/shared/computer-port.ts";
 import type { ControlRpc } from "../../src/shared/rpc.ts";
 import { FakeBucket } from "./fake-bucket.ts";
@@ -353,6 +360,12 @@ export class ComputerSim {
 
   record(): ComputerRecord {
     return ComputerRecord.parse(this.store.get(RECORD_KEY));
+  }
+
+  /** The computer's ownership (WP8.4), kept beside the record; none stored reads as none. */
+  ownership(): OwnershipRecord {
+    const raw = this.store.get(OWNERSHIP_KEY);
+    return raw === undefined ? NO_OWNERSHIP : OwnershipRecord.parse(raw);
   }
 
   /** The supervisor's queued messages, through the computer API, until none is acknowledged. */

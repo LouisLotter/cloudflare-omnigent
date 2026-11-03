@@ -487,12 +487,23 @@ export class PageFront {
     };
   }
 
-  /** Before a launcher call: `terminate` closes the terminal; a sleep checks the window first. */
-  async beforeLauncher(raw: LauncherCall | unknown): Promise<void> {
+  /**
+   * Before a launcher call: `terminate` closes the terminal; a sleep checks the window first.
+   * `authorize` validates the call and its owner (WP8.4) and throws to refuse it; it runs before
+   * either step, and for `terminate` in the same turn of the terminal's serialization as the close,
+   * so a refused call never touches the terminal.
+   */
+  async beforeLauncher(raw: LauncherCall | unknown, authorize: () => void): Promise<void> {
     const operation = (raw as { request?: { operation?: unknown } } | null)?.request?.operation;
     if (operation === "terminate") {
-      await this.#exclusive(() => this.#d.terminal.close("the computer is being removed"));
-    } else if (operation === "suspend") await this.#d.terminal.enforce();
+      await this.#exclusive(async () => {
+        authorize();
+        await this.#d.terminal.close("the computer is being removed");
+      });
+      return;
+    }
+    authorize();
+    if (operation === "suspend") await this.#d.terminal.enforce();
   }
 
   /** Before the controller's alarm: an expired window closes before a start-deadline stop. */

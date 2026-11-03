@@ -37,19 +37,21 @@ A tool or MCP server switched on for a Codex session that is already running sti
 WP8.4 (owner decision D50) adds launcher protocol version 2 and the page person; nothing in either image changes but the Cloudflare launcher, which the server image packages ([architecture](architecture.md#boundaries-that-must-survive-implementation), ADRs [0001](decisions/0001-omnigent-owns-host-execution.md), [0004](decisions/0004-identity-credential-authority.md) and [0005](decisions/0005-checkpoint-publication-continuation.md)). The supervisor, its protocol, the manifests and the checkpoint keys are unchanged.
 
 - **The launcher.** Version 2 is version 1 with `owner` on every call but `prepare`. The Cloudflare launcher sends it only when Omnigent passes `owner=`, which only a build with the fork's `owner_context` capability does (`cfo/teams`, from `84a528a2a`). Main's pin `9be778d79` has no such capability, so main's server keeps sending version 1 and nothing changes for an installation on it.
-- **WorkspaceDO's record** gains the owner binding and the two pointer stamps; a record written before them reads as unbound (the installation owner's) with unstamped pointers.
+- **WorkspaceDO's storage.** The computer's record keeps exactly its earlier shape. The owner binding and the two pointer stamps are under a key of their own (`ownership`), written in the same transaction as the record, and only once there is something to keep: an installation whose server sends version 1 never gets the key. Storage written before WP8.4 reads as unbound (the installation owner's) with unstamped pointers.
 - **The pages.** `PageOwner` gains an optional `person` and the page state optional `access` and `ownerName`; the request-intent token now also covers the person, so a page left open across the release asks to be reloaded once.
 
 | Pair during an update | Result |
 |---|---|
 | New Worker, server sending version 1 (main today) | Works as before: every computer is unbound, the installation owner's |
+| **Platform Worker downgrade:** the previous platform Worker on storage this one wrote, as `update --rollback` leaves it (it redeploys the previous Workers and the server, and does not revert WorkspaceDO's storage) | Works. The previous Worker parses the record as a strict object on every load; the record still has exactly that shape, and the previous Worker never reads the `ownership` key. While it runs it does not check owners, as before WP8.4; the server rolled back with it sends version 1 only |
+| This Worker again after such a rollback (roll forward) | Works. Bindings are as they were. A pointer the previous Worker published carries no stamp, and the stamps it left behind name earlier checkpoints: such a pointer is the computer's own (its manifest names the computer, its objects are under the computer's prefix) and restores. A stamp naming anyone else still refuses the restore |
 | Server sending version 2, Worker before WP8.4 | Refused visibly (`unsupported_version`, a readable refusal); `update` deploys the platform Worker before the server, so this pair does not arise in an update |
 | Server sending version 2 rolled back to one sending version 1 | Works for the installation owner's computers; a member's computer refuses the owner-less calls (`forbidden`). No member's computer exists before a second member is admitted |
 | New web Worker, WorkspaceDO before WP8.4 | Works: the older page front ignores `person`; every computer is the installation owner's |
 | Web Worker before WP8.4, new WorkspaceDO | Works: a page call without `person` acts for the installation's owner |
 | Computer image of either release | Unchanged: the supervisor never sees an owner |
 
-These pairs are read from the source; the version 1 and version 2 receivers, the record defaults and the page calls without `person` are tested, the deploy order is the installer's.
+These pairs are read from the source; the version 1 and version 2 receivers, the record defaults and the page calls without `person` are tested, and the deploy order is the installer's. The downgrade is tested by reading storage the current controller wrote (version 1 calls, publications, an adoption, a member's binding, a removal and restarts) with the previous release's own storage schemas ([its reader](../worker/test/fixtures/previous-worker/README.md)), and a roll forward over a pointer published without a stamp. It was also run once locally with the previous release's whole controller: it booted on that storage, woke the computer from the checkpoint the current controller published and published its own, and the current controller then woke the computer from that one. Not run with deployed Workers.
 
 ## The MCP page (2 November 2026)
 

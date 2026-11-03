@@ -20,7 +20,7 @@ import {
   personKey,
   stampMatches,
 } from "../../src/computer/ownership.ts";
-import { RECORD_KEY } from "../../src/computer/record.ts";
+import { OWNERSHIP_KEY, RECORD_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
 const FOUNDER = "founder";
@@ -231,20 +231,31 @@ describe("checkLauncherOwner", () => {
 });
 
 describe("stampMatches", () => {
-  it("restores a pointer published without an owner only into the installation owner's computer", () => {
-    expect(stampMatches(null, null, FOUNDER)).toBe(true);
-    expect(stampMatches(null, bound(FOUNDER_ALONE, "adopted"), FOUNDER)).toBe(true);
-    expect(stampMatches(null, bound(FOUNDER_IN_TEAM), FOUNDER)).toBe(true);
-    expect(stampMatches(null, bound(ALICE), FOUNDER)).toBe(false);
-    expect(stampMatches(null, bound(ALICE), null)).toBe(false);
+  const CKP = "ckp_0000000000000000000000000a";
+  const OTHER_CKP = "ckp_0000000000000000000000000b";
+  const stamp = (owner: OwnerBinding, checkpointId = CKP) => ({ checkpointId, owner });
+
+  it("restores a pointer no stamp names: published by a Worker without owners, this computer's own", () => {
+    for (const binding of [
+      null,
+      bound(FOUNDER_ALONE, "adopted"),
+      bound(FOUNDER_IN_TEAM),
+      bound(ALICE),
+    ]) {
+      expect(stampMatches(null, CKP, binding)).toBe(true);
+      // A stamp for an earlier pointer: the previous Worker published this one during a rollback.
+      expect(stampMatches(stamp(bound(BOB_ON_ALICES_HOST), OTHER_CKP), CKP, binding)).toBe(true);
+    }
   });
 
   it("restores the owner's own and an ancestor's stamps, never another person's", () => {
-    expect(stampMatches(bound(ALICE), bound(ALICE), FOUNDER)).toBe(true);
-    expect(stampMatches(bound(FOUNDER_ALONE), bound(FOUNDER_IN_TEAM), FOUNDER)).toBe(true);
-    expect(stampMatches(bound(BOB_ON_ALICES_HOST), bound(ALICE), FOUNDER)).toBe(false);
-    expect(stampMatches(bound(ALICE), null, FOUNDER)).toBe(false);
-    expect(stampMatches(bound({ ...ALICE, hostId: BOB_HOST }), bound(ALICE), FOUNDER)).toBe(false);
+    expect(stampMatches(stamp(bound(ALICE)), CKP, bound(ALICE))).toBe(true);
+    expect(stampMatches(stamp(bound(FOUNDER_ALONE)), CKP, bound(FOUNDER_IN_TEAM))).toBe(true);
+    expect(stampMatches(stamp(bound(BOB_ON_ALICES_HOST)), CKP, bound(ALICE))).toBe(false);
+    expect(stampMatches(stamp(bound(ALICE)), CKP, null)).toBe(false);
+    expect(stampMatches(stamp(bound({ ...ALICE, hostId: BOB_HOST })), CKP, bound(ALICE))).toBe(
+      false,
+    );
   });
 });
 
@@ -274,8 +285,9 @@ async function runningFor(sim: ComputerSim, who: LauncherOwner | undefined): Pro
   return claim.startAttempt;
 }
 
-/** The record without the parts a refused call must not touch either. */
-const snapshot = (sim: ComputerSim) => JSON.stringify(sim.store.get(RECORD_KEY));
+/** The record and its ownership: a refused call touches neither. */
+const snapshot = (sim: ComputerSim) =>
+  JSON.stringify([sim.store.get(RECORD_KEY), sim.store.get(OWNERSHIP_KEY)]);
 
 /** Every on-computer launcher request, as `owner` would send it. */
 function requests(sim: ComputerSim, as: LauncherOwner | undefined): [string, LauncherRequest][] {
@@ -311,10 +323,10 @@ describe("a computer bound to its owner at provisioning (T3, T15)", () => {
     expect(await sim.call(sim.client.provisionRequest(NAME))).toMatchObject({
       computerId: sim.client.computerId,
     });
-    expect(sim.record().owner).toEqual({ ...ALICE, how: "provision", boundAt: sim.now });
+    expect(sim.ownership().binding).toEqual({ ...ALICE, how: "provision", boundAt: sim.now });
     // Alice again: the same computer, the same binding.
     await sim.call(sim.client.provisionRequest(NAME));
-    expect(sim.record().owner?.memberId).toBe(ALICE_MEMBER);
+    expect(sim.ownership().binding?.memberId).toBe(ALICE_MEMBER);
     // A name naming another host is refused before anything is recorded.
     const other = new ComputerSim({ installationOwner: FOUNDER });
     other.client.owner = ALICE;
@@ -408,19 +420,81 @@ describe("a computer bound to its owner at provisioning (T3, T15)", () => {
   });
 });
 
+describe("authorizeLauncher: the owner check before WorkspaceDO's own steps (Codex r1-1)", () => {
+  const call = (request: LauncherRequest) => ({ interfaceVersion: 1, request });
+
+  it("refuses what the launcher call itself would refuse, and changes nothing", async () => {
+    const sim = new ComputerSim({ installationOwner: FOUNDER });
+    // No record yet: nothing is bound, and the call answers for itself.
+    sim.client.owner = BOB;
+    expect(() =>
+      sim.controller.authorizeLauncher(call(sim.client.terminateRequest())),
+    ).not.toThrow();
+    await runningFor(sim, ALICE);
+    const before = snapshot(sim);
+    for (const [operation, request] of requests(sim, BOB_ON_ALICES_HOST)) {
+      expect(() => sim.controller.authorizeLauncher(call(request)), operation).toThrow(/forbidden/);
+    }
+    for (const [operation, request] of requests(sim, undefined)) {
+      expect(() => sim.controller.authorizeLauncher(call(request)), operation).toThrow(/forbidden/);
+    }
+    expect(snapshot(sim)).toBe(before);
+    // The owner's calls, and `prepare`, pass; an adoption is not persisted by the check.
+    for (const [operation, request] of requests(sim, ALICE)) {
+      expect(() => sim.controller.authorizeLauncher(call(request)), operation).not.toThrow();
+    }
+    expect(() =>
+      sim.controller.authorizeLauncher(
+        call({ operation: "prepare", protocolVersion: 1, operationId: "f".repeat(32) }),
+      ),
+    ).not.toThrow();
+    expect(snapshot(sim)).toBe(before);
+  });
+
+  it("refuses a malformed call, another version or another computer before anything", async () => {
+    const sim = new ComputerSim({ installationOwner: FOUNDER });
+    await runningFor(sim, ALICE);
+    expect(() => sim.controller.authorizeLauncher({ interfaceVersion: 1 })).toThrow(/bad_request/);
+    expect(() =>
+      sim.controller.authorizeLauncher({
+        interfaceVersion: 2,
+        request: sim.client.statusRequest(),
+      }),
+    ).toThrow(/unsupported_version/);
+    expect(() =>
+      sim.controller.authorizeLauncher(
+        call({
+          ...sim.client.statusRequest(),
+          computerId: "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4",
+        } as LauncherRequest),
+      ),
+    ).toThrow(/bad_request/);
+  });
+
+  it("does not persist an adoption: the call itself adopts", async () => {
+    const sim = new ComputerSim({ installationOwner: FOUNDER });
+    await runningFor(sim, undefined);
+    sim.client.owner = FOUNDER_ALONE;
+    sim.controller.authorizeLauncher(call(sim.client.statusRequest()));
+    expect(sim.store.get(OWNERSHIP_KEY)).toBeUndefined();
+    await sim.call(sim.client.statusRequest());
+    expect(sim.ownership().binding).toMatchObject({ userId: FOUNDER, how: "adopted" });
+  });
+});
+
 describe("computers recorded before owners (the installation's owner, adopted on first use)", () => {
   it("serves version 1 calls as before, and adopts the computer at its first version 2 call", async () => {
     const sim = new ComputerSim({ installationOwner: FOUNDER });
     await runningFor(sim, undefined);
-    expect(sim.record().owner).toBeNull();
+    expect(sim.ownership().binding).toBeNull();
     // Someone else's version 2 call is refused, and adopts nothing.
     sim.client.owner = { ...ALICE, hostId: HOST };
     expect(await sim.client.refusal(sim.client.statusRequest())).toBe("forbidden");
-    expect(sim.record().owner).toBeNull();
+    expect(sim.ownership().binding).toBeNull();
     // The installation owner's first version 2 call adopts it, before the call's effect.
     sim.client.owner = FOUNDER_ALONE;
     await sim.call(sim.client.keepAliveRequest());
-    expect(sim.record().owner).toMatchObject({ ...FOUNDER_ALONE, how: "adopted" });
+    expect(sim.ownership().binding).toMatchObject({ ...FOUNDER_ALONE, how: "adopted" });
     expect(sim.logs.find((l) => l.event === "owner_adopted")?.fields).toMatchObject({
       operation: "keep_alive",
       owner: "account",
@@ -429,7 +503,7 @@ describe("computers recorded before owners (the installation's owner, adopted on
     // for the founder (a rollback), never once the computer is someone else's.
     sim.client.owner = FOUNDER_IN_TEAM;
     await sim.call(sim.client.statusRequest());
-    expect(sim.record().owner).toMatchObject({ memberId: FOUNDER_MEMBER, how: "adopted" });
+    expect(sim.ownership().binding).toMatchObject({ memberId: FOUNDER_MEMBER, how: "adopted" });
     sim.client.owner = undefined;
     expect(await sim.client.refusal(sim.client.statusRequest())).toBeUndefined();
     sim.client.owner = { ...FOUNDER_IN_TEAM, memberId: ALICE_MEMBER };
@@ -441,7 +515,7 @@ describe("computers recorded before owners (the installation's owner, adopted on
     await runningFor(sim, undefined);
     sim.client.owner = FOUNDER_ALONE;
     expect(await sim.client.refusal(sim.client.statusRequest())).toBe("forbidden");
-    expect(sim.record().owner).toBeNull();
+    expect(sim.ownership().binding).toBeNull();
     sim.client.owner = undefined;
     expect(await sim.client.refusal(sim.client.statusRequest())).toBeUndefined();
   });
@@ -488,10 +562,19 @@ describe("checkpoints stamped with their owner (T15)", () => {
     await sim.call(sim.client.checkpointRequest());
     await sim.advance(10_000);
     const r = sim.record();
+    const o = sim.ownership();
     expect(r.workspace).not.toBeNull();
-    expect(r.workspaceOwner).toEqual(r.owner);
+    expect(o.workspace).toEqual({
+      checkpointId: r.workspace?.checkpointId,
+      generation: r.workspace?.generation,
+      owner: o.binding,
+    });
     expect(r.credential).not.toBeNull();
-    expect(r.credentialOwner).toEqual(r.owner);
+    expect(o.credential).toEqual({
+      checkpointId: r.credential?.checkpointId,
+      generation: r.credential?.generation,
+      owner: o.binding,
+    });
     expect(sim.bucket.writers.at(-1)).toEqual({
       key: r.credential?.object.key,
       generation: r.credential?.generation,
@@ -500,7 +583,7 @@ describe("checkpoints stamped with their owner (T15)", () => {
   });
 
   it("restores the owner's checkpoints, and refuses a pointer stamped for anyone else, failing the start", async () => {
-    for (const pointer of ["workspaceOwner", "credentialOwner"] as const) {
+    for (const pointer of ["workspace", "credential"] as const) {
       const sim = new ComputerSim({ installationOwner: FOUNDER });
       await runningFor(sim, ALICE);
       live(sim).signIn("claude", "claude-login-canary-ownership");
@@ -515,10 +598,15 @@ describe("checkpoints stamped with their owner (T15)", () => {
       live(sim).runnerProcesses = 0;
       await sim.call(sim.client.suspendRequest());
       await sim.advance(30_000);
-      const raw = sim.record();
-      sim.store.put(RECORD_KEY, {
-        ...raw,
-        [pointer]: bindingFor(BOB_ON_ALICES_HOST, "provision", 1),
+      const current = sim.record()[pointer];
+      if (current === null) throw new Error(`no ${pointer} pointer`);
+      sim.store.put(OWNERSHIP_KEY, {
+        ...sim.ownership(),
+        [pointer]: {
+          checkpointId: current.checkpointId,
+          generation: current.generation,
+          owner: bindingFor(BOB_ON_ALICES_HOST, "provision", 1),
+        },
       });
       const restores = sim.computer.restores.length;
       await sim.client
@@ -542,10 +630,11 @@ describe("checkpoints stamped with their owner (T15)", () => {
     live(sim).write("work/a.txt", "legacy");
     await sim.call(sim.client.checkpointRequest());
     await sim.advance(10_000);
-    expect(sim.record().workspaceOwner).toBeNull();
+    expect(sim.ownership()).toEqual({ binding: null, workspace: null, credential: null });
+    expect(sim.store.get(OWNERSHIP_KEY)).toBeUndefined();
     sim.client.owner = FOUNDER_ALONE;
     await sleepAndWake(sim);
-    expect(sim.record().owner?.how).toBe("adopted");
+    expect(sim.ownership().binding?.how).toBe("adopted");
     expect(sim.record().lifecycle.context.state).toBe("host_running");
     expect(live(sim).tree.get("work/a.txt")).toBe("legacy");
   });
@@ -658,7 +747,7 @@ describe("crashes across generations and ownership", () => {
     const dry = new ComputerSim({ installationOwner: FOUNDER });
     expect(await ownershipScenario(dry)).toEqual(["forbidden", "forbidden"]);
     expect(dry.check()).toEqual([]);
-    expect(dry.record().owner).toMatchObject({ ...FOUNDER_IN_TEAM, how: "adopted" });
+    expect(dry.ownership().binding).toMatchObject({ ...FOUNDER_IN_TEAM, how: "adopted" });
     const steps = dry.steps;
     expect(steps).toBeGreaterThan(100);
     const failures: string[] = [];
@@ -668,8 +757,8 @@ describe("crashes across generations and ownership", () => {
       const seen: (OwnerBinding | null)[] = [];
       sim.store.afterCommit = ((original) => () => {
         original?.();
-        const raw = sim.store.get(RECORD_KEY) as { owner?: OwnerBinding | null } | undefined;
-        seen.push(raw?.owner ?? null);
+        const raw = sim.store.get(OWNERSHIP_KEY) as { binding?: OwnerBinding | null } | undefined;
+        seen.push(raw?.binding ?? null);
       })(sim.store.afterCommit);
       let refusals: string[];
       try {
@@ -678,7 +767,7 @@ describe("crashes across generations and ownership", () => {
         failures.push(`step ${at} (${dry.stepLog[at - 1]}): ${String(error)}`);
         continue;
       }
-      const r = sim.record();
+      const r = { ...sim.record(), owner: sim.ownership().binding };
       const problems = sim.check();
       if (refusals.some((x) => x !== "forbidden")) problems.push(`Bob was answered: ${refusals}`);
       if (r.lifecycle.context.state !== "host_running")
