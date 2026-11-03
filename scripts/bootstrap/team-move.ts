@@ -110,18 +110,31 @@ export function normalHostId(value: string): string | undefined {
 }
 
 /**
- * This computer's Omnigent host ID, read from Omnigent's own configuration (`host.host_id` in
- * `$OMNIGENT_CONFIG_HOME/config.yaml`, else `~/.omnigent/config.yaml`), or undefined when there
- * is none. Reads that one value; nothing else of the file is kept or shown.
+ * Where this computer's platform-managed Omnigent host keeps its configuration, as
+ * `scripts/host/omnigent-host.sh` sets it up: `$OMNIGENT_CONFIG_HOME/config.yaml` when that is
+ * set explicitly, else `${XDG_CONFIG_HOME:-$HOME/.config}/omnigent-cfo/config.yaml`.
+ */
+export function hostConfigPath(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const explicit = env.OMNIGENT_CONFIG_HOME?.trim();
+  if (explicit) return join(explicit, "config.yaml");
+  const config = env.XDG_CONFIG_HOME?.trim() || join(homedir(), ".config");
+  return join(config, "omnigent-cfo", "config.yaml");
+}
+
+/**
+ * This computer's Omnigent host ID, read from the platform-managed host's configuration
+ * (`host.host_id` at `hostConfigPath`), or undefined when there is none. Reads that one value;
+ * nothing else of the file is kept or shown.
  */
 export function localHostId(
   env: Readonly<Record<string, string | undefined>> = process.env,
   read: (path: string) => string = (path) => readFileSync(path, "utf8"),
 ): string | undefined {
-  const home = env.OMNIGENT_CONFIG_HOME?.trim() || join(homedir(), ".omnigent");
   let text: string;
   try {
-    text = read(join(home, "config.yaml"));
+    text = read(hostConfigPath(env));
   } catch {
     return undefined;
   }
@@ -183,7 +196,7 @@ export function checkMove(line: TeamMoveLine | undefined, rules: MoveRules): Mov
   if (team.ownersBound < team.owners) {
     return {
       kind: "waiting",
-      why: `the owner's Access sign-in is not bound to Omnigent yet: open https://${rules.hostname} in your browser and sign in to Omnigent once (if the site asks you to choose your Omnigent password first, do that, then sign in)`,
+      why: `the owner's Access sign-in is not bound to Omnigent yet: open https://${rules.hostname} in your browser and sign in to Omnigent once with your password (if Omnigent opens without asking you to, sign out from your account menu and sign in again; if the site asks you to choose your Omnigent password first, do that, then sign in)`,
     };
   }
   // Nothing applied yet is revision 0: a team that never changed its list.
@@ -239,12 +252,32 @@ export function checkMove(line: TeamMoveLine | undefined, rules: MoveRules): Mov
 }
 
 /**
- * The move's record after its update was rolled back inside the window: the version from before
- * holds none of the move's settings or secrets, so an unfinished move starts again from its
- * member group (which stays), and its token, whose value went with the rolled-back version, is
- * listed for deletion. A move finished before that update is kept as it is.
+ * The move's record after its update was rolled back inside the window. `previous` is the stage
+ * the restored release carries (`PreviousRelease.team`): restored as it was, with any token made
+ * since (its value went with the rolled-back versions) listed for deletion. Without one, the
+ * move began in the rolled-back window: the version from before holds none of its settings or
+ * secrets, so it starts again from its member group (which stays), its token listed for deletion.
  */
-export function teamAfterRollback(team: TeamRecord | undefined): TeamRecord | undefined {
+export function teamAfterRollback(
+  team: TeamRecord | undefined,
+  previous?: TeamRecord | undefined,
+): TeamRecord | undefined {
+  if (previous !== undefined) {
+    const key = (t: RecordedToken) => t.id ?? t.name;
+    const kept = new Set(
+      [
+        ...(previous.token === undefined ? [] : [previous.token]),
+        ...(previous.tokensToDelete ?? []),
+      ].map(key),
+    );
+    const made = [
+      ...(team?.tokensToDelete ?? []),
+      ...(team?.token === undefined ? [] : [team.token]),
+    ];
+    const left = [...(previous.tokensToDelete ?? []), ...made.filter((t) => !kept.has(key(t)))];
+    const { tokensToDelete: _left, ...stage } = previous;
+    return left.length === 0 ? stage : { ...stage, tokensToDelete: left };
+  }
   if (team === undefined || team.finishedAt !== undefined) return team;
   return {
     id: team.id,

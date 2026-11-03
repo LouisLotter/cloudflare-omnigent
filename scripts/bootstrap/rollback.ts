@@ -269,7 +269,7 @@ export async function runRollback(
 
   const closing = window();
   const { update: _u, platformCode: _p, webCode: _w, team, ...kept } = state.journal;
-  const back = teamAfterRollback(team);
+  const back = teamAfterRollback(team, closing.previous.team);
   const rest = back === undefined ? kept : { ...kept, team: back };
   setJournal(
     closeWindow(

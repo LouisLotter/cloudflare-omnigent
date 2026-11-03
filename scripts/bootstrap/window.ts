@@ -34,6 +34,7 @@ import {
   slicedLogs,
 } from "./machine.ts";
 import type { Installation } from "./settings.ts";
+import type { TeamRecord } from "./team-move.ts";
 
 /** How many restore points the server keeps, and the journal records (the newest). */
 export const RESTORE_POINTS_KEPT = 3;
@@ -44,6 +45,11 @@ export interface PreviousRelease {
   readonly webVersionId: string;
   readonly platformCode?: string;
   readonly webCode?: string;
+  /**
+   * The team's move as that release carries it (WP8.11): its stage before this window's run
+   * changed anything, restored with the release on a rollback. Absent: no move then.
+   */
+  readonly team?: TeamRecord;
 }
 
 /** A rollback in progress: each step's outcome, as it lands. */

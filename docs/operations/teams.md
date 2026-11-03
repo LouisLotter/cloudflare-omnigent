@@ -49,17 +49,31 @@ From a clean checkout of the release, on the computer whose Omnigent host should
 node scripts/bootstrap/bootstrap.ts update --team-admission members --owner-email <owner address>
 ```
 
+Before it changes anything, it checks two things and stops if either fails:
+
+- **This computer's host ID** is found where `scripts/host/omnigent-host.sh` keeps the host's
+  configuration: `host.host_id` in `${XDG_CONFIG_HOME:-~/.config}/omnigent-cfo/config.yaml`, or
+  in `$OMNIGENT_CONFIG_HOME/config.yaml` when that is set. Give `--host-id <ID>` for another host
+  (`omnigent-cfo host status` shows the ID), or `--host-id none` when you use no personal host.
+- **The hostname's Access application is the installation's own**: the one the installer created
+  and the state file records. The move switches that application's policy to the member group and
+  never changes one the installer did not create. If yours is not its own, delete it (Zero Trust
+  dashboard, Access, Applications) and run the same command: the update creates the
+  installation's own owner-only application first (Omnigent is unreachable for the minute
+  between), then the move goes on.
+
 One run does all of it:
 
 1. **The update**, with its restore point and read-only window: the member group (the owner's
    address only), the reconciler's token, the identity envelope on, Omnigent in bind mode. Inside
    the window `bootstrap.ts update --rollback` goes back, data included.
 2. **The owner's sign-in.** Once the update is accepted, the run prints what to open: sign in to
-   Omnigent once in your browser. That binds your Access identity to your account, once.
+   Omnigent once in your browser, with your password. That binds your Access identity to your
+   account, once. If Omnigent opens without asking you to sign in, sign out from your account
+   menu and sign in again: only a browser sign-in made since binds.
 3. **The bind checks**, from the server's own reports: every active owner bound, Access's member
    group written, and this computer's Omnigent host connected through Access with a sign-in bound
-   to you. Its host ID comes from Omnigent's configuration (`host.host_id`); give
-   `--host-id <ID>` for another, or `--host-id none` when you use no personal host.
+   to you (the host ID found above).
 4. **Required mode**: Omnigent honours a person's sign-in only through Access from then on. The
    server restarts once, and the same checks run again. If they do not pass within the wait, the
    run puts Omnigent back in bind mode and says why.
@@ -126,13 +140,20 @@ cf zero-trust access rule-groups get <group ID> | jq '.include | length'
 
 **Isolation** (each person's own browser)
 
+The checks below need the installation's sharing settings as the platform sets them: sharing off
+(`OMNIGENT_SHARING_MODE` unset, or `off`), public sharing off, and new threads never public (the
+image pins it). Share none of the threads used here.
+
 1. B: create B's own cloud computer, and start a thread on it. A: start a thread of A's own.
 2. B: `/platform/computers` lists B's computer and none of A's. Open A's computer page (A copies its
    address): not found.
 3. A: `/platform/computers` lists B's computer as a fleet card ("Belongs to …") with Stop only;
-   its setup page and terminal are not found.
+   its setup page and terminal are not found. Another person's computer setup and terminal stay
+   that person's alone, for owners and administrators too.
 4. B: open `/v1/sessions` in the browser: none of A's threads is listed. Open A's thread address:
-   refused. A, likewise, for B's thread.
+   refused.
+5. A: B's thread **is** listed and opens. That is expected: owners and administrators keep access
+   to members' threads (owner decision D52). It is not a failed check; what B can see of A's threads is.
 
 **Suspension**
 

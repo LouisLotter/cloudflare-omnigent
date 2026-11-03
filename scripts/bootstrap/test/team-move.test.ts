@@ -7,6 +7,7 @@ import type { TeamStatusReport } from "../../../contracts/src/team.ts";
 import { type AccessApi, AccessRefusal, AccessUnavailable } from "../access-app.ts";
 import {
   checkMove,
+  hostConfigPath,
   localHostId,
   type MoveRules,
   moveSecrets,
@@ -147,38 +148,53 @@ describe("the move's checks", () => {
 });
 
 describe("this computer's host ID", () => {
-  it("reads host.host_id from Omnigent's configuration, and nothing else", () => {
-    const files: Record<string, string> = {
-      "/cfg/config.yaml": [
-        "server:",
-        "  host_id: not-this-one",
-        "host:",
-        "  name: workstation",
-        `  host_id: "${PC.slice(0, 8)}-${PC.slice(8, 12)}-${PC.slice(12, 16)}-${PC.slice(16, 20)}-${PC.slice(20)}"  # mine`,
-        "other: 1",
-      ].join("\n"),
-    };
-    const read = (path: string) => {
-      const text = files[path];
-      if (text === undefined) throw new Error("ENOENT");
-      return text;
-    };
-    expect(localHostId({ OMNIGENT_CONFIG_HOME: "/cfg" }, read)).toBe(PC);
-    expect(localHostId({ OMNIGENT_CONFIG_HOME: "/nowhere" }, read)).toBeUndefined();
-    files["/cfg/config.yaml"] = "host:\n  name: workstation\n";
-    expect(localHostId({ OMNIGENT_CONFIG_HOME: "/cfg" }, read)).toBeUndefined();
+  const files: Record<string, string> = {};
+  const read = (path: string) => {
+    const text = files[path];
+    if (text === undefined) throw new Error("ENOENT");
+    return text;
+  };
+  const config = (id: string) =>
+    [
+      "server:",
+      "  host_id: not-this-one",
+      "host:",
+      "  name: workstation",
+      `  host_id: "${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}"  # mine`,
+      "other: 1",
+    ].join("\n");
+
+  it("reads the platform host's configuration where omnigent-host.sh keeps it", () => {
+    // XDG_CONFIG_HOME set, OMNIGENT_CONFIG_HOME unset: as on the owner's computer.
+    files["/xdg/omnigent-cfo/config.yaml"] = config(PC);
+    files["/home/me/.omnigent/config.yaml"] = config(LAPTOP);
+    expect(hostConfigPath({ XDG_CONFIG_HOME: "/xdg" })).toBe("/xdg/omnigent-cfo/config.yaml");
+    expect(localHostId({ XDG_CONFIG_HOME: "/xdg", HOME: "/home/me" }, read)).toBe(PC);
+    // An explicit OMNIGENT_CONFIG_HOME (the host wrapper's) wins.
+    files["/explicit/config.yaml"] = config(CLOUD);
+    expect(localHostId({ XDG_CONFIG_HOME: "/xdg", OMNIGENT_CONFIG_HOME: "/explicit" }, read)).toBe(
+      CLOUD,
+    );
+    expect(localHostId({ XDG_CONFIG_HOME: "/nowhere" }, read)).toBeUndefined();
+    files["/xdg/omnigent-cfo/config.yaml"] = "host:\n  name: workstation\n";
+    expect(localHostId({ XDG_CONFIG_HOME: "/xdg" }, read)).toBeUndefined();
   });
 
-  it("looks in ~/.omnigent without OMNIGENT_CONFIG_HOME, a blank one included", () => {
+  it("falls back to ~/.config/omnigent-cfo, never Omnigent's own ~/.omnigent", () => {
     const asked: string[] = [];
-    const read = (path: string) => {
+    const record = (path: string) => {
       asked.push(path);
       throw new Error("ENOENT");
     };
-    expect(localHostId({}, read)).toBeUndefined();
-    expect(localHostId({ OMNIGENT_CONFIG_HOME: "  " }, read)).toBeUndefined();
+    expect(localHostId({}, record)).toBeUndefined();
+    expect(
+      localHostId({ OMNIGENT_CONFIG_HOME: "  ", XDG_CONFIG_HOME: " " }, record),
+    ).toBeUndefined();
     expect(asked).toHaveLength(2);
-    for (const path of asked) expect(path).toMatch(/\.omnigent[\\/]config\.yaml$/);
+    for (const path of asked) {
+      expect(path).toMatch(/[\\/]\.config[\\/]omnigent-cfo[\\/]config\.yaml$/);
+      expect(path).not.toMatch(/\.omnigent[\\/]/);
+    }
   });
 
   it("takes Omnigent's forms of a host ID and refuses anything else", () => {

@@ -1766,27 +1766,181 @@ describe("runUpdate with the team's move behind Access (WP8.11)", () => {
       why: "the team's move needs the check, which was skipped",
     });
     signIn();
-    // Staging-like: no Access API of its own, so the application's policy is left as it is.
+    // Without an Access login of its own, the move cannot switch the policy: refused, unfinished.
     const { accessApi: _api, ...withoutAccess } = h.context(CODE_A);
-    const finished = await runUpdate(
+    await expect(
+      runUpdate(
+        {
+          ...withoutAccess,
+          ownerEmail: OWNER_EMAIL,
+          team: {
+            requested: true,
+            supported: true,
+            groups: h.world.groupsApi(),
+            tokens: h.world.tokenApi(),
+            hostId: PC,
+          },
+        },
+        { ...OPTIONS, teamWaitMs: 10 * 60_000 },
+      ),
+    ).rejects.toThrow(/Access login/);
+    expect(journalOf(h).team?.policyAt).toBeUndefined();
+    expect(journalOf(h).team?.finishedAt).toBeUndefined();
+    expect(policyOf(h)).toEqual([[{ email: { email: OWNER_EMAIL } }]]);
+    // With it, the same command finishes.
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+    // A later update, as `run` makes it, without the team's ports: nothing to prepare.
+    expect(await runUpdate(h.context(CODE_B), OPTIONS)).toEqual({ kind: "done" });
+  }, 60_000);
+
+  // ── Codex 8.11-lite r1 ──
+
+  /** A move run to its end: owner bound, required, members, the group's policy. */
+  async function finishedMove() {
+    const m = await moving();
+    await m.run();
+    m.signIn();
+    expect(await m.run()).toMatchObject({ kind: "team", state: "finished" });
+    return m;
+  }
+
+  it("P-1: `run` and `update` restore a lost identity mode from the journal, never weaker", async () => {
+    // Through `run` (its update has no team ports).
+    const viaRun = await finishedMove();
+    const worker = viaRun.plan.platformWorker;
+    await viaRun.h.world.cloud().updateSecrets(worker, { [MODE]: null });
+    const ran = await runBootstrap(
       {
-        ...withoutAccess,
-        ownerEmail: OWNER_EMAIL,
+        cloud: viaRun.h.world.cloud(),
+        store: viaRun.h.store,
+        baseConfigs: BASE,
+        secrets: () => ({}),
+        codeVersion: CODE_B,
+        accessApi: viaRun.h.world.accessApi(),
+        random: counter(),
+        now: () => viaRun.h.world.now,
+        sleep: async (ms) => {
+          viaRun.h.world.now += Math.max(0, ms);
+        },
+        log: () => undefined,
+      },
+      RUN,
+    );
+    expect(ran).toEqual({ kind: "done", updated: true });
+    expect(platformSecrets(viaRun.h).get(MODE)).toBe("required");
+    expect(lastConfig(viaRun.h, viaRun.plan.webWorker).vars).toMatchObject({
+      TEAM_ADMISSION: "members",
+    });
+    // Through `update`, without asking for the move again.
+    const viaUpdate = await finishedMove();
+    await viaUpdate.h.world.cloud().updateSecrets(viaUpdate.plan.platformWorker, { [MODE]: null });
+    expect(await viaUpdate.run(false, {}, CODE_B)).toEqual({ kind: "done" });
+    expect(platformSecrets(viaUpdate.h).get(MODE)).toBe("required");
+  }, 60_000);
+
+  it("P-1: a lost token: `run` refuses with the command that can make it, `update` makes it", async () => {
+    const { h, plan, run } = await finishedMove();
+    await h.world.cloud().updateSecrets(plan.platformWorker, { CFO_ACCESS_GROUP_TOKEN: null });
+    const deploys = count(h, "deployPlatform");
+    await expect(runUpdate(h.context(CODE_B), OPTIONS)).rejects.toThrow(
+      /CFO_ACCESS_GROUP_TOKEN.*run bootstrap\.ts update/,
+    );
+    expect(count(h, "deployPlatform")).toBe(deploys);
+    expect(await run(false, {}, CODE_B)).toEqual({ kind: "done" });
+    expect(platformSecrets(h).has("CFO_ACCESS_GROUP_TOKEN")).toBe(true);
+    expect(platformSecrets(h).get(MODE)).toBe("required");
+  }, 60_000);
+
+  it("P-2: interrupted after required, then a later update rolled back: the move goes on from required", async () => {
+    const { h, plan, run, signIn } = await moving();
+    await run();
+    signIn();
+    // The web step fails after required mode was checked and recorded.
+    h.world.crash = { call: "deployWeb", nth: count(h, "deployWeb") + 1, when: "before" };
+    await expect(run()).rejects.toThrow(Crash);
+    h.world.crash = undefined;
+    const stage = journalOf(h).team;
+    expect(stage?.requiredAt).toBeDefined();
+    expect(stage?.webAt).toBeUndefined();
+    // A later update whose check does not pass, rolled back inside its window.
+    h.world.adminServices = () => ({ stored: 1, served: 0 });
+    expect(await run(false, {}, CODE_B)).toMatchObject({ kind: "deployed", window: "open" });
+    expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+    // The stage the restored release carries: required, as the platform still is.
+    expect(journalOf(h).team).toEqual(stage);
+    expect(platformSecrets(h).get(MODE)).toBe("required");
+    // Going on finishes the move from there, without going back to bind.
+    h.world.adminServices = () => ({ stored: 0, served: 0 });
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+    expect(lastConfig(h, plan.webWorker).vars).toMatchObject({ TEAM_ADMISSION: "members" });
+    expect(policyOf(h)).toEqual([[{ group: { id: stage?.memberGroup?.id } }]]);
+    const modes = h.world.secretChanges.map((c) => c.changes[MODE]).filter((m) => m !== undefined);
+    expect(modes).toEqual(["required"]);
+  }, 60_000);
+
+  it("P-2: interrupted after the policy step, then a later update rolled back: the move finishes", async () => {
+    const { h, plan, run, signIn } = await moving();
+    await run();
+    signIn();
+    // The last step (deleting the move's secret) fails after the policy was switched.
+    h.world.crash = {
+      call: "updateSecrets",
+      nth: count(h, "updateSecrets") + 2,
+      when: "before",
+    };
+    await expect(run()).rejects.toThrow(Crash);
+    h.world.crash = undefined;
+    const stage = journalOf(h).team;
+    expect(stage?.policyAt).toBeDefined();
+    expect(stage?.finishedAt).toBeUndefined();
+    h.world.adminServices = () => ({ stored: 1, served: 0 });
+    expect(await run(false, {}, CODE_B)).toMatchObject({ kind: "deployed", window: "open" });
+    expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+    expect(journalOf(h).team).toEqual(stage);
+    expect(lastConfig(h, plan.webWorker).vars).toMatchObject({ TEAM_ADMISSION: "members" });
+    h.world.adminServices = () => ({ stored: 0, served: 0 });
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+    expect(platformSecrets(h).has("CFO_TEAM_MOVE")).toBe(false);
+    expect(platformSecrets(h).get(MODE)).toBe("required");
+  }, 60_000);
+
+  it("P-3: an Access application the installer did not create stops the move before any change", async () => {
+    const { h, plan, run, signIn } = await moving();
+    // The application stays; the state file does not record it as this installation's.
+    const { accessApp: _app, ...journal } = journalOf(h);
+    h.store.save({ ...h.store.load(), journal });
+    const calls = h.world.calls.length;
+    await expect(run()).rejects.toThrow(/was not created by this installation/);
+    expect(h.world.groups.size).toBe(0);
+    expect(h.world.calls.slice(calls).filter((c) => c.startsWith("deploy"))).toEqual([]);
+    expect(journalOf(h).team).toBeUndefined();
+    // The supported path: delete it; the update then creates the installation's own.
+    h.world.accessApps.clear();
+    await run();
+    expect(journalOf(h).accessApp?.id).toBeDefined();
+    signIn();
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+    expect(policyOf(h)).toEqual([[{ group: { id: journalOf(h).team?.memberGroup?.id } }]]);
+    expect(plan.hostname).toBeDefined();
+  }, 60_000);
+
+  it("P-4: no host ID found refuses before the update, naming where it looked", async () => {
+    const { h, run } = await moving();
+    const calls = h.world.calls.length;
+    await expect(
+      run(true, {
         team: {
           requested: true,
           supported: true,
           groups: h.world.groupsApi(),
           tokens: h.world.tokenApi(),
-          hostId: PC,
+          hostId: undefined,
+          hostConfig: "/xdg/omnigent-cfo/config.yaml",
         },
-      },
-      { ...OPTIONS, teamWaitMs: 10 * 60_000 },
-    );
-    expect(finished).toMatchObject({ kind: "team", state: "finished" });
-    expect(policyOf(h)).toEqual([[{ email: { email: OWNER_EMAIL } }]]);
-    expect(h.lines.join("\n")).toContain("its policy is left as it is");
-    // A later update, as `run` makes it, without the team's ports: nothing to prepare.
-    expect(await runUpdate(h.context(CODE_B), OPTIONS)).toEqual({ kind: "done" });
+      }),
+    ).rejects.toThrow(/not in \/xdg\/omnigent-cfo\/config\.yaml.*--host-id/);
+    expect(h.world.calls.slice(calls).filter((c) => c.startsWith("deploy"))).toEqual([]);
+    expect(h.world.groups.size).toBe(0);
   }, 60_000);
 
   it("refuses another owner's address for the member group", async () => {

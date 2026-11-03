@@ -75,6 +75,7 @@ import {
   ROLLBACK_SECRET,
 } from "../../worker/src/server/maintenance.ts";
 import { newTeamMoveId } from "../../worker/src/server/team-move.ts";
+import { coversHostname } from "./access.ts";
 import {
   type AccessApi,
   type AccessRecords,
@@ -219,6 +220,8 @@ export interface TeamPorts {
   readonly tokens: TokenApi;
   /** This computer's host, checked before `required`; `none`: the owner uses none. */
   readonly hostId: string | undefined;
+  /** Where the host ID was looked for (team-move.ts, `hostConfigPath`), for the refusal. */
+  readonly hostConfig?: string;
 }
 
 export interface UpdateOptions {
@@ -478,7 +481,10 @@ export async function runUpdate(
       );
     }
   }
-  // WP8.11: the team's move behind Access, asked for now or under way since an earlier run.
+  // WP8.11: the team's move behind Access, asked for now or under way since an earlier run. Its
+  // stage before this run changed it is what the release running now carries: a window opened
+  // below keeps it with that release, for a rollback to restore.
+  const teamBefore = state.journal.team;
   const moveSecretsToAdd = await prepareTeamMove(
     ctx,
     plan,
@@ -623,7 +629,13 @@ export async function runUpdate(
   if (resuming) {
     ctx.log(`continuing the update of https://${plan.hostname} to ${shortCode(code)}`);
   } else if (window === undefined) {
-    const previous = previousRelease(plan, platformIdentity, webIdentity, state.journal);
+    const previous = previousRelease(
+      plan,
+      platformIdentity,
+      webIdentity,
+      state.journal,
+      teamBefore,
+    );
     const id = newWindowId(ctx.now(), ctx.random);
     record({
       update: { code, startedAt: iso(ctx.now()) },
@@ -827,6 +839,7 @@ function previousRelease(
   platform: ServingIdentity,
   web: ServingIdentity,
   journal: Journal,
+  team: TeamRecord | undefined,
 ): PreviousRelease {
   for (const [worker, identity] of [
     [plan.platformWorker, platform],
@@ -843,6 +856,7 @@ function previousRelease(
     webVersionId: String(web.versionId),
     ...(journal.platformCode === undefined ? {} : { platformCode: journal.platformCode }),
     ...(journal.webCode === undefined ? {} : { webCode: journal.webCode }),
+    ...(team === undefined ? {} : { team }),
   };
 }
 
@@ -1098,13 +1112,30 @@ async function prepareTeamMove(
   if (team === undefined && !asked) return {};
   const ports = ctx.team;
   if (ports === undefined) {
-    // A finished move needs nothing more here: its settings render from the journal.
-    if (team !== undefined && team.finishedAt !== undefined) return {};
+    // A finished move (`run`'s update, which has no team ports): its variables render from the
+    // journal, and its identity mode is restored from it as the move left it, never weaker. Its
+    // token can be made again only with the token API: refused, with the one command that can.
+    if (team !== undefined && team.finishedAt !== undefined) {
+      if (!present.has(ACCESS_GROUP_TOKEN_SECRET)) {
+        throw new BootstrapRefusal(
+          `${plan.platformWorker} no longer holds ${ACCESS_GROUP_TOKEN_SECRET}, the member group's token, which only the installer's own Cloudflare login can make again: run bootstrap.ts update (it makes a new one and deploys it); nothing was changed`,
+        );
+      }
+      return moveSecrets(present, team, undefined);
+    }
     throw new BootstrapRefusal(
       "the team's move behind Access is under way: go on with bootstrap.ts update --team-admission members, from the installer's own Cloudflare account (not the staging tool); nothing was changed",
     );
   }
   if (asked && !ports.supported) throw new BootstrapRefusal(teamAdmissionRefusal());
+  // Preflights, before anything changes: this computer's host, and an Access application the
+  // move may change, for the steps not done yet.
+  if (team?.boundAt === undefined && ports.hostId === undefined) {
+    throw new BootstrapRefusal(
+      `this computer's Omnigent host ID is not in ${ports.hostConfig ?? "the host's configuration"} (where scripts/host/omnigent-host.sh sets the host up), so the move could not check that host: run again with --host-id <its ID>, or --host-id none if the owner uses no personal host; nothing was changed`,
+    );
+  }
+  if (team?.policyAt === undefined) accessOwnershipPreflight(ctx, plan, journal());
   const save = (next: TeamRecord) => {
     team = next;
     setJournal({ ...journal(), team: next });
@@ -1293,12 +1324,13 @@ async function continueTeamMove(
       ctx.log(
         `the Access application on ${plan.hostname} allows the installation's member group now (it holds the owner alone until someone is invited)`,
       );
+      save({ policyAt: iso(ctx.now()) });
     } else {
-      ctx.log(
-        "the Access application is not this installation's own (staging), so its policy is left as it is",
+      // Never a success without the group's policy read back.
+      throw new BootstrapRefusal(
+        `the Access application on ${plan.hostname} is not one this installation created (or this run has no Access login), so the move cannot switch it to the member group and is not finished: ${notOursRemedy(plan)}`,
       );
     }
-    save({ policyAt: iso(ctx.now()) });
   }
 
   // Done: the move's secret goes, and with it the team fields on every status line.
@@ -1341,4 +1373,29 @@ async function pollMove(
     },
   );
   return "decided" in seen ? seen.decided : { kind: "waiting", why: seen.why };
+}
+
+/** How to let the installer own the hostname's Access application, so the move may switch it. */
+function notOursRemedy(plan: Installation): string {
+  return `delete that application (https://one.dash.cloudflare.com/, Access, Applications, the one for ${plan.hostname}) and run this command again: the update creates the installation's own owner-only application first (Omnigent is unreachable for the minute between), then the move goes on`;
+}
+
+/**
+ * Refuses a move that would have to change an Access application the installer does not own:
+ * the hostname's application must be the one the journal records as created by this
+ * installation, or none (the update then creates it). Never overwritten silently.
+ */
+function accessOwnershipPreflight(ctx: UpdateContext, plan: Installation, journal: Journal): void {
+  if (ctx.accessApi === undefined) {
+    throw new BootstrapRefusal(
+      "the team's move switches the hostname's Access application to the member group, which needs the installer's own Cloudflare account and its Access login (not the staging tool); nothing was changed",
+    );
+  }
+  if (journal.accessApp?.id !== undefined) return;
+  const covering = ctx.accessApi.apps().filter((app) => coversHostname(app, plan.hostname));
+  if (covering.length > 0) {
+    throw new BootstrapRefusal(
+      `the Access application on ${plan.hostname} was not created by this installation (the state file does not record it), and the move never changes an application it does not own: ${notOursRemedy(plan)}; nothing was changed`,
+    );
+  }
 }

@@ -9,7 +9,14 @@
  * storage, as the runtime keeps it across instances. Everything else, the watchdog, its status
  * line, `githubSetup` and the cron's `scheduled` handler (`/__e2e/cron`), is production code.
  * WorkspaceDO and ControlDO are the production classes, for the web Worker's bindings.
+ *
+ * `/__e2e/platform-internal/<path>` (WP8.11, `team-move-e2e.ts`) is `platform.internal/<path>`:
+ * the production `PlatformInternal` entrypoint with the props OmnigentServer registers for its
+ * container, which the container reaches in production through its intercept. Here the server
+ * container reaches it through the run's relay (the container's own loopback, a Unix socket, the
+ * web Worker's `/__e2e/` route), since Docker gives it no intercept.
  */
+import { exports } from "cloudflare:workers";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
 import type { PlatformEnv } from "../../src/env.ts";
@@ -148,6 +155,11 @@ export class OmnigentServer extends PlatformOmnigentServer {
 // the launcher API), as in production.
 export { PlatformInternal } from "../../src/internal/entrypoints.ts";
 
+const SERVER_PROPS = { propsVersion: 1, caller: "omnigent-server" };
+const INTERNAL_PREFIX = "/__e2e/platform-internal/";
+
+type Factory = (options: { props: unknown }) => Fetcher;
+
 export class WorkspaceDO extends PlatformWorkspaceDO {}
 export class ControlDO extends PlatformControlDO {}
 
@@ -157,6 +169,14 @@ export default {
     if (new URL(request.url).pathname === "/__e2e/cron") {
       await platform.scheduled?.({} as ScheduledController, env, ctx);
       return new Response("ok");
+    }
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(INTERNAL_PREFIX)) {
+      const path = url.pathname.slice(INTERNAL_PREFIX.length - 1);
+      const entry = (exports as unknown as Record<"PlatformInternal", Factory>).PlatformInternal;
+      return entry({ props: SERVER_PROPS }).fetch(
+        new Request(`http://platform.internal${path}${url.search}`, request),
+      );
     }
     return new Response("not found", { status: 404 });
   },

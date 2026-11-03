@@ -35,7 +35,7 @@ import {
   TEAM_ADMISSION_SUPPORTED,
   teamAdmissionRefusal,
 } from "./team-admission.ts";
-import { localHostId, normalHostId } from "./team-move.ts";
+import { hostConfigPath, localHostId, normalHostId } from "./team-move.ts";
 import {
   DEFAULT_UPDATE_OPTIONS,
   runUpdate,
@@ -168,6 +168,7 @@ export async function updateCommand(
               supported: TEAM_ADMISSION_SUPPORTED,
               ...teamApis,
               hostId,
+              hostConfig: hostConfigPath(),
             },
           }),
       random: ports.random,

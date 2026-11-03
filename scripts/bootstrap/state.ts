@@ -399,6 +399,7 @@ function parseWindow(value: unknown): WindowRecord {
     webVersionId: str(p, "webVersionId", `${where}.previous`),
     ...optionalCommit(p, "platformCode", `${where}.previous`),
     ...optionalCommit(p, "webCode", `${where}.previous`),
+    ...(p.team === undefined ? {} : { team: parseTeam(p.team) }),
   };
   let rollback: RollbackRecord | undefined;
   if (w.rollback !== undefined) {

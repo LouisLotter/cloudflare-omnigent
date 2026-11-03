@@ -21,6 +21,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +32,12 @@ from cfo_server.events import log
 
 PROTOCOL = "cfo-access-admission/v1"
 URL = "http://platform.internal/access/v1/admission"
+PATH = "/access/v1/admission"
+#: Local end-to-end runs only (worker/test/e2e/team-move-e2e.ts): the platform's internal route
+#: through a relay the run starts on the Docker host. Only this exact form is taken; anything
+#: else, and every deployment, posts to ``platform.internal``.
+LOCAL_BASE_ENV = "CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY"
+_LOCAL_BASE = re.compile(r"^http://host\.docker\.internal:\d{1,5}(/[A-Za-z0-9_-]+)*$")
 TIMEOUT_S = 15.0
 KEY_ENV = "CFO_LAUNCHER_SIGNING_KEY"
 KEY_ID_ENV = "CFO_LAUNCHER_SIGNING_KEY_ID"
@@ -124,4 +131,6 @@ def from_env(env: Mapping[str, str]) -> PlatformAdmission | None:
     key, key_id = env.get(KEY_ENV), env.get(KEY_ID_ENV)
     if not key or not key_id:
         return None
-    return PlatformAdmission(key=key.encode("utf-8"), key_id=key_id)
+    local = env.get(LOCAL_BASE_ENV, "")
+    url = f"{local}{PATH}" if _LOCAL_BASE.match(local) else URL
+    return PlatformAdmission(key=key.encode("utf-8"), key_id=key_id, url=url)
