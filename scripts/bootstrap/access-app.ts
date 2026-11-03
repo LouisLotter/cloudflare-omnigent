@@ -63,6 +63,11 @@ export interface AccessApi {
   createOneTimePin(): string;
   /** Deletes an application (removal only). A refusal (403) is AccessUnavailable. */
   remove(id: string): "deleted" | "absent";
+  /**
+   * Replaces an application (PUT): only the installation's own, to allow its member group
+   * (WP8.11, team-move.ts). A refusal (403) is AccessUnavailable.
+   */
+  update(id: string, body: Record<string, unknown>): void;
 }
 
 /** Cloudflare refused (HTTP 403): the installer's login may not do this with Access. */
@@ -98,6 +103,8 @@ export interface EnsureAccessContext {
   readonly plan: Installation;
   /** The owner's address, given to this run; needed only to create the application. */
   readonly ownerEmail?: string | undefined;
+  /** The installation's member group, once recorded (WP8.11): its policy rule is accepted. */
+  readonly memberGroupId?: string | undefined;
   readonly recorded: () => AccessRecords;
   /** Replaces both records whole (undefined removes one), before the step that follows. */
   readonly record: (records: AccessRecords) => void;
@@ -177,7 +184,10 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
 
   // An application this installation created: owner-only, and the only one on the hostname.
   const checkOurs = async (app: unknown, recorded: RecordedAccessApp & { id: string }) => {
-    const problems = ownerOnlyProblems(app, await pinCheck(app, host, plan.ownerPin));
+    const problems = ownerOnlyProblems(
+      app,
+      await pinCheck(app, host, plan.ownerPin, ctx.memberGroupId),
+    );
     if (problems.length > 0) {
       throw new AccessRefusal(
         describeProblems(
@@ -255,7 +265,10 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
   }
   const [theirs] = listed;
   if (theirs !== undefined) {
-    const problems = ownerOnlyProblems(theirs, await pinCheck(theirs, host, plan.ownerPin));
+    const problems = ownerOnlyProblems(
+      theirs,
+      await pinCheck(theirs, host, plan.ownerPin, ctx.memberGroupId),
+    );
     if (problems.length > 0) {
       throw new AccessRefusal(
         describeProblems(

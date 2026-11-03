@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "9be778d79cf36abbbdd42b5a40d6158e46c0cb5f"
+COMMIT = "3d5a12934e9ecf26b782c089a734f14a1354228d"
 
 
 def _write(path: Path, **fields: object) -> Path:
@@ -65,6 +65,7 @@ def _dockerfile_commit() -> str:
 
 
 def test_the_dockerfile_pins_the_fork_commit_with_the_stop_fix() -> None:
+    # cfo/teams 3d5a12934 (WP8.11): the team model (WP8.1, 8.2a/b, 8.4, 8.6, 8.8, 8.3) merged onto
     # cfo/upgrade-0.20.0 9be778d79 (WP3.52): Omnigent 0.20.0 merged into the fork at 3d7f7d08c
     # (WP3.24), then fork integration afb809aa6 (WP5.11's F1), WP3.40c's crash-safe database
     # upgrade, WP3.49's reported Claude Code effort, cc24's MCP media files, WP8.13's MCP page and

@@ -337,6 +337,7 @@ def build_app(
         auth_provider=auth_provider,
         hash_password=hash_password,
         team_store=team_store_or_none(database_url),
+        team_status=team_status_or_none(app, database_url),
     )
     # Outermost user middleware: added last, so it wraps everything create_app added.
     app.add_middleware(
@@ -353,6 +354,19 @@ def team_store_or_none(database_url: str) -> Any:
     except ImportError:
         return None
     return SqlAlchemyTeamStore(database_url)
+
+
+def team_status_or_none(app: Any, database_url: str) -> Callable[[], Any] | None:
+    """Omnigent's team status (WP8.11) for this app, or ``None`` for a build without it."""
+    try:
+        from omnigent.server.team_status import team_status
+    except ImportError:
+        return None
+    team_store = team_store_or_none(database_url)
+    registry = getattr(app.state, "host_registry", None)
+    if team_store is None or registry is None:
+        return None
+    return lambda: team_status(team_store, registry)
 
 
 def team_admission_kwargs(create_app: Callable[..., Any], config: Any) -> dict[str, Any]:

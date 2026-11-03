@@ -918,19 +918,30 @@ def agent_bundle(name: str) -> bytes:
     return buffer.getvalue()
 
 
-def mint_runner_token(app: object, session_token: str) -> str:
-    """A runner's delegated owner token, as Omnigent mints one for a runner it binds: under the
-    owner's account generation (read here from the owner's own session token)."""
+def mint_runner_token(app: object, session_token: str, session_id: str, db_path: Path) -> str:
+    """A runner's machine token, as Omnigent mints one for a runner it binds: the thread bound to
+    a host of its owner's and to a runner, then the server's own binding of that runner, minted
+    under the owner's account generation (read here from the owner's own session token)."""
     import base64
+    import uuid
 
     from omnigent.db.account_authority import account_authority_scope
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
 
     payload = session_token.split(".")[1]
     claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    state = app.state  # type: ignore[attr-defined]
+    host_id, runner_id = uuid.uuid4().hex, f"runner-{uuid.uuid4().hex[:12]}"
     with account_authority_scope(OWNER, claims["account_generation"]):
-        token = app.state.mcp_registry_auth.mint_runner_token(OWNER, 600)  # type: ignore[attr-defined]
-    assert token is not None
-    return token
+        state.host_store.upsert_on_connect(host_id, f"mcp-test-{host_id[:8]}", OWNER)
+        conversations = SqlAlchemyConversationStore(f"sqlite:///{db_path}")
+        conversations.set_host_id(session_id, host_id, workspace="/tmp/mcp-test")
+        conversations.replace_runner_id(session_id, runner_id)
+        binding = state.host_store.runner_binding(runner_id)
+        assert binding is not None
+        minted = state.mcp_registry_auth.mint_machine_token(binding, 600)
+    assert minted is not None
+    return minted[0]
 
 
 @requires_omnigent
@@ -1014,13 +1025,14 @@ def test_the_app_connects_calls_and_disconnects_through_the_key_service(
             )
             assert created.status_code == 201, created.text
             sid = created.json()["session_id"]
-            runner_token = mint_runner_token(h.app, h.login()["token"])
+            runner_token = mint_runner_token(h.app, h.login()["token"], sid, h.db_path)
             client.cookies.clear()
             runner = {"Authorization": f"Bearer {runner_token}"}
-            # A runner's token reaches the catalog too (Omnigent refuses delegated tokens only
-            # under /auth and /oauth), and no answer ever carries the login.
+            # The catalog is a person's (WP8.2a's route authority): a runner's token is refused
+            # there, and reaches the service only through the gateway below. No answer ever
+            # carries the login.
             listed = client.get("/v1/mcp-registry/services", headers=runner)
-            assert listed.status_code == 200
+            assert listed.status_code == 403
             assert access not in listed.text and refresh not in listed.text
             assert client.get("/auth/me", headers=runner).status_code in (401, 403, 404)
 
@@ -1297,7 +1309,8 @@ def test_a_page_server_signs_in_calls_and_is_counted_and_a_chosen_one_hides_it(
             )
             assert created_session.status_code == 201, created_session.text
             sid = created_session.json()["session_id"]
-            runner = {"Authorization": f"Bearer {mint_runner_token(h.app, h.login()['token'])}"}
+            token = mint_runner_token(h.app, h.login()["token"], sid, h.db_path)
+            runner = {"Authorization": f"Bearer {token}"}
             # A runner's delegated token cannot manage the page's servers.
             refused = client.get("/v1/mcp-registry/admin/services", headers=runner)
             assert refused.status_code == 403

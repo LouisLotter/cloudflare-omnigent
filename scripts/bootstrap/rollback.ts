@@ -43,6 +43,7 @@ import { MAINTENANCE_WINDOW_SECRET, ROLLBACK_SECRET } from "../../worker/src/ser
 import { parseLogs, verifyRelease } from "./events.ts";
 import { BootstrapRefusal, type Journal, slicedLogs, VersionNotDeleted } from "./machine.ts";
 import { installationProblems } from "./settings.ts";
+import { teamAfterRollback } from "./team-move.ts";
 import { pollServer, type UpdateContext, type UpdateOptions } from "./update.ts";
 import {
   closeWindow,
@@ -267,7 +268,9 @@ export async function runRollback(
   if (!("decided" in checked)) return { kind: "waiting", why: checked.why };
 
   const closing = window();
-  const { update: _u, platformCode: _p, webCode: _w, ...rest } = state.journal;
+  const { update: _u, platformCode: _p, webCode: _w, team, ...kept } = state.journal;
+  const back = teamAfterRollback(team);
+  const rest = back === undefined ? kept : { ...kept, team: back };
   setJournal(
     closeWindow(
       rest,

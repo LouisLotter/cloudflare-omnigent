@@ -755,6 +755,7 @@ async function main(): Promise<number> {
       origin: { type: "string" },
       rollback: { type: "boolean" },
       "team-admission": { type: "string" },
+      "host-id": { type: "string" },
       "client-session": { type: "string" },
     },
   });
@@ -797,6 +798,7 @@ async function main(): Promise<number> {
         ...(values["team-admission"] === undefined
           ? {}
           : { teamAdmission: values["team-admission"] }),
+        ...(values["host-id"] === undefined ? {} : { hostId: values["host-id"] }),
       });
     case "github-app":
       return githubAppCommand(statePath(), {

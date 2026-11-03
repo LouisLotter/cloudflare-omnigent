@@ -28,7 +28,11 @@ import { ACCESS_SETTLE_MS, AccessUnavailable } from "./access-app.ts";
 import type { TokenApi, TokenRequest } from "./r2-token.ts";
 import type { Installation } from "./settings.ts";
 
-/** Whether the pinned Omnigent has the team model; flips when the pin moves (WP8.11). */
+/**
+ * Whether the pinned Omnigent can be moved behind Access (WP8.11): the team model, and the
+ * binding-state report and lenient bind mode the move checks with. `3d5a12934` (`cfo/teams`) has
+ * the team model without the report, so this stays off until the pin carries WP8.11's fork part.
+ */
 export const TEAM_ADMISSION_SUPPORTED = false;
 /** The permission group the reconciler's token holds (Cloudflare's account permissions). */
 export const ACCESS_GROUPS_WRITE_GROUP =
@@ -87,7 +91,7 @@ function text(value: unknown, key: string): string | undefined {
 
 /** The refusal while the pinned Omnigent has no team model. */
 export function teamAdmissionRefusal(): string {
-  return "team admission waits for an Omnigent build with the team model (WP8.11): until the installation's pin carries it, Access keeps admitting the owner only, and this update changes nothing";
+  return "team admission waits for an Omnigent pin that reports the team's binding state and binds leniently (WP8.11's fork part, omnigent.server.team_status): until the installation's pin carries it, Access keeps admitting the owner only, and this update changes nothing";
 }
 
 /** The member group's name for this installation and create. */
@@ -249,12 +253,13 @@ export function makeAdmissionToken(
 }
 
 /**
- * The settings `update --team-admission members` deploys (WP8.11): the web Worker admits whoever
- * Access admits, the platform Worker signs identity envelopes and reconciles the member group,
- * and the server requires the envelope and pushes its admission list.
+ * The settings `update --team-admission members` deploys (WP8.11, team-move.ts): the web Worker
+ * admits whoever Access admits, the platform Worker signs identity envelopes and reconciles the
+ * member group, and the server pushes its admission list. The server's identity mode (`bind`,
+ * then `required`) is a secret, changed on its own without a deploy.
  */
 export function teamAdmissionVars(
-  plan: Installation,
+  plan: Pick<Installation, "accountId">,
   groupId: string,
 ): {
   readonly web: Readonly<Record<string, string>>;
@@ -266,7 +271,6 @@ export function teamAdmissionVars(
       CFO_IDENTITY_ENVELOPE: "on",
       CFO_ACCESS_ACCOUNT_ID: plan.accountId,
       CFO_ACCESS_GROUP_ID: groupId,
-      SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE: "required",
       SERVER_ENV_CFO_ACCESS_ADMISSION: "true",
     },
   };

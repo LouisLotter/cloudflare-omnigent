@@ -290,14 +290,17 @@ def test_the_page_count_reads_omnigents_service_table() -> None:
 #: after it at this pin (WP8.14, docs/compatibility.md).
 PREVIOUS_HEAD = "c0201a2b3c4d"
 PAGE_MIGRATION = "mr1a2b3c4d5e"
+#: The head at this pin: the team model's migrations after the page's (WP8.11, compatibility.md).
+HEAD = "ti1a2b3c4d5e"
 
 
 @requires_omnigent
 def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_tables(
     tmp_path: Path,
 ) -> None:
-    """The first start on this pin runs the page's migration, additive, after the previous
-    head; a database at the new head is the one an earlier server refuses as newer."""
+    """The first start on this pin runs the page's migration and the team model's, additive,
+    after the previous head; a database at the new head is the one an earlier server refuses as
+    newer."""
     from alembic import command
     from omnigent.db.utils import _build_alembic_config, _create_engine, _get_current_db_heads
 
@@ -312,7 +315,7 @@ def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_table
         assert _get_current_db_heads(engine) == (PREVIOUS_HEAD,)
         assert count_admin_services(db) == 0  # no table yet
         ep.run_migrations(url)
-        assert _get_current_db_heads(engine) == (PAGE_MIGRATION,)
+        assert _get_current_db_heads(engine) == (HEAD,)
     finally:
         engine.dispose()
     import sqlite3
@@ -320,6 +323,7 @@ def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_table
     with sqlite3.connect(db) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
     assert {"mcp_registry_services", "mcp_registry_service_tools"} <= tables
+    assert {"teams", "team_members", "team_identity_bindings", "team_invitations"} <= tables
     assert count_admin_services(db) == 0
 
 

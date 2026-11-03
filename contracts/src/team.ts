@@ -134,3 +134,34 @@ export const PagePersonResult = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("unavailable") }),
 ]);
 export type PagePersonResult = z.infer<typeof PagePersonResult>;
+
+/** The team-status platform call's path on the server container (WP8.11). */
+export const TEAM_STATUS_CALL_PATH = "/_cfo/team-status";
+
+/** What a host's tunnel presented, resolved now (Omnigent's `team_status`). */
+export const HostIdentityState = z.enum(["owner", "unbound", "other", "none"]);
+export type HostIdentityState = z.infer<typeof HostIdentityState>;
+
+/**
+ * The team's binding state, as the server container answers the team-status call: active owners
+ * and how many have an Access identity bound, the admission revision, and each connected host by
+ * ID with what its tunnel presented. Names nobody: no account, no address, no Access subject.
+ */
+export const TeamStatusReport = z.strictObject({
+  owners: z.number().int().min(0),
+  ownersBound: z.number().int().min(0),
+  revision: z.number().int().min(0),
+  hosts: z
+    .array(
+      z.strictObject({
+        hostId: z.string().regex(/^[0-9a-f]{32}$/),
+        /** A cloud computer registered with its launch token. */
+        launchToken: z.boolean(),
+        /** The host's owner is the installation's named owner. */
+        installationOwner: z.boolean(),
+        identity: HostIdentityState,
+      }),
+    )
+    .max(1000),
+});
+export type TeamStatusReport = z.infer<typeof TeamStatusReport>;

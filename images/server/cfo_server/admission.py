@@ -3,7 +3,8 @@
 Omnigent's ``omnigent.server.team_admission`` calls :meth:`PlatformAdmission.apply` with the
 team's admission snapshot (active members' verified addresses and pending invitations, and which
 of them are the current active owners) after it commits a change, at the next invitation expiry
-and hourly, at an unchanged revision too, so the platform can repair drift. This sends it to the platform Worker's private route,
+and hourly, at an unchanged revision too, so the platform can repair drift. This sends it to the
+platform Worker's private route,
 ``POST http://platform.internal/access/v1/admission`` (``contracts/src/team.ts``), which only
 this container's intercept reaches. The body is compact JSON with sorted keys; it is signed with
 the launcher's key (``CFO_LAUNCHER_SIGNING_KEY`` and its ID) under the admission call's own
@@ -16,6 +17,7 @@ backoff. Addresses are never logged.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -109,10 +111,8 @@ class PlatformAdmission:
         }
         status, answer = self._post(self._url, body, headers)
         outcome = None
-        try:
+        with contextlib.suppress(UnicodeDecodeError, ValueError, AttributeError):
             outcome = json.loads(answer.decode("utf-8")).get("outcome")
-        except (UnicodeDecodeError, ValueError, AttributeError):
-            pass
         log("access_admission.answer", status=status, outcome=outcome, revision=snapshot.revision)
         if status == 200 and outcome in ("applied", "stale"):
             return

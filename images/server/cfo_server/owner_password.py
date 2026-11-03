@@ -32,6 +32,14 @@ Its own lines name outcomes and reasons, never the body.
 the team member Omnigent binds that identity to (``member``, with the member's ID, account, role
 and state) or ``none``; an Omnigent without the team model answers 501, which the platform reads
 as ``unsupported``. It reads only, so it is not held by the barrier.
+
+**The team's binding state** (WP8.11): ``POST /_cfo/team-status``, body ``{"nonce": "<32 hex
+digits>"}``, signed the same way, answers how many active owners there are and how many have an
+Access identity bound, the admission revision, and each connected host with what its tunnel's
+handshake presented (Omnigent's ``team_status``): ``owner``, ``unbound``, ``other`` or ``none``,
+and whether the host's owner is the installation's owner. Hosts by ID, nobody by address. The
+platform logs it while it moves the installation from ``bind`` to ``required``. An Omnigent
+without it answers 501.
 """
 
 from __future__ import annotations
@@ -50,6 +58,7 @@ from cfo_server.events import log
 PREFIX = "/_cfo"
 PATH = "/_cfo/owner-password"
 PAGE_PERSON_PATH = "/_cfo/page-person"
+TEAM_STATUS_PATH = "/_cfo/team-status"
 PROTOCOL = "cfo-platform-call/v1"
 KEY_LABEL = b"cfo-platform-call-key/v1"
 TIMESTAMP_HEADER = b"x-cfo-call-timestamp"
@@ -137,6 +146,7 @@ class OwnerPasswordMiddleware:
         auth_provider: Any,
         hash_password: Callable[[str], str],
         team_store: Any = None,
+        team_status: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.app = app
@@ -146,6 +156,7 @@ class OwnerPasswordMiddleware:
         self._auth = auth_provider
         self._hash = hash_password
         self._team_store = team_store
+        self._team_status = team_status
         self._clock = clock
         self._seen = SeenSignatures()
 
@@ -177,6 +188,8 @@ class OwnerPasswordMiddleware:
     async def _handle(self, scope: dict[str, Any], receive: Any) -> tuple[int, dict[str, Any]]:
         if scope["path"] == PAGE_PERSON_PATH:
             return await self._page_person(scope, receive)
+        if scope["path"] == TEAM_STATUS_PATH:
+            return await self._team_status_call(scope, receive)
         if scope["path"] != PATH:
             return _error(404, "not_found", "Not found.")
         if scope.get("method") != "POST":
@@ -212,9 +225,7 @@ class OwnerPasswordMiddleware:
         log("owner_password.set", sessions="revoked")
         return 200, {"ok": True}
 
-    async def _page_person(
-        self, scope: dict[str, Any], receive: Any
-    ) -> tuple[int, dict[str, Any]]:
+    async def _page_person(self, scope: dict[str, Any], receive: Any) -> tuple[int, dict[str, Any]]:
         if scope.get("method") != "POST":
             return _error(405, "bad_request", "Method not allowed.")
         body = await _read_body(receive)
@@ -246,6 +257,43 @@ class OwnerPasswordMiddleware:
             "userId": member.user_id,
             "role": member.role,
             "state": member.state,
+        }
+
+    async def _team_status_call(
+        self, scope: dict[str, Any], receive: Any
+    ) -> tuple[int, dict[str, Any]]:
+        if scope.get("method") != "POST":
+            return _error(405, "bad_request", "Method not allowed.")
+        body = await _read_body(receive)
+        if body is None:
+            return self._refused(400, "bad_request", "too_large")
+        if self._key is None:
+            return _error(503, "unavailable", "Not configured.", True)
+        reason = self._check_signature(scope, body)
+        if reason is not None:
+            return self._refused(401, "unauthorized", reason)
+        if not _nonce_only(body):
+            return self._refused(400, "bad_request", "malformed")
+        if self._team_status is None:
+            return _error(501, "unsupported", "This Omnigent reports no team status.")
+        try:
+            status = self._team_status()
+        except Exception as exc:  # noqa: BLE001 - logged by type only
+            log("team_status.failed", error=type(exc).__name__)
+            return _error(500, "internal", "The team status could not be read.")
+        return 200, {
+            "owners": status.owners,
+            "ownersBound": status.owners_bound,
+            "revision": status.revision,
+            "hosts": [
+                {
+                    "hostId": host.host_id,
+                    "launchToken": host.launch_token,
+                    "installationOwner": bool(self._username) and host.owner == self._username,
+                    "identity": host.identity,
+                }
+                for host in status.hosts
+            ],
         }
 
     def _check_signature(self, scope: dict[str, Any], body: bytes) -> str | None:
@@ -324,6 +372,17 @@ def _identity_of(body: bytes) -> tuple[str, str, str] | None:
     if not all(isinstance(v, str) and 0 < len(v) <= 512 for v in values):
         return None
     return values  # type: ignore[return-value]
+
+
+def _nonce_only(body: bytes) -> bool:
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(parsed, dict) or set(parsed) != {"nonce"}:
+        return False
+    nonce = parsed["nonce"]
+    return isinstance(nonce, str) and len(nonce) == 32 and set(nonce) <= _HEX
 
 
 def owner_username() -> str | None:

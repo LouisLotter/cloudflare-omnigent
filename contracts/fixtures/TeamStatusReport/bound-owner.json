@@ -1,0 +1,19 @@
+{
+  "owners": 1,
+  "ownersBound": 1,
+  "revision": 3,
+  "hosts": [
+    {
+      "hostId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "launchToken": false,
+      "installationOwner": true,
+      "identity": "owner"
+    },
+    {
+      "hostId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "launchToken": true,
+      "installationOwner": true,
+      "identity": "none"
+    }
+  ]
+}

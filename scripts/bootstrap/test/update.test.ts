@@ -1532,3 +1532,291 @@ describe("runUpdate: the integrations that were on must still be on (WP3.44)", (
     expect(mcpServicesUnrecorded(list, { on: [], pending: { ...pending, on: [] } })).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// WP8.11: the team of one moves behind Access in the same update (team-move.ts).
+
+describe("runUpdate with the team's move behind Access (WP8.11)", () => {
+  const PC = "a".repeat(32);
+  const CLOUD = "b".repeat(32);
+  const MODE = "SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE";
+
+  /** A finished installation and a world whose server reports its team as the test says. */
+  async function moving(identity: () => "owner" | "unbound" = () => "owner") {
+    const plan = await accountPlan();
+    const h = await installed(plan, freshState(plan), undefined, "api");
+    // The owner has not signed in yet: nobody is bound, nothing written to the group.
+    let signedInAt = Number.POSITIVE_INFINITY;
+    h.world.teamTruth = (v, t) => {
+      const bound = t >= signedInAt;
+      const mode = v.secrets.get(MODE);
+      // In required mode, a host whose sign-in nobody is bound to is refused: not connected.
+      const pc = identity();
+      const hosts = [
+        ...(mode === "required" && pc !== "owner"
+          ? []
+          : [{ hostId: PC, launchToken: false, installationOwner: true, identity: pc }]),
+        { hostId: CLOUD, launchToken: true, installationOwner: true, identity: "none" as const },
+      ];
+      return { owners: 1, ownersBound: bound ? 1 : 0, revision: bound ? 1 : 0, hosts };
+    };
+    h.world.admissionApplied = (t) => (t >= signedInAt ? 1 : null);
+    const run = (
+      requested = true,
+      over: Partial<UpdateContext> = {},
+      code = CODE_A,
+      ownerEmail: string | null = OWNER_EMAIL,
+    ) =>
+      runUpdate(
+        {
+          ...h.context(code),
+          ...(ownerEmail === null ? {} : { ownerEmail }),
+          team: {
+            requested,
+            supported: true,
+            groups: h.world.groupsApi(),
+            tokens: h.world.tokenApi(),
+            hostId: PC,
+          },
+          ...over,
+        },
+        { ...OPTIONS, teamWaitMs: 10 * 60_000 },
+      );
+    return {
+      h,
+      plan,
+      run,
+      signIn: () => {
+        signedInAt = h.world.now;
+      },
+    };
+  }
+
+  const policyOf = (h: Harness) => {
+    const app = [...h.world.accessApps.values()][0] as { policies?: { include?: unknown }[] };
+    return app.policies?.map((p) => p.include);
+  };
+
+  it("deploys bind with a restore point, waits for the owner's sign-in, then requires Access and opens the team", async () => {
+    const { h, plan, run, signIn } = await moving();
+    const first = await run();
+    // The update itself: accepted, its restore point kept, the fork's migrations behind it.
+    expect(journalOf(h).window).toBeUndefined();
+    expect(journalOf(h).restorePoints?.at(-1)?.outcome).toBe("accepted");
+    // The member group with the owner's address only, its token, the settings, bind mode.
+    const groups = [...h.world.groups.values()];
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.include).toEqual([{ email: { email: OWNER_EMAIL } }]);
+    const team = journalOf(h).team;
+    expect(team?.memberGroup?.id).toBe(groups[0]?.id);
+    expect(team?.token?.id).toBeDefined();
+    const secrets = platformSecrets(h);
+    expect(secrets.get(MODE)).toBe("bind");
+    expect(secrets.get("CFO_TEAM_MOVE")).toBe(team?.id);
+    expect(secrets.get("CFO_ACCESS_GROUP_TOKEN")).toBeDefined();
+    expect(lastConfig(h, plan.platformWorker).vars).toMatchObject({
+      CFO_IDENTITY_ENVELOPE: "on",
+      CFO_ACCESS_GROUP_ID: groups[0]?.id,
+      SERVER_ENV_CFO_ACCESS_ADMISSION: "true",
+    });
+    // The web Worker keeps owner admission meanwhile: the owner's pages stay theirs.
+    expect(lastConfig(h, plan.webWorker).vars).not.toHaveProperty("TEAM_ADMISSION");
+    // It waits for exactly one thing, and says what to open.
+    expect(first).toMatchObject({ kind: "team", state: "waiting" });
+    expect(first.kind === "team" && first.why).toContain(
+      `open https://${plan.hostname} in your browser and sign in to Omnigent once`,
+    );
+    expect(policyOf(h)).toEqual([[{ email: { email: OWNER_EMAIL } }]]);
+    // No token value in the journal or the log.
+    const token = String(secrets.get("CFO_ACCESS_GROUP_TOKEN"));
+    expect(JSON.stringify(journalOf(h))).not.toContain(token);
+    expect(h.lines.join("\n")).not.toContain(token);
+
+    // The owner signs in once; the next run goes on and repeats nothing done.
+    signIn();
+    const deploysBefore = count(h, "deployPlatform");
+    const second = await run();
+    expect(second).toMatchObject({ kind: "team", state: "finished", computers: 1 });
+    expect(count(h, "deployPlatform")).toBe(deploysBefore);
+    expect(platformSecrets(h).get(MODE)).toBe("required");
+    expect(platformSecrets(h).has("CFO_TEAM_MOVE")).toBe(false);
+    expect(lastConfig(h, plan.webWorker).vars).toMatchObject({ TEAM_ADMISSION: "members" });
+    expect(policyOf(h)).toEqual([[{ group: { id: groups[0]?.id } }]]);
+    expect(journalOf(h).team?.finishedAt).toBeDefined();
+    expect(journalOf(h).team?.hostId).toBe(PC);
+    // Bind before required, then the move's secret deleted: in that order.
+    const changes = h.world.secretChanges.map((c) => c.changes);
+    const required = changes.findIndex((c) => c[MODE] === "required");
+    const done = changes.findIndex((c) => c.CFO_TEAM_MOVE === null);
+    expect(required).toBeGreaterThan(-1);
+    expect(done).toBeGreaterThan(required);
+
+    // Later updates keep the team's settings, and Access's check accepts the group's policy.
+    const third = await run(false, {}, CODE_B);
+    expect(third).toEqual({ kind: "done" });
+    expect(lastConfig(h, plan.platformWorker).vars).toMatchObject({ CFO_IDENTITY_ENVELOPE: "on" });
+    expect(lastConfig(h, plan.webWorker).vars).toMatchObject({ TEAM_ADMISSION: "members" });
+    expect(platformSecrets(h).get(MODE)).toBe("required");
+  }, 60_000);
+
+  it("stops at bind, working, when this computer's host has another Access identity", async () => {
+    let identity: "owner" | "unbound" = "unbound";
+    const { h, plan, run, signIn } = await moving(() => identity);
+    await run();
+    signIn();
+    const stopped = await run();
+    expect(stopped).toMatchObject({ kind: "team", state: "stopped" });
+    expect(stopped.kind === "team" && stopped.why).toContain(
+      "the device's sign-in is not the same Access identity as your browser's",
+    );
+    // Nothing past bind: the host keeps working, the team stays the owner's alone.
+    expect(platformSecrets(h).get(MODE)).toBe("bind");
+    expect(lastConfig(h, plan.webWorker).vars).not.toHaveProperty("TEAM_ADMISSION");
+    expect(policyOf(h)).toEqual([[{ email: { email: OWNER_EMAIL } }]]);
+    expect(journalOf(h).team?.stopped).toContain("Cloudflare One Client");
+    // Run again without asking: it says so again, without waiting.
+    const again = await run(false);
+    expect(again).toMatchObject({ kind: "team", state: "stopped" });
+    // Once the device is bound (the fix below the report), the same command finishes the move.
+    identity = "owner";
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+  }, 60_000);
+
+  it("goes back to bind when this computer's host does not reconnect in required mode", async () => {
+    let identity: "owner" | "unbound" = "owner";
+    const { h, run, signIn } = await moving(() => identity);
+    await run();
+    signIn();
+    // The host passes in bind mode, and is refused once required (its sign-in changed meanwhile).
+    const world = h.world;
+    const truth = world.teamTruth;
+    world.teamTruth = (v, t) => {
+      if (v.secrets.get(MODE) === "required") identity = "unbound";
+      return truth(v, t);
+    };
+    const back = await run();
+    expect(back).toMatchObject({ kind: "team", state: "stopped" });
+    expect(back.kind === "team" && back.why).toContain("back in bind mode, where it works");
+    expect(platformSecrets(h).get(MODE)).toBe("bind");
+    expect(journalOf(h).team?.requiredStartedAt).toBeUndefined();
+  }, 60_000);
+
+  it("goes back inside the update's window: the move starts again from its member group", async () => {
+    const { h, plan, run } = await moving();
+    // The update's check does not pass (a page MCP server lost in the restart): window open.
+    h.world.adminServices = () => ({ stored: 1, served: 0 });
+    const open = await run();
+    expect(open).toMatchObject({ kind: "deployed", window: "open" });
+    expect(platformSecrets(h).get(MODE)).toBe("bind");
+    const group = journalOf(h).team?.memberGroup;
+    const token = journalOf(h).team?.token;
+    expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+    // The version from before holds none of the move's settings or secrets.
+    expect(platformSecrets(h).has(MODE)).toBe(false);
+    expect(platformSecrets(h).has("CFO_TEAM_MOVE")).toBe(false);
+    expect(lastConfig(h, plan.platformWorker).vars).not.toHaveProperty("CFO_IDENTITY_ENVELOPE");
+    // The move keeps its member group, lists its token for deletion, and has done nothing else.
+    const team = journalOf(h).team;
+    expect(team?.memberGroup).toEqual(group);
+    expect(team?.tokensToDelete).toEqual([token]);
+    expect(team?.token).toBeUndefined();
+    expect(team?.boundAt).toBeUndefined();
+  }, 60_000);
+
+  it("makes a new token when the Worker lost its value, and says to delete the old one", async () => {
+    const { h, plan, run, signIn } = await moving();
+    await run();
+    const first = journalOf(h).team?.token;
+    // The token's secret goes missing (deleted by hand, say).
+    await h.world.cloud().updateSecrets(plan.platformWorker, { CFO_ACCESS_GROUP_TOKEN: null });
+    await run();
+    const team = journalOf(h).team;
+    expect(team?.token?.id).not.toBe(first?.id);
+    // cf's OAuth login may not delete tokens: the old one is listed for the person.
+    expect(team?.tokensToDelete).toEqual([first]);
+    expect(platformSecrets(h).has("CFO_ACCESS_GROUP_TOKEN")).toBe(true);
+    signIn();
+    const done = await run();
+    expect(done.kind === "team" && done.why).toContain(`delete the unused token ${first?.name}`);
+  }, 60_000);
+
+  it("refuses a move under way without its ports, and needs none once it is finished", async () => {
+    const { h, run, signIn } = await moving();
+    await run();
+    await expect(runUpdate(h.context(CODE_A), OPTIONS)).rejects.toThrow(/under way/);
+    // Without the check, the move cannot go on: it says so.
+    expect(await run(true, {}, CODE_A)).toMatchObject({ kind: "team" });
+    const skipped = await runUpdate(
+      {
+        ...h.context(CODE_A),
+        ownerEmail: OWNER_EMAIL,
+        team: {
+          requested: true,
+          supported: true,
+          groups: h.world.groupsApi(),
+          tokens: h.world.tokenApi(),
+          hostId: PC,
+        },
+      },
+      { ...OPTIONS, verify: false },
+    );
+    expect(skipped).toEqual({
+      kind: "team",
+      state: "waiting",
+      why: "the team's move needs the check, which was skipped",
+    });
+    signIn();
+    // Staging-like: no Access API of its own, so the application's policy is left as it is.
+    const { accessApi: _api, ...withoutAccess } = h.context(CODE_A);
+    const finished = await runUpdate(
+      {
+        ...withoutAccess,
+        ownerEmail: OWNER_EMAIL,
+        team: {
+          requested: true,
+          supported: true,
+          groups: h.world.groupsApi(),
+          tokens: h.world.tokenApi(),
+          hostId: PC,
+        },
+      },
+      { ...OPTIONS, teamWaitMs: 10 * 60_000 },
+    );
+    expect(finished).toMatchObject({ kind: "team", state: "finished" });
+    expect(policyOf(h)).toEqual([[{ email: { email: OWNER_EMAIL } }]]);
+    expect(h.lines.join("\n")).toContain("its policy is left as it is");
+    // A later update, as `run` makes it, without the team's ports: nothing to prepare.
+    expect(await runUpdate(h.context(CODE_B), OPTIONS)).toEqual({ kind: "done" });
+  }, 60_000);
+
+  it("refuses another owner's address for the member group", async () => {
+    const { h, run } = await moving();
+    await expect(run(true, {}, CODE_A, "mallory@example.test")).rejects.toThrow(/not the owner/);
+    expect(h.world.groups.size).toBe(0);
+  }, 60_000);
+
+  it("refuses before any change without the owner's address, or without the team model", async () => {
+    const { h, run } = await moving();
+    const calls = h.world.calls.length;
+    await expect(run(true, {}, CODE_A, null)).rejects.toThrow(/--owner-email/);
+    expect(h.world.groups.size).toBe(0);
+    expect(h.world.calls.slice(calls).filter((c) => c.startsWith("deploy"))).toEqual([]);
+    const unsupported = await moving();
+    await expect(
+      runUpdate(
+        {
+          ...unsupported.h.context(CODE_A),
+          team: {
+            requested: true,
+            supported: false,
+            groups: unsupported.h.world.groupsApi(),
+            tokens: unsupported.h.world.tokenApi(),
+            hostId: PC,
+          },
+        },
+        OPTIONS,
+      ),
+    ).rejects.toThrow(/WP8.11/);
+    expect(unsupported.h.world.groups.size).toBe(0);
+  }, 60_000);
+});

@@ -239,8 +239,9 @@ describe("enabling team admission", () => {
     expect(vars.platform).toMatchObject({
       CFO_IDENTITY_ENVELOPE: "on",
       CFO_ACCESS_GROUP_ID: "group-1",
-      SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE: "required",
     });
+    // The identity mode is a secret the move changes on its own (bind, then required).
+    expect(Object.keys(vars.platform)).not.toContain("SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE");
     expect(Object.keys(vars.platform)).not.toContain("CFO_ACCESS_GROUP_TOKEN");
     // The reconciler checks the team's current owners, not the planned owner's pin.
     expect(Object.keys(vars.platform)).not.toContain("OWNER_EMAIL_HASH");

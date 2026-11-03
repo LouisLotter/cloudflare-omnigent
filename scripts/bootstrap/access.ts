@@ -301,17 +301,22 @@ export function describeProblems(
   return `${what} ${problems.map((p) => p.why).join("; ")}. To fix it, open ${ZERO_TRUST_DASHBOARD}, Access, Applications, edit it, and ${fixes}${instead}. The bootstrap never changes or widens an application it did not create`;
 }
 
-/** The plan's owner pin as a check: every address the application names, matched first. */
+/**
+ * The plan's owner pin as a check: every address the application names, matched first. With
+ * the installation's recorded member group (WP8.11, `journal.team`), a policy allowing exactly
+ * that group is accepted too, and nothing wider.
+ */
 export async function pinCheck(
   app: unknown,
   hostname: string,
   ownerPin: string,
+  memberGroupId?: string | undefined,
 ): Promise<OwnerOnlyCheck> {
   const pin = parseOwnerPin(ownerPin);
   if (pin === undefined) throw new Error("the plan's owner pin is malformed");
   const owners = new Set<string>();
   for (const email of addressesIn(app)) if (await pin.matches(email)) owners.add(email);
-  return { hostname, isOwner: (email) => owners.has(email) };
+  return { hostname, isOwner: (email) => owners.has(email), memberGroupId };
 }
 
 /**

@@ -35,6 +35,7 @@ import { BootstrapStatus } from "../../contracts/src/index.ts";
 import { type DevicesRecord, durationMinutes } from "./devices.ts";
 import type { BootstrapState, Journal, McpServicesRecord, StateStore } from "./machine.ts";
 import { type Installation, installationProblems, type Target } from "./settings.ts";
+import type { TeamRecord } from "./team-move.ts";
 import type { UpdateRecord } from "./update.ts";
 import type {
   PreviousRelease,
@@ -255,6 +256,7 @@ function parseJournal(value: unknown): Journal {
   if (j.window !== undefined) journal.window = parseWindow(j.window);
   if (j.restorePoints !== undefined) journal.restorePoints = parseRestorePoints(j.restorePoints);
   if (j.devices !== undefined) journal.devices = parseDevices(j.devices);
+  if (j.team !== undefined) journal.team = parseTeam(j.team);
   if (j.r2Token !== undefined) {
     const t = object(j.r2Token, "journal.r2Token");
     const token: Record<string, string> = { name: str(t, "name", "journal.r2Token") };
@@ -455,6 +457,55 @@ function parseRoute(value: unknown, where: string): Record<string, string> {
 }
 
 /** The devices step's record (WP3.43, devices.ts). Names, IDs, routes and times; no address. */
+/** The team's move behind Access (WP8.11, team-move.ts): IDs and times only. */
+function parseTeam(value: unknown): TeamRecord {
+  const where = "journal.team";
+  const t = object(value, where);
+  const id = str(t, "id", where);
+  if (!/^tm-\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(id)) {
+    throw new Error(`the state file's ${where}.id is not a team move's ID`);
+  }
+  const record = (v: unknown, what: string): Record<string, string> => {
+    const o = object(v, what);
+    const out: Record<string, string> = { name: str(o, "name", what) };
+    if (o.id !== undefined) out.id = str(o, "id", what);
+    for (const key of ["createStartedAt", "createdAt"] as const) {
+      const time = optionalTime(o, key, what);
+      if (time !== undefined) out[key] = time;
+    }
+    return out;
+  };
+  const team: Record<string, unknown> = { id, startedAt: str(t, "startedAt", where) };
+  if (t.memberGroup !== undefined) team.memberGroup = record(t.memberGroup, `${where}.memberGroup`);
+  if (t.token !== undefined) team.token = record(t.token, `${where}.token`);
+  if (t.tokensToDelete !== undefined) {
+    if (!Array.isArray(t.tokensToDelete)) {
+      throw new Error(`the state file's ${where}.tokensToDelete is not a list`);
+    }
+    team.tokensToDelete = t.tokensToDelete.map((entry: unknown) =>
+      record(entry, `${where}.tokensToDelete entry`),
+    );
+  }
+  for (const key of ["hostId", "stopped", "requiredVersionId"] as const) {
+    if (t[key] !== undefined) team[key] = str(t, key, where);
+  }
+  for (const key of [
+    "stoppedAt",
+    "boundAt",
+    "requiredStartedAt",
+    "requiredAt",
+    "webStartedAt",
+    "webAt",
+    "policyStartedAt",
+    "policyAt",
+    "finishedAt",
+  ] as const) {
+    const time = optionalTime(t, key, where);
+    if (time !== undefined) team[key] = time;
+  }
+  return team as unknown as TeamRecord;
+}
+
 function parseDevices(value: unknown): DevicesRecord {
   const where = "journal.devices";
   const d = object(value, where);
