@@ -30,10 +30,10 @@ import type { Installation } from "./settings.ts";
 
 /**
  * Whether the pinned Omnigent can be moved behind Access (WP8.11): the team model, and the
- * binding-state report and lenient bind mode the move checks with. `3d5a12934` (`cfo/teams`) has
- * the team model without the report, so this stays off until the pin carries WP8.11's fork part.
+ * binding-state report and lenient bind mode the move checks with. The pin (`cfo/teams`
+ * `922b69c62`) carries both; a pin without them sets this false, and the move refuses.
  */
-export const TEAM_ADMISSION_SUPPORTED = false;
+export const TEAM_ADMISSION_SUPPORTED: boolean = true;
 /** The permission group the reconciler's token holds (Cloudflare's account permissions). */
 export const ACCESS_GROUPS_WRITE_GROUP =
   "Access: Organizations, Identity Providers, and Groups Write";

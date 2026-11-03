@@ -7,7 +7,8 @@ move itself, what to do if it stops in bind mode, and the two-person check to ru
 real member is invited. Architecture and decisions: [architecture](../architecture.md) (team
 members), [ADR 0004](../decisions/0004-identity-credential-authority.md).
 
-The move needs a release whose Omnigent pin carries the team model. Until then
+The move needs a release whose Omnigent pin carries the team model and what the move checks with
+(WP8.11's fork part, from `cfo/teams` `922b69c62`). With an earlier pin,
 `bootstrap.ts update --team-admission members` refuses and changes nothing.
 
 ## 1. Rehearse on a copy of the database

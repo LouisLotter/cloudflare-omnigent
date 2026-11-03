@@ -218,6 +218,34 @@ describe("updateCommand", () => {
     expect(fileStateStore(path).load().journal.accessApp?.id).toBeDefined();
   });
 
+  it("moves the team with --team-admission members: this computer's host found or named first", async () => {
+    const plan = await accountPlan();
+    const { world, path, lines, ports } = await finished(plan);
+    const port = ports({
+      accessApi: () => world.accessApi(),
+      teamApis: () => ({ groups: world.groupsApi(), tokens: world.tokenApi() }),
+    });
+    const move = { root: ROOT, verify: true, teamAdmission: "members", ownerEmail: OWNER_EMAIL };
+    // No host ID where the host's configuration is kept, and none given: refused, nothing done.
+    await expect(updateCommand(path, move, port)).rejects.toThrow(
+      /host ID is not in .*omnigent-cfo\/config\.yaml/,
+    );
+    await expect(updateCommand(path, { ...move, hostId: "not-an-id" }, port)).rejects.toThrow(
+      /--host-id takes an Omnigent host ID/,
+    );
+    expect(world.calls.filter((c) => c.startsWith("deploy"))).toEqual([]);
+    expect(world.groups.size).toBe(0);
+    // Named (the owner uses no personal host): the update deploys in bind mode and the move
+    // waits for the server's report, telling the person to run it again.
+    expect(await updateCommand(path, { ...move, hostId: "none" }, port)).toBe(3);
+    const team = fileStateStore(path).load().journal.team;
+    expect(team?.memberGroup?.id).toBeDefined();
+    expect(
+      world.secretsOf(plan.platformWorker)?.get("SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE"),
+    ).toBe("bind");
+    expect(lines.at(-1)).toContain("Run bootstrap.ts update --team-admission members again");
+  });
+
   it("refuses while another command holds the installation's lock, deploying nothing", async () => {
     const plan = await accountPlan();
     const { world, path, ports } = await finished(plan);

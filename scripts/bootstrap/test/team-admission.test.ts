@@ -214,15 +214,11 @@ describe("the application's check with the member group", () => {
 });
 
 describe("enabling team admission", () => {
-  it("waits for WP8.11: the update refuses before touching anything", async () => {
-    expect(TEAM_ADMISSION_SUPPORTED).toBe(false);
-    await expect(
-      updateCommand("/nonexistent/state.json", {
-        root: "/nonexistent",
-        verify: true,
-        teamAdmission: "members",
-      }),
-    ).rejects.toThrow(teamAdmissionRefusal());
+  it("is supported at this pin; any other admission is refused before touching anything", async () => {
+    // cfo/teams 922b69c62 carries WP8.11's fork part; a pin without it is refused through the
+    // update's ports (update.test.ts, `supported: false`) with this refusal.
+    expect(TEAM_ADMISSION_SUPPORTED).toBe(true);
+    expect(teamAdmissionRefusal()).toMatch(/WP8\.11's fork part/);
     await expect(
       updateCommand("/nonexistent/state.json", {
         root: "/nonexistent",
