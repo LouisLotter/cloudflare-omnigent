@@ -241,7 +241,7 @@ export async function runRollback(
 
   // 5. The update's versions, which serve no more (WP3.41b).
   const settled = await settleVersions(ctx, plan.platformWorker, previous.platformVersionId);
-  if (settled !== undefined) return settled;
+  if (typeof settled === "object") return settled;
   if (rollback().platformVersionId === undefined) {
     progress({ platformVersionId: previous.platformVersionId });
   }
@@ -269,7 +269,8 @@ export async function runRollback(
 
   const closing = window();
   const { update: _u, platformCode: _p, webCode: _w, team, ...kept } = state.journal;
-  const back = teamAfterRollback(team, closing.previous.team);
+  // Kept versions: the latest upload still holds the update's team secrets, the next deploy's.
+  const back = teamAfterRollback(team, closing.previous.team, settled === "kept");
   const rest = back === undefined ? kept : { ...kept, team: back };
   setJournal(
     closeWindow(
@@ -299,14 +300,15 @@ export async function runRollback(
  * `versions secret`), the one secrets change it allows then, and a warning says what stays
  * refused. Nothing here deploys: the server of the version from before keeps running. Another
  * version serving, or that version holding the window or the order (none from before an update
- * does), stops the rollback for a person. Undefined once done; resumable: every run lists the
- * versions again.
+ * does), stops the rollback for a person. Once done: `deleted` (the version from before is the
+ * latest again) or `kept` (a newer one stays, its secrets the next deploy's); resumable: every run
+ * lists the versions again.
  */
 async function settleVersions(
   ctx: UpdateContext,
   worker: string,
   previous: string,
-): Promise<RollbackWaiting | undefined> {
+): Promise<RollbackWaiting | "deleted" | "kept"> {
   const serving = await ctx.cloud.activeVersion(worker);
   if (serving === undefined) {
     return {
@@ -343,7 +345,7 @@ async function settleVersions(
   if (names === null) throw new Error(`after its rollback, ${worker} does not exist`);
   const left = [MAINTENANCE_WINDOW_SECRET, ROLLBACK_SECRET].filter((n) => names.includes(n));
   if (kept === undefined) {
-    if (left.length === 0) return undefined;
+    if (left.length === 0) return "deleted";
     throw new BootstrapRefusal(
       `${previous}, the version of ${worker} from before the update, holds ${left.join(", ")}, which no version from before an update holds. Nothing more was changed: get help before going on (docs/operations/recovery.md, "Rollback and destructive restore")`,
     );
@@ -361,7 +363,7 @@ async function settleVersions(
   ctx.log(
     `warning: ${worker}'s latest version is not the one deployed (${kept}). It holds no window or rollback order, so no later deploy takes them up, but Cloudflare refuses changes of its secrets (bootstrap.ts services, github-app) until the next update deploys a version (docs/operations/recovery.md, "Latest version not deployed")`,
   );
-  return undefined;
+  return "kept";
 }
 
 /** When the restore point's data is from, in words. */

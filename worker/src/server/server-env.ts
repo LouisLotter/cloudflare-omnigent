@@ -38,6 +38,8 @@ export const BOOTSTRAP_PASSWORD_SECRET = `${SERVER_ENV_PREFIX}OMNIGENT_ACCOUNTS_
 /** Set by the platform itself; a `SERVER_ENV_` variable of the same name is ignored. */
 export const PLATFORM_SET_NAMES: ReadonlySet<string> = new Set(["CFO_INSTALLATION_ID"]);
 
+/** A local test setting's form: never forwarded, so no deployment can turn a test path on. */
+const LOCAL_ONLY = /_LOCAL_ONLY$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const MAX_VALUE_BYTES = 32 * 1024;
 
@@ -60,6 +62,7 @@ export function serverContainerEnv(env: Readonly<Record<string, unknown>>): Serv
     if (!NAME.test(name)) skipped.push({ name: key, reason: "invalid name" });
     else if (PLATFORM_SET_NAMES.has(name))
       skipped.push({ name: key, reason: "set by the platform" });
+    else if (LOCAL_ONLY.test(name)) skipped.push({ name: key, reason: "a local test setting" });
     else if (typeof value !== "string") skipped.push({ name: key, reason: "not a string" });
     else if (value.includes("\0")) skipped.push({ name: key, reason: "contains NUL" });
     else if (new TextEncoder().encode(value).byteLength > MAX_VALUE_BYTES) {

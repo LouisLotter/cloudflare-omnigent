@@ -148,6 +148,61 @@ function quoted(apps: readonly unknown[]): string {
 }
 
 /**
+ * A create an earlier run started and never saw answered: its unique name and start are journaled
+ * before the create, so the application is looked up by that name (after the settle time, when it
+ * has not appeared yet) and recorded with its ID, or forgotten when it never appeared. Two with
+ * that name are refused. Returns the record as it is then; any other record is returned as it is.
+ */
+export async function resolvePendingCreate(
+  ctx: EnsureAccessContext,
+): Promise<RecordedAccessApp | undefined> {
+  const recorded = ctx.recorded().app;
+  if (recorded === undefined || recorded.id !== undefined) return recorded;
+  const host = ctx.plan.hostname;
+  const setApp = (app: RecordedAccessApp | undefined) => {
+    const { loginMethod } = ctx.recorded();
+    ctx.record({
+      ...(app === undefined ? {} : { app }),
+      ...(loginMethod === undefined ? {} : { loginMethod }),
+    });
+  };
+  const intent = recorded;
+  const made = () =>
+    ctx.api
+      .apps()
+      .filter((a) => coversHostname(a, host))
+      .filter((a) => field(a, "name") === intent.name);
+  let found = made();
+  const started = Date.parse(intent.createStartedAt ?? "");
+  const wait = Number.isFinite(started) ? started + ACCESS_SETTLE_MS - ctx.now() : 0;
+  if (found.length === 0 && wait > 0) {
+    ctx.log(
+      `an interrupted run may still create the Access application "${intent.name}"; checking again in ${Math.ceil(wait / 1000)}s`,
+    );
+    await ctx.sleep(wait);
+    found = made();
+  }
+  const [only] = found;
+  if (found.length > 1) {
+    throw new AccessRefusal(
+      `${found.length} Access applications on ${host} are named "${intent.name}", which only one create of this installation used: delete all but one in ${ZERO_TRUST_DASHBOARD}, Access, Applications, then run again`,
+    );
+  }
+  const id = field(only, "id");
+  if (id !== undefined) {
+    const app = { name: intent.name, id, createdAt: iso(ctx.now()) };
+    setApp(app);
+    ctx.log(
+      `the Access application "${intent.name}", created by an interrupted run, is recorded now`,
+    );
+    return app;
+  }
+  setApp(undefined);
+  ctx.log(`an interrupted run's Access application "${intent.name}" never appeared`);
+  return undefined;
+}
+
+/**
  * The hostname's owner-only Access application, created when missing, and checked: its team
  * domain and AUD, for ingress. Throws AccessRefusal for what a person must do.
  */
@@ -158,7 +213,6 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
   if (pin === undefined) throw new Error("the plan's owner pin is malformed");
   const teamDomain = api.teamDomain();
   if (teamDomain === undefined) throw new AccessRefusal(noOrganizationStep());
-  const covering = () => api.apps().filter((app) => coversHostname(app, host));
   // Applications that reach the hostname only through a wildcard are named, never refused: the
   // web Worker admits only sign-ins through the hostname's own application (its AUD), so they
   // can keep the owner out on some paths but cannot let anyone else in.
@@ -211,39 +265,7 @@ export async function ensureOwnerAccess(ctx: EnsureAccessContext): Promise<Acces
   };
 
   // 1. A create an earlier run started and never saw answered.
-  let recorded = ctx.recorded().app;
-  if (recorded !== undefined && recorded.id === undefined) {
-    const intent = recorded;
-    const made = () => covering().filter((a) => field(a, "name") === intent.name);
-    let found = made();
-    const started = Date.parse(intent.createStartedAt ?? "");
-    const wait = Number.isFinite(started) ? started + ACCESS_SETTLE_MS - ctx.now() : 0;
-    if (found.length === 0 && wait > 0) {
-      ctx.log(
-        `an interrupted run may still create the Access application "${intent.name}"; checking again in ${Math.ceil(wait / 1000)}s`,
-      );
-      await ctx.sleep(wait);
-      found = made();
-    }
-    const [only] = found;
-    if (found.length > 1) {
-      throw new AccessRefusal(
-        `${found.length} Access applications on ${host} are named "${intent.name}", which only one create of this installation used: delete all but one in ${ZERO_TRUST_DASHBOARD}, Access, Applications, then run again`,
-      );
-    }
-    const id = field(only, "id");
-    if (id !== undefined) {
-      recorded = { name: intent.name, id, createdAt: iso(ctx.now()) };
-      setApp(recorded);
-      ctx.log(
-        `the Access application "${intent.name}", created by an interrupted run, is recorded now`,
-      );
-    } else {
-      recorded = undefined;
-      setApp(undefined);
-      ctx.log(`an interrupted run's Access application "${intent.name}" never appeared`);
-    }
-  }
+  const recorded = await resolvePendingCreate(ctx);
 
   // 2. The application this installation created, read by its ID.
   if (recorded?.id !== undefined) {

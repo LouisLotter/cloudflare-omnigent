@@ -10,13 +10,6 @@
 import type { AccessGroup, AccessGroupPort } from "./access-admission.ts";
 
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
-/**
- * Local end-to-end runs only (worker/test/e2e/team-move-e2e.ts): Cloudflare's API stand-in on
- * `http://127.0.0.1:<port>`. Ignored in any other form, so a stray value cannot redirect the
- * token anywhere; a deployed Worker cannot reach the loopback address at all.
- */
-export const ACCESS_API_LOCAL_ONLY_VAR = "CFO_ACCESS_API_LOCAL_ONLY";
-const LOCAL_API = /^http:\/\/127\.0\.0\.1:\d{1,5}$/;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 const GROUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const API_TIMEOUT_MS = 15_000;
@@ -60,9 +53,8 @@ export function accessGroupPortFrom(
   ) {
     return undefined;
   }
-  const local = vars[ACCESS_API_LOCAL_ONLY_VAR];
-  const api = typeof local === "string" && LOCAL_API.test(local) ? local : CLOUDFLARE_API;
-  const url = `${api}/accounts/${accountId}/access/groups/${groupId}`;
+  // No setting changes where the token goes: a test reaches a stand-in through `fetcher` only.
+  const url = `${CLOUDFLARE_API}/accounts/${accountId}/access/groups/${groupId}`;
   const call = async (method: "GET" | "PUT", body?: AccessGroup): Promise<Response> =>
     fetcher(url, {
       method,

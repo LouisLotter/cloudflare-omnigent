@@ -13,14 +13,17 @@
  * `/__e2e/platform-internal/<path>` (WP8.11, `team-move-e2e.ts`) is `platform.internal/<path>`:
  * the production `PlatformInternal` entrypoint with the props OmnigentServer registers for its
  * container, which the container reaches in production through its intercept. Here the server
- * container reaches it through the run's relay (the container's own loopback, a Unix socket, the
- * web Worker's `/__e2e/` route), since Docker gives it no intercept.
+ * container reaches it through the run's relay (its own hosts name platform.internal on its
+ * loopback, then a Unix socket and the web Worker's `/__e2e/` route), since Docker gives it no
+ * intercept. And the member group's client reaches Cloudflare's API stand-in
+ * (`CFO_E2E_ACCESS_API`), injected here; without one it reaches nothing.
  */
 import { exports } from "cloudflare:workers";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
 import type { PlatformEnv } from "../../src/env.ts";
 import platform from "../../src/index.ts";
+import { CLOUDFLARE_API } from "../../src/server/access-group-api.ts";
 import type { ContainerExit, ServerContainer } from "../../src/server/container-port.ts";
 import {
   OmnigentServer as PlatformOmnigentServer,
@@ -31,6 +34,7 @@ type Env = PlatformEnv & {
   readonly CFO_E2E_SERVER_PORTS?: string;
   readonly CFO_E2E_CONTROL?: string;
   readonly CFO_E2E_CONTROL_TOKEN?: string;
+  readonly CFO_E2E_ACCESS_API?: string;
 };
 
 /** The real container, through the run's control server; its state in the object's storage. */
@@ -143,6 +147,15 @@ export class OmnigentServer extends PlatformOmnigentServer {
 
   protected override serverImage(): string | null {
     return null;
+  }
+
+  /** Cloudflare's API stand-in for the member group's client; an e2e run never reaches the real one. */
+  protected override accessApiFetch(input: string, init: RequestInit): Promise<Response> {
+    const standIn = (this.env as Env).CFO_E2E_ACCESS_API;
+    if (standIn === undefined || !input.startsWith(`${CLOUDFLARE_API}/`)) {
+      return Promise.resolve(new Response("no Cloudflare API stand-in", { status: 503 }));
+    }
+    return fetch(`${standIn}${input.slice(CLOUDFLARE_API.length)}`, init);
   }
 
   /** Checks every 10 s instead of every minute, so the run waits less; nothing else changes. */

@@ -407,7 +407,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   // -------------------------------------------------------------------------------------------
-  // Seams for the Workers-runtime tests, which run without containers and with a test clock.
+  // Seams for the Workers-runtime tests (no containers, a test clock) and the local end-to-end
+  // entrypoints (worker/test/e2e: Docker, and Cloudflare's API stand-in).
 
   /** The container port, or null when this class has no container configured. */
   protected openContainer(): ServerContainer | null {
@@ -421,6 +422,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
 
   protected now(): number {
     return Date.now();
+  }
+
+  /** How the member group's client reaches Cloudflare's API (access-group-api.ts). */
+  protected accessApiFetch(input: string, init: RequestInit): Promise<Response> {
+    return fetch(input, init);
   }
 
   protected timing(): ServerTiming {
@@ -1362,7 +1368,7 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const env = this.env as unknown as Record<string, unknown>;
     const run = this.#admissions.then(() =>
       applyAdmission(parsed.data, {
-        port: accessGroupPortFrom(env),
+        port: accessGroupPortFrom(env, (input, init) => this.accessApiFetch(input, init)),
         appliedRevision: () => this.#appliedAdmission(),
         recordApplied: (revision) => this.#putServerState(ADMISSION_APPLIED_KEY, revision),
         log: (fields) => logEvent("server", "access_admission", fields),

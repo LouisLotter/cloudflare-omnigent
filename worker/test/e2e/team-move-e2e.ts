@@ -8,16 +8,17 @@
 // is a stand-in too: the web Worker checks assertions signed with a synthetic team key; the
 // installer's Access, group and token APIs are the installer tests' fakes (fake-cloud.ts), with
 // the member group served over HTTP on the loopback address to the platform Worker's own group
-// client (`CFO_ACCESS_API_LOCAL_ONLY`). The server container reaches `platform.internal` (the
-// admission adapter's private route) through a relay: a process in the container's network
-// namespace, a Unix socket, and the e2e platform Worker's `/__e2e/platform-internal/` route to the
+// client, whose transport the e2e entrypoint injects (`CFO_E2E_ACCESS_API`; production code reads
+// no such setting). The server image is the production one, unchanged: its container's hosts name
+// `platform.internal` on its own loopback, where a relay in its network namespace takes each
+// call to a Unix socket and the e2e platform Worker's `/__e2e/platform-internal/` route, the
 // production `PlatformInternal` entrypoint (the host's firewall keeps the Docker bridge from
 // reaching the host, and the loopback keeps it local).
 // No real account or Cloudflare resource is involved; every value is synthetic.
 //
-//   1. An installation, released, owner admission: its owner signs in; this computer's host
-//      (a WebSocket client speaking the host protocol, with a CLI sign-in) connects; another
-//      person's Access sign-in is refused at the web Worker.
+//   1. An installation, released, owner admission: its owner signs in; the CLI's sign-in sets no
+//      cookie; this computer's host (a WebSocket client speaking the host protocol, with that
+//      sign-in) connects; another person's Access sign-in is refused at the web Worker.
 //   2. `update --team-admission members`: the member group (the owner alone) and its token are
 //      made, the update deploys in bind mode and is accepted; the move then waits for the owner's
 //      browser sign-in. The host's CLI session, as its bearer, as a request's bearer and as a
@@ -79,7 +80,6 @@ import {
 import { latestNotDeployed } from "../../../scripts/bootstrap/window.ts";
 import { readWranglerConfig } from "../../../scripts/staging/cloud.ts";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
-import { ACCESS_API_LOCAL_ONLY_VAR } from "../../src/server/access-group-api.ts";
 import { RESTORE_POINT_VAR } from "../../src/server/maintenance.ts";
 import {
   AUD,
@@ -103,8 +103,8 @@ const RELAY = "cfo-wp811-e2e-relay";
 const VOLUME = "cfo-wp811-e2e-replica";
 const RELAY_DIR = join(DIR, "relay");
 const RELAY_SOCKET = join(RELAY_DIR, "platform.sock");
-/** The relay's port on the server container's own loopback interface. */
-const RELAY_PORT = 18080;
+/** The relay's port on the server container's own loopback: platform.internal's, HTTP. */
+const RELAY_PORT = 80;
 const INSTALLATION = "ins_01hs3f9q2m8z4w7k6t5r1n0ybc";
 const PLATFORM = "cloudflare-omnigent";
 const ACCOUNT = "1".repeat(32);
@@ -260,10 +260,10 @@ function controlServer(ports: Record<string, number>, token: string): Server {
         "-d",
         "--name",
         CONTAINER,
-        // The adapter's local-only relay base names host.docker.internal: here, the container's
-        // own loopback interface, where the relay listens.
+        // platform.internal, which the runtime's intercept serves in production: here, the
+        // container's own loopback, where the relay listens.
         "--add-host",
-        "host.docker.internal:127.0.0.1",
+        "platform.internal:127.0.0.1",
         "-v",
         `${VOLUME}:/replica-root`,
         "-p",
@@ -673,8 +673,7 @@ async function main(): Promise<number> {
     CFO_E2E_SERVER_PORTS: JSON.stringify(ports),
     CFO_E2E_CONTROL: `http://127.0.0.1:${controlPort}`,
     CFO_E2E_CONTROL_TOKEN: token,
-    [ACCESS_API_LOCAL_ONLY_VAR]: `http://127.0.0.1:${accessGroupsPort}`,
-    SERVER_ENV_CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY: `http://host.docker.internal:${RELAY_PORT}`,
+    CFO_E2E_ACCESS_API: `http://127.0.0.1:${accessGroupsPort}`,
     SERVER_ENV_CFO_REPLICA_URL: REPLICA,
     SERVER_ENV_CFO_ALLOW_FILE_REPLICA: "true",
     SERVER_ENV_CFO_ALLOW_LOCAL_ARTIFACTS: "true",
@@ -798,7 +797,13 @@ async function main(): Promise<number> {
     await durable(current.id);
     await serverAnswers();
     const cli = await login(owner, true);
-    check("the installation's owner signs in (the CLI's sign-in, a token)", cli.token.length > 0);
+    check(
+      "the installation's owner signs in: the CLI's sign-in, a token in the body and no cookie",
+      cli.token.length > 0 && cli.cookie === undefined,
+      String(cli.cookie?.split("=")[0]),
+    );
+    // The session cookie's name, from a browser's sign-in while no proxy sign-in is bound.
+    const sessionCookie = (await login(owner, false)).cookie?.split("=")[0] ?? "omnigent_session";
     host = new FakeHost(`ws://${hostname}/v1/hosts/${HOST_ID}/tunnel`, () => ({
       "cf-access-jwt-assertion": owner,
       authorization: `Bearer ${cli.token}`,
@@ -1007,7 +1012,6 @@ async function main(): Promise<number> {
     await waitFor("this computer's host reconnected in bind mode", async () => host?.open, 120_000);
     // F-1 on the real path: the CLI's session token, as a request's bearer and as a cookie, with
     // the owner's Access sign-in; the host connects with it too.
-    const sessionCookie = cli.cookie?.split("=")[0] ?? "omnigent_session";
     const asBearer = await visit(owner, "/v1/agents", {
       headers: { authorization: `Bearer ${cli.token}` },
     });

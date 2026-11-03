@@ -80,7 +80,9 @@ import {
   type AccessApi,
   type AccessRecords,
   AccessRefusal,
+  type EnsureAccessContext,
   ensureOwnerAccess,
+  resolvePendingCreate,
 } from "./access-app.ts";
 import {
   appliedStatus,
@@ -872,7 +874,22 @@ async function ownerAccess(
   setJournal: (journal: Journal) => void,
 ): Promise<AccessSettings> {
   if (ctx.accessApi === undefined) return ctx.cloud.access(plan);
-  // The Access records are replaced whole, and left out when empty (as in `run`).
+  try {
+    return await ensureOwnerAccess(accessContext(ctx, ctx.accessApi, plan, journal, setJournal));
+  } catch (error) {
+    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+    throw error;
+  }
+}
+
+/** The Access steps' context on the journal's records, replaced whole and left out when empty. */
+function accessContext(
+  ctx: UpdateContext,
+  api: AccessApi,
+  plan: Installation,
+  journal: () => Journal,
+  setJournal: (journal: Journal) => void,
+): EnsureAccessContext {
   const records = (r: AccessRecords) => {
     const { accessApp: _app, accessLoginMethod: _method, ...rest } = journal();
     setJournal({
@@ -881,29 +898,24 @@ async function ownerAccess(
       ...(r.loginMethod === undefined ? {} : { accessLoginMethod: r.loginMethod }),
     });
   };
-  try {
-    return await ensureOwnerAccess({
-      api: ctx.accessApi,
-      plan,
-      ownerEmail: ctx.ownerEmail,
-      memberGroupId: memberGroupIdOf(journal().team),
-      recorded: () => {
-        const { accessApp, accessLoginMethod } = journal();
-        return {
-          ...(accessApp === undefined ? {} : { app: accessApp }),
-          ...(accessLoginMethod === undefined ? {} : { loginMethod: accessLoginMethod }),
-        };
-      },
-      record: records,
-      now: ctx.now,
-      sleep: ctx.sleep,
-      nonce: () => hex(ctx.random(4)),
-      log: ctx.log,
-    });
-  } catch (error) {
-    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
-    throw error;
-  }
+  return {
+    api,
+    plan,
+    ownerEmail: ctx.ownerEmail,
+    memberGroupId: memberGroupIdOf(journal().team),
+    recorded: () => {
+      const { accessApp, accessLoginMethod } = journal();
+      return {
+        ...(accessApp === undefined ? {} : { app: accessApp }),
+        ...(accessLoginMethod === undefined ? {} : { loginMethod: accessLoginMethod }),
+      };
+    },
+    record: records,
+    now: ctx.now,
+    sleep: ctx.sleep,
+    nonce: () => hex(ctx.random(4)),
+    log: ctx.log,
+  };
 }
 
 /** What `workerInstallation` says of a Worker that exists. */
@@ -1135,7 +1147,9 @@ async function prepareTeamMove(
       `this computer's Omnigent host ID is not in ${ports.hostConfig ?? "the host's configuration"} (where scripts/host/omnigent-host.sh sets the host up), so the move could not check that host: run again with --host-id <its ID>, or --host-id none if the owner uses no personal host; nothing was changed`,
     );
   }
-  if (team?.policyAt === undefined) accessOwnershipPreflight(ctx, plan, journal());
+  if (team?.policyAt === undefined) {
+    await accessOwnershipPreflight(ctx, plan, journal, setJournal);
+  }
   const save = (next: TeamRecord) => {
     team = next;
     setJournal({ ...journal(), team: next });
@@ -1385,13 +1399,26 @@ function notOursRemedy(plan: Installation): string {
  * the hostname's application must be the one the journal records as created by this
  * installation, or none (the update then creates it). Never overwritten silently.
  */
-function accessOwnershipPreflight(ctx: UpdateContext, plan: Installation, journal: Journal): void {
+async function accessOwnershipPreflight(
+  ctx: UpdateContext,
+  plan: Installation,
+  journal: () => Journal,
+  setJournal: (journal: Journal) => void,
+): Promise<void> {
   if (ctx.accessApi === undefined) {
     throw new BootstrapRefusal(
       "the team's move switches the hostname's Access application to the member group, which needs the installer's own Cloudflare account and its Access login (not the staging tool); nothing was changed",
     );
   }
-  if (journal.accessApp?.id !== undefined) return;
+  // This installation's own create that an interrupted run never saw answered is resolved first,
+  // as the Access step resolves it (by its journaled unique name, after the settle time).
+  try {
+    await resolvePendingCreate(accessContext(ctx, ctx.accessApi, plan, journal, setJournal));
+  } catch (error) {
+    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+    throw error;
+  }
+  if (journal().accessApp?.id !== undefined) return;
   const covering = ctx.accessApi.apps().filter((app) => coversHostname(app, plan.hostname));
   if (covering.length > 0) {
     throw new BootstrapRefusal(

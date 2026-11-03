@@ -163,19 +163,12 @@ def test_the_adapter_succeeds_on_applied_or_stale_and_raises_otherwise() -> None
             _adapter(status, answer)[0].apply(Snapshot(4, ()))
 
 
-def test_the_adapter_posts_to_platform_internal_unless_a_local_relay_is_named() -> None:
+def test_the_adapter_posts_to_platform_internal_whatever_the_environment_says() -> None:
     env = {"CFO_LAUNCHER_SIGNING_KEY": "k" * 32, "CFO_LAUNCHER_SIGNING_KEY_ID": "key-1"}
     assert admission.from_env(env)._url == "http://platform.internal/access/v1/admission"  # type: ignore[union-attr]
-    local = {
-        **env,
-        "CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY": "http://host.docker.internal:9123/__e2e/x",
-    }
-    assert (
-        admission.from_env(local)._url  # type: ignore[union-attr]
-        == "http://host.docker.internal:9123/__e2e/x/access/v1/admission"
-    )
-    for stray in ("https://evil.example", "http://host.docker.internal", "http://10.0.0.1:80"):
-        other = {**env, "CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY": stray}
+    # No setting redirects it: a local test reaches its stand-in by the container's own hosts.
+    for name in ("CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY", "CFO_PLATFORM_INTERNAL_URL"):
+        other = {**env, name: "http://host.docker.internal:9123"}
         assert admission.from_env(other)._url == admission.URL  # type: ignore[union-attr]
 
 

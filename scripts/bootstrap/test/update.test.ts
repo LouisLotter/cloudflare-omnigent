@@ -1904,6 +1904,70 @@ describe("runUpdate with the team's move behind Access (WP8.11)", () => {
     expect(platformSecrets(h).get(MODE)).toBe("required");
   }, 60_000);
 
+  /** The member group token's value as the fake token API made it. */
+  const tokenValue = (h: Harness, id: string | undefined) =>
+    id === undefined ? undefined : h.world.tokens.get(id)?.value;
+
+  it("R2-P1: Cloudflare keeps the rolled-back versions: the first move's token stays its own, never listed", async () => {
+    const { h, plan, run, signIn } = await moving();
+    h.world.adminServices = () => ({ stored: 1, served: 0 });
+    expect(await run()).toMatchObject({ kind: "deployed", window: "open" });
+    const token = journalOf(h).team?.token;
+    h.world.keepsVersions = true;
+    expect(await runRollback(h.context(CODE_A), OPTIONS)).toEqual({ kind: "done" });
+    // The version from before serves without it; the latest upload, the next deploy's, holds it.
+    expect(h.world.latest(plan.platformWorker)?.secrets.has("CFO_ACCESS_GROUP_TOKEN")).toBe(false);
+    expect(platformSecrets(h).get("CFO_ACCESS_GROUP_TOKEN")).toBe(tokenValue(h, token?.id));
+    const back = journalOf(h).team;
+    expect(back?.token).toEqual(token);
+    expect(back?.tokensToDelete).toBeUndefined();
+    expect(back?.boundAt).toBeUndefined();
+    // Going on reuses it: no second token, nothing to delete, and it is the one that serves.
+    h.world.adminServices = () => ({ stored: 0, served: 0 });
+    expect(await run()).toMatchObject({ kind: "team", state: "waiting" });
+    signIn();
+    expect(await run()).toEqual({
+      kind: "team",
+      state: "finished",
+      why: "the team's move behind Access is finished",
+      computers: 1,
+    });
+    expect(count(h, "tokenCreate")).toBe(1);
+    expect(journalOf(h).team?.tokensToDelete).toBeUndefined();
+    expect(h.world.latest(plan.platformWorker)?.secrets.get("CFO_ACCESS_GROUP_TOKEN")).toBe(
+      tokenValue(h, token?.id),
+    );
+  }, 60_000);
+
+  it("R2-P1: a token replaced in a later window, rolled back with its versions kept, stays the move's", async () => {
+    const { h, plan, run, signIn } = await moving();
+    expect(await run()).toMatchObject({ kind: "team", state: "waiting" });
+    const first = journalOf(h).team?.token;
+    // The token's secret goes missing; a later update makes another, and its check does not pass.
+    await h.world.cloud().updateSecrets(plan.platformWorker, { CFO_ACCESS_GROUP_TOKEN: null });
+    h.world.adminServices = () => ({ stored: 1, served: 0 });
+    expect(await run(true, {}, CODE_B)).toMatchObject({ kind: "deployed", window: "open" });
+    const second = journalOf(h).team?.token;
+    expect(second?.id).not.toBe(first?.id);
+    h.world.keepsVersions = true;
+    expect(await runRollback(h.context(CODE_B), OPTIONS)).toEqual({ kind: "done" });
+    expect(platformSecrets(h).get("CFO_ACCESS_GROUP_TOKEN")).toBe(tokenValue(h, second?.id));
+    const back = journalOf(h).team;
+    expect(back?.token).toEqual(second);
+    // The first one, given up by that window's run (cf's OAuth login may not delete it), only.
+    expect(back?.tokensToDelete).toEqual([first]);
+    h.world.adminServices = () => ({ stored: 0, served: 0 });
+    signIn();
+    const done = await run(true, {}, CODE_B);
+    expect(done).toMatchObject({ kind: "team", state: "finished" });
+    expect(done.kind === "team" && done.why).toContain(`delete the unused token ${first?.name}`);
+    expect(done.kind === "team" && done.why).not.toContain(String(second?.name));
+    expect(count(h, "tokenCreate")).toBe(2);
+    expect(h.world.latest(plan.platformWorker)?.secrets.get("CFO_ACCESS_GROUP_TOKEN")).toBe(
+      tokenValue(h, second?.id),
+    );
+  }, 60_000);
+
   it("P-3: an Access application the installer did not create stops the move before any change", async () => {
     const { h, plan, run, signIn } = await moving();
     // The application stays; the state file does not record it as this installation's.
@@ -1922,6 +1986,57 @@ describe("runUpdate with the team's move behind Access (WP8.11)", () => {
     expect(await run()).toMatchObject({ kind: "team", state: "finished" });
     expect(policyOf(h)).toEqual([[{ group: { id: journalOf(h).team?.memberGroup?.id } }]]);
     expect(plan.hostname).toBeDefined();
+  }, 60_000);
+
+  it("R2-P2: the installer's own Access create, interrupted before its ID was recorded, is resolved on retry", async () => {
+    const { h, run, signIn } = await moving();
+    // The replacement path: the application deleted in the dashboard, and its record with it.
+    const { accessApp: _app, ...journal } = journalOf(h);
+    h.store.save({ ...h.store.load(), journal });
+    h.world.accessApps.clear();
+    // The create takes effect; the run stops before it records the application's ID.
+    h.world.crash = { call: "accessCreate", nth: count(h, "accessCreate") + 1, when: "after" };
+    await expect(run()).rejects.toThrow(Crash);
+    h.world.crash = undefined;
+    const pending = journalOf(h).accessApp;
+    expect(pending?.id).toBeUndefined();
+    expect(pending?.createStartedAt).toBeDefined();
+    expect(journalOf(h).window).toBeDefined();
+    const [created] = [...h.world.accessApps.keys()];
+    // A normal retry: found by its unique name and recorded, nothing deleted or made again.
+    const creates = count(h, "accessCreate");
+    expect(await run()).toMatchObject({ kind: "team", state: "waiting" });
+    expect(journalOf(h).accessApp).toMatchObject({ name: pending?.name, id: created });
+    expect(count(h, "accessRemove")).toBe(0);
+    expect(count(h, "accessCreate")).toBe(creates);
+    expect(h.world.accessApps.size).toBe(1);
+    signIn();
+    expect(await run()).toMatchObject({ kind: "team", state: "finished" });
+    expect(policyOf(h)).toEqual([[{ group: { id: journalOf(h).team?.memberGroup?.id } }]]);
+  }, 60_000);
+
+  it("R2-P2: a pending create that never appeared adopts nothing: another application stays refused", async () => {
+    const { h, run } = await moving();
+    // This installation's create never took effect; someone else's application covers the host.
+    const [theirs] = [...h.world.accessApps.keys()];
+    const { accessApp: ours, ...journal } = journalOf(h);
+    h.store.save({
+      ...h.store.load(),
+      journal: {
+        ...journal,
+        accessApp: {
+          name: `${ours?.name}-lost`,
+          createStartedAt: new Date(h.world.now).toISOString(),
+        },
+      },
+    });
+    const deploys = count(h, "deployPlatform");
+    await expect(run()).rejects.toThrow(/was not created by this installation/);
+    // After the settle time, the lost create is forgotten, and the other application left as it is.
+    expect(journalOf(h).accessApp).toBeUndefined();
+    expect([...h.world.accessApps.keys()]).toEqual([theirs]);
+    expect(count(h, "deployPlatform")).toBe(deploys);
+    expect(journalOf(h).team).toBeUndefined();
   }, 60_000);
 
   it("P-4: no host ID found refuses before the update, naming where it looked", async () => {

@@ -257,10 +257,31 @@ export function checkMove(line: TeamMoveLine | undefined, rules: MoveRules): Mov
  * since (its value went with the rolled-back versions) listed for deletion. Without one, the
  * move began in the rolled-back window: the version from before holds none of its settings or
  * secrets, so it starts again from its member group (which stays), its token listed for deletion.
+ *
+ * `latestKept`: Cloudflare kept the rolled-back versions, so the Worker's latest upload, whose
+ * secrets the next deploy takes, still holds the token that window deployed. That token stays the
+ * move's own, never listed; only the ones that window's run had already given up stay listed.
  */
 export function teamAfterRollback(
   team: TeamRecord | undefined,
   previous?: TeamRecord | undefined,
+  latestKept = false,
+): TeamRecord | undefined {
+  const restored = restoredStage(team, previous);
+  if (!latestKept || team === undefined || restored === undefined) return restored;
+  const { token: _t, tokensToDelete: _d, ...stage } = restored;
+  return {
+    ...stage,
+    ...(team.token === undefined ? {} : { token: team.token }),
+    ...(team.tokensToDelete === undefined || team.tokensToDelete.length === 0
+      ? {}
+      : { tokensToDelete: team.tokensToDelete }),
+  };
+}
+
+function restoredStage(
+  team: TeamRecord | undefined,
+  previous: TeamRecord | undefined,
 ): TeamRecord | undefined {
   if (previous !== undefined) {
     const key = (t: RecordedToken) => t.id ?? t.name;

@@ -258,6 +258,33 @@ describe("the move's settings and secrets", () => {
     expect(teamAfterRollback(bare)).toEqual(bare);
     expect(teamAfterRollback(undefined)).toBeUndefined();
   });
+
+  it("keeps the token the latest upload still holds when Cloudflare kept the rolled-back versions", () => {
+    const halfway = { ...recorded, boundAt: "2026-11-03T15:30:00.000Z" };
+    // The first move: started again, its token its own.
+    expect(teamAfterRollback(halfway, undefined, true)).toEqual({
+      id: MOVE,
+      startedAt: recorded.startedAt,
+      memberGroup: recorded.memberGroup,
+      token: recorded.token,
+    });
+    // A later window that replaced a lost token: the stage restored, the new token kept, and
+    // only the one that window's run gave up listed.
+    const lost = { name: "cfo-access-old", id: "token-old" };
+    const replaced = { ...halfway, requiredAt: "z", tokensToDelete: [lost] };
+    const stage = { ...halfway, token: lost };
+    expect(teamAfterRollback(replaced, stage, true)).toEqual({
+      ...halfway,
+      tokensToDelete: [lost],
+    });
+    expect(teamAfterRollback(replaced, stage, false)).toEqual({
+      ...stage,
+      tokensToDelete: [recorded.token],
+    });
+    expect(teamAfterRollback(undefined, undefined, true)).toBeUndefined();
+    const finished = { ...recorded, finishedAt: "2026-11-03T17:00:00.000Z" };
+    expect(teamAfterRollback(finished, undefined, true)).toEqual(finished);
+  });
 });
 
 describe("the application's policy", () => {
