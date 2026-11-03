@@ -36,6 +36,13 @@ import {
   TerminalUpgrade,
 } from "./pages.ts";
 import { ReplicationHealth, ReplicationPosition } from "./replication.ts";
+import {
+  AccessAdmissionCall,
+  AccessAdmissionResult,
+  ForwardedPerson,
+  PagePersonCall,
+  PagePersonResult,
+} from "./team.ts";
 
 export * from "./access.ts";
 export * from "./bootstrap.ts";
@@ -54,6 +61,7 @@ export * from "./owner-password.ts";
 export * from "./pages.ts";
 export * from "./replication.ts";
 export * from "./setup-cards.ts";
+export * from "./team.ts";
 
 /**
  * Every wire schema, by name. The JSON Schema export, the golden fixtures and the Python contract
@@ -62,6 +70,8 @@ export * from "./setup-cards.ts";
  */
 export const wireSchemas = {
   AccessAssertionClaims,
+  AccessAdmissionCall,
+  AccessAdmissionResult,
   BootstrapStatus,
   CheckpointPolicy,
   ControlCall,
@@ -71,6 +81,7 @@ export const wireSchemas = {
   DurabilityUnconfirmed,
   DurabilityUnconfirmedAuth,
   ErrorBody,
+  ForwardedPerson,
   GitHubSetupCall,
   GitHubSetupResult,
   InterceptProps,
@@ -80,6 +91,8 @@ export const wireSchemas = {
   OutageRecord,
   OwnerPasswordCall,
   OwnerPasswordResult,
+  PagePersonCall,
+  PagePersonResult,
   PagesCall,
   PagesResult,
   PageFrontCall,

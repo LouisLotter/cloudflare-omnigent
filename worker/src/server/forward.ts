@@ -2,11 +2,14 @@
 // cross-script binding into the platform Worker's OmnigentServer. Pure: no Workers runtime import.
 //
 //   - Trust headers are stripped here, whatever ingress already removed.
+//   - The person ingress admitted goes to OmnigentServer in `x-cfo-person` (WP8.3), set only here,
+//     after the strip, so no client can supply it; OmnigentServer strips it again.
 //   - The call carries the interface version (R-26).
 //   - The answer is passed through once and never retried, a 424 `durability_unconfirmed`
 //     included: Omnigent applied that change, and repeating it blindly could apply it twice.
 //     When the call itself fails, an unsafe request is reported as lost, not as retryable.
 
+import { FORWARDED_PERSON_HEADER, type ForwardedPerson } from "@cfo/contracts";
 import {
   FORWARD_VERSION_HEADER,
   OMNIGENT_SERVER_INTERFACE_VERSION,
@@ -20,10 +23,15 @@ export interface ServerBinding {
   getByName(name: string): { fetch(request: Request): Promise<Response> };
 }
 
-export async function forwardToServer(request: Request, binding: ServerBinding): Promise<Response> {
+export async function forwardToServer(
+  request: Request,
+  binding: ServerBinding,
+  person?: ForwardedPerson,
+): Promise<Response> {
   const headers = new Headers(request.headers);
   stripTrustHeaders(headers);
   headers.set(FORWARD_VERSION_HEADER, String(OMNIGENT_SERVER_INTERFACE_VERSION));
+  if (person !== undefined) headers.set(FORWARDED_PERSON_HEADER, JSON.stringify(person));
   const forwarded = new Request(request, { headers, redirect: "manual" });
   try {
     return await binding.getByName(OMNIGENT_SERVER_OBJECT_NAME).fetch(forwarded);

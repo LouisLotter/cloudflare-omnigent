@@ -1,0 +1,5 @@
+{
+  "revision": 7,
+  "emails": ["alice@example.test", "owner@example.test"],
+  "owners": ["owner@example.test"]
+}

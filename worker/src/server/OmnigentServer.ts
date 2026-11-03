@@ -34,6 +34,11 @@
 //   - Omnigent's MCP registry (WP5.10): the same line says whether `/v1/info` lists `mcp`
 //     (`mcpRegistry`) and which revision of the installation's MCP choices the version holds
 //     (`mcpRevision`), which the installer's `services` step waits for.
+//   - Teams (WP8.3): a forwarded request's Access identity (`x-cfo-person`, set only by the web
+//     Worker) becomes Omnigent's signed identity envelope when `CFO_IDENTITY_ENVELOPE` is `on`
+//     (identity-envelope.ts); `pagePerson` asks the server which member an Access identity is
+//     bound to, for the platform pages; `admission` writes who Access admits into the
+//     installation's member group (access-admission.ts), keeping the applied revision here.
 //   - An update's read-only window (WP3.41, maintenance.ts): while the version holds
 //     `SERVER_ENV_CFO_MAINTENANCE_WINDOW`, nothing is passed to the server (`fetch` answers 503,
 //     and so does the password page's change), the watchdog still checks it directly, and the
@@ -47,8 +52,14 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
+  type AccessAdmissionCall,
+  AccessAdmissionCall as AccessAdmissionCallSchema,
+  type AccessAdmissionResult,
   type BootstrapStatus,
   BootstrapStatus as BootstrapStatusSchema,
+  EXTERNAL_IDENTITY_HEADER,
+  FORWARDED_PERSON_HEADER,
+  ForwardedPerson,
   GitHubSetupCall,
   type GitHubSetupResult,
   isPlatformCallPath,
@@ -58,7 +69,10 @@ import {
   OwnerPasswordCall,
   type OwnerPasswordResult,
   outageOverlaps,
+  PAGE_PERSON_CALL_PATH,
   type PageOwner,
+  PagePersonCall,
+  PagePersonResult,
   REPLICATION_POSITION_PATH,
   REPLICATION_POSITION_PORT,
   type ReplicationHealth,
@@ -78,6 +92,8 @@ import {
   type OutagesQuery,
 } from "../shared/rpc.ts";
 import { migrate } from "../shared/sql.ts";
+import { applyAdmission } from "./access-admission.ts";
+import { accessGroupPortFrom } from "./access-group-api.ts";
 import { type BootstrapTarget, BootstrapTargetSchema, checkBootstrap } from "./bootstrap.ts";
 import {
   exitCodeOf,
@@ -89,6 +105,7 @@ import {
 } from "./container-port.ts";
 import { githubAppConfigured, githubAppTagOf, githubLinkingOf } from "./github-linking.ts";
 import { bareUpgradeHeaders, isSafeMethod, isUpgrade, stripTrustHeaders } from "./headers.ts";
+import { envelopeKey, signEnvelope } from "./identity-envelope.ts";
 import {
   MAINTENANCE_MESSAGE,
   maintenanceWindowOf,
@@ -282,6 +299,21 @@ const PASSWORD_CHOSEN_KEY = "owner_password_chosen";
 const PASSWORD_DONE_KEY = "owner_password_done";
 /** The times of the latest attempts that reached the server (WP3.34's limit). */
 const PASSWORD_ATTEMPTS_KEY = "owner_password_attempts";
+/** The admission revision Access holds (WP8.3); a lower one is answered `stale`. */
+const ADMISSION_APPLIED_KEY = "access_admission_applied";
+/** The platform Worker's switch for Omnigent's identity envelope (WP8.3): `on`, else off. */
+export const IDENTITY_ENVELOPE_VAR = "CFO_IDENTITY_ENVELOPE";
+
+/** The forwarded person in `x-cfo-person`, or null when absent or malformed. */
+export function forwardedPersonOf(header: string | null): ForwardedPerson | null {
+  if (header === null) return null;
+  try {
+    const parsed = ForwardedPerson.safeParse(JSON.parse(header));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 /**
  * When this object last yielded to a newer version of the Worker, and that version's server
  * environment fingerprint (WP3.36): a digest, stored, never logged or returned.
@@ -342,6 +374,10 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   #checks: Promise<void> = Promise.resolve();
   /** Serialises the password page's changes: one platform call at a time (WP3.34). */
   #passwordChanges: Promise<unknown> = Promise.resolve();
+  /** Admission calls, one at a time, so a revision is recorded only after its own write. */
+  #admissions: Promise<unknown> = Promise.resolve();
+  /** The envelope key, derived once per cookie secret. */
+  #envelopeKey: { readonly secret: string; readonly key: string } | null = null;
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
@@ -451,9 +487,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   async #forward(container: ServerContainer, request: Request): Promise<Response> {
     const url = new URL(request.url);
     const headers = new Headers(request.headers);
+    // The web Worker's person (WP8.3), read before the strip that removes it.
+    const person = forwardedPersonOf(request.headers.get(FORWARDED_PERSON_HEADER));
     // Removes the interface version with every other `x-cfo-` header, and any trust header that
     // reached this far: Omnigent sees none of them.
     stripTrustHeaders(headers);
+    const envelope = person === null ? null : await this.#envelope(person);
+    if (envelope !== null) headers.set(EXTERNAL_IDENTITY_HEADER, envelope);
     const outbound = new Request(`http://${url.host}${url.pathname}${url.search}`, {
       method: request.method,
       headers,
@@ -1196,6 +1236,109 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   protected resetSelf(reason: string): never {
     this.ctx.abort(reason);
     throw new Error(reason);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Teams (WP8.3)
+
+  /** Omnigent's identity envelope for *person*, or null while envelopes are off. */
+  async #envelope(person: ForwardedPerson): Promise<string | null> {
+    const env = this.env as unknown as Record<string, unknown>;
+    if (env[IDENTITY_ENVELOPE_VAR] !== "on") return null;
+    const secret = cookieSecretOf(env);
+    if (secret === null) return null;
+    if (this.#envelopeKey === null || this.#envelopeKey.secret !== secret) {
+      this.#envelopeKey = { secret, key: await envelopeKey(secret) };
+    }
+    return signEnvelope(person, this.#envelopeKey.key, Date.now() / 1000);
+  }
+
+  /** Which team member an Access identity is bound to, for the platform pages. */
+  async pagePerson(raw: PagePersonCall): Promise<PagePersonResult> {
+    this.#checkCall(raw);
+    const parsed = PagePersonCall.safeParse(raw);
+    if (!parsed.success) throw platformError("bad_request", "invalid page person call");
+    const cookieSecret = cookieSecretOf(this.env as unknown as Record<string, unknown>);
+    const container = this.#container;
+    const unavailable: PagePersonResult = { action: "unavailable" };
+    if (cookieSecret === null) return { action: "unsupported" };
+    if (container === null || this.#window() !== null) return unavailable;
+    const state = this.#loadState();
+    if (
+      this.#stopping ||
+      state.phase === "held" ||
+      state.phase === "stopping" ||
+      state.recoverySince !== null
+    ) {
+      return unavailable;
+    }
+    if (!this.#ready && !(await this.#waitUntilReady(container))) return unavailable;
+    const nonce = [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const { issuer, subject, audience } = parsed.data;
+    const body = new TextEncoder().encode(JSON.stringify({ issuer, subject, audience, nonce }));
+    const headers = await signPlatformCall({
+      cookieSecret,
+      method: "POST",
+      path: PAGE_PERSON_CALL_PATH,
+      timestamp: Math.floor(Date.now() / 1000),
+      body,
+    });
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), PLATFORM_CALL_TIMEOUT_MS);
+    try {
+      const response = await container.fetch(
+        OMNIGENT_PORT,
+        new Request(`http://omnigent${PAGE_PERSON_CALL_PATH}`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body,
+          signal: abort.signal,
+        }),
+      );
+      if (response.status === 404 || response.status === 501) {
+        await response.body?.cancel();
+        return { action: "unsupported" };
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        logEvent("server", "page_person_status", { status: response.status });
+        return unavailable;
+      }
+      const answer = PagePersonResult.safeParse(await response.json());
+      if (!answer.success) return unavailable;
+      if (answer.data.action !== "member") return answer.data;
+      // Whether this is the installation's named owner is the platform's to say, not the server's.
+      const { installationOwner: _sent, ...member } = answer.data;
+      const owner = ownerUsernameOf(this.env as unknown as Record<string, unknown>);
+      return { ...member, installationOwner: owner !== null && member.userId === owner };
+    } catch (error) {
+      logEvent("server", "page_person_error", { error: describeError(error) });
+      return unavailable;
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  /** Writes who Access admits into the installation's member group; one call at a time. */
+  async admission(raw: AccessAdmissionCall): Promise<AccessAdmissionResult> {
+    const parsed = AccessAdmissionCallSchema.safeParse(raw);
+    if (!parsed.success) throw platformError("bad_request", "invalid admission call");
+    const env = this.env as unknown as Record<string, unknown>;
+    const run = this.#admissions.then(() =>
+      applyAdmission(parsed.data, {
+        port: accessGroupPortFrom(env),
+        appliedRevision: () => {
+          const value = this.#serverState(ADMISSION_APPLIED_KEY);
+          return typeof value === "number" && Number.isInteger(value) ? value : null;
+        },
+        recordApplied: (revision) => this.#putServerState(ADMISSION_APPLIED_KEY, revision),
+        log: (fields) => logEvent("server", "access_admission", fields),
+      }),
+    );
+    this.#admissions = run.catch(() => undefined);
+    return run;
   }
 
   // -------------------------------------------------------------------------------------------

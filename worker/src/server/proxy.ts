@@ -13,7 +13,8 @@
 // reach the browser as Omnigent sets them: attachments with `Content-Disposition: attachment` and
 // `nosniff`, sandboxed previews, framing headers (RC-07's proxy part).
 
-import type { Admitted } from "../ingress/index.ts";
+import type { ForwardedPerson } from "@cfo/contracts";
+import type { Admitted, OwnerIdentity } from "../ingress/index.ts";
 import { OMNIGENT_INTERNAL_ORIGIN } from "../ingress/origin.ts";
 import { forwardToServer, type ServerBinding } from "./forward.ts";
 import { isSafeMethod, isUpgrade } from "./headers.ts";
@@ -37,6 +38,19 @@ export function hasForeignOrigin(request: Request, origin: string): boolean {
   return presented !== null && presented !== origin && presented !== OMNIGENT_INTERNAL_ORIGIN;
 }
 
+/** The person to forward for an admitted identity; undefined for one built without its claims. */
+export function forwardedPersonOf(identity: OwnerIdentity): ForwardedPerson | undefined {
+  if (identity.issuer === undefined || identity.audience === undefined) return undefined;
+  return {
+    issuer: identity.issuer,
+    subject: identity.sub,
+    audience: identity.audience,
+    ...(identity.email === undefined ? {} : { email: identity.email }),
+    installationOwner: identity.pin !== false,
+    expiresAt: identity.expiresAt,
+  };
+}
+
 export async function proxyToOmnigent(admitted: Admitted, env: ProxyEnv): Promise<Response> {
   const request = admitted.request;
   if (needsOriginCheck(request) && hasForeignOrigin(request, admitted.origin)) {
@@ -48,5 +62,5 @@ export async function proxyToOmnigent(admitted: Admitted, env: ProxyEnv): Promis
     });
     return errorResponse(403, "forbidden", "Access denied.", false);
   }
-  return forwardToServer(request, env.OMNIGENT);
+  return forwardToServer(request, env.OMNIGENT, forwardedPersonOf(admitted.identity));
 }

@@ -13,12 +13,16 @@
  *   else "done".
  * - `githubSetup` (WP3.36) parses its call with the contract, counts it, and answers
  *   `githubSetupState` (GitHub linking on, by default).
+ * - `pagePerson` (WP8.3) parses its call, records it, and answers `pagePersonAnswer` (`none` by
+ *   default); `admission` parses its call, records it, and answers `admissionAnswer`.
  * - Every RPC call checks its interface version as OmnigentServer does: a newer one is refused
  *   with `unsupported_version`.
  * - `unconfirmedResponse` builds the server image's 424 for a path, in the body shape that
  *   path's clients parse (spike S4), for tests that a 424 is passed through and never retried.
  */
 import {
+  AccessAdmissionCall,
+  type AccessAdmissionResult,
   type BootstrapStatus,
   DURABILITY_UNCONFIRMED_CODE,
   DURABILITY_UNCONFIRMED_MESSAGE,
@@ -30,6 +34,8 @@ import {
   OwnerPasswordCall,
   type OwnerPasswordResult,
   outageOverlaps,
+  PagePersonCall,
+  type PagePersonResult,
   type ReplicationHealth,
 } from "@cfo/contracts";
 import { platformError } from "../../src/shared/errors.ts";
@@ -161,6 +167,28 @@ export class FakeOmnigentServer implements OmnigentServerRpc {
     checkVersion(call);
     this.githubSetupCalls += 1;
     return this.githubSetupState;
+  }
+
+  /** Every `pagePerson` call (WP8.3). */
+  readonly pagePersonCalls: PagePersonCall[] = [];
+  /** What `pagePerson` answers. */
+  pagePersonAnswer: PagePersonResult = { action: "none" };
+
+  async pagePerson(raw: PagePersonCall): Promise<PagePersonResult> {
+    const call = PagePersonCall.parse(raw);
+    checkVersion(call);
+    this.pagePersonCalls.push(call);
+    return this.pagePersonAnswer;
+  }
+
+  /** Every `admission` call (WP8.3). */
+  readonly admissionCalls: AccessAdmissionCall[] = [];
+  /** What `admission` answers. */
+  admissionAnswer: AccessAdmissionResult = { outcome: "applied", revision: 0 };
+
+  async admission(raw: AccessAdmissionCall): Promise<AccessAdmissionResult> {
+    this.admissionCalls.push(AccessAdmissionCall.parse(raw));
+    return this.admissionAnswer;
   }
 }
 

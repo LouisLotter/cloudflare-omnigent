@@ -3,7 +3,7 @@
 // cloud.ts, or the guarded staging tool, staging.ts) and this checkout's code version.
 //
 //   node scripts/bootstrap/bootstrap.ts update [--platform-worker <name> | --state <file>]
-//       [--owner-email <address>] [--no-verify] [--rollback]
+//       [--owner-email <address>] [--no-verify] [--rollback] [--team-admission owner|members]
 //
 // Exit status: 0 updated, checked and accepted, or already up to date (with --rollback: rolled
 // back and checked, or nothing to roll back); 3 not finished yet: deployed, but the check after
@@ -23,6 +23,7 @@ import { runRollback } from "./rollback.ts";
 import type { Installation } from "./settings.ts";
 import { stagingCloud } from "./staging.ts";
 import { fileStateStore, resourceLockPaths, stagingStateProblem } from "./state.ts";
+import { TEAM_ADMISSION_SUPPORTED, teamAdmissionRefusal } from "./team-admission.ts";
 import {
   DEFAULT_UPDATE_OPTIONS,
   runUpdate,
@@ -39,6 +40,8 @@ export interface UpdateCommandOptions {
   readonly verify: boolean;
   /** Go back to the release and the data from before the update, inside its window (WP3.41). */
   readonly rollback?: boolean;
+  /** `members` lets the team page decide who Access admits (WP8.3); `owner`, today's default. */
+  readonly teamAdmission?: string;
 }
 
 /** What the command reaches outside itself; tests replace it. */
@@ -87,6 +90,12 @@ export async function updateCommand(
   options: UpdateCommandOptions,
   ports: UpdatePorts = realPorts(options.root),
 ): Promise<number> {
+  if (options.teamAdmission !== undefined && options.teamAdmission !== "owner") {
+    if (options.teamAdmission !== "members") {
+      throw new BootstrapRefusal("--team-admission takes owner or members");
+    }
+    if (!TEAM_ADMISSION_SUPPORTED) throw new BootstrapRefusal(teamAdmissionRefusal());
+  }
   const store = fileStateStore(path);
   const installation = store.load().installation;
   const misplaced = stagingStateProblem(installation, path);

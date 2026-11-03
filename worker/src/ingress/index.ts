@@ -19,11 +19,16 @@
 //   4. a missing, malformed, forged, expired, foreign or otherwise invalid Access assertion,
 //      read from the `Cf-Access-Jwt-Assertion` header only, never the cookie: 403
 //      (503 while the team's keys cannot be loaded at all);
-//   5. any identity other than the pinned owner, even when Access admitted it: 403;
+//   5. any identity other than the pinned owner, even when Access admitted it: 403. With
+//      `TEAM_ADMISSION=members` (WP8.3) Access's member group decides who is admitted, and the
+//      server decides who they are (Omnigent's membership binding), the owner included; the pin
+//      then only marks the owner's address;
 //   6. an unsafe method (anything but GET, HEAD and OPTIONS) or a WebSocket upgrade whose
 //      `Origin` is present and is neither this installation's exact origin nor Omnigent's own
 //      non-browser marker `omnigent://internal` (origin.ts), `null` included: 403.
-// Then it strips identity headers and the `CF_Authorization` cookie, and only that cookie.
+// Then it strips identity headers and the `CF_Authorization` cookie, and only that cookie. The
+// address the assertion carries goes on only in `identity.email`, for the forwarding path's
+// internal person (WP8.3); it is never logged.
 // A refusal answers with an `ErrorBody` that names no reason; the reason is logged, with the
 // path but never the query string, the assertion or the email.
 
@@ -39,7 +44,7 @@ import {
 import { isAllowedHost, parseHostnames, strippedHeaders } from "./hosts.ts";
 import { clientKey, type LimitDecision, RateLimiter } from "./limits.ts";
 import { originAllowed } from "./origin.ts";
-import { type OwnerPin, parseOwnerPin } from "./owner.ts";
+import { normalizeEmail, type OwnerPin, parseOwnerPin } from "./owner.ts";
 
 /**
  * The Worker variables ingress reads. All are plain configuration, written at installation
@@ -55,6 +60,12 @@ export interface IngressEnv {
   /** The owner's address as a salted hash (`makeOwnerPin` in owner.ts). Required. */
   readonly OWNER_EMAIL_HASH?: string | undefined;
   /**
+   * Who ingress admits (WP8.3): `owner` (the default, and anything unrecognised) admits only the
+   * pinned owner, as before teams; `members` admits every identity Access admitted for this
+   * application, and leaves who they are to Omnigent's membership binding.
+   */
+  readonly TEAM_ADMISSION?: string | undefined;
+  /**
    * Local end-to-end runs only: a certs origin on `http://127.0.0.1:<port>` or
    * `http://localhost:<port>`. Ignored in any other form. A deployed Worker cannot reach either,
    * so a stray value fails closed.
@@ -62,10 +73,28 @@ export interface IngressEnv {
   readonly ACCESS_CERTS_URL_LOCAL_ONLY?: string | undefined;
 }
 
-/** Who ingress admitted. Always the pinned owner (R-29); the email is deliberately not passed on. */
+/**
+ * Who ingress admitted: the pinned owner (R-29) or, with `TEAM_ADMISSION=members`, anyone Access
+ * admitted for this application. The email reaches only the forwarding path's internal header
+ * (`ForwardedPerson`), never a log.
+ */
 export interface OwnerIdentity {
   /** Access's user ID (`sub`), stable for this person in this Access account. */
   readonly sub: string;
+  /**
+   * The assertion's issuer (`https://<team>.cloudflareaccess.com`) and this application's AUD
+   * tag. Ingress always sets both; an identity without them (built by hand) is never forwarded
+   * as a person.
+   */
+  readonly issuer?: string;
+  readonly audience?: string;
+  /** The verified address, lowercase, when the assertion carries one. */
+  readonly email?: string | undefined;
+  /**
+   * Whether the address matched the owner pin: always true in `owner` admission, so only
+   * `members` admission yields false. Treat only `false` as "not the owner".
+   */
+  readonly pin?: boolean;
   /**
    * The Access session this request belongs to: a hash of `sub`, the assertion's `iat` (its
    * `exp` when `iat` is absent) and Access's `identity_nonce`. Capabilities bind to it (WP3.5).
@@ -103,6 +132,12 @@ export type IngressFailure =
 export interface Admitted {
   readonly ok: true;
   readonly identity: OwnerIdentity;
+  /**
+   * The admission that let it in (WP8.3). With `members`, the pin only marks an address: who the
+   * person is, the pinned owner included, is their active Omnigent membership (`member-seam.ts`).
+   * Ingress always sets it; absent (a value built by hand) means `owner`.
+   */
+  readonly admission?: "owner" | "members";
   /**
    * The request to pass on: the same method, URL, body and upgrade, with identity headers and
    * the `CF_Authorization` cookie removed. Omnigent's own `Authorization` header and session
@@ -186,6 +221,8 @@ export interface IngressConfig {
   readonly settings: AccessSettings;
   readonly hostnames: readonly string[];
   readonly owner: OwnerPin;
+  /** `owner`: only the pinned owner; `members`: whoever Access admitted. */
+  readonly admission: "owner" | "members";
   /** The team's certs endpoint, or the local stand-in's. */
   readonly certsUrl: string;
 }
@@ -205,7 +242,8 @@ export function parseIngressEnv(env: IngressEnv): IngressConfig | undefined {
     local !== undefined && LOCAL_CERTS.test(local)
       ? `${local}/cdn-cgi/access/certs`
       : certsUrlFor(issuer);
-  return { settings: { issuer, audience }, hostnames, owner, certsUrl };
+  const admission = env.TEAM_ADMISSION?.trim() === "members" ? "members" : "owner";
+  return { settings: { issuer, audience }, hostnames, owner, admission, certsUrl };
 }
 
 /** What `createIngress` runs on: injected so that tests drive the clock, keys and limits. */
@@ -259,9 +297,8 @@ export function createIngress(config: IngressConfig | undefined, deps: IngressDe
       );
       if (!assertion.ok) return refuse(assertion.reason, request, url);
       const { sub, email, iat, exp } = assertion.claims;
-      if (email === undefined || !(await config.owner.matches(email))) {
-        return refuse("not_owner", request, url);
-      }
+      const pin = email !== undefined && (await config.owner.matches(email));
+      if (!pin && config.admission === "owner") return refuse("not_owner", request, url);
 
       const origin = url.origin;
       if (!originAllowed(request, origin)) return refuse("bad_origin", request, url);
@@ -270,12 +307,17 @@ export function createIngress(config: IngressConfig | undefined, deps: IngressDe
         ok: true,
         identity: {
           sub,
+          issuer: config.settings.issuer,
+          audience: config.settings.audience,
+          email: email === undefined ? undefined : normalizeEmail(email),
+          pin,
           sessionId: await sessionIdOf(assertion.claims),
           issuedAt: iat,
           expiresAt: exp,
         },
         request: new Request(request, { headers: strippedHeaders(request.headers) }),
         origin,
+        admission: config.admission,
       };
     },
   };
@@ -297,6 +339,7 @@ export function ingressFromEnv(env: IngressEnv): Ingress {
     env.ALLOWED_HOSTNAMES,
     env.OWNER_EMAIL_HASH,
     env.ACCESS_CERTS_URL_LOCAL_ONLY,
+    env.TEAM_ADMISSION,
   ]);
   if (cached?.key === key) return cached.ingress;
   const config = parseIngressEnv(env);

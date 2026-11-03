@@ -411,7 +411,15 @@ describe("request shapes", () => {
       [{ ...record, ciphertext: "not base64url!" }, 422, "unusable"],
       [{ ...record, ciphertext: "A" }, 422, "unusable"],
       [{ ...record, ciphertext: base64url(new Uint8Array(27)) }, 422, "unusable"],
-      [{ ...record, ciphertext: `${record.ciphertext.slice(0, -2)}AA` }, 422, "unusable"],
+      // Always a different tail: a sealed record may already end in "AA".
+      [
+        {
+          ...record,
+          ciphertext: `${record.ciphertext.slice(0, -2)}${record.ciphertext.endsWith("AA") ? "BB" : "AA"}`,
+        },
+        422,
+        "unusable",
+      ],
     ];
     for (const [fields, status, expected] of cases) {
       const response = await handleKeyServiceRequest(

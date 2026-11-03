@@ -6,6 +6,8 @@
 
 import type { WebEnv } from "./env.ts";
 import { type Admitted, withIngress } from "./ingress/index.ts";
+import { refusedPage } from "./pages/computers.ts";
+import { bindingsPagePersonBackend, memberSeam } from "./pages/member-seam.ts";
 import {
   bindingsPasswordBackend,
   type FirstVisitMemo,
@@ -18,6 +20,9 @@ import { proxyToOmnigent } from "./server/proxy.ts";
 async function loadPageAssets() {
   return (await import("./pages/assets.ts")).ASSETS;
 }
+
+/** Owner admission's refusal of the platform pages to anyone but the installation's owner. */
+const OWNER_PAGES = "These pages are the installation owner's. Use Omnigent instead.";
 
 /** This isolate's memory of the owner's password (WP3.34): once chosen, it stops asking. */
 const firstVisit: FirstVisitMemo = { chosen: false };
@@ -33,16 +38,41 @@ export async function routeAdmitted(
   _ctx: ExecutionContext,
 ): Promise<Response> {
   const path = new URL(admitted.request.url).pathname;
-  if (isPlatformPath(path)) {
-    return routePlatform(admitted, env, { assets: loadPageAssets });
+  const log = (fields: Readonly<Record<string, string>>) =>
+    console.log(JSON.stringify({ ...fields, path: path.slice(0, 256) }));
+  if (admitted.admission === "members") return routeMember(admitted, env, path, log);
+  // Owner admission (a team of one): ingress admits only the pinned owner.
+  if (admitted.identity.pin === false) {
+    return isPlatformPath(path) ? refusedPage(403, OWNER_PAGES) : proxyToOmnigent(admitted, env);
   }
+  if (isPlatformPath(path)) return routePlatform(admitted, env, { assets: loadPageAssets });
   const redirect = await firstVisitRedirect(
     admitted,
     bindingsPasswordBackend(env),
     firstVisit,
-    (fields) => console.log(JSON.stringify({ ...fields, path: path.slice(0, 256) })),
+    log,
   );
   return redirect ?? proxyToOmnigent(admitted, env);
+}
+
+/**
+ * Members admission (WP8.3): Omnigent is everyone's, and decides who they are itself. The
+ * platform pages decide per person through the membership seam (`member-seam.ts`), and
+ * WorkspaceDO per computer (WP8.4): a member reaches her own computers, an administrator the
+ * fleet view, and only the installation's owner the owner's own pages. There is no first-visit
+ * redirect: the owner chose a password before the team.
+ */
+function routeMember(
+  admitted: Admitted,
+  env: WebEnv,
+  path: string,
+  log: (fields: Readonly<Record<string, string>>) => void,
+): Promise<Response> {
+  if (!isPlatformPath(path)) return proxyToOmnigent(admitted, env);
+  return routePlatform(admitted, env, {
+    assets: loadPageAssets,
+    person: memberSeam(bindingsPagePersonBackend(env), log),
+  });
 }
 
 export default {

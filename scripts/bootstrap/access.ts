@@ -82,12 +82,25 @@ export interface OwnerOnlyCheck {
   readonly isOwner: (email: string) => boolean;
   /** F7-staging: the service token the application may also admit, in one policy of its own. */
   readonly serviceTokenId?: string | undefined;
+  /**
+   * Teams (WP8.3): the installation's recorded member group, which a policy may allow in place
+   * of the owner's address (`{ group: { id } }`, alone in its policy). Any other group is refused.
+   */
+  readonly memberGroupId?: string | undefined;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+/** Whether a rule is exactly `{ group: { id: <memberGroupId> } }`. */
+function isMemberGroupRule(rule: unknown, memberGroupId: string | undefined): boolean {
+  const r = record(rule);
+  if (memberGroupId === undefined || r === undefined || Object.keys(r).length !== 1) return false;
+  const group = record(r.group);
+  return group !== undefined && Object.keys(group).length === 1 && group.id === memberGroupId;
 }
 
 /** The single rule an owner-only policy may hold: `{ email: { email: <address> } }`. */
@@ -189,6 +202,11 @@ export function ownerOnlyProblems(app: unknown, check: OwnerOnlyCheck): AccessPr
     const include = p.include;
     if (!Array.isArray(include) || include.length === 0) {
       add("rules", "has a policy with no rule", remove);
+      continue;
+    }
+    if (include.length === 1 && isMemberGroupRule(include[0], check.memberGroupId)) {
+      // The member group: seeded with the owner, and kept so by the reconciler (WP8.3).
+      owners++;
       continue;
     }
     let ownerOnly = true;

@@ -72,8 +72,11 @@ export interface TokenRequest {
 
 /** What the bootstrap needs of Cloudflare's user API tokens. cloud.ts implements it with cf. */
 export interface TokenApi {
-  /** The ID of the one bucket-scoped permission group with this name. */
-  permissionGroup(name: string): string;
+  /**
+   * The ID of the one permission group with this name in *scope* (R2's bucket scope by default;
+   * the team reconciler's token asks for the account scope).
+   */
+  permissionGroup(name: string, scope?: string): string;
   /** Creates a token, and returns its ID and its value, which Cloudflare shows only now. */
   create(request: TokenRequest): { readonly id: string; readonly value: string };
   /** Every user API token of the login, expired ones included. An OAuth login gets 403. */

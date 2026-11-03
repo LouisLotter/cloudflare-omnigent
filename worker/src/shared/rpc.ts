@@ -3,6 +3,8 @@
 // request to the lead, together with its fake in test/support/.
 
 import {
+  type AccessAdmissionCall,
+  type AccessAdmissionResult,
   type BootstrapStatus,
   type ComputerCall,
   ComputerId,
@@ -19,6 +21,8 @@ import {
   type OwnerPasswordResult,
   type PageFrontCall,
   type PageFrontResult,
+  type PagePersonCall,
+  type PagePersonResult,
   type PageReadCall,
   type PageReadResult,
   type PagesCall,
@@ -139,6 +143,20 @@ export interface OmnigentServerRpc {
    * with an RPC error, which the page shows as "still finishing".
    */
   githubSetup(call: GitHubSetupCall): Promise<GitHubSetupResult>;
+  /**
+   * Which team member an Access identity is bound to (WP8.3, `contracts/src/team.ts`), for the
+   * platform pages' person seam: one signed platform call to the server (`/_cfo/page-person`).
+   * `unsupported` from a server whose Omnigent has no team model, `unavailable` while it does not
+   * answer. Added in version 1, additively, as `ownerPassword` was: an older object answers with
+   * an RPC error, which the seam treats as a refusal.
+   */
+  pagePerson(call: PagePersonCall): Promise<PagePersonResult>;
+  /**
+   * Who Cloudflare Access admits (WP8.3): for `platform.internal`'s admission route only, from
+   * the platform Worker itself, after it verified the server's signature. Writes the
+   * installation's member group and keeps the applied revision. Not on the web Worker's path.
+   */
+  admission(call: AccessAdmissionCall): Promise<AccessAdmissionResult>;
 }
 
 // ---------------------------------------------------------------------------------------------

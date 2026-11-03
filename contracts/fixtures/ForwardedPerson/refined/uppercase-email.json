@@ -1,0 +1,8 @@
+{
+  "issuer": "https://i",
+  "subject": "s",
+  "audience": "a",
+  "email": "Alice@Example.test",
+  "installationOwner": false,
+  "expiresAt": 1
+}

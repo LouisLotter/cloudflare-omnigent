@@ -6,10 +6,10 @@
 // what a person may see and do there is decided in WorkspaceDO, never here.
 //
 // Before teams, ingress admits only the installation's owner (the owner pin, `ingress/owner.ts`),
-// so the seam answers `installation_owner` for every admitted request. WP8.3 replaces it with a
-// membership lookup: the Access identity's bound team member and role, or no person (refused)
-// for an identity Omnigent does not bind to an active member. Pages never read the identity
-// themselves.
+// so the seam answers `installation_owner` for every admitted request. In members admission
+// (WP8.3) the web Worker passes `member-seam.ts` instead: the Access identity's bound team member
+// and role, or no person (refused) for an identity Omnigent does not bind to an active member.
+// Pages never read the identity themselves.
 
 import type { PagePerson } from "@cfo/contracts";
 import type { Admitted } from "../ingress/index.ts";
@@ -22,7 +22,8 @@ export const installationOwnerSeam: PersonSeam = async () => ({ kind: "installat
 
 /**
  * Whether the person may use the installation owner's own pages (the owner's Omnigent password,
- * the GitHub App's setup). Only the installation's owner; WP8.3 decides them per member.
+ * the GitHub App's setup). Only the installation's owner; in members admission, the active owner
+ * on the installation's named account (`member-seam.ts`).
  */
 export function isInstallationOwner(person: PagePerson): boolean {
   return person.kind === "installation_owner";

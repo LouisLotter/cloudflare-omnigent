@@ -5,7 +5,8 @@
 //     service tokens or policies; besides its deploys it creates only a missing R2 bucket of the
 //     plan, the installation's own R2 user API token, which it may also delete (WP3.25), and the
 //     hostname's owner-only Access application and the one-time PIN login method (WP3.31), only
-//     through cloud.ts's cfAccessApi, which may also delete the application for removal;
+//     through cloud.ts's cfAccessApi, which may also delete the application for removal, and the
+//     installation's member group (WP8.3), only through cloud.ts's cfAccessGroupsApi;
 //   - the one exception, the devices step (WP3.43), changes exactly three things through
 //     cloud.ts's cfDevicesApi: the installation's application (a full-object update), the Zero
 //     Trust organization (a full-object update) and the default device profile's split tunnel,
@@ -263,6 +264,7 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "settings.ts",
       "staging.ts",
       "state.ts",
+      "team-admission.ts",
       "update-command.ts",
       "update.ts",
       "window.ts",
@@ -307,6 +309,8 @@ describe("the bootstrap never talks to the installation, changes Access or makes
         /"user",\s*"tokens",\s*"(create|roll|delete)"/g,
         /"zero-trust",\s*"access",\s*"applications",\s*"(create|delete)"/g,
         /"zero-trust",\s*"identity-providers",\s*"create"/g,
+        // The installation's member group (WP8.3), created once in cloud.ts's cfAccessGroupsApi.
+        /"zero-trust",\s*"access",\s*"rule-groups",\s*"create"/g,
         // The devices step's three updates (WP3.43), in cloud.ts's cfDevicesApi only.
         /"zero-trust",\s*"organization",\s*"update"/g,
         /"zero-trust",\s*"access",\s*"applications",\s*"update"/g,

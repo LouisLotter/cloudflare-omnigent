@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "audience": {
+      "maxLength": 255,
+      "minLength": 1,
+      "type": "string"
+    },
+    "interfaceVersion": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "issuer": {
+      "maxLength": 512,
+      "minLength": 1,
+      "type": "string"
+    },
+    "subject": {
+      "maxLength": 255,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "interfaceVersion",
+    "issuer",
+    "subject",
+    "audience"
+  ],
+  "title": "PagePersonCall",
+  "type": "object"
+}
