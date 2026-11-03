@@ -49,6 +49,7 @@ import {
   type InterceptProps,
   LAUNCHER_OPERATIONS,
   LauncherCall,
+  type LauncherOwner,
   type LauncherRequest,
   type LauncherResult,
   type LifecycleEvent,
@@ -136,19 +137,34 @@ import {
   wouldReserve,
 } from "./machine.ts";
 import {
+  bindingFor,
+  checkLauncherOwner,
+  nameContradictsHost,
+  type OwnerBinding,
+  type OwnerRefusal,
+  ownerTag,
+  stampMatches,
+} from "./ownership.ts";
+import {
   type CaptureRecord,
   ComputerRecord,
+  NO_OWNERSHIP,
   newRecord,
   OPERATION_PREFIX,
   OPERATION_TIME_PREFIX,
   OperationRecord,
+  OWNERSHIP_KEY,
+  OwnershipRecord,
   RECORD_KEY,
   SLEEP_PREFIX,
   STATUS_LOG_KEY,
   StatusLogRecord,
   type Store,
+  splitWorking,
+  stampFor,
   TOKEN_KEY,
   TokenRecord,
+  type WorkingRecord,
 } from "./record.ts";
 import {
   fence,
@@ -202,7 +218,15 @@ import { isTransientUploadError } from "./upload-errors.ts";
  * by the generation whose upload it is, so the fence admits only this generation's pending keys.
  */
 export interface CheckpointBucket {
-  put(key: string, body: Uint8Array, writer: { readonly generation: number }): Promise<void>;
+  /**
+   * A credential bundle's put for this generation's pending upload. `owner`: the computer's owner
+   * tag (`ownerTag`, WP8.4), kept as the object's metadata; never the account ID.
+   */
+  put(
+    key: string,
+    body: Uint8Array,
+    writer: { readonly generation: number; readonly owner?: string },
+  ): Promise<void>;
   /** The object's bytes, or null if it does not exist. */
   get(key: string): Promise<Uint8Array | null>;
   /** Deleting a missing object succeeds. */
@@ -327,6 +351,12 @@ export interface ControllerDeps {
    * on production: WorkspaceDO sets it only from the staging tool's variable.
    */
   readonly stagingChecks?: boolean;
+  /**
+   * The installation owner's Omnigent account (WP8.4): the person every computer recorded without
+   * an owner belongs to, and the only one a version 1 launcher call acts for. Null or absent: not
+   * configured, so no computer is adopted and a version 1 call reaches only unbound computers.
+   */
+  readonly installationOwner?: string | null;
 }
 
 /** The soonest the alarm is ever set after now. */
@@ -473,19 +503,49 @@ export class WorkspaceController {
     this.#d.log(event, { computerId: this.#d.computerId, ...fields });
   }
 
-  #load(): ComputerRecord | null {
+  /** The record with its ownership (WP8.4), which is kept under its own key. */
+  #load(): WorkingRecord | null {
     const raw = this.#d.store.get(RECORD_KEY);
-    return raw === undefined ? null : ComputerRecord.parse(raw);
+    if (raw === undefined) return null;
+    const ownership = this.#ownership();
+    return {
+      ...ComputerRecord.parse(raw),
+      owner: ownership.binding,
+      workspaceStamp: ownership.workspace,
+      credentialStamp: ownership.credential,
+    };
+  }
+
+  #ownership(): OwnershipRecord {
+    const raw = this.#d.store.get(OWNERSHIP_KEY);
+    return raw === undefined ? NO_OWNERSHIP : OwnershipRecord.parse(raw);
+  }
+
+  /**
+   * Stores a working record: the record as `ComputerRecord`, the shape the previous platform
+   * Worker reads too, and its ownership under OWNERSHIP_KEY, written only when it changed and
+   * never while it is empty and none is stored (an installation that never names owners keeps
+   * exactly its old storage). Each is checked before it is written. Callers run it inside a
+   * transaction, so both commit together.
+   */
+  #save(d: WorkingRecord): void {
+    const { record, ownership } = splitWorking(d);
+    this.#d.store.put(RECORD_KEY, record);
+    const stored = this.#d.store.get(OWNERSHIP_KEY);
+    const empty =
+      ownership.binding === null && ownership.workspace === null && ownership.credential === null;
+    if (stored === undefined ? empty : JSON.stringify(stored) === JSON.stringify(ownership)) return;
+    this.#d.store.put(OWNERSHIP_KEY, ownership);
   }
 
   /** One transaction: load, change, save. */
-  #write<T>(fn: (d: ComputerRecord) => T): T {
+  #write<T>(fn: (d: WorkingRecord) => T): T {
     return this.#d.store.transaction(() => {
       const d = this.#load();
       if (d === null) throw platformError("not_found", "no such computer");
       const result = fn(d);
       // Checked before it is written: a record that would not read back is never stored.
-      this.#d.store.put(RECORD_KEY, ComputerRecord.parse(d));
+      this.#save(d);
       return result;
     });
   }
@@ -514,7 +574,7 @@ export class WorkspaceController {
    * write to it. A write admitted earlier can still land, so it is deleted now and its tombstone
    * kept: late writes are cleaned up by the re-delete.
    */
-  #abandonUpload(d: ComputerRecord, checkpointId: string): void {
+  #abandonUpload(d: WorkingRecord, checkpointId: string): void {
     const key = credentialObjectKey(
       this.#d.computerId,
       checkpointId as CredentialManifest["checkpointId"],
@@ -530,7 +590,7 @@ export class WorkspaceController {
    * the lead's decision, 26 Oct). The cost is a few bytes per tombstone and one delete every
    * `credentialSweepMs`.
    */
-  async #sweep(r: ComputerRecord): Promise<boolean> {
+  async #sweep(r: WorkingRecord): Promise<boolean> {
     const now = this.#now();
     const due = r.credentialSweeps.find((x) => x.at <= now);
     if (due === undefined || this.#d.bucket === null) return false;
@@ -556,7 +616,7 @@ export class WorkspaceController {
    * admissions; a write admitted before it can land later, and this sweep cleans it up
    * (the lead's decision, 26 Oct).
    */
-  async #sweepRemoved(r: ComputerRecord): Promise<boolean> {
+  async #sweepRemoved(r: WorkingRecord): Promise<boolean> {
     const now = this.#now();
     const bucket = this.#d.bucket;
     if (bucket === null || r.prefixSweepAt === null || now < r.prefixSweepAt) return false;
@@ -667,7 +727,7 @@ export class WorkspaceController {
    * One event through the table, with its bookkeeping, inside the caller's transaction. The
    * effects that need I/O are left as intents in the record for `#reconcile`.
    */
-  #step(d: ComputerRecord, event: LifecycleEvent, facts: Facts, extra: Extra = {}): Transition {
+  #step(d: WorkingRecord, event: LifecycleEvent, facts: Facts, extra: Extra = {}): Transition {
     const before = d.lifecycle.context;
     const t = transition(d.lifecycle, event, guardInputs(facts), extra.reservedGeneration);
     d.lifecycle = {
@@ -879,13 +939,13 @@ export class WorkspaceController {
   }
 
   /** The setup terminal closes before a credential-sensitive step (WP3.5). */
-  #closeTerminal(d: ComputerRecord, reason: string): void {
+  #closeTerminal(d: WorkingRecord, reason: string): void {
     d.terminalOpenUntil = null;
     this.#d.terminal?.closeNow(reason);
   }
 
   /** The container stopped, or a new generation starts: everything bound to the old one ends. */
-  #containerGone(d: ComputerRecord): void {
+  #containerGone(d: WorkingRecord): void {
     if (d.capture !== null) {
       if (d.capture.backup !== null && d.capture.result !== "published")
         d.orphans.push(d.capture.backup);
@@ -929,10 +989,10 @@ export class WorkspaceController {
     facts: Facts,
     extra: Extra = {},
     unavailable: "throw" | "at_capacity" | "defer" = "throw",
-    commit: (d: ComputerRecord, reply: Reply | undefined) => void = () => undefined,
+    commit: (d: WorkingRecord, reply: Reply | undefined) => void = () => undefined,
   ): Promise<Reply | undefined | "deferred"> {
     const r = this.#require();
-    const apply = (d: ComputerRecord, f: Facts, x: Extra) => {
+    const apply = (d: WorkingRecord, f: Facts, x: Extra) => {
       const t = this.#step(d, event, f, x);
       commit(d, t.reply);
       return t;
@@ -1079,7 +1139,7 @@ export class WorkspaceController {
     return null;
   }
 
-  #require(): ComputerRecord {
+  #require(): WorkingRecord {
     const r = this.#load();
     if (r === null) throw platformError("not_found", "no such computer");
     return r;
@@ -1194,7 +1254,8 @@ export class WorkspaceController {
   // -------------------------------------------------------------------------------------------
   // The launcher API (from `internal/platform-api.ts`, after the HMAC and schema checks).
 
-  async launcher(raw: unknown): Promise<LauncherResult> {
+  /** A launcher call's checks before anything else: its shape, versions and computer. */
+  #validLauncherCall(raw: unknown): LauncherRequest {
     const parsed = LauncherCall.safeParse(raw);
     if (!parsed.success) throw platformError("bad_request", "not a LauncherCall");
     checkInterface(parsed.data.interfaceVersion);
@@ -1207,6 +1268,30 @@ export class WorkspaceController {
     if ("computerId" in request && request.computerId !== this.#d.computerId) {
       throw platformError("bad_request", "a call for another computer");
     }
+    return request;
+  }
+
+  /**
+   * Validates a launcher call and authorizes its owner against the committed binding, changing
+   * nothing (WP8.4). WorkspaceDO runs it before the page front's hooks (a `terminate` closes the
+   * setup terminal, a sleep closes an expired window), so a call the controller would refuse has
+   * no effect at all. `launcher`'s own check, inside the operation's serialization, stays the
+   * authoritative one; the hooks cannot run inside it, since closing the terminal waits on that
+   * serialization. A binding never moves to another person and only gains detail, so a call
+   * authorized here is not refused there, except for the same account naming another member
+   * while the binding learns its member at once.
+   */
+  authorizeLauncher(raw: unknown): void {
+    const request = this.#validLauncherCall(raw);
+    if (request.operation === "prepare") return;
+    const r = this.#load();
+    // No record: nothing is bound, and the call answers `not_found` (or `absent`) itself.
+    if (r === null) return;
+    this.#checkOwner(r, request.operation, request.owner);
+  }
+
+  async launcher(raw: unknown): Promise<LauncherResult> {
+    const request = this.#validLauncherCall(raw);
     const byId = LAUNCHER_OPERATIONS[request.operation].idempotency === "operation_id";
     const fingerprint = byId ? await fingerprintOf(request) : null;
     try {
@@ -1226,15 +1311,21 @@ export class WorkspaceController {
         supportedProtocolVersions: [...SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS],
       };
     }
-    if (request.operation === "provision") return this.#provision(request.name);
+    if (request.operation === "provision") return this.#provision(request.name, request.owner);
     const r = this.#load();
     if (r === null) {
       if (request.operation === "terminate") return { operation: "terminate", removal: "absent" };
       throw platformError("not_found", "no such computer");
     }
+    // The owner first (WP8.4): a call for someone else's computer learns nothing about it and
+    // changes nothing, not even the contact time. An adoption or a refinement is persisted with
+    // the contact time, before the call has any effect.
+    const bind = this.#checkOwner(r, request.operation, request.owner);
     this.#write((d) => {
       d.lastContactAt = this.#now();
+      if (bind !== null) d.owner = bind;
     });
+    this.#logBound(r.owner, bind, request.operation);
     if (fingerprint !== null) {
       const prior = this.#opFind("launcher", request.operationId, fingerprint);
       if (prior !== undefined) {
@@ -1348,6 +1439,36 @@ export class WorkspaceController {
     }
   }
 
+  /**
+   * The computer's owner binding and the installation's owner (WP8.4), for the page front's
+   * decisions. A read of committed state; null for a computer with no record.
+   */
+  ownership(): {
+    readonly binding: OwnerBinding | null;
+    readonly installationOwner: string | null;
+  } | null {
+    const r = this.#load();
+    if (r === null) return null;
+    return { binding: r.owner, installationOwner: this.#d.installationOwner ?? null };
+  }
+
+  /**
+   * A removal intent the setup page records (WP3.5): what Omnigent's `terminate` records, without a
+   * launcher owner to check. The page front has already decided that the person may remove this
+   * computer, and offers it only while Omnigent no longer calls (WP8.4).
+   */
+  async removeForPage(): Promise<"pending" | "resolved" | "absent"> {
+    try {
+      return await this.#exclusive(() => {
+        if (this.#load() === null) return "absent" as const;
+        const reply = this.#write((d) => this.#step(d, "terminate", {}).reply);
+        return expectReply(reply, "terminate").removal;
+      });
+    } finally {
+      this.#kick();
+    }
+  }
+
   #replyError(code: "gone" | "at_capacity" | "conflict"): Error {
     const messages = {
       gone: "This computer was removed.",
@@ -1362,7 +1483,7 @@ export class WorkspaceController {
   #recorded(
     operationId: string,
     fingerprint: string | null,
-    fn: (d: ComputerRecord) => Outcome,
+    fn: (d: WorkingRecord) => Outcome,
   ): LauncherResult {
     const outcome = this.#write((d) => {
       const result = fn(d);
@@ -1374,25 +1495,73 @@ export class WorkspaceController {
     return outcome.result as LauncherResult;
   }
 
-  #provision(name: string): LauncherResult {
+  #provision(name: string, owner: LauncherOwner | undefined): LauncherResult {
     const now = this.#now();
-    this.#d.store.transaction(() => {
+    const bound = this.#d.store.transaction((): [OwnerBinding | null, OwnerBinding | null] => {
       const existing = this.#load();
       if (existing === null) {
-        this.#d.store.put(
-          RECORD_KEY,
-          ComputerRecord.parse({ ...newRecord(this.#d.computerId, now), name, lastContactAt: now }),
-        );
-        return;
+        // A new computer is bound to its owner in the same write that records it (WP8.4).
+        if (owner !== undefined && nameContradictsHost(name, owner.hostId)) {
+          this.#refuseOwner("provision", "other_host");
+        }
+        this.#save({
+          ...newRecord(this.#d.computerId, now),
+          name,
+          lastContactAt: now,
+          owner: owner === undefined ? null : bindingFor(owner, "provision", now),
+          workspaceStamp: null,
+          credentialStamp: null,
+        });
+        return [null, null];
       }
+      const bind = this.#checkOwner(existing, "provision", owner);
       if (existing.lifecycle.context.removalIntent)
         throw platformError("gone", "this computer was removed");
       if (existing.name !== null && existing.name !== name) {
         throw platformError("conflict", "this computer was provisioned under another name");
       }
-      this.#d.store.put(RECORD_KEY, { ...existing, name, lastContactAt: now });
+      this.#save({ ...existing, name, lastContactAt: now, owner: bind ?? existing.owner });
+      return [existing.owner, bind];
     });
+    this.#logBound(bound[0], bound[1], "provision");
     return { operation: "provision", computerId: this.#d.computerId };
+  }
+
+  /**
+   * A launcher call's owner against the computer's binding (WP8.4, `ownership.ts`): the binding to
+   * persist before the call has any effect (an adoption or a refinement), or null when it stays.
+   * Refused with `forbidden`, before anything else about the call, when the computer belongs to
+   * someone else or another host; the log names the operation and the reason only.
+   */
+  #checkOwner(
+    r: WorkingRecord,
+    operation: LauncherRequest["operation"],
+    owner: LauncherOwner | undefined,
+  ): OwnerBinding | null {
+    const decision = checkLauncherOwner({
+      binding: r.owner,
+      hostId: r.hostId,
+      name: r.name,
+      owner,
+      installationOwner: this.#d.installationOwner ?? null,
+      now: this.#now(),
+    });
+    if (!decision.ok) this.#refuseOwner(operation, decision.reason);
+    return decision.bind;
+  }
+
+  /** Logs a binding persisted by `#checkOwner`'s decision, once its write committed. */
+  #logBound(before: OwnerBinding | null, bound: OwnerBinding | null, operation: string): void {
+    if (bound === null) return;
+    this.#log(before === null ? "owner_adopted" : "owner_refined", {
+      operation,
+      owner: ownerTag(bound),
+    });
+  }
+
+  #refuseOwner(operation: string, reason: OwnerRefusal): never {
+    this.#log("owner_refused", { operation, reason });
+    throw platformError("forbidden", "This computer belongs to someone else.");
   }
 
   /**
@@ -1457,12 +1626,12 @@ export class WorkspaceController {
     return answer;
   }
 
-  #currentReport(r: ComputerRecord): NonNullable<ComputerRecord["report"]> | null {
+  #currentReport(r: WorkingRecord): NonNullable<ComputerRecord["report"]> | null {
     return r.report !== null && r.report.generation === r.lifecycle.generation ? r.report : null;
   }
 
   /** Asks the supervisor for its report now; null if it cannot answer. */
-  async #freshReport(r: ComputerRecord): Promise<SupervisorReport | null> {
+  async #freshReport(r: WorkingRecord): Promise<SupervisorReport | null> {
     try {
       const reply = await this.#command({
         type: "status",
@@ -1563,7 +1732,7 @@ export class WorkspaceController {
   }
 
   /** Applies a report if it is newer than the last for its generation (state, not events). */
-  #applyReport(d: ComputerRecord, generation: number, report: SupervisorReport): void {
+  #applyReport(d: WorkingRecord, generation: number, report: SupervisorReport): void {
     if (generation !== d.lifecycle.generation) return;
     if (d.report !== null && d.report.generation === generation && report.seq <= d.report.seq)
       return;
@@ -1595,7 +1764,7 @@ export class WorkspaceController {
    */
   async #credentialCheckpoint(bundle: CredentialBundle): Promise<SupervisorReply> {
     const r = this.#require();
-    const allowed = (record: ComputerRecord) =>
+    const allowed = (record: WorkingRecord) =>
       ruleFor(record.lifecycle.context, "credential_checkpoint").effects?.includes(
         "publish_credentials",
       ) ?? false;
@@ -1652,7 +1821,10 @@ export class WorkspaceController {
     const object = bundleObject(bundle);
     const manifest = await credentialManifestOf({ bundle, checkpointId, object, now: this.#now() });
     try {
-      await bucket.put(manifest.object.key, object, { generation: bundle.generation });
+      await bucket.put(manifest.object.key, object, {
+        generation: bundle.generation,
+        owner: ownerTag(r.owner),
+      });
     } catch (error) {
       this.#log("credential_store_failed", { error: describe(error) });
       throw platformError("unavailable", "the credential checkpoint could not be stored; retry");
@@ -1665,6 +1837,7 @@ export class WorkspaceController {
       }
       if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
       d.credential = manifest;
+      d.credentialStamp = stampFor(d.owner, manifest);
       if (holdsLogin(manifest.files)) d.everHeldLogin = true;
       d.signOut = {
         ...d.signOut,
@@ -1720,7 +1893,7 @@ export class WorkspaceController {
       reply?.kind === "page_refused"
         ? { action, outcome: "refused", reason: reply.reason }
         : { action, outcome: "accepted" };
-    const act = (fn: (d: ComputerRecord) => PagesResult): PagesResult =>
+    const act = (fn: (d: WorkingRecord) => PagesResult): PagesResult =>
       this.#write((d) => {
         const result = fn(d);
         record(result);
@@ -1777,7 +1950,7 @@ export class WorkspaceController {
     }
   }
 
-  #pageState(r: ComputerRecord): ComputerPageState {
+  #pageState(r: WorkingRecord): ComputerPageState {
     const now = this.#now();
     const ctx = r.lifecycle.context;
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
@@ -1851,7 +2024,7 @@ export class WorkspaceController {
   // Sign-in from the page, the computer's status and the staging switch (WP3.23), behind the page
   // front (`page-front.ts`), which has checked the owner's request-intent token for every change.
 
-  #signInFacts(r: ComputerRecord) {
+  #signInFacts(r: WorkingRecord) {
     const ctx = r.lifecycle.context;
     return {
       removal: ctx.removalIntent || ctx.state === "removed",
@@ -1930,7 +2103,7 @@ export class WorkspaceController {
    * offers the terminal. Null: no answer now (the runner tries again).
    */
   async #deliverStart(
-    r: ComputerRecord,
+    r: WorkingRecord,
     a: SignInAttemptRecord,
   ): Promise<SignInView | "unsupported" | null> {
     let view: SignInView;
@@ -2051,7 +2224,7 @@ export class WorkspaceController {
    * An attempt's cancel, to the supervisor; true once answered. A cancel is owed only to the
    * running generation's supervisor: a container's end clears it (`endWithContainer`).
    */
-  async #deliverCancel(r: ComputerRecord, a: SignInAttemptRecord): Promise<boolean> {
+  async #deliverCancel(r: WorkingRecord, a: SignInAttemptRecord): Promise<boolean> {
     try {
       await this.#command({
         type: "sign_in_cancel",
@@ -2121,7 +2294,7 @@ export class WorkspaceController {
    * Whether this generation's supervisor keeps the setup terminal's shells in sessions that
    * outlive their streams (WP3.28): its `hello` named `terminal_sessions`.
    */
-  #keepsShells(r: ComputerRecord): boolean {
+  #keepsShells(r: WorkingRecord): boolean {
     const info = r.supervisorInfo;
     return (
       info !== null &&
@@ -2148,7 +2321,7 @@ export class WorkspaceController {
    * shell with its stream). Not while a capture pauses the computer: the supervisor refuses it
    * then, and the capture's own `endTerminals` covers a stop.
    */
-  async #advanceTerminalEnd(r: ComputerRecord): Promise<boolean> {
+  async #advanceTerminalEnd(r: WorkingRecord): Promise<boolean> {
     const terminal = this.#d.terminal;
     const end = terminal?.pendingEnd?.() ?? null;
     if (terminal === undefined || end === null) return false;
@@ -2186,12 +2359,12 @@ export class WorkspaceController {
   }
 
   /** Whether a sign-in cancel is still owed to the running generation's supervisor. */
-  #cancelsPending(r: ComputerRecord): boolean {
+  #cancelsPending(r: WorkingRecord): boolean {
     return r.signIn.attempts.some((a) => a.cancel === "pending");
   }
 
   /** The runner's part: cancels, expiries, undelivered starts, and finished attempts. */
-  async #advanceSignIns(r: ComputerRecord): Promise<boolean> {
+  async #advanceSignIns(r: WorkingRecord): Promise<boolean> {
     const now = this.#now();
     const generation = r.lifecycle.generation;
     const owed = r.signIn.attempts.find((a) => a.cancel === "pending");
@@ -2250,7 +2423,7 @@ export class WorkspaceController {
    * Staging only: the RC-53 switch, applied in each generation before its captures. `blocked`:
    * not applied yet, so no capture starts; `idle`: nothing to apply.
    */
-  async #advanceStagingCheck(r: ComputerRecord): Promise<"progress" | "blocked" | "idle"> {
+  async #advanceStagingCheck(r: WorkingRecord): Promise<"progress" | "blocked" | "idle"> {
     const want = r.rc53;
     const generation = r.lifecycle.generation;
     if (
@@ -2312,7 +2485,7 @@ export class WorkspaceController {
   }
 
   /** Staging's keep-awake switch holds now: on, and only ever on a staging installation. */
-  #keepAwake(r: ComputerRecord): boolean {
+  #keepAwake(r: WorkingRecord): boolean {
     return this.#d.stagingChecks === true && r.keepAwake;
   }
 
@@ -2368,7 +2541,7 @@ export class WorkspaceController {
 
   /** The supervisor's metrics: fresh enough from memory, or asked for now. */
   async #supervisorStatus(
-    r: ComputerRecord,
+    r: WorkingRecord,
     freshMs: number,
   ): Promise<{
     readonly part: ComputerStatusView["supervisor"];
@@ -2401,7 +2574,7 @@ export class WorkspaceController {
   }
 
   #compose(
-    r: ComputerRecord,
+    r: WorkingRecord,
     supervisor: {
       readonly part: ComputerStatusView["supervisor"];
       readonly status: SupervisorStatus | null;
@@ -2431,7 +2604,7 @@ export class WorkspaceController {
    * kept with the saves they belong to, and logged as `computer_status` (names and counts only)
    * on every change and at each interval.
    */
-  async #statusTick(r: ComputerRecord): Promise<void> {
+  async #statusTick(r: WorkingRecord): Promise<void> {
     const now = this.#now();
     const interval = this.#t.statusIntervalMs ?? STATUS_INTERVAL_MS;
     // An unanswered read waits an interval: a silent supervisor never holds every runner pass.
@@ -2678,13 +2851,13 @@ export class WorkspaceController {
     return JSON.stringify(this.#load()) !== before;
   }
 
-  #internalSave(d: ComputerRecord, reason: "retry" | "backstop"): void {
+  #internalSave(d: WorkingRecord, reason: "retry" | "backstop"): void {
     const request: SaveRequest = { id: this.#d.newId("op"), reason, at: this.#now() };
     this.#step(d, "checkpoint", {}, { request });
   }
 
   /** Whether the container's state matches the lifecycle; corrects it if not. */
-  async #observe(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean | "deferred"> {
+  async #observe(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean | "deferred"> {
     const state = r.lifecycle.context.state;
     // The backoff belongs to one queued wake: whatever ends it, the next one starts afresh.
     if (!(state === "stopping" && r.lifecycle.context.wakeQueued)) {
@@ -2744,7 +2917,7 @@ export class WorkspaceController {
   }
 
   /** Every new instance re-arms the inactivity timeout and refreshes the intercepts' props. */
-  async #rearm(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
+  async #rearm(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean> {
     const state = r.lifecycle.context.state;
     if (!port.running || !containerMayRun(state) || state === "waking") return false;
     if (this.#renewTimeout) {
@@ -2758,7 +2931,7 @@ export class WorkspaceController {
     return false;
   }
 
-  async #registerIntercepts(r: ComputerRecord, port: ComputerContainerPort): Promise<void> {
+  async #registerIntercepts(r: WorkingRecord, port: ComputerContainerPort): Promise<void> {
     const props: InterceptProps = {
       propsVersion: INTERCEPT_PROPS_VERSION,
       computerId: this.#d.computerId,
@@ -2771,7 +2944,7 @@ export class WorkspaceController {
   }
 
   /** `waking`: start the container, detect a refused start, retry it (DC-37). */
-  async #advanceStart(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
+  async #advanceStart(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean> {
     const generation = r.lifecycle.generation;
     const start = r.start;
     const step = (event: LifecycleEvent, facts: Facts = {}) =>
@@ -2852,14 +3025,14 @@ export class WorkspaceController {
   }
 
   /** `restoring`: the layers in order, the merge, then the credentials; then confirmed (R-19). */
-  async #advanceRestore(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
+  async #advanceRestore(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean> {
     const job = r.restore;
     const generation = r.lifecycle.generation;
     if (job === null || job.generation !== generation) {
       await this.#exclusive(() => this.#write((d) => this.#step(d, "restore_failed", {})));
       return true;
     }
-    const update = (fn: (d: ComputerRecord, j: NonNullable<ComputerRecord["restore"]>) => void) =>
+    const update = (fn: (d: WorkingRecord, j: NonNullable<ComputerRecord["restore"]>) => void) =>
       this.#exclusive(() =>
         this.#write((d) => {
           if (
@@ -2887,6 +3060,17 @@ export class WorkspaceController {
       });
       return false;
     };
+    // Both pointers must belong to this computer's owner (WP8.4): a checkpoint stamped for anyone
+    // else is never restored, and the start fails rather than come up with someone else's files
+    // or logins, or with none.
+    if (
+      (job.manifest !== null &&
+        !stampMatches(r.workspaceStamp, job.manifest.checkpointId, r.owner)) ||
+      (r.credential !== null &&
+        !stampMatches(r.credentialStamp, r.credential.checkpointId, r.owner))
+    ) {
+      return fail("owner_mismatch");
+    }
     const layers = job.manifest?.layers ?? [];
     try {
       if (job.phase === "layers") {
@@ -2950,6 +3134,7 @@ export class WorkspaceController {
         d.credentialFloor = { generation, floor: reply.orderFloor };
         if (read.lost) {
           d.credential = null;
+          d.credentialStamp = null;
           d.signOut = { ...d.signOut, loginPossiblyLost: true };
         }
         d.restoredTo = d.stop?.reason === "unexpected" ? (job.manifest?.cutAt ?? null) : null;
@@ -2992,12 +3177,12 @@ export class WorkspaceController {
   }
 
   /** `host_running`: hand the current attempt's parameters to the supervisor once (G1BR-005). */
-  async #advanceDeliver(r: ComputerRecord): Promise<boolean> {
+  async #advanceDeliver(r: WorkingRecord): Promise<boolean> {
     const params = r.params;
     if (r.lifecycle.context.state !== "host_running" || params === null || !params.deliver)
       return false;
     const token = TokenRecord.safeParse(this.#d.store.get(TOKEN_KEY));
-    const finish = (fn: (d: ComputerRecord) => void) =>
+    const finish = (fn: (d: WorkingRecord) => void) =>
       this.#exclusive(() =>
         this.#write((d) => {
           const current =
@@ -3037,7 +3222,7 @@ export class WorkspaceController {
 
   // Saves (D17, R-18, R-19).
 
-  async #advanceSaves(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
+  async #advanceSaves(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean> {
     if (r.capture !== null) return this.#advanceCapture(r, r.capture, port);
     const job = r.stopJob;
     if (job !== null && job.phase !== "capture") return false;
@@ -3078,11 +3263,11 @@ export class WorkspaceController {
   }
 
   async #advanceCapture(
-    r: ComputerRecord,
+    r: WorkingRecord,
     c: CaptureRecord,
     port: ComputerContainerPort,
   ): Promise<boolean> {
-    const update = (fn: (d: ComputerRecord, c: CaptureRecord) => void) =>
+    const update = (fn: (d: WorkingRecord, c: CaptureRecord) => void) =>
       this.#exclusive(() =>
         this.#write((d) => {
           if (d.capture !== null && d.capture.op === c.op) fn(d, d.capture);
@@ -3223,6 +3408,7 @@ export class WorkspaceController {
             if (outcome.outcome === "published") {
               d.orphans.push(...droppedLayers(d.workspace, outcome.manifest));
               d.workspace = outcome.manifest;
+              d.workspaceStamp = stampFor(d.owner, outcome.manifest);
               d.lastSavedAt = outcome.manifest.cutAt;
               d.unchanged = null;
               d.verified = { generation: x.generation, at: x.startedAt, how: "published" };
@@ -3359,7 +3545,7 @@ export class WorkspaceController {
   }
 
   /** A stop being prepared, after its capture: the final credential barrier (step 7). */
-  async #advanceStopJob(r: ComputerRecord): Promise<boolean> {
+  async #advanceStopJob(r: WorkingRecord): Promise<boolean> {
     const job = r.stopJob;
     if (job === null || job.phase === "capture" || job.generation !== r.lifecycle.generation)
       return false;
@@ -3411,7 +3597,7 @@ export class WorkspaceController {
   }
 
   /** `stopping`: the stop record is persisted; stop the container. */
-  async #advanceStopping(r: ComputerRecord, port: ComputerContainerPort): Promise<boolean> {
+  async #advanceStopping(r: WorkingRecord, port: ComputerContainerPort): Promise<boolean> {
     if (!port.running) return false;
     try {
       await port.destroy(r.stop?.reason ?? "stop");
@@ -3427,18 +3613,18 @@ export class WorkspaceController {
    * published, a read-back of the stored bundle showing no declared file (the bytes a fresh
    * computer's install would get; 3.C, open question 6).
    */
-  async #advanceSignOut(r: ComputerRecord): Promise<boolean> {
+  async #advanceSignOut(r: WorkingRecord): Promise<boolean> {
     const job = r.signOut.job;
     if (job === null || job.generation !== r.lifecycle.generation) return false;
     const update = (
-      fn: (d: ComputerRecord, j: NonNullable<ComputerRecord["signOut"]["job"]>) => void,
+      fn: (d: WorkingRecord, j: NonNullable<ComputerRecord["signOut"]["job"]>) => void,
     ) =>
       this.#exclusive(() =>
         this.#write((d) => {
           if (d.signOut.job !== null && d.signOut.job.op === job.op) fn(d, d.signOut.job);
         }),
       ).then(() => true);
-    const end = (d: ComputerRecord) => {
+    const end = (d: WorkingRecord) => {
       d.signOut = {
         ...d.signOut,
         phase: signOutAbandoned(d.signOut.phase, d.credential?.files ?? null),
@@ -3508,7 +3694,7 @@ export class WorkspaceController {
   }
 
   /** Background work that needs no particular state: releases, layer and bundle deletions. */
-  async #chores(r: ComputerRecord, port: ComputerContainerPort | null): Promise<boolean> {
+  async #chores(r: WorkingRecord, port: ComputerContainerPort | null): Promise<boolean> {
     const release = r.releases[0];
     if (release !== undefined) {
       try {
@@ -3584,10 +3770,10 @@ export class WorkspaceController {
   }
 
   /** A resolved removal: layers, then credential bundles, then ControlDO, then the records. */
-  async #advanceDeletion(r: ComputerRecord, port: ComputerContainerPort | null): Promise<boolean> {
+  async #advanceDeletion(r: WorkingRecord, port: ComputerContainerPort | null): Promise<boolean> {
     const deletion = r.deletion;
     if (deletion === null) return false;
-    const set = (fn: (d: ComputerRecord) => void) =>
+    const set = (fn: (d: WorkingRecord) => void) =>
       this.#exclusive(() => this.#write(fn)).then(() => true);
     try {
       switch (deletion.phase) {
@@ -3597,6 +3783,7 @@ export class WorkspaceController {
               d.orphans.push(...(d.workspace?.layers.map((l) => l.backup) ?? []));
               if (d.capture?.backup) d.orphans.push(d.capture.backup);
               d.workspace = null;
+              d.workspaceStamp = null;
               d.capture = null;
             });
           }
@@ -3618,6 +3805,7 @@ export class WorkspaceController {
               if (d.credential !== null) d.credentialDeletes.push(d.credential.object.key);
               for (const u of d.credentialUploads) this.#abandonUpload(d, u.checkpointId);
               d.credential = null;
+              d.credentialStamp = null;
               d.credentialUploads = [];
             });
           }
@@ -3688,7 +3876,7 @@ export class WorkspaceController {
   // -------------------------------------------------------------------------------------------
   // The computer API's commands (WorkspaceDO → supervisor, port 8090).
 
-  #envelope(r: ComputerRecord, operationId: string) {
+  #envelope(r: WorkingRecord, operationId: string) {
     return {
       protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
       computerId: this.#d.computerId,

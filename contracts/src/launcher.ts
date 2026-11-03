@@ -2,11 +2,13 @@ import { z } from "zod";
 import type { ErrorCode } from "./errors.ts";
 import {
   AbsolutePath,
+  AccountId,
   ComputerId,
   Generation,
   HostId,
   LauncherOperationId,
   StartAttempt,
+  TeamMemberId,
 } from "./ids.ts";
 
 // The launcher API: the Cloudflare launcher (Omnigent's `SandboxHostLauncher` in the server
@@ -15,9 +17,16 @@ import {
 // Its methods map one to one onto the launcher's, as core changes 13 and 15 built them in the
 // fork (`cfo/integration` `35ac1ebd2`, `omnigent/onboarding/sandboxes/{base,types}.py`).
 
-/** Launcher protocol versions this contract package understands. Version 1 is the first. */
+/**
+ * Launcher protocol versions this contract package understands. Version 1 is the first. Version 2
+ * (WP8.4, owner decision D50) is version 1 with the computer's owner (`LauncherOwner`) on every
+ * call but `prepare`; nothing else differs. A launcher sends version 2 whenever Omnigent tells it
+ * the owner, and version 1 otherwise (an Omnigent build without owners). The Worker supports both.
+ */
 export const LAUNCHER_PROTOCOL_VERSION = 1;
-export const SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS = [1] as const;
+/** The protocol version whose calls name the computer's owner. */
+export const LAUNCHER_OWNER_PROTOCOL_VERSION = 2;
+export const SUPPORTED_LAUNCHER_PROTOCOL_VERSIONS = [1, 2] as const;
 
 /** Reachable only from the server container, through its intercept. */
 export const PLATFORM_INTERNAL_HOST = "platform.internal";
@@ -202,15 +211,45 @@ export const HostConfig = z
   });
 
 // ---------------------------------------------------------------------------------------------
+// The computer's owner (protocol version 2; WP8.4, D50).
+
+/**
+ * The person a computer belongs to, as Omnigent derives it from its own records for each call: the
+ * host row's owner (`users.id`) and host ID and, where Omnigent has a team, that account's member
+ * and the team. Nothing a person or a runner sends chooses it. The launcher API's signature covers
+ * it, as it covers the whole body.
+ *
+ * The member ID is the stable identity of a person's registration: it survives a password change
+ * (which rotates Omnigent's account generation and moves the account's hosts with it) and is
+ * never reused, so a person removed and invited again is a new member. An Omnigent build without
+ * a team model sends `memberId` and `teamId` as null. WorkspaceDO binds the computer to the first
+ * owner it is provisioned for and refuses every call for another (`computer/ownership.ts`).
+ */
+export const LauncherOwner = z
+  .strictObject({
+    userId: AccountId,
+    memberId: TeamMemberId.nullable(),
+    teamId: TeamMemberId.nullable(),
+    hostId: HostId,
+  })
+  .refine((o) => (o.memberId === null) === (o.teamId === null), {
+    message: "a member is named with its team",
+  });
+export type LauncherOwner = z.infer<typeof LauncherOwner>;
+
+// ---------------------------------------------------------------------------------------------
 // Requests. Every request carries the protocol version and an operation ID. Unknown fields are
 // refused: any change raises the protocol version, and the Worker supports the current and the
 // previous version, so the server image and the Worker release separately (design, Upgrades).
+// From version 2, every request but `prepare` carries `owner`; a version 1 request never does
+// (`LauncherRequest`'s refinement).
 
 const call = {
   protocolVersion: z.number().int().min(1),
   operationId: LauncherOperationId,
 };
-const onComputer = { ...call, computerId: ComputerId };
+const owned = { ...call, owner: LauncherOwner.optional() };
+const onComputer = { ...owned, computerId: ComputerId };
 
 /** `prepare()`: the launcher's preflight. Read-only: checks the key and the protocol version. */
 export const PrepareRequest = z.strictObject({ operation: z.literal("prepare"), ...call });
@@ -218,7 +257,7 @@ export const PrepareRequest = z.strictObject({ operation: z.literal("prepare"), 
 /** `provision(name)`: records a computer at the default size. Idempotent by `name`. */
 export const ProvisionRequest = z.strictObject({
   operation: z.literal("provision"),
-  ...call,
+  ...owned,
   name: ProvisionName,
 });
 
@@ -283,20 +322,46 @@ export const TerminateRequest = z.strictObject({
   ...onComputer,
 });
 
-/** Every launcher API request, by `operation`. */
-export const LauncherRequest = z.discriminatedUnion("operation", [
-  PrepareRequest,
-  ProvisionRequest,
-  ClaimStartRequest,
-  StartHostRequest,
-  ResumeRequest,
-  KeepAliveRequest,
-  StatusRequest,
-  AdmissionRequest,
-  CheckpointRequest,
-  SuspendRequest,
-  TerminateRequest,
-]);
+/**
+ * Whether a request carries `owner` exactly when its protocol version asks for it: never in
+ * version 1 or in `prepare`, always otherwise.
+ */
+export function ownerMatchesVersion(request: {
+  readonly operation: string;
+  readonly protocolVersion: number;
+  readonly owner?: unknown;
+}): boolean {
+  const named = request.owner !== undefined;
+  if (request.operation === "prepare" || request.protocolVersion < LAUNCHER_OWNER_PROTOCOL_VERSION)
+    return !named;
+  return named;
+}
+
+/**
+ * Every launcher API request, by `operation`. Checked in TypeScript, not in the exported JSON
+ * Schema: `ownerMatchesVersion`, and that `start_host`'s owner names the host it starts.
+ */
+export const LauncherRequest = z
+  .discriminatedUnion("operation", [
+    PrepareRequest,
+    ProvisionRequest,
+    ClaimStartRequest,
+    StartHostRequest,
+    ResumeRequest,
+    KeepAliveRequest,
+    StatusRequest,
+    AdmissionRequest,
+    CheckpointRequest,
+    SuspendRequest,
+    TerminateRequest,
+  ])
+  .refine(ownerMatchesVersion, {
+    message: "version 2 names the owner on every call but prepare; version 1 never does",
+  })
+  .refine(
+    (r) => r.operation !== "start_host" || r.owner === undefined || r.owner.hostId === r.hostId,
+    { message: "start_host's owner names the host it starts" },
+  );
 export type LauncherRequest = z.infer<typeof LauncherRequest>;
 export type LauncherOperation = LauncherRequest["operation"];
 

@@ -28,7 +28,14 @@ import {
   type ControllerTiming,
   WorkspaceController,
 } from "../../src/computer/controller.ts";
-import { ComputerRecord, RECORD_KEY, TOKEN_KEY } from "../../src/computer/record.ts";
+import {
+  ComputerRecord,
+  NO_OWNERSHIP,
+  OWNERSHIP_KEY,
+  OwnershipRecord,
+  RECORD_KEY,
+  TOKEN_KEY,
+} from "../../src/computer/record.ts";
 import type { ComputerContainerPort } from "../../src/shared/computer-port.ts";
 import type { ControlRpc } from "../../src/shared/rpc.ts";
 import { FakeBucket } from "./fake-bucket.ts";
@@ -63,6 +70,8 @@ export interface SimOptions {
   readonly start?: number;
   /** A staging installation: the RC-53 switch is offered and applied (WP3.23). */
   readonly staging?: boolean;
+  /** The installation owner's account (WP8.4); none by default. */
+  readonly installationOwner?: string | null;
 }
 
 /** The running computer's supervisor; fails the test if no container runs. */
@@ -102,6 +111,7 @@ export class ComputerSim {
   readonly #noBucket: boolean;
   readonly #gateway: boolean;
   readonly #staging: boolean;
+  readonly #installationOwner: string | null;
   /** The gateway's checks, in order. */
   readonly gatewayChecks: { readonly key: string; readonly allowed: boolean }[] = [];
 
@@ -118,6 +128,7 @@ export class ComputerSim {
     this.#noBucket = options.noBucket ?? false;
     this.#gateway = options.gateway ?? false;
     this.#staging = options.staging ?? false;
+    this.#installationOwner = options.installationOwner ?? null;
     this.now = options.start ?? Date.UTC(2026, 9, 25, 9, 0, 0);
     this.timing = { ...CONTROLLER_TIMING, ...options.timing };
     this.client = new FakeLauncherClient(CMP, async (request) => {
@@ -260,6 +271,7 @@ export class ComputerSim {
         this.logs.push({ event, fields });
       },
       stagingChecks: this.#staging,
+      installationOwner: this.#installationOwner,
       terminal: {
         closeNow: (reason) => {
           this.terminal.closes.push(reason);
@@ -348,6 +360,12 @@ export class ComputerSim {
 
   record(): ComputerRecord {
     return ComputerRecord.parse(this.store.get(RECORD_KEY));
+  }
+
+  /** The computer's ownership (WP8.4), kept beside the record; none stored reads as none. */
+  ownership(): OwnershipRecord {
+    const raw = this.store.get(OWNERSHIP_KEY);
+    return raw === undefined ? NO_OWNERSHIP : OwnershipRecord.parse(raw);
   }
 
   /** The supervisor's queued messages, through the computer API, until none is acknowledged. */

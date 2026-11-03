@@ -223,6 +223,15 @@ export const ComputerPageState = z.looseObject({
   stagingChecks: z.boolean().optional(),
   /** The last final save outcome WorkspaceDO recorded (the list's "last save failed" badge). */
   lastSave: SaveOutcome.nullable().optional(),
+  // Additive (WP8.4): what the caller may do with this computer, from WorkspaceDO's page front.
+  /**
+   * `owner`: the computer is the caller's. `admin`: someone else's, seen by an administrator, who
+   * may stop it, remove it while Omnigent no longer calls it, and finish a pending removal; never
+   * its setup page, terminal or sign-ins. Absent from an older WorkspaceDO: the owner.
+   */
+  access: z.enum(["owner", "admin"]).optional(),
+  /** The owner's Omnigent account, for an administrator's view only. Rendered as text only. */
+  ownerName: z.string().min(1).max(255).nullable().optional(),
 });
 export type ComputerPageState = z.infer<typeof ComputerPageState>;
 

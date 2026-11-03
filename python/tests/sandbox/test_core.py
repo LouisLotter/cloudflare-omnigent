@@ -452,7 +452,7 @@ def test_terminate_is_idempotent_without_an_operation_id(
 def test_prepare_refuses_a_platform_without_our_protocol_version(
     api: FakeLauncherApi, core: LauncherCore
 ) -> None:
-    assert core.prepare().supported_protocol_versions == (1,)
+    assert core.prepare().supported_protocol_versions == (1, 2)
     api.supported_versions = [2]  # the request's version 1 is refused before any effect
     with pytest.raises(PlatformRefusal) as caught:
         core.prepare()
@@ -695,3 +695,135 @@ def test_suspend_polls_never_run_past_the_suspend_budget() -> None:
         core.suspend("cmp_01hzy3m8k6q4t2v9w7x5r0s1n3", "0" * 31 + "3")
     assert clock.now - started <= 1.03 + 1e-9
     assert all(when + timeout <= started + 1.03 + 1e-9 for when, timeout in clock.starts)
+
+
+# ── The computer's owner (WP8.4) ────────────────────────────────────────────────────────
+
+ALICE = protocol.Owner(
+    user_id="alice",
+    host_id="7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+    member_id="0a1b2c3d4e5f40718293a4b5c6d7e8f9",
+    team_id="9f8e7d6c5b4a49382716f5e4d3c2b1a0",
+)
+BOB = protocol.Owner(
+    user_id="bob",
+    host_id="7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+    member_id="1b2c3d4e5f60718293a4b5c6d7e8f90a",
+    team_id="9f8e7d6c5b4a49382716f5e4d3c2b1a0",
+)
+
+
+def _invoke_owned(
+    api: FakeLauncherApi, core: LauncherCore, operation: str, owner: protocol.Owner
+) -> object:
+    computer = api.add_computer(status="host_running", generation=2)
+    computer.owner = (owner.user_id, owner.member_id, owner.host_id)
+    cid = computer.computer_id
+    if operation == "provision":
+        return core.provision(computer.name, owner=owner)
+    if operation == "claim_start":
+        computer.status = "started_no_host"
+        return core.claim_start(cid, protocol.new_operation_id(), owner=owner)
+    if operation == "start_host":
+        computer.status, computer.attempt = "start_claimed", 1
+        return core.start_host(
+            cid,
+            start_attempt=1,
+            host_id=owner.host_id,
+            host_name="Work computer",
+            token=launch_token(),
+            host_config={},
+            owner=owner,
+        )
+    if operation == "checkpoint":
+        return core.checkpoint(cid, "turn_completed", owner=owner)
+    if operation == "suspend":
+        return core.suspend(cid, protocol.new_operation_id(), owner=owner)
+    return getattr(core, operation)(cid, owner=owner)
+
+
+OWNED = [op for op in protocol.OPERATIONS if op != "prepare"]
+
+
+@pytest.mark.parametrize("operation", OWNED)
+def test_every_call_names_its_owner_as_version_2(
+    api: FakeLauncherApi, core: LauncherCore, operation: str
+) -> None:
+    _invoke_owned(api, core, operation, ALICE)
+    sent = [r for r in api.requests if r.operation == operation]
+    assert sent and all(r.status == 200 for r in sent)
+    for record in sent:
+        assert record.body is not None and record.body["protocolVersion"] == 2
+        assert record.body["owner"] == {
+            "userId": "alice",
+            "memberId": ALICE.member_id,
+            "teamId": ALICE.team_id,
+            "hostId": ALICE.host_id,
+        }
+
+
+@pytest.mark.parametrize("operation", OWNED)
+def test_a_call_for_someone_elses_computer_is_a_readable_refusal_never_repeated(
+    api: FakeLauncherApi, core: LauncherCore, operation: str
+) -> None:
+    computer = api.add_computer(status="host_running", generation=2)
+    computer.owner = (BOB.user_id, BOB.member_id, BOB.host_id)
+    computer.status = "started_no_host" if operation == "claim_start" else computer.status
+    if operation == "start_host":
+        computer.status, computer.attempt = "start_claimed", 1
+    calls = {
+        "provision": lambda: core.provision(computer.name, owner=ALICE),
+        "claim_start": lambda: core.claim_start(
+            computer.computer_id, protocol.new_operation_id(), owner=ALICE
+        ),
+        "start_host": lambda: core.start_host(
+            computer.computer_id,
+            start_attempt=1,
+            host_id=ALICE.host_id,
+            host_name="Work computer",
+            token=launch_token(),
+            host_config={},
+            owner=ALICE,
+        ),
+        "checkpoint": lambda: core.checkpoint(computer.computer_id, "turn_completed", owner=ALICE),
+        "suspend": lambda: core.suspend(
+            computer.computer_id, protocol.new_operation_id(), owner=ALICE
+        ),
+    }
+    call = calls.get(operation, lambda: getattr(core, operation)(computer.computer_id, owner=ALICE))
+    with pytest.raises(PlatformRefusal) as caught:
+        call()
+    assert caught.value.code == "forbidden"
+    sent = [r for r in api.requests if r.operation == operation]
+    assert len(sent) == 1 and sent[0].status == 403
+    assert computer.tokens == [] and computer.status != "stopped"
+
+
+def test_an_owner_needs_a_platform_that_speaks_version_2(
+    api: FakeLauncherApi, core: LauncherCore
+) -> None:
+    api.supported_versions = [1]
+    computer = api.add_computer(status="host_running", generation=2)
+    assert core.resume(computer.computer_id).outcome == "running"  # version 1: unchanged
+    with pytest.raises(PlatformRefusal) as caught:
+        core.resume(computer.computer_id, owner=ALICE)
+    assert caught.value.code == "unsupported_version"
+
+
+def test_a_malformed_owner_is_refused_before_anything_is_sent(
+    api: FakeLauncherApi, core: LauncherCore
+) -> None:
+    computer = api.add_computer(status="host_running", generation=2)
+    with pytest.raises(InvalidCall):
+        core.resume(computer.computer_id, owner=protocol.Owner(user_id="", host_id=ALICE.host_id))
+    with pytest.raises(InvalidCall):
+        core.start_host(
+            computer.computer_id,
+            start_attempt=1,
+            host_id="0" * 32,
+            host_name="Work computer",
+            token=launch_token(),
+            host_config={},
+            owner=ALICE,
+        )
+    assert api.requests == []

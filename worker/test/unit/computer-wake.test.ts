@@ -529,7 +529,19 @@ describe("generations and new instances", () => {
       /unsupported_version/,
     );
     await expect(
-      sim.controller.launcher({ interfaceVersion: 1, request: { ...resume, protocolVersion: 2 } }),
+      sim.controller.launcher({
+        interfaceVersion: 1,
+        request: {
+          ...resume,
+          protocolVersion: 3,
+          owner: {
+            userId: "owner-canary",
+            memberId: null,
+            teamId: null,
+            hostId: "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+          },
+        },
+      }),
     ).rejects.toThrow(/unsupported_version/);
     await expect(
       sim.controller.launcher({
@@ -547,6 +559,6 @@ describe("generations and new instances", () => {
         protocolVersion: 1,
         operationId: sim.client.operationId(),
       }),
-    ).toEqual({ operation: "prepare", supportedProtocolVersions: [1] });
+    ).toEqual({ operation: "prepare", supportedProtocolVersions: [1, 2] });
   });
 });

@@ -11,6 +11,13 @@
         "computer": {
           "additionalProperties": {},
           "properties": {
+            "access": {
+              "enum": [
+                "owner",
+                "admin"
+              ],
+              "type": "string"
+            },
             "admission": {
               "additionalProperties": {},
               "properties": {
@@ -257,6 +264,18 @@
             },
             "noContact": {
               "type": "boolean"
+            },
+            "ownerName": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "refusedSleeps": {
               "maximum": 9007199254740991,

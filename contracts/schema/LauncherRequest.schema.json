@@ -40,6 +40,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -68,6 +112,50 @@
         "operationId": {
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
+        },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
         },
         "protocolVersion": {
           "maximum": 9007199254740991,
@@ -115,6 +203,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -158,6 +290,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -186,6 +362,50 @@
         "operationId": {
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
+        },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
         },
         "protocolVersion": {
           "maximum": 9007199254740991,
@@ -216,6 +436,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -245,6 +509,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -273,6 +581,50 @@
         "operationId": {
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
+        },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
         },
         "protocolVersion": {
           "maximum": 9007199254740991,
@@ -311,6 +663,50 @@
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
+        },
         "protocolVersion": {
           "maximum": 9007199254740991,
           "minimum": 1,
@@ -339,6 +735,50 @@
         "operationId": {
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"
+        },
+        "owner": {
+          "additionalProperties": false,
+          "properties": {
+            "hostId": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "memberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "teamId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "userId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "userId",
+            "memberId",
+            "teamId",
+            "hostId"
+          ],
+          "type": "object"
         },
         "protocolVersion": {
           "maximum": 9007199254740991,

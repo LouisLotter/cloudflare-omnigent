@@ -333,10 +333,16 @@ describe("the receiver's checks, in the contract's order (FH-28)", () => {
       () =>
         signed(
           JSON.stringify({
-            protocolVersion: 2,
+            protocolVersion: 3,
             operationId: OP,
             operation: "status",
             computerId: COMPUTER,
+            owner: {
+              userId: "owner-canary",
+              memberId: null,
+              teamId: null,
+              hostId: "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f",
+            },
           }),
         ),
       400,
@@ -389,7 +395,10 @@ describe("dispatch", () => {
       await signed(call({ operation: "prepare" })),
       h.deps,
     );
-    expect(await response.json()).toEqual({ operation: "prepare", supportedProtocolVersions: [1] });
+    expect(await response.json()).toEqual({
+      operation: "prepare",
+      supportedProtocolVersions: [1, 2],
+    });
     expect(h.workspaces.size).toBe(0);
   });
 

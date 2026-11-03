@@ -23,9 +23,7 @@ import {
   type ComputerPageState,
   type ComputerStatusView,
   IntentToken,
-  LAUNCHER_PROTOCOL_VERSION,
   type LauncherCall,
-  type LauncherResult,
   PageFrontCall,
   type PageFrontResult,
   PageOwner,
@@ -41,6 +39,15 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { platformError } from "../shared/errors.ts";
+import {
+  type OwnerBinding,
+  type PageAccess,
+  type PageAction,
+  type PagePersonFields,
+  pageAccess,
+  pageAllows,
+  personKey,
+} from "./ownership.ts";
 import type { Store } from "./record.ts";
 import type { TerminalBridge, TerminalTarget } from "./terminal.ts";
 
@@ -51,7 +58,11 @@ type SignInAnswer =
 /** What the front needs from the controller: its public RPC answers. */
 export interface FrontController {
   pages(call: unknown): Promise<PagesResult>;
-  launcher(call: unknown): Promise<LauncherResult>;
+  /**
+   * Records a removal intent, as Omnigent's `terminate` does, for the page (WP3.5). Not a launcher
+   * call: it names no launcher owner, since the page front decides who may remove (WP8.4).
+   */
+  removeForPage(): Promise<"pending" | "resolved" | "absent">;
   signInStart(input: {
     readonly service: SignInService;
     readonly session: string;
@@ -97,7 +108,48 @@ export interface FrontController {
    * outlive their streams (WP3.28, `terminal_sessions`). Absent or unknown: no.
    */
   terminalShellsKept?(): boolean;
+  /**
+   * The computer's owner binding and the installation's owner (WP8.4), for the page front's
+   * decisions; null for a computer with no record.
+   */
+  ownership(): {
+    readonly binding: OwnerBinding | null;
+    readonly installationOwner: string | null;
+  } | null;
 }
+
+/** The person a page call names; without one (a web Worker before WP8.4), the installation's owner. */
+export function personOf(owner: PageOwner | undefined): PagePersonFields {
+  return owner?.person ?? { kind: "installation_owner" };
+}
+
+/** The owner a raw page call names, if it names a well-formed one. */
+function ownerIn(raw: Record<string, unknown>): PageOwner | undefined {
+  const owner = PageOwner.safeParse(raw.owner);
+  return owner.success ? owner.data : undefined;
+}
+
+/** The page front's own calls, as the access rules classify them (`ownership.ts`). */
+const FRONT_ACTIONS: Readonly<Record<PageFrontCall["action"], PageAction>> = {
+  open_terminal: "terminal",
+  close_terminal: "terminal",
+  remove: "remove",
+  sign_in_start: "sign_in",
+  sign_in_input: "sign_in",
+  sign_in_cancel: "sign_in",
+  staging_check: "staging",
+  staging_keep_awake: "staging",
+};
+
+/** The controller's mutating page calls, as the access rules classify them. */
+const PAGES_ACTIONS: Readonly<Record<Exclude<PagesCall["action"], "state">, PageAction>> = {
+  set_size: "set_size",
+  restart: "restart",
+  stop_without_saving: "stop_without_saving",
+  sign_out: "sign_out",
+  record_revocation: "record_revocation",
+  resolve_removal: "resolve_removal",
+};
 
 export interface PageFrontDeps {
   readonly store: Store;
@@ -160,15 +212,6 @@ export function terminalTarget(state: ComputerPageState, keepsShells = false): T
   return { ok: true, generation: state.generation, keepsShells };
 }
 
-/** A 32-hex launcher operation ID derived from a page operation ID, so a repeat maps to it. */
-async function launcherOperationId(pageOperationId: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(`cfo-page-remove/v1\n${pageOperationId}`),
-  );
-  return toHex(new Uint8Array(digest)).slice(0, 32);
-}
-
 export class PageFront {
   readonly #d: PageFrontDeps;
   readonly #computerId: string;
@@ -201,11 +244,47 @@ export class PageFront {
     return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   }
 
-  /** The request-intent token for this owner's session on this computer. */
+  /**
+   * The request-intent token for this person's session on this computer: bound to the Access
+   * subject and session and (WP8.4) to the person the seam decided.
+   */
   async intentFor(owner: PageOwner): Promise<string> {
-    const text = `cfo-pages-intent/v1\n${this.#computerId}\n${owner.sub}\n${owner.sessionId}`;
+    const person = personKey(personOf(owner));
+    const text = `cfo-pages-intent/v2\n${this.#computerId}\n${owner.sub}\n${owner.sessionId}\n${person}`;
     const mac = await crypto.subtle.sign("HMAC", await this.#secret(), encoder.encode(text));
     return toHex(new Uint8Array(mac));
+  }
+
+  /**
+   * What `owner`'s person may do with this computer (WP8.4, `ownership.ts`), from its binding. A
+   * computer with no record answers `none`: `#state()` refuses it as not found first anyway.
+   */
+  #access(owner: PageOwner | undefined): PageAccess {
+    const ownership = this.#d.controller.ownership();
+    if (ownership === null) return "none";
+    return pageAccess(personOf(owner), ownership.binding, ownership.installationOwner);
+  }
+
+  /**
+   * Refuses, before any effect, a call this person may not make: someone else's computer is
+   * answered as if it did not exist (`not_found`, nothing about it is said); an administrator's
+   * call that is the owner's alone is `forbidden`.
+   */
+  #authorize(
+    owner: PageOwner | undefined,
+    action: PageAction,
+    state: ComputerPageState,
+  ): "owner" | "admin" {
+    const access = this.#access(owner);
+    if (access === "none") {
+      this.#d.log("page_refused", { action, access });
+      throw platformError("not_found", "no such computer");
+    }
+    if (!pageAllows(access, action, state.removal.state === "pending")) {
+      this.#d.log("page_refused", { action, access });
+      throw platformError("forbidden", "this is the computer's owner's alone");
+    }
+    return access;
   }
 
   /** Refuses, before any effect, a mutating call without this session's intent token. */
@@ -250,14 +329,19 @@ export class PageFront {
     const read = PageReadCall.safeParse(raw);
     if (read.success) {
       this.#checkInterface(read.data.interfaceVersion);
-      await this.#state(); // `not_found` for a computer that does not exist
+      const state = await this.#state(); // `not_found` for a computer that does not exist
+      this.#authorize(read.data.owner, "view", state);
       return this.#read(read.data);
     }
     const front = PageFrontCall.safeParse(raw);
     if (front.success) {
       this.#checkInterface(front.data.interfaceVersion);
-      await this.#state(); // `not_found` for a computer that does not exist: nothing is stored
+      const state = await this.#state(); // `not_found` for a computer that does not exist
+      // Someone else's computer is not found before its intent token says it exists.
+      if (this.#access(ownerIn(front.data)) === "none")
+        this.#authorize(ownerIn(front.data), "fleet", state);
       const owner = await this.#checkIntent(front.data);
+      this.#authorize(owner, FRONT_ACTIONS[front.data.action], state);
       return this.#exclusive(() => this.#front(front.data, owner));
     }
     const parsed = PagesCall.safeParse(raw);
@@ -266,8 +350,28 @@ export class PageFront {
     this.#checkInterface(call.interfaceVersion);
     if (call.action === "state") {
       const result = await this.#stateResult(call.interfaceVersion);
-      const computer = { ...result.computer, terminal: this.#d.terminal.view() };
-      const owner = PageOwner.safeParse(call.owner);
+      const named = PageOwner.safeParse(call.owner);
+      const access = this.#authorize(
+        named.success ? named.data : undefined,
+        "fleet",
+        result.computer,
+      );
+      if (access === "admin") {
+        // An administrator's view of someone else's computer: its fleet facts, the owner's
+        // account and the token for the administrator's own actions; no terminal or sign-in.
+        const { terminal: _t, signIn: _s, ...facts } = result.computer;
+        return {
+          ...result,
+          computer: {
+            ...facts,
+            access,
+            ownerName: this.#d.controller.ownership()?.binding?.userId ?? null,
+          },
+          ...(named.success ? { intentToken: await this.intentFor(named.data) } : {}),
+        };
+      }
+      const computer = { ...result.computer, terminal: this.#d.terminal.view(), access };
+      const owner = named;
       if (!owner.success) return { ...result, computer };
       // The caller's own sign-in attempts still running, so a reloaded page resumes them.
       const signIn = computer.signIn;
@@ -281,8 +385,15 @@ export class PageFront {
         intentToken: await this.intentFor(owner.data),
       };
     }
-    await this.#state();
-    await this.#checkIntent(call as Record<string, unknown>);
+    const state = await this.#state();
+    const claimed = ownerIn(call as Record<string, unknown>);
+    if (this.#access(claimed) === "none") this.#authorize(claimed, "fleet", state);
+    const owner = await this.#checkIntent(call as Record<string, unknown>);
+    this.#authorize(
+      owner,
+      PAGES_ACTIONS[call.action as Exclude<PagesCall["action"], "state">],
+      state,
+    );
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
       return this.#exclusive(async () => {
@@ -314,17 +425,8 @@ export class PageFront {
           state.lifecycle !== "removed";
         if (!offered) return { action: "remove", outcome: "refused", reason: "not_offered" };
         await this.#d.terminal.close("the computer is being removed");
-        const result = await this.#d.controller.launcher({
-          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
-          request: {
-            operation: "terminate",
-            protocolVersion: LAUNCHER_PROTOCOL_VERSION,
-            operationId: await launcherOperationId(call.operationId),
-            computerId: this.#computerId,
-          },
-        });
-        if (result.operation !== "terminate") throw platformError("internal", "remove");
-        this.#d.log("page_removal_recorded", { removal: result.removal });
+        const removal = await this.#d.controller.removeForPage();
+        this.#d.log("page_removal_recorded", { removal });
         return { action: "remove", outcome: "accepted" };
       }
       case "sign_in_start":
@@ -385,12 +487,23 @@ export class PageFront {
     };
   }
 
-  /** Before a launcher call: `terminate` closes the terminal; a sleep checks the window first. */
-  async beforeLauncher(raw: LauncherCall | unknown): Promise<void> {
+  /**
+   * Before a launcher call: `terminate` closes the terminal; a sleep checks the window first.
+   * `authorize` validates the call and its owner (WP8.4) and throws to refuse it; it runs before
+   * either step, and for `terminate` in the same turn of the terminal's serialization as the close,
+   * so a refused call never touches the terminal.
+   */
+  async beforeLauncher(raw: LauncherCall | unknown, authorize: () => void): Promise<void> {
     const operation = (raw as { request?: { operation?: unknown } } | null)?.request?.operation;
     if (operation === "terminate") {
-      await this.#exclusive(() => this.#d.terminal.close("the computer is being removed"));
-    } else if (operation === "suspend") await this.#d.terminal.enforce();
+      await this.#exclusive(async () => {
+        authorize();
+        await this.#d.terminal.close("the computer is being removed");
+      });
+      return;
+    }
+    authorize();
+    if (operation === "suspend") await this.#d.terminal.enforce();
   }
 
   /** Before the controller's alarm: an expired window closes before a start-deadline stop. */
@@ -419,6 +532,13 @@ export class PageFront {
         { error: { code: "unsupported_version", message: "Unsupported.", retryable: false } },
         { status: 400 },
       );
+    }
+    // The terminal is its owner's alone (WP8.4): anyone else's upgrade is not found, before the
+    // capability is even looked at.
+    const access = this.#access(upgrade.data.owner);
+    if (access !== "owner") {
+      this.#d.log("page_refused", { action: "terminal", access });
+      return notFound();
     }
     return this.#d.terminal.connect(upgrade.data);
   }

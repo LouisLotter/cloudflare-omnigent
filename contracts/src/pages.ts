@@ -15,7 +15,7 @@ import {
   StatusSignInState,
   SupervisorAlertKind,
 } from "./computer-protocol.ts";
-import { ComputerId, Generation, OperationId, Timestamp } from "./ids.ts";
+import { AccountId, ComputerId, Generation, OperationId, TeamMemberId, Timestamp } from "./ids.ts";
 import { DeclaredCredentialPath } from "./manifests.ts";
 
 // The platform pages (WP3.5): what the web Worker's pages send to WorkspaceDO beyond the
@@ -54,10 +54,33 @@ export type TerminalCapability = z.infer<typeof TerminalCapability>;
 export const IntentToken = z.string().regex(/^[0-9a-f]{64}$/);
 export type IntentToken = z.infer<typeof IntentToken>;
 
-/** Who ingress admitted (WP2.1): the pinned owner's Access `sub` and the Access session's ID. */
+/**
+ * The person behind a page request (WP8.4), as the web Worker's one seam decides it from the
+ * ingress identity (`pages/person.ts`):
+ * - `installation_owner`: the installation's owner, the only person ingress admits before teams;
+ * - `member`: a team member, with their role (WP8.3 makes the seam membership-aware).
+ * WorkspaceDO decides from it and the computer's owner binding what the request may do.
+ */
+export const PagePerson = z.discriminatedUnion("kind", [
+  z.looseObject({ kind: z.literal("installation_owner") }),
+  z.looseObject({
+    kind: z.literal("member"),
+    memberId: TeamMemberId,
+    userId: AccountId,
+    role: z.enum(["owner", "admin", "member"]),
+  }),
+]);
+export type PagePerson = z.infer<typeof PagePerson>;
+
+/**
+ * Who ingress admitted (WP2.1): the Access `sub` and the Access session's ID, and (WP8.4) the
+ * person the seam decided. Without `person` (a web Worker from before WP8.4), the installation's
+ * owner.
+ */
 export const PageOwner = z.looseObject({
   sub: z.string().min(1).max(256),
   sessionId: z.string().regex(/^[0-9a-f]{64}$/),
+  person: PagePerson.optional(),
 });
 export type PageOwner = z.infer<typeof PageOwner>;
 

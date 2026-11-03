@@ -11,7 +11,9 @@
 import {
   ErrorBody,
   LAUNCHER_BASE_URL,
+  LAUNCHER_OWNER_PROTOCOL_VERSION,
   LAUNCHER_PROTOCOL_VERSION,
+  type LauncherOwner,
   type LauncherRequest,
   LauncherResult,
   signLauncherRequest,
@@ -83,6 +85,11 @@ export class FakeLauncherClient {
   readonly computerId: string;
   readonly transport: LauncherTransport;
   readonly calls: Call[] = [];
+  /**
+   * The owner Omnigent names on every call but `prepare` (WP8.4): set, the requests are protocol
+   * version 2 with it; unset, version 1, as an Omnigent build without owners sends them.
+   */
+  owner: LauncherOwner | undefined = undefined;
   #next = 0;
 
   constructor(computerId: string, transport: LauncherTransport) {
@@ -96,17 +103,19 @@ export class FakeLauncherClient {
     return this.#next.toString(16).padStart(32, "0");
   }
 
+  /** The version and the owner, as Omnigent sends them. */
+  #version() {
+    return this.owner === undefined
+      ? { protocolVersion: LAUNCHER_PROTOCOL_VERSION }
+      : { protocolVersion: LAUNCHER_OWNER_PROTOCOL_VERSION, owner: this.owner };
+  }
+
   #base(operationId = this.operationId()) {
-    return { protocolVersion: LAUNCHER_PROTOCOL_VERSION, operationId, computerId: this.computerId };
+    return { ...this.#version(), operationId, computerId: this.computerId };
   }
 
   provisionRequest(name: string, operationId = this.operationId()): LauncherRequest {
-    return {
-      operation: "provision",
-      protocolVersion: LAUNCHER_PROTOCOL_VERSION,
-      operationId,
-      name,
-    };
+    return { operation: "provision", ...this.#version(), operationId, name };
   }
   resumeRequest(): LauncherRequest {
     return { operation: "resume", ...this.#base() };

@@ -27,8 +27,8 @@ OP_ID = "5f0c6e2a9b4d4c1e8a7f3b2d1c0e9f8a"
 CMP = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3"
 
 
-def _fixtures(kind: str, *, invalid: bool = False) -> list[Path]:
-    directory = FIXTURES / kind / ("invalid" if invalid else "")
+def _fixtures(kind: str, *, invalid: bool = False, refined: bool = False) -> list[Path]:
+    directory = FIXTURES / kind / ("invalid" if invalid else "refined" if refined else "")
     return sorted(p for p in directory.glob("*.json") if p.is_file())
 
 
@@ -79,14 +79,29 @@ def test_the_first_line_never_verifies_as_a_key_service_call() -> None:
 # ── Requests ────────────────────────────────────────────────────────────────────────────
 
 
+def _owner(fixture: dict[str, Any]) -> protocol.Owner | None:
+    raw = fixture.get("owner")
+    if raw is None:
+        return None
+    return protocol.Owner(
+        user_id=raw["userId"],
+        host_id=raw["hostId"],
+        member_id=raw["memberId"],
+        team_id=raw["teamId"],
+    )
+
+
 def _build(fixture: dict[str, Any]) -> dict[str, Any]:
     """Build the fixture's request through the launcher's own builder for its operation."""
     op = fixture["operation"]
     oid, cmp = fixture.get("operationId"), fixture.get("computerId")
+    owner = _owner(fixture)
     if op == "prepare":
+        if owner is not None:
+            raise protocol.ProtocolError("prepare names no owner")
         return protocol.prepare_request(oid)
     if op == "provision":
-        return protocol.provision_request(oid, fixture["name"])
+        return protocol.provision_request(oid, fixture["name"], owner=owner)
     if op == "start_host":
         return protocol.start_host_request(
             oid,
@@ -96,11 +111,12 @@ def _build(fixture: dict[str, Any]) -> dict[str, Any]:
             host_name=fixture["hostName"],
             token=fixture["token"],
             host_config=fixture["hostConfig"],
+            owner=owner,
         )
     if op == "checkpoint":
-        return protocol.checkpoint_request(oid, cmp, fixture["reason"])
+        return protocol.checkpoint_request(oid, cmp, fixture["reason"], owner=owner)
     builder = getattr(protocol, f"{op}_request")
-    return builder(oid, cmp)
+    return builder(oid, cmp, owner=owner)
 
 
 @pytest.mark.parametrize("path", _fixtures("LauncherRequest"), ids=lambda p: p.stem)
@@ -117,6 +133,7 @@ UNEXPRESSIBLE = {
     "unknown-operation",
     "protocol-version-zero",
     "start-host-with-repos",
+    "owner-extra-field",
 }
 
 
@@ -127,6 +144,51 @@ def test_each_invalid_request_fixture_is_refused_or_unexpressible(path: Path) ->
         return
     with pytest.raises((protocol.ProtocolError, KeyError)):
         _build(fixture)
+
+
+#: Refined fixtures the builders cannot express: the version follows from the owner (WP8.4).
+UNEXPRESSIBLE_REFINED = {"version-1-with-owner", "version-2-without-owner"}
+
+
+@pytest.mark.parametrize("path", _fixtures("LauncherRequest", refined=True), ids=lambda p: p.stem)
+def test_each_refined_request_fixture_is_refused_or_unexpressible(path: Path) -> None:
+    """The schema admits these; the contract's refinements, and the builders, refuse them."""
+    fixture = json.loads(path.read_text())
+    REQUEST_SCHEMA.validate(fixture)
+    if path.stem in UNEXPRESSIBLE_REFINED:
+        built = _build(fixture)
+        assert built != fixture
+        assert ("owner" in built) == (built["protocolVersion"] == protocol.OWNER_PROTOCOL_VERSION)
+        return
+    with pytest.raises(protocol.ProtocolError):
+        _build(fixture)
+
+
+def test_owners_are_checked_as_the_contract_checks_them() -> None:
+    host = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"
+    member = "0a1b2c3d4e5f40718293a4b5c6d7e8f9"
+    ok = protocol.Owner(user_id="alice", host_id=host, member_id=member, team_id=member)
+    assert protocol.resume_request(OP_ID, CMP, owner=ok)["protocolVersion"] == 2
+    assert protocol.resume_request(OP_ID, CMP)["protocolVersion"] == 1
+    assert "owner" not in protocol.resume_request(OP_ID, CMP)
+    bad = [
+        protocol.Owner(user_id="", host_id=host),
+        protocol.Owner(user_id="x" * 256, host_id=host),
+        protocol.Owner(user_id="a\x7fb", host_id=host),
+        protocol.Owner(user_id="a\ud800", host_id=host),
+        protocol.Owner(user_id="alice", host_id=host.upper()),
+        protocol.Owner(user_id="alice", host_id=host, member_id=member),
+        protocol.Owner(user_id="alice", host_id=host, member_id="m", team_id="t"),
+    ]
+    for owner in bad:
+        with pytest.raises(protocol.ProtocolError):
+            protocol.resume_request(OP_ID, CMP, owner=owner)
+    with pytest.raises(protocol.ProtocolError):
+        protocol.check_owner("alice")  # type: ignore[arg-type]
+    # 255 UTF-16 units, as zod counts them: a character outside the BMP counts twice.
+    assert protocol.check_owner(protocol.Owner(user_id="\U0001f600" * 127 + "a", host_id=host))
+    with pytest.raises(protocol.ProtocolError):
+        protocol.check_owner(protocol.Owner(user_id="\U0001f600" * 128, host_id=host))
 
 
 def test_request_bodies_are_compact_sorted_ascii() -> None:
@@ -427,6 +489,7 @@ def test_constants_match_the_contract() -> None:
         return match.group(1).strip().strip('"')
 
     assert int(const("LAUNCHER_PROTOCOL_VERSION")) == protocol.PROTOCOL_VERSION
+    assert int(const("LAUNCHER_OWNER_PROTOCOL_VERSION")) == protocol.OWNER_PROTOCOL_VERSION
     assert const("LAUNCHER_SIGNING_PROTOCOL") == protocol.SIGNING_PROTOCOL
     assert const("SIGNING_KEY_ID_HEADER") == protocol.SIGNING_KEY_ID_HEADER
     assert const("TIMESTAMP_HEADER") == protocol.TIMESTAMP_HEADER

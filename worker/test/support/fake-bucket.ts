@@ -17,9 +17,17 @@ export class FakeBucket implements CheckpointBucket {
 
   /** Every write issued, by key, whether or not it landed. */
   readonly puts: string[] = [];
+  /** Every write's writer: its generation and owner tag (WP8.4). */
+  readonly writers: { key: string; generation: number; owner: string | undefined }[] = [];
 
-  async put(key: string, body: Uint8Array): Promise<void> {
+  async put(
+    key: string,
+    body: Uint8Array,
+    writer?: { readonly generation: number; readonly owner?: string },
+  ): Promise<void> {
     this.puts.push(key);
+    if (writer !== undefined)
+      this.writers.push({ key, generation: writer.generation, owner: writer.owner });
     const gate = this.putGate;
     this.putGate = null;
     if (gate !== null) await gate;

@@ -46,6 +46,7 @@ import {
 } from "@cfo/contracts";
 import { credentialWriter, directoryBackups, type GatewayExports } from "../egress/backups.ts";
 import type { PlatformEnv } from "../env.ts";
+import { ownerUsernameOf } from "../server/owner-password.ts";
 import { logEvent } from "../server/responses.ts";
 import type { ComputerContainerPort } from "../shared/computer-port.ts";
 import { platformError } from "../shared/errors.ts";
@@ -172,6 +173,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
         endSettled: (op) => bridge?.endSettled(op),
       },
       stagingChecks: this.stagingChecks(),
+      installationOwner: this.installationOwner(),
     });
     const controller = this.#controller;
     let front: PageFront | null = null;
@@ -278,8 +280,8 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     const computerId = this.#computerId;
     if (bucket === undefined || computerId === null) return null;
     const exports = this.#exports();
-    return r2Bucket(bucket, (key, body, generation) =>
-      credentialWriter(exports, { computerId, generation }).put(key, body),
+    return r2Bucket(bucket, (key, body, generation, owner) =>
+      credentialWriter(exports, { computerId, generation }).put(key, body, owner),
     );
   }
 
@@ -300,6 +302,15 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
    */
   protected stagingChecks(): boolean {
     return isStagingInstallation(this.env.CFO_STAGING_INSTALLATION);
+  }
+
+  /**
+   * The installation owner's Omnigent account (WP8.4): the person every computer recorded without
+   * an owner belongs to. The installer sets it for the server (`ownerUsernameOf`); the platform
+   * Worker holds the same secret.
+   */
+  protected installationOwner(): string | null {
+    return ownerUsernameOf(this.env as unknown as Readonly<Record<string, unknown>>);
   }
 
   protected timing(): ControllerTiming {
@@ -326,8 +337,9 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   }
 
   async launcher(call: LauncherCall): Promise<LauncherResult> {
-    // `terminate` closes the setup terminal first; a sleep finds an expired window closed.
-    await this.front.beforeLauncher(call);
+    // `terminate` closes the setup terminal first; a sleep finds an expired window closed. The call
+    // is validated and its owner authorized before either (WP8.4): a refused call changes nothing.
+    await this.front.beforeLauncher(call, () => this.controller.authorizeLauncher(call));
     return this.controller.launcher(call);
   }
 

@@ -4,6 +4,7 @@
 // Omnigent no longer calls (FH-29).
 import type { ComputerPageState, PagesResult } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
+import type { OwnerBinding } from "../../src/computer/ownership.ts";
 import {
   constantTimeEqual,
   type FrontController,
@@ -33,9 +34,18 @@ class FakeController implements FrontController {
     return { action: c.action, outcome: "accepted" } as PagesResult;
   }
 
-  async launcher(call: unknown) {
-    this.launches.push(call);
-    return { operation: "terminate" as const, removal: "pending" as const };
+  /** The computer's owner binding (WP8.4); none: the installation owner's. */
+  binding: OwnerBinding | null = null;
+  installationOwner: string | null = "founder";
+  ownership() {
+    return this.state === null
+      ? null
+      : { binding: this.binding, installationOwner: this.installationOwner };
+  }
+
+  async removeForPage() {
+    this.launches.push("remove");
+    return "pending" as const;
   }
 
   // WP3.23: sign-in, status and the staging switch, recorded.
@@ -290,12 +300,30 @@ describe("the page front's answers", () => {
       intent,
       window: null,
     });
-    await front.beforeLauncher({ interfaceVersion: 1, request: { operation: "suspend" } });
+    await front.beforeLauncher(
+      { interfaceVersion: 1, request: { operation: "suspend" } },
+      () => undefined,
+    );
     expect(terminal.view().open).toBe(true);
-    await front.beforeLauncher({ interfaceVersion: 1, request: { operation: "terminate" } });
+    // A call its authorization refuses (Codex WP8.4 r1-1) touches nothing: neither a sleep's
+    // window check nor a terminate's close runs.
+    const refuse = () => {
+      throw platformError("forbidden", "someone else's computer");
+    };
+    for (const operation of ["suspend", "terminate", "status"]) {
+      expect(
+        await codeOf(front.beforeLauncher({ interfaceVersion: 1, request: { operation } }, refuse)),
+        operation,
+      ).toBe("forbidden");
+      expect(terminal.view().open, operation).toBe(true);
+    }
+    await front.beforeLauncher(
+      { interfaceVersion: 1, request: { operation: "terminate" } },
+      () => undefined,
+    );
     expect(terminal.view().open).toBe(false);
     expect(events).toContain("terminal_window_closed");
-    await front.beforeLauncher(null);
+    await front.beforeLauncher(null, () => undefined);
     await front.beforeAlarm();
   });
 
@@ -358,12 +386,8 @@ describe("the page front's answers", () => {
     controller.state = pageState({ noContact: true });
     expect(await remove(3)).toEqual({ action: "remove", outcome: "accepted" });
     expect(await remove(3)).toEqual({ action: "remove", outcome: "accepted" });
-    const [first, second] = controller.launches as {
-      request: { operationId: string; operation: string; computerId: string };
-    }[];
-    expect(first?.request).toMatchObject({ operation: "terminate", computerId: PAGE_CMP });
-    expect(first?.request.operationId).toMatch(/^[0-9a-f]{32}$/);
-    expect(second?.request.operationId).toBe(first?.request.operationId);
+    // A repeat records the same intent again, which is the same intent (semantic idempotency).
+    expect(controller.launches).toEqual(["remove", "remove"]);
   });
 
   it("answers the terminal's upgrade only with a well-formed header", async () => {
@@ -499,20 +523,6 @@ describe("the page front's own failures", () => {
 
   it("reports a controller answer of the wrong kind as internal", async () => {
     const { front, controller } = harness();
-    const intent = await intentOf(front);
-    controller.launcher = async () => ({ operation: "status" }) as never;
-    controller.state = pageState({ noContact: true });
-    expect(
-      await codeOf(
-        front.pages({
-          action: "remove",
-          interfaceVersion: 1,
-          operationId: OP(1),
-          owner: OWNER,
-          intent,
-        }),
-      ),
-    ).toBe("internal");
     controller.pages = async () => ({ action: "set_size", appliesAt: "next_start" });
     expect(await codeOf(front.pages({ action: "state", interfaceVersion: 1 }))).toBe("internal");
   });
@@ -735,5 +745,301 @@ describe("sign-in from the page (WP3.23)", () => {
     controller.state = pageState();
     const older = await front.pages({ action: "state", interfaceVersion: 1, owner: OWNER });
     expect((older as { computer: { signIn?: unknown } }).computer.signIn).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// WP8.4 (D50): every page call checked against the computer's owner binding (T3, T13).
+
+describe("a computer's pages are its owner's (WP8.4)", () => {
+  const TEAM = "9f8e7d6c5b4a49382716f5e4d3c2b1a0";
+  const HOST = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f";
+  const person = (memberId: string, userId: string, role: "owner" | "admin" | "member") =>
+    ({ kind: "member", memberId, userId, role }) as const;
+  const ALICE = {
+    sub: "alice-sub",
+    sessionId: "a1".repeat(32),
+    person: person("0a1b2c3d4e5f40718293a4b5c6d7e8f9", "alice", "member"),
+  };
+  const BOB = {
+    sub: "bob-sub",
+    sessionId: "b2".repeat(32),
+    person: person("1b2c3d4e5f60718293a4b5c6d7e8f90a", "bob", "member"),
+  };
+  const CAROL = {
+    sub: "carol-sub",
+    sessionId: "c3".repeat(32),
+    person: person("2c3d4e5f60718293a4b5c6d7e8f90a1b", "carol", "admin"),
+  };
+  const FOUNDER = {
+    sub: "founder-sub",
+    sessionId: "f4".repeat(32),
+    person: { kind: "installation_owner" } as const,
+  };
+  const alicesBinding: OwnerBinding = {
+    userId: "alice",
+    memberId: ALICE.person.memberId,
+    teamId: TEAM,
+    hostId: HOST,
+    how: "provision",
+    boundAt: 1,
+  };
+
+  function alicesComputer(state: Partial<ComputerPageState> = {}) {
+    const h = harness();
+    h.controller.binding = alicesBinding;
+    h.controller.state = pageState(state);
+    return h;
+  }
+
+  async function tokenFor(front: PageFront, owner: object): Promise<string | undefined> {
+    const result = await front.pages({ action: "state", interfaceVersion: 1, owner });
+    return result.action === "state" && "intentToken" in result
+      ? (result.intentToken as string)
+      : undefined;
+  }
+
+  /** Every mutating page call, from `owner` with `intent`. */
+  const changes = (owner: object, intent: string) => [
+    {
+      action: "open_terminal",
+      interfaceVersion: 1,
+      operationId: OP(1),
+      owner,
+      intent,
+      window: null,
+    },
+    { action: "close_terminal", interfaceVersion: 1, operationId: OP(2), owner, intent },
+    {
+      action: "sign_in_start",
+      interfaceVersion: 1,
+      operationId: OP(3),
+      owner,
+      intent,
+      service: "claude",
+      generation: 7,
+    },
+    {
+      action: "sign_in_input",
+      interfaceVersion: 1,
+      operationId: OP(4),
+      owner,
+      intent,
+      service: "claude",
+      attempt: 1,
+      code: "code-canary-0123456789",
+    },
+    {
+      action: "sign_in_cancel",
+      interfaceVersion: 1,
+      operationId: OP(5),
+      owner,
+      intent,
+      service: "claude",
+      attempt: 1,
+    },
+    { action: "staging_check", interfaceVersion: 1, operationId: OP(6), owner, intent, rc53: true },
+    { action: "set_size", interfaceVersion: 1, operationId: OP(7), owner, intent, size: "basic" },
+    { action: "stop_without_saving", interfaceVersion: 1, operationId: OP(8), owner, intent },
+    { action: "record_revocation", interfaceVersion: 1, operationId: OP(9), owner, intent },
+    { action: "sign_out", interfaceVersion: 1, operationId: OP(10), owner, intent },
+    { action: "resolve_removal", interfaceVersion: 1, operationId: OP(11), owner, intent },
+    { action: "restart", interfaceVersion: 1, operationId: OP(12), owner, intent },
+    { action: "remove", interfaceVersion: 1, operationId: OP(13), owner, intent },
+  ];
+
+  it("answers another member as if the computer did not exist: no state, read, change or token", async () => {
+    const { front, controller, events } = alicesComputer({ noContact: true });
+    expect(await codeOf(front.pages({ action: "state", interfaceVersion: 1, owner: BOB }))).toBe(
+      "not_found",
+    );
+    for (const read of [
+      { action: "computer_status", interfaceVersion: 1, owner: BOB },
+      { action: "sign_in_status", interfaceVersion: 1, owner: BOB, service: "claude", attempt: 1 },
+    ]) {
+      expect(await codeOf(front.pages(read)), read.action).toBe("not_found");
+    }
+    // With a well-formed token of his own making, or Alice's own token replayed: not found either.
+    const alicesToken = (await tokenFor(front, ALICE)) as string;
+    for (const intent of ["0".repeat(64), alicesToken]) {
+      for (const change of changes(BOB, intent)) {
+        expect(await codeOf(front.pages(change)), change.action).toBe("not_found");
+      }
+    }
+    expect(controller.calls).toEqual([]);
+    expect(controller.launches).toEqual([]);
+    expect(controller.signIns.filter((s) => s.method !== "sessionAttempts")).toEqual([]);
+    expect(events.filter((e) => e === "page_refused").length).toBeGreaterThan(20);
+  });
+
+  it("lets the owner do every one of those things", async () => {
+    const { front, controller } = alicesComputer({ noContact: true });
+    const state = await front.pages({ action: "state", interfaceVersion: 1, owner: ALICE });
+    expect(state).toMatchObject({ computer: { access: "owner" } });
+    expect(
+      await codeOf(front.pages({ action: "computer_status", interfaceVersion: 1, owner: ALICE })),
+    ).toBeUndefined();
+    const intent = (await tokenFor(front, ALICE)) as string;
+    for (const change of changes(ALICE, intent)) {
+      expect(await codeOf(front.pages(change)), change.action).toBeUndefined();
+    }
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "set_size",
+      "stop_without_saving",
+      "record_revocation",
+      "sign_out",
+      "resolve_removal",
+      "restart",
+    ]);
+    expect(controller.launches).toEqual(["remove"]);
+  });
+
+  it("gives an administrator the fleet view and the stop, never a terminal, sign-in, status or setup change", async () => {
+    const { front, controller } = alicesComputer({ noContact: true });
+    const state = await front.pages({ action: "state", interfaceVersion: 1, owner: CAROL });
+    expect(state).toMatchObject({ computer: { access: "admin", ownerName: "alice" } });
+    const computer = (state as { computer: Record<string, unknown> }).computer;
+    expect(computer.terminal).toBeUndefined();
+    expect(computer.signIn).toBeUndefined();
+    for (const read of [
+      { action: "computer_status", interfaceVersion: 1, owner: CAROL },
+      {
+        action: "sign_in_status",
+        interfaceVersion: 1,
+        owner: CAROL,
+        service: "claude",
+        attempt: 1,
+      },
+    ]) {
+      expect(await codeOf(front.pages(read)), read.action).toBe("forbidden");
+    }
+    const intent = (await tokenFor(front, CAROL)) as string;
+    const allowed: string[] = [];
+    for (const change of changes(CAROL, intent)) {
+      const code = await codeOf(front.pages(change));
+      if (code === undefined) allowed.push(change.action);
+      else expect(code, change.action).toBe("forbidden");
+    }
+    // Without a pending removal: the stop, and the removal of a computer Omnigent no longer calls.
+    expect(allowed).toEqual(["restart", "remove"]);
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual(["restart"]);
+    expect(controller.signIns.filter((s) => s.method !== "sessionAttempts")).toEqual([]);
+    // Alice's token is hers: Carol presenting it is refused.
+    const alicesToken = (await tokenFor(front, ALICE)) as string;
+    expect(
+      await codeOf(
+        front.pages({
+          action: "restart",
+          interfaceVersion: 1,
+          operationId: OP(20),
+          owner: CAROL,
+          intent: alicesToken,
+        }),
+      ),
+    ).toBe("forbidden");
+  });
+
+  it("lets an administrator sign a computer being removed out and finish its removal, only then", async () => {
+    const pendingRemoval = {
+      state: "pending" as const,
+      signOut: "none" as const,
+      loginPossiblyLost: false,
+      revocationRecorded: false,
+    };
+    const { front, controller } = alicesComputer({ removal: pendingRemoval });
+    const intent = (await tokenFor(front, CAROL)) as string;
+    for (const action of ["sign_out", "resolve_removal"]) {
+      expect(
+        await codeOf(
+          front.pages({ action, interfaceVersion: 1, operationId: OP(30), owner: CAROL, intent }),
+        ),
+        action,
+      ).toBeUndefined();
+    }
+    for (const action of ["record_revocation", "set_size"]) {
+      expect(
+        await codeOf(
+          front.pages({
+            action,
+            interfaceVersion: 1,
+            operationId: OP(31),
+            owner: CAROL,
+            intent,
+            size: "basic",
+          }),
+        ),
+        action,
+      ).toBe("forbidden");
+    }
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "sign_out",
+      "resolve_removal",
+    ]);
+  });
+
+  it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {
+    const { front, controller } = alicesComputer({ noContact: false });
+    const intent = (await tokenFor(front, CAROL)) as string;
+    expect(
+      await front.pages({
+        action: "remove",
+        interfaceVersion: 1,
+        operationId: OP(40),
+        owner: CAROL,
+        intent,
+      }),
+    ).toEqual({ action: "remove", outcome: "refused", reason: "not_offered" });
+    expect(controller.launches).toEqual([]);
+  });
+
+  it("refuses the terminal's upgrade to anyone but the owner before its capability is looked at", async () => {
+    const { front } = alicesComputer();
+    const up = (owner: object) =>
+      front.fetch(
+        new Request("https://w/", {
+          headers: {
+            upgrade: "websocket",
+            "x-cfo-terminal": JSON.stringify({
+              interfaceVersion: 1,
+              computerId: PAGE_CMP,
+              owner,
+              capability: "A".repeat(43),
+            }),
+          },
+        }),
+      );
+    expect((await up(BOB)).status).toBe(404);
+    expect((await up(CAROL)).status).toBe(404);
+    expect((await up(FOUNDER)).status).toBe(404);
+    // The owner reaches the capability check (an unknown capability: 403).
+    expect((await up(ALICE)).status).toBe(403);
+  });
+
+  it("gives the installation's owner every computer recorded without an owner, and an administrator's view of a member's", async () => {
+    const unbound = harness();
+    unbound.controller.binding = null;
+    expect(
+      await unbound.front.pages({ action: "state", interfaceVersion: 1, owner: FOUNDER }),
+    ).toMatchObject({ computer: { access: "owner" } });
+    // A web Worker from before WP8.4 names no person: the installation's owner.
+    expect(
+      await unbound.front.pages({ action: "state", interfaceVersion: 1, owner: OWNER }),
+    ).toMatchObject({ computer: { access: "owner" } });
+    // A member is not the owner of a computer recorded without an owner.
+    expect(
+      await codeOf(unbound.front.pages({ action: "state", interfaceVersion: 1, owner: BOB })),
+    ).toBe("not_found");
+    const { front } = alicesComputer();
+    expect(
+      await front.pages({ action: "state", interfaceVersion: 1, owner: FOUNDER }),
+    ).toMatchObject({ computer: { access: "admin", ownerName: "alice" } });
+  });
+
+  it("binds the intent token to the person as well as the Access session", async () => {
+    const { front } = alicesComputer();
+    const asAlice = await front.intentFor(ALICE);
+    expect(await front.intentFor({ ...ALICE, person: BOB.person })).not.toBe(asAlice);
+    expect(await front.intentFor({ ...ALICE, sessionId: "a2".repeat(32) })).not.toBe(asAlice);
+    expect(await front.intentFor(ALICE)).toBe(asAlice);
   });
 });
