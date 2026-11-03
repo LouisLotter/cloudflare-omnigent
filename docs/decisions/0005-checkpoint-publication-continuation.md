@@ -1,6 +1,6 @@
 # 0005 — Checkpoint publication and continuation
 
-Status: accepted design. Version-one contracts are present in main; production computer integration remains draft.
+Status: accepted design, amended 3 November 2026 (checkpoints bound to the computer's owner, below). Version-one contracts are present in main; production computer integration remains draft.
 
 ## Context
 
@@ -24,6 +24,8 @@ A content-correct capture first copies while processes run, then pauses all writ
 Each layer includes an index; the manifest binds layer index hashes and successive whole-tree digests. Publish only verified objects, in one pointer switch. A delta whose parent is no longer current is discarded. A failed/expired copy, prune or upload leaves the previous pointer current. Restore applies a base and its ordered deltas in staging, validates the rebuilt index/tree and only then installs it; credential-family members found in workspace layers are stripped and reported. Retention cannot remove any layer still referenced by a retained checkpoint or protected restore point.
 
 A new base is required after twenty deltas, when delta bytes exceed half the base, after format/policy changes or without a valid parent. Freshness is time since confirmed restore, publication or verified unchanged in the current generation. After thirty minutes without verification, admission closes as `not_saved`; admitted work finishes. Save retries after one, two, then five-minute intervals reopen admission automatically after a current-generation proof. The healthy loss-window target no longer applies while saves fail.
+
+**Checkpoints are their owner's (amended 3 November 2026).** Each pointer records the owner binding (ADR 0001) it was published under, beside its manifest; manifests and object keys are unchanged, since the supervisor parses manifests strictly and copying sensitive blobs to rename a prefix gains nothing. A restore refuses a pointer stamped for anyone other than the computer's owner, and the start fails rather than come up with someone else's files or logins, or with none. A pointer published before owners restores only into the installation owner's computer. Credential bundles carry the owner's tag (a member ID, never the account name), the computer and the generation as object metadata. As before, only the computer's own WorkspaceDO reads its prefixes, and every write passes the fenced gateway.
 
 ## Alternatives and consequences
 
