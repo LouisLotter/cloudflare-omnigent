@@ -253,9 +253,7 @@ def check_owner(owner: Owner) -> dict[str, Any]:
     }
 
 
-def _call(
-    operation: Operation, operation_id: str, owner: Owner | None = None
-) -> dict[str, Any]:
+def _call(operation: Operation, operation_id: str, owner: Owner | None = None) -> dict[str, Any]:
     """The fields every request carries: version 2 with the owner, version 1 without one."""
     _require(is_operation_id(operation_id), "an operation ID is 32 lowercase hex digits")
     if owner is None:
@@ -284,7 +282,9 @@ def prepare_request(operation_id: str) -> dict[str, Any]:
     return _call("prepare", operation_id)
 
 
-def provision_request(operation_id: str, name: str, *, owner: Owner | None = None) -> dict[str, Any]:
+def provision_request(
+    operation_id: str, name: str, *, owner: Owner | None = None
+) -> dict[str, Any]:
     _require(
         isinstance(name, str) and PROVISION_NAME_RE.fullmatch(name) is not None,
         "a computer's name is 1 to 63 lowercase letters, digits and hyphens",

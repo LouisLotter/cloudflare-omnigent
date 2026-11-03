@@ -42,6 +42,7 @@ import {
   passwordChange,
   passwordPage,
 } from "./password.ts";
+import { installationOwnerSeam, isInstallationOwner, type PersonSeam } from "./person.ts";
 import { setupPage, stateJson, terminalChange, terminalUpgrade } from "./setup.ts";
 
 /** One asset: its body and content type. */
@@ -52,6 +53,8 @@ export interface Asset {
 
 export interface PlatformDeps {
   readonly backend?: PagesBackend;
+  /** The person behind the request (WP8.4); the installation's owner by default. */
+  readonly person?: PersonSeam;
   /** OmnigentServer's password interface (WP3.34); the OMNIGENT binding's by default. */
   readonly password?: PasswordBackend;
   /** OmnigentServer's GitHub setup interface (WP3.36); the OMNIGENT binding's by default. */
@@ -93,9 +96,19 @@ export async function routePlatform(
     ((fields: Readonly<Record<string, string>>) =>
       console.log(JSON.stringify({ ...fields, path: url.pathname.slice(0, MAX_LOGGED_PATH) })));
   const now = deps.now ?? Date.now;
-  const owner: PageOwner = { sub: admitted.identity.sub, sessionId: admitted.identity.sessionId };
   const read = request.method === "GET" || request.method === "HEAD";
   try {
+    // The person, through the one seam (WP8.4); WorkspaceDO decides what they may do.
+    const person = await (deps.person ?? installationOwnerSeam)(admitted);
+    if (person === null) {
+      log({ event: "page_person_refused" });
+      return refusedPage(403, "This account has no access to this installation's computers.");
+    }
+    const owner: PageOwner = {
+      sub: admitted.identity.sub,
+      sessionId: admitted.identity.sessionId,
+      person,
+    };
     const backend = deps.backend ?? bindingsBackend(env);
     const parts = url.pathname.split("/").slice(2); // after "", "platform"
     if (parts.length === 0 || (parts.length === 1 && parts[0] === "")) {
@@ -119,6 +132,9 @@ export async function routePlatform(
           },
         }),
       );
+    }
+    if ((parts[0] === "password" || parts[0] === "github") && !isInstallationOwner(person)) {
+      return head(request, notFoundPage());
     }
     if (parts[0] === "password" && parts.length === 1) {
       const password = deps.password ?? bindingsPasswordBackend(env);

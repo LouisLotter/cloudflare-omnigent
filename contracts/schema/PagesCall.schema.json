@@ -16,6 +16,57 @@
         "owner": {
           "additionalProperties": {},
           "properties": {
+            "person": {
+              "oneOf": [
+                {
+                  "additionalProperties": {},
+                  "properties": {
+                    "kind": {
+                      "const": "installation_owner",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": {},
+                  "properties": {
+                    "kind": {
+                      "const": "member",
+                      "type": "string"
+                    },
+                    "memberId": {
+                      "pattern": "^[0-9a-f]{32}$",
+                      "type": "string"
+                    },
+                    "role": {
+                      "enum": [
+                        "owner",
+                        "admin",
+                        "member"
+                      ],
+                      "type": "string"
+                    },
+                    "userId": {
+                      "maxLength": 255,
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "memberId",
+                    "userId",
+                    "role"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "sessionId": {
               "pattern": "^[0-9a-f]{64}$",
               "type": "string"

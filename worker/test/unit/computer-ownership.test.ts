@@ -14,6 +14,10 @@ import {
   type OwnerBinding,
   type OwnerFields,
   ownerTag,
+  ownsComputer,
+  pageAccess,
+  pageAllows,
+  personKey,
   stampMatches,
 } from "../../src/computer/ownership.ts";
 import { RECORD_KEY } from "../../src/computer/record.ts";
@@ -697,4 +701,107 @@ describe("crashes across generations and ownership", () => {
     }
     expect(failures).toEqual([]);
   }, 240_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The pages' access rules (T3, T13).
+
+describe("pageAccess and pageAllows", () => {
+  const member = (memberId: string, userId: string, role: "owner" | "admin" | "member") =>
+    ({ kind: "member", memberId, userId, role }) as const;
+  const person = fc.oneof(
+    fc.constant({ kind: "installation_owner" } as const),
+    fc
+      .tuple(
+        fc.constantFrom(
+          [ALICE_MEMBER, "alice"] as const,
+          [BOB_MEMBER, "bob"] as const,
+          [FOUNDER_MEMBER, FOUNDER] as const,
+        ),
+        fc.constantFrom("owner" as const, "admin" as const, "member" as const),
+      )
+      .map(([[id, user], role]) => member(id, user, role)),
+  );
+  const binding = fc.option(
+    fc.constantFrom(
+      bound(ALICE),
+      bound(BOB_ON_ALICES_HOST),
+      bound(FOUNDER_ALONE, "adopted"),
+      bound(FOUNDER_IN_TEAM),
+    ),
+    { nil: null },
+  );
+  const actions = [
+    "fleet",
+    "view",
+    "terminal",
+    "sign_in",
+    "set_size",
+    "restart",
+    "stop_without_saving",
+    "sign_out",
+    "record_revocation",
+    "resolve_removal",
+    "remove",
+    "staging",
+  ] as const;
+
+  it("never lets a plain member past someone else's computer, and never an admin into what is the owner's alone", () => {
+    fc.assert(
+      fc.property(
+        person,
+        binding,
+        fc.constantFrom(...actions),
+        fc.boolean(),
+        (p, b, action, pending) => {
+          const access = pageAccess(p, b, FOUNDER);
+          const owns = ownsComputer(p, b, FOUNDER);
+          expect(access === "owner").toBe(owns);
+          if (!owns && p.kind === "member" && p.role === "member") expect(access).toBe("none");
+          const allowed = pageAllows(access, action, pending);
+          if (access === "none") expect(allowed).toBe(false);
+          if (access === "admin") {
+            const adminActions = ["fleet", "restart", "remove"];
+            const pendingActions = ["sign_out", "resolve_removal"];
+            expect(allowed).toBe(
+              adminActions.includes(action) || (pending && pendingActions.includes(action)),
+            );
+          }
+          if (access === "owner") expect(allowed).toBe(true);
+        },
+      ),
+    );
+  });
+
+  it("decides ownership by member, and by the installation owner's account where there is none", () => {
+    expect(ownsComputer(member(ALICE_MEMBER, "alice", "member"), bound(ALICE), FOUNDER)).toBe(true);
+    expect(ownsComputer(member(BOB_MEMBER, "bob", "admin"), bound(ALICE), FOUNDER)).toBe(false);
+    // The same member ID under another account is not the same person.
+    expect(ownsComputer(member(ALICE_MEMBER, "mallory", "member"), bound(ALICE), FOUNDER)).toBe(
+      false,
+    );
+    expect(ownsComputer({ kind: "installation_owner" }, null, null)).toBe(true);
+    expect(ownsComputer({ kind: "installation_owner" }, bound(ALICE), FOUNDER)).toBe(false);
+    expect(ownsComputer({ kind: "installation_owner" }, bound(FOUNDER_IN_TEAM), FOUNDER)).toBe(
+      true,
+    );
+    expect(ownsComputer(member(FOUNDER_MEMBER, FOUNDER, "owner"), null, FOUNDER)).toBe(true);
+    expect(
+      ownsComputer(
+        member(FOUNDER_MEMBER, FOUNDER, "owner"),
+        bound(FOUNDER_ALONE, "adopted"),
+        FOUNDER,
+      ),
+    ).toBe(true);
+    expect(ownsComputer(member(ALICE_MEMBER, "alice", "member"), null, FOUNDER)).toBe(false);
+    expect(ownsComputer(member(FOUNDER_MEMBER, FOUNDER, "owner"), null, null)).toBe(false);
+    expect(pageAccess({ kind: "installation_owner" }, bound(ALICE), FOUNDER)).toBe("admin");
+    expect(pageAccess(member(BOB_MEMBER, "bob", "owner"), bound(ALICE), FOUNDER)).toBe("admin");
+    expect(pageAccess(member(BOB_MEMBER, "bob", "member"), bound(ALICE), FOUNDER)).toBe("none");
+  });
+
+  it("keys an intent token to the person", () => {
+    expect(personKey({ kind: "installation_owner" })).toBe("installation");
+    expect(personKey(member(ALICE_MEMBER, "alice", "member"))).toBe(`member:${ALICE_MEMBER}`);
+  });
 });

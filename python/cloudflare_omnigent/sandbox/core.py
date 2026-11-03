@@ -188,9 +188,7 @@ class LauncherCore:
         self, computer_id: str, operation_id: str, *, owner: protocol.Owner | None = None
     ) -> protocol.ClaimStartResult:
         """The fence before any re-arm, under Omnigent's operation ID."""
-        request = self._build(
-            protocol.claim_start_request, operation_id, computer_id, owner=owner
-        )
+        request = self._build(protocol.claim_start_request, operation_id, computer_id, owner=owner)
         result = self._send(request).result
         assert isinstance(result, protocol.ClaimStartResult)
         return result

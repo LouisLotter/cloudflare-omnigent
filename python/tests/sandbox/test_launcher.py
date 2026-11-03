@@ -286,3 +286,109 @@ def test_blocked_replication_fails_a_start_visibly_with_no_token_sent(
     assert sleep == SuspendResult(outcome="unknown")  # Omnigent repeats it once durable
     assert api.requests == [] and computer.tokens == []
     assert len(fence.calls) == 4
+
+
+# ── The computer's owner (WP8.4) ────────────────────────────────────────────────────────
+
+ALICE_MEMBER = "0a1b2c3d4e5f40718293a4b5c6d7e8f9"
+TEAM = "9f8e7d6c5b4a49382716f5e4d3c2b1a0"
+
+
+def _owner(user_id: str = "alice", member_id: str | None = ALICE_MEMBER) -> object:
+    """Omnigent's ``SandboxOwner`` where the build has it, else a stand-in with its fields."""
+    try:
+        from omnigent.onboarding.sandboxes.types import SandboxOwner
+    except ImportError:  # an Omnigent build without owners
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            user_id=user_id,
+            host_id=HOST_ID,
+            member_id=member_id,
+            team_id=None if member_id is None else TEAM,
+        )
+    return SandboxOwner(
+        user_id=user_id,
+        host_id=HOST_ID,
+        member_id=member_id,
+        team_id=None if member_id is None else TEAM,
+    )
+
+
+def test_it_declares_that_it_takes_owners() -> None:
+    assert CloudflareLauncher.supports_owner_context is True
+    caps = CloudflareLauncher(None, None).capabilities
+    if hasattr(caps, "owner_context"):  # an Omnigent build with the capability
+        assert caps.owner_context is True
+
+
+def test_a_wake_with_an_owner_sends_version_2_naming_it_on_every_call(
+    api: FakeLauncherApi, launcher: CloudflareLauncher
+) -> None:
+    owner = _owner()
+    sandbox_id = launcher.provision(f"managed-{HOST_ID}", owner=owner)
+    assert launcher.admission(sandbox_id, owner=owner) is not None
+    assert launcher.is_running(sandbox_id, owner=owner) is False
+    launcher.resume(sandbox_id, owner=owner)
+    claim = launcher.claim_start(sandbox_id, operation_id=protocol.new_operation_id(), owner=owner)
+    assert claim.granted
+    _start(launcher, sandbox_id, claim.attempt, owner=owner)
+    assert launcher.keep_alive(sandbox_id, owner=owner) is True
+    launcher.checkpoint(sandbox_id, reason="turn_completed", owner=owner)
+    launcher.terminate(sandbox_id, owner=owner)
+    sent = [r for r in api.requests if r.operation != "prepare"]
+    assert {r.operation for r in sent} >= {
+        "provision",
+        "admission",
+        "status",
+        "resume",
+        "claim_start",
+        "start_host",
+        "keep_alive",
+        "checkpoint",
+        "terminate",
+    }
+    for record in sent:
+        assert record.body is not None and record.body["protocolVersion"] == 2
+        assert record.body["owner"] == {
+            "userId": "alice",
+            "memberId": ALICE_MEMBER,
+            "teamId": TEAM,
+            "hostId": HOST_ID,
+        }
+
+
+def test_someone_elses_computer_is_a_readable_refusal_and_the_owners_call_works(
+    api: FakeLauncherApi, launcher: CloudflareLauncher
+) -> None:
+    alice = _owner()
+    sandbox_id = launcher.provision(f"managed-{HOST_ID}", owner=alice)
+    bob = _owner("bob", "1b2c3d4e5f60718293a4b5c6d7e8f90a")
+    with pytest.raises(click.ClickException, match="belongs to someone else") as caught:
+        launcher.resume(sandbox_id, owner=bob)
+    assert not isinstance(caught.value, SandboxGoneError)
+    with pytest.raises(click.ClickException, match="belongs to someone else"):
+        launcher.claim_start(sandbox_id, operation_id=protocol.new_operation_id(), owner=bob)
+    # A read is refused readably too, never answered; keep_alive soft-fails as always, and the
+    # sleep's outcome is unknown, never "refused" (an earlier call may have started it).
+    with pytest.raises(click.ClickException, match="belongs to someone else"):
+        launcher.is_running(sandbox_id, owner=bob)
+    with pytest.raises(click.ClickException, match="belongs to someone else"):
+        launcher.admission(sandbox_id, owner=bob)
+    assert launcher.keep_alive(sandbox_id, owner=bob) is False
+    assert launcher.suspend(
+        sandbox_id, operation_id=protocol.new_operation_id(), owner=bob
+    ) == SuspendResult(outcome="unknown")
+    launcher.resume(sandbox_id, owner=alice)
+    assert launcher.is_running(sandbox_id, owner=alice) is True
+
+
+def test_a_malformed_owner_is_refused_readably_before_anything_is_sent(
+    api: FakeLauncherApi, launcher: CloudflareLauncher
+) -> None:
+    computer = api.add_computer(status="host_running")
+    with pytest.raises(click.ClickException, match="cannot send"):
+        launcher.resume(computer.computer_id, owner=object())
+    with pytest.raises(click.ClickException, match="cannot send"):
+        launcher.resume(computer.computer_id, owner=_owner(""))
+    assert api.requests == []

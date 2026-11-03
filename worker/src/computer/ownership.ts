@@ -195,3 +195,105 @@ export function ownerTag(binding: OwnerBinding | null): string {
   if (binding === null) return "installation";
   return binding.memberId === null ? "account" : `member:${binding.memberId}`;
 }
+
+// ---------------------------------------------------------------------------------------------
+// The pages (WP8.4): who may do what with a computer, from the person the web Worker's seam
+// decided (`pages/person.ts`) and the computer's binding.
+
+/** A page request's person, as `PagePerson` carries it. */
+export type PagePersonFields =
+  | { readonly kind: "installation_owner" }
+  | {
+      readonly kind: "member";
+      readonly memberId: string;
+      readonly userId: string;
+      readonly role: "owner" | "admin" | "member";
+    };
+
+/**
+ * What a person may do with a computer:
+ * - `owner`: everything the pages offer: it is theirs;
+ * - `admin`: someone else's, seen by a human administrator (the installation's owner, or a team
+ *   owner or admin), who may see it in the fleet, stop it, remove it while Omnigent no longer
+ *   calls it, and finish a pending removal; never start it, sign in on it, read its status or
+ *   sign-ins, or drive its terminal;
+ * - `none`: nothing; the computer is answered as if it did not exist.
+ */
+export type PageAccess = "owner" | "admin" | "none";
+
+/** Whether `person` owns a computer bound to `binding`. */
+export function ownsComputer(
+  person: PagePersonFields,
+  binding: OwnerBinding | null,
+  installationOwner: string | null,
+): boolean {
+  if (person.kind === "installation_owner") {
+    return binding === null || (installationOwner !== null && binding.userId === installationOwner);
+  }
+  if (binding !== null && binding.memberId !== null) {
+    return binding.memberId === person.memberId && binding.userId === person.userId;
+  }
+  // No binding, or one made before the team: the installation owner's, whoever names that account.
+  return (
+    installationOwner !== null &&
+    person.userId === installationOwner &&
+    (binding === null || binding.userId === installationOwner)
+  );
+}
+
+export function pageAccess(
+  person: PagePersonFields,
+  binding: OwnerBinding | null,
+  installationOwner: string | null,
+): PageAccess {
+  if (ownsComputer(person, binding, installationOwner)) return "owner";
+  if (person.kind === "installation_owner" || person.role !== "member") return "admin";
+  return "none";
+}
+
+/** The page actions, as the page front classifies its calls. */
+export type PageAction =
+  /** The page state for the list and the confirmation pages. */
+  | "fleet"
+  /** The setup page's own reads: the computer's status and a sign-in attempt. */
+  | "view"
+  | "terminal"
+  | "sign_in"
+  | "set_size"
+  | "restart"
+  | "stop_without_saving"
+  | "sign_out"
+  | "record_revocation"
+  | "resolve_removal"
+  | "remove"
+  | "staging";
+
+/**
+ * Whether `access` allows `action`. An administrator may stop and remove; a sign-out and the
+ * removal's end only while a removal is pending (signing a departing person's logins out of a
+ * computer being removed protects that person). Everything else is the owner's alone.
+ */
+export function pageAllows(
+  access: PageAccess,
+  action: PageAction,
+  removalPending: boolean,
+): boolean {
+  if (access === "owner") return true;
+  if (access === "none") return false;
+  switch (action) {
+    case "fleet":
+    case "restart":
+    case "remove":
+      return true;
+    case "sign_out":
+    case "resolve_removal":
+      return removalPending;
+    default:
+      return false;
+  }
+}
+
+/** The person's key in a request-intent token: who the token was issued to. */
+export function personKey(person: PagePersonFields): string {
+  return person.kind === "installation_owner" ? "installation" : `member:${person.memberId}`;
+}

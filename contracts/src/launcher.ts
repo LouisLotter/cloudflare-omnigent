@@ -2,11 +2,13 @@ import { z } from "zod";
 import type { ErrorCode } from "./errors.ts";
 import {
   AbsolutePath,
+  AccountId,
   ComputerId,
   Generation,
   HostId,
   LauncherOperationId,
   StartAttempt,
+  TeamMemberId,
 } from "./ids.ts";
 
 // The launcher API: the Cloudflare launcher (Omnigent's `SandboxHostLauncher` in the server
@@ -210,22 +212,6 @@ export const HostConfig = z
 
 // ---------------------------------------------------------------------------------------------
 // The computer's owner (protocol version 2; WP8.4, D50).
-
-/** A team's or a member's ID, as Omnigent mints them (`uuid.uuid4().hex`; fork `team_store`). */
-export const TeamMemberId = z.string().regex(/^[0-9a-f]{32}$/);
-export type TeamMemberId = z.infer<typeof TeamMemberId>;
-
-/**
- * An Omnigent account's ID (`users.id`), for example a username. Personal data: rendered as text
- * only, never logged.
- */
-export const AccountId = z
-  .string()
-  .min(1)
-  .max(255)
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are refused
-  .regex(/^[^\u0000-\u001f\u007f]+$/);
-export type AccountId = z.infer<typeof AccountId>;
 
 /**
  * The person a computer belongs to, as Omnigent derives it from its own records for each call: the

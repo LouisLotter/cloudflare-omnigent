@@ -790,9 +790,7 @@ def test_a_call_for_someone_elses_computer_is_a_readable_refusal_never_repeated(
             computer.computer_id, protocol.new_operation_id(), owner=ALICE
         ),
     }
-    call = calls.get(
-        operation, lambda: getattr(core, operation)(computer.computer_id, owner=ALICE)
-    )
+    call = calls.get(operation, lambda: getattr(core, operation)(computer.computer_id, owner=ALICE))
     with pytest.raises(PlatformRefusal) as caught:
         call()
     assert caught.value.code == "forbidden"

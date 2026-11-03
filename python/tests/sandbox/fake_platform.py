@@ -409,7 +409,7 @@ class FakeLauncherApi:
 
     @staticmethod
     def _check_owner(c: Computer, owner: dict[str, Any] | None) -> None:
-        """WorkspaceDO's owner check, as far as the launcher can see it: another owner is refused."""
+        """WorkspaceDO's owner check as the launcher sees it: another owner is refused."""
         if owner is not None and c.owner is not None and c.owner != _owner_key(owner):
             raise ApiError("forbidden", "This computer belongs to someone else.")
 

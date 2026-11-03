@@ -5,6 +5,7 @@
 // container and the clocks are simulated.
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import type { PagePerson } from "@cfo/contracts";
 import { type ComputerId, type LauncherOwner, signLauncherRequest } from "@cfo/contracts";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ComputerRecord, RECORD_KEY } from "../../src/computer/record.ts";
@@ -12,6 +13,9 @@ import {
   type WorkspaceDO as ProductionWorkspaceDO,
   SqlStore,
 } from "../../src/computer/WorkspaceDO.ts";
+import type { WebEnv } from "../../src/env.ts";
+import type { Admitted } from "../../src/ingress/index.ts";
+import { routePlatform } from "../../src/pages/router.ts";
 import { workspaceObjectName } from "../../src/shared/rpc.ts";
 import {
   type Computer,
@@ -209,5 +213,168 @@ describe("a computer bound to its owner through the assembled chain (T3, T15)", 
       "cfo-owner": `member:${ALICE_MEMBER}`,
     });
     expect(JSON.stringify(head?.customMetadata)).not.toContain("alice");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The pages through the real web Worker routes and WorkspaceDO (T3, T13), with the person seam
+// answering for Alice, Bob and Carol (an administrator) as WP8.3's will. WorkspaceDO is evicted
+// before the pages are used; not between page requests, whose stubs this isolate still holds (the
+// eviction would wait on them, as in assembled-pages.test.ts). The launcher tests above evict
+// after each persisted transition.
+
+const ORIGIN = "https://omnigent.example.test";
+const webEnv = {
+  OMNIGENT: env.OMNIGENT,
+  WORKSPACE: env.WORKSPACE,
+  CONTROL: env.CONTROL,
+} as unknown as WebEnv;
+
+const PEOPLE = {
+  alice: { kind: "member", memberId: ALICE_MEMBER, userId: "alice", role: "member" },
+  bob: { kind: "member", memberId: BOB_MEMBER, userId: "bob", role: "member" },
+  carol: {
+    kind: "member",
+    memberId: "2c3d4e5f60718293a4b5c6d7e8f90a1b",
+    userId: "carol",
+    role: "admin",
+  },
+} as const satisfies Record<string, PagePerson>;
+type Who = keyof typeof PEOPLE;
+const SESSIONS: Record<Who, string> = {
+  alice: "a1".repeat(32),
+  bob: "b2".repeat(32),
+  carol: "c3".repeat(32),
+};
+
+function routeAs(who: Who, path: string, init: RequestInit = {}): Promise<Response> {
+  const admitted: Admitted = {
+    ok: true,
+    request: new Request(`${ORIGIN}${path}`, init),
+    origin: ORIGIN,
+    identity: { sub: `${who}-sub`, sessionId: SESSIONS[who], issuedAt: 1, expiresAt: 2 },
+  };
+  return routePlatform(admitted, webEnv, {
+    person: async () => PEOPLE[who],
+    assets: async () => ({}),
+  });
+}
+
+const post = (fields: Record<string, string>): RequestInit => ({
+  method: "POST",
+  headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+  body: new URLSearchParams(fields).toString(),
+});
+
+/** A page's status, its body read so no request is left open. */
+async function statusAs(who: Who, path: string, init: RequestInit = {}): Promise<number> {
+  const response = await routeAs(who, path, init);
+  await response.text();
+  return response.status;
+}
+
+async function intentOn(who: Who, path: string): Promise<string | null> {
+  const html = await (await routeAs(who, path)).text();
+  const match =
+    /data-intent="([0-9a-f]{64})"/.exec(html) ?? /name="intent" value="([0-9a-f]{64})"/.exec(html);
+  return match?.[1] ?? null;
+}
+
+describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)", () => {
+  it("shows Alice her computer, hides it from Bob, and gives Carol the fleet view and the stop", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    const page = `/platform/computers/${c.computerId}`;
+    await evictDurableObject(c.stub);
+
+    // Alice: her setup page, its token, its status.
+    expect(await statusAs("alice", page)).toBe(200);
+    expect(await intentOn("alice", page)).toMatch(/^[0-9a-f]{64}$/);
+    expect(await statusAs("alice", `${page}/status`)).toBe(200);
+    expect(await (await routeAs("alice", "/platform/computers")).text()).toContain(
+      `data-computer="${c.computerId}"`,
+    );
+
+    // Bob: not listed, not found, no token; a change with a token of his own making: not found.
+    expect(await (await routeAs("bob", "/platform/computers")).text()).not.toContain(c.computerId);
+    for (const path of [page, `${page}/state`, `${page}/status`, `${page}/do/restart`]) {
+      expect(await statusAs("bob", path), path).toBe(404);
+    }
+    expect(
+      await statusAs(
+        "bob",
+        `${page}/do/restart`,
+        post({ intent: "0".repeat(64), op: "op_01hzy4a7b8c9d0e1f2g3h4j5k6" }),
+      ),
+    ).toBe(404);
+
+    // Carol: the fleet card, never the setup page; the stop.
+    const list = await (await routeAs("carol", "/platform/computers")).text();
+    expect(list).toContain(`data-fleet-computer="${c.computerId}"`);
+    expect(list).toContain("Belongs to alice");
+    expect(await statusAs("carol", page)).toBe(404);
+    expect(await statusAs("carol", `${page}/status`)).toBe(403);
+    expect(await (await routeAs("carol", `${page}/do/set-size`)).text()).toContain(
+      'data-confirm="not-offered"',
+    );
+    // Alice's token is hers: Carol presenting it is refused, and nothing stops.
+    const alicesToken = (await intentOn("alice", page)) as string;
+    expect(
+      await statusAs(
+        "carol",
+        `${page}/do/restart`,
+        post({ intent: alicesToken, op: "op_01hzy4a7b8c9d0e1f2g3h4j5k7" }),
+      ),
+    ).toBe(403);
+    expect((await record(c.stub)).lifecycle.context.state).toBe("host_running");
+    const carols = (await intentOn("carol", `${page}/do/restart`)) as string;
+    const stopped = await routeAs(
+      "carol",
+      `${page}/do/restart`,
+      post({ intent: carols, op: "op_01hzy4a7b8c9d0e1f2g3h4j5k8" }),
+    );
+    await stopped.text();
+    expect(stopped.status).toBe(303);
+    expect(stopped.headers.get("location")).toBe(
+      "/platform/computers?done=restart&outcome=accepted",
+    );
+    await settle(c);
+    expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
+  }, 60_000);
+
+  it("refuses Bob's and Carol's terminal upgrades before the capability is looked at", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    const upgrade = (who: Who) =>
+      c.stub.fetch(
+        new Request("https://workspace/", {
+          headers: {
+            upgrade: "websocket",
+            "x-cfo-terminal": JSON.stringify({
+              interfaceVersion: 1,
+              computerId: c.computerId,
+              owner: { sub: `${who}-sub`, sessionId: SESSIONS[who], person: PEOPLE[who] },
+              capability: "A".repeat(43),
+            }),
+          },
+        }),
+      );
+    expect((await upgrade("bob")).status).toBe(404);
+    expect((await upgrade("carol")).status).toBe(404);
+    expect((await upgrade("alice")).status).toBe(403); // hers: the unknown capability is refused
   });
 });

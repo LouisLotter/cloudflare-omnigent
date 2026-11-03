@@ -1379,6 +1379,19 @@ export class WorkspaceController {
   }
 
   /**
+   * The computer's owner binding and the installation's owner (WP8.4), for the page front's
+   * decisions. A read of committed state; null for a computer with no record.
+   */
+  ownership(): {
+    readonly binding: OwnerBinding | null;
+    readonly installationOwner: string | null;
+  } | null {
+    const r = this.#load();
+    if (r === null) return null;
+    return { binding: r.owner, installationOwner: this.#d.installationOwner ?? null };
+  }
+
+  /**
    * A removal intent the setup page records (WP3.5): what Omnigent's `terminate` records, without a
    * launcher owner to check. The page front has already decided that the person may remove this
    * computer, and offers it only while Omnigent no longer calls (WP8.4).

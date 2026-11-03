@@ -89,7 +89,9 @@ export async function setupPage(
   nowMs: number,
 ): Promise<Response> {
   const state = await backend.state(id, owner);
-  if (state === null || state.intentToken === undefined) return notFoundPage();
+  // The setup page is its owner's alone (WP8.4): an administrator's view has no setup page.
+  if (state === null || state.intentToken === undefined || state.computer.access === "admin")
+    return notFoundPage();
   const view = computerView(state.computer, nowMs);
   const removing = view.removal === "pending" || view.removal === "resolved";
   const terminal = state.computer.terminal;
@@ -159,7 +161,8 @@ export async function stateJson(
   nowMs: number,
 ): Promise<Response> {
   const state = await backend.state(id, owner);
-  if (state === null) return jsonResponse({ error: { code: "not_found" } }, 404);
+  if (state === null || state.computer.access === "admin")
+    return jsonResponse({ error: { code: "not_found" } }, 404);
   const view = computerView(state.computer, nowMs);
   return jsonResponse({
     status: view.status,

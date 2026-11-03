@@ -20,12 +20,18 @@ import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
 import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
+import type { PersonSeam } from "../../src/pages/person.ts";
 import { isPlatformPath, routePlatform } from "../../src/pages/router.ts";
 import { platformError } from "../../src/shared/errors.ts";
 import { NEVER_SIGNED_IN, NOW, PAGE_CMP, pageState } from "../support/page-states.ts";
 
 const ORIGIN = "https://omnigent.example.test";
-const OWNER: PageOwner = { sub: "owner-sub-canary", sessionId: "ab".repeat(32) };
+/** The admitted identity, and the person today's seam decides for it (WP8.4). */
+const OWNER: PageOwner = {
+  sub: "owner-sub-canary",
+  sessionId: "ab".repeat(32),
+  person: { kind: "installation_owner" },
+};
 const INTENT = "c3".repeat(32);
 const OP = "op_01hzy4a7b8c9d0e1f2g3h4j5k6";
 const OTHER = "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4" as ComputerId;
@@ -91,7 +97,7 @@ const ASSETS = {
   "setup-client.js": { body: "/* client */", type: "text/javascript; charset=utf-8" },
 };
 
-function setup() {
+function setup(person?: PersonSeam) {
   const backend = new FakeBackend();
   const logs: Readonly<Record<string, string>>[] = [];
   const route = (path: string, init: RequestInit = {}) => {
@@ -103,6 +109,7 @@ function setup() {
     };
     return routePlatform(admitted, {} as WebEnv, {
       backend,
+      ...(person === undefined ? {} : { person }),
       assets: async () => ASSETS,
       now: () => NOW,
       log: (fields) => logs.push(fields),
@@ -1713,5 +1720,107 @@ describe("the sign-in markup (WP3.23)", () => {
     expect(signInHtml("codex", { outcome: "refused", reason: "not_offered" }, NOW)).toContain(
       'data-act="start" disabled',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// WP8.4: the person, through one seam; an administrator's view of someone else's computer.
+
+describe("the person behind a page (WP8.4)", () => {
+  const MEMBER = {
+    kind: "member" as const,
+    memberId: "1b2c3d4e5f60718293a4b5c6d7e8f90a",
+    userId: "bob",
+    role: "member" as const,
+  };
+  const ADMIN = { ...MEMBER, userId: "carol", role: "admin" as const };
+
+  it("refuses every page for an identity the seam gives no person", async () => {
+    const { route, backend } = setup(async () => null);
+    for (const path of ["/platform/computers", page, `${page}/state`, "/platform/password"]) {
+      const response = await route(path);
+      expect(response.status, path).toBe(403);
+      expectFramingProtection(response);
+    }
+    expect(backend.acts).toEqual([]);
+  });
+
+  it("passes the seam's person to WorkspaceDO with every call", async () => {
+    const { route, backend } = setup(async () => MEMBER);
+    const response = await route(`${page}/do/restart`, form({ intent: INTENT, op: OP }));
+    expect(response.status).toBe(303);
+    expect(backend.acts[0]?.call).toMatchObject({ owner: { person: MEMBER } });
+  });
+
+  it("keeps the installation owner's own pages from anyone else", async () => {
+    const { route } = setup(async () => ADMIN);
+    expect((await route("/platform/password")).status).toBe(404);
+    expect((await route("/platform/github")).status).toBe(404);
+  });
+
+  function adminFleet() {
+    const t = setup(async () => ADMIN);
+    t.backend.names.set(OTHER, "managed-0123456789abcdef0123456789abcdef");
+    t.backend.states.set(OTHER, {
+      action: "state",
+      computer: pageState({
+        computerId: OTHER,
+        hostName: "Alice's computer",
+        access: "admin",
+        ownerName: "alice",
+        noContact: true,
+      }),
+      intentToken: INTENT,
+    });
+    return t;
+  }
+
+  it("lists someone else's computer for an administrator with its owner and the stop, never its setup", async () => {
+    const { route } = adminFleet();
+    const html = await (await route("/platform/computers")).text();
+    expect(html).toContain(`data-fleet-computer="${OTHER}"`);
+    expect(html).toContain("Belongs to alice");
+    expect(html).toContain(`href="/platform/computers/${OTHER}/do/restart"`);
+    expect(html).toContain(`href="/platform/computers/${OTHER}/do/remove"`);
+    expect(html).not.toContain(`href="/platform/computers/${OTHER}"`);
+    // The administrator's own computer keeps its setup link.
+    expect(html).toContain(`href="/platform/computers/${PAGE_CMP}"`);
+  });
+
+  it("answers an administrator's setup page and state of someone else's computer as not found", async () => {
+    const { route } = adminFleet();
+    const other = `/platform/computers/${OTHER}`;
+    expect((await route(other)).status).toBe(404);
+    expect((await route(`${other}/state`)).status).toBe(404);
+  });
+
+  it("offers an administrator only the stop and the removal, and sends them back to the list", async () => {
+    const { route, backend } = adminFleet();
+    const other = `/platform/computers/${OTHER}`;
+    expect(await (await route(`${other}/do/restart`)).text()).toContain('data-confirm="restart"');
+    expect(await (await route(`${other}/do/remove`)).text()).toContain('data-confirm="remove"');
+    for (const slug of ["set-size", "sign-out", "record-revocation", "stop-without-saving"]) {
+      expect(await (await route(`${other}/do/${slug}`)).text(), slug).toContain(
+        'data-confirm="not-offered"',
+      );
+    }
+    const response = await route(`${other}/do/restart`, form({ intent: INTENT, op: OP }));
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "/platform/computers?done=restart&outcome=accepted",
+    );
+    expect(backend.acts.map((a) => a.id)).toEqual([OTHER]);
+  });
+
+  it("names a computer that could not be read to an administrator only", async () => {
+    for (const [person, shown] of [
+      [MEMBER, false],
+      [ADMIN, true],
+    ] as const) {
+      const { route, backend } = setup(async () => person);
+      backend.failState.add(PAGE_CMP);
+      const html = await (await route("/platform/computers")).text();
+      expect(html.includes("managed-7f3c2a9e"), person.role).toBe(shown);
+    }
   });
 });

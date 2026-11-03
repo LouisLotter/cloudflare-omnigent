@@ -54,6 +54,22 @@ export type HostId = z.infer<typeof HostId>;
 export const LauncherOperationId = z.string().regex(/^[0-9a-f]{32}$/);
 export type LauncherOperationId = z.infer<typeof LauncherOperationId>;
 
+/** A team's or a member's ID, as Omnigent mints them (`uuid.uuid4().hex`; fork `team_store`). */
+export const TeamMemberId = z.string().regex(/^[0-9a-f]{32}$/);
+export type TeamMemberId = z.infer<typeof TeamMemberId>;
+
+/**
+ * An Omnigent account's ID (`users.id`), for example a username. Personal data: rendered as text
+ * only, never logged.
+ */
+export const AccountId = z
+  .string()
+  .min(1)
+  .max(255)
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are refused
+  .regex(/^[^\u0000-\u001f\u007f]+$/);
+export type AccountId = z.infer<typeof AccountId>;
+
 /** A host start attempt, granted by `claim_start`. Attempts count up from 1 per computer. */
 export const StartAttempt = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 export type StartAttempt = z.infer<typeof StartAttempt>;
