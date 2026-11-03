@@ -122,6 +122,12 @@ export const PagePersonResult = z.discriminatedUnion("action", [
     userId: z.string().min(1).max(128),
     role: z.enum(["owner", "admin", "member"]),
     state: z.enum(["invited", "active", "suspended", "removed"]),
+    /**
+     * Whether the member's account is the installation's named owner
+     * (`SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`). OmnigentServer sets it from its own
+     * configuration and ignores any value the server container sends.
+     */
+    installationOwner: z.boolean().optional(),
   }),
   z.strictObject({ action: z.literal("none") }),
   z.strictObject({ action: z.literal("unsupported") }),

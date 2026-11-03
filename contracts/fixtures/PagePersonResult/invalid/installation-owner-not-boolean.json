@@ -1,0 +1,8 @@
+{
+  "action": "member",
+  "memberId": "fedcba9876543210fedcba9876543210",
+  "userId": "owner",
+  "role": "owner",
+  "state": "active",
+  "installationOwner": "yes"
+}

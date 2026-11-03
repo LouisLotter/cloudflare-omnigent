@@ -21,9 +21,8 @@ async function loadPageAssets() {
   return (await import("./pages/assets.ts")).ASSETS;
 }
 
-/** The refusal of the platform pages to anyone but the installation's owner. */
-const OWNER_PAGES =
-  "These pages are the installation owner's. If that is you, open Omnigent and sign in first; otherwise use Omnigent instead.";
+/** Owner admission's refusal of the platform pages to anyone but the installation's owner. */
+const OWNER_PAGES = "These pages are the installation owner's. Use Omnigent instead.";
 
 /** This isolate's memory of the owner's password (WP3.34): once chosen, it stops asking. */
 const firstVisit: FirstVisitMemo = { chosen: false };
@@ -58,26 +57,22 @@ export async function routeAdmitted(
 
 /**
  * Members admission (WP8.3): Omnigent is everyone's, and decides who they are itself. The
- * platform pages decide per person only through the person seam (WP8.4); until it is wired into
- * the router they open only to the pinned owner whose Access identity Omnigent binds to an
- * active owner, so neither a matching address nor another owner reaches the installation
- * owner's pages. There is no first-visit redirect: the owner chose a password before the team.
+ * platform pages decide per person through the membership seam (`member-seam.ts`), and
+ * WorkspaceDO per computer (WP8.4): a member reaches her own computers, an administrator the
+ * fleet view, and only the installation's owner the owner's own pages. There is no first-visit
+ * redirect: the owner chose a password before the team.
  */
-async function routeMember(
+function routeMember(
   admitted: Admitted,
   env: WebEnv,
   path: string,
   log: (fields: Readonly<Record<string, string>>) => void,
 ): Promise<Response> {
   if (!isPlatformPath(path)) return proxyToOmnigent(admitted, env);
-  const person =
-    admitted.identity.pin === true
-      ? await memberSeam(bindingsPagePersonBackend(env), log)(admitted)
-      : null;
-  if (person?.kind !== "member" || person.role !== "owner") {
-    return refusedPage(403, OWNER_PAGES);
-  }
-  return routePlatform(admitted, env, { assets: loadPageAssets });
+  return routePlatform(admitted, env, {
+    assets: loadPageAssets,
+    person: memberSeam(bindingsPagePersonBackend(env), log),
+  });
 }
 
 export default {

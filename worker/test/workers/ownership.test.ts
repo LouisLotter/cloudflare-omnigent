@@ -5,7 +5,7 @@
 // container and the clocks are simulated.
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import type { PagePerson } from "@cfo/contracts";
+import type { PagePerson, PagePersonResult } from "@cfo/contracts";
 import {
   type ComputerId,
   type LauncherOwner,
@@ -29,6 +29,7 @@ import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import { routePlatform } from "../../src/pages/router.ts";
 import { workspaceObjectName } from "../../src/shared/rpc.ts";
+import { routeAdmitted } from "../../src/web.ts";
 import {
   type Computer,
   LAUNCHER_KEY,
@@ -404,6 +405,112 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect((await upgrade("carol")).status).toBe(404);
     expect((await upgrade("alice")).status).toBe(403); // hers: the unknown capability is refused
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// WP8.3 with WP8.4: in members admission the web Worker's own route decides the person through the
+// membership seam (`pages/member-seam.ts`), asking OmnigentServer which member each Access
+// identity is bound to; WorkspaceDO then decides per computer as above. OmnigentServer's answer
+// is simulated here (its own tests run it with the server container); the routes, the seam, the
+// router and WorkspaceDO are the real ones.
+
+describe("the pages in members admission, through the web Worker's route (WP8.3)", () => {
+  const MEMBERS: Record<string, PagePersonResult> = {
+    "alice-sub": {
+      action: "member",
+      memberId: ALICE_MEMBER,
+      userId: "alice",
+      role: "member",
+      state: "active",
+    },
+    "bob-sub": {
+      action: "member",
+      memberId: BOB_MEMBER,
+      userId: "bob",
+      role: "member",
+      state: "active",
+    },
+    "carol-sub": {
+      action: "member",
+      memberId: PEOPLE.carol.memberId,
+      userId: "carol",
+      role: "admin",
+      state: "active",
+    },
+  };
+  let answers = { ...MEMBERS };
+  const membersEnv = {
+    OMNIGENT: {
+      getByName: () => ({
+        pagePerson: async ({ subject }: { subject: string }) =>
+          answers[subject] ?? { action: "none" },
+      }),
+    },
+    WORKSPACE: env.WORKSPACE,
+    CONTROL: env.CONTROL,
+  } as unknown as WebEnv;
+
+  async function statusOf(subject: string, path: string): Promise<[number, string]> {
+    const admitted: Admitted = {
+      ok: true,
+      request: new Request(`${ORIGIN}${path}`),
+      origin: ORIGIN,
+      admission: "members",
+      identity: {
+        sub: subject,
+        issuer: "https://team.cloudflareaccess.com",
+        audience: "a".repeat(64),
+        email: `${subject.slice(0, -4)}@example.test`,
+        pin: false,
+        sessionId: "d4".repeat(32),
+        issuedAt: 1,
+        expiresAt: 2,
+      },
+    };
+    const response = await routeAdmitted(admitted, membersEnv, {} as ExecutionContext);
+    return [response.status, await response.text()];
+  }
+
+  it("shows a member her own computer, hides it from another, and gives an admin the fleet view", async () => {
+    answers = { ...MEMBERS };
+    const host = newHost();
+    const c = await provisionFor(host, {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    });
+    await wake(c, { hostId: host, token: TOKEN });
+    const page = `/platform/computers/${c.computerId}`;
+
+    const [aliceList, aliceListed] = await statusOf("alice-sub", "/platform/computers");
+    expect(aliceList).toBe(200);
+    expect(aliceListed).toContain(`data-computer="${c.computerId}"`);
+    expect((await statusOf("alice-sub", page))[0]).toBe(200);
+
+    const [, bobListed] = await statusOf("bob-sub", "/platform/computers");
+    expect(bobListed).not.toContain(c.computerId);
+    expect((await statusOf("bob-sub", page))[0]).toBe(404);
+
+    const [, carolListed] = await statusOf("carol-sub", "/platform/computers");
+    expect(carolListed).toContain(`data-fleet-computer="${c.computerId}"`);
+    expect((await statusOf("carol-sub", page))[0]).toBe(404);
+
+    // Nobody but the installation's owner reaches the owner's own pages.
+    for (const subject of ["alice-sub", "carol-sub"]) {
+      expect((await statusOf(subject, "/platform/password"))[0]).toBe(404);
+    }
+
+    // Suspended, or bound to nobody: no page at all.
+    answers = {
+      ...MEMBERS,
+      "alice-sub": { ...MEMBERS["alice-sub"], state: "suspended" } as PagePersonResult,
+    };
+    expect((await statusOf("alice-sub", "/platform/computers"))[0]).toBe(403);
+    expect((await statusOf("alice-sub", page))[0]).toBe(403);
+    expect((await statusOf("stranger-sub", "/platform/computers"))[0]).toBe(403);
+    await settle(c);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -1307,7 +1307,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         return unavailable;
       }
       const answer = PagePersonResult.safeParse(await response.json());
-      return answer.success ? answer.data : unavailable;
+      if (!answer.success) return unavailable;
+      if (answer.data.action !== "member") return answer.data;
+      // Whether this is the installation's named owner is the platform's to say, not the server's.
+      const { installationOwner: _sent, ...member } = answer.data;
+      const owner = ownerUsernameOf(this.env as unknown as Record<string, unknown>);
+      return { ...member, installationOwner: owner !== null && member.userId === owner };
     } catch (error) {
       logEvent("server", "page_person_error", { error: describeError(error) });
       return unavailable;

@@ -233,14 +233,17 @@ describe("the pages in members admission", () => {
     ...(admission === "absent" ? {} : { admission }),
   });
 
-  it("are refused to anyone but the owner until the person seam is wired", async () => {
-    // Bob is an active owner too, but not the installation's: the pages stay its owner's.
-    const { seen, asked, binding } = recordingBinding({ ...ACTIVE_OWNER, userId: "bob" });
+  const ALICE: PagePersonResult = { ...ACTIVE_OWNER, userId: "alice", role: "member" };
+
+  it("are each member's own, decided through the seam by her identity", async () => {
+    const { seen, asked, binding } = recordingBinding(ALICE);
     const env = { OMNIGENT: binding } as unknown as WebEnv;
-    const refused = await routeAdmitted(at("/platform/computers", false), env, ctx);
-    expect(refused.status).toBe(403);
-    expect(seen).toHaveLength(0);
-    expect(asked).toHaveLength(0);
+    const routed = await routeAdmitted(at("/platform/", false), env, ctx);
+    expect(routed.status).toBe(303);
+    expect(routed.headers.get("location")).toBe("/platform/computers");
+    expect(asked).toEqual([
+      expect.objectContaining({ issuer: ISSUER, subject: ALICE_SUB, audience: AUD }),
+    ]);
     // Omnigent itself is reached, with the person for the server to bind.
     const forwarded = await routeAdmitted(at("/v1/me", false), env, ctx);
     expect(forwarded.status).toBe(200);
@@ -251,29 +254,33 @@ describe("the pages in members admission", () => {
     ["unbound", { action: "none" }],
     ["suspended", { ...ACTIVE_OWNER, state: "suspended" }],
     ["removed", { ...ACTIVE_OWNER, state: "removed" }],
-    ["demoted to admin", { ...ACTIVE_OWNER, role: "admin" }],
     ["on an Omnigent without teams", { action: "unsupported" }],
     ["while the server does not answer", { action: "unavailable" }],
-  ])("are refused to the pinned address when its identity is %s", async (_name, person) => {
-    const { seen, asked, binding } = recordingBinding(person);
-    const env = { OMNIGENT: binding } as unknown as WebEnv;
-    const refused = await routeAdmitted(at("/platform/", true), env, ctx);
-    expect(refused.status).toBe(403);
-    expect(await refused.text()).toContain("open Omnigent and sign in first");
-    // Asked about this identity, by its own claims.
-    expect(asked).toEqual([
-      expect.objectContaining({ issuer: ISSUER, subject: OWNER_SUB, audience: AUD }),
-    ]);
-    expect(seen).toHaveLength(0);
+  ])("are refused, the pinned address too, when the identity is %s", async (_name, person) => {
+    for (const pinned of [true, false]) {
+      const { seen, asked, binding } = recordingBinding(person);
+      const env = { OMNIGENT: binding } as unknown as WebEnv;
+      const refused = await routeAdmitted(at("/platform/", pinned), env, ctx);
+      expect(refused.status).toBe(403);
+      expect(asked).toHaveLength(1);
+      expect(seen).toHaveLength(0);
+    }
   });
 
-  it("open to the pinned address bound to an active owner", async () => {
-    const { asked, binding } = recordingBinding(ACTIVE_OWNER);
-    const env = { OMNIGENT: binding } as unknown as WebEnv;
-    const routed = await routeAdmitted(at("/platform/", true), env, ctx);
-    expect(routed.status).toBe(303);
-    expect(routed.headers.get("location")).toBe("/platform/computers");
-    expect(asked).toHaveLength(1);
+  it("keep the owner's own pages for the installation's owner alone", async () => {
+    const page = async (person: PagePersonResult, pinned: boolean) => {
+      const { binding } = recordingBinding(person);
+      const env = { OMNIGENT: binding } as unknown as WebEnv;
+      const response = await routeAdmitted(at("/platform/password", pinned), env, ctx);
+      await response.text();
+      return response.status;
+    };
+    expect(await page({ ...ACTIVE_OWNER, installationOwner: true }, true)).toBe(200);
+    // Another owner, an admin, a member, and the owner's address on another account: not found.
+    expect(await page({ ...ACTIVE_OWNER, userId: "bob" }, false)).toBe(404);
+    expect(await page({ ...ACTIVE_OWNER, role: "admin", installationOwner: true }, true)).toBe(404);
+    expect(await page(ALICE, false)).toBe(404);
+    expect(await page(ACTIVE_OWNER, true)).toBe(404);
   });
 
   it("send no one to the password page: Omnigent is reached directly", async () => {
@@ -349,12 +356,29 @@ describe("the member seam", () => {
     expect(unbound.calls[0]).toMatchObject({ subject: OWNER_SUB });
     const suspended = backend({ ...active, role: "owner", state: "suspended" });
     expect(await memberSeam(suspended)(admitted(owner))).toBeNull();
-    const bound = backend({ ...active, userId: "owner", role: "owner" });
-    expect(await memberSeam(bound)(admitted(owner))).toEqual({
-      kind: "member",
-      memberId: active.memberId,
+    // The installation's owner: an active owner on the account OmnigentServer names as theirs.
+    const installation = backend({
+      ...active,
       userId: "owner",
       role: "owner",
+      installationOwner: true,
+    });
+    expect(await memberSeam(installation)(admitted(owner))).toEqual({
+      kind: "installation_owner",
+    });
+    // Any other owner is a member person with the owner's role, the pinned address or not.
+    const another = backend({ ...active, userId: "bob", role: "owner", installationOwner: false });
+    expect(await memberSeam(another)(admitted(owner))).toEqual({
+      kind: "member",
+      memberId: active.memberId,
+      userId: "bob",
+      role: "owner",
+    });
+    // A demoted installation owner keeps their own computers as an administrator.
+    const demoted = backend({ ...active, userId: "owner", role: "admin", installationOwner: true });
+    expect(await memberSeam(demoted)(admitted(owner))).toMatchObject({
+      kind: "member",
+      role: "admin",
     });
   });
 

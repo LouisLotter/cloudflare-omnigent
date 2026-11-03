@@ -8,6 +8,9 @@
           "const": "member",
           "type": "string"
         },
+        "installationOwner": {
+          "type": "boolean"
+        },
         "memberId": {
           "pattern": "^[0-9a-f]{32}$",
           "type": "string"

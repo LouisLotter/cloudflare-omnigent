@@ -138,7 +138,8 @@ describe("OmnigentServer: page person and admission", () => {
         : Response.json({ path: new URL(request.url).pathname });
     fake.handler = answer(() => Response.json(member));
     const asked = { ...call, issuer: ALICE.issuer, subject: "alice-sub", audience: "aud-tag" };
-    expect(await stub.pagePerson(asked)).toEqual(member);
+    // Without an installation owner configured, nobody is named it.
+    expect(await stub.pagePerson(asked)).toEqual({ ...member, installationOwner: false });
     const sent = fake.forwarded().find((r) => r.url.endsWith(PAGE_PERSON_CALL_PATH));
     expect(sent?.headers["x-cfo-call-signature"]).toMatch(/^[0-9a-f]{64}$/);
     fake.handler = answer(() => new Response("{}", { status: 404 }));
@@ -174,56 +175,79 @@ describe("OmnigentServer: page person and admission", () => {
 });
 
 describe("the web Worker's pages in members admission, through OmnigentServer", () => {
-  it("open to the pinned owner bound to an active owner, and to nobody else", async () => {
-    const { stub, fake } = await runningServer();
-    let person: PagePersonResult = {
+  it("decide each person by membership, and name the installation's owner from the platform", async () => {
+    const { stub, fake } = await runningServer({
+      SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME: "owner",
+    });
+    const member = (userId: string, role: "owner" | "admin" | "member") => ({
       action: "member",
       memberId: "0123456789abcdef0123456789abcdef",
-      userId: "owner",
-      role: "owner",
+      userId,
+      role,
       state: "active",
+    });
+    // The server container's answers, by Access subject. Bob's claims to be the installation's
+    // owner: OmnigentServer decides that itself.
+    let answers: Record<string, PagePersonResult> = {
+      "owner-sub": member("owner", "owner") as PagePersonResult,
+      "bob-sub": { ...member("bob", "owner"), installationOwner: true } as PagePersonResult,
+      "alice-sub": member("alice", "member") as PagePersonResult,
     };
-    fake.handler = (_port: number, request: Request) =>
-      new URL(request.url).pathname === PAGE_PERSON_CALL_PATH
-        ? Response.json(person)
-        : Response.json({ path: new URL(request.url).pathname });
-    const asked = () =>
-      fake.forwarded().filter((r) => r.url.endsWith(PAGE_PERSON_CALL_PATH)).length;
+    fake.handler = async (_port: number, request: Request) => {
+      if (new URL(request.url).pathname !== PAGE_PERSON_CALL_PATH) {
+        return Response.json({ path: new URL(request.url).pathname });
+      }
+      const { subject } = (await request.json()) as { subject: string };
+      return Response.json(answers[subject] ?? { action: "none" });
+    };
+    const call = (subject: string) =>
+      stub.pagePerson({ interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION, ...person(subject) });
+    const person = (subject: string) => ({
+      issuer: ALICE.issuer,
+      subject,
+      audience: ALICE.audience,
+    });
+    expect(await call("owner-sub")).toMatchObject({ userId: "owner", installationOwner: true });
+    expect(await call("bob-sub")).toMatchObject({ userId: "bob", installationOwner: false });
+    expect(await call("alice-sub")).toMatchObject({ userId: "alice", installationOwner: false });
+
     const webEnv = { OMNIGENT: { getByName: () => stub } } as unknown as WebEnv;
-    const at = (path: string, pin: boolean, admission?: "owner" | "members"): Admitted => ({
+    const at = (path: string, subject: string): Admitted => ({
       ok: true,
       identity: {
-        sub: "owner-sub",
-        issuer: ALICE.issuer,
-        audience: ALICE.audience,
-        email: "owner@example.test",
-        pin,
+        ...person(subject),
+        sub: subject,
+        email: `${subject.slice(0, -4)}@example.test`,
+        pin: subject === "owner-sub",
         sessionId: "e".repeat(64),
         issuedAt: 1,
         expiresAt: 2,
       },
       request: new Request(`${ORIGIN}${path}`),
       origin: ORIGIN,
-      ...(admission === undefined ? {} : { admission }),
+      admission: "members",
     });
     // Each answer's body is read, so no stream outlives the test.
-    const route = async (admitted: Admitted) => {
-      const response = await routeAdmitted(admitted, webEnv, createExecutionContext());
+    const status = async (path: string, subject: string) => {
+      const response = await routeAdmitted(at(path, subject), webEnv, createExecutionContext());
       await response.arrayBuffer();
-      return response;
+      return response.status;
     };
-
-    const opened = await route(at("/platform/", true, "members"));
-    expect(opened.status).toBe(303);
-    expect(asked()).toBe(1);
-    person = { ...person, state: "suspended" };
-    expect((await route(at("/platform/", true, "members"))).status).toBe(403);
-    expect(asked()).toBe(2);
-    // Another identity is refused without asking; Omnigent itself is still its to reach.
-    expect((await route(at("/platform/", false, "members"))).status).toBe(403);
-    expect((await route(at("/v1/me", false, "members"))).status).toBe(200);
-    // Owner admission never admits an unpinned identity; one built by hand is refused too.
-    expect((await route(at("/platform/", false))).status).toBe(403);
-    expect(asked()).toBe(2);
+    // Every active member reaches the pages; WorkspaceDO decides per computer (ownership tests).
+    for (const subject of ["owner-sub", "bob-sub", "alice-sub"]) {
+      expect(await status("/platform/", subject), subject).toBe(303);
+    }
+    // The owner's own pages are the installation owner's alone, whatever the container claims.
+    expect(await status("/platform/github", "bob-sub")).toBe(404);
+    expect(await status("/platform/github", "alice-sub")).toBe(404);
+    expect(await status("/platform/github", "owner-sub")).not.toBe(404);
+    // An unbound identity and a suspended member are refused; Omnigent is still theirs to reach.
+    expect(await status("/platform/", "stranger-sub")).toBe(403);
+    answers = {
+      ...answers,
+      "alice-sub": { ...answers["alice-sub"], state: "suspended" } as PagePersonResult,
+    };
+    expect(await status("/platform/", "alice-sub")).toBe(403);
+    expect(await status("/v1/me", "alice-sub")).toBe(200);
   });
 });
