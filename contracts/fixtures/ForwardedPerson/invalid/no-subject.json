@@ -1,0 +1,6 @@
+{
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "audience": "aud",
+  "installationOwner": false,
+  "expiresAt": 1
+}

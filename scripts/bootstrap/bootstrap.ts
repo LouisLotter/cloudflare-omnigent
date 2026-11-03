@@ -754,6 +754,7 @@ async function main(): Promise<number> {
       "no-open": { type: "boolean" },
       origin: { type: "string" },
       rollback: { type: "boolean" },
+      "team-admission": { type: "string" },
       "client-session": { type: "string" },
     },
   });
@@ -793,6 +794,9 @@ async function main(): Promise<number> {
         ...(values["owner-email"] === undefined ? {} : { ownerEmail: values["owner-email"] }),
         verify: values["no-verify"] !== true,
         rollback: values.rollback === true,
+        ...(values["team-admission"] === undefined
+          ? {}
+          : { teamAdmission: values["team-admission"] }),
       });
     case "github-app":
       return githubAppCommand(statePath(), {

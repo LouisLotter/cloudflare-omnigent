@@ -26,6 +26,12 @@ the response barrier: its 200 is held until Litestream's replica covers it, else
 
 It runs before Omnigent's own middleware and routes, so nothing of Omnigent's logs the request.
 Its own lines name outcomes and reasons, never the body.
+
+**Which member an Access identity is** (WP8.3): ``POST /_cfo/page-person``, body ``{"issuer":
+"…", "subject": "…", "audience": "…", "nonce": "<32 hex digits>"}``, signed the same way, answers
+the team member Omnigent binds that identity to (``member``, with the member's ID, account, role
+and state) or ``none``; an Omnigent without the team model answers 501, which the platform reads
+as ``unsupported``. It reads only, so it is not held by the barrier.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from cfo_server.events import log
 
 PREFIX = "/_cfo"
 PATH = "/_cfo/owner-password"
+PAGE_PERSON_PATH = "/_cfo/page-person"
 PROTOCOL = "cfo-platform-call/v1"
 KEY_LABEL = b"cfo-platform-call-key/v1"
 TIMESTAMP_HEADER = b"x-cfo-call-timestamp"
@@ -129,6 +136,7 @@ class OwnerPasswordMiddleware:
         account_store: Any,
         auth_provider: Any,
         hash_password: Callable[[str], str],
+        team_store: Any = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.app = app
@@ -137,6 +145,7 @@ class OwnerPasswordMiddleware:
         self._store = account_store
         self._auth = auth_provider
         self._hash = hash_password
+        self._team_store = team_store
         self._clock = clock
         self._seen = SeenSignatures()
 
@@ -166,6 +175,8 @@ class OwnerPasswordMiddleware:
         await send({"type": "http.response.body", "body": payload, "more_body": False})
 
     async def _handle(self, scope: dict[str, Any], receive: Any) -> tuple[int, dict[str, Any]]:
+        if scope["path"] == PAGE_PERSON_PATH:
+            return await self._page_person(scope, receive)
         if scope["path"] != PATH:
             return _error(404, "not_found", "Not found.")
         if scope.get("method") != "POST":
@@ -200,6 +211,42 @@ class OwnerPasswordMiddleware:
         self._auth.revoke_user_sessions(user.id)
         log("owner_password.set", sessions="revoked")
         return 200, {"ok": True}
+
+    async def _page_person(
+        self, scope: dict[str, Any], receive: Any
+    ) -> tuple[int, dict[str, Any]]:
+        if scope.get("method") != "POST":
+            return _error(405, "bad_request", "Method not allowed.")
+        body = await _read_body(receive)
+        if body is None:
+            return self._refused(400, "bad_request", "too_large")
+        if self._key is None:
+            return _error(503, "unavailable", "Not configured.", True)
+        reason = self._check_signature(scope, body)
+        if reason is not None:
+            return self._refused(401, "unauthorized", reason)
+        identity = _identity_of(body)
+        if identity is None:
+            return self._refused(400, "bad_request", "malformed")
+        if self._team_store is None:
+            return _error(501, "unsupported", "This Omnigent has no team model.")
+        issuer, subject, audience = identity
+        try:
+            member = self._team_store.member_for_external_identity(
+                issuer, subject, audience=audience
+            )
+        except Exception as exc:  # noqa: BLE001 - logged by type only; never the request
+            log("page_person.failed", error=type(exc).__name__)
+            return _error(500, "internal", "The member could not be read.")
+        if member is None:
+            return 200, {"action": "none"}
+        return 200, {
+            "action": "member",
+            "memberId": member.id,
+            "userId": member.user_id,
+            "role": member.role,
+            "state": member.state,
+        }
 
     def _check_signature(self, scope: dict[str, Any], body: bytes) -> str | None:
         timestamp = _header(scope, TIMESTAMP_HEADER)
@@ -261,6 +308,22 @@ def _password_of(body: bytes) -> str | None:
     if not (isinstance(nonce, str) and len(nonce) == 32 and set(nonce) <= _HEX):
         return None
     return password if isinstance(password, str) else None
+
+
+def _identity_of(body: bytes) -> tuple[str, str, str] | None:
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict) or set(parsed) != {"issuer", "subject", "audience", "nonce"}:
+        return None
+    nonce = parsed["nonce"]
+    if not (isinstance(nonce, str) and len(nonce) == 32 and set(nonce) <= _HEX):
+        return None
+    values = (parsed["issuer"], parsed["subject"], parsed["audience"])
+    if not all(isinstance(v, str) and 0 < len(v) <= 512 for v in values):
+        return None
+    return values  # type: ignore[return-value]
 
 
 def owner_username() -> str | None:

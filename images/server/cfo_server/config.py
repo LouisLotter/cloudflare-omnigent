@@ -35,6 +35,14 @@ reach the app; nothing else under ``OMNIGENT_GITHUB_APP_`` or ``OMNIGENT_CREDENT
 App's private key in particular never does: Omnigent's linking does not use it, and it would let
 the server act as the App on every repository the App is installed on.
 
+**Teams behind Cloudflare Access** (WP8.3). ``OMNIGENT_EXTERNAL_IDENTITY_MODE`` (``off``, the
+default, ``bind`` or ``required``) reaches the app as it is, and with any mode but ``off`` the app
+gets ``OMNIGENT_EXTERNAL_IDENTITY_KEY`` derived here from the cookie secret, the key the platform
+Worker signs each forwarded request's identity envelope with (``identity-envelope.ts``); a key
+from the environment is never used. ``CFO_ACCESS_ADMISSION`` turns on the adapter that tells the
+platform who Access should admit (:mod:`cfo_server.admission`); it needs a mode other than
+``off``. Both are inert with an Omnigent build without the team model.
+
 **Omnigent's MCP registry** (WP5.10, WP8.14) is on whenever the key service is on, for the
 services administrators add on Omnigent's own page, and when the installation turns on one of the
 services the image ships (:mod:`cfo_server.mcp`): the app gets the registry, the OAuth state
@@ -45,6 +53,8 @@ removed: the app builds the registry itself, with the platform's rules).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 import os
 import re
@@ -316,6 +326,10 @@ class ServerImageConfig:
     #: The update's read-only window is open (``CFO_MAINTENANCE_WINDOW``, any value): the app
     #: starts without Omnigent's scheduler, so nothing fires until the update is accepted.
     maintenance: bool = False
+    #: How requests are tied to the Access identity (WP8.3): ``off``, ``bind`` or ``required``.
+    external_identity_mode: str = "off"
+    #: Whether the app tells the platform who Access should admit (``CFO_ACCESS_ADMISSION``).
+    access_admission: bool = False
     #: Warnings to log at start: settings the image ignored or removed.
     warnings: tuple[str, ...] = ()
 
@@ -790,6 +804,7 @@ def load(
     ):
         raise ConfigError(f"CFO_INSTALLATION_ID is not an installation ID: {installation_id!r}")
 
+    external_identity_mode, access_admission = parse_external_identity(env, warnings)
     initialized = parse_bool(env, "CFO_INSTALLATION_INITIALIZED", None)
     replica = None if for_app else parse_replica(env)
     artifacts = parse_artifacts(env, replica, warnings)
@@ -819,8 +834,40 @@ def load(
         restore_point=restore_point,
         rollback_to=rollback_to,
         maintenance=_get(env, "CFO_MAINTENANCE_WINDOW") is not None,
+        external_identity_mode=external_identity_mode,
+        access_admission=access_admission,
         warnings=tuple(warnings),
     )
+
+
+#: Omnigent's external-identity settings (``omnigent.server.external_identity``).
+EXTERNAL_IDENTITY_MODE_ENV = "OMNIGENT_EXTERNAL_IDENTITY_MODE"
+EXTERNAL_IDENTITY_KEY_ENV = "OMNIGENT_EXTERNAL_IDENTITY_KEY"
+#: The label the envelope key is derived under, as the platform Worker derives it.
+ENVELOPE_KEY_LABEL = b"cfo/omnigent-external-identity/v1"
+_EXTERNAL_IDENTITY_MODES = ("off", "bind", "required")
+
+
+def envelope_key(cookie_secret: str) -> str:
+    """The identity envelope's key: lowercase hex of HMAC-SHA256(cookie secret, label)."""
+    return hmac.new(cookie_secret.encode("utf-8"), ENVELOPE_KEY_LABEL, hashlib.sha256).hexdigest()
+
+
+def parse_external_identity(env: Mapping[str, str], warnings: list[str]) -> tuple[str, bool]:
+    """The external-identity mode and whether Access admission is on (WP8.3)."""
+    mode = (_get(env, EXTERNAL_IDENTITY_MODE_ENV) or "off").lower()
+    if mode not in _EXTERNAL_IDENTITY_MODES:
+        raise ConfigError(f"{EXTERNAL_IDENTITY_MODE_ENV} must be off, bind or required")
+    if _get(env, EXTERNAL_IDENTITY_KEY_ENV) is not None:
+        warnings.append(
+            f"{EXTERNAL_IDENTITY_KEY_ENV} removed: the image derives it from the cookie secret"
+        )
+    admission = parse_bool(env, "CFO_ACCESS_ADMISSION", False)
+    if admission and mode == "off":
+        raise ConfigError(
+            f"CFO_ACCESS_ADMISSION needs {EXTERNAL_IDENTITY_MODE_ENV} bind or required"
+        )
+    return mode, admission
 
 
 def _passed_env(key_service: KeyService | None, github: GitHubLinking) -> frozenset[str]:
@@ -881,6 +928,12 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
         out["OMNIGENT_ARTIFACT_URI"] = config.artifacts.uri
         for name, value in ARTIFACT_CHECKSUM_DEFAULTS.items():
             out.setdefault(name, value)
+    # The envelope's key is the image's own derivation, never one from the environment.
+    out.pop(EXTERNAL_IDENTITY_KEY_ENV, None)
+    out[EXTERNAL_IDENTITY_MODE_ENV] = config.external_identity_mode
+    cookie_secret = _get(env, "OMNIGENT_ACCOUNTS_COOKIE_SECRET")
+    if config.external_identity_mode != "off" and cookie_secret is not None:
+        out[EXTERNAL_IDENTITY_KEY_ENV] = envelope_key(cookie_secret)
     out["OMNIGENT_WS_ALLOWED_ORIGINS"] = ",".join(config.ws_allowed_origins)
     # Omnigent reads these only when create_app gets no static value; the app passes static
     # values, so they are set for consistency with GET /v1/info, never as the authority.

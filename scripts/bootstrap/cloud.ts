@@ -58,6 +58,7 @@ import { type BootstrapCloud, VersionNotDeleted, type WorkerIdentity } from "./m
 import type { PreflightApi } from "./preflight.ts";
 import { type ApiToken, R2_BUCKET_SCOPE, type TokenApi, TokensUnavailable } from "./r2-token.ts";
 import { INSTALLATION_ID_VAR, type Installation } from "./settings.ts";
+import type { AccessGroupsApi } from "./team-admission.ts";
 import { latestNotDeployed } from "./window.ts";
 
 /** At most this many pages of 100 Workers Logs events per query. */
@@ -291,7 +292,7 @@ export function apiTokenOf(entry: unknown): ApiToken | undefined {
  */
 export function cfTokenApi(run: Runner): TokenApi {
   return {
-    permissionGroup: (name) => {
+    permissionGroup: (name, scope = R2_BUCKET_SCOPE) => {
       const listed = tokenCf(run, [
         "user",
         "tokens",
@@ -300,11 +301,11 @@ export function cfTokenApi(run: Runner): TokenApi {
         "--name",
         name,
         "--scope",
-        R2_BUCKET_SCOPE,
+        scope,
       ]);
       const ids = (Array.isArray(listed) ? listed : []).flatMap((entry: unknown) => {
         const g = (entry ?? {}) as { id?: unknown; name?: unknown; scopes?: unknown };
-        const scoped = Array.isArray(g.scopes) && g.scopes.includes(R2_BUCKET_SCOPE);
+        const scoped = Array.isArray(g.scopes) && g.scopes.includes(scope);
         return g.name === name && scoped && typeof g.id === "string" ? [g.id] : [];
       });
       if (ids.length !== 1) {
@@ -595,6 +596,62 @@ const MAX_ACCESS_PAGES = 20;
  * owner-only application, the one-time PIN login method; deletes only for removal. Answers are
  * captured, never shown; errors carry cf's first line of error output, masked.
  */
+/**
+ * The installation's member group (WP8.3, team-admission.ts) through `cf zero-trust access
+ * rule-groups`: list, read by ID and create, nothing else. The bootstrap never updates or deletes
+ * a group: its addresses belong to the team page's reconciler.
+ */
+export function cfAccessGroupsApi(run: Runner): AccessGroupsApi {
+  return {
+    groups: () => {
+      const groups: unknown[] = [];
+      for (let page = 1; page <= MAX_ACCESS_PAGES; page++) {
+        const listed = accessCf(run, [
+          "zero-trust",
+          "access",
+          "rule-groups",
+          "list",
+          "--per-page",
+          "100",
+          "--page",
+          String(page),
+        ]);
+        if (!Array.isArray(listed)) {
+          throw new Error("cf zero-trust access rule-groups list answered no list");
+        }
+        groups.push(...listed);
+        if (listed.length < 100) return groups;
+      }
+      throw new Error(`more than ${MAX_ACCESS_PAGES * 100} Access groups in the account`);
+    },
+    group: (id) => {
+      const args = ["zero-trust", "access", "rule-groups", "get", id];
+      const result = run("cf", args, { inherit: false });
+      if (result.status !== 0 && accessAppMissing(result)) return undefined;
+      if (result.status !== 0 && forbidden(result)) {
+        throw new AccessUnavailable(
+          "Cloudflare refused `cf zero-trust access rule-groups get` (403)",
+        );
+      }
+      return cfAnswer(result, args);
+    },
+    createGroup: (body) => {
+      const answer = accessCf(run, [
+        "zero-trust",
+        "access",
+        "rule-groups",
+        "create",
+        "--body",
+        JSON.stringify(body),
+      ]) as { id?: unknown } | null;
+      if (typeof answer?.id !== "string" || answer.id === "") {
+        throw new Error("cf zero-trust access rule-groups create answered without an ID");
+      }
+      return answer.id;
+    },
+  };
+}
+
 export function cfAccessApi(run: Runner): AccessApi {
   return {
     teamDomain: () => {

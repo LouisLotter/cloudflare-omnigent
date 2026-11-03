@@ -59,6 +59,8 @@ export const IDENTITY_HEADERS: readonly string[] = [
   "x-amzn-oidc-accesstoken",
   "remote-user",
   "x-remote-user",
+  // Omnigent's signed identity envelope: only OmnigentServer writes it (WP8.3).
+  "x-omnigent-external-identity",
 ];
 
 const ACCESS_HEADER_PREFIX = "cf-access-";

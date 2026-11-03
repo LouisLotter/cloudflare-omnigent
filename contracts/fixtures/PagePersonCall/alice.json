@@ -1,0 +1,6 @@
+{
+  "interfaceVersion": 1,
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "subject": "alice-sub",
+  "audience": "aud-tag"
+}

@@ -37,6 +37,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from cfo_server import admission as image_admission
 from cfo_server import config as image_config
 from cfo_server import logfilter
 from cfo_server import mcp as image_mcp
@@ -320,6 +321,7 @@ def build_app(
         default_public_sessions=config.sharing.default_public_sessions,
         feature_flags=pinned_feature_flags(),
         durability_barrier=make_transcript_barrier(waiter, config.transcript_barrier_timeout_s),
+        **team_admission_kwargs(create_app, config),
     )
     # The owner's password, set by the platform (WP3.34): outside everything create_app added, so
     # no Omnigent middleware sees the request, and inside the barrier, which holds its answer
@@ -334,6 +336,7 @@ def build_app(
         account_store=account_store,
         auth_provider=auth_provider,
         hash_password=hash_password,
+        team_store=team_store_or_none(database_url),
     )
     # Outermost user middleware: added last, so it wraps everything create_app added.
     app.add_middleware(
@@ -341,6 +344,36 @@ def build_app(
     )
     ep.log_capabilities(sandbox_config, github_config, github_store)
     return app
+
+
+def team_store_or_none(database_url: str) -> Any:
+    """Omnigent's team store (WP8.3), or ``None`` for a build without the team model."""
+    try:
+        from omnigent.stores.team_store import SqlAlchemyTeamStore
+    except ImportError:
+        return None
+    return SqlAlchemyTeamStore(database_url)
+
+
+def team_admission_kwargs(create_app: Callable[..., Any], config: Any) -> dict[str, Any]:
+    """``create_app``'s Access admission adapter (WP8.3), when it is on and Omnigent takes one.
+
+    Passed as extra keywords rather than by name: the pinned Omnigent may predate the team model,
+    and the coupling test pins every keyword the image names. Moves into the named keywords when
+    the pin carries it (WP8.11).
+    """
+    if not config.access_admission:
+        return {}
+    import inspect
+
+    if "team_admission" not in inspect.signature(create_app).parameters:
+        log("access_admission.unsupported", reason="this Omnigent build has no team admission")
+        return {}
+    adapter = image_admission.from_env(os.environ)
+    if adapter is None:
+        log("access_admission.not_configured", reason="the launcher's signing key is not set")
+        return {}
+    return {"team_admission": adapter}
 
 
 def main() -> None:

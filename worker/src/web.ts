@@ -6,6 +6,7 @@
 
 import type { WebEnv } from "./env.ts";
 import { type Admitted, withIngress } from "./ingress/index.ts";
+import { refusedPage } from "./pages/computers.ts";
 import {
   bindingsPasswordBackend,
   type FirstVisitMemo,
@@ -33,9 +34,17 @@ export async function routeAdmitted(
   _ctx: ExecutionContext,
 ): Promise<Response> {
   const path = new URL(admitted.request.url).pathname;
+  // With TEAM_ADMISSION=members (WP8.3), ingress admits people other than the owner. The
+  // platform pages decide per person only through the person seam (WP8.4, `member-seam.ts`);
+  // until that is wired here, they stay the pinned owner's, and so does the password page.
+  const owner = admitted.identity.pin !== false;
   if (isPlatformPath(path)) {
+    if (!owner) {
+      return refusedPage(403, "These pages are the installation owner's. Use Omnigent instead.");
+    }
     return routePlatform(admitted, env, { assets: loadPageAssets });
   }
+  if (!owner) return proxyToOmnigent(admitted, env);
   const redirect = await firstVisitRedirect(
     admitted,
     bindingsPasswordBackend(env),

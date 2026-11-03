@@ -33,6 +33,7 @@ import {
   WorkspaceIdentity,
   workspaceObjectName,
 } from "../shared/rpc.ts";
+import { handleAdmissionRequest, isAdmissionPath } from "./admission-api.ts";
 import { COMPUTER_API_LIMITS, handleSupervisorMessage, INBOUND_RETRY } from "./computer-api.ts";
 import {
   handleKeyServiceRequest,
@@ -146,6 +147,16 @@ export class PlatformInternal extends WorkerEntrypoint<PlatformEnv, PlatformInte
         keys: keyServiceKeysFrom(this.env as unknown as Record<string, unknown>),
         nowSeconds: () => Math.floor(Date.now() / 1000),
         log: (event, fields) => logEvent("key_service", event, fields),
+      });
+    }
+    if (isAdmissionPath(pathname)) {
+      // Who Access admits (WP8.3): applied by OmnigentServer, which holds the applied revision.
+      const server = this.env.OMNIGENT.getByName(OMNIGENT_SERVER_OBJECT_NAME);
+      return handleAdmissionRequest(request, {
+        keys: signingKeysFrom(this.env as unknown as Record<string, unknown>),
+        nowSeconds: () => Math.floor(Date.now() / 1000),
+        admit: (call) => server.admission(call),
+        log: (event, fields) => logEvent("access_admission_api", event, fields),
       });
     }
     const env = internalEnv(this.env);

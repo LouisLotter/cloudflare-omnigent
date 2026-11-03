@@ -217,6 +217,11 @@ describe("createIngress", () => {
       );
       expect(a.identity).toEqual({
         sub: OWNER_SUB,
+        // For the forwarding path's person (WP8.3); never logged.
+        issuer: ISSUER,
+        audience: AUD,
+        email: OWNER_EMAIL,
+        pin: true,
         sessionId: expect.stringMatching(/^[0-9a-f]{64}$/),
         issuedAt: NOW - 10,
         expiresAt: NOW + 600,
@@ -230,12 +235,17 @@ describe("createIngress", () => {
       if (body) expect(await a.request.text()).toBe(body);
     }
     expect(h.logs).toEqual([]);
-    // No email reaches the next handler at all.
-    expect(
-      JSON.stringify(
-        await admitted(h, request("/", { headers: { "cf-access-jwt-assertion": genuine } })),
-      ),
-    ).not.toContain(OWNER_EMAIL);
+    // The address reaches the next handler only as the identity's `email`, for the forwarding
+    // path's internal person (WP8.3): never in the request it hands on, nor in a log.
+    const next = await admitted(
+      h,
+      request("/", { headers: { "cf-access-jwt-assertion": genuine } }),
+    );
+    const { email, ...rest } = next.identity;
+    expect(email).toBe(OWNER_EMAIL);
+    expect(JSON.stringify(rest)).not.toContain(OWNER_EMAIL);
+    expect(JSON.stringify([...next.request.headers])).not.toContain(OWNER_EMAIL);
+    expect(JSON.stringify(h.logs)).not.toContain(OWNER_EMAIL);
   });
 
   it("keeps a WebSocket upgrade an upgrade", async () => {

@@ -1,0 +1,7 @@
+{
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "subject": "owner-sub",
+  "audience": "aud-tag",
+  "installationOwner": true,
+  "expiresAt": 1800000060
+}

@@ -1,0 +1,7 @@
+{
+  "action": "member",
+  "memberId": "0123456789abcdef0123456789abcdef",
+  "userId": "alice",
+  "role": "root",
+  "state": "active"
+}

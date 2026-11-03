@@ -20,6 +20,8 @@ const TRUST_HEADER_NAMES: ReadonlySet<string> = new Set([
   "x-remote-user",
   "x-user",
   "x-email",
+  // Omnigent's signed identity envelope (WP8.3): OmnigentServer adds it after this strip.
+  "x-omnigent-external-identity",
 ]);
 
 export function isTrustHeader(name: string): boolean {

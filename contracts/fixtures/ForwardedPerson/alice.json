@@ -1,0 +1,8 @@
+{
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "subject": "7335d417-61da-459d-899c-0a01c76a2f94",
+  "audience": "32eafc7626e974616deaf0dc3ce63d7bcbed58a2731e84d06bc3cdf1b53c4228",
+  "email": "alice@example.test",
+  "installationOwner": false,
+  "expiresAt": 1800000060
+}

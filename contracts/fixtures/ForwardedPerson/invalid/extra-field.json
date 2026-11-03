@@ -1,0 +1,8 @@
+{
+  "issuer": "https://i",
+  "subject": "s",
+  "audience": "a",
+  "installationOwner": false,
+  "expiresAt": 1,
+  "role": "admin"
+}
