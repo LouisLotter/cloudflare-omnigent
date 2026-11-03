@@ -41,7 +41,7 @@ ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
 ARG PIP_PIN="pip==26.3 --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13"
 # uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
-ARG UV_PIN="uv==0.13.6 --hash=sha256:22759b8895e1103578de6fb4cd27e94b4399d021023378d29f01333717751fba --hash=sha256:d1efed1d15102ffdbf5e0fd49a440643dda2d921a2ad856792ae42ccd43c253f"
+ARG UV_PIN="uv==0.13.7 --hash=sha256:2c9bdc4a872b60a93c5f26c0791089ea11585a4f9d3b3c017d78eb8487505e25 --hash=sha256:8b8ac028ae4ebb2a3f9d04907c61794f2cf8d7a7002bfbb4019a3dee28351fb2"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
@@ -170,10 +170,10 @@ FROM runtime-base AS runtime
 # (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
 # above, from an install whose registry signatures (and Codex's provenance) it has checked, and
 # this build then checks them in an independent install.
-ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CLAUDE_CODE_VERSION=2.1.317
 ARG CODEX_VERSION=0.166.0
-ARG CLAUDE_CODE_TREE_SHA256=6664834bb7d0ad17f8c176bdf0a3aa01c4d7a5b6f89924f5f63b306d07e7efbf
-ARG CLAUDE_CODE_INSTALLED_SHA256=9b25921ea887f2600f9dec5074457882467b0e010e843523069eb72083908cd1
+ARG CLAUDE_CODE_TREE_SHA256=4fbf01710f9b777aaca682e92b750beb70363aa4bd43f513405da43949a4b20a
+ARG CLAUDE_CODE_INSTALLED_SHA256=80e4f819ab863a5dc15b1be5a7d73eecb1de25d9c210aae5967b35dd55338ae6
 ARG CODEX_TREE_SHA256=9293cf0b1c9aa7aa61f3eee4cfd25295cbc35f3f196552a7b53671fb224cb8e0
 RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
     sh /cfo-build/install_clis.sh check
