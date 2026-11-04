@@ -34,14 +34,22 @@ Each card says whose computer it is and how it is doing. You can **Stop** it, wh
 
 ## Removing someone
 
-**Remove** on Settings → Members deletes the person's account. This is today's removal, and it cannot be undone:
+**Remove** on Settings → Members takes a person off the team for good. It cannot be undone. Administrators can remove members; owners can also remove administrators and other owners. Nobody can remove themselves, and the team's last owner and the installation's own owner are always kept.
 
-- In the same step, their membership ends, every session share they had is taken away, their scheduled tasks stop and their Omnigent sign-ins on other devices end.
-- Their cloud computers are then removed. Each one's saved files and logins are kept until its removal is finished: on the computers page, its card offers **Sign out of Claude and Codex** and then **Finish the removal**, which deletes them.
-- Omnigent's confirmation warns that sessions they owned become inaccessible, unless someone else can manage them. If their work matters, ask them to share it or hand it over before you remove them.
-- Omnigent and the computers pages refuse them at once. Cloudflare's sign-in can still let their address through for up to an hour, until the installation next sends it the team's list; they can get a code in that time, but nothing past it lets them in.
-- The sign-out on their computers runs Claude's and Codex's own sign-out, which does not prove the providers ended those sessions. Ask the person to end their sessions in their Claude and ChatGPT accounts.
+- **At once:** their account is deleted. Every sign-in, CLI login, laptop and runner of theirs stops working, their open pages close, their scheduled tasks stop, the shares they were given are taken away, and invitations to their address are revoked. Omnigent and the computers pages refuse them, and so does a Cloudflare sign-in they already had.
+- **Straight after:** the installation tells Cloudflare's sign-in to stop letting their address through, and checks that it did. Their cloud computers stop and are handed over to be deleted.
+- **Their work stays where it was.** Their threads are kept, and owners and administrators can still open them; nothing is moved to anyone else. If someone else should carry on with their work, ask them to share it before you remove them.
+- **Invitations they sent** to other people stay pending. Revoke them if they should not be used.
+
+Afterwards Settings → Members lists them under **Removed**, with each step: access blocked, the installation's sign-in no longer letting them in, their cloud computers handed over, and their threads. A step that has not finished yet says so and offers **Retry now**; removing them again is always safe.
+
+To finish their computers, open the computers page. Each of their cards offers **Sign out of Claude and Codex**, then **Finish the removal**, which deletes the computer's saved files and logins. Two cases have their own button:
+
+- **Delete without signing out** appears if the sign-out was tried and did not finish, or if a login may have changed after the computer's last save. The computer's saved files and logins are deleted, but the person's Claude and ChatGPT sessions are not ended: ask them, or the administrator of their Claude or ChatGPT account, to end those sessions in their Claude account and in ChatGPT's security settings.
+- **Stop without saving** appears if the computer could not save before stopping three times. Work changed after its last save is lost. Once it has stopped, finish it as above.
+
+After **Finish the removal** or **Delete without signing out**, the card says **Deleting…** until the saved files and logins are gone. Even after a normal sign-out, ask the person to check their Claude and ChatGPT sessions and end any that remain.
+
+If a computer they deleted themselves is still being removed because it cannot save, wait for that to finish before you remove them: once they are removed, its card offers neither button.
 
 If they join again later, it is with a new invitation, as a new member.
-
-Fuller removal (a checklist across every system, and handing work over) is being built; this section changes when it arrives.
