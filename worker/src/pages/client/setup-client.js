@@ -13,8 +13,82 @@
 //   the attempt's state every 2 seconds, and offers Cancel; a failure offers the terminal. A
 //   reload resumes the session's running attempts. The markup comes from the server, escaped.
 // - "Computer status": read on load and on Refresh; on staging, the RC-53 and keep-awake switches.
+// - Waking for a sign-in or the terminal (WP3.53): while the computer is not running, a card's
+//   button and "Open the terminal" stay offered. Pressing one wakes the computer through Omnigent
+//   (`POST /v1/hosts/{id}/start`, Omnigent owns its sleep), from this browser with the person's
+//   own Omnigent session, waits until the platform says it runs, then starts what was pressed as
+//   its button would on an awake computer. Every button pressed meanwhile shares that one wake.
+//   It lives in memory only: a reload shows the computer's state now.
 // Nothing here stores or logs what the terminal shows, the provider's link, Codex's code or the
 // code the person pastes.
+
+// The wake's sequence (WP3.53), apart from the page so that tests can drive it: `cfoWake(deps)`
+// makes the page's one shared wake, `wake(hostUrl)`. It knows nothing of the page's state; the
+// page supplies the calls:
+//   startHost(hostUrl)  Omnigent's `POST …/start`: its HTTP status; throws when unreachable;
+//   readRunning()       whether the platform says the computer runs; null when it cannot say;
+//   readHost(hostUrl)   Omnigent's `persistent_status` ({ state, failure }); null when unread;
+//   wait(ms), now()     the clock.
+// The wake resolves { ok: true } once the platform says the computer runs, else { ok: false,
+// reason, detail }: `signed_out` (401), `refused` (403), `unknown` (404), `unavailable` (any other
+// answer, or none), `failed` (Omnigent's reason in `detail`, text only), `not_woken` (asleep again
+// with no reason) or `timeout` (5 minutes; nothing keeps polling after it).
+globalThis.cfoWake = (() => {
+  const POLL_MS = 2000;
+  const GIVE_UP_MS = 5 * 60_000;
+  /** Omnigent's reason is shown as text, cut to a sensible length. */
+  const MAX_DETAIL = 500;
+
+  async function quietly(fn, ...args) {
+    try {
+      return await fn(...args);
+    } catch {
+      return null;
+    }
+  }
+
+  async function run(deps, hostUrl) {
+    const deadline = deps.now() + GIVE_UP_MS;
+    let status;
+    try {
+      status = await deps.startHost(hostUrl);
+    } catch {
+      return { ok: false, reason: "unavailable" };
+    }
+    if (status === 401) return { ok: false, reason: "signed_out" };
+    if (status === 403) return { ok: false, reason: "refused" };
+    if (status === 404) return { ok: false, reason: "unknown" };
+    if (!(status >= 200 && status < 300)) return { ok: false, reason: "unavailable" };
+    for (;;) {
+      // A read that fails is asked again next time: never taken as a refusal.
+      if ((await quietly(deps.readRunning)) === true) return { ok: true };
+      const host = await quietly(deps.readHost, hostUrl);
+      // Omnigent answered 202 once its wake had begun: from then on it reports `waking` until
+      // the wake ends, so `failed` or `asleep` here is this wake's end.
+      if (host?.state === "failed") {
+        const detail = typeof host.failure === "string" ? host.failure.slice(0, MAX_DETAIL) : null;
+        return { ok: false, reason: "failed", detail };
+      }
+      if (host?.state === "asleep") return { ok: false, reason: "not_woken" };
+      const left = deadline - deps.now();
+      if (left <= 0) return { ok: false, reason: "timeout" };
+      await deps.wait(Math.min(POLL_MS, left));
+    }
+  }
+
+  return (deps) => {
+    let inFlight = null;
+    return (hostUrl) => {
+      if (inFlight === null) {
+        inFlight = run(deps, hostUrl).finally(() => {
+          inFlight = null;
+        });
+      }
+      return inFlight;
+    };
+  };
+})();
+
 (() => {
   const root = document.getElementById("computer-page");
   if (root === null) return;
@@ -52,6 +126,18 @@
 
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  /**
+   * What the page last learned (WP3.53): whether the computer runs, and where Omnigent wakes it
+   * (null when the page cannot). `terminalWake`: the terminal press a wake runs for, or null.
+   */
+  const live = {
+    running: root.dataset.running === "yes",
+    hostUrl: root.dataset.hostUrl || null,
+    terminalWake: null,
+  };
+  // The script runs: what only it can do (waking the computer from the page) may be said now.
+  root.dataset.script = "on";
+
   // ------------------------------------------------------------------------------------------
   // The page's state.
 
@@ -60,13 +146,53 @@
     if (node !== null && typeof html === "string") node.outerHTML = html;
   }
 
-  async function refresh() {
+  /** A read that does not answer by then counts as unread: no read here waits longer. */
+  const READ_MS = 10_000;
+
+  async function readJson(url) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      signal: AbortSignal.timeout(READ_MS),
+    });
+    return response.ok ? response.json() : null;
+  }
+
+  /**
+   * Every read of the page's state takes a ticket when it is sent. An answer is applied only if
+   * no read sent after it was applied first, so an older read that answers late never replaces
+   * newer state, such as the generation and intent a wake's last read found (Codex WP3.53 r1-1).
+   */
+  let sent = 0;
+  let applied = 0;
+
+  /** Reads the page's state (bounded) and applies it: the JSON, or null when it was not read. */
+  async function readState() {
+    sent += 1;
+    const ticket = sent;
+    let json;
     try {
-      const response = await fetch(root.dataset.stateUrl, { credentials: "same-origin" });
-      if (!response.ok) return;
-      const json = await response.json();
+      json = await readJson(root.dataset.stateUrl);
+    } catch {
+      return null;
+    }
+    if (json === null || typeof json !== "object") return null;
+    if (ticket > applied) {
+      applied = ticket;
+      applyState(json);
+    }
+    return json;
+  }
+
+  async function refresh() {
+    await readState();
+  }
+
+  function applyState(json) {
+    try {
       if (typeof json.intent === "string") state.intent = json.intent;
       if (Number.isSafeInteger(json.generation)) root.dataset.generation = String(json.generation);
+      live.running = json.running === true;
+      live.hostUrl = typeof json.hostUrl === "string" ? json.hostUrl : null;
       if (Array.isArray(json.cards)) {
         for (const card of json.cards) updateCard(card.provider, card.html);
       }
@@ -82,7 +208,10 @@
         node.textContent = json.saving;
       }
       const openButton = document.getElementById("terminal-open");
-      if (openButton !== null) openButton.disabled = !json.running;
+      if (openButton !== null) {
+        openButton.disabled =
+          live.terminalWake !== null || !(live.running || live.hostUrl !== null);
+      }
     } catch {
       // the next refresh tries again
     }
@@ -93,10 +222,98 @@
   }, 5000);
 
   // ------------------------------------------------------------------------------------------
+  // Waking the computer through Omnigent (WP3.53).
+
+  /**
+   * What the wake's last read found once the computer ran: its generation and intent, which the
+   * page's own state may not hold yet. Page-private: the wake sequence never sees it.
+   */
+  let awake = null;
+
+  /** The page's one wake: shared by the cards and the terminal. */
+  const shared = globalThis.cfoWake({
+    // Omnigent's own call, as its computer list makes it: the person's Omnigent session, no body.
+    startHost: async (hostUrl) => {
+      awake = null;
+      return (
+        await fetch(`${hostUrl}/start`, {
+          method: "POST",
+          credentials: "same-origin",
+          signal: AbortSignal.timeout(READ_MS),
+        })
+      ).status;
+    },
+    // Each read is the page's own state read, bounded and applied in order.
+    readRunning: async () => {
+      const json = await readState();
+      if (json === null) return null;
+      if (json.running !== true) return false;
+      awake =
+        Number.isSafeInteger(json.generation) &&
+        typeof json.intent === "string" &&
+        /^[0-9a-f]{64}$/.test(json.intent)
+          ? { generation: json.generation, intent: json.intent }
+          : null;
+      return true;
+    },
+    readHost: async (hostUrl) => {
+      const status = (await readJson(hostUrl))?.persistent_status;
+      return status && typeof status === "object" ? status : null;
+    },
+    wait,
+    now: () => Date.now(),
+  });
+
+  /**
+   * Wakes the computer; once it runs, the outcome carries `awake`: the generation and intent to
+   * act with, from the read that found it running (Codex WP3.53 r1-1). No other read follows, so
+   * nothing after the wake can hold a button (r1-2).
+   */
+  async function wake(hostUrl) {
+    let outcome;
+    try {
+      outcome = await shared(hostUrl);
+    } catch {
+      return { ok: false, reason: "unavailable" };
+    }
+    return outcome.ok ? { ok: true, awake } : outcome;
+  }
+
+  /** The computer runs, but the page could not read what it needs to go on: press again. */
+  const AWAKE_PRESS_AGAIN = "The computer is awake now. Press the button again.";
+
+  /** What a failed wake tells the person: text only, never markup. */
+  function wakeFailure(outcome) {
+    switch (outcome.reason) {
+      case "signed_out":
+        return "Omnigent needs you to sign in before it can wake the computer. Open Omnigent in this browser, sign in, then press the button again.";
+      case "refused":
+        return "Omnigent did not wake the computer for the account this browser is signed in with. Open Omnigent, check that you are signed in as yourself, then try again.";
+      case "unknown":
+        return "Omnigent does not know this computer. Check that Omnigent still lists it.";
+      case "failed":
+        return outcome.detail
+          ? `The computer did not wake. Omnigent says: ${outcome.detail} Try again later.`
+          : "The computer did not wake. Try again later.";
+      case "not_woken":
+        return "The computer did not wake. Press the button to try again.";
+      case "timeout":
+        return "The computer did not wake within 5 minutes. Check it in Omnigent's list of computers, then press the button again.";
+      default:
+        return "Omnigent could not be reached to wake the computer. Try again shortly.";
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------
   // Sign-in from the page.
 
   /** Running flows by service: { attempt, state, shown, timer }. `shown`: what the markup shows. */
   const flows = {};
+  /**
+   * A failed wake's message by service (WP3.53): kept until the person's next press, so the
+   * state refresh, which replaces the card, never wipes what went wrong.
+   */
+  const wakeNotes = {};
   const POLL_MS = 2000;
   const ACTIVE = new Set(["starting", "awaiting_user", "completing"]);
 
@@ -119,6 +336,7 @@
     const flow = flows[service];
     if (flow === undefined || flow.state === null) {
       card.replaceWith(fresh);
+      if (wakeNotes[service]) tell(service, wakeNotes[service], "tone-danger");
       return;
     }
     const slot = slotOf(service);
@@ -216,20 +434,21 @@
     }
   }
 
-  function tell(service, text) {
+  function tell(service, text, tone = "tone-warn") {
     const slot = slotOf(service);
     if (slot === null) return;
     let line = slot.querySelector("[data-sign-in-message]");
     if (line === null) {
       line = document.createElement("p");
-      line.className = "tone-warn";
       line.setAttribute("data-sign-in-message", "");
       slot.append(line);
     }
+    line.className = tone;
     line.textContent = text;
   }
 
   async function act(service, body, button) {
+    delete wakeNotes[service];
     if (button) button.disabled = true;
     try {
       const answer = await signInPost({ service, ...body });
@@ -247,11 +466,60 @@
         return;
       }
       apply(service, answer.json);
+      // Asleep after all: learn it now, so the button wakes it next time.
+      if (answer.json?.reason === "not_running") void refresh();
     } catch {
       tell(service, "The computer could not be reached now. Try again shortly.");
     } finally {
       if (button?.isConnected) button.disabled = false;
     }
+  }
+
+  /** The card while the wake runs: static markup, no value from anywhere. */
+  const WAKING_CARD =
+    '<p data-sign-in-state="waking" role="status">Waking the computer… this takes about a minute. The sign-in starts by itself once it is awake.</p>';
+
+  /**
+   * Wakes the computer, then starts this card's sign-in as its button does on an awake computer
+   * (WP3.53), with the generation and intent the wake's last read found: no further read can
+   * fail or hang in between (Codex WP3.53 r1-1, r1-2). The card keeps its slot while the wake
+   * runs; then its button comes back, with what went wrong if anything did.
+   */
+  async function wakeThenStart(service) {
+    const slot = slotOf(service);
+    const hostUrl = live.hostUrl;
+    if (slot === null || hostUrl === null) return;
+    delete wakeNotes[service];
+    slot.querySelector("[data-sign-in-message]")?.remove();
+    const before = slot.innerHTML;
+    const flow = flows[service] ?? { attempt: null, state: null, shown: null, timer: null };
+    flows[service] = flow;
+    stopPolling(service);
+    const press = {};
+    flow.attempt = null;
+    flow.shown = null;
+    flow.state = "waking";
+    flow.press = press;
+    slot.innerHTML = WAKING_CARD;
+    const outcome = await wake(hostUrl);
+    // A press the card has moved on from never acts.
+    if (flows[service] !== flow || flow.press !== press) return;
+    flow.press = null;
+    flow.state = null;
+    const current = slotOf(service);
+    if (current === null) return; // the card no longer offers it (an older computer, a removal)
+    current.innerHTML = before;
+    if (!outcome.ok || outcome.awake === null) {
+      wakeNotes[service] = outcome.ok ? AWAKE_PRESS_AGAIN : wakeFailure(outcome);
+      tell(service, wakeNotes[service], "tone-danger");
+      return;
+    }
+    const { generation, intent } = outcome.awake;
+    await act(
+      service,
+      { mode: "start", generation: String(generation), intent },
+      current.querySelector('[data-act="start"]'),
+    );
   }
 
   async function copyCode(button) {
@@ -273,7 +541,8 @@
     const flow = flows[service];
     switch (button.getAttribute("data-act")) {
       case "start":
-        void act(service, { mode: "start", generation: root.dataset.generation }, button);
+        if (!live.running && live.hostUrl !== null) void wakeThenStart(service);
+        else void act(service, { mode: "start", generation: root.dataset.generation }, button);
         break;
       case "cancel":
         if (flow?.attempt) void act(service, { mode: "cancel", attempt: flow.attempt }, button);
@@ -538,13 +807,14 @@
     }
   }
 
-  async function open() {
+  /** `intent`: the one a wake's last read found (WP3.53); otherwise the page's own. */
+  async function open(intent = null) {
     openButton.disabled = true;
     state.attempt += 1;
     const attempt = state.attempt;
     say("Opening…");
     try {
-      const answer = await post({ mode: "open" });
+      const answer = await post({ mode: "open", ...(intent === null ? {} : { intent }) });
       if (attempt !== state.attempt) return;
       const json = answer.json;
       if (json?.action === "open_terminal" && json.outcome === "accepted") {
@@ -554,9 +824,12 @@
         return;
       }
       const reason = json?.reason;
+      if (reason === "not_running") void refresh();
       say(
         reason === "not_running"
-          ? "The computer is not running. Send it work in Omnigent to wake it, then reload this page."
+          ? live.hostUrl !== null
+            ? "The computer is not running. Press Open the terminal again to wake it."
+            : "The computer is not running. Send it work in Omnigent to wake it, then reload this page."
           : reason === "busy"
             ? "The computer is stopping or signing out. Try again shortly."
             : answer.status === 403
@@ -590,7 +863,33 @@
     say("Closed. The computer may go to sleep again.");
   }
 
-  openButton.addEventListener("click", () => void open());
+  /**
+   * Wakes the computer through Omnigent, then opens the terminal as the button does (WP3.53),
+   * with the intent the wake's last read found. The button is released when the wake ends, which
+   * is bounded, whatever its outcome; a press the page has moved on from never opens.
+   */
+  async function wakeThenOpen() {
+    const hostUrl = live.hostUrl;
+    if (hostUrl === null || live.terminalWake !== null) return;
+    const press = {};
+    live.terminalWake = press;
+    openButton.disabled = true;
+    say(
+      "Waking the computer… this takes about a minute. The terminal opens by itself once it is awake.",
+    );
+    const outcome = await wake(hostUrl);
+    if (live.terminalWake !== press) return;
+    live.terminalWake = null;
+    openButton.disabled = false;
+    if (!outcome.ok) say(wakeFailure(outcome));
+    else if (outcome.awake === null) say(AWAKE_PRESS_AGAIN);
+    else await open(outcome.awake.intent);
+  }
+
+  openButton.addEventListener("click", () => {
+    if (!live.running && live.hostUrl !== null) void wakeThenOpen();
+    else void open();
+  });
   closeButton.addEventListener("click", () => void close());
   // For the local journeys only: lets a test drop the stream as a web Worker deploy would.
   window.cfoTerminal = state;

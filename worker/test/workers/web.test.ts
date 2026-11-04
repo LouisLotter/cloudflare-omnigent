@@ -258,6 +258,112 @@ describe("web Worker: with WP2.1's real ingress", () => {
   });
 });
 
+describe("web Worker: the setup page's wake through Omnigent (WP3.53)", () => {
+  const ownOrigin = `https://${HOST}`;
+  const START = "/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f/start";
+  const MEMBER_EMAIL = "member@example.invalid";
+  let key: TestKey;
+  let pin: string;
+
+  beforeAll(async () => {
+    key = await makeKey("kid-web-wake");
+    pin = await makeOwnerPin(OWNER_EMAIL, SALT);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** web.ts's own handler in `admission`, with a binding that records every server call. */
+  async function press(
+    admission: "owner" | "members",
+    init: RequestInit,
+    extra: Record<string, unknown> = {},
+  ): Promise<{ response: Response; serverCalls: number }> {
+    let serverCalls = 0;
+    const binding = {
+      getByName(name: string) {
+        serverCalls += 1;
+        return env.OMNIGENT.getByName(name);
+      },
+    };
+    const ingressEnv = {
+      OMNIGENT: binding,
+      ACCESS_TEAM_DOMAIN: TEAM,
+      ACCESS_AUD: AUD,
+      ALLOWED_HOSTNAMES: HOST,
+      OWNER_EMAIL_HASH: pin,
+      TEAM_ADMISSION: admission,
+    } as unknown as WebEnv;
+    vi.stubGlobal("fetch", async () => jwksResponse(key));
+    const now = Math.floor(Date.now() / 1000);
+    const headers = new Headers(init.headers);
+    headers.set("cf-access-jwt-assertion", await sign(key, claims(now, extra)));
+    const response = await web.fetch(
+      new Request(`${ownOrigin}${START}`, { ...init, headers, redirect: "manual" }),
+      ingressEnv,
+      createExecutionContext(),
+    );
+    const body = await response.arrayBuffer();
+    return {
+      response: new Response(body, { status: response.status, headers: response.headers }),
+      serverCalls,
+    };
+  }
+
+  it.each([
+    ["owner", "the installation's owner", {}],
+    ["members", "the owner, as a member", {}],
+    ["members", "a member", { email: MEMBER_EMAIL, sub: "00000000-0000-4000-8000-000000000002" }],
+  ] as const)(
+    "%s admission: %s's same-origin POST reaches Omnigent once, with its own session and no Access cookie",
+    async (admission, _who, extra) => {
+      fake.handler = () =>
+        Response.json({ host_id: "h", persistent_status: { state: "waking" } }, { status: 202 });
+      const { response, serverCalls } = await press(
+        admission,
+        {
+          method: "POST",
+          headers: {
+            origin: ownOrigin,
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-mode": "cors",
+            cookie: "CF_Authorization=canary-access-cookie; omnigent_session=member-session-canary",
+          },
+        },
+        extra,
+      );
+      expect(response.status).toBe(202);
+      expect(serverCalls).toBe(1);
+      const sent = fake.forwarded();
+      expect(sent).toHaveLength(1);
+      expect([sent[0]?.method, sent[0]?.url]).toEqual(["POST", `http://${HOST}${START}`]);
+      expect(sent[0]?.headers.cookie).toBe("omnigent_session=member-session-canary");
+      const leaked = Object.keys(sent[0]?.headers ?? {}).filter((h) =>
+        /^(cf-access-|x-forwarded-email|x-cfo-)/.test(h),
+      );
+      expect(leaked).toEqual([]);
+    },
+  );
+
+  it.each(["owner", "members"] as const)(
+    "%s admission: a foreign, sibling or null Origin is refused before OmnigentServer is reached",
+    async (admission) => {
+      for (const origin of ["https://evil.example", `https://sibling.${HOST}`, "null"]) {
+        const { response, serverCalls } = await press(admission, {
+          method: "POST",
+          headers: { origin, cookie: "omnigent_session=member-session-canary" },
+        });
+        expect(response.status).toBe(403);
+        expect(ErrorBody.parse(await response.json()).error.code).toBe("forbidden");
+        expect(serverCalls).toBe(0);
+      }
+      expect(fake.requests).toEqual([]);
+      expect(fake.starts).toEqual([]);
+    },
+  );
+});
+
 describe("web Worker: ingress first", () => {
   it("lets no unadmitted request reach the server or wake its container", async () => {
     fake.running = false;

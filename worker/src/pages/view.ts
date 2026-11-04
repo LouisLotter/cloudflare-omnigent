@@ -2,12 +2,13 @@
 // server's outage records and the replication health. The pages render these decisions; the
 // tests check them for every state.
 
-import type {
-  ComputerPageState,
-  OutageRecord,
-  ReplicationHealth,
-  SetupCard,
-  SetupProvider,
+import {
+  type ComputerPageState,
+  HostId,
+  type OutageRecord,
+  type ReplicationHealth,
+  type SetupCard,
+  type SetupProvider,
 } from "@cfo/contracts";
 
 /** The workspace size budget: the page warns above it (design, Size and number). */
@@ -101,6 +102,13 @@ export interface ComputerView {
   readonly signIn: "yes" | "no" | "unknown";
   /** The last final save failed: the list's badge (WP3.23). */
   readonly lastSaveFailed: boolean;
+  /**
+   * The computer's Omnigent host ID when the setup page may wake it (WP3.53): it is not running,
+   * no removal is under way, and Omnigent has started it before, so its host is known. The page's
+   * script then wakes it through Omnigent's own `POST /v1/hosts/{id}/start`, which owns the
+   * computer's sleep, before a sign-in or the terminal. Null otherwise.
+   */
+  readonly wakeHost: string | null;
 }
 
 const PROVIDER_TITLE: Record<SetupProvider, string> = { claude: "Claude", codex: "Codex" };
@@ -369,7 +377,16 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     signOutPhase: state.removal.signOut,
     signIn: state.signIn?.available ?? "unknown",
     lastSaveFailed: state.lastSave?.outcome === "failed",
+    wakeHost: wakeHostOf(state, running, removing),
   };
+}
+
+/** `ComputerView.wakeHost`: checked again here, as it goes into a URL path. */
+function wakeHostOf(state: ComputerPageState, running: boolean, removing: boolean): string | null {
+  if (running || removing) return null;
+  if (state.lifecycle === "removed" || state.lifecycle === "removal_pending") return null;
+  const host = HostId.safeParse(state.hostId);
+  return host.success ? host.data : null;
 }
 
 /**

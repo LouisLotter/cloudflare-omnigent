@@ -7,6 +7,12 @@
 // Worker checks the exact origin and hands the upgrade, with the admitted owner, to the
 // computer's WorkspaceDO, which checks the capability and bridges the stream to ttyd. No HTML or
 // script from the computer is ever served on this origin: only the terminal's byte stream crosses.
+//
+// An asleep computer (WP3.53): the sign-in buttons and "Open the terminal" stay offered when the
+// page knows the computer's Omnigent host. The page's script wakes it with Omnigent's own
+// `POST /v1/hosts/{id}/start`, from the browser with the person's own Omnigent session (Omnigent
+// owns the computer's sleep, and checks that the host is the caller's), then starts what was
+// pressed. The platform never acts for the person here.
 
 import {
   CAPABILITY_SUBPROTOCOL_PREFIX,
@@ -38,7 +44,7 @@ import {
   readChange,
   socketOriginOf,
 } from "./http.ts";
-import { signInIdleHtml } from "./owner-actions.ts";
+import { NOT_RUNNING_NOTE, signInIdleHtml, WAKE_NOTE } from "./owner-actions.ts";
 import { type CardView, type ComputerView, computerView } from "./view.ts";
 
 /** The terminal's way, for a computer whose software predates signing in from the page. */
@@ -49,23 +55,59 @@ const CARD_HOW: Readonly<Record<SetupProvider, string>> = {
 
 /**
  * The card's sign-in (WP3.23): a button that starts the flow on this page, the terminal's way for
- * an older computer, or why it is not offered now. The page's script runs the flow.
+ * an older computer, or why it is not offered now. The page's script runs the flow. While the
+ * computer is not running, the button stays offered when the page can wake it (WP3.53): the
+ * script wakes it through Omnigent, then starts this sign-in.
  */
 function signInPart(c: CardView, view: ComputerView): string {
   const removing = view.removal === "pending" || view.removal === "resolved";
   if (removing) return "";
   if (view.signIn === "no") return CARD_HOW[c.provider];
-  const offered = view.running;
-  const note = offered
-    ? ""
-    : "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then sign in here.";
+  const wake = !view.running && view.wakeHost !== null;
+  const offered = view.running || wake;
+  const note = view.running ? "" : wake ? WAKE_NOTE : NOT_RUNNING_NOTE;
   const signedIn = c.state === "signed_in";
   return `<div class="sign-in" data-sign-in="${c.provider}">${signInIdleHtml(
     c.provider,
     offered,
     signedIn ? "" : note,
     signedIn,
+    wake,
   )}</div>`;
+}
+
+/** Omnigent's own resource for the computer's host: the page wakes it with `POST …/start`. */
+export function omnigentHostPath(hostId: string): string {
+  return `/v1/hosts/${encodeURIComponent(hostId)}`;
+}
+
+/** The terminal's status line before it is opened: escaped markup. */
+function terminalNote(view: ComputerView): string {
+  if (view.running) {
+    return escapeHtml(
+      "The terminal opens for 30 minutes. While it is open the computer does not go to sleep.",
+    );
+  }
+  if (view.wakeHost !== null) {
+    // Only the page's script wakes it: said only where the script runs (WP3.53).
+    return `<span data-js-only>${escapeHtml("The computer is not running now. Opening the terminal wakes it first, which takes about a minute. While the terminal is open, the computer does not go to sleep.")}</span>`;
+  }
+  return escapeHtml(
+    "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep.",
+  );
+}
+
+/**
+ * The page without its script (WP3.53, Codex r1-3): how to wake the computer, in the page's
+ * common part, whatever the cards show (both signed in, or an older computer's terminal way).
+ * Only the script wakes it from the page, so this promises no wake here.
+ */
+export const NO_SCRIPT_WAKE =
+  "The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.";
+
+function noScriptNote(view: ComputerView, removing: boolean): string {
+  if (view.running || removing) return "";
+  return `<noscript><p class="tone-warn" data-no-script>${escapeHtml(NO_SCRIPT_WAKE)}</p></noscript>`;
 }
 
 export const PASTE_HINT =
@@ -95,6 +137,7 @@ export async function setupPage(
   const view = computerView(state.computer, nowMs);
   const removing = view.removal === "pending" || view.removal === "resolved";
   const terminal = state.computer.terminal;
+  const openable = view.running || view.wakeHost !== null;
   const terminalPanel = removing
     ? `<p class="muted">The terminal is not offered while a removal is pending.</p>`
     : `<div class="terminal-panel" id="terminal-panel"
@@ -103,19 +146,17 @@ export async function setupPage(
   data-window="${terminal?.open ? terminal.window : ""}"
   data-terminal-url="${escapeHtml(`${computerPath(id)}/terminal`)}">
 <div class="actions">
-  <button type="button" class="primary" id="terminal-open"${view.running ? "" : " disabled"}>Open the terminal</button>
+  <button type="button" class="primary" id="terminal-open"${view.running ? "" : view.wakeHost !== null ? " data-wake" : ""}${openable ? "" : " disabled"}>Open the terminal</button>
   <button type="button" id="terminal-close" hidden>Close the terminal</button>
-  <span id="terminal-status" class="muted" role="status">${
-    view.running
-      ? "The terminal opens for 30 minutes. While it is open the computer does not go to sleep."
-      : "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep."
-  }</span>
+  <span id="terminal-status" class="muted" role="status">${terminalNote(view)}</span>
 </div>
 <p class="muted" data-paste-hint>${escapeHtml(PASTE_HINT)}</p>
 <div id="terminal" hidden></div>
 </div>`;
   const resume = JSON.stringify(state.computer.signIn?.attempts ?? []);
-  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-resume="${escapeHtml(resume)}">
+  const hostUrl =
+    view.wakeHost === null ? "" : ` data-host-url="${escapeHtml(omnigentHostPath(view.wakeHost))}"`;
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-running="${view.running ? "yes" : "no"}"${hostUrl} data-script="off" data-resume="${escapeHtml(resume)}">
 <h1>${escapeHtml(view.name)}</h1>
 <p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
@@ -124,6 +165,7 @@ ${flashNotice(url)}
 <section>
 <h2>Set up this computer</h2>
 <p class="muted">Sign in once to each service with the buttons on its card. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself. The terminal below is for troubleshooting, and for signing in by hand if the buttons do not work.</p>
+${noScriptNote(view, removing)}
 ${terminalPanel}
 </section>
 <section>
@@ -168,6 +210,8 @@ export async function stateJson(
     status: view.status,
     statusTone: view.statusTone,
     running: view.running,
+    // Where the page wakes the computer through Omnigent (WP3.53); null when it cannot.
+    hostUrl: view.wakeHost === null ? null : omnigentHostPath(view.wakeHost),
     saving: view.saving,
     intent: state.intentToken ?? null,
     generation: state.computer.generation,

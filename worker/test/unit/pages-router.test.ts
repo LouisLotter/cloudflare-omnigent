@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
+import { PAGES_CSS } from "../../src/pages/html.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
 import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import type { PersonSeam } from "../../src/pages/person.ts";
@@ -536,14 +537,38 @@ describe("the setup page", () => {
     expect(html).not.toContain("onclick");
   });
 
-  it("disables the terminal while the computer is not running, and hides it during a removal", async () => {
+  it("offers the terminal of an asleep computer for a wake (WP3.53), and hides it during a removal", async () => {
     const { route, backend } = setup();
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({ lifecycle: "asleep", status: "stopped" }),
       intentToken: INTENT,
     });
-    expect(await (await route(page)).text()).toContain('id="terminal-open" disabled');
+    const asleep = await (await route(page)).text();
+    expect(asleep).toContain('id="terminal-open" data-wake>Open the terminal</button>');
+    expect(asleep).toContain(
+      "<span data-js-only>The computer is not running now. Opening the terminal wakes it first, which takes about a minute.",
+    );
+    expect(asleep).toContain(
+      'data-running="no" data-host-url="/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"',
+    );
+    // Never started, so Omnigent's host is not known: no wake, and today's way.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ lifecycle: "provisioned", status: "stopped", hostId: null }),
+      intentToken: INTENT,
+    });
+    const unknown = await (await route(page)).text();
+    expect(unknown).toContain('id="terminal-open" disabled');
+    expect(unknown).toContain("Send it work in Omnigent");
+    expect(unknown).not.toContain("data-host-url");
+    // Awake: opened as before, with no wake and no host URL.
+    backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
+    const awake = await (await route(page)).text();
+    expect(awake).toContain('id="terminal-open">Open the terminal</button>');
+    expect(awake).toContain('data-running="yes" data-script="off" data-resume=');
+    expect(awake).not.toContain("<noscript>");
+    expect(awake).not.toContain("data-wake");
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({
@@ -561,6 +586,7 @@ describe("the setup page", () => {
     const html = await (await route(page)).text();
     expect(html).not.toContain('id="terminal-panel"');
     expect(html).toContain('data-removal-step="pending"');
+    expect(html).not.toContain("data-host-url");
   });
 
   it("runs the sign-out rules before it links to Omnigent's deletion", async () => {
@@ -629,6 +655,29 @@ describe("the setup page", () => {
     expect(body.running).toBe(true);
     expect(body.cards.map((c) => c.provider)).toEqual(["claude", "codex"]);
     expect(body.cards[0]?.html).toContain('data-card="claude"');
+  });
+
+  it("names where Omnigent wakes the computer only while it can be woken (WP3.53)", async () => {
+    const { route, backend } = setup();
+    const hostUrl = async () =>
+      ((await (await route(`${page}/state`)).json()) as { hostUrl: unknown }).hostUrl;
+    expect(await hostUrl()).toBeNull();
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ lifecycle: "asleep", status: "stopped" }),
+      intentToken: INTENT,
+    });
+    expect(await hostUrl()).toBe("/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f");
+    const asleep = (await (await route(`${page}/state`)).json()) as {
+      cards: { html: string }[];
+    };
+    expect(asleep.cards[0]?.html).toContain('data-act="start" data-wake>');
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ lifecycle: "asleep", status: "stopped", hostId: null }),
+      intentToken: INTENT,
+    });
+    expect(await hostUrl()).toBeNull();
   });
 
   it("answers 404 for a computer that does not exist", async () => {
@@ -1580,7 +1629,7 @@ describe("the status and the staging switch (WP3.23)", () => {
     expect(await (await route("/platform/computers")).text()).not.toContain("last-save-failed");
   });
 
-  it("offers sign-in on the cards only while the computer runs, and not during a removal", async () => {
+  it("offers sign-in on the cards while the computer runs, wakes it first while it sleeps (WP3.53), and not during a removal", async () => {
     const { route, backend } = setup();
     backend.states.set(PAGE_CMP, {
       action: "state",
@@ -1592,10 +1641,44 @@ describe("the status and the staging switch (WP3.23)", () => {
       intentToken: INTENT,
     });
     const asleep = await (await route(page)).text();
-    expect(asleep).toContain('data-act="start" disabled');
-    expect(asleep).toContain("The computer is not running.");
+    // Enabled, labelled for a wake; the wake is promised only where the script runs.
+    expect(asleep).not.toContain('data-act="start" disabled');
+    for (const service of ["Claude", "Codex"]) {
+      expect(asleep).toContain(
+        `<button type="button" class="primary" data-act="start" data-wake>Sign in to ${service}</button>`,
+      );
+    }
+    expect(asleep).toContain(
+      "<p data-sign-in-note data-js-only>The computer is not running now. Signing in wakes it first, which takes about a minute.</p>",
+    );
+    // A signed-in card asleep: "again", with the wake and no note.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ lifecycle: "asleep", status: "stopped" }),
+      intentToken: INTENT,
+    });
+    const signedIn = await (await route(page)).text();
+    expect(signedIn).toContain('data-act="start" data-wake>Sign in to Claude again</button>');
+    expect(signedIn).not.toContain("data-sign-in-note");
+    // Omnigent's host not known yet: disabled, with today's note.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "provisioned",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    const unknown = await (await route(page)).text();
+    expect(unknown).toContain('data-act="start" disabled');
+    expect(unknown).toContain("The computer is not running. Send it work in Omnigent");
+    expect(unknown).not.toContain("data-wake");
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
-    expect(await (await route(page)).text()).toContain("Sign in to Claude again");
+    const awake = await (await route(page)).text();
+    expect(awake).toContain("Sign in to Claude again");
+    expect(awake).not.toContain("data-wake");
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({
@@ -1609,6 +1692,66 @@ describe("the status and the staging switch (WP3.23)", () => {
       intentToken: INTENT,
     });
     expect(await (await route(page)).text()).not.toContain("data-sign-in=");
+  });
+});
+
+describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
+  /** What a browser without JavaScript shows: the page with every `data-js-only` part hidden. */
+  const noScriptText = (html: string) =>
+    html
+      .replace(/<[a-z]+[^>]* data-js-only[^>]*>[^<]*<\/[a-z]+>/g, "")
+      .replace(/<\/?noscript>/g, "");
+
+  it.each([
+    ["both services signed in", {}],
+    ["an older computer (the terminal's way)", { signIn: { available: "no" as const } }],
+    ["neither signed in", { setupCards: [...NEVER_SIGNED_IN] }],
+  ])(
+    "asleep, %s: the common <noscript> gives the way to wake it, and no wake is promised",
+    async (_case, extra) => {
+      const { route, backend } = setup();
+      backend.states.set(PAGE_CMP, {
+        action: "state",
+        computer: pageState({ lifecycle: "asleep", status: "stopped", ...extra }),
+        intentToken: INTENT,
+      });
+      const html = await (await route(page)).text();
+      // Once, in the setup section, before the terminal and the cards.
+      expect(html.match(/<noscript>/g)).toHaveLength(1);
+      expect(html).toContain(
+        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.</p></noscript>',
+      );
+      expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="terminal-panel"'));
+      expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="cards"'));
+      expect(html).toContain('data-script="off"');
+      // Without the script, nothing on the page says the page wakes it.
+      const shown = noScriptText(html);
+      expect(shown).not.toMatch(/wakes it first/);
+      expect(shown).toContain("send it work in Omnigent");
+    },
+  );
+
+  it("is not shown while the computer runs or during a removal, and the stylesheet hides the script's promises until it runs", async () => {
+    const { route, backend } = setup();
+    expect(await (await route(page)).text()).not.toContain("<noscript>");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "removal_pending",
+        status: "stopped",
+        removal: {
+          state: "pending",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).not.toContain("<noscript>");
+    expect(PAGES_CSS).toContain(
+      '#computer-page[data-script="off"] [data-js-only] { display: none; }',
+    );
   });
 });
 
@@ -1705,7 +1848,7 @@ describe("the sign-in markup (WP3.23)", () => {
 
   it("explains every refusal; the older computer's offers the terminal", () => {
     for (const [reason, text] of [
-      ["not_running", "not running"],
+      ["not_running", "Press the button again to wake it and sign in"],
       ["busy", "stopping or signing out"],
       ["not_offered", "removal is pending"],
       ["unsupported", "older"],
