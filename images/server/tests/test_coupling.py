@@ -291,8 +291,9 @@ def test_the_page_count_reads_omnigents_service_table() -> None:
 #: after it at this pin (WP8.14, docs/compatibility.md).
 PREVIOUS_HEAD = "c0201a2b3c4d"
 PAGE_MIGRATION = "mr1a2b3c4d5e"
-#: The head at this pin: the team model's migrations after the page's (WP8.11, compatibility.md).
-HEAD = "ti1a2b3c4d5e"
+#: The head at this pin: the team model's migrations after the page's (WP8.11), then the record
+#: of member removals (WP8.9, compatibility.md).
+HEAD = "rm1a2b3c4d5e"
 
 
 @requires_omnigent
