@@ -422,7 +422,7 @@ export class PageFront {
         };
       case "remove": {
         const state = await this.#state();
-        if (!removeOffered(removalFactsOf(state))) {
+        if (!removeOffered(removalFactsOf(state), this.#access(owner))) {
           return { action: "remove", outcome: "refused", reason: "not_offered" };
         }
         await this.#d.terminal.close("the computer is being removed");

@@ -1023,6 +1023,44 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     expect(controller.calls).toEqual([]);
   });
 
+  it("lets an administrator remove only an awake computer Omnigent no longer calls; its owner asleep too", async () => {
+    const remove = (owner: object, intent: string, n: number) =>
+      front.pages({
+        action: "remove",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner,
+        intent,
+      });
+    // Asleep for an hour: no lost host, so not for Carol; still for Alice, its owner.
+    const { front, controller } = alicesComputer({
+      noContact: true,
+      lifecycle: "asleep",
+      status: "stopped",
+    });
+    expect(await remove(CAROL, (await tokenFor(front, CAROL)) as string, 60)).toEqual({
+      action: "remove",
+      outcome: "refused",
+      reason: "not_offered",
+    });
+    expect(controller.launches).toEqual([]);
+    expect(await remove(ALICE, (await tokenFor(front, ALICE)) as string, 61)).toEqual({
+      action: "remove",
+      outcome: "accepted",
+    });
+    // Awake and not called for an hour: a lost host, which Carol may remove.
+    const awake = alicesComputer({ noContact: true, lifecycle: "host_running" });
+    expect(
+      await awake.front.pages({
+        action: "remove",
+        interfaceVersion: 1,
+        operationId: OP(62),
+        owner: CAROL,
+        intent: (await tokenFor(awake.front, CAROL)) as string,
+      }),
+    ).toEqual({ action: "remove", outcome: "accepted" });
+  });
+
   it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {
     const { front, controller } = alicesComputer({ noContact: false });
     const intent = (await tokenFor(front, CAROL)) as string;

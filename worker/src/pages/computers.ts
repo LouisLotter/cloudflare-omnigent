@@ -660,6 +660,11 @@ export async function performAction(
     "outcome" in result && result.outcome === "refused" && "reason" in result
       ? String(result.reason)
       : "accepted";
+  // An action the computer does not offer now answers as its confirmation page does: 409.
+  if (outcome === "not_offered") {
+    log({ event: "page_change_refused", reason: "not_offered", action: spec.slug });
+    return refusedPage(409, "This is not offered for this computer now, so nothing was done.");
+  }
   // An administrator acting on someone else's computer goes back to the list: its setup page is
   // the owner's alone (WP8.4).
   const after = await backend.state(id, owner).catch(() => null);

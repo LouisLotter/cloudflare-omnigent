@@ -19,12 +19,14 @@ import {
   pageAllows,
   personKey,
   type RemovalFacts,
+  removalFactsOf,
   removeOffered,
   stampMatches,
   unsignedDeletionDue,
 } from "../../src/computer/ownership.ts";
 import { OWNERSHIP_KEY, RECORD_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
+import { pageState } from "../support/page-states.ts";
 
 const FOUNDER = "founder";
 const TEAM = "9f8e7d6c5b4a49382716f5e4d3c2b1a0";
@@ -903,6 +905,7 @@ describe("pageAccess and pageAllows", () => {
 describe("the removal offers (WP8.9): one rule for the page, its cards and WorkspaceDO", () => {
   const facts: fc.Arbitrary<RemovalFacts> = fc.record({
     noContact: fc.boolean(),
+    awake: fc.boolean(),
     removal: fc.constantFrom("none" as const, "pending" as const, "resolved" as const),
     lifecycle: fc.constantFrom("host_running", "asleep", "removal_pending", "removed", "stopping"),
     settled: fc.boolean(),
@@ -917,16 +920,56 @@ describe("the removal offers (WP8.9): one rule for the page, its cards and Works
     revocationRequired: fc.boolean(),
   });
 
-  it("offers recording a removal only while Omnigent no longer calls and none is recorded", () => {
+  it("offers recording a removal only while Omnigent no longer calls, and to an admin only awake", () => {
     fc.assert(
-      fc.property(facts, (f) => {
-        expect(removeOffered(f)).toBe(
-          f.noContact && f.removal === "none" && f.lifecycle !== "removed",
-        );
-        // Never both: a computer with a removal recorded goes on through the removal's steps.
-        if (removeOffered(f)) expect(unsignedDeletionDue(f)).toBe(false);
-      }),
+      fc.property(
+        facts,
+        fc.constantFrom("owner" as const, "admin" as const, "none" as const),
+        (f, access) => {
+          const lost = f.noContact && f.removal === "none" && f.lifecycle !== "removed";
+          // The owner keeps the rule for their own computer; an admin needs a lost host, awake.
+          const expected = access === "owner" ? lost : access === "admin" ? lost && f.awake : false;
+          expect(removeOffered(f, access)).toBe(expected);
+          // Never both: a computer with a removal recorded goes on through the removal's steps.
+          if (removeOffered(f, access)) expect(unsignedDeletionDue(f)).toBe(false);
+        },
+      ),
     );
+    const asleep: RemovalFacts = {
+      noContact: true,
+      awake: false,
+      removal: "none",
+      lifecycle: "asleep",
+      settled: false,
+      signOut: "none",
+      signOutRunning: false,
+      signOutFailed: false,
+      revocationRequired: false,
+    };
+    expect(removeOffered(asleep, "admin")).toBe(false);
+    expect(removeOffered(asleep, "owner")).toBe(true);
+    expect(removeOffered({ ...asleep, awake: true, lifecycle: "host_running" }, "admin")).toBe(
+      true,
+    );
+  });
+
+  it("counts a computer as awake only while a restored container runs", () => {
+    const awake = ["started_no_host", "start_claimed", "host_running", "host_refused"];
+    for (const lifecycle of [
+      ...awake,
+      "provisioned",
+      "waking",
+      "restoring",
+      "asleep",
+      "stopped",
+      "failed",
+      "removal_pending",
+      "removed",
+    ] as const) {
+      expect(removalFactsOf(pageState({ lifecycle: lifecycle as never })).awake, lifecycle).toBe(
+        awake.includes(lifecycle),
+      );
+    }
   });
 
   it("lets a removal end unsigned only when the sign-out cannot settle, never instead of one", () => {
@@ -952,6 +995,7 @@ describe("the removal offers (WP8.9): one rule for the page, its cards and Works
     );
     const base: RemovalFacts = {
       noContact: false,
+      awake: false,
       removal: "pending",
       lifecycle: "removal_pending",
       settled: false,

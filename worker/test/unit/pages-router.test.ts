@@ -2214,26 +2214,77 @@ describe("the person behind a page (WP8.4)", () => {
     }
   });
 
-  it("offers recording a removal exactly when WorkspaceDO accepts one", async () => {
-    for (const [noContact, removal] of [
-      [true, "none"],
-      [false, "none"],
-      [true, "pending"],
+  it("offers an administrator recording a removal exactly when WorkspaceDO accepts one", async () => {
+    for (const [noContact, removal, lifecycle] of [
+      [true, "none", "host_running"],
+      [false, "none", "host_running"],
+      [true, "pending", "host_running"],
+      [true, "none", "asleep"],
+      [true, "none", "stopped"],
     ] as const) {
       const state = pageState({
         computerId: OTHER,
         access: "admin",
         noContact,
+        lifecycle,
         removal: { ...pageState().removal, state: removal },
       });
       const t = adminFleet();
       t.backend.states.set(OTHER, { action: "state", computer: state, intentToken: INTENT });
-      const offered = removeOffered(removalFactsOf(state));
+      const offered = removeOffered(removalFactsOf(state), "admin");
       const list = await (await t.route("/platform/computers")).text();
-      expect(list.includes(`/platform/computers/${OTHER}/do/remove`)).toBe(offered);
+      expect(list.includes(`/platform/computers/${OTHER}/do/remove`), lifecycle).toBe(offered);
       const confirm = await t.route(`/platform/computers/${OTHER}/do/remove`);
-      expect(confirm.status).toBe(offered ? 200 : 409);
+      expect(confirm.status, lifecycle).toBe(offered ? 200 : 409);
     }
+  });
+
+  it("refuses an administrator's removal of a member's computer asleep for an hour, with 409", async () => {
+    const { route, backend } = adminFleet();
+    backend.states.set(OTHER, {
+      action: "state",
+      computer: pageState({
+        computerId: OTHER,
+        hostName: "Alice's computer",
+        access: "admin",
+        ownerName: "alice",
+        noContact: true,
+        lifecycle: "asleep",
+        status: "stopped",
+      }),
+      intentToken: INTENT,
+    });
+    // WorkspaceDO refuses it too; the fake answers as it would.
+    backend.actResult = { action: "remove", outcome: "refused", reason: "not_offered" };
+    const other = `/platform/computers/${OTHER}`;
+    const list = await (await route("/platform/computers")).text();
+    expect(list).toContain(`data-fleet-computer="${OTHER}"`);
+    expect(list).not.toContain(`${other}/do/remove`);
+    const confirm = await route(`${other}/do/remove`);
+    expect(confirm.status).toBe(409);
+    expect(await confirm.text()).not.toContain("<form");
+    const posted = await route(`${other}/do/remove`, form({ intent: INTENT, op: OP }));
+    expect(posted.status).toBe(409);
+    expect(await posted.text()).toContain("nothing was done");
+  });
+
+  it("keeps the owner's own removal of their asleep computer as it was", async () => {
+    const { route, backend } = setup(async () => MEMBER);
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        access: "owner",
+        noContact: true,
+        lifecycle: "asleep",
+        status: "stopped",
+      }),
+      intentToken: INTENT,
+    });
+    const list = await (await route("/platform/computers")).text();
+    expect(list).toContain(`href="${page}/do/remove"`);
+    expect(list).toContain("Not connected to Omnigent");
+    expect(await (await route(page)).text()).toContain(`href="${page}/do/remove"`);
+    expect((await route(`${page}/do/remove`)).status).toBe(200);
   });
 
   it("names a computer that could not be read to an administrator only", async () => {

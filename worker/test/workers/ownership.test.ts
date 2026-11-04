@@ -382,6 +382,56 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
   }, 60_000);
 
+  it("gives Carol no removal of Alice's computer asleep for an hour, but of an awake lost one", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    expect(await sleep(c)).toEqual({ operation: "suspend", outcome: "stopped" });
+    assembly.advance(61 * 60_000);
+    await evictDurableObject(c.stub);
+    const page = `/platform/computers/${c.computerId}`;
+    expect((await record(c.stub)).lifecycle.context.state).toBe("asleep");
+
+    // Asleep an hour: Carol sees the card, no Remove; the page and the POST answer 409.
+    let list = await (await routeAs("carol", "/platform/computers")).text();
+    expect(list).toContain(`data-fleet-computer="${c.computerId}"`);
+    expect(list).not.toContain(`${page}/do/remove`);
+    expect(await statusAs("carol", `${page}/do/remove`)).toBe(409);
+    // Carol's own valid token, as WorkspaceDO issues it with the page state: the refusal is the
+    // rule's, not a token's.
+    const carolState = (await c.stub.pages({
+      action: "state",
+      interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+      owner: { sub: "carol-sub", sessionId: SESSIONS.carol, person: PEOPLE.carol },
+    })) as { intentToken?: string };
+    expect(carolState.intentToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      await statusAs(
+        "carol",
+        `${page}/do/remove`,
+        post({ intent: carolState.intentToken as string, op: "op_01hzy4a7b8c9d0e1f2g3h4j5n1" }),
+      ),
+    ).toBe(409);
+    expect((await record(c.stub)).lifecycle.context.removalIntent).toBe(false);
+    // Alice keeps her own Remove of it.
+    expect(await (await routeAs("alice", "/platform/computers")).text()).toContain(
+      `href="${page}/do/remove"`,
+    );
+
+    // Awake and not called for an hour: a lost host, which Carol may remove.
+    await wake(c, { hostId: host, token: TOKEN });
+    assembly.advance(61 * 60_000);
+    list = await (await routeAs("carol", "/platform/computers")).text();
+    expect(list).toContain(`href="${page}/do/remove"`);
+    expect(await statusAs("carol", `${page}/do/remove`)).toBe(200);
+  }, 60_000);
+
   it("lets Carol finish a removed member's computer without her, and never Bob", async () => {
     const host = newHost();
     const alice: LauncherOwner = {

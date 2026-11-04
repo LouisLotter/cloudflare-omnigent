@@ -2,6 +2,7 @@
 // removal's deletions, and reconciliation after Omnigent's database loses writes (FH-29).
 import { describe, expect, it } from "vitest";
 import { holdsLogin } from "../../src/computer/checkpoints.ts";
+import { removalFactsOf, removeOffered } from "../../src/computer/ownership.ts";
 import { type ComputerRecord, RECORD_KEY, SIGN_OUT_FAILED_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
@@ -275,7 +276,7 @@ describe("after Omnigent's database loses writes (FH-29)", () => {
     expect(sim.sup?.token).toBe(sim.tokens.at(-1));
   });
 
-  it("shows a computer Omnigent no longer calls as not connected after 60 minutes", async () => {
+  it("counts 60 minutes without a call, asleep too, but offers an admin the removal only awake", async () => {
     const sim = new ComputerSim();
     await sim.running();
     live(sim).runnerProcesses = 0;
@@ -283,9 +284,23 @@ describe("after Omnigent's database loses writes (FH-29)", () => {
     await sim.advance(30_000);
     expect((await state(sim)).noContact).toBe(false);
     await sim.advance(61 * 60_000);
-    expect((await state(sim)).noContact).toBe(true);
+    const asleep = await state(sim);
+    expect(asleep).toMatchObject({ lifecycle: "asleep", noContact: true });
+    // An hour asleep is no lost host: its owner may remove it, an administrator may not.
+    expect(removeOffered(removalFactsOf(asleep), "owner")).toBe(true);
+    expect(removeOffered(removalFactsOf(asleep), "admin")).toBe(false);
     await sim.call(sim.client.statusRequest());
     expect((await state(sim)).noContact).toBe(false);
+  });
+
+  it("offers an admin the removal of an awake computer Omnigent no longer calls", async () => {
+    const sim = new ComputerSim();
+    await sim.running();
+    await sim.advance(61 * 60_000);
+    const lost = await state(sim);
+    expect(lost).toMatchObject({ lifecycle: "host_running", noContact: true });
+    expect(removeOffered(removalFactsOf(lost), "admin")).toBe(true);
+    expect(removeOffered(removalFactsOf(lost), "owner")).toBe(true);
   });
 });
 

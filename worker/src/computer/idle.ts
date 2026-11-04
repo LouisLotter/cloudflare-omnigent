@@ -77,7 +77,12 @@ export function admissionOf(notSaved: NotSaved | null): Admission {
     : { admitting: false, reason: "not_saved", message: NOT_SAVED_MESSAGE };
 }
 
-/** The "no contact" notice: no launcher call of any kind for 60 minutes while awake (FH-31). */
+/**
+ * The "no contact" notice: no launcher call of any kind for 60 minutes, whether the computer is
+ * awake or asleep (FH-31). Omnigent calls an asleep computer only to wake it, so for an asleep one
+ * this is no sign that it is lost: an administrator's removal of someone else's computer also
+ * needs it awake (`removeOffered`).
+ */
 export function noContact(
   lastContactAt: number | null,
   now: number,
