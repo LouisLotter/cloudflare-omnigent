@@ -70,6 +70,8 @@ select { font: inherit; padding: 5px; border-radius: 6px; }
 code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
   padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
 ol.steps li { margin: 6px 0; }
+details.earlier { margin: 24px 0 8px; }
+details.earlier summary { cursor: pointer; color: var(--muted); }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0; }
 dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; }
 .terminal-panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;

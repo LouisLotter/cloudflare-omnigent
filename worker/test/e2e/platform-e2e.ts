@@ -515,6 +515,15 @@ async function seed(env: Env): Promise<Record<string, string>> {
       endedAt: new Date(Date.now() - 3 * 3_600_000 + 720_000).toISOString(),
       restarts: 1,
     },
+    // Two days ago: history, below the computers (WP8.10).
+    {
+      outageId: "out_01hzy4a7b8c9d0e1f2g3h4j5k7",
+      cause: "config_changed",
+      startedAt: new Date(Date.now() - 48 * 3_600_000).toISOString(),
+      detectedAt: new Date(Date.now() - 48 * 3_600_000 + 30_000).toISOString(),
+      endedAt: new Date(Date.now() - 48 * 3_600_000 + 120_000).toISOString(),
+      restarts: 1,
+    },
   ];
   scenario.replication = {
     state: "lagging",

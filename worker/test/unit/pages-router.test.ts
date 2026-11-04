@@ -25,7 +25,7 @@ import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import type { PersonSeam } from "../../src/pages/person.ts";
 import { isPlatformPath, routePlatform } from "../../src/pages/router.ts";
 import { platformError } from "../../src/shared/errors.ts";
-import { NEVER_SIGNED_IN, NOW, PAGE_CMP, pageState } from "../support/page-states.ts";
+import { NEVER_SIGNED_IN, NOW, outageAt, PAGE_CMP, pageState } from "../support/page-states.ts";
 
 const ORIGIN = "https://omnigent.example.test";
 /** The admitted identity, and the person today's seam decides for it (WP8.4). */
@@ -428,6 +428,39 @@ describe("the cloud-computers page", () => {
       expect(html).not.toContain("<img");
       expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
     }
+  });
+
+  it("puts the computers first: only an outage under way and the latest day's are above them (WP8.10)", async () => {
+    const { route, backend } = setup();
+    const old = Array.from({ length: 33 }, (_, i) => outageAt(i + 1, 30 + i * 4, 2));
+    backend.outageRecords = [...old, outageAt(40, 3, 12, "not_answering"), outageAt(41, 0.5, null)];
+    const html = await (await route("/platform/computers")).text();
+    const computers = html.indexOf("<h2>Computers</h2>");
+    const details = html.indexOf("<details");
+    expect(computers).toBeGreaterThan(0);
+    // Above the computers: the outage under way, then the one that ended three hours ago.
+    const top = html.slice(0, computers);
+    expect(top.match(/data-notice="outage"/g)).toHaveLength(2);
+    expect(top).toContain(
+      "Omnigent is restarting to apply a configuration change (since 08:50 UTC)",
+    );
+    expect(top).toContain("Omnigent was unavailable from 06:20 UTC to 06:32 UTC");
+    expect(top.indexOf("since 08:50 UTC")).toBeLessThan(top.indexOf("from 06:20 UTC"));
+    // Below them, collapsed without any script: the 33 others, newest first.
+    expect(details).toBeGreaterThan(html.indexOf('data-computer="'));
+    const earlier = html.slice(details, html.indexOf("</details>"));
+    expect(earlier).toContain('<details class="earlier" data-earlier-outages>');
+    expect(earlier).not.toContain("<details open");
+    expect(earlier).toContain("<summary>Earlier interruptions (33)</summary>");
+    expect(earlier.match(/data-notice="outage"/g)).toHaveLength(33);
+    const firstOld = earlier.indexOf("from 21 Oct 03:20 UTC");
+    const lastOld = earlier.indexOf("from 17 Oct 03:20 UTC");
+    expect(firstOld).toBeGreaterThan(0);
+    expect(lastOld).toBeGreaterThan(firstOld);
+    // Nothing of history before the computers; no list at all when there is none.
+    expect(top).not.toContain("21 Oct 03:20 UTC");
+    backend.outageRecords = [];
+    expect(await (await route("/platform/computers")).text()).not.toContain("<details");
   });
 
   it("shows outage notices and the replication warning (FH-06, FH-15)", async () => {

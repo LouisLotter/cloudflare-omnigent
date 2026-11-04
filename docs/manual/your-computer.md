@@ -7,7 +7,7 @@ Your agents work on a cloud computer that belongs to you. It keeps its files bet
 1. In Omnigent, open **Settings → Computers** and choose **Add computer**.
 2. Give it a name you will recognise, for example "Work", and add it.
 
-The computer starts at once; this takes a minute or two. It is listed as needing setup until you have signed in to Claude or Codex on it. Choose **Set up / manage** next to it to open its page, which opens in a new tab.
+The computer starts at once; this takes a minute or two. It is listed as needing setup until you have signed in to Claude or Codex on it. Choose **Set up / manage** next to it to open its page, which opens in a new tab. Settings → Computers also links the **computers page**, which lists all your computers with their setup, sign-ins and terminals.
 
 ## Signing in to Claude or Codex
 

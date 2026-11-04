@@ -450,6 +450,50 @@ export function outageNotices(records: readonly OutageRecord[], nowMs: number): 
   });
 }
 
+/** How long an outage that ended stays at the top of the computers page. */
+export const RECENT_OUTAGE_MS = 24 * 3_600_000;
+
+/** The computers page's outage notices, split by what still needs attention (WP8.10). */
+export interface OutageNoticeGroups {
+  /** Before the computers: every outage under way, recovery mode in the last day, and the
+   * newest outage if it ended in the last day. Newest first. */
+  readonly current: readonly Notice[];
+  /** Below the computers, collapsed: every other outage in the window, newest first. */
+  readonly earlier: readonly Notice[];
+}
+
+/**
+ * Splits the outage records the page reads (the last `OUTAGE_WINDOW_MS`) so that the computers
+ * come first: an outage under way stays at the top, as does recovery mode (it needs the owner)
+ * and the most recent outage if it ended within `RECENT_OUTAGE_MS`; the rest are history.
+ */
+export function outageNoticeGroups(
+  records: readonly OutageRecord[],
+  nowMs: number,
+): OutageNoticeGroups {
+  const at = (record: OutageRecord) => Date.parse(record.endedAt ?? record.startedAt);
+  const sorted = [...records].sort(
+    (a, b) =>
+      (b.endedAt === null ? Number.POSITIVE_INFINITY : at(b)) -
+        (a.endedAt === null ? Number.POSITIVE_INFINITY : at(a)) ||
+      Date.parse(b.startedAt) - Date.parse(a.startedAt),
+  );
+  const recent = (record: OutageRecord) =>
+    record.endedAt !== null && nowMs - Date.parse(record.endedAt) <= RECENT_OUTAGE_MS;
+  const newestEnded = sorted.find((record) => record.endedAt !== null);
+  const isCurrent = (record: OutageRecord) =>
+    record.endedAt === null ||
+    (record.cause === "recovery_mode" && recent(record)) ||
+    (record === newestEnded && recent(record));
+  return {
+    current: outageNotices(sorted.filter(isCurrent), nowMs),
+    earlier: outageNotices(
+      sorted.filter((record) => !isCurrent(record)),
+      nowMs,
+    ),
+  };
+}
+
 /** The replication warning (FH-15). Null when replication is healthy. */
 export function replicationNotice(health: ReplicationHealth | null, nowMs: number): Notice | null {
   if (health === null) {

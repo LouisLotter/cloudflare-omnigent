@@ -33,7 +33,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=d636ec3a00967009e002431288e7e494cb25bc08
+ARG OMNIGENT_COMMIT=b151b4ad2121645eafab129d4092efc4e94f8094
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -256,7 +256,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="d636ec3a00967009e002431288e7e494cb25bc08" \
+      cloudflare-omnigent.omnigent-commit="b151b4ad2121645eafab129d4092efc4e94f8094" \
       cloudflare-omnigent.claude-code="${CLAUDE_CODE_VERSION}" \
       cloudflare-omnigent.codex="${CODEX_VERSION}" \
       cloudflare-omnigent.gh="${GH_VERSION}" \

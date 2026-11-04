@@ -28,8 +28,9 @@ import { escapeHtml, htmlResponse, newOperationId, readChange, seeOther } from "
 import {
   type ComputerView,
   computerView,
+  type Notice,
   OUTAGE_WINDOW_MS,
-  outageNotices,
+  outageNoticeGroups,
   replicationNotice,
 } from "./view.ts";
 
@@ -280,6 +281,15 @@ function pendingLine(view: ComputerView): string {
   return `<li data-removal="${escapeHtml(view.id)}"><a href="${computerPath(view.id)}">${escapeHtml(view.name)}</a>: ${escapeHtml(what)} Its saved logins are kept until then.</li>`;
 }
 
+/** The outages that need nothing now, collapsed below the computers (a `<details>`: no script). */
+function earlierOutages(earlier: readonly Notice[]): string {
+  if (earlier.length === 0) return "";
+  return `<details class="earlier" data-earlier-outages>
+<summary>Earlier interruptions (${earlier.length})</summary>
+${earlier.map(notice).join("\n")}
+</details>`;
+}
+
 /** GET `/platform/computers`. */
 export async function computersPage(
   backend: PagesBackend,
@@ -323,11 +333,13 @@ export async function computersPage(
       } else views.push(view);
     }
   }
+  // The computers come first: only what still needs attention is above them (WP8.10).
+  const outageGroups = outageNoticeGroups(outages ?? [], nowMs);
   const notices = [
     ...(replicationNotice(replication, nowMs) === null
       ? []
       : [replicationNotice(replication, nowMs)]),
-    ...outageNotices(outages ?? [], nowMs),
+    ...outageGroups.current,
   ].filter((n) => n !== null);
   if (outages === null) {
     notices.push({
@@ -348,6 +360,7 @@ ${active.length === 0 ? `<p class="muted" data-empty>No computers yet. <a href="
 ${unreadable.length > 0 ? `<p class="tone-warn">Could not be read now: ${unreadable.map(escapeHtml).join(", ")}.</p>` : ""}
 ${pending.length > 0 ? `<h2>Removals in progress</h2><ul data-removals>${pending.map(pendingLine).join("")}</ul>` : ""}
 ${fleet.length > 0 ? `<h2>The team's other computers</h2><p class="muted">As an administrator you can stop another person's computer, remove one Omnigent no longer calls, and finish its pending removal. Setting it up, signing in on it and its terminal are its owner's alone.</p><div class="cards" data-fleet>${fleet.map((f) => fleetCard(f.view, f.ownerName)).join("\n")}</div>` : ""}
+${earlierOutages(outageGroups.earlier)}
 <h2>Deleting a computer</h2>
 <p>Open the computer and follow its removal steps first: they sign it out of Claude and Codex, then link to <a href="${OMNIGENT_COMPUTERS_PATH}" data-link="omnigent-delete">Omnigent's deletion</a>. A computer deleted in Omnigent first is listed under "Removals in progress" until its sign-out is done, and its saved logins are kept until then.</p>`;
   return htmlResponse(layout("Cloud computers", body));
