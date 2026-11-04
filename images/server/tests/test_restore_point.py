@@ -635,6 +635,45 @@ def test_a_rollback_without_a_restore_point_leaves_the_replica(rig: Rig) -> None
     assert not rig.marker.exists()
 
 
+#: A setting an older image accepted that this one refuses (WP8.10): public sharing's level.
+REFUSED_SHARING = {"OMNIGENT_PUBLIC_SHARING_MAX_LEVEL": "edit"}
+
+
+@requires_litestream
+def test_a_refused_sharing_setting_in_the_window_still_leaves_the_way_back(rig: Rig) -> None:
+    """The update's server takes its restore point, then refuses (78) before Omnigent starts;
+    the rollback order is carried out with the setting still refused."""
+    rig.seed(with_owner=True)
+    before = _replica_files(rig)
+    rig.start(rig.env(initialized="true", CFO_RESTORE_POINT=RP, **REFUSED_SHARING))
+    assert rig.wait(60) == entrypoint.EXIT_CONFIG
+    assert rig.events("restore_point.taken")
+    assert "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL" in rig.events("config.error")[-1]["message"]
+    assert not rig.marker.exists()
+    assert _replica_files(rig) == before
+
+    rig.start(rig.env(initialized="true", **ROLLBACK, **REFUSED_SHARING))
+    assert rig.wait(60) == entrypoint.EXIT_ROLLED_BACK
+    assert rig.events("rollback.done")[0]["restored"] is True
+    assert _replica_files(rig) == before
+    assert not rig.marker.exists()
+
+
+@requires_litestream
+def test_a_rollback_order_runs_with_a_refused_sharing_setting_and_no_restore_point(
+    rig: Rig,
+) -> None:
+    """A server refused before any restore point existed: the order still runs, and leaves the
+    replica, which nothing changed, as it is."""
+    rig.seed(with_owner=True)
+    before = _replica_files(rig)
+    rig.start(rig.env(initialized="true", **ROLLBACK, **REFUSED_SHARING))
+    assert rig.wait(60) == entrypoint.EXIT_ROLLED_BACK
+    assert rig.events("rollback.done")[0]["restored"] is False
+    assert _replica_files(rig) == before
+    assert not rig.marker.exists()
+
+
 @requires_litestream
 def test_a_restore_point_that_restores_another_database_is_never_put_back(rig: Rig) -> None:
     rig.seed(with_owner=True)

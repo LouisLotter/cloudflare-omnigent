@@ -7,6 +7,10 @@ import type { Notice, Tone } from "./view.ts";
 
 /** Omnigent's own interface for adding and deleting computers (core change 13's UI). */
 export const OMNIGENT_COMPUTERS_PATH = "/settings/computers";
+/** Omnigent's own account settings, where a person changes their password. */
+export const OMNIGENT_ACCOUNT_PATH = "/settings/account";
+/** Omnigent's members page, where owners and administrators reset a member's password. */
+export const OMNIGENT_MEMBERS_PATH = "/settings/members";
 export const PAGES_ROOT = "/platform";
 export const COMPUTERS_PATH = `${PAGES_ROOT}/computers`;
 export const ASSETS_PATH = `${PAGES_ROOT}/assets`;
@@ -14,6 +18,9 @@ export const ASSETS_PATH = `${PAGES_ROOT}/assets`;
 export const PASSWORD_PAGE_PATH = `${PAGES_ROOT}/password`;
 /** The GitHub App's setup URL: GitHub sends the owner here after installing it (WP3.36). */
 export const GITHUB_SETUP_PAGE_PATH = `${PAGES_ROOT}/github`;
+/** The user manual, in the project's public repository (WP8.10): every page's "Help". */
+export const MANUAL_URL =
+  "https://github.com/LouisLotter/cloudflare-omnigent/blob/main/docs/manual/README.md";
 
 export function computerPath(id: string): string {
   return `${COMPUTERS_PATH}/${id}`;
@@ -63,6 +70,8 @@ select { font: inherit; padding: 5px; border-radius: 6px; }
 code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
   padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); }
 ol.steps li { margin: 6px 0; }
+details.earlier { margin: 24px 0 8px; }
+details.earlier summary { cursor: pointer; color: var(--muted); }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0; }
 dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; }
 .terminal-panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
@@ -113,6 +122,7 @@ ${tags}
   <strong>Cloud computers</strong>
   <a href="${COMPUTERS_PATH}">All computers</a>
   <a href="${PASSWORD_PAGE_PATH}">Omnigent password</a>
+  <a href="${MANUAL_URL}" target="_blank" rel="noopener noreferrer" data-link="help">Help</a>
   <a href="/">Back to Omnigent</a>
 </header>
 <main>

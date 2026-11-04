@@ -879,7 +879,7 @@ async function main(): Promise<number> {
         await page.goto(`${base}/platform/computers/${ids["managed-full"] ?? ""}`);
         await page
           .locator("[data-no-script]")
-          .getByText("To wake it, send it work in Omnigent")
+          .getByText("To wake it, start a new thread on it in Omnigent")
           .waitFor();
         const text = await page.locator("body").innerText();
         if (text.includes("wakes it first")) throw new Error("a wake is promised without JS");
@@ -929,6 +929,29 @@ async function main(): Promise<number> {
       checks.push("outage notice with its interval");
       await page.locator('[data-notice="replication"]').getByText("replica is behind").waitFor();
       checks.push("replication warning");
+      // WP8.10: older interruptions are below the computers, collapsed, and open without a script.
+      const bare = await chromiumBrowser.newContext({
+        extraHTTPHeaders: headers,
+        javaScriptEnabled: false,
+      });
+      try {
+        const plain = await bare.newPage();
+        await plain.goto(`${base}/platform/computers`);
+        const earlier = plain.locator("[data-earlier-outages]");
+        await earlier.getByText("Earlier interruptions (1)").waitFor();
+        const old = earlier.getByText("Omnigent restarted to apply a configuration change");
+        if (await old.isVisible()) throw new Error("an earlier interruption is shown unasked");
+        const computer = await plain.locator("[data-computer]").first().boundingBox();
+        const list = await earlier.boundingBox();
+        if (computer === null || list === null || list.y <= computer.y) {
+          throw new Error("the earlier interruptions are not below the computers");
+        }
+        await earlier.getByText("Earlier interruptions (1)").click();
+        await old.waitFor();
+        checks.push("JavaScript off: older interruptions collapsed below the computers, and open");
+      } finally {
+        await bare.close();
+      }
       await page.screenshot({ path: join(DIR, "computers-page.png"), fullPage: true });
     });
   } finally {

@@ -141,20 +141,25 @@ cf zero-trust access rule-groups get <group ID> | jq '.include | length'
 
 **Isolation** (each person's own browser)
 
-The checks below need the installation's sharing settings as the platform sets them: sharing off
-(`OMNIGENT_SHARING_MODE` unset, or `off`), public sharing off, and new threads never public (the
-image pins it). Share none of the threads used here.
+The checks below need the installation's sharing settings as the platform sets them: sharing
+between members on (`OMNIGENT_SHARING_MODE` unset, or `on`), public sharing off and new threads
+never public (the image pins both). Share none of the threads used here, except in the sharing
+step below.
 
 1. B: create B's own cloud computer, and start a thread on it. A: start a thread of A's own.
 2. B: `/platform/computers` lists B's computer and none of A's. Open A's computer page (A copies its
    address): not found.
-3. A: `/platform/computers` lists B's computer as a fleet card ("Belongs to …") with Stop only;
+3. A: `/platform/computers` (linked from Settings → Computers, "Other people's computers are on the
+   computers page") lists B's computer as a fleet card ("Belongs to …") with Stop only;
    its setup page and terminal are not found. Another person's computer setup and terminal stay
    that person's alone, for owners and administrators too.
 4. B: open `/v1/sessions` in the browser: none of A's threads is listed. Open A's thread address:
    refused.
 5. A: B's thread **is** listed and opens. That is expected: owners and administrators keep access
    to members' threads (owner decision D52). It is not a failed check; what B can see of A's threads is.
+6. **Sharing:** A opens A's thread, Share, adds B as **Read**. B: the thread is now listed and
+   opens, and B cannot send it a message. A: take B's access away again (the bin icon in the
+   same dialog). B: the thread is refused again.
 
 **Suspension**
 
@@ -163,4 +168,9 @@ image pins it). Share none of the threads used here.
 2. A: Reinstate B. B signs in again in the browser; B's sessions from before stay ended.
 3. A: remove the test member (Settings, Members, Remove), or leave B suspended.
 
-Only then invite the first real member, the same way as step 1 of the invitation.
+Only then invite the first real member, the same way as step 1 of the invitation. Give them the
+[user manual](../manual/README.md): [joining](../manual/joining.md) walks them through the link,
+the code and their password, and [your cloud computer](../manual/your-computer.md) through
+their first computer and sign-in. Owners and administrators find the team's computers on
+`/platform/computers`, linked from Settings → Computers ([for owners and
+administrators](../manual/for-owners-and-admins.md#the-teams-computers)).

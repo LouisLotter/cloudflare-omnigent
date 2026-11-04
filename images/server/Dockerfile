@@ -12,7 +12,11 @@
 # What it holds:
 #   - Omnigent's server, built from the fork LouisLotter/omnigent at the pinned commit, which the
 #     image carries: /opt/cfo/build.json, the image labels, and the entrypoint's GET /status
-#     (`build`) and boot log line. 922b69c62 (`cfo/teams`, 3 Nov 2026) is the team model
+#     (`build`) and boot log line. f53990a30 (`cfo/teams`, 4 Nov 2026) is WP8.10's fork part
+#     (an overview page a computer provider may declare, which Settings → Computers links for
+#     everyone, and for administrators as other people's computers too; a create_app option that ignores stored public grants while public sharing
+#     is off; the Share dialog saying where an editor's turns run; plainer team wording; no
+#     migration) merged onto 922b69c62 (`cfo/teams`, 3 Nov 2026), the team model
 #     (D50: WP8.1 memberships, WP8.2a/b authority re-checked on open connections, WP8.4's owner
 #     context for the launcher, WP8.6 approver roles, WP8.8's display-only team view (D59),
 #     WP8.3, a front proxy's sign-in bound to members, and WP8.11's fork part, the binding state
@@ -54,7 +58,7 @@
 # secrets as container environment variables at start.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=922b69c62095a03a5d6401a44023e2239fcc4107
+ARG OMNIGENT_COMMIT=f53990a303f0a45cbf2b73db3d2911ee5760b2e8
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 # Trust pins over the fork's lock, hash-checked (see the builder stage).

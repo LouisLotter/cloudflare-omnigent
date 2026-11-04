@@ -178,7 +178,7 @@ import {
 } from "./cloud.ts";
 import { devicesStatus } from "./devices.ts";
 import { devicesCommand } from "./devices-command.ts";
-import { decide, parseLogs } from "./events.ts";
+import { decide, holdReport, parseLogs } from "./events.ts";
 import { githubAppCommand } from "./github-app-command.ts";
 import {
   BootstrapRefusal,
@@ -708,6 +708,8 @@ async function status(path: string, withLogs: boolean): Promise<void> {
       `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} github=${e.githubLinking ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} mcpPage=${e.mcpAdminServices ? `${e.mcpAdminServices.served ?? "?"}/${e.mcpAdminServices.stored ?? "?"}` : "?"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
     );
   }
+  // A refused setting (exit 78): whether it holds the server now, and the earlier refusals.
+  for (const line of holdReport(logs, installation.installationId)) console.log(line);
   if (journal.releasedAt !== undefined) {
     console.log(
       `released at ${journal.releasedAt}${journal.verifiedAt ? `, checked at ${journal.verifiedAt}` : ", not checked yet"}: the lines above are from before the switch`,

@@ -348,7 +348,7 @@ def test_sharing_settings_refuse_s7_variants_straight_to_the_server(
     # Nothing changed, and no override file exists.
     with server.client() as c:
         state = c.get("/v1/sharing", headers={"Authorization": f"Bearer {token}"}).json()
-    assert state["sharing_mode"] == "off"
+    assert state["sharing_mode"] == "on"
     assert state["public_sharing_enabled"] is False
     assert state["public_sharing_max_level"] == "read"
     assert state["default_public_sessions"] == "off"
@@ -508,7 +508,7 @@ def test_running_image_pins_features_and_wires_no_extra_integrations(
     server.wait_healthy()
     info = httpx.get(f"{server.url}/v1/info", timeout=10).json()
     assert not any(info["features"].values())
-    assert info["sharing_mode"] == "off" and info["public_sharing_enabled"] is False
+    assert info["sharing_mode"] == "on" and info["public_sharing_enabled"] is False
     names = _process_env_names(server, "cfo_server.app")
     assert "OMNIGENT_DATABRICKS_CLIENT_ID" not in names
     assert "OMNIGENT_CREDENTIAL_CIPHER" not in names
@@ -528,6 +528,17 @@ def test_malformed_setting_stops_the_container_with_78(
     server = link.server(prefix, initialized=False, **{variable: "everyone"}).start()
     assert server.wait_exit(60) == 78
     assert variable in server.events("config.error")[-1]["message"]
+
+
+def test_public_sharing_asked_for_stops_the_container_with_78(link: Stack, prefix: str) -> None:
+    """A deployment that asks for public sharing (the Worker secret
+    ``SERVER_ENV_OMNIGENT_PUBLIC_SHARING=on`` reaches the container as ``OMNIGENT_PUBLIC_SHARING``,
+    worker/test/unit/server-env.test.ts) gets a container that refuses to start, saying why."""
+    server = link.server(prefix, initialized=False, OMNIGENT_PUBLIC_SHARING="on").start()
+    assert server.wait_exit(60) == 78
+    message = server.events("config.error")[-1]["message"]
+    assert "OMNIGENT_PUBLIC_SHARING is pinned to off" in message
+    assert "nothing an installation runs is public" in message
 
 
 def test_request_logs_never_carry_query_strings(link: Stack, prefix: str) -> None:

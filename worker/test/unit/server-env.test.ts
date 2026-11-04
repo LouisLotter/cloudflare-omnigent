@@ -36,6 +36,15 @@ describe("serverContainerEnv", () => {
     expect(skipped).toEqual([]);
   });
 
+  it("forwards a public-sharing secret unchanged: the server image refuses it, not the Worker", () => {
+    // The image pins public sharing off (images/server/cfo_server/config.py, parse_sharing): a
+    // container started with this exits 78, which the watchdog holds and the installer reports
+    // (images/server/tests/test_entrypoint.py, scripts/bootstrap/test/machine.test.ts).
+    const { vars, skipped } = serverContainerEnv({ SERVER_ENV_OMNIGENT_PUBLIC_SHARING: "on" });
+    expect(vars).toEqual({ OMNIGENT_PUBLIC_SHARING: "on" });
+    expect(skipped).toEqual([]);
+  });
+
   it("skips what start() would refuse or the platform sets, naming never a value", () => {
     const { vars, skipped } = serverContainerEnv({
       "SERVER_ENV_BAD=NAME": "x",

@@ -65,10 +65,12 @@ import {
 } from "./access-app.ts";
 import type { DevicesRecord } from "./devices.ts";
 import {
+  currentHold,
   decide,
   FRESH_MS,
   newest,
   parseLogs,
+  SERVER_HELD_WHY,
   type StatusEvent,
   staleness,
   verifyRelease,
@@ -870,6 +872,19 @@ async function r2Credentials(
 
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };
 
+/**
+ * Whether a refused setting (exit 78) holds the server now, from a hold logged since `since`:
+ * `currentHold`, the reading `update` and `status --logs` share. It will not answer until the
+ * setting changes; a later status or another configuration's start ends the hold.
+ */
+export function heldSince(
+  logs: ReturnType<typeof parseLogs>,
+  installationId: string,
+  since: number,
+): boolean {
+  return currentHold(logs, installationId, since).held;
+}
+
 async function waitForOwner(
   ctx: RunContext,
   current: () => BootstrapState,
@@ -894,6 +909,11 @@ async function waitForOwner(
     if (decision.accepted) {
       ctx.log(`the owner is initialized and durable (checked ${decision.event.status.checkedAt})`);
       return { ok: true, event: decision.event };
+    }
+    const deployedAt = Date.parse(String(current().journal.platformDeployedAt));
+    if (Number.isFinite(deployedAt) && heldSince(logs, plan.installationId, deployedAt)) {
+      // Waiting longer changes nothing: the server answers only once the setting changes.
+      return { ok: false, why: SERVER_HELD_WHY };
     }
     const ignored =
       logs.malformed > 0 ? ` (${logs.malformed} bootstrap lines ignored: not the watchdog's)` : "";
@@ -950,7 +970,9 @@ async function verifyAfterRelease(
       );
       return { kind: "done" };
     }
-    if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };
+    if (result.held === true || ctx.now() + options.pollMs > deadline) {
+      return { kind: "released", why: result.why };
+    }
     await ctx.sleep(options.pollMs);
   }
 }

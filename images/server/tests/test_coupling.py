@@ -48,6 +48,7 @@ PLATFORM_KWARGS = {
     "sharing_mode",
     "public_sharing",
     "public_sharing_max_level",
+    "public_grants_when_disabled",
     "default_public_sessions",
     "feature_flags",
     "durability_barrier",

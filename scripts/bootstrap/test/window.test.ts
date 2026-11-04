@@ -10,7 +10,7 @@ import {
   RESTORE_POINT_VAR,
   ROLLBACK_SECRET,
 } from "../../../worker/src/server/maintenance.ts";
-import { parseLogs } from "../events.ts";
+import { parseLogs, SERVER_HELD_WHY } from "../events.ts";
 import {
   type BootstrapCloud,
   BootstrapRefusal,
@@ -727,6 +727,33 @@ describe("bootstrap.ts update --rollback (WP3.41)", () => {
       expect.stringMatching(/with Omnigent's data as it was before the update \(restore point/),
     );
     expect(h.journal().restorePoints?.[0]?.takenAt).toBeUndefined();
+  });
+
+  it("stops at once when the new server refuses a setting, and goes back without a restore point", async () => {
+    const h = await installed();
+    // The new release refuses a setting the previous one accepted (for example
+    // OMNIGENT_PUBLIC_SHARING_MAX_LEVEL=edit, WP8.10), and still carries out a rollback order,
+    // as the server image does. Refused at its first start, it never took the restore point.
+    h.world.refusesSettings = (v) =>
+      v.secrets.has(MAINTENANCE_WINDOW_SECRET) && !v.secrets.has(ROLLBACK_SECRET);
+    const started = h.world.now;
+    expect(await h.update(CODE_A)).toEqual({
+      kind: "deployed",
+      why: SERVER_HELD_WHY,
+      window: "open",
+      held: true,
+    });
+    // Decided at the first check that sees the hold, not at the 15-minute deadline.
+    expect(h.world.now - started).toBeLessThan(OPTIONS.switchMs + 4 * OPTIONS.pollMs);
+    expect(h.lines.filter((l) => l.startsWith("waiting:")).length).toBeLessThanOrEqual(2);
+    const logReads = count(h, "logs");
+    // The window stays open, with no restore point taken.
+    expect(h.journal().window).toBeDefined();
+    expect(h.journal().window?.restorePointTakenAt).toBeUndefined();
+    // The rollback goes back to the previous release; its data was never changed.
+    expect(await h.rollback()).toEqual({ kind: "done" });
+    expect(count(h, "logs")).toBeGreaterThan(logReads);
+    expect(h.journal().platformCode).not.toBe(CODE_A);
   });
 
   it("waits, naming why, while the server refuses the order's settings", async () => {

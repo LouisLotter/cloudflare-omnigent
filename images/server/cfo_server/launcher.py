@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from cloudflare_omnigent.sandbox.launcher import PROVIDER, CloudflareLauncher
 from cloudflare_omnigent.sandbox.registration import (
+    OVERVIEW_PATH,
     cloudflare_sandbox_config,
     manage_url_template,
 )
@@ -75,6 +76,7 @@ def sandbox_deployment(
         settings=settings,
         durability_wait=durability_wait,
         manage_url=manage_url_template(config.base_url),
+        overview=OVERVIEW_PATH,
         server_url=config.sandbox_server_url,
     )
     if launcher_factory is not None:

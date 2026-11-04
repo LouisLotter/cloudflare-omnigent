@@ -15,7 +15,7 @@
 // back and checked, or nothing to roll back); 3 not finished yet: deployed, but the check after
 // the switch has not passed yet (Omnigent stays paused meanwhile), or accepted with the server's
 // restart without the window not seen yet, or a rollback under way (run the same command again: it repeats nothing that
-// landed); 1 an error or a refusal.
+// landed); 1 an error or a refusal, the new server's refusal of a setting among them.
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -197,6 +197,12 @@ export async function updateCommand(
           `accepted, and the read-only window is closed; the server's restart without it was not seen yet: ${outcome.why}. Omnigent is available again once it has restarted (a few minutes); bootstrap.ts status --logs shows it. ${open}`,
         );
         return 3;
+      }
+      if (outcome.held === true) {
+        ports.log(
+          `updated, but the new server refused one of its settings and stays stopped: ${outcome.why}. Omnigent stays paused, so nothing can be lost meanwhile. Or go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback. ${open}`,
+        );
+        return 1;
       }
       if (outcome.integrationsOff === true) {
         // WP3.44: the server is checked every minute while the window holds, so a run sees an

@@ -28,8 +28,9 @@ import { escapeHtml, htmlResponse, newOperationId, readChange, seeOther } from "
 import {
   type ComputerView,
   computerView,
+  type Notice,
   OUTAGE_WINDOW_MS,
-  outageNotices,
+  outageNoticeGroups,
   replicationNotice,
 } from "./view.ts";
 
@@ -52,6 +53,15 @@ export interface ActionSpec {
    * only while a removal is pending.
    */
   readonly admin: (view: ComputerView) => boolean;
+  /**
+   * Its wording for an administrator acting on someone else's computer, when it differs: a
+   * restart there is a stop, since the computer starts again only when its owner next uses it.
+   */
+  readonly asAdmin?: {
+    readonly title: string;
+    readonly button: string;
+    readonly explain: string;
+  };
 }
 
 const v = WORKSPACE_INTERFACE_VERSION;
@@ -83,6 +93,12 @@ export const ACTIONS: readonly ActionSpec[] = [
       "<p><strong>A restart ends work in progress.</strong> Turns that are running stop and are not replayed. The computer saves its files and logins first, then stops; Omnigent's next request starts it again and arms its host anew.</p>",
     call: (base) => ({ action: "restart", interfaceVersion: v, ...base }),
     admin: () => true,
+    asAdmin: {
+      title: "Stop this computer",
+      button: "Stop, ending work in progress",
+      explain:
+        "<p><strong>Stopping ends work in progress.</strong> Turns that are running stop and are not replayed. The computer saves its files and logins first, then stops. It starts again when its owner next uses it.</p>",
+    },
   },
   {
     slug: "stop-without-saving",
@@ -169,7 +185,10 @@ function flash(url: URL): string {
   const text = OUTCOME_TEXT[outcome];
   if (done === undefined || text === undefined) return "";
   const tone = outcome === "accepted" ? "ok" : "warn";
-  return notice({ tone, kind: "removal_pending", text: `${done.title}: ${text}` }).replace(
+  // An administrator's action on someone else's computer comes back with `as=admin`.
+  const title =
+    url.searchParams.get("as") === "admin" && done.asAdmin ? done.asAdmin.title : done.title;
+  return notice({ tone, kind: "removal_pending", text: `${title}: ${text}` }).replace(
     'data-notice="removal_pending"',
     'data-notice="flash" role="status"',
   );
@@ -262,6 +281,15 @@ function pendingLine(view: ComputerView): string {
   return `<li data-removal="${escapeHtml(view.id)}"><a href="${computerPath(view.id)}">${escapeHtml(view.name)}</a>: ${escapeHtml(what)} Its saved logins are kept until then.</li>`;
 }
 
+/** The outages that need nothing now, collapsed below the computers (a `<details>`: no script). */
+function earlierOutages(earlier: readonly Notice[]): string {
+  if (earlier.length === 0) return "";
+  return `<details class="earlier" data-earlier-outages>
+<summary>Earlier interruptions (${earlier.length})</summary>
+${earlier.map(notice).join("\n")}
+</details>`;
+}
+
 /** GET `/platform/computers`. */
 export async function computersPage(
   backend: PagesBackend,
@@ -305,11 +333,13 @@ export async function computersPage(
       } else views.push(view);
     }
   }
+  // The computers come first: only what still needs attention is above them (WP8.10).
+  const outageGroups = outageNoticeGroups(outages ?? [], nowMs);
   const notices = [
     ...(replicationNotice(replication, nowMs) === null
       ? []
       : [replicationNotice(replication, nowMs)]),
-    ...outageNotices(outages ?? [], nowMs),
+    ...outageGroups.current,
   ].filter((n) => n !== null);
   if (outages === null) {
     notices.push({
@@ -330,6 +360,7 @@ ${active.length === 0 ? `<p class="muted" data-empty>No computers yet. <a href="
 ${unreadable.length > 0 ? `<p class="tone-warn">Could not be read now: ${unreadable.map(escapeHtml).join(", ")}.</p>` : ""}
 ${pending.length > 0 ? `<h2>Removals in progress</h2><ul data-removals>${pending.map(pendingLine).join("")}</ul>` : ""}
 ${fleet.length > 0 ? `<h2>The team's other computers</h2><p class="muted">As an administrator you can stop another person's computer, remove one Omnigent no longer calls, and finish its pending removal. Setting it up, signing in on it and its terminal are its owner's alone.</p><div class="cards" data-fleet>${fleet.map((f) => fleetCard(f.view, f.ownerName)).join("\n")}</div>` : ""}
+${earlierOutages(outageGroups.earlier)}
 <h2>Deleting a computer</h2>
 <p>Open the computer and follow its removal steps first: they sign it out of Claude and Codex, then link to <a href="${OMNIGENT_COMPUTERS_PATH}" data-link="omnigent-delete">Omnigent's deletion</a>. A computer deleted in Omnigent first is listed under "Removals in progress" until its sign-out is done, and its saved logins are kept until then.</p>`;
   return htmlResponse(layout("Cloud computers", body));
@@ -488,21 +519,23 @@ export async function confirmPage(
       ),
     );
   }
+  const wording = asAdmin && spec.asAdmin !== undefined ? spec.asAdmin : null;
+  const title = wording?.title ?? spec.title;
   const extra =
     spec.slug === "set-size"
       ? `<label>Size <select name="size">${InstanceSize.options.map((s) => `<option value="${s}"${s === (state.computer.nextSize ?? state.computer.size) ? " selected" : ""}>${s}</option>`).join("")}</select></label>`
       : "";
-  const body = `<h1>${escapeHtml(spec.title)}</h1>
+  const body = `<h1>${escapeHtml(title)}</h1>
 <p class="muted">${escapeHtml(view.name)}</p>
-${spec.explain(view, state.computer)}
+${wording?.explain ?? spec.explain(view, state.computer)}
 <p class="muted">Opening this page changed nothing. Nothing happens until you press the button.</p>
 <form method="post" action="${actionPath(id, spec.slug)}" class="actions" data-confirm="${spec.slug}">
 ${hidden("intent", state.intentToken)}${hidden("op", newOperationId())}
 ${extra}
-<button type="submit" class="${spec.danger ? "danger" : "primary"}">${escapeHtml(spec.button)}</button>
+<button type="submit" class="${spec.danger ? "danger" : "primary"}">${escapeHtml(wording?.button ?? spec.button)}</button>
 ${back}
 </form>`;
-  return htmlResponse(layout(spec.title, body));
+  return htmlResponse(layout(title, body));
 }
 
 export function notFoundPage(): Response {
@@ -584,11 +617,16 @@ export async function performAction(
     "outcome" in result && result.outcome === "refused" && "reason" in result
       ? String(result.reason)
       : "accepted";
-  const query = new URLSearchParams({ done: spec.slug, outcome });
   // An administrator acting on someone else's computer goes back to the list: its setup page is
   // the owner's alone (WP8.4).
   const after = await backend.state(id, owner).catch(() => null);
-  const back = after?.computer.access === "admin" ? COMPUTERS_PATH : computerPath(id);
+  const asAdmin = after?.computer.access === "admin";
+  const query = new URLSearchParams({
+    done: spec.slug,
+    outcome,
+    ...(asAdmin ? { as: "admin" } : {}),
+  });
+  const back = asAdmin ? COMPUTERS_PATH : computerPath(id);
   return seeOther(`${back}?${query.toString()}`);
 }
 

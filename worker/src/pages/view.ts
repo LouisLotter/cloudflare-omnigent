@@ -109,6 +109,12 @@ export interface ComputerView {
    * computer's sleep, before a sign-in or the terminal. Null otherwise.
    */
   readonly wakeHost: string | null;
+  /**
+   * Why it is not running, for the page's wording when it cannot wake it: a start is under way,
+   * it has never started (a first start not asked for yet, or refused, for example at a limit
+   * on awake computers), its last start failed, or anything else. Null while it runs.
+   */
+  readonly notRunning: "starting" | "not_started" | "failed" | "other" | null;
 }
 
 const PROVIDER_TITLE: Record<SetupProvider, string> = { claude: "Claude", codex: "Codex" };
@@ -220,6 +226,8 @@ function statusOf(state: ComputerPageState, notConnected: boolean): [string, Ton
 }
 
 const RUNNING = new Set(["started_no_host", "start_claimed", "host_running", "host_refused"]);
+/** A start under way: granted, its container not running Omnigent's host yet. */
+const STARTING = new Set(["waking", "restoring"]);
 
 /** The removal flow's next step (design, Signing in, "Removal"; Lifecycle step 9). */
 export function removalStep(state: ComputerPageState): RemovalStep {
@@ -378,6 +386,15 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     signIn: state.signIn?.available ?? "unknown",
     lastSaveFailed: state.lastSave?.outcome === "failed",
     wakeHost: wakeHostOf(state, running, removing),
+    notRunning: running
+      ? null
+      : state.lifecycle === "failed"
+        ? "failed"
+        : state.lifecycle === "provisioned"
+          ? "not_started"
+          : STARTING.has(state.lifecycle)
+            ? "starting"
+            : "other",
   };
 }
 
@@ -431,6 +448,50 @@ export function outageNotices(records: readonly OutageRecord[], nowMs: number): 
     }
     return { tone: "warn", kind: "outage", text };
   });
+}
+
+/** How long an outage that ended stays at the top of the computers page. */
+export const RECENT_OUTAGE_MS = 24 * 3_600_000;
+
+/** The computers page's outage notices, split by what still needs attention (WP8.10). */
+export interface OutageNoticeGroups {
+  /** Before the computers: every outage under way, recovery mode in the last day, and the
+   * newest outage if it ended in the last day. Newest first. */
+  readonly current: readonly Notice[];
+  /** Below the computers, collapsed: every other outage in the window, newest first. */
+  readonly earlier: readonly Notice[];
+}
+
+/**
+ * Splits the outage records the page reads (the last `OUTAGE_WINDOW_MS`) so that the computers
+ * come first: an outage under way stays at the top, as does recovery mode (it needs the owner)
+ * and the most recent outage if it ended within `RECENT_OUTAGE_MS`; the rest are history.
+ */
+export function outageNoticeGroups(
+  records: readonly OutageRecord[],
+  nowMs: number,
+): OutageNoticeGroups {
+  const at = (record: OutageRecord) => Date.parse(record.endedAt ?? record.startedAt);
+  const sorted = [...records].sort(
+    (a, b) =>
+      (b.endedAt === null ? Number.POSITIVE_INFINITY : at(b)) -
+        (a.endedAt === null ? Number.POSITIVE_INFINITY : at(a)) ||
+      Date.parse(b.startedAt) - Date.parse(a.startedAt),
+  );
+  const recent = (record: OutageRecord) =>
+    record.endedAt !== null && nowMs - Date.parse(record.endedAt) <= RECENT_OUTAGE_MS;
+  const newestEnded = sorted.find((record) => record.endedAt !== null);
+  const isCurrent = (record: OutageRecord) =>
+    record.endedAt === null ||
+    (record.cause === "recovery_mode" && recent(record)) ||
+    (record === newestEnded && recent(record));
+  return {
+    current: outageNotices(sorted.filter(isCurrent), nowMs),
+    earlier: outageNotices(
+      sorted.filter((record) => !isCurrent(record)),
+      nowMs,
+    ),
+  };
 }
 
 /** The replication warning (FH-15). Null when replication is healthy. */

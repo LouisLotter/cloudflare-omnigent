@@ -18,6 +18,10 @@ The [compatibility snapshot](docs/compatibility.md) identifies exact revisions a
 
 To set up your own installation in your Cloudflare account with one command, follow the [install guide](docs/install.md). It lists what the account needs first (the Workers Paid plan, R2, a domain and a Zero Trust organization), the two sign-ins, and what happens at the first sign-in.
 
+## Using an installation
+
+If you were invited to a team's installation, or you look after one, the [user manual](docs/manual/README.md) covers it from the person's side: joining, your cloud computer, sessions and sharing, approvals, connections, and what owners and administrators do. Every step there is a page action.
+
 ## How it fits together
 
 The **web Worker** owns public ingress and forwarding. The **platform Worker** owns Durable Objects, container bindings and private virtual hosts; it has no public route. Omnigent owns conversations, schedules, approvals and application work. The platform supplies provider lifecycle and storage interfaces rather than duplicating that state.

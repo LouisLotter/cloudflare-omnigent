@@ -13,7 +13,8 @@
 //   POST /platform/computers/{id}/sign-in         start a sign-in, relay the pasted code, cancel
 //   GET  /platform/computers/{id}/status          the computer's status (JSON)
 //   POST /platform/computers/{id}/staging-check   staging only: RC-53's save check, or keep-awake, on or off
-//   GET  /platform/password                       the owner's Omnigent password: choose or reset (WP3.34)
+//   GET  /platform/password                       the owner's Omnigent password: choose or reset (WP3.34);
+//                                                 for a member, where theirs is changed (WP8.10)
 //   POST /platform/password                       set it, guarded, then a 303
 //   GET  /platform/github                         GitHub's return after installing the App: waits
 //                                                 for GitHub linking, then Integrations (WP3.36)
@@ -38,6 +39,7 @@ import { securityHeaders } from "./http.ts";
 import { signInChange, signInRead, stagingChange, statusRead } from "./owner-actions.ts";
 import {
   bindingsPasswordBackend,
+  memberPasswordPage,
   type PasswordBackend,
   passwordChange,
   passwordPage,
@@ -134,6 +136,10 @@ export async function routePlatform(
       );
     }
     if ((parts[0] === "password" || parts[0] === "github") && !isInstallationOwner(person)) {
+      // A member who follows the header's "Omnigent password" learns where theirs is changed.
+      if (parts[0] === "password" && parts.length === 1 && read) {
+        return head(request, memberPasswordPage());
+      }
       return head(request, notFoundPage());
     }
     if (parts[0] === "password" && parts.length === 1) {

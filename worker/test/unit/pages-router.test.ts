@@ -15,6 +15,7 @@ import type {
   ReplicationHealth,
 } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
+import { INITIAL_LIFECYCLE, transition } from "../../src/computer/machine.ts";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
@@ -24,7 +25,7 @@ import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import type { PersonSeam } from "../../src/pages/person.ts";
 import { isPlatformPath, routePlatform } from "../../src/pages/router.ts";
 import { platformError } from "../../src/shared/errors.ts";
-import { NEVER_SIGNED_IN, NOW, PAGE_CMP, pageState } from "../support/page-states.ts";
+import { NEVER_SIGNED_IN, NOW, outageAt, PAGE_CMP, pageState } from "../support/page-states.ts";
 
 const ORIGIN = "https://omnigent.example.test";
 /** The admitted identity, and the person today's seam decides for it (WP8.4). */
@@ -409,6 +410,10 @@ describe("the cloud-computers page", () => {
     expect(html).toContain('href="/settings/computers" data-link="omnigent-delete"');
     expect(html).toContain(`href="${page}">Set up / manage`);
     expect(html).toContain("Last saved 09:14 UTC");
+    // Every page's header links the user manual (WP8.10), in a new tab.
+    expect(html).toContain(
+      '<a href="https://github.com/LouisLotter/cloudflare-omnigent/blob/main/docs/manual/README.md" target="_blank" rel="noopener noreferrer" data-link="help">Help</a>',
+    );
   });
 
   it("renders untrusted names as text only", async () => {
@@ -423,6 +428,39 @@ describe("the cloud-computers page", () => {
       expect(html).not.toContain("<img");
       expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
     }
+  });
+
+  it("puts the computers first: only an outage under way and the latest day's are above them (WP8.10)", async () => {
+    const { route, backend } = setup();
+    const old = Array.from({ length: 33 }, (_, i) => outageAt(i + 1, 30 + i * 4, 2));
+    backend.outageRecords = [...old, outageAt(40, 3, 12, "not_answering"), outageAt(41, 0.5, null)];
+    const html = await (await route("/platform/computers")).text();
+    const computers = html.indexOf("<h2>Computers</h2>");
+    const details = html.indexOf("<details");
+    expect(computers).toBeGreaterThan(0);
+    // Above the computers: the outage under way, then the one that ended three hours ago.
+    const top = html.slice(0, computers);
+    expect(top.match(/data-notice="outage"/g)).toHaveLength(2);
+    expect(top).toContain(
+      "Omnigent is restarting to apply a configuration change (since 08:50 UTC)",
+    );
+    expect(top).toContain("Omnigent was unavailable from 06:20 UTC to 06:32 UTC");
+    expect(top.indexOf("since 08:50 UTC")).toBeLessThan(top.indexOf("from 06:20 UTC"));
+    // Below them, collapsed without any script: the 33 others, newest first.
+    expect(details).toBeGreaterThan(html.indexOf('data-computer="'));
+    const earlier = html.slice(details, html.indexOf("</details>"));
+    expect(earlier).toContain('<details class="earlier" data-earlier-outages>');
+    expect(earlier).not.toContain("<details open");
+    expect(earlier).toContain("<summary>Earlier interruptions (33)</summary>");
+    expect(earlier.match(/data-notice="outage"/g)).toHaveLength(33);
+    const firstOld = earlier.indexOf("from 21 Oct 03:20 UTC");
+    const lastOld = earlier.indexOf("from 17 Oct 03:20 UTC");
+    expect(firstOld).toBeGreaterThan(0);
+    expect(lastOld).toBeGreaterThan(firstOld);
+    // Nothing of history before the computers; no list at all when there is none.
+    expect(top).not.toContain("21 Oct 03:20 UTC");
+    backend.outageRecords = [];
+    expect(await (await route("/platform/computers")).text()).not.toContain("<details");
   });
 
   it("shows outage notices and the replication warning (FH-06, FH-15)", async () => {
@@ -552,7 +590,7 @@ describe("the setup page", () => {
     expect(asleep).toContain(
       'data-running="no" data-host-url="/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"',
     );
-    // Never started, so Omnigent's host is not known: no wake, and today's way.
+    // Never started, so Omnigent's host is not known: no wake, and where to start it.
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({ lifecycle: "provisioned", status: "stopped", hostId: null }),
@@ -560,7 +598,9 @@ describe("the setup page", () => {
     });
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('id="terminal-open" disabled');
-    expect(unknown).toContain("Send it work in Omnigent");
+    expect(unknown).toContain(
+      "The computer has not started yet. If Omnigent&#39;s Settings → Computers says it failed to start, choose Start again there; this page updates when it is running. While the terminal is open, the computer does not go to sleep.",
+    );
     expect(unknown).not.toContain("data-host-url");
     // Awake: opened as before, with no wake and no host URL.
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
@@ -1673,8 +1713,55 @@ describe("the status and the staging switch (WP3.23)", () => {
     });
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('data-act="start" disabled');
-    expect(unknown).toContain("The computer is not running. Send it work in Omnigent");
+    // Never started (no start under way): where to start it, never "starting" or "send it work".
+    expect(unknown).toContain(
+      "The computer has not started yet. If Omnigent&#39;s Settings → Computers says it failed to start, choose Start again there; this page updates when it is running.",
+    );
+    expect(unknown).not.toContain("The computer is starting");
+    expect(unknown).not.toContain("Send it work");
     expect(unknown).not.toContain("data-wake");
+    // A start under way: it says so.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "waking",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+    );
+    // Its last start failed: where to start it again.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "failed",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer&#39;s last start failed. Start it again in Omnigent (Settings → Computers, Start again); this page updates when it is running.",
+    );
+    // Stopped some other way, with no host known: a new thread wakes it.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "stopped",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer is not running. Start a new thread on it in Omnigent to wake it, then come back to this page.",
+    );
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
     const awake = await (await route(page)).text();
     expect(awake).toContain("Sign in to Claude again");
@@ -1719,7 +1806,7 @@ describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
       // Once, in the setup section, before the terminal and the cards.
       expect(html.match(/<noscript>/g)).toHaveLength(1);
       expect(html).toContain(
-        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.</p></noscript>',
+        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, start a new thread on it in Omnigent. Signing in and the terminal on this page need JavaScript.</p></noscript>',
       );
       expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="terminal-panel"'));
       expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="cards"'));
@@ -1727,7 +1814,7 @@ describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
       // Without the script, nothing on the page says the page wakes it.
       const shown = noScriptText(html);
       expect(shown).not.toMatch(/wakes it first/);
-      expect(shown).toContain("send it work in Omnigent");
+      expect(shown).toContain("start a new thread on it in Omnigent");
     },
   );
 
@@ -1896,9 +1983,23 @@ describe("the person behind a page (WP8.4)", () => {
   });
 
   it("keeps the installation owner's own pages from anyone else", async () => {
-    const { route } = setup(async () => ADMIN);
-    expect((await route("/platform/password")).status).toBe(404);
-    expect((await route("/platform/github")).status).toBe(404);
+    for (const person of [ADMIN, MEMBER]) {
+      const { route } = setup(async () => person);
+      // The password page says where their own password is changed, with no form (WP8.10).
+      const shown = await route("/platform/password");
+      expect(shown.status).toBe(200);
+      expectFramingProtection(shown);
+      const html = await shown.text();
+      expect(html).toContain(
+        'Change it in Omnigent: <a href="/settings/account">Settings → Account</a>, Change password.',
+      );
+      expect(html).toContain('<a href="/settings/members">Settings → Members</a>');
+      expect(html).not.toContain("<form");
+      expect(
+        (await route("/platform/password", form({ username: "x", password: "y" }))).status,
+      ).toBe(404);
+      expect((await route("/platform/github")).status).toBe(404);
+    }
   });
 
   function adminFleet() {
@@ -1940,7 +2041,13 @@ describe("the person behind a page (WP8.4)", () => {
   it("offers an administrator only the stop and the removal, and sends them back to the list", async () => {
     const { route, backend } = adminFleet();
     const other = `/platform/computers/${OTHER}`;
-    expect(await (await route(`${other}/do/restart`)).text()).toContain('data-confirm="restart"');
+    const stop = await (await route(`${other}/do/restart`)).text();
+    expect(stop).toContain('data-confirm="restart"');
+    // For someone else's computer it is a stop: it starts again when its owner next uses it.
+    expect(stop).toContain("<h1>Stop this computer</h1>");
+    expect(stop).toContain(">Stop, ending work in progress</button>");
+    expect(stop).toContain("It starts again when its owner next uses it.");
+    expect(stop).not.toContain("Restart");
     expect(await (await route(`${other}/do/remove`)).text()).toContain('data-confirm="remove"');
     for (const slug of ["set-size", "sign-out", "record-revocation", "stop-without-saving"]) {
       expect(await (await route(`${other}/do/${slug}`)).text(), slug).toContain(
@@ -1950,9 +2057,17 @@ describe("the person behind a page (WP8.4)", () => {
     const response = await route(`${other}/do/restart`, form({ intent: INTENT, op: OP }));
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      "/platform/computers?done=restart&outcome=accepted",
+      "/platform/computers?done=restart&outcome=accepted&as=admin",
     );
     expect(backend.acts.map((a) => a.id)).toEqual([OTHER]);
+    const back = await (
+      await route("/platform/computers?done=restart&outcome=accepted&as=admin")
+    ).text();
+    expect(back).toContain("Stop this computer: Done.");
+    // The owner's own restart keeps its wording.
+    expect(await (await route(`${page}/do/restart`)).text()).toContain(
+      "<h1>Restart this computer</h1>",
+    );
   });
 
   it("names a computer that could not be read to an administrator only", async () => {
@@ -1965,5 +2080,45 @@ describe("the person behind a page (WP8.4)", () => {
       const html = await (await route("/platform/computers")).text();
       expect(html.includes("managed-7f3c2a9e"), person.role).toBe(shown);
     }
+  });
+});
+
+describe("a first start refused at the limit of awake computers (WP8.10, Codex r1 P-06)", () => {
+  it("leaves the computer not started, and its page says where to start it again", async () => {
+    // The controller's own transition: a refused first resume changes nothing and starts nothing.
+    const refused = transition(INITIAL_LIFECYCLE, "resume", new Set(["at_capacity"]));
+    expect(refused.reply).toEqual({ kind: "error", code: "at_capacity" });
+    expect(refused.effects).toEqual([]);
+    const state = refused.lifecycle.context.state;
+    expect(state).toBe("provisioned");
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: state,
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    const html = await (await route(page)).text();
+    expect(html).toContain("Not started yet");
+    expect(html).toContain("choose Start again there");
+    expect(html).not.toContain("The computer is starting");
+    // Granted, the same computer is starting, and the page says that instead.
+    const granted = transition(INITIAL_LIFECYCLE, "resume", new Set(), 1);
+    expect(granted.lifecycle.context.state).toBe("waking");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: granted.lifecycle.context.state,
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain("The computer is starting.");
   });
 });

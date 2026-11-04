@@ -318,6 +318,9 @@ def build_app(
         sharing_mode=SharingMode(config.sharing.sharing_mode),
         public_sharing=config.sharing.public_sharing,
         public_sharing_max_level=config.sharing.public_sharing_max_level,
+        # Public sharing is pinned off: a public grant stored before (for example by an older
+        # image that allowed it) gives nobody access, and the row is kept.
+        public_grants_when_disabled="ignored",
         default_public_sessions=config.sharing.default_public_sessions,
         feature_flags=pinned_feature_flags(),
         durability_barrier=make_transcript_barrier(waiter, config.transcript_barrier_timeout_s),

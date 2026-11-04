@@ -27,7 +27,13 @@ import {
 } from "@cfo/contracts";
 import type { Admitted } from "../ingress/index.ts";
 import { OMNIGENT_SERVER_INTERFACE_VERSION, OMNIGENT_SERVER_OBJECT_NAME } from "../shared/rpc.ts";
-import { hidden, layout, PASSWORD_PAGE_PATH } from "./html.ts";
+import {
+  hidden,
+  layout,
+  OMNIGENT_ACCOUNT_PATH,
+  OMNIGENT_MEMBERS_PATH,
+  PASSWORD_PAGE_PATH,
+} from "./html.ts";
 import { escapeHtml, htmlResponse, readChange, seeOther } from "./http.ts";
 
 export const PASSWORD_PATH = PASSWORD_PAGE_PATH;
@@ -280,4 +286,21 @@ export async function firstVisitRedirect(
     log({ event: "first_visit_unknown", error: errorName(error) });
     return null;
   }
+}
+
+/**
+ * `/platform/password` for a team member who is not the installation's owner (WP8.10): this page
+ * sets the owner's password only, so it says where theirs is changed, or reset when forgotten.
+ * It changes nothing and takes no form.
+ */
+export function memberPasswordPage(): Response {
+  return htmlResponse(
+    layout(
+      "Your Omnigent password",
+      `<h1>Your Omnigent password</h1>
+<p data-member-password>Change it in Omnigent: <a href="${OMNIGENT_ACCOUNT_PATH}">Settings → Account</a>, Change password.</p>
+<p>Forgotten it? Ask an owner or administrator of your team to reset it on <a href="${OMNIGENT_MEMBERS_PATH}">Settings → Members</a>. They get a new password to give you: sign in with it, then change it in Settings → Account.</p>
+<p class="muted">This page sets only the installation owner's password.</p>`,
+    ),
+  );
 }

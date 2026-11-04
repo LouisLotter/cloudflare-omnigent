@@ -11,12 +11,13 @@ import {
   computerView,
   formatTime,
   minutesSince,
+  outageNoticeGroups,
   outageNotices,
   pendingRemoval,
   removalStep,
   replicationNotice,
 } from "../../src/pages/view.ts";
-import { NEVER_SIGNED_IN, NOW, pageState } from "../support/page-states.ts";
+import { NEVER_SIGNED_IN, NOW, outageAt, pageState } from "../support/page-states.ts";
 
 const kinds = (state: Partial<ComputerPageState>) =>
   computerView(pageState(state), NOW).notices.map((n) => n.kind);
@@ -109,6 +110,20 @@ describe("statuses", () => {
   ] as const)("%o reads %s", (overrides, status, tone) => {
     const view = computerView(pageState(overrides as Partial<ComputerPageState>), NOW);
     expect([view.status, view.statusTone]).toEqual([status, tone]);
+  });
+
+  it.each([
+    [{}, null],
+    [{ lifecycle: "provisioned", status: "stopped" }, "not_started"],
+    [{ lifecycle: "waking", status: "stopped" }, "starting"],
+    [{ lifecycle: "restoring", status: "stopped" }, "starting"],
+    [{ lifecycle: "failed", status: "stopped" }, "failed"],
+    [{ lifecycle: "asleep", status: "stopped" }, "other"],
+    [{ lifecycle: "stopped", status: "stopped" }, "other"],
+    [{ lifecycle: "host_running", status: "stopping" }, "other"],
+  ] as const)("%o is not running because: %s", (overrides, why) => {
+    const view = computerView(pageState(overrides as Partial<ComputerPageState>), NOW);
+    expect(view.notRunning).toBe(why);
   });
 
   it("names an unnamed computer by its ID", () => {
@@ -451,6 +466,40 @@ describe("the removal flow (design, Signing in, Removal)", () => {
         }),
       ),
     ).toEqual({ ...none, resolvable: true });
+  });
+});
+
+describe("which outages come before the computers (WP8.10)", () => {
+  it("keeps what is under way, recovery mode and the latest day's newest at the top; the rest below, newest first", () => {
+    const old = Array.from({ length: 33 }, (_, i) => outageAt(i + 1, 30 + i * 4, 2));
+    const recent = outageAt(40, 3, 12, "not_answering");
+    const olderRecent = outageAt(41, 10, 2);
+    const ongoing = outageAt(42, 0.5, null, "container_stopped");
+    const recovered = outageAt(43, 20, 30, "recovery_mode");
+    const groups = outageNoticeGroups([...old, recent, olderRecent, ongoing, recovered], NOW);
+    expect(groups.current.map((n) => n.text)).toEqual([
+      expect.stringMatching(/^Omnigent has been unavailable since 08:50 UTC/),
+      expect.stringMatching(/^Omnigent was unavailable from 06:20 UTC to 06:32 UTC/),
+      expect.stringMatching(/^Omnigent was in recovery mode from /),
+    ]);
+    expect(groups.earlier).toHaveLength(34);
+    // Newest first: the other outage of the last day, then the old ones by age.
+    expect(groups.earlier[0]?.text).toMatch(
+      /^Omnigent restarted to apply a configuration change\. It was unavailable from 21 Oct 23:20 UTC/,
+    );
+    const ends = [olderRecent, ...old].map((r) => r.endedAt);
+    expect(ends).toEqual([...ends].sort().reverse());
+    // The wording is outageNotices' own.
+    expect(groups.earlier.map((n) => n.text)).toEqual(
+      outageNotices([olderRecent, ...old], NOW).map((n) => n.text),
+    );
+  });
+
+  it("keeps nothing at the top when the newest outage ended more than a day ago", () => {
+    const groups = outageNoticeGroups([outageAt(1, 30, 5), outageAt(2, 50, 5)], NOW);
+    expect(groups.current).toEqual([]);
+    expect(groups.earlier).toHaveLength(2);
+    expect(outageNoticeGroups([], NOW)).toEqual({ current: [], earlier: [] });
   });
 });
 

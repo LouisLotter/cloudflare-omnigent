@@ -19,15 +19,17 @@ EDITABLE_KEYS = (
 )
 
 
-def test_sharing_settings_are_reported_managed_and_restrictive(app_harness: AppHarness) -> None:
+def test_sharing_settings_are_reported_managed_and_never_public(app_harness: AppHarness) -> None:
     response = app_harness.client.get("/v1/sharing", headers=app_harness.bearer())
     assert response.status_code == 200, response.text
     body = response.json()
     editable = {k: v for k, v in body.items() if k == "editable" or k.endswith("_editable")}
     assert set(editable) == set(EDITABLE_KEYS)
     assert not any(editable.values())
-    assert body["sharing_mode"] == "off"
+    assert body["sharing_mode"] == "on"
     assert body["public_sharing_enabled"] is False
+    # A public grant stored before gives nobody access while public sharing is off.
+    assert app_harness.app.state.public_grants_honoured() is False
     assert body["public_sharing_max_level"] == "read"
     assert body["default_public_sessions"] == "off"
 
@@ -37,7 +39,7 @@ def test_sharing_settings_are_reported_managed_and_restrictive(app_harness: AppH
     [
         {"public_sharing": True},
         {"public_sharing": "yes"},
-        {"sharing_mode": "on"},
+        {"sharing_mode": "off"},
         {"sharing_mode": " ON "},
         {"default_public_sessions": "all"},
         {"public_sharing_max_level": "edit"},
@@ -61,7 +63,7 @@ def test_sharing_writes_are_refused_by_omnigent_itself(
 
 def test_info_reports_pinned_features_and_sharing(app_harness: AppHarness) -> None:
     info = app_harness.client.get("/v1/info").json()
-    assert info["sharing_mode"] == "off"
+    assert info["sharing_mode"] == "on"
     assert info["public_sharing_enabled"] is False
     assert not any(info.get("features", {}).values())
     assert info["features"].get("harness_install") is False
@@ -123,6 +125,10 @@ def test_launcher_is_registered_through_sandbox_config_with_the_reaper(
     assert config.host_config == {"runner": {"idle_timeout_s": 600}}
     assert config.persistent is not None
     assert config.persistent.manage_url == "http://testserver/platform/computers/{sandbox_id}"
+    # Administrators find other people's computers on the platform's computers page.
+    assert config.persistent.overview_url == "/platform/computers"
+    info = app_harness.client.get("/v1/info").json()
+    assert info["persistent_host_overview_urls"] == {PROVIDER: "/platform/computers"}
     assert isinstance(config.launcher_factory(), CloudflareLauncher)
     # Persistent-only: never offered for one-conversation launches.
     assert deployment.launchable_providers() == ()

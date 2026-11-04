@@ -38,6 +38,16 @@ The default server pin predates the no-redelivery correction. The separate serve
 
 A saved session's 201 response is distinct from `runner_launch: started|failed|unknown`. An interrupted/unknown tool outcome must stay visible until a matching result or the person's action resolves it. A replacement runner must not automatically replay uncertain external work. Preserve unreconciled transcript files; do not erase them or start a fresh transcript to make a history-outage error disappear. Current fork source includes refusal/preservation changes, with remaining real-replacement and missing-ID/bridge cases to qualify.
 
+## A server that refuses a setting
+
+The server image checks every setting before anything starts. A missing or malformed one, or one that asks for something the image pins (public sharing, for example), stops the server with exit 78, and the watchdog keeps it stopped until the configuration changes: Omnigent is down meanwhile. A sharing setting the image refuses is the one exception to "before anything starts": inside an update's window the server first takes the update's restore point, or carries out a rollback order, and refuses after that, so the way back stays open.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| `bootstrap.ts run` says "the server refused one of its settings and stays stopped until that setting changes" | The server exited 78, and none has answered since. | The server's `cfo.config.error` line in the platform Worker's Workers Logs names the setting and the rule, never its value; `bootstrap.ts status --logs` says whether the hold is current. Change or remove that setting (a `SERVER_ENV_<NAME>` secret: `wrangler secret delete SERVER_ENV_<NAME>`, or the value the message names), then run the same command again. |
+| `bootstrap.ts update` stops with "the new server refused one of its settings and stays stopped" (exit 1) | The update's server took its restore point, or refused before it could, and exited 78; Omnigent stays paused in the update's window. | Go back with `bootstrap.ts update --rollback`: the new server carries out the order whatever its sharing settings, and puts the restore point back (with none taken, the replica was never changed). Then change the setting and update again. Or change the setting first, and run `update` again to check. |
+| `bootstrap.ts status --logs` says "the server is held now" | The newest hold line (`config_error` when it began, then `config_held` every minute while it lasts) has nothing after it that ends it. `run`, `update` and `status` read a hold the same way. | As above. "No current hold" means the server has answered, or the watchdog started another configuration (`config_changed`), since the last hold line; a new refusal after that is the current hold at once. |
+
 ## GitHub setup
 
 `bootstrap.ts github-app` stores the installation's GitHub App and then waits until a server started with its settings reports GitHub linking on, before it sends the browser to GitHub's install page. GitHub's "Install" returns to `https://<hostname>/platform/github`, which opens Omnigent's Integrations settings once linking is on.
