@@ -501,7 +501,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await stopped.text();
     expect(stopped.headers.get("location")).toBe(
-      "/platform/computers?done=stop-without-saving&outcome=accepted",
+      "/platform/computers?done=stop-without-saving&outcome=accepted&as=admin",
     );
     for (
       let i = 0;
@@ -587,7 +587,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await signOut.text();
     expect(signOut.headers.get("location")).toBe(
-      "/platform/computers?done=sign-out&outcome=accepted",
+      "/platform/computers?done=sign-out&outcome=accepted&as=admin",
     );
     for (let i = 0; i < 60; i++) {
       const r = await record(c.stub);
@@ -622,7 +622,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await deleted.text();
     expect(deleted.headers.get("location")).toBe(
-      "/platform/computers?done=delete-without-sign-out&outcome=accepted",
+      "/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin",
     );
     const credentialKey = tried.credential?.object.key ?? "";
     expect(credentialKey).not.toBe("");
