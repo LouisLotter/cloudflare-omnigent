@@ -30,6 +30,7 @@ import {
   type SoakStatus,
 } from "../staging/wp318/commands.ts";
 import { instanceCounts, instanceStarts, type Planned } from "../staging/wp318/instances.ts";
+import { DEFAULT_LIMITS } from "../../src/control/limits.ts";
 import { LIMIT_VAR, limitHolds, limitSetting, withLimit } from "../staging/wp318/limit.ts";
 import type { LogLine } from "../staging/wp318/plan.ts";
 import { scanLines, TOKEN_SHAPES, tokenHits, valuesFrom } from "../staging/wp318/scan.ts";
@@ -1176,7 +1177,9 @@ describe("run.sh limit", () => {
     expect(limitHolds(answer(1), "1")).toBe(true);
     expect(limitHolds(answer(2), "1")).toBe(false);
     expect(limitHolds(answer("1"), "1")).toBe(false);
-    expect(limitHolds(answer(2), "default")).toBe(true);
+    // Unset: no cap (D61), so ControlDO answers with every computer the installation records.
+    expect(limitHolds(answer(DEFAULT_LIMITS.maxAwakeComputers), "default")).toBe(true);
+    expect(limitHolds(answer(2), "default")).toBe(false);
     expect(limitHolds(answer(1, "failed"), "1")).toBe(false);
     expect(limitHolds(answer(1, "ok", "server-reset"), "1")).toBe(false);
     expect(limitHolds(null, "1")).toBe(false);
@@ -1265,7 +1268,7 @@ describe("run.sh's G3 verbs without an account", () => {
     expect(one.status).toBe(0);
     expect(one.stdout).toContain('{"CFO_MAX_AWAKE_COMPUTERS":"1"}');
     expect(one.stdout).toContain("dry run: nothing kept or deployed");
-    expect(run("limit", "default", "--dry-run").stdout).toContain("(unset: the default, 2)");
+    expect(run("limit", "default", "--dry-run").stdout).toContain("(unset: no cap, D61)");
     const bad = run("limit", "2000", "--dry-run");
     expect(bad.status).toBe(2);
     expect(bad.stderr).toContain("CFO_MAX_AWAKE_COMPUTERS must be a whole number");

@@ -36,11 +36,18 @@ export interface Limits {
   readonly maxInstanceSize: InstanceSize;
 }
 
-/** Used when the installation sets nothing: two awake computers, any size. */
-export const DEFAULT_LIMITS: Limits = { maxAwakeComputers: 2, maxInstanceSize: "standard-4" };
-
 /** The most computers an installation records: `list_computers` answers at most this many. */
 export const MAX_COMPUTERS = 1000;
+
+/**
+ * Used when the installation sets nothing: no cap on awake computers (owner decision D61: every
+ * computer the installation records may be awake at once; their idle sleep keeps the cost down),
+ * any size up to `standard-4`. `CFO_MAX_AWAKE_COMPUTERS` still sets a cap where one is wanted.
+ */
+export const DEFAULT_LIMITS: Limits = {
+  maxAwakeComputers: MAX_COMPUTERS,
+  maxInstanceSize: "standard-4",
+};
 
 /** The floor of a computer that has asked for nothing: every generation is still open. */
 export const NO_FLOOR = -1;

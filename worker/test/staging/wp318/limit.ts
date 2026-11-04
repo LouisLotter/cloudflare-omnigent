@@ -57,7 +57,7 @@ function main(argv: readonly string[]): number {
   if (verb === "check" && value !== undefined) {
     try {
       const limit = limitSetting(value);
-      console.log(JSON.stringify({ [LIMIT_VAR]: limit ?? "(unset: the default, 2)" }));
+      console.log(JSON.stringify({ [LIMIT_VAR]: limit ?? "(unset: no cap, D61)" }));
       return 0;
     } catch (error) {
       console.error(`run.sh: ${(error as Error).message}`);
