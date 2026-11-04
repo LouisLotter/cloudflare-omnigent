@@ -1023,42 +1023,30 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     expect(controller.calls).toEqual([]);
   });
 
-  it("lets an administrator remove only an awake computer Omnigent no longer calls; its owner asleep too", async () => {
-    const remove = (owner: object, intent: string, n: number) =>
-      front.pages({
-        action: "remove",
-        interfaceVersion: 1,
-        operationId: OP(n),
-        owner,
-        intent,
-      });
-    // Asleep for an hour: no lost host, so not for Carol; still for Alice, its owner.
-    const { front, controller } = alicesComputer({
-      noContact: true,
-      lifecycle: "asleep",
-      status: "stopped",
-    });
-    expect(await remove(CAROL, (await tokenFor(front, CAROL)) as string, 60)).toEqual({
-      action: "remove",
-      outcome: "refused",
-      reason: "not_offered",
-    });
-    expect(controller.launches).toEqual([]);
-    expect(await remove(ALICE, (await tokenFor(front, ALICE)) as string, 61)).toEqual({
-      action: "remove",
-      outcome: "accepted",
-    });
-    // Awake and not called for an hour: a lost host, which Carol may remove.
-    const awake = alicesComputer({ noContact: true, lifecycle: "host_running" });
-    expect(
-      await awake.front.pages({
-        action: "remove",
-        interfaceVersion: 1,
-        operationId: OP(62),
-        owner: CAROL,
-        intent: (await tokenFor(awake.front, CAROL)) as string,
-      }),
-    ).toEqual({ action: "remove", outcome: "accepted" });
+  it("removes only a lost host, awake and not called for an hour, for its owner and an admin alike", async () => {
+    const remove = (front: PageFront, owner: object, intent: string, n: number) =>
+      front.pages({ action: "remove", interfaceVersion: 1, operationId: OP(n), owner, intent });
+    // Asleep for an hour, as WorkspaceDO reports it: never without contact, so for nobody.
+    const asleep = alicesComputer({ noContact: false, lifecycle: "asleep", status: "stopped" });
+    for (const [who, n] of [
+      [CAROL, 60],
+      [ALICE, 61],
+    ] as const) {
+      expect(
+        await remove(asleep.front, who, (await tokenFor(asleep.front, who)) as string, n),
+      ).toEqual({ action: "remove", outcome: "refused", reason: "not_offered" });
+    }
+    expect(asleep.controller.launches).toEqual([]);
+    // Awake and not called for an hour: a lost host, which either may remove.
+    for (const [who, n] of [
+      [CAROL, 62],
+      [ALICE, 63],
+    ] as const) {
+      const awake = alicesComputer({ noContact: true, lifecycle: "host_running" });
+      expect(
+        await remove(awake.front, who, (await tokenFor(awake.front, who)) as string, n),
+      ).toEqual({ action: "remove", outcome: "accepted" });
+    }
   });
 
   it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {

@@ -2219,8 +2219,9 @@ describe("the person behind a page (WP8.4)", () => {
       [true, "none", "host_running"],
       [false, "none", "host_running"],
       [true, "pending", "host_running"],
-      [true, "none", "asleep"],
-      [true, "none", "stopped"],
+      // Asleep or stopped, as WorkspaceDO reports them: never without contact.
+      [false, "none", "asleep"],
+      [false, "none", "stopped"],
     ] as const) {
       const state = pageState({
         computerId: OTHER,
@@ -2231,7 +2232,7 @@ describe("the person behind a page (WP8.4)", () => {
       });
       const t = adminFleet();
       t.backend.states.set(OTHER, { action: "state", computer: state, intentToken: INTENT });
-      const offered = removeOffered(removalFactsOf(state), "admin");
+      const offered = removeOffered(removalFactsOf(state));
       const list = await (await t.route("/platform/computers")).text();
       expect(list.includes(`/platform/computers/${OTHER}/do/remove`), lifecycle).toBe(offered);
       const confirm = await t.route(`/platform/computers/${OTHER}/do/remove`);
@@ -2248,7 +2249,7 @@ describe("the person behind a page (WP8.4)", () => {
         hostName: "Alice's computer",
         access: "admin",
         ownerName: "alice",
-        noContact: true,
+        noContact: false,
         lifecycle: "asleep",
         status: "stopped",
       }),
@@ -2268,22 +2269,39 @@ describe("the person behind a page (WP8.4)", () => {
     expect(await posted.text()).toContain("nothing was done");
   });
 
-  it("keeps the owner's own removal of their asleep computer as it was", async () => {
+  it("shows the owner of an asleep computer no 'not connected', notice or Remove", async () => {
     const { route, backend } = setup(async () => MEMBER);
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({
         access: "owner",
-        noContact: true,
+        noContact: false,
         lifecycle: "asleep",
         status: "stopped",
       }),
       intentToken: INTENT,
     });
-    const list = await (await route("/platform/computers")).text();
-    expect(list).toContain(`href="${page}/do/remove"`);
-    expect(list).toContain("Not connected to Omnigent");
-    expect(await (await route(page)).text()).toContain(`href="${page}/do/remove"`);
+    for (const path of ["/platform/computers", page]) {
+      const html = await (await route(path)).text();
+      expect(html, path).not.toContain("Not connected to Omnigent");
+      expect(html, path).not.toContain('data-notice="not_connected"');
+      expect(html, path).not.toContain(`${page}/do/remove`);
+      expect(html, path).toContain("Asleep");
+    }
+    expect((await route(`${page}/do/remove`)).status).toBe(409);
+  });
+
+  it("shows the owner of an awake lost host its notice, the restart and Remove", async () => {
+    const { route, backend } = setup(async () => MEMBER);
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({ access: "owner", noContact: true, lifecycle: "host_running" }),
+      intentToken: INTENT,
+    });
+    const html = await (await route(page)).text();
+    expect(html).toContain("Omnigent has not called this computer since");
+    expect(html).toContain(`href="${page}/do/restart"`);
+    expect(html).toContain(`href="${page}/do/remove"`);
     expect((await route(`${page}/do/remove`)).status).toBe(200);
   });
 

@@ -385,8 +385,7 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     size,
     notConnected,
     offerRestart: notConnected && running,
-    // An older WorkspaceDO names no access: the computer is the caller's own.
-    offerRemove: removeOffered(removalFactsOf(state), state.access ?? "owner"),
+    offerRemove: removeOffered(removalFactsOf(state)),
     offerStopWithoutSaving,
     removal: removalStep(state),
     pending: pendingRemoval(state),

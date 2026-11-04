@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { holdsLogin } from "../../src/computer/checkpoints.ts";
 import { removalFactsOf, removeOffered } from "../../src/computer/ownership.ts";
 import { type ComputerRecord, RECORD_KEY, SIGN_OUT_FAILED_KEY } from "../../src/computer/record.ts";
+import { computerView } from "../../src/pages/view.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
 const pageCall = (
@@ -276,31 +277,49 @@ describe("after Omnigent's database loses writes (FH-29)", () => {
     expect(sim.sup?.token).toBe(sim.tokens.at(-1));
   });
 
-  it("counts 60 minutes without a call, asleep too, but offers an admin the removal only awake", async () => {
+  it("never counts an asleep computer as not connected: no status, notice, restart or removal", async () => {
     const sim = new ComputerSim();
     await sim.running();
     live(sim).runnerProcesses = 0;
     await sim.call(sim.client.suspendRequest());
     await sim.advance(30_000);
-    expect((await state(sim)).noContact).toBe(false);
     await sim.advance(61 * 60_000);
     const asleep = await state(sim);
-    expect(asleep).toMatchObject({ lifecycle: "asleep", noContact: true });
-    // An hour asleep is no lost host: its owner may remove it, an administrator may not.
-    expect(removeOffered(removalFactsOf(asleep), "owner")).toBe(true);
-    expect(removeOffered(removalFactsOf(asleep), "admin")).toBe(false);
-    await sim.call(sim.client.statusRequest());
-    expect((await state(sim)).noContact).toBe(false);
+    expect(asleep).toMatchObject({ lifecycle: "asleep", noContact: false });
+    for (const access of ["owner", "admin"] as const) {
+      const view = computerView({ ...asleep, access }, Date.now());
+      expect(view).toMatchObject({
+        status: "Asleep",
+        notConnected: false,
+        offerRestart: false,
+        offerRemove: false,
+      });
+      expect(view.notices.map((n) => n.kind)).not.toContain("not_connected");
+    }
+    expect(removeOffered(removalFactsOf(asleep))).toBe(false);
   });
 
-  it("offers an admin the removal of an awake computer Omnigent no longer calls", async () => {
+  it("counts an awake computer Omnigent no longer calls as a lost host: notice, restart, removal", async () => {
     const sim = new ComputerSim();
     await sim.running();
     await sim.advance(61 * 60_000);
     const lost = await state(sim);
     expect(lost).toMatchObject({ lifecycle: "host_running", noContact: true });
-    expect(removeOffered(removalFactsOf(lost), "admin")).toBe(true);
-    expect(removeOffered(removalFactsOf(lost), "owner")).toBe(true);
+    for (const access of ["owner", "admin"] as const) {
+      const view = computerView({ ...lost, access }, Date.now());
+      expect(view).toMatchObject({
+        status: "Not connected to Omnigent",
+        notConnected: true,
+        offerRestart: true,
+        offerRemove: true,
+      });
+      expect(view.notices.find((n) => n.kind === "not_connected")?.text).toContain(
+        "Omnigent has not called this computer since",
+      );
+    }
+    // Any launcher call is contact again.
+    await sim.call(sim.client.statusRequest());
+    expect((await state(sim)).noContact).toBe(false);
   });
 });
 

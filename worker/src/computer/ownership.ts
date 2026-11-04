@@ -310,8 +310,6 @@ export function personKey(person: PagePersonFields): string {
 export interface RemovalFacts {
   /** Omnigent has not called the computer for the no-contact window, and no removal is recorded. */
   readonly noContact: boolean;
-  /** A restored container runs: starting Omnigent's host, running it, or refused by Omnigent. */
-  readonly awake: boolean;
   readonly removal: "none" | "pending" | "resolved";
   readonly lifecycle: string;
   /** The sign-out rule lets the removal resolve. */
@@ -329,7 +327,6 @@ export function removalFactsOf(state: ComputerPageState): RemovalFacts {
   const { removal } = state;
   return {
     noContact: state.noContact === true,
-    awake: AWAKE_LIFECYCLES.has(state.lifecycle),
     removal: removal.state,
     lifecycle: state.lifecycle,
     settled: removal.settled === true,
@@ -341,24 +338,15 @@ export function removalFactsOf(state: ComputerPageState): RemovalFacts {
   };
 }
 
-/** The lifecycle states in which a restored container runs: the computer is awake. */
-export const AWAKE_LIFECYCLES: ReadonlySet<string> = new Set([
-  "started_no_host",
-  "start_claimed",
-  "host_running",
-  "host_refused",
-]);
-
 /**
- * Whether recording a removal from the page is offered to `access`: only while Omnigent no longer
- * calls the computer (FH-29) and no removal is recorded. For someone else's computer the
- * administrator also needs it awake, a lost host: Omnigent calls an asleep computer only to wake
- * it, so an hour asleep is no sign that it is lost. Its owner may remove it asleep too. A removed
- * member's computers do not need this: Omnigent's own removal records theirs.
+ * Whether recording a removal from the page is offered, to the computer's owner and to an
+ * administrator alike: only for a lost host, awake while Omnigent has not called it for an hour
+ * (`noContact`, FH-29, FH-31), with no removal recorded. An asleep computer is never offered: its
+ * owner deletes it in Omnigent, whose `terminate` records the removal, and a removed member's
+ * computers get Omnigent's own removal.
  */
-export function removeOffered(facts: RemovalFacts, access: PageAccess): boolean {
-  if (!facts.noContact || facts.removal !== "none" || facts.lifecycle === "removed") return false;
-  return access === "owner" || (access === "admin" && facts.awake);
+export function removeOffered(facts: RemovalFacts): boolean {
+  return facts.noContact && facts.removal === "none" && facts.lifecycle !== "removed";
 }
 
 /**

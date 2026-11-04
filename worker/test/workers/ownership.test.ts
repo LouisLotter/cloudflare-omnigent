@@ -382,7 +382,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
   }, 60_000);
 
-  it("gives Carol no removal of Alice's computer asleep for an hour, but of an awake lost one", async () => {
+  it("never shows Alice's asleep computer as not connected, and offers only a lost host for removal", async () => {
     const host = newHost();
     const alice: LauncherOwner = {
       userId: "alice",
@@ -398,13 +398,32 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     const page = `/platform/computers/${c.computerId}`;
     expect((await record(c.stub)).lifecycle.context.state).toBe("asleep");
 
-    // Asleep an hour: Carol sees the card, no Remove; the page and the POST answer 409.
-    let list = await (await routeAs("carol", "/platform/computers")).text();
-    expect(list).toContain(`data-fleet-computer="${c.computerId}"`);
-    expect(list).not.toContain(`${page}/do/remove`);
+    // This computer's own card in a list that also holds other tests' computers.
+    const cardOf = (html: string, attribute: string) => {
+      const start = html.indexOf(`${attribute}="${c.computerId}"`);
+      expect(start).toBeGreaterThan(-1);
+      return html.slice(start, html.indexOf("</article>", start));
+    };
+    // Asleep an hour: on Alice's card and setup page no "not connected", notice or Remove.
+    const aliceList = await (await routeAs("alice", "/platform/computers")).text();
+    for (const [where, html] of [
+      ["card", cardOf(aliceList, "data-computer")],
+      ["setup page", await (await routeAs("alice", page)).text()],
+    ] as const) {
+      expect(html, where).not.toContain("Not connected to Omnigent");
+      expect(html, where).not.toContain('data-notice="not_connected"');
+      expect(html, where).not.toContain(`${page}/do/remove`);
+      expect(html, where).toContain("Asleep");
+    }
+    expect(await statusAs("alice", `${page}/do/remove`)).toBe(409);
+    // Carol sees the card, no Remove; the page and the POST, with her own valid token, answer 409.
+    const fleetCard = cardOf(
+      await (await routeAs("carol", "/platform/computers")).text(),
+      "data-fleet-computer",
+    );
+    expect(fleetCard).not.toContain("Not connected to Omnigent");
+    expect(fleetCard).not.toContain(`${page}/do/remove`);
     expect(await statusAs("carol", `${page}/do/remove`)).toBe(409);
-    // Carol's own valid token, as WorkspaceDO issues it with the page state: the refusal is the
-    // rule's, not a token's.
     const carolState = (await c.stub.pages({
       action: "state",
       interfaceVersion: WORKSPACE_INTERFACE_VERSION,
@@ -419,16 +438,18 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
       ),
     ).toBe(409);
     expect((await record(c.stub)).lifecycle.context.removalIntent).toBe(false);
-    // Alice keeps her own Remove of it.
-    expect(await (await routeAs("alice", "/platform/computers")).text()).toContain(
-      `href="${page}/do/remove"`,
-    );
 
-    // Awake and not called for an hour: a lost host, which Carol may remove.
+    // Awake and not called for an hour, a lost host: the notice, the restart and Remove for
+    // Alice, and Remove for Carol.
     await wake(c, { hostId: host, token: TOKEN });
     assembly.advance(61 * 60_000);
-    list = await (await routeAs("carol", "/platform/computers")).text();
-    expect(list).toContain(`href="${page}/do/remove"`);
+    const setup = await (await routeAs("alice", page)).text();
+    expect(setup).toContain("Omnigent has not called this computer since");
+    expect(setup).toContain(`href="${page}/do/restart"`);
+    expect(setup).toContain(`href="${page}/do/remove"`);
+    expect(await (await routeAs("carol", "/platform/computers")).text()).toContain(
+      `href="${page}/do/remove"`,
+    );
     expect(await statusAs("carol", `${page}/do/remove`)).toBe(200);
   }, 60_000);
 

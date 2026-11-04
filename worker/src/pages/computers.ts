@@ -170,7 +170,7 @@ export const ACTIONS: readonly ActionSpec[] = [
     danger: true,
     offered: (view) => view.offerRemove,
     explain: () =>
-      "<p>Omnigent has not called this computer for over an hour, for example because Omnigent's database was restored to a time before it was added. Removing it stops it after saving its files and logins, refuses any later start, and keeps its saved logins until you finish the removal here. If Omnigent still lists this computer, delete it there too.</p>",
+      "<p>This computer is awake, but Omnigent has not called it for over an hour, for example because Omnigent's database was restored to a time before it was added. Removing it stops it after saving its files and logins, refuses any later start, and keeps its saved logins until you finish the removal here. If Omnigent still lists this computer, delete it there too.</p>",
     call: (base) => ({ action: "remove", interfaceVersion: v, ...base }),
     admin: () => true,
   },

@@ -8,7 +8,7 @@
 // "not saved" retries. A "no contact" notice after 60 minutes without a launcher call tells the
 // person, and the page offers the explicit restart (FH-31).
 
-import { type GuardInput, TIMING } from "@cfo/contracts";
+import { type GuardInput, type LifecycleState, RESTORED_STATES, TIMING } from "@cfo/contracts";
 import { retryDelayMs } from "./checkpoints.ts";
 
 /**
@@ -78,17 +78,21 @@ export function admissionOf(notSaved: NotSaved | null): Admission {
 }
 
 /**
- * The "no contact" notice: no launcher call of any kind for 60 minutes, whether the computer is
- * awake or asleep (FH-31). Omnigent calls an asleep computer only to wake it, so for an asleep one
- * this is no sign that it is lost: an administrator's removal of someone else's computer also
- * needs it awake (`removeOffered`).
+ * The "no contact" notice: no launcher call of any kind for 60 minutes while the computer is awake,
+ * a restored container running (FH-31): a lost host. Omnigent calls an asleep or stopped computer
+ * only to wake it, so such a computer is never "not connected".
  */
 export function noContact(
   lastContactAt: number | null,
   now: number,
+  lifecycle: LifecycleState,
   noContactMs: number = TIMING.noContactS * 1000,
 ): boolean {
-  return lastContactAt !== null && now - lastContactAt >= noContactMs;
+  return (
+    RESTORED_STATES.includes(lifecycle) &&
+    lastContactAt !== null &&
+    now - lastContactAt >= noContactMs
+  );
 }
 
 /** The inactivity timeout WorkspaceDO renews on every heartbeat and in every new instance. */

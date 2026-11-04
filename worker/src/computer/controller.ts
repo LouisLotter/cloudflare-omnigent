@@ -2035,7 +2035,8 @@ export class WorkspaceController {
         signOutFailed: this.#d.store.get(SIGN_OUT_FAILED_KEY) !== undefined,
       },
       // Additive fields (the schema is loose): the page's notices.
-      noContact: !ctx.removalIntent && noContact(r.lastContactAt, now, this.#t.noContactMs),
+      noContact:
+        !ctx.removalIntent && noContact(r.lastContactAt, now, ctx.state, this.#t.noContactMs),
       sizeWarning: workspaceSizeWarning(r.workspaceBytes),
       stopWithoutSavingOffered: r.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
       // Additive (WP3.23).
