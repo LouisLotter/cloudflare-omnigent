@@ -31,6 +31,7 @@ import { routePlatform } from "../../src/pages/router.ts";
 import { workspaceObjectName } from "../../src/shared/rpc.ts";
 import { routeAdmitted } from "../../src/web.ts";
 import {
+  alarm,
   type Computer,
   LAUNCHER_KEY,
   LAUNCHER_KEY_ID,
@@ -349,9 +350,12 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect(list).toContain("Belongs to alice");
     expect(await statusAs("carol", page)).toBe(404);
     expect(await statusAs("carol", `${page}/status`)).toBe(403);
-    expect(await (await routeAs("carol", `${page}/do/set-size`)).text()).toContain(
-      'data-confirm="not-offered"',
-    );
+    // Not offered to an administrator: 409, a page without the form.
+    const setSize = await routeAs("carol", `${page}/do/set-size`);
+    expect(setSize.status).toBe(409);
+    const notOffered = await setSize.text();
+    expect(notOffered).toContain('data-confirm="not-offered"');
+    expect(notOffered).not.toContain("<form");
     // Alice's token is hers: Carol presenting it is refused, and nothing stops.
     const alicesToken = (await intentOn("alice", page)) as string;
     expect(
@@ -377,6 +381,110 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     await settle(c);
     expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
   }, 60_000);
+
+  it("lets Carol finish a removed member's computer without her, and never Bob", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    c.container.sim.sup?.signIn("claude");
+    c.container.sim.sup?.signIn("codex");
+    await settle(c);
+    // Omnigent removes Alice: her account is gone, so its terminate names her without a member.
+    c.client.owner = { ...alice, memberId: null, teamId: null };
+    expect(await c.client.send(c.client.terminateRequest())).toEqual({
+      operation: "terminate",
+      removal: "pending",
+    });
+    await evictDurableObject(c.stub);
+    for (
+      let i = 0;
+      i < 6 && (await record(c.stub)).lifecycle.context.state !== "removal_pending";
+      i++
+    ) {
+      await alarm(c, 30_000);
+    }
+    expect((await record(c.stub)).lifecycle.context.state).toBe("removal_pending");
+    await evictDurableObject(c.stub);
+    const page = `/platform/computers/${c.computerId}`;
+    const unsigned = `${page}/do/delete-without-sign-out`;
+
+    // Never tried: Carol signs out first; deleting without one is not offered yet.
+    let list = await (await routeAs("carol", "/platform/computers")).text();
+    expect(list).toContain(`href="${page}/do/sign-out"`);
+    expect(list).not.toContain(unsigned);
+    expect(await statusAs("carol", unsigned)).toBe(409);
+    // Bob learns nothing at any step.
+    expect(await (await routeAs("bob", "/platform/computers")).text()).not.toContain(c.computerId);
+    expect(await statusAs("bob", unsigned)).toBe(404);
+
+    // Carol's sign-out runs and fails (a CLI's logout leaves its login).
+    c.container.sim.supervisorOptions = { staggeredLogouts: true, failedLogout: "codex" };
+    const signOut = await routeAs(
+      "carol",
+      `${page}/do/sign-out`,
+      post({
+        intent: (await intentOn("carol", `${page}/do/sign-out`)) as string,
+        op: "op_01hzy4a7b8c9d0e1f2g3h4j5m1",
+      }),
+    );
+    await signOut.text();
+    expect(signOut.headers.get("location")).toBe(
+      "/platform/computers?done=sign-out&outcome=accepted",
+    );
+    for (let i = 0; i < 60; i++) {
+      const r = await record(c.stub);
+      if (r.signOut.job === null && r.lifecycle.context.state === "removal_pending" && i > 0) break;
+      await alarm(c, 5_000);
+    }
+    const tried = await record(c.stub);
+    expect(tried.signOut).toMatchObject({ phase: "none", job: null });
+    expect(tried.lifecycle.context.state).toBe("removal_pending");
+
+    // Now offered to Carol, saying the sessions are not revoked; still nothing for Bob.
+    list = await (await routeAs("carol", "/platform/computers")).text();
+    expect(list).toContain(`href="${unsigned}"`);
+    const confirm = await routeAs("carol", unsigned);
+    expect(confirm.status).toBe(200);
+    expect(await confirm.text()).toContain("The provider sessions are not revoked.");
+    expect(await statusAs("bob", unsigned)).toBe(404);
+    expect(
+      await statusAs(
+        "bob",
+        unsigned,
+        post({ intent: "0".repeat(64), op: "op_01hzy4a7b8c9d0e1f2g3h4j5m2" }),
+      ),
+    ).toBe(404);
+    const deleted = await routeAs(
+      "carol",
+      unsigned,
+      post({
+        intent: (await intentOn("carol", unsigned)) as string,
+        op: "op_01hzy4a7b8c9d0e1f2g3h4j5m3",
+      }),
+    );
+    await deleted.text();
+    expect(deleted.headers.get("location")).toBe(
+      "/platform/computers?done=delete-without-sign-out&outcome=accepted",
+    );
+    const credentialKey = tried.credential?.object.key ?? "";
+    expect(credentialKey).not.toBe("");
+    for (let i = 0; i < 20 && (await record(c.stub)).lifecycle.context.state !== "removed"; i++) {
+      await alarm(c, 30_000);
+    }
+    const removed = await record(c.stub);
+    expect(removed.lifecycle.context.state).toBe("removed");
+    expect(removed.credential).toBeNull();
+    expect(await bucket().head(credentialKey)).toBeNull();
+    expect(await (await routeAs("carol", "/platform/computers")).text()).not.toContain(
+      `data-fleet-computer="${c.computerId}"`,
+    );
+  }, 120_000);
 
   it("refuses Bob's and Carol's terminal upgrades before the capability is looked at", async () => {
     const host = newHost();

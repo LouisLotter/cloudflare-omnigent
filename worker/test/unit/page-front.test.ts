@@ -977,6 +977,52 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     ]);
   });
 
+  it("lets an administrator delete a computer being removed without signing out, never its owner", async () => {
+    const pendingRemoval = {
+      state: "pending" as const,
+      signOut: "requested" as const,
+      loginPossiblyLost: false,
+      revocationRecorded: false,
+    };
+    const { front, controller } = alicesComputer({
+      lifecycle: "removal_pending",
+      removal: pendingRemoval,
+    });
+    const call = (owner: object, intent: string) =>
+      front.pages({
+        action: "delete_without_sign_out",
+        interfaceVersion: 1,
+        operationId: OP(50),
+        owner,
+        intent,
+      });
+    // Alice records that she revoked the sessions instead; Bob learns nothing.
+    expect(await codeOf(call(ALICE, (await tokenFor(front, ALICE)) as string))).toBe("forbidden");
+    expect(await codeOf(call(BOB, "0".repeat(64)))).toBe("not_found");
+    expect(controller.calls).toEqual([]);
+    expect(await codeOf(call(CAROL, (await tokenFor(front, CAROL)) as string))).toBeUndefined();
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "delete_without_sign_out",
+    ]);
+  });
+
+  it("refuses an administrator's delete without sign-out while no removal is pending", async () => {
+    const { front, controller } = alicesComputer({ noContact: true });
+    const intent = (await tokenFor(front, CAROL)) as string;
+    expect(
+      await codeOf(
+        front.pages({
+          action: "delete_without_sign_out",
+          interfaceVersion: 1,
+          operationId: OP(51),
+          owner: CAROL,
+          intent,
+        }),
+      ),
+    ).toBe("forbidden");
+    expect(controller.calls).toEqual([]);
+  });
+
   it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {
     const { front, controller } = alicesComputer({ noContact: false });
     const intent = (await tokenFor(front, CAROL)) as string;

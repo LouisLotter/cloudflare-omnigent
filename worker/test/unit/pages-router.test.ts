@@ -4,6 +4,7 @@
 // cloud-computers page's contents; untrusted names rendered as text.
 import type {
   ComputerId,
+  ComputerPageState,
   OutageRecord,
   PageFrontCall,
   PageFrontResult,
@@ -16,14 +17,22 @@ import type {
 } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
 import { INITIAL_LIFECYCLE, transition } from "../../src/computer/machine.ts";
+import {
+  type PageAction,
+  pageAllows,
+  removalFactsOf,
+  removeOffered,
+} from "../../src/computer/ownership.ts";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
+import { ACTIONS, PAGE_ACTION_OF } from "../../src/pages/computers.ts";
 import { PAGES_CSS } from "../../src/pages/html.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
 import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import type { PersonSeam } from "../../src/pages/person.ts";
 import { isPlatformPath, routePlatform } from "../../src/pages/router.ts";
+import { computerView } from "../../src/pages/view.ts";
 import { platformError } from "../../src/shared/errors.ts";
 import { NEVER_SIGNED_IN, NOW, outageAt, PAGE_CMP, pageState } from "../support/page-states.ts";
 
@@ -254,10 +263,18 @@ describe("state changes (P1)", () => {
 
   it("a confirmation page says when its action is not offered now", async () => {
     const { route } = setup();
-    for (const slug of ["stop-without-saving", "remove", "resolve-removal", "record-revocation"]) {
-      expect(await (await route(`${page}/do/${slug}`)).text()).toContain(
-        'data-confirm="not-offered"',
-      );
+    for (const slug of [
+      "stop-without-saving",
+      "remove",
+      "resolve-removal",
+      "record-revocation",
+      "delete-without-sign-out",
+    ]) {
+      const response = await route(`${page}/do/${slug}`);
+      expect(response.status, slug).toBe(409);
+      const html = await response.text();
+      expect(html).toContain('data-confirm="not-offered"');
+      expect(html).not.toContain("<form");
     }
     expect((await route(`/platform/computers/${OTHER}/do/restart`)).status).toBe(404);
   });
@@ -2049,10 +2066,16 @@ describe("the person behind a page (WP8.4)", () => {
     expect(stop).toContain("It starts again when its owner next uses it.");
     expect(stop).not.toContain("Restart");
     expect(await (await route(`${other}/do/remove`)).text()).toContain('data-confirm="remove"');
-    for (const slug of ["set-size", "sign-out", "record-revocation", "stop-without-saving"]) {
-      expect(await (await route(`${other}/do/${slug}`)).text(), slug).toContain(
-        'data-confirm="not-offered"',
-      );
+    for (const slug of [
+      "set-size",
+      "sign-out",
+      "record-revocation",
+      "stop-without-saving",
+      "delete-without-sign-out",
+    ]) {
+      const refused = await route(`${other}/do/${slug}`);
+      expect(refused.status, slug).toBe(409);
+      expect(await refused.text(), slug).toContain('data-confirm="not-offered"');
     }
     const response = await route(`${other}/do/restart`, form({ intent: INTENT, op: OP }));
     expect(response.status).toBe(303);
@@ -2068,6 +2091,149 @@ describe("the person behind a page (WP8.4)", () => {
     expect(await (await route(`${page}/do/restart`)).text()).toContain(
       "<h1>Restart this computer</h1>",
     );
+  });
+
+  /** Alice's computer as an administrator sees it with its removal pending. */
+  function pendingFleet(removal: Partial<ComputerPageState["removal"]>) {
+    const t = adminFleet();
+    t.backend.states.set(OTHER, {
+      action: "state",
+      computer: pageState({
+        computerId: OTHER,
+        hostName: "Alice's computer",
+        access: "admin",
+        ownerName: "alice",
+        lifecycle: "removal_pending",
+        status: "stopped",
+        removal: {
+          state: "pending",
+          signOut: "requested",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          settled: false,
+          signOutRunning: false,
+          ...removal,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    return t;
+  }
+
+  it("offers an administrator a delete without signing out once the sign-out cannot settle", async () => {
+    const { route, backend } = pendingFleet({});
+    const other = `/platform/computers/${OTHER}`;
+    const list = await (await route("/platform/computers")).text();
+    expect(list).toContain(`href="${other}/do/delete-without-sign-out"`);
+    expect(list).toContain(`href="${other}/do/sign-out"`);
+    expect(list).not.toContain(`href="${other}/do/resolve-removal"`);
+    const confirm = await route(`${other}/do/delete-without-sign-out`);
+    expect(confirm.status).toBe(200);
+    const html = await confirm.text();
+    expect(html).toContain('data-confirm="delete-without-sign-out"');
+    expect(html).toContain("was tried and did not finish");
+    expect(html).toContain("The provider sessions are not revoked.");
+    expect(html).toContain("must revoke them at claude.ai and in ChatGPT");
+    const response = await route(
+      `${other}/do/delete-without-sign-out`,
+      form({ intent: INTENT, op: OP }),
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      "/platform/computers?done=delete-without-sign-out&outcome=accepted",
+    );
+    expect(backend.acts.map((a) => [a.id, a.call.action])).toEqual([
+      [OTHER, "delete_without_sign_out"],
+    ]);
+    const after = await (
+      await route("/platform/computers?done=delete-without-sign-out&outcome=accepted")
+    ).text();
+    expect(after).toContain("Its provider sessions were not revoked");
+  });
+
+  it("names a login that may have changed after the last save as the reason", async () => {
+    const { route } = pendingFleet({ signOut: "none", loginPossiblyLost: true });
+    const html = await (
+      await route(`/platform/computers/${OTHER}/do/delete-without-sign-out`)
+    ).text();
+    expect(html).toContain("may have changed after its last save");
+  });
+
+  it("offers no delete without signing out while a sign-out can still settle or runs", async () => {
+    for (const removal of [
+      { signOut: "none" as const },
+      { signOut: "verified" as const, settled: true },
+      { signOut: "requested" as const, signOutRunning: true },
+    ]) {
+      const { route } = pendingFleet(removal);
+      const other = `/platform/computers/${OTHER}`;
+      const list = await (await route("/platform/computers")).text();
+      expect(list, JSON.stringify(removal)).not.toContain("do/delete-without-sign-out");
+      expect((await route(`${other}/do/delete-without-sign-out`)).status).toBe(409);
+    }
+  });
+
+  it("never offers the owner a delete without signing out on their own computer", async () => {
+    const { route, backend } = setup(async () => MEMBER);
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        access: "owner",
+        lifecycle: "removal_pending",
+        status: "stopped",
+        removal: {
+          state: "pending",
+          signOut: "requested",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          settled: false,
+          signOutRunning: false,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    expect((await route(`${page}/do/delete-without-sign-out`)).status).toBe(409);
+    expect(await (await route(page)).text()).not.toContain("delete-without-sign-out");
+    // Theirs is the revocation record.
+    expect((await route(`${page}/do/record-revocation`)).status).toBe(200);
+  });
+
+  it("asks WorkspaceDO's own rule for who may take each action on someone else's computer", () => {
+    for (const removal of ["none", "pending"] as const) {
+      const view = computerView(
+        pageState({ access: "admin", removal: { ...pageState().removal, state: removal } }),
+        NOW,
+      );
+      for (const spec of ACTIONS) {
+        const action = PAGE_ACTION_OF[spec.slug];
+        expect(action, spec.slug).toBeDefined();
+        expect(spec.admin(view), `${spec.slug} ${removal}`).toBe(
+          pageAllows("admin", action as PageAction, removal === "pending"),
+        );
+      }
+    }
+  });
+
+  it("offers recording a removal exactly when WorkspaceDO accepts one", async () => {
+    for (const [noContact, removal] of [
+      [true, "none"],
+      [false, "none"],
+      [true, "pending"],
+    ] as const) {
+      const state = pageState({
+        computerId: OTHER,
+        access: "admin",
+        noContact,
+        removal: { ...pageState().removal, state: removal },
+      });
+      const t = adminFleet();
+      t.backend.states.set(OTHER, { action: "state", computer: state, intentToken: INTENT });
+      const offered = removeOffered(removalFactsOf(state));
+      const list = await (await t.route("/platform/computers")).text();
+      expect(list.includes(`/platform/computers/${OTHER}/do/remove`)).toBe(offered);
+      const confirm = await t.route(`/platform/computers/${OTHER}/do/remove`);
+      expect(confirm.status).toBe(offered ? 200 : 409);
+    }
   });
 
   it("names a computer that could not be read to an administrator only", async () => {

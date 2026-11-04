@@ -12,7 +12,7 @@
 // (`SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`). Before teams, Access admitted only that
 // person, so every computer recorded without an owner is theirs.
 
-import type { LauncherOwner } from "@cfo/contracts";
+import type { ComputerPageState, LauncherOwner } from "@cfo/contracts";
 import { AccountId, HostId, TeamMemberId } from "@cfo/contracts";
 import { z } from "zod";
 
@@ -264,19 +264,24 @@ export type PageAction =
   | "sign_out"
   | "record_revocation"
   | "resolve_removal"
+  /** An administrator's end of a removal whose sign-out cannot settle (WP8.9). */
+  | "delete_without_sign_out"
   | "remove"
   | "staging";
 
 /**
  * Whether `access` allows `action`. An administrator may stop and remove; a sign-out and the
  * removal's end only while a removal is pending (signing a departing person's logins out of a
- * computer being removed protects that person). Everything else is the owner's alone.
+ * computer being removed protects that person). Everything else is the owner's alone, except
+ * deleting without a sign-out, which is the administrator's alone: an owner who cannot sign out
+ * records that they revoked the sessions themselves.
  */
 export function pageAllows(
   access: PageAccess,
   action: PageAction,
   removalPending: boolean,
 ): boolean {
+  if (action === "delete_without_sign_out") return access === "admin" && removalPending;
   if (access === "owner") return true;
   if (access === "none") return false;
   switch (action) {
@@ -295,4 +300,68 @@ export function pageAllows(
 /** The person's key in a request-intent token: who the token was issued to. */
 export function personKey(person: PagePersonFields): string {
   return person.kind === "installation_owner" ? "installation" : `member:${person.memberId}`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// When the pages offer a removal's steps (WP8.9). One rule each, used by the confirmation page,
+// the cards and WorkspaceDO's check of the POST, so what a page offers is what the POST does.
+
+/** The facts of a computer's page state the removal offers depend on. */
+export interface RemovalFacts {
+  /** Omnigent has not called the computer for the no-contact window, and no removal is recorded. */
+  readonly noContact: boolean;
+  readonly removal: "none" | "pending" | "resolved";
+  readonly lifecycle: string;
+  /** The sign-out rule lets the removal resolve. */
+  readonly settled: boolean;
+  readonly signOut: "none" | "requested" | "tombstoned" | "verified";
+  /** A sign-out job runs now. */
+  readonly signOutRunning: boolean;
+  /** A sign-out run ended without a verified sign-out: it was tried and did not finish. */
+  readonly signOutFailed: boolean;
+  /** A login may have changed after the last save, and nobody recorded revoking it. */
+  readonly revocationRequired: boolean;
+}
+
+export function removalFactsOf(state: ComputerPageState): RemovalFacts {
+  const { removal } = state;
+  return {
+    noContact: state.noContact === true,
+    removal: removal.state,
+    lifecycle: state.lifecycle,
+    settled: removal.settled === true,
+    signOut: removal.signOut,
+    // An older controller says only its persisted phase: a requested one may still run.
+    signOutRunning: removal.signOutRunning ?? removal.signOut === "requested",
+    signOutFailed: removal.signOutFailed === true,
+    revocationRequired: removal.loginPossiblyLost && !removal.revocationRecorded,
+  };
+}
+
+/**
+ * Whether recording a removal from the page is offered: only while Omnigent no longer calls the
+ * computer (FH-29) and no removal is recorded. A removed member's computers do not need it:
+ * Omnigent's own removal records theirs.
+ */
+export function removeOffered(facts: RemovalFacts): boolean {
+  return facts.noContact && facts.removal === "none" && facts.lifecycle !== "removed";
+}
+
+/**
+ * Whether a pending removal may end without a settled sign-out: the computer is stopped again, no
+ * sign-out runs, and the sign-out cannot settle, because one was tried and did not finish, or a
+ * login may have changed after the last save, so no sign-out from a saved login reaches it. A
+ * run that did not finish leaves `signOutFailed`, or, from an older WorkspaceDO, its phase at
+ * `requested` or `tombstoned`. Its saved logins are deleted; the provider sessions are not
+ * revoked.
+ */
+export function unsignedDeletionDue(facts: RemovalFacts): boolean {
+  if (facts.removal !== "pending" || facts.lifecycle !== "removal_pending") return false;
+  if (facts.settled || facts.signOutRunning) return false;
+  return (
+    facts.revocationRequired ||
+    facts.signOutFailed ||
+    facts.signOut === "requested" ||
+    facts.signOut === "tombstoned"
+  );
 }

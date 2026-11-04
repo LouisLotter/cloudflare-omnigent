@@ -379,6 +379,17 @@ export const StatusLogRecord = z.strictObject({
 });
 export type StatusLogRecord = z.infer<typeof StatusLogRecord>;
 
+/**
+ * When a sign-out run last ended without a verified sign-out (WP8.9). A failed logout returns the
+ * phase to `none`, so the record alone cannot tell a sign-out that was tried from one never run;
+ * an administrator may delete a removed computer without one only after it was tried. Beside the
+ * record, so the previous Worker, which never reads it, still reads the record; the removal's
+ * wipe deletes it.
+ */
+export const SIGN_OUT_FAILED_KEY = "sign-out-failed";
+export const SignOutFailedRecord = z.strictObject({ at: Millis });
+export type SignOutFailedRecord = z.infer<typeof SignOutFailedRecord>;
+
 export const TokenRecord = z.strictObject({ attempt: Count, token: z.string().min(1).max(512) });
 
 /** An operation's journal entry: the request's fingerprint, and its outcome once settled. */

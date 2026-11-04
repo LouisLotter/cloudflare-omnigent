@@ -360,6 +360,7 @@ describe("the removal flow (design, Signing in, Removal)", () => {
     recordRevocation: false,
     revocationRequired: false,
     resolvable: false,
+    deleteWithoutSignOut: false,
   };
 
   it("follows the controller's settlement: only `settled` makes a removal resolvable (Codex r1-4)", () => {
@@ -409,16 +410,19 @@ describe("the removal flow (design, Signing in, Removal)", () => {
       signingOut: true,
       recordRevocation: true,
     });
-    // A job that ended without a verified sign-out: offer it again.
+    // A job that ended without a verified sign-out: offer it again, and an administrator may
+    // delete it without one (WP8.9).
     expect(pendingRemoval(pendingState({ signOut: "tombstoned", signOutRunning: false }))).toEqual({
       ...none,
       signOut: true,
       recordRevocation: true,
+      deleteWithoutSignOut: true,
     });
     expect(pendingRemoval(pendingState({ signOut: "requested", signOutRunning: false }))).toEqual({
       ...none,
       signOut: true,
       recordRevocation: true,
+      deleteWithoutSignOut: true,
     });
     // Settled, but the computer has not stopped again: not yet resolvable (Codex r2-2).
     expect(
@@ -457,6 +461,21 @@ describe("the removal flow (design, Signing in, Removal)", () => {
       ...none,
       recordRevocation: true,
       revocationRequired: true,
+    });
+    // Stopped again, a lost login can also be deleted without a sign-out by an administrator.
+    expect(
+      pendingRemoval(
+        pageState({
+          lifecycle: "removal_pending",
+          ...removal({ signOut: "none", loginPossiblyLost: true }),
+        }),
+      ),
+    ).toEqual({
+      ...none,
+      signOut: true,
+      recordRevocation: true,
+      revocationRequired: true,
+      deleteWithoutSignOut: true,
     });
     expect(
       pendingRemoval(

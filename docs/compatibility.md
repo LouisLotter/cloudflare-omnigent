@@ -51,6 +51,23 @@ Both images moved from `9be778d79` on `cfo/upgrade-0.20.0` to `922b69c62` on `cf
 
 **The move behind Access.** From this pin on, `bootstrap.ts update --team-admission members` moves an installation ([moving an installation to a team](operations/teams.md)): the update in bind mode with its restore point, the owner's browser sign-in, required mode, then members admission and the Access application's member group. Its stage is kept with each update's previous release, so `update --rollback` puts it back as that release had it. With a pin that lacks WP8.11's fork part the installer refuses the move and changes nothing.
 
+## Removing a team member (4 November 2026)
+
+WP8.9 (owner decisions D50, D54) adds member removal: Omnigent's own part is in the fork, and the platform's in the pages and WorkspaceDO ([ADR 0004](decisions/0004-identity-credential-authority.md), [the team's operations](operations/teams.md)).
+
+- **The fork.** Removing a member is one database transaction with a record of it, in two new tables (`team_member_removals`, `team_member_removal_items`; migration `rm1a2b3c4d5e` after `ti1a2b3c4d5e`, additive, its downgrade dropping only the two tables). The server image passes `OMNIGENT_INSTALLATION_OWNER`, the installer-named owner account, which the team never removes, and the computers list as the persistent host policy's `fleet_url`, which Omnigent links a removal to. Both need the fork's removal: the image's `test` target checks the `fleet_url`, so a pin without it fails there, not at start.
+- **The pages.** `PagesCall` and `PagesResult` gain `delete_without_sign_out`, and the page state's `removal` an optional `signOutFailed`. A page that does not offer its action answers 409 instead of 200.
+- **WorkspaceDO's storage.** The record keeps exactly its earlier shape. When a sign-out run ends without a verified sign-out, a key of its own (`sign-out-failed`) records when; a new run and the removal's wipe delete it.
+
+| Pair during an update | Result |
+|---|---|
+| **Platform Worker downgrade** on storage this one wrote | Works: the previous Worker never reads `sign-out-failed`, and the record has its old shape. Its pages no longer offer deleting without a sign-out |
+| New web Worker, WorkspaceDO before WP8.9 | The page state has no `signOutFailed`: the pages read a run left at `requested` or `tombstoned` instead, and an older WorkspaceDO refuses `delete_without_sign_out` as a malformed call (the page says the computer could not be reached) |
+| Web Worker before WP8.9, new WorkspaceDO | Works: it never sends the new call and ignores the new field |
+| Server image before WP8.9 with this platform | Works as before: Omnigent's account deletion still terminates the deleted account's computers |
+
+These pairs are read from the source; the new call, the field and the key are tested in the Workers runtime and the controller's simulation.
+
 ## Codex sessions get Omnigent's tools from the start (3 November 2026)
 
 Both images moved from `dc4cff998` to `9be778d79` on `cfo/upgrade-0.20.0`, which adds one fork change and nothing else: WP3.52, the order in which a codex-native session starts. The fork's Dockerfile (mirror digest `dca1880e5`), its Docker entrypoint, `pyproject.toml` and `uv.lock` are unchanged. There is no database migration and no interface change.

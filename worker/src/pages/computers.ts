@@ -13,6 +13,7 @@ import {
   type PagesCall,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
+import { type PageAction, pageAllows } from "../computer/ownership.ts";
 import { errorCodeOf } from "../shared/errors.ts";
 import type { PagesBackend, StateResult } from "./backend.ts";
 import {
@@ -43,6 +44,8 @@ export interface ActionSpec {
   /** Whether the computer's state offers it now. */
   readonly offered: (view: ComputerView, state: StateResult["computer"]) => boolean;
   readonly explain: (view: ComputerView, state: StateResult["computer"]) => string;
+  /** What the notice after an accepted POST says, when "Done." is not enough. */
+  readonly acceptedText?: string;
   readonly call: (
     base: { readonly operationId: string; readonly owner: PageOwner; readonly intent: string },
     form: Record<string, string>,
@@ -146,6 +149,21 @@ export const ACTIONS: readonly ActionSpec[] = [
     admin: (view) => view.removal === "pending",
   },
   {
+    slug: "delete-without-sign-out",
+    title: "Delete without signing out",
+    button: "Delete it without signing out",
+    danger: true,
+    offered: (view, state) =>
+      pageAllows(state.access ?? "owner", "delete_without_sign_out", view.removal === "pending") &&
+      (view.pending?.deleteWithoutSignOut ?? false),
+    explain: (view) =>
+      `<p>${view.pending?.revocationRequired ? "A login on this computer may have changed after its last save, so a sign-out from its saved logins cannot reach it." : "The sign-out on this computer was tried and did not finish."} This deletes its saved files and saved logins from the platform now, <strong>without signing them out</strong>. It cannot be undone.</p><p><strong>The provider sessions are not revoked.</strong> They stay valid at Anthropic and OpenAI until they are revoked there: the computer's owner, or the administrator of their Claude or ChatGPT account, must revoke them at claude.ai and in ChatGPT's security settings.</p>`,
+    acceptedText:
+      "Deleted. Its provider sessions were not revoked: the computer's owner or their provider's administrator must revoke them at claude.ai and in ChatGPT's settings.",
+    call: (base) => ({ action: "delete_without_sign_out", interfaceVersion: v, ...base }),
+    admin: (view) => view.removal === "pending",
+  },
+  {
     slug: "remove",
     title: "Remove this computer",
     button: "Remove it",
@@ -161,6 +179,21 @@ export const ACTIONS: readonly ActionSpec[] = [
 export function actionBySlug(slug: string): ActionSpec | undefined {
   return ACTIONS.find((a) => a.slug === slug);
 }
+
+/**
+ * Each action as WorkspaceDO's page front classifies it (`ownership.ts`): an action's `admin`
+ * predicate is the pages' copy of `pageAllows` for it, and the tests keep the two equal.
+ */
+export const PAGE_ACTION_OF: Readonly<Record<string, PageAction>> = {
+  "set-size": "set_size",
+  restart: "restart",
+  "stop-without-saving": "stop_without_saving",
+  "sign-out": "sign_out",
+  "record-revocation": "record_revocation",
+  "resolve-removal": "resolve_removal",
+  "delete-without-sign-out": "delete_without_sign_out",
+  remove: "remove",
+};
 
 const AT_CAPACITY =
   "All computers are busy: the limit of awake computers is reached. Try again later.";
@@ -182,7 +215,10 @@ export function actionPath(id: string, slug: string): string {
 function flash(url: URL): string {
   const done = actionBySlug(url.searchParams.get("done") ?? "");
   const outcome = url.searchParams.get("outcome") ?? "";
-  const text = OUTCOME_TEXT[outcome];
+  const text =
+    outcome === "accepted" && done?.acceptedText !== undefined
+      ? done.acceptedText
+      : OUTCOME_TEXT[outcome];
   if (done === undefined || text === undefined) return "";
   const tone = outcome === "accepted" ? "ok" : "warn";
   // An administrator's action on someone else's computer comes back with `as=admin`.
@@ -254,6 +290,11 @@ function fleetCard(view: ComputerView, ownerName: string | null): string {
   if (view.removal === "pending" && view.pending?.resolvable) {
     links.push(
       `<a class="button danger" href="${actionPath(view.id, "resolve-removal")}" data-admin-action="resolve-removal">Finish the removal</a>`,
+    );
+  }
+  if (view.removal === "pending" && view.pending?.deleteWithoutSignOut) {
+    links.push(
+      `<a class="button danger" href="${actionPath(view.id, "delete-without-sign-out")}" data-admin-action="delete-without-sign-out">Delete without signing out</a>`,
     );
   }
   const owner = ownerName === null ? "the installation's owner" : ownerName;
@@ -512,11 +553,13 @@ export async function confirmPage(
     state.intentToken === undefined ||
     (asAdmin && !spec.admin(view))
   ) {
+    // 409, not 200: a page without the form is never mistaken for a confirmation.
     return htmlResponse(
       layout(
         spec.title,
         `<h1>${escapeHtml(spec.title)}</h1><p data-confirm="not-offered">This is not offered for ${escapeHtml(view.name)} now.</p><div class="actions">${back}</div>`,
       ),
+      409,
     );
   }
   const wording = asAdmin && spec.asAdmin !== undefined ? spec.asAdmin : null;

@@ -18,7 +18,10 @@ import {
   pageAccess,
   pageAllows,
   personKey,
+  type RemovalFacts,
+  removeOffered,
   stampMatches,
+  unsignedDeletionDue,
 } from "../../src/computer/ownership.ts";
 import { OWNERSHIP_KEY, RECORD_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
@@ -831,6 +834,7 @@ describe("pageAccess and pageAllows", () => {
     "sign_out",
     "record_revocation",
     "resolve_removal",
+    "delete_without_sign_out",
     "remove",
     "staging",
   ] as const;
@@ -851,12 +855,13 @@ describe("pageAccess and pageAllows", () => {
           if (access === "none") expect(allowed).toBe(false);
           if (access === "admin") {
             const adminActions = ["fleet", "restart", "remove"];
-            const pendingActions = ["sign_out", "resolve_removal"];
+            const pendingActions = ["sign_out", "resolve_removal", "delete_without_sign_out"];
             expect(allowed).toBe(
               adminActions.includes(action) || (pending && pendingActions.includes(action)),
             );
           }
-          if (access === "owner") expect(allowed).toBe(true);
+          // Deleting without a sign-out is the administrator's: an owner records a revocation.
+          if (access === "owner") expect(allowed).toBe(action !== "delete_without_sign_out");
         },
       ),
     );
@@ -892,5 +897,73 @@ describe("pageAccess and pageAllows", () => {
   it("keys an intent token to the person", () => {
     expect(personKey({ kind: "installation_owner" })).toBe("installation");
     expect(personKey(member(ALICE_MEMBER, "alice", "member"))).toBe(`member:${ALICE_MEMBER}`);
+  });
+});
+
+describe("the removal offers (WP8.9): one rule for the page, its cards and WorkspaceDO", () => {
+  const facts: fc.Arbitrary<RemovalFacts> = fc.record({
+    noContact: fc.boolean(),
+    removal: fc.constantFrom("none" as const, "pending" as const, "resolved" as const),
+    lifecycle: fc.constantFrom("host_running", "asleep", "removal_pending", "removed", "stopping"),
+    settled: fc.boolean(),
+    signOut: fc.constantFrom(
+      "none" as const,
+      "requested" as const,
+      "tombstoned" as const,
+      "verified" as const,
+    ),
+    signOutRunning: fc.boolean(),
+    signOutFailed: fc.boolean(),
+    revocationRequired: fc.boolean(),
+  });
+
+  it("offers recording a removal only while Omnigent no longer calls and none is recorded", () => {
+    fc.assert(
+      fc.property(facts, (f) => {
+        expect(removeOffered(f)).toBe(
+          f.noContact && f.removal === "none" && f.lifecycle !== "removed",
+        );
+        // Never both: a computer with a removal recorded goes on through the removal's steps.
+        if (removeOffered(f)) expect(unsignedDeletionDue(f)).toBe(false);
+      }),
+    );
+  });
+
+  it("lets a removal end unsigned only when the sign-out cannot settle, never instead of one", () => {
+    fc.assert(
+      fc.property(facts, (f) => {
+        const due = unsignedDeletionDue(f);
+        if (due) {
+          expect(f.removal).toBe("pending");
+          expect(f.lifecycle).toBe("removal_pending");
+          expect(f.settled || f.signOutRunning).toBe(false);
+          expect(
+            f.revocationRequired ||
+              f.signOutFailed ||
+              f.signOut === "requested" ||
+              f.signOut === "tombstoned",
+          ).toBe(true);
+        }
+        // A sign-out that settled, never tried, or still runs: the ordinary steps.
+        if (f.settled || f.signOutRunning) expect(due).toBe(false);
+        const tried = f.signOutFailed || f.signOut === "requested" || f.signOut === "tombstoned";
+        if (!tried && !f.revocationRequired) expect(due).toBe(false);
+      }),
+    );
+    const base: RemovalFacts = {
+      noContact: false,
+      removal: "pending",
+      lifecycle: "removal_pending",
+      settled: false,
+      signOut: "requested",
+      signOutRunning: false,
+      signOutFailed: false,
+      revocationRequired: false,
+    };
+    expect(unsignedDeletionDue(base)).toBe(true);
+    expect(unsignedDeletionDue({ ...base, signOut: "none", revocationRequired: true })).toBe(true);
+    // A failed logout leaves the phase at none: the marker says it was tried.
+    expect(unsignedDeletionDue({ ...base, signOut: "none", signOutFailed: true })).toBe(true);
+    expect(unsignedDeletionDue({ ...base, signOut: "none" })).toBe(false);
   });
 });

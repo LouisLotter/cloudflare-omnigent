@@ -19,6 +19,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,7 +29,7 @@ from cfo_server import app as image_app
 from cfo_server import config as image_config
 from cfo_server import owner_password as op
 
-from conftest import COOKIE_SECRET
+from conftest import COOKIE_SECRET, DOCKER_ENTRYPOINT, requires_omnigent
 
 BASE = {
     "OMNIGENT_ACCOUNTS_BASE_URL": "https://omnigent.example.test",
@@ -278,6 +279,40 @@ def test_page_person_answers_the_bound_member_and_none_for_anyone_else() -> None
         },
     )
     body = _body("bob-sub")
+    assert _call(middleware, body, _signed(body)) == (200, {"action": "none"})
+
+
+@requires_omnigent
+def test_page_person_gets_no_member_for_a_removed_members_still_valid_sign_in(
+    tmp_path: Path,
+) -> None:
+    """A removed member's Access sign-in is bound to nobody, so it gets no page (WP8.9)."""
+    from omnigent.server.accounts_store import SqlAlchemyAccountStore
+    from omnigent.stores.team_store import SqlAlchemyTeamStore
+
+    url = f"sqlite:///{tmp_path / 'omnigent.db'}"
+    image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT).run_migrations(url)
+    accounts, teams = SqlAlchemyAccountStore(url), SqlAlchemyTeamStore(url)
+    accounts.create_user_with_password("owner", "hash", is_admin=True, team_owner=True)
+    accounts.create_user_with_password("alice", "hash")
+    owner = teams.get_member_for_account("owner")
+    assert owner is not None
+    alice = teams.add_member("alice", role="member", state="active")
+    teams.bind_external_identity(
+        alice.id,
+        issuer="https://team.example",
+        subject="alice-sub",
+        audience="aud",
+        provenance="invitation",
+        email="alice@example.test",
+    )
+    middleware = _middleware(teams)
+    body = _body("alice-sub")
+    assert _call(middleware, body, _signed(body))[1]["memberId"] == alice.id
+
+    accounts.remove_member(alice.id, actor_member_id=owner.id)
+
+    body = _body("alice-sub")
     assert _call(middleware, body, _signed(body)) == (200, {"action": "none"})
 
 

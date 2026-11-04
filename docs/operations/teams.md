@@ -166,7 +166,22 @@ step below.
 1. A: Settings, Members, B, Suspend. B's next page is refused, B's open pages close, and B's
    cloud computer can no longer be used. The group count goes back to 1.
 2. A: Reinstate B. B signs in again in the browser; B's sessions from before stay ended.
-3. A: remove the test member (Settings, Members, Remove), or leave B suspended.
+
+**Removal** (remove the test member)
+
+1. B: start a thread on B's cloud computer, and keep it open.
+2. A: Settings, Members, B, Remove, then confirm. B's open page closes, B's next page is refused,
+   and signing in again says the sign-in is not linked to a member of this team. The group count
+   goes back to 1. Invitations B sent to other people stay pending; revoke them if they should not.
+3. A: the Members page lists B under Removed: access blocked, the installation's sign-in no
+   longer lets them in, cloud computers handed over 1 of 1, no laptop registrations to revoke,
+   and B's threads, which open for A. A step that is not done yet says so and offers Retry now.
+4. A: `/platform/computers` shows B's computer as a fleet card that stops, then offers Sign out of
+   Claude and Codex. Sign it out, then Finish the removal: its saved files and logins are deleted
+   and the card goes. If the sign-out does not finish, the card offers Delete without signing out
+   instead; it says that B's provider sessions are not revoked, so B (or the provider account's
+   administrator) revokes them at claude.ai and in ChatGPT's settings.
+5. B: `/platform/computers` is refused.
 
 Only then invite the first real member, the same way as step 1 of the invitation. Give them the
 [user manual](../manual/README.md): [joining](../manual/joining.md) walks them through the link,

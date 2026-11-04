@@ -245,6 +245,30 @@
         "operationId"
       ],
       "type": "object"
+    },
+    {
+      "additionalProperties": {},
+      "properties": {
+        "action": {
+          "const": "delete_without_sign_out",
+          "type": "string"
+        },
+        "interfaceVersion": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "pattern": "^op_[0-9a-hjkmnp-tv-z]{26}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "interfaceVersion",
+        "operationId"
+      ],
+      "type": "object"
     }
   ],
   "title": "PagesCall"

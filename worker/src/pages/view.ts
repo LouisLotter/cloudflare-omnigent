@@ -10,6 +10,7 @@ import {
   type SetupCard,
   type SetupProvider,
 } from "@cfo/contracts";
+import { removalFactsOf, removeOffered, unsignedDeletionDue } from "../computer/ownership.ts";
 
 /** The workspace size budget: the page warns above it (design, Size and number). */
 export const SIZE_WARNING_BYTES = 1.5e9;
@@ -75,6 +76,11 @@ export interface PendingRemoval {
   readonly revocationRequired: boolean;
   /** The controller would resolve it now (`removal.settled`). */
   readonly resolvable: boolean;
+  /**
+   * The sign-out cannot settle (it was tried and did not finish, or a login may have changed after
+   * the last save): an administrator may delete it without signing out (WP8.9).
+   */
+  readonly deleteWithoutSignOut: boolean;
 }
 
 export interface ComputerView {
@@ -266,6 +272,7 @@ export function pendingRemoval(state: ComputerPageState): PendingRemoval | null 
     revocationRequired: state.removal.loginPossiblyLost && !state.removal.revocationRecorded,
     // `resolve_removal` also needs the computer stopped again in `removal_pending` (Codex r2-2).
     resolvable: settled && !active && state.lifecycle === "removal_pending",
+    deleteWithoutSignOut: unsignedDeletionDue(removalFactsOf(state)),
   };
 }
 
@@ -378,7 +385,7 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     size,
     notConnected,
     offerRestart: notConnected && running,
-    offerRemove: noContact,
+    offerRemove: removeOffered(removalFactsOf(state)),
     offerStopWithoutSaving,
     removal: removalStep(state),
     pending: pendingRemoval(state),

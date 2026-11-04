@@ -42,7 +42,9 @@ gets ``OMNIGENT_EXTERNAL_IDENTITY_KEY`` derived here from the cookie secret, the
 Worker signs each forwarded request's identity envelope with (``identity-envelope.ts``); a key
 from the environment is never used. ``CFO_ACCESS_ADMISSION`` turns on the adapter that tells the
 platform who Access should admit (:mod:`cfo_server.admission`); it needs a mode other than
-``off``. Both are inert with an Omnigent build without the team model.
+``off``. Both are inert with an Omnigent build without the team model. The app also gets
+``OMNIGENT_INSTALLATION_OWNER``, the installer-named owner account, which the team never removes
+(WP8.9); a value from the environment is replaced.
 
 **Omnigent's MCP registry** (WP5.10, WP8.14) is on whenever the key service is on, for the
 services administrators add on Omnigent's own page, and when the installation turns on one of the
@@ -868,6 +870,8 @@ def load(
     )
 
 
+#: The account the team never removes (``omnigent.server.member_removal``).
+INSTALLATION_OWNER_ENV = "OMNIGENT_INSTALLATION_OWNER"
 #: Omnigent's external-identity settings (``omnigent.server.external_identity``).
 EXTERNAL_IDENTITY_MODE_ENV = "OMNIGENT_EXTERNAL_IDENTITY_MODE"
 EXTERNAL_IDENTITY_KEY_ENV = "OMNIGENT_EXTERNAL_IDENTITY_KEY"
@@ -962,6 +966,13 @@ def app_environment(config: ServerImageConfig, env: Mapping[str, str]) -> dict[s
     cookie_secret = _get(env, "OMNIGENT_ACCOUNTS_COOKIE_SECRET")
     if config.external_identity_mode != "off" and cookie_secret is not None:
         out[EXTERNAL_IDENTITY_KEY_ENV] = envelope_key(cookie_secret)
+    # The installation's owner, whose own pages the platform keeps, is never removed by the team
+    # (WP8.9): the account the installer named, never a value from elsewhere.
+    owner = _get(env, "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME")
+    if owner is not None:
+        out[INSTALLATION_OWNER_ENV] = owner
+    else:
+        out.pop(INSTALLATION_OWNER_ENV, None)
     out["OMNIGENT_WS_ALLOWED_ORIGINS"] = ",".join(config.ws_allowed_origins)
     # Omnigent reads these only when create_app gets no static value; the app passes static
     # values, so they are set for consistency with GET /v1/info, never as the authority.

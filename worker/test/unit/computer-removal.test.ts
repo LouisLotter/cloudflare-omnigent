@@ -2,12 +2,12 @@
 // removal's deletions, and reconciliation after Omnigent's database loses writes (FH-29).
 import { describe, expect, it } from "vitest";
 import { holdsLogin } from "../../src/computer/checkpoints.ts";
-import { type ComputerRecord, RECORD_KEY } from "../../src/computer/record.ts";
+import { type ComputerRecord, RECORD_KEY, SIGN_OUT_FAILED_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
 
 const pageCall = (
   sim: ComputerSim,
-  action: "sign_out" | "resolve_removal" | "record_revocation",
+  action: "sign_out" | "resolve_removal" | "record_revocation" | "delete_without_sign_out",
   n: number,
 ) =>
   sim.controller.pages({
@@ -393,4 +393,101 @@ describe("a sign-out run's phase (WP3.27, the 28 Oct sitting's B3)", () => {
       });
     }
   }
+});
+
+describe("deleting a removed computer without a sign-out (WP8.9)", () => {
+  /** A removal whose computer stopped again, with both logins saved. */
+  async function removing(sim: ComputerSim): Promise<void> {
+    await signedIn(sim);
+    await sim.call(sim.client.terminateRequest());
+    await sim.advance(30_000);
+    expect(sim.record().lifecycle.context.state).toBe("removal_pending");
+  }
+
+  /** Runs a sign-out to its end and waits for the computer to stop again. */
+  async function signOutRun(sim: ComputerSim, n: number): Promise<void> {
+    expect(await pageCall(sim, "sign_out", n)).toEqual({ action: "sign_out", outcome: "accepted" });
+    for (let i = 0; i < 90 && (i === 0 || sim.record().signOut.job !== null); i += 1) {
+      await sim.advance(5_000);
+    }
+    await sim.advance(2 * 60_000);
+    expect(sim.record().signOut.job).toBeNull();
+    expect(sim.record().lifecycle.context.state).toBe("removal_pending");
+  }
+
+  it("refuses it while a sign-out was never tried, and once one settles", async () => {
+    const sim = new ComputerSim();
+    await removing(sim);
+    expect(await pageCall(sim, "delete_without_sign_out", 1)).toEqual({
+      action: "delete_without_sign_out",
+      outcome: "refused",
+      reason: "not_offered",
+    });
+    await signOutRun(sim, 2);
+    expect(sim.record().signOut.phase).toBe("verified");
+    expect(await state(sim)).toMatchObject({ removal: { settled: true, signOutFailed: false } });
+    expect(await pageCall(sim, "delete_without_sign_out", 3)).toMatchObject({
+      outcome: "refused",
+    });
+    expect(sim.record().lifecycle.context.state).toBe("removal_pending");
+  });
+
+  it("deletes after a sign-out was tried and failed, saying nothing was revoked", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true, failedLogout: "codex" };
+    await removing(sim);
+    await signOutRun(sim, 1);
+    // The failed logout leaves the phase at none: only the marker says it was tried.
+    expect(sim.record().signOut.phase).toBe("none");
+    expect(sim.store.get(SIGN_OUT_FAILED_KEY)).toBeDefined();
+    expect(await state(sim)).toMatchObject({ removal: { settled: false, signOutFailed: true } });
+    expect(await pageCall(sim, "resolve_removal", 2)).toMatchObject({ outcome: "refused" });
+
+    expect(await pageCall(sim, "delete_without_sign_out", 3)).toEqual({
+      action: "delete_without_sign_out",
+      outcome: "accepted",
+    });
+    expect(sim.logs.some((l) => l.event === "removal_resolved_unsigned")).toBe(true);
+    await sim.advance(5 * 60_000);
+    const r = sim.record();
+    expect(r.lifecycle.context.state).toBe("removed");
+    expect(r.credential).toBeNull();
+    expect(sim.bucket.objects.size).toBe(0);
+    expect(sim.store.get(SIGN_OUT_FAILED_KEY)).toBeUndefined();
+  });
+
+  it("deletes a computer whose login may have changed after its last save, with no run", async () => {
+    const sim = new ComputerSim();
+    await signedIn(sim);
+    live(sim).refreshUnpublished("codex");
+    live(sim).report();
+    await sim.settle();
+    sim.computer.stopByPlatform();
+    await sim.advance(60_000);
+    await sim.call(sim.client.terminateRequest());
+    await sim.advance(30_000);
+    expect(sim.record().signOut.loginPossiblyLost).toBe(true);
+    expect(await pageCall(sim, "delete_without_sign_out", 1)).toEqual({
+      action: "delete_without_sign_out",
+      outcome: "accepted",
+    });
+    await sim.advance(5 * 60_000);
+    expect(sim.record().lifecycle.context.state).toBe("removed");
+    expect(sim.bucket.objects.size).toBe(0);
+  });
+
+  it("starts each sign-out run afresh: a new run clears the last one's failure", async () => {
+    const sim = new ComputerSim();
+    sim.computer.supervisorOptions = { staggeredLogouts: true, failedLogout: "codex" };
+    await removing(sim);
+    await signOutRun(sim, 1);
+    expect(sim.store.get(SIGN_OUT_FAILED_KEY)).toBeDefined();
+    sim.computer.supervisorOptions = { staggeredLogouts: true };
+    await signOutRun(sim, 2);
+    expect(sim.record().signOut.phase).toBe("verified");
+    expect(sim.store.get(SIGN_OUT_FAILED_KEY)).toBeUndefined();
+    expect(await pageCall(sim, "delete_without_sign_out", 3)).toMatchObject({
+      outcome: "refused",
+    });
+  });
 });

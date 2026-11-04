@@ -47,6 +47,8 @@ import {
   pageAccess,
   pageAllows,
   personKey,
+  removalFactsOf,
+  removeOffered,
 } from "./ownership.ts";
 import type { Store } from "./record.ts";
 import type { TerminalBridge, TerminalTarget } from "./terminal.ts";
@@ -149,6 +151,7 @@ const PAGES_ACTIONS: Readonly<Record<Exclude<PagesCall["action"], "state">, Page
   sign_out: "sign_out",
   record_revocation: "record_revocation",
   resolve_removal: "resolve_removal",
+  delete_without_sign_out: "delete_without_sign_out",
 };
 
 export interface PageFrontDeps {
@@ -419,11 +422,9 @@ export class PageFront {
         };
       case "remove": {
         const state = await this.#state();
-        const offered =
-          state.noContact === true &&
-          state.removal.state === "none" &&
-          state.lifecycle !== "removed";
-        if (!offered) return { action: "remove", outcome: "refused", reason: "not_offered" };
+        if (!removeOffered(removalFactsOf(state))) {
+          return { action: "remove", outcome: "refused", reason: "not_offered" };
+        }
         await this.#d.terminal.close("the computer is being removed");
         const removal = await this.#d.controller.removeForPage();
         this.#d.log("page_removal_recorded", { removal });

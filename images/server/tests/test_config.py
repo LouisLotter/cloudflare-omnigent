@@ -25,6 +25,21 @@ def env(tmp_path: Path) -> dict[str, str]:
     return base_env(tmp_path)
 
 
+def test_the_installation_owner_reaches_the_app_from_the_installer_named_account(
+    env: dict[str, str],
+) -> None:
+    """The account the team never removes is the installer's named owner, never another value."""
+    named = {
+        **env,
+        "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME": "owner",
+        "OMNIGENT_INSTALLATION_OWNER": "mallory",
+    }
+    assert app_environment(load(named), named)["OMNIGENT_INSTALLATION_OWNER"] == "owner"
+    unnamed = {k: v for k, v in named.items() if k != "OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME"}
+    unnamed.pop("OMNIGENT_ACCOUNTS_INIT_ADMIN_PASSWORD", None)
+    assert "OMNIGENT_INSTALLATION_OWNER" not in app_environment(load(unnamed), unnamed)
+
+
 def test_unset_settings_are_the_image_defaults(env: dict[str, str]) -> None:
     config = load(env)
     # Sharing between the installation's people is Omnigent's own default (D51); public is off.

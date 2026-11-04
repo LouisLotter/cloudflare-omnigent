@@ -143,7 +143,9 @@ import {
   type OwnerBinding,
   type OwnerRefusal,
   ownerTag,
+  removalFactsOf,
   stampMatches,
+  unsignedDeletionDue,
 } from "./ownership.ts";
 import {
   type CaptureRecord,
@@ -156,6 +158,8 @@ import {
   OWNERSHIP_KEY,
   OwnershipRecord,
   RECORD_KEY,
+  SIGN_OUT_FAILED_KEY,
+  SignOutFailedRecord,
   SLEEP_PREFIX,
   STATUS_LOG_KEY,
   StatusLogRecord,
@@ -911,6 +915,8 @@ export class WorkspaceController {
         case "run_sign_out":
           this.#closeTerminal(d, "a sign-out started");
           d.signIn = closeAll(d.signIn);
+          // A new run: only its own outcome says whether the sign-out was tried and failed.
+          this.#d.store.delete(SIGN_OUT_FAILED_KEY);
           d.signOut = {
             ...d.signOut,
             phase: SIGN_OUT_TABLE[d.signOut.phase].requested,
@@ -1887,7 +1893,12 @@ export class WorkspaceController {
     record: (result: PagesResult) => void,
   ): Promise<PagesResult> {
     const outcome = (
-      action: "restart" | "stop_without_saving" | "sign_out" | "resolve_removal",
+      action:
+        | "restart"
+        | "stop_without_saving"
+        | "sign_out"
+        | "resolve_removal"
+        | "delete_without_sign_out",
       reply: Reply | undefined,
     ): PagesResult =>
       reply?.kind === "page_refused"
@@ -1947,6 +1958,21 @@ export class WorkspaceController {
             }).reply,
           ),
         );
+      case "delete_without_sign_out":
+        // The page front let only an administrator through; the rule is re-read here, in the write.
+        return act((d) => {
+          if (!unsignedDeletionDue(removalFactsOf(this.#pageState(d)))) {
+            return { action: "delete_without_sign_out", outcome: "refused", reason: "not_offered" };
+          }
+          const result = outcome(
+            "delete_without_sign_out",
+            this.#step(d, "removal_resolved", { signOutSettled: true }).reply,
+          );
+          if (result.action === "delete_without_sign_out" && result.outcome === "accepted") {
+            this.#log("removal_resolved_unsigned", { signOut: d.signOut.phase });
+          }
+          return result;
+        });
     }
   }
 
@@ -2005,6 +2031,8 @@ export class WorkspaceController {
         }),
         // Additive (WP3.5): a sign-out job runs now, whatever its persisted phase.
         signOutRunning: r.signOut.job !== null,
+        // Additive (WP8.9): a sign-out run ended without a verified sign-out.
+        signOutFailed: this.#d.store.get(SIGN_OUT_FAILED_KEY) !== undefined,
       },
       // Additive fields (the schema is loose): the page's notices.
       noContact: !ctx.removalIntent && noContact(r.lastContactAt, now, this.#t.noContactMs),
@@ -3630,6 +3658,10 @@ export class WorkspaceController {
         phase: signOutAbandoned(d.signOut.phase, d.credential?.files ?? null),
         job: null,
       };
+      // Tried and not verified: kept beside the record, in this transaction (WP8.9).
+      if (d.signOut.phase !== "verified") {
+        this.#d.store.put(SIGN_OUT_FAILED_KEY, SignOutFailedRecord.parse({ at: this.#now() }));
+      }
     };
     if (this.#now() >= job.deadline) {
       this.#log("sign_out_gave_up", { phase: job.phase });
@@ -3848,6 +3880,7 @@ export class WorkspaceController {
               }
               this.#dropToken();
               this.#d.store.delete(STATUS_LOG_KEY);
+              this.#d.store.delete(SIGN_OUT_FAILED_KEY);
               this.#statusLog = null;
               const fresh = newRecord(this.#d.computerId, d.createdAt);
               this.#d.store.put(RECORD_KEY, {
