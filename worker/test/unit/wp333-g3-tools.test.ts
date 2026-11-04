@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ComputerId } from "@cfo/contracts";
 import { afterAll, describe, expect, it } from "vitest";
+import { DEFAULT_LIMITS } from "../../src/control/limits.ts";
 import {
   COMMAND_MAX_AGE_MS,
   type CommandPorts,
@@ -30,7 +31,6 @@ import {
   type SoakStatus,
 } from "../staging/wp318/commands.ts";
 import { instanceCounts, instanceStarts, type Planned } from "../staging/wp318/instances.ts";
-import { DEFAULT_LIMITS } from "../../src/control/limits.ts";
 import { LIMIT_VAR, limitHolds, limitSetting, withLimit } from "../staging/wp318/limit.ts";
 import type { LogLine } from "../staging/wp318/plan.ts";
 import { scanLines, TOKEN_SHAPES, tokenHits, valuesFrom } from "../staging/wp318/scan.ts";
