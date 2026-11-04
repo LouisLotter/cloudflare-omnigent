@@ -167,7 +167,7 @@ step below.
    cloud computer can no longer be used. The group count goes back to 1.
 2. A: Reinstate B. B signs in again in the browser; B's sessions from before stay ended.
 
-**Removal** (remove the test member)
+**Removal** (remove the test member; these steps need a release pinned at `cfo/teams` `e379f42d5` or later, whose Remove is WP8.9's)
 
 1. B: start a thread on B's cloud computer, and keep it open.
 2. A: Settings, Members, B, Remove, then confirm. B's open page closes, B's next page is refused,
