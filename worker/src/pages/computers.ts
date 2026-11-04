@@ -13,6 +13,7 @@ import {
   type PagesCall,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
+import { type PageAction, pageAllows } from "../computer/ownership.ts";
 import { errorCodeOf } from "../shared/errors.ts";
 import type { PagesBackend, StateResult } from "./backend.ts";
 import {
@@ -43,6 +44,8 @@ export interface ActionSpec {
   /** Whether the computer's state offers it now. */
   readonly offered: (view: ComputerView, state: StateResult["computer"]) => boolean;
   readonly explain: (view: ComputerView, state: StateResult["computer"]) => string;
+  /** What the notice after an accepted POST says, when "Done." is not enough. */
+  readonly acceptedText?: string;
   readonly call: (
     base: { readonly operationId: string; readonly owner: PageOwner; readonly intent: string },
     form: Record<string, string>,
@@ -105,11 +108,14 @@ export const ACTIONS: readonly ActionSpec[] = [
     title: "Stop without saving the latest changes",
     button: "Stop without saving",
     danger: true,
-    offered: (view) => view.offerStopWithoutSaving,
-    explain: (_view, state) =>
-      `<p>The computer could not save its files before sleeping ${state.refusedSleeps} times in a row, so it stays awake. This stops it <strong>without saving its files</strong>: changes made ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} are lost. Its logins are still saved first. It ends work in progress.</p>`,
+    offered: (view) => view.offerStopWithoutSaving || (view.pending?.stopWithoutSaving ?? false),
+    explain: (view, state) =>
+      view.pending?.stopWithoutSaving
+        ? `<p>This computer's owner was removed from the team. Its removal stops it after saving its files and logins, and that save failed ${state.removal.refusedStops ?? 0} times, so it keeps running. This stops it <strong>without saving</strong>: work changed ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} is lost. Its logins are saved first if they can be; if they cannot, logins changed since the last save are lost too.</p><p><strong>Provider sessions may still need revoking.</strong> If a login was lost, signing out cannot reach it: the removed person, or the administrator of their Claude or ChatGPT account, must revoke it at claude.ai and in ChatGPT's security settings.</p>`
+        : `<p>The computer could not save its files before sleeping ${state.refusedSleeps} times in a row, so it stays awake. This stops it <strong>without saving its files</strong>: changes made ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} are lost. Its logins are still saved first. It ends work in progress.</p>`,
     call: (base) => ({ action: "stop_without_saving", interfaceVersion: v, ...base }),
-    admin: () => false,
+    // Someone else's only while a removal is pending (`pageAllows`); then the offer above.
+    admin: (view) => view.removal === "pending",
   },
   {
     slug: "sign-out",
@@ -141,8 +147,25 @@ export const ACTIONS: readonly ActionSpec[] = [
     danger: true,
     offered: (view) => view.pending?.resolvable ?? false,
     explain: () =>
-      "<p>Deletes this computer's saved files and saved logins from the platform. This cannot be undone.</p>",
+      "<p>Deletes this computer's saved files and saved logins from the platform. This cannot be undone. Its card shows Deleting… until they are deleted.</p>",
+    acceptedText:
+      "Deletion started: its card shows Deleting… until its saved files and logins are deleted.",
     call: (base) => ({ action: "resolve_removal", interfaceVersion: v, ...base }),
+    admin: (view) => view.removal === "pending",
+  },
+  {
+    slug: "delete-without-sign-out",
+    title: "Delete without signing out",
+    button: "Delete it without signing out",
+    danger: true,
+    offered: (view, state) =>
+      pageAllows(state.access ?? "owner", "delete_without_sign_out", view.removal === "pending") &&
+      (view.pending?.deleteWithoutSignOut ?? false),
+    explain: (view) =>
+      `<p>${view.pending?.revocationRequired ? "A login on this computer may have changed after its last save, so a sign-out from its saved logins cannot reach it." : "The sign-out on this computer was tried and did not finish."} This deletes its saved files and saved logins from the platform, <strong>without signing them out</strong>; its card shows Deleting… until they are deleted. It cannot be undone.</p><p><strong>The provider sessions are not revoked.</strong> They stay valid at Anthropic and OpenAI until they are revoked there: the computer's owner, or the administrator of their Claude or ChatGPT account, must revoke them at claude.ai and in ChatGPT's security settings.</p>`,
+    acceptedText:
+      "Deletion started: its card shows Deleting… until its saved files and logins are deleted. Its provider sessions were not revoked: the computer's owner or their provider's administrator must revoke them at claude.ai and in ChatGPT's settings.",
+    call: (base) => ({ action: "delete_without_sign_out", interfaceVersion: v, ...base }),
     admin: (view) => view.removal === "pending",
   },
   {
@@ -152,7 +175,7 @@ export const ACTIONS: readonly ActionSpec[] = [
     danger: true,
     offered: (view) => view.offerRemove,
     explain: () =>
-      "<p>Omnigent has not called this computer for over an hour, for example because Omnigent's database was restored to a time before it was added. Removing it stops it after saving its files and logins, refuses any later start, and keeps its saved logins until you finish the removal here. If Omnigent still lists this computer, delete it there too.</p>",
+      "<p>This computer is awake, but Omnigent has not called it for over an hour, for example because Omnigent's database was restored to a time before it was added. Removing it stops it after saving its files and logins, refuses any later start, and keeps its saved logins until you finish the removal here. If Omnigent still lists this computer, delete it there too.</p>",
     call: (base) => ({ action: "remove", interfaceVersion: v, ...base }),
     admin: () => true,
   },
@@ -161,6 +184,21 @@ export const ACTIONS: readonly ActionSpec[] = [
 export function actionBySlug(slug: string): ActionSpec | undefined {
   return ACTIONS.find((a) => a.slug === slug);
 }
+
+/**
+ * Each action as WorkspaceDO's page front classifies it (`ownership.ts`): an action's `admin`
+ * predicate is the pages' copy of `pageAllows` for it, and the tests keep the two equal.
+ */
+export const PAGE_ACTION_OF: Readonly<Record<string, PageAction>> = {
+  "set-size": "set_size",
+  restart: "restart",
+  "stop-without-saving": "stop_without_saving",
+  "sign-out": "sign_out",
+  "record-revocation": "record_revocation",
+  "resolve-removal": "resolve_removal",
+  "delete-without-sign-out": "delete_without_sign_out",
+  remove: "remove",
+};
 
 const AT_CAPACITY =
   "All computers are busy: the limit of awake computers is reached. Try again later.";
@@ -182,7 +220,10 @@ export function actionPath(id: string, slug: string): string {
 function flash(url: URL): string {
   const done = actionBySlug(url.searchParams.get("done") ?? "");
   const outcome = url.searchParams.get("outcome") ?? "";
-  const text = OUTCOME_TEXT[outcome];
+  const text =
+    outcome === "accepted" && done?.acceptedText !== undefined
+      ? done.acceptedText
+      : OUTCOME_TEXT[outcome];
   if (done === undefined || text === undefined) return "";
   const tone = outcome === "accepted" ? "ok" : "warn";
   // An administrator's action on someone else's computer comes back with `as=admin`.
@@ -256,6 +297,16 @@ function fleetCard(view: ComputerView, ownerName: string | null): string {
       `<a class="button danger" href="${actionPath(view.id, "resolve-removal")}" data-admin-action="resolve-removal">Finish the removal</a>`,
     );
   }
+  if (view.removal === "pending" && view.pending?.stopWithoutSaving) {
+    links.push(
+      `<a class="button danger" href="${actionPath(view.id, "stop-without-saving")}" data-admin-action="stop-without-saving">Stop without saving</a>`,
+    );
+  }
+  if (view.removal === "pending" && view.pending?.deleteWithoutSignOut) {
+    links.push(
+      `<a class="button danger" href="${actionPath(view.id, "delete-without-sign-out")}" data-admin-action="delete-without-sign-out">Delete without signing out</a>`,
+    );
+  }
   const owner = ownerName === null ? "the installation's owner" : ownerName;
   return `<article class="card" data-fleet-computer="${escapeHtml(view.id)}">
 <h3>${escapeHtml(view.name)}</h3>
@@ -326,7 +377,12 @@ export async function computersPage(
   for (const entry of states) {
     if (entry.state === undefined) {
       if (admin) unreadable.push(entry.name);
-    } else if (entry.state !== null && entry.state.computer.lifecycle !== "removed") {
+    } else if (
+      entry.state !== null &&
+      // A removed computer stays listed, as Deleting…, until its deletions are done (WP8.9).
+      (entry.state.computer.lifecycle !== "removed" ||
+        entry.state.computer.removal.deleting === true)
+    ) {
       const view = computerView(entry.state.computer, nowMs);
       if (entry.state.computer.access === "admin") {
         fleet.push({ view, ownerName: entry.state.computer.ownerName ?? null });
@@ -434,6 +490,9 @@ export function removalSection(view: ComputerView): string {
       steps = `<p data-removal-step="pending">The removal is pending; its saved logins are kept until it is resolved. ${escapeHtml(signOutNote)}</p><ol class="steps">${items.join("")}</ol>`;
       break;
     }
+    case "deleting":
+      steps = `<p data-removal-step="deleting">Deleting its saved files and logins… This page shows Removed when they are deleted.</p>`;
+      break;
     case "resolved":
       steps = `<p data-removal-step="resolved">Removed.</p>`;
       break;
@@ -512,11 +571,13 @@ export async function confirmPage(
     state.intentToken === undefined ||
     (asAdmin && !spec.admin(view))
   ) {
+    // 409, not 200: a page without the form is never mistaken for a confirmation.
     return htmlResponse(
       layout(
         spec.title,
         `<h1>${escapeHtml(spec.title)}</h1><p data-confirm="not-offered">This is not offered for ${escapeHtml(view.name)} now.</p><div class="actions">${back}</div>`,
       ),
+      409,
     );
   }
   const wording = asAdmin && spec.asAdmin !== undefined ? spec.asAdmin : null;
@@ -617,6 +678,11 @@ export async function performAction(
     "outcome" in result && result.outcome === "refused" && "reason" in result
       ? String(result.reason)
       : "accepted";
+  // An action the computer does not offer now answers as its confirmation page does: 409.
+  if (outcome === "not_offered") {
+    log({ event: "page_change_refused", reason: "not_offered", action: spec.slug });
+    return refusedPage(409, "This is not offered for this computer now, so nothing was done.");
+  }
   // An administrator acting on someone else's computer goes back to the list: its setup page is
   // the owner's alone (WP8.4).
   const after = await backend.state(id, owner).catch(() => null);

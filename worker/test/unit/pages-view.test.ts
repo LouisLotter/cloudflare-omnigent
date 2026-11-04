@@ -283,12 +283,18 @@ describe("not connected to Omnigent (FH-30, FH-31, FH-29)", () => {
     expect(view).toMatchObject({ notConnected: true, offerRestart: true, offerRemove: false });
   });
 
-  it("an asleep computer Omnigent no longer calls is offered for removal, not a restart", () => {
+  it("an asleep computer, which WorkspaceDO never counts as without contact, is just asleep", () => {
     const view = computerView(
-      pageState({ noContact: true, lifecycle: "asleep", status: "stopped" }),
+      pageState({ noContact: false, lifecycle: "asleep", status: "stopped" }),
       NOW,
     );
-    expect(view).toMatchObject({ offerRestart: false, offerRemove: true });
+    expect(view).toMatchObject({
+      status: "Asleep",
+      notConnected: false,
+      offerRestart: false,
+      offerRemove: false,
+    });
+    expect(view.notices.map((n) => n.kind)).not.toContain("not_connected");
   });
 
   it("nothing is offered while a removal is pending", () => {
@@ -360,6 +366,8 @@ describe("the removal flow (design, Signing in, Removal)", () => {
     recordRevocation: false,
     revocationRequired: false,
     resolvable: false,
+    deleteWithoutSignOut: false,
+    stopWithoutSaving: false,
   };
 
   it("follows the controller's settlement: only `settled` makes a removal resolvable (Codex r1-4)", () => {
@@ -409,16 +417,19 @@ describe("the removal flow (design, Signing in, Removal)", () => {
       signingOut: true,
       recordRevocation: true,
     });
-    // A job that ended without a verified sign-out: offer it again.
+    // A job that ended without a verified sign-out: offer it again, and an administrator may
+    // delete it without one (WP8.9).
     expect(pendingRemoval(pendingState({ signOut: "tombstoned", signOutRunning: false }))).toEqual({
       ...none,
       signOut: true,
       recordRevocation: true,
+      deleteWithoutSignOut: true,
     });
     expect(pendingRemoval(pendingState({ signOut: "requested", signOutRunning: false }))).toEqual({
       ...none,
       signOut: true,
       recordRevocation: true,
+      deleteWithoutSignOut: true,
     });
     // Settled, but the computer has not stopped again: not yet resolvable (Codex r2-2).
     expect(
@@ -457,6 +468,21 @@ describe("the removal flow (design, Signing in, Removal)", () => {
       ...none,
       recordRevocation: true,
       revocationRequired: true,
+    });
+    // Stopped again, a lost login can also be deleted without a sign-out by an administrator.
+    expect(
+      pendingRemoval(
+        pageState({
+          lifecycle: "removal_pending",
+          ...removal({ signOut: "none", loginPossiblyLost: true }),
+        }),
+      ),
+    ).toEqual({
+      ...none,
+      signOut: true,
+      recordRevocation: true,
+      revocationRequired: true,
+      deleteWithoutSignOut: true,
     });
     expect(
       pendingRemoval(

@@ -231,10 +231,26 @@ describe("the idle rules", () => {
     expect(admissionOf(closed)).toMatchObject({ admitting: false, reason: "not_saved" });
   });
 
-  it("shows no contact after 60 minutes without a launcher call", () => {
-    expect(noContact(null, 10 ** 9)).toBe(false);
-    expect(noContact(0, 3_600_000)).toBe(true);
-    expect(noContact(0, 3_599_999)).toBe(false);
+  it("shows no contact after 60 minutes without a launcher call, only while awake", () => {
+    expect(noContact(null, 10 ** 9, "host_running")).toBe(false);
+    expect(noContact(0, 3_600_000, "host_running")).toBe(true);
+    expect(noContact(0, 3_599_999, "host_running")).toBe(false);
+    // Awake: a restored container runs. Asleep or stopped, Omnigent calls it only to wake it.
+    for (const state of ["started_no_host", "start_claimed", "host_refused"] as const) {
+      expect(noContact(0, 3_600_000, state), state).toBe(true);
+    }
+    for (const state of [
+      "provisioned",
+      "waking",
+      "restoring",
+      "asleep",
+      "stopped",
+      "failed",
+      "removal_pending",
+      "removed",
+    ] as const) {
+      expect(noContact(0, 10 ** 9, state), state).toBe(false);
+    }
   });
 });
 

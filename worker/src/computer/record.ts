@@ -379,6 +379,28 @@ export const StatusLogRecord = z.strictObject({
 });
 export type StatusLogRecord = z.infer<typeof StatusLogRecord>;
 
+/**
+ * When a sign-out run last ended without a verified sign-out (WP8.9). A failed logout returns the
+ * phase to `none`, so the record alone cannot tell a sign-out that was tried from one never run;
+ * an administrator may delete a removed computer without one only after it was tried. Beside the
+ * record, so the previous Worker, which never reads it, still reads the record; the removal's
+ * wipe deletes it.
+ */
+export const SIGN_OUT_FAILED_KEY = "sign-out-failed";
+export const SignOutFailedRecord = z.strictObject({ at: Millis });
+export type SignOutFailedRecord = z.infer<typeof SignOutFailedRecord>;
+
+/**
+ * A removal Omnigent recorded for a removed member (WP8.9): its `terminate` named the computer's
+ * owner without a membership, while the binding has one. `refusedStops` counts the removal's
+ * stops refused because their save failed, as `refusedSleeps` counts sleeps; at the same bound an
+ * owner or admin may stop it without saving. Beside the record, for the previous Worker; the
+ * removal's wipe deletes it.
+ */
+export const MEMBER_REMOVAL_KEY = "member-removal";
+export const MemberRemovalRecord = z.strictObject({ at: Millis, refusedStops: Count });
+export type MemberRemovalRecord = z.infer<typeof MemberRemovalRecord>;
+
 export const TokenRecord = z.strictObject({ attempt: Count, token: z.string().min(1).max(512) });
 
 /** An operation's journal entry: the request's fingerprint, and its outcome once settled. */

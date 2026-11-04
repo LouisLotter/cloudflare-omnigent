@@ -285,8 +285,19 @@
             "removal": {
               "additionalProperties": {},
               "properties": {
+                "deleting": {
+                  "type": "boolean"
+                },
                 "loginPossiblyLost": {
                   "type": "boolean"
+                },
+                "memberRemoved": {
+                  "type": "boolean"
+                },
+                "refusedStops": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "revocationRecorded": {
                   "type": "boolean"
@@ -302,6 +313,9 @@
                     "verified"
                   ],
                   "type": "string"
+                },
+                "signOutFailed": {
+                  "type": "boolean"
                 },
                 "signOutRunning": {
                   "type": "boolean"
@@ -790,6 +804,57 @@
           "properties": {
             "action": {
               "const": "resolve_removal",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "refused",
+              "type": "string"
+            },
+            "reason": {
+              "enum": [
+                "busy",
+                "not_running",
+                "not_offered",
+                "unresolved",
+                "at_capacity"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "delete_without_sign_out",
+              "type": "string"
+            },
+            "outcome": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": {},
+          "properties": {
+            "action": {
+              "const": "delete_without_sign_out",
               "type": "string"
             },
             "outcome": {

@@ -1,0 +1,5 @@
+{
+  "action": "delete_without_sign_out",
+  "outcome": "refused",
+  "reason": "not_offered"
+}

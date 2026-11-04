@@ -977,6 +977,129 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     ]);
   });
 
+  it("lets an administrator delete a computer being removed without signing out, never its owner", async () => {
+    const pendingRemoval = {
+      state: "pending" as const,
+      signOut: "requested" as const,
+      loginPossiblyLost: false,
+      revocationRecorded: false,
+    };
+    const { front, controller } = alicesComputer({
+      lifecycle: "removal_pending",
+      removal: pendingRemoval,
+    });
+    const call = (owner: object, intent: string) =>
+      front.pages({
+        action: "delete_without_sign_out",
+        interfaceVersion: 1,
+        operationId: OP(50),
+        owner,
+        intent,
+      });
+    // Alice records that she revoked the sessions instead; Bob learns nothing.
+    expect(await codeOf(call(ALICE, (await tokenFor(front, ALICE)) as string))).toBe("forbidden");
+    expect(await codeOf(call(BOB, "0".repeat(64)))).toBe("not_found");
+    expect(controller.calls).toEqual([]);
+    expect(await codeOf(call(CAROL, (await tokenFor(front, CAROL)) as string))).toBeUndefined();
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "delete_without_sign_out",
+    ]);
+  });
+
+  it("refuses an administrator's delete without sign-out while no removal is pending", async () => {
+    const { front, controller } = alicesComputer({ noContact: true });
+    const intent = (await tokenFor(front, CAROL)) as string;
+    expect(
+      await codeOf(
+        front.pages({
+          action: "delete_without_sign_out",
+          interfaceVersion: 1,
+          operationId: OP(51),
+          owner: CAROL,
+          intent,
+        }),
+      ),
+    ).toBe("forbidden");
+    expect(controller.calls).toEqual([]);
+  });
+
+  it("removes only a lost host, awake and not called for an hour, for its owner and an admin alike", async () => {
+    const remove = (front: PageFront, owner: object, intent: string, n: number) =>
+      front.pages({ action: "remove", interfaceVersion: 1, operationId: OP(n), owner, intent });
+    // Asleep for an hour, as WorkspaceDO reports it: never without contact, so for nobody.
+    const asleep = alicesComputer({ noContact: false, lifecycle: "asleep", status: "stopped" });
+    for (const [who, n] of [
+      [CAROL, 60],
+      [ALICE, 61],
+    ] as const) {
+      expect(
+        await remove(asleep.front, who, (await tokenFor(asleep.front, who)) as string, n),
+      ).toEqual({ action: "remove", outcome: "refused", reason: "not_offered" });
+    }
+    expect(asleep.controller.launches).toEqual([]);
+    // Awake and not called for an hour: a lost host, which either may remove.
+    for (const [who, n] of [
+      [CAROL, 62],
+      [ALICE, 63],
+    ] as const) {
+      const awake = alicesComputer({ noContact: true, lifecycle: "host_running" });
+      expect(
+        await remove(awake.front, who, (await tokenFor(awake.front, who)) as string, n),
+      ).toEqual({ action: "remove", outcome: "accepted" });
+    }
+  });
+
+  it("lets an administrator stop a removed member's computer without saving only once its saves failed", async () => {
+    const removal = {
+      state: "pending" as const,
+      signOut: "none" as const,
+      loginPossiblyLost: false,
+      revocationRecorded: false,
+      memberRemoved: true,
+    };
+    const call = (front: PageFront, owner: object, intent: string, n: number) =>
+      front.pages({
+        action: "stop_without_saving",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner,
+        intent,
+      });
+    // Two refused stops: not yet, for an administrator; nothing reaches the controller.
+    const early = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, refusedStops: 2 },
+    });
+    expect(
+      await call(early.front, CAROL, (await tokenFor(early.front, CAROL)) as string, 70),
+    ).toEqual({
+      action: "stop_without_saving",
+      outcome: "refused",
+      reason: "not_offered",
+    });
+    expect(early.controller.calls).toEqual([]);
+    // Three: Carol's call reaches the controller; Bob learns nothing.
+    const due = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, refusedStops: 3 },
+    });
+    expect(await codeOf(call(due.front, BOB, "0".repeat(64), 71))).toBe("not_found");
+    expect(
+      await codeOf(call(due.front, CAROL, (await tokenFor(due.front, CAROL)) as string, 72)),
+    ).toBeUndefined();
+    expect(due.controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "stop_without_saving",
+    ]);
+    // Not a member removal (Alice deleted it herself): not for an administrator.
+    const own = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, memberRemoved: false, refusedStops: 5 },
+    });
+    expect(
+      await call(own.front, CAROL, (await tokenFor(own.front, CAROL)) as string, 73),
+    ).toMatchObject({ outcome: "refused", reason: "not_offered" });
+  });
+
   it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {
     const { front, controller } = alicesComputer({ noContact: false });
     const intent = (await tokenFor(front, CAROL)) as string;

@@ -47,6 +47,9 @@ import {
   pageAccess,
   pageAllows,
   personKey,
+  removalFactsOf,
+  removalStopWithoutSavingDue,
+  removeOffered,
 } from "./ownership.ts";
 import type { Store } from "./record.ts";
 import type { TerminalBridge, TerminalTarget } from "./terminal.ts";
@@ -149,6 +152,7 @@ const PAGES_ACTIONS: Readonly<Record<Exclude<PagesCall["action"], "state">, Page
   sign_out: "sign_out",
   record_revocation: "record_revocation",
   resolve_removal: "resolve_removal",
+  delete_without_sign_out: "delete_without_sign_out",
 };
 
 export interface PageFrontDeps {
@@ -389,11 +393,19 @@ export class PageFront {
     const claimed = ownerIn(call as Record<string, unknown>);
     if (this.#access(claimed) === "none") this.#authorize(claimed, "fleet", state);
     const owner = await this.#checkIntent(call as Record<string, unknown>);
-    this.#authorize(
+    const access = this.#authorize(
       owner,
       PAGES_ACTIONS[call.action as Exclude<PagesCall["action"], "state">],
       state,
     );
+    // On someone else's computer only a removed member's, whose save keeps failing (WP8.9).
+    if (
+      access === "admin" &&
+      call.action === "stop_without_saving" &&
+      !removalStopWithoutSavingDue(removalFactsOf(state))
+    ) {
+      return { action: "stop_without_saving", outcome: "refused", reason: "not_offered" };
+    }
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
       return this.#exclusive(async () => {
@@ -419,11 +431,9 @@ export class PageFront {
         };
       case "remove": {
         const state = await this.#state();
-        const offered =
-          state.noContact === true &&
-          state.removal.state === "none" &&
-          state.lifecycle !== "removed";
-        if (!offered) return { action: "remove", outcome: "refused", reason: "not_offered" };
+        if (!removeOffered(removalFactsOf(state))) {
+          return { action: "remove", outcome: "refused", reason: "not_offered" };
+        }
         await this.#d.terminal.close("the computer is being removed");
         const removal = await this.#d.controller.removeForPage();
         this.#d.log("page_removal_recorded", { removal });

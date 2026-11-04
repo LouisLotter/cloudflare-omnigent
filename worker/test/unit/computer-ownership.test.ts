@@ -18,7 +18,11 @@ import {
   pageAccess,
   pageAllows,
   personKey,
+  type RemovalFacts,
+  removalStopWithoutSavingDue,
+  removeOffered,
   stampMatches,
+  unsignedDeletionDue,
 } from "../../src/computer/ownership.ts";
 import { OWNERSHIP_KEY, RECORD_KEY } from "../../src/computer/record.ts";
 import { ComputerSim, HOST, live } from "../support/computer-sim.ts";
@@ -831,6 +835,7 @@ describe("pageAccess and pageAllows", () => {
     "sign_out",
     "record_revocation",
     "resolve_removal",
+    "delete_without_sign_out",
     "remove",
     "staging",
   ] as const;
@@ -851,15 +856,28 @@ describe("pageAccess and pageAllows", () => {
           if (access === "none") expect(allowed).toBe(false);
           if (access === "admin") {
             const adminActions = ["fleet", "restart", "remove"];
-            const pendingActions = ["sign_out", "resolve_removal"];
+            const pendingActions = [
+              "sign_out",
+              "resolve_removal",
+              "delete_without_sign_out",
+              "stop_without_saving",
+            ];
             expect(allowed).toBe(
               adminActions.includes(action) || (pending && pendingActions.includes(action)),
             );
           }
-          if (access === "owner") expect(allowed).toBe(true);
+          // Deleting without a sign-out is the administrator's: an owner records a revocation.
+          if (access === "owner") expect(allowed).toBe(action !== "delete_without_sign_out");
         },
       ),
     );
+  });
+
+  it("lets an admin stop someone else's computer without saving only while a removal is pending", () => {
+    expect(pageAllows("admin", "stop_without_saving", true)).toBe(true);
+    expect(pageAllows("admin", "stop_without_saving", false)).toBe(false);
+    expect(pageAllows("none", "stop_without_saving", true)).toBe(false);
+    expect(pageAllows("owner", "stop_without_saving", false)).toBe(true);
   });
 
   it("decides ownership by member, and by the installation owner's account where there is none", () => {
@@ -892,5 +910,92 @@ describe("pageAccess and pageAllows", () => {
   it("keys an intent token to the person", () => {
     expect(personKey({ kind: "installation_owner" })).toBe("installation");
     expect(personKey(member(ALICE_MEMBER, "alice", "member"))).toBe(`member:${ALICE_MEMBER}`);
+  });
+});
+
+describe("the removal offers (WP8.9): one rule for the page, its cards and WorkspaceDO", () => {
+  const facts: fc.Arbitrary<RemovalFacts> = fc.record({
+    noContact: fc.boolean(),
+    removal: fc.constantFrom("none" as const, "pending" as const, "resolved" as const),
+    lifecycle: fc.constantFrom("host_running", "asleep", "removal_pending", "removed", "stopping"),
+    settled: fc.boolean(),
+    signOut: fc.constantFrom(
+      "none" as const,
+      "requested" as const,
+      "tombstoned" as const,
+      "verified" as const,
+    ),
+    signOutRunning: fc.boolean(),
+    signOutFailed: fc.boolean(),
+    revocationRequired: fc.boolean(),
+    memberRemoved: fc.boolean(),
+    refusedStops: fc.integer({ min: 0, max: 6 }),
+  });
+
+  it("offers recording a removal only for a lost host, to the owner and an admin alike", () => {
+    fc.assert(
+      fc.property(facts, (f) => {
+        // `noContact` counts only an awake computer (`idle.ts`): asleep, it is never offered.
+        expect(removeOffered(f)).toBe(
+          f.noContact && f.removal === "none" && f.lifecycle !== "removed",
+        );
+        // Never both: a computer with a removal recorded goes on through the removal's steps.
+        if (removeOffered(f)) expect(unsignedDeletionDue(f)).toBe(false);
+      }),
+    );
+  });
+
+  it("offers stopping without saving only a removed member's running computer, after 3 refused stops", () => {
+    const running = ["started_no_host", "start_claimed", "host_running", "host_refused"];
+    fc.assert(
+      fc.property(facts, (f) => {
+        expect(removalStopWithoutSavingDue(f)).toBe(
+          f.removal === "pending" &&
+            f.memberRemoved &&
+            running.includes(f.lifecycle) &&
+            f.refusedStops >= 3,
+        );
+      }),
+    );
+  });
+
+  it("lets a removal end unsigned only when the sign-out cannot settle, never instead of one", () => {
+    fc.assert(
+      fc.property(facts, (f) => {
+        const due = unsignedDeletionDue(f);
+        if (due) {
+          expect(f.removal).toBe("pending");
+          expect(f.lifecycle).toBe("removal_pending");
+          expect(f.settled || f.signOutRunning).toBe(false);
+          expect(
+            f.revocationRequired ||
+              f.signOutFailed ||
+              f.signOut === "requested" ||
+              f.signOut === "tombstoned",
+          ).toBe(true);
+        }
+        // A sign-out that settled, never tried, or still runs: the ordinary steps.
+        if (f.settled || f.signOutRunning) expect(due).toBe(false);
+        const tried = f.signOutFailed || f.signOut === "requested" || f.signOut === "tombstoned";
+        if (!tried && !f.revocationRequired) expect(due).toBe(false);
+      }),
+    );
+    const base: RemovalFacts = {
+      noContact: false,
+      removal: "pending",
+      lifecycle: "removal_pending",
+      settled: false,
+      signOut: "requested",
+      signOutRunning: false,
+      signOutFailed: false,
+      revocationRequired: false,
+      memberRemoved: false,
+      refusedStops: 0,
+    };
+    expect(unsignedDeletionDue(base)).toBe(true);
+    expect(unsignedDeletionDue({ ...base, signOut: "none", revocationRequired: true })).toBe(true);
+    // A failed logout leaves the phase at none: the marker says it was tried.
+    expect(unsignedDeletionDue({ ...base, signOut: "none", signOutFailed: true })).toBe(true);
+    expect(unsignedDeletionDue({ ...base, signOut: "none" })).toBe(false);
   });
 });

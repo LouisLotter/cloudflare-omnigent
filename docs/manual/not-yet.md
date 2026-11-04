@@ -10,4 +10,4 @@ The installation is deliberately simple for now. These are the things it does no
 
 **No shared company logins for services.** Every connection in Settings → MCP belongs to one person ([Connections](connections.md)).
 
-**Removal is basic.** Removing a member deletes their account and removes their computers, but there is no checklist across every system yet, and no handing over of their work ([For owners and administrators](for-owners-and-admins.md#removing-someone)).
+**Removal is basic.** Removing a member blocks them everywhere at once, deletes their account and removes their computers, but nothing hands their work over to someone else, and restoring the installation's database from a copy made before the removal brings them back ([For owners and administrators](for-owners-and-admins.md#removing-someone)).

@@ -348,6 +348,8 @@ export class FakeWorkspace implements WorkspaceRpc {
       stop_without_saving: "stop_without_saving",
       sign_out: "sign_out_run",
       resolve_removal: "removal_resolved",
+      // The fake keeps no sign-out facts: deleting without one resolves as the removal does.
+      delete_without_sign_out: "removal_resolved",
     } as const;
     switch (call.action) {
       case "state":

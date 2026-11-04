@@ -12,8 +12,15 @@
 // (`SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`). Before teams, Access admitted only that
 // person, so every computer recorded without an owner is theirs.
 
-import type { LauncherOwner } from "@cfo/contracts";
-import { AccountId, HostId, TeamMemberId } from "@cfo/contracts";
+import {
+  AccountId,
+  type ComputerPageState,
+  HostId,
+  type LauncherOwner,
+  RESTORED_STATES,
+  TeamMemberId,
+  TIMING,
+} from "@cfo/contracts";
 import { z } from "zod";
 
 const Millis = z.number().int().min(0).max(8.64e15);
@@ -264,19 +271,24 @@ export type PageAction =
   | "sign_out"
   | "record_revocation"
   | "resolve_removal"
+  /** An administrator's end of a removal whose sign-out cannot settle (WP8.9). */
+  | "delete_without_sign_out"
   | "remove"
   | "staging";
 
 /**
  * Whether `access` allows `action`. An administrator may stop and remove; a sign-out and the
  * removal's end only while a removal is pending (signing a departing person's logins out of a
- * computer being removed protects that person). Everything else is the owner's alone.
+ * computer being removed protects that person). Everything else is the owner's alone, except
+ * deleting without a sign-out, which is the administrator's alone: an owner who cannot sign out
+ * records that they revoked the sessions themselves.
  */
 export function pageAllows(
   access: PageAccess,
   action: PageAction,
   removalPending: boolean,
 ): boolean {
+  if (action === "delete_without_sign_out") return access === "admin" && removalPending;
   if (access === "owner") return true;
   if (access === "none") return false;
   switch (action) {
@@ -286,6 +298,8 @@ export function pageAllows(
       return true;
     case "sign_out":
     case "resolve_removal":
+    // A removed member's computer whose save keeps failing (`removalStopWithoutSavingDue`).
+    case "stop_without_saving":
       return removalPending;
     default:
       return false;
@@ -295,4 +309,92 @@ export function pageAllows(
 /** The person's key in a request-intent token: who the token was issued to. */
 export function personKey(person: PagePersonFields): string {
   return person.kind === "installation_owner" ? "installation" : `member:${person.memberId}`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// When the pages offer a removal's steps (WP8.9). One rule each, used by the confirmation page,
+// the cards and WorkspaceDO's check of the POST, so what a page offers is what the POST does.
+
+/** The facts of a computer's page state the removal offers depend on. */
+export interface RemovalFacts {
+  /** Omnigent has not called the computer for the no-contact window, and no removal is recorded. */
+  readonly noContact: boolean;
+  readonly removal: "none" | "pending" | "resolved";
+  readonly lifecycle: string;
+  /** The sign-out rule lets the removal resolve. */
+  readonly settled: boolean;
+  readonly signOut: "none" | "requested" | "tombstoned" | "verified";
+  /** A sign-out job runs now. */
+  readonly signOutRunning: boolean;
+  /** A sign-out run ended without a verified sign-out: it was tried and did not finish. */
+  readonly signOutFailed: boolean;
+  /** A login may have changed after the last save, and nobody recorded revoking it. */
+  readonly revocationRequired: boolean;
+  /** Omnigent's removal of a removed member: its account is gone. */
+  readonly memberRemoved: boolean;
+  /** That removal's stops refused because their save failed. */
+  readonly refusedStops: number;
+}
+
+export function removalFactsOf(state: ComputerPageState): RemovalFacts {
+  const { removal } = state;
+  return {
+    noContact: state.noContact === true,
+    removal: removal.state,
+    lifecycle: state.lifecycle,
+    settled: removal.settled === true,
+    signOut: removal.signOut,
+    // An older controller says only its persisted phase: a requested one may still run.
+    signOutRunning: removal.signOutRunning ?? removal.signOut === "requested",
+    signOutFailed: removal.signOutFailed === true,
+    revocationRequired: removal.loginPossiblyLost && !removal.revocationRecorded,
+    memberRemoved: removal.memberRemoved === true,
+    refusedStops: removal.refusedStops ?? 0,
+  };
+}
+
+/**
+ * Whether recording a removal from the page is offered, to the computer's owner and to an
+ * administrator alike: only for a lost host, awake while Omnigent has not called it for an hour
+ * (`noContact`, FH-29, FH-31), with no removal recorded. An asleep computer is never offered: its
+ * owner deletes it in Omnigent, whose `terminate` records the removal, and a removed member's
+ * computers get Omnigent's own removal.
+ */
+export function removeOffered(facts: RemovalFacts): boolean {
+  return facts.noContact && facts.removal === "none" && facts.lifecycle !== "removed";
+}
+
+/**
+ * Whether a pending removal may end without a settled sign-out: the computer is stopped again, no
+ * sign-out runs, and the sign-out cannot settle, because one was tried and did not finish, or a
+ * login may have changed after the last save, so no sign-out from a saved login reaches it. A
+ * run that did not finish leaves `signOutFailed`, or, from an older WorkspaceDO, its phase at
+ * `requested` or `tombstoned`. Its saved logins are deleted; the provider sessions are not
+ * revoked.
+ */
+export function unsignedDeletionDue(facts: RemovalFacts): boolean {
+  if (facts.removal !== "pending" || facts.lifecycle !== "removal_pending") return false;
+  if (facts.settled || facts.signOutRunning) return false;
+  return (
+    facts.revocationRequired ||
+    facts.signOutFailed ||
+    facts.signOut === "requested" ||
+    facts.signOut === "tombstoned"
+  );
+}
+
+/**
+ * Whether an owner or admin may stop a removed member's computer without saving: Omnigent removed
+ * the member, the computer still runs, and its removal's stops were refused because their save
+ * failed as often as sleeps are refused before "stop without saving" (FH-35). The computer's
+ * files changed since the last save are lost, and its logins too if they cannot be saved; its
+ * owner keeps FH-35's own rule for their computer.
+ */
+export function removalStopWithoutSavingDue(facts: RemovalFacts): boolean {
+  return (
+    facts.removal === "pending" &&
+    facts.memberRemoved &&
+    RESTORED_STATES.includes(facts.lifecycle as (typeof RESTORED_STATES)[number]) &&
+    facts.refusedStops >= TIMING.refusedSleepsBeforeStopWithoutSaving
+  );
 }

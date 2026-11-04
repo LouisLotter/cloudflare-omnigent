@@ -189,6 +189,18 @@ export const ComputerPageState = z.looseObject({
      * persisted phase. Additive (WP3.5); absent from an older WorkspaceDO, where the pages read
      * `signOut === "requested"` instead. */
     signOutRunning: z.boolean().optional(),
+    /** A sign-out run ended without a verified sign-out (WP8.9): it was tried and did not
+     * finish. Additive; absent from an older WorkspaceDO, where the pages read a phase left at
+     * `requested` or `tombstoned` instead. */
+    signOutFailed: z.boolean().optional(),
+    /** Omnigent's removal of a removed member (WP8.9): its `terminate` named the owner without a
+     * membership. Additive. */
+    memberRemoved: z.boolean().optional(),
+    /** That removal's stops refused because their save failed (WP8.9). Additive. */
+    refusedStops: z.number().int().min(0).optional(),
+    /** A resolved removal's deletions of saved files and logins are still under way (WP8.9): the
+     * pages say "Deleting…" until they are done. Additive. */
+    deleting: z.boolean().optional(),
   }),
   // Additive (WP3.5): the page's notices, as the controller derives them, and the setup terminal's
   // window, from WorkspaceDO's page front. Optional, so an older WorkspaceDO still parses.
@@ -255,6 +267,14 @@ export const PagesCall = z.discriminatedUnion("action", [
   /** The person records that they revoked the sessions at the providers. */
   z.looseObject({ action: z.literal("record_revocation"), ...mutating }),
   z.looseObject({ action: z.literal("resolve_removal"), ...mutating }),
+  /**
+   * Additive (WP8.9): an administrator finishes a pending removal of someone else's computer whose
+   * sign-out cannot settle, deleting its saved logins without signing them out. Offered only after
+   * a sign-out was tried and did not finish, or when a login may have changed after the last save;
+   * the provider sessions stay valid until the person or their provider's administrator revokes
+   * them.
+   */
+  z.looseObject({ action: z.literal("delete_without_sign_out"), ...mutating }),
 ]);
 export type PagesCall = z.infer<typeof PagesCall>;
 
@@ -290,5 +310,6 @@ export const PagesResult = z.discriminatedUnion("action", [
   pageOutcome("sign_out"),
   z.looseObject({ action: z.literal("record_revocation"), recorded: z.literal(true) }),
   pageOutcome("resolve_removal"),
+  pageOutcome("delete_without_sign_out"),
 ]);
 export type PagesResult = z.infer<typeof PagesResult>;
