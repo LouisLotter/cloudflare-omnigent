@@ -1049,6 +1049,57 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     }
   });
 
+  it("lets an administrator stop a removed member's computer without saving only once its saves failed", async () => {
+    const removal = {
+      state: "pending" as const,
+      signOut: "none" as const,
+      loginPossiblyLost: false,
+      revocationRecorded: false,
+      memberRemoved: true,
+    };
+    const call = (front: PageFront, owner: object, intent: string, n: number) =>
+      front.pages({
+        action: "stop_without_saving",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner,
+        intent,
+      });
+    // Two refused stops: not yet, for an administrator; nothing reaches the controller.
+    const early = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, refusedStops: 2 },
+    });
+    expect(
+      await call(early.front, CAROL, (await tokenFor(early.front, CAROL)) as string, 70),
+    ).toEqual({
+      action: "stop_without_saving",
+      outcome: "refused",
+      reason: "not_offered",
+    });
+    expect(early.controller.calls).toEqual([]);
+    // Three: Carol's call reaches the controller; Bob learns nothing.
+    const due = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, refusedStops: 3 },
+    });
+    expect(await codeOf(call(due.front, BOB, "0".repeat(64), 71))).toBe("not_found");
+    expect(
+      await codeOf(call(due.front, CAROL, (await tokenFor(due.front, CAROL)) as string, 72)),
+    ).toBeUndefined();
+    expect(due.controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "stop_without_saving",
+    ]);
+    // Not a member removal (Alice deleted it herself): not for an administrator.
+    const own = alicesComputer({
+      lifecycle: "host_running",
+      removal: { ...removal, memberRemoved: false, refusedStops: 5 },
+    });
+    expect(
+      await call(own.front, CAROL, (await tokenFor(own.front, CAROL)) as string, 73),
+    ).toMatchObject({ outcome: "refused", reason: "not_offered" });
+  });
+
   it("keeps the remove's own gate for an administrator: only while Omnigent no longer calls", async () => {
     const { front, controller } = alicesComputer({ noContact: false });
     const intent = (await tokenFor(front, CAROL)) as string;

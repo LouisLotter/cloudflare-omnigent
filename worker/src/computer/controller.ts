@@ -150,6 +150,8 @@ import {
 import {
   type CaptureRecord,
   ComputerRecord,
+  MEMBER_REMOVAL_KEY,
+  MemberRemovalRecord,
   NO_OWNERSHIP,
   newRecord,
   OPERATION_PREFIX,
@@ -525,6 +527,26 @@ export class WorkspaceController {
     return raw === undefined ? NO_OWNERSHIP : OwnershipRecord.parse(raw);
   }
 
+  /** Omnigent's removal of a removed member (WP8.9), if this is one. */
+  #memberRemoval(): MemberRemovalRecord | null {
+    const raw = this.#d.store.get(MEMBER_REMOVAL_KEY);
+    return raw === undefined ? null : MemberRemovalRecord.parse(raw);
+  }
+
+  /**
+   * A removed member's computer whose removal's stops were refused as often as sleeps are before
+   * "stop without saving" (FH-35), still running: an owner or admin may stop it without saving.
+   */
+  #memberRemovalStopDue(d: WorkingRecord): boolean {
+    const memberRemoval = this.#memberRemoval();
+    return (
+      memberRemoval !== null &&
+      d.lifecycle.context.removalIntent &&
+      restored(d.lifecycle.context.state) &&
+      memberRemoval.refusedStops >= TIMING.refusedSleepsBeforeStopWithoutSaving
+    );
+  }
+
   /**
    * Stores a working record: the record as `ComputerRecord`, the shape the previous platform
    * Worker reads too, and its ownership under OWNERSHIP_KEY, written only when it changed and
@@ -839,6 +861,16 @@ export class WorkspaceController {
         case "record_stop_refusal": {
           const reason = d.stopJob?.failure ?? "checkpoint_failed";
           if (before.stopPrep === "sleep") d.refusedSleeps += 1;
+          const memberRemoval = this.#memberRemoval();
+          if (before.stopPrep === "removal" && memberRemoval !== null) {
+            this.#d.store.put(
+              MEMBER_REMOVAL_KEY,
+              MemberRemovalRecord.parse({
+                ...memberRemoval,
+                refusedStops: memberRemoval.refusedStops + 1,
+              }),
+            );
+          }
           // Every sleep waiting on this stop (a sleep, or one that joined a restart) is refused.
           this.#settleSleeps({ operation: "suspend", outcome: "refused", reason });
           this.#log("stop_refused", { generation, stop: before.stopPrep, reason });
@@ -1412,7 +1444,22 @@ export class WorkspaceController {
       case "suspend":
         return this.#suspend(request.operationId, fingerprint as string);
       case "terminate": {
-        const reply = this.#write((d) => this.#step(d, "terminate", {}).reply);
+        const reply = this.#write((d) => {
+          // Omnigent names a removed member without a membership: their account is gone.
+          if (
+            request.owner?.memberId === null &&
+            d.owner !== null &&
+            d.owner.memberId !== null &&
+            this.#memberRemoval() === null
+          ) {
+            this.#d.store.put(
+              MEMBER_REMOVAL_KEY,
+              MemberRemovalRecord.parse({ at: this.#now(), refusedStops: 0 }),
+            );
+            this.#log("member_removal", {});
+          }
+          return this.#step(d, "terminate", {}).reply;
+        });
         return { operation: "terminate", removal: expectReply(reply, "terminate").removal };
       }
       case "keep_alive": {
@@ -1919,14 +1966,21 @@ export class WorkspaceController {
       case "restart":
         return act((d) => outcome("restart", this.#step(d, "restart", {}).reply));
       case "stop_without_saving":
-        return act((d) =>
-          outcome(
+        return act((d) => {
+          const forRemoval = this.#memberRemovalStopDue(d);
+          // A removed member's computer: the save-before-stop being retried gives way.
+          if (forRemoval && d.lifecycle.context.stopPrep === "removal") {
+            if (d.stopJob !== null) d.stopJob = { ...d.stopJob, failure: "checkpoint_failed" };
+            this.#step(d, "stop_preparation_failed", {});
+          }
+          return outcome(
             "stop_without_saving",
             this.#step(d, "stop_without_saving", {
-              sleepsRefusedThrice: d.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving,
+              sleepsRefusedThrice:
+                d.refusedSleeps >= TIMING.refusedSleepsBeforeStopWithoutSaving || forRemoval,
             }).reply,
-          ),
-        );
+          );
+        });
       case "sign_out": {
         let result: PagesResult | null = null;
         await this.#reserving("sign_out_run", {}, {}, "throw", (d, reply) => {
@@ -2033,6 +2087,11 @@ export class WorkspaceController {
         signOutRunning: r.signOut.job !== null,
         // Additive (WP8.9): a sign-out run ended without a verified sign-out.
         signOutFailed: this.#d.store.get(SIGN_OUT_FAILED_KEY) !== undefined,
+        // Additive (WP8.9): Omnigent's removal of a removed member, and its stops refused.
+        memberRemoved: this.#memberRemoval() !== null,
+        refusedStops: this.#memberRemoval()?.refusedStops ?? 0,
+        // Additive (WP8.9): a resolved removal's deletions are still under way.
+        deleting: r.deletion !== null,
       },
       // Additive fields (the schema is loose): the page's notices.
       noContact:
@@ -3583,6 +3642,14 @@ export class WorkspaceController {
       this.#exclusive(() =>
         this.#write((d) => {
           if (d.stopJob?.snapshotOp !== job.snapshotOp) return;
+          // A removed member's computer an owner or admin stops without saving stops even when
+          // its logins cannot be saved: a login may then be lost, so the removal needs revoking.
+          if (d.stopJob.reason === "without_saving" && this.#memberRemovalStopDue(d)) {
+            d.signOut = { ...d.signOut, loginPossiblyLost: true };
+            this.#log("stop_without_saving_unpublished", { generation: d.lifecycle.generation });
+            this.#step(d, "stop_prepared", {});
+            return;
+          }
           d.stopJob = { ...d.stopJob, failure: "credentials_unpublished" };
           this.#step(d, "stop_preparation_failed", {});
         }),
@@ -3882,6 +3949,7 @@ export class WorkspaceController {
               this.#dropToken();
               this.#d.store.delete(STATUS_LOG_KEY);
               this.#d.store.delete(SIGN_OUT_FAILED_KEY);
+              this.#d.store.delete(MEMBER_REMOVAL_KEY);
               this.#statusLog = null;
               const fresh = newRecord(this.#d.computerId, d.createdAt);
               this.#d.store.put(RECORD_KEY, {

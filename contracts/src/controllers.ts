@@ -193,6 +193,14 @@ export const ComputerPageState = z.looseObject({
      * finish. Additive; absent from an older WorkspaceDO, where the pages read a phase left at
      * `requested` or `tombstoned` instead. */
     signOutFailed: z.boolean().optional(),
+    /** Omnigent's removal of a removed member (WP8.9): its `terminate` named the owner without a
+     * membership. Additive. */
+    memberRemoved: z.boolean().optional(),
+    /** That removal's stops refused because their save failed (WP8.9). Additive. */
+    refusedStops: z.number().int().min(0).optional(),
+    /** A resolved removal's deletions of saved files and logins are still under way (WP8.9): the
+     * pages say "Deleting…" until they are done. Additive. */
+    deleting: z.boolean().optional(),
   }),
   // Additive (WP3.5): the page's notices, as the controller derives them, and the setup terminal's
   // window, from WorkspaceDO's page front. Optional, so an older WorkspaceDO still parses.

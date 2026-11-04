@@ -12,8 +12,15 @@
 // (`SERVER_ENV_OMNIGENT_ACCOUNTS_INIT_ADMIN_USERNAME`). Before teams, Access admitted only that
 // person, so every computer recorded without an owner is theirs.
 
-import type { ComputerPageState, LauncherOwner } from "@cfo/contracts";
-import { AccountId, HostId, TeamMemberId } from "@cfo/contracts";
+import {
+  AccountId,
+  type ComputerPageState,
+  HostId,
+  type LauncherOwner,
+  RESTORED_STATES,
+  TeamMemberId,
+  TIMING,
+} from "@cfo/contracts";
 import { z } from "zod";
 
 const Millis = z.number().int().min(0).max(8.64e15);
@@ -291,6 +298,8 @@ export function pageAllows(
       return true;
     case "sign_out":
     case "resolve_removal":
+    // A removed member's computer whose save keeps failing (`removalStopWithoutSavingDue`).
+    case "stop_without_saving":
       return removalPending;
     default:
       return false;
@@ -321,6 +330,10 @@ export interface RemovalFacts {
   readonly signOutFailed: boolean;
   /** A login may have changed after the last save, and nobody recorded revoking it. */
   readonly revocationRequired: boolean;
+  /** Omnigent's removal of a removed member: its account is gone. */
+  readonly memberRemoved: boolean;
+  /** That removal's stops refused because their save failed. */
+  readonly refusedStops: number;
 }
 
 export function removalFactsOf(state: ComputerPageState): RemovalFacts {
@@ -335,6 +348,8 @@ export function removalFactsOf(state: ComputerPageState): RemovalFacts {
     signOutRunning: removal.signOutRunning ?? removal.signOut === "requested",
     signOutFailed: removal.signOutFailed === true,
     revocationRequired: removal.loginPossiblyLost && !removal.revocationRecorded,
+    memberRemoved: removal.memberRemoved === true,
+    refusedStops: removal.refusedStops ?? 0,
   };
 }
 
@@ -365,5 +380,21 @@ export function unsignedDeletionDue(facts: RemovalFacts): boolean {
     facts.signOutFailed ||
     facts.signOut === "requested" ||
     facts.signOut === "tombstoned"
+  );
+}
+
+/**
+ * Whether an owner or admin may stop a removed member's computer without saving: Omnigent removed
+ * the member, the computer still runs, and its removal's stops were refused because their save
+ * failed as often as sleeps are refused before "stop without saving" (FH-35). The computer's
+ * files changed since the last save are lost, and its logins too if they cannot be saved; its
+ * owner keeps FH-35's own rule for their computer.
+ */
+export function removalStopWithoutSavingDue(facts: RemovalFacts): boolean {
+  return (
+    facts.removal === "pending" &&
+    facts.memberRemoved &&
+    RESTORED_STATES.includes(facts.lifecycle as (typeof RESTORED_STATES)[number]) &&
+    facts.refusedStops >= TIMING.refusedSleepsBeforeStopWithoutSaving
   );
 }

@@ -10,7 +10,12 @@ import {
   type SetupCard,
   type SetupProvider,
 } from "@cfo/contracts";
-import { removalFactsOf, removeOffered, unsignedDeletionDue } from "../computer/ownership.ts";
+import {
+  removalFactsOf,
+  removalStopWithoutSavingDue,
+  removeOffered,
+  unsignedDeletionDue,
+} from "../computer/ownership.ts";
 
 /** The workspace size budget: the page warns above it (design, Size and number). */
 export const SIZE_WARNING_BYTES = 1.5e9;
@@ -61,6 +66,8 @@ export type RemovalStep =
   | "delete_then_sign_out"
   /** A removal is pending: the page's checklist. */
   | "pending"
+  /** Resolved, its saved files and logins still being deleted (WP8.9). */
+  | "deleting"
   | "resolved";
 
 export interface PendingRemoval {
@@ -81,6 +88,11 @@ export interface PendingRemoval {
    * the last save): an administrator may delete it without signing out (WP8.9).
    */
   readonly deleteWithoutSignOut: boolean;
+  /**
+   * A removed member's computer still runs because its save before stopping keeps failing: an
+   * owner or admin may stop it without saving (WP8.9).
+   */
+  readonly stopWithoutSaving: boolean;
 }
 
 export interface ComputerView {
@@ -202,8 +214,10 @@ export function cardView(card: SetupCard): CardView {
 }
 
 function statusOf(state: ComputerPageState, notConnected: boolean): [string, Tone] {
-  if (state.removal.state === "resolved" || state.lifecycle === "removed")
-    return ["Removed", "info"];
+  if (state.removal.state === "resolved" || state.lifecycle === "removed") {
+    // Removed only once its saved files and logins are deleted (WP8.9).
+    return state.removal.deleting === true ? ["Deleting…", "info"] : ["Removed", "info"];
+  }
   if (state.removal.state === "pending") return ["Removal pending", "warn"];
   if (state.status === "stopping") return ["Stopping", "info"];
   if (notConnected) return ["Not connected to Omnigent", "danger"];
@@ -237,7 +251,9 @@ const STARTING = new Set(["waking", "restoring"]);
 
 /** The removal flow's next step (design, Signing in, "Removal"; Lifecycle step 9). */
 export function removalStep(state: ComputerPageState): RemovalStep {
-  if (state.removal.state === "resolved" || state.lifecycle === "removed") return "resolved";
+  if (state.removal.state === "resolved" || state.lifecycle === "removed") {
+    return state.removal.deleting === true ? "deleting" : "resolved";
+  }
   if (state.removal.state === "pending") return "pending";
   if (running(state)) return "signing_out";
   if (state.removal.signOut === "tombstoned" || state.removal.signOut === "verified") {
@@ -273,6 +289,7 @@ export function pendingRemoval(state: ComputerPageState): PendingRemoval | null 
     // `resolve_removal` also needs the computer stopped again in `removal_pending` (Codex r2-2).
     resolvable: settled && !active && state.lifecycle === "removal_pending",
     deleteWithoutSignOut: unsignedDeletionDue(removalFactsOf(state)),
+    stopWithoutSaving: removalStopWithoutSavingDue(removalFactsOf(state)),
   };
 }
 

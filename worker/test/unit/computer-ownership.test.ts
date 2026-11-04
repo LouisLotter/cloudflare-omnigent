@@ -19,6 +19,7 @@ import {
   pageAllows,
   personKey,
   type RemovalFacts,
+  removalStopWithoutSavingDue,
   removeOffered,
   stampMatches,
   unsignedDeletionDue,
@@ -855,7 +856,12 @@ describe("pageAccess and pageAllows", () => {
           if (access === "none") expect(allowed).toBe(false);
           if (access === "admin") {
             const adminActions = ["fleet", "restart", "remove"];
-            const pendingActions = ["sign_out", "resolve_removal", "delete_without_sign_out"];
+            const pendingActions = [
+              "sign_out",
+              "resolve_removal",
+              "delete_without_sign_out",
+              "stop_without_saving",
+            ];
             expect(allowed).toBe(
               adminActions.includes(action) || (pending && pendingActions.includes(action)),
             );
@@ -865,6 +871,13 @@ describe("pageAccess and pageAllows", () => {
         },
       ),
     );
+  });
+
+  it("lets an admin stop someone else's computer without saving only while a removal is pending", () => {
+    expect(pageAllows("admin", "stop_without_saving", true)).toBe(true);
+    expect(pageAllows("admin", "stop_without_saving", false)).toBe(false);
+    expect(pageAllows("none", "stop_without_saving", true)).toBe(false);
+    expect(pageAllows("owner", "stop_without_saving", false)).toBe(true);
   });
 
   it("decides ownership by member, and by the installation owner's account where there is none", () => {
@@ -915,6 +928,8 @@ describe("the removal offers (WP8.9): one rule for the page, its cards and Works
     signOutRunning: fc.boolean(),
     signOutFailed: fc.boolean(),
     revocationRequired: fc.boolean(),
+    memberRemoved: fc.boolean(),
+    refusedStops: fc.integer({ min: 0, max: 6 }),
   });
 
   it("offers recording a removal only for a lost host, to the owner and an admin alike", () => {
@@ -926,6 +941,20 @@ describe("the removal offers (WP8.9): one rule for the page, its cards and Works
         );
         // Never both: a computer with a removal recorded goes on through the removal's steps.
         if (removeOffered(f)) expect(unsignedDeletionDue(f)).toBe(false);
+      }),
+    );
+  });
+
+  it("offers stopping without saving only a removed member's running computer, after 3 refused stops", () => {
+    const running = ["started_no_host", "start_claimed", "host_running", "host_refused"];
+    fc.assert(
+      fc.property(facts, (f) => {
+        expect(removalStopWithoutSavingDue(f)).toBe(
+          f.removal === "pending" &&
+            f.memberRemoved &&
+            running.includes(f.lifecycle) &&
+            f.refusedStops >= 3,
+        );
       }),
     );
   });
@@ -960,6 +989,8 @@ describe("the removal offers (WP8.9): one rule for the page, its cards and Works
       signOutRunning: false,
       signOutFailed: false,
       revocationRequired: false,
+      memberRemoved: false,
+      refusedStops: 0,
     };
     expect(unsignedDeletionDue(base)).toBe(true);
     expect(unsignedDeletionDue({ ...base, signOut: "none", revocationRequired: true })).toBe(true);

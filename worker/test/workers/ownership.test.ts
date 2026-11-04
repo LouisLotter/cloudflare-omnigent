@@ -453,6 +453,87 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     expect(await statusAs("carol", `${page}/do/remove`)).toBe(200);
   }, 60_000);
 
+  it("lets Carol stop a removed member's computer whose save keeps failing, and finish it; never Bob", async () => {
+    const host = newHost();
+    const alice: LauncherOwner = {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    };
+    const c = await provisionFor(host, alice);
+    await wake(c, { hostId: host, token: TOKEN });
+    const sup = c.container.sim.sup;
+    if (sup === null) throw new Error("no supervisor");
+    sup.signIn("claude");
+    await settle(c);
+    // A login changed since the last save, whose publication is held back: every save fails.
+    sup.options.holdCredentials = true;
+    sup.refreshUnpublished("codex");
+    sup.report();
+    await settle(c);
+    c.client.owner = { ...alice, memberId: null, teamId: null };
+    expect(await c.client.send(c.client.terminateRequest())).toEqual({
+      operation: "terminate",
+      removal: "pending",
+    });
+    await evictDurableObject(c.stub);
+    const page = `/platform/computers/${c.computerId}`;
+    const unsaved = `${page}/do/stop-without-saving`;
+    let offered = false;
+    for (let i = 0; i < 20 && !offered; i++) {
+      await alarm(c, 60_000);
+      offered = (await (await routeAs("carol", "/platform/computers")).text()).includes(unsaved);
+    }
+    expect(offered).toBe(true);
+    expect(c.container.sim.running).toBe(true);
+    expect(await statusAs("bob", unsaved)).toBe(404);
+    const confirm = await routeAs("carol", unsaved);
+    expect(confirm.status).toBe(200);
+    expect(await confirm.text()).toContain("Provider sessions may still need revoking.");
+    const stopped = await routeAs(
+      "carol",
+      unsaved,
+      post({
+        intent: (await intentOn("carol", unsaved)) as string,
+        op: "op_01hzy4a7b8c9d0e1f2g3h4j5p1",
+      }),
+    );
+    await stopped.text();
+    expect(stopped.headers.get("location")).toBe(
+      "/platform/computers?done=stop-without-saving&outcome=accepted",
+    );
+    for (
+      let i = 0;
+      i < 10 && (await record(c.stub)).lifecycle.context.state !== "removal_pending";
+      i++
+    ) {
+      await alarm(c, 60_000);
+    }
+    const r = await record(c.stub);
+    expect(r.lifecycle.context.state).toBe("removal_pending");
+    expect(r.signOut.loginPossiblyLost).toBe(true);
+    expect(c.container.sim.running).toBe(false);
+
+    // Stopped, with a login possibly lost: Carol deletes it without a sign-out.
+    const unsigned = `${page}/do/delete-without-sign-out`;
+    expect(await (await routeAs("carol", "/platform/computers")).text()).toContain(unsigned);
+    const deleted = await routeAs(
+      "carol",
+      unsigned,
+      post({
+        intent: (await intentOn("carol", unsigned)) as string,
+        op: "op_01hzy4a7b8c9d0e1f2g3h4j5p2",
+      }),
+    );
+    await deleted.text();
+    expect(deleted.status).toBe(303);
+    for (let i = 0; i < 20 && (await record(c.stub)).lifecycle.context.state !== "removed"; i++) {
+      await alarm(c, 30_000);
+    }
+    expect((await record(c.stub)).lifecycle.context.state).toBe("removed");
+  }, 120_000);
+
   it("lets Carol finish a removed member's computer without her, and never Bob", async () => {
     const host = newHost();
     const alice: LauncherOwner = {

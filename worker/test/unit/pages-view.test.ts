@@ -367,6 +367,7 @@ describe("the removal flow (design, Signing in, Removal)", () => {
     revocationRequired: false,
     resolvable: false,
     deleteWithoutSignOut: false,
+    stopWithoutSaving: false,
   };
 
   it("follows the controller's settlement: only `settled` makes a removal resolvable (Codex r1-4)", () => {

@@ -108,11 +108,14 @@ export const ACTIONS: readonly ActionSpec[] = [
     title: "Stop without saving the latest changes",
     button: "Stop without saving",
     danger: true,
-    offered: (view) => view.offerStopWithoutSaving,
-    explain: (_view, state) =>
-      `<p>The computer could not save its files before sleeping ${state.refusedSleeps} times in a row, so it stays awake. This stops it <strong>without saving its files</strong>: changes made ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} are lost. Its logins are still saved first. It ends work in progress.</p>`,
+    offered: (view) => view.offerStopWithoutSaving || (view.pending?.stopWithoutSaving ?? false),
+    explain: (view, state) =>
+      view.pending?.stopWithoutSaving
+        ? `<p>This computer's owner was removed from the team. Its removal stops it after saving its files and logins, and that save failed ${state.removal.refusedStops ?? 0} times, so it keeps running. This stops it <strong>without saving</strong>: work changed ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} is lost. Its logins are saved first if they can be; if they cannot, logins changed since the last save are lost too.</p><p><strong>Provider sessions may still need revoking.</strong> If a login was lost, signing out cannot reach it: the removed person, or the administrator of their Claude or ChatGPT account, must revoke it at claude.ai and in ChatGPT's security settings.</p>`
+        : `<p>The computer could not save its files before sleeping ${state.refusedSleeps} times in a row, so it stays awake. This stops it <strong>without saving its files</strong>: changes made ${state.lastSavedAt ? `after the last save, at ${escapeHtml(state.lastSavedAt)},` : "since it was added"} are lost. Its logins are still saved first. It ends work in progress.</p>`,
     call: (base) => ({ action: "stop_without_saving", interfaceVersion: v, ...base }),
-    admin: () => false,
+    // Someone else's only while a removal is pending (`pageAllows`); then the offer above.
+    admin: (view) => view.removal === "pending",
   },
   {
     slug: "sign-out",
@@ -144,7 +147,9 @@ export const ACTIONS: readonly ActionSpec[] = [
     danger: true,
     offered: (view) => view.pending?.resolvable ?? false,
     explain: () =>
-      "<p>Deletes this computer's saved files and saved logins from the platform. This cannot be undone.</p>",
+      "<p>Deletes this computer's saved files and saved logins from the platform. This cannot be undone. Its card shows Deleting… until they are deleted.</p>",
+    acceptedText:
+      "Deletion started: its card shows Deleting… until its saved files and logins are deleted.",
     call: (base) => ({ action: "resolve_removal", interfaceVersion: v, ...base }),
     admin: (view) => view.removal === "pending",
   },
@@ -157,9 +162,9 @@ export const ACTIONS: readonly ActionSpec[] = [
       pageAllows(state.access ?? "owner", "delete_without_sign_out", view.removal === "pending") &&
       (view.pending?.deleteWithoutSignOut ?? false),
     explain: (view) =>
-      `<p>${view.pending?.revocationRequired ? "A login on this computer may have changed after its last save, so a sign-out from its saved logins cannot reach it." : "The sign-out on this computer was tried and did not finish."} This deletes its saved files and saved logins from the platform now, <strong>without signing them out</strong>. It cannot be undone.</p><p><strong>The provider sessions are not revoked.</strong> They stay valid at Anthropic and OpenAI until they are revoked there: the computer's owner, or the administrator of their Claude or ChatGPT account, must revoke them at claude.ai and in ChatGPT's security settings.</p>`,
+      `<p>${view.pending?.revocationRequired ? "A login on this computer may have changed after its last save, so a sign-out from its saved logins cannot reach it." : "The sign-out on this computer was tried and did not finish."} This deletes its saved files and saved logins from the platform, <strong>without signing them out</strong>; its card shows Deleting… until they are deleted. It cannot be undone.</p><p><strong>The provider sessions are not revoked.</strong> They stay valid at Anthropic and OpenAI until they are revoked there: the computer's owner, or the administrator of their Claude or ChatGPT account, must revoke them at claude.ai and in ChatGPT's security settings.</p>`,
     acceptedText:
-      "Deleted. Its provider sessions were not revoked: the computer's owner or their provider's administrator must revoke them at claude.ai and in ChatGPT's settings.",
+      "Deletion started: its card shows Deleting… until its saved files and logins are deleted. Its provider sessions were not revoked: the computer's owner or their provider's administrator must revoke them at claude.ai and in ChatGPT's settings.",
     call: (base) => ({ action: "delete_without_sign_out", interfaceVersion: v, ...base }),
     admin: (view) => view.removal === "pending",
   },
@@ -292,6 +297,11 @@ function fleetCard(view: ComputerView, ownerName: string | null): string {
       `<a class="button danger" href="${actionPath(view.id, "resolve-removal")}" data-admin-action="resolve-removal">Finish the removal</a>`,
     );
   }
+  if (view.removal === "pending" && view.pending?.stopWithoutSaving) {
+    links.push(
+      `<a class="button danger" href="${actionPath(view.id, "stop-without-saving")}" data-admin-action="stop-without-saving">Stop without saving</a>`,
+    );
+  }
   if (view.removal === "pending" && view.pending?.deleteWithoutSignOut) {
     links.push(
       `<a class="button danger" href="${actionPath(view.id, "delete-without-sign-out")}" data-admin-action="delete-without-sign-out">Delete without signing out</a>`,
@@ -367,7 +377,12 @@ export async function computersPage(
   for (const entry of states) {
     if (entry.state === undefined) {
       if (admin) unreadable.push(entry.name);
-    } else if (entry.state !== null && entry.state.computer.lifecycle !== "removed") {
+    } else if (
+      entry.state !== null &&
+      // A removed computer stays listed, as Deleting…, until its deletions are done (WP8.9).
+      (entry.state.computer.lifecycle !== "removed" ||
+        entry.state.computer.removal.deleting === true)
+    ) {
       const view = computerView(entry.state.computer, nowMs);
       if (entry.state.computer.access === "admin") {
         fleet.push({ view, ownerName: entry.state.computer.ownerName ?? null });
@@ -475,6 +490,9 @@ export function removalSection(view: ComputerView): string {
       steps = `<p data-removal-step="pending">The removal is pending; its saved logins are kept until it is resolved. ${escapeHtml(signOutNote)}</p><ol class="steps">${items.join("")}</ol>`;
       break;
     }
+    case "deleting":
+      steps = `<p data-removal-step="deleting">Deleting its saved files and logins… This page shows Removed when they are deleted.</p>`;
+      break;
     case "resolved":
       steps = `<p data-removal-step="resolved">Removed.</p>`;
       break;

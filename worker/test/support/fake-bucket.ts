@@ -51,7 +51,14 @@ export class FakeBucket implements CheckpointBucket {
     return body === undefined ? null : new Uint8Array(body);
   }
 
+  /** The next deletes fail, leaving their objects (WP8.9). */
+  failDeletes = 0;
+
   async delete(key: string): Promise<void> {
+    if (this.failDeletes > 0) {
+      this.failDeletes -= 1;
+      throw new Error("R2: we encountered an internal error");
+    }
     this.objects.delete(key);
     this.deleted.push(key);
   }

@@ -180,7 +180,9 @@ step below.
    Claude and Codex. Sign it out, then Finish the removal: its saved files and logins are deleted
    and the card goes. If the sign-out does not finish, the card offers Delete without signing out
    instead; it says that B's provider sessions are not revoked, so B (or the provider account's
-   administrator) revokes them at claude.ai and in ChatGPT's settings.
+   administrator) revokes them at claude.ai and in ChatGPT's settings. If the computer cannot
+   save before it stops, the card offers Stop without saving after three tries. After either
+   deletion the card shows Deleting… until the saved files and logins are gone.
 5. B: `/platform/computers` is refused.
 
 Only then invite the first real member, the same way as step 1 of the invitation. Give them the

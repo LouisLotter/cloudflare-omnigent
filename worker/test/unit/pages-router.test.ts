@@ -2149,6 +2149,7 @@ describe("the person behind a page (WP8.4)", () => {
       await route("/platform/computers?done=delete-without-sign-out&outcome=accepted")
     ).text();
     expect(after).toContain("Its provider sessions were not revoked");
+    expect(after).toContain("Deletion started");
   });
 
   it("names a login that may have changed after the last save as the reason", async () => {
@@ -2303,6 +2304,108 @@ describe("the person behind a page (WP8.4)", () => {
     expect(html).toContain(`href="${page}/do/restart"`);
     expect(html).toContain(`href="${page}/do/remove"`);
     expect((await route(`${page}/do/remove`)).status).toBe(200);
+  });
+
+  it("offers an administrator stopping a removed member's computer without saving, saying what is lost", async () => {
+    const { route, backend } = pendingFleet({ signOut: "none" });
+    backend.states.set(OTHER, {
+      action: "state",
+      computer: pageState({
+        computerId: OTHER,
+        hostName: "Alice's computer",
+        access: "admin",
+        ownerName: "alice",
+        lifecycle: "host_running",
+        status: "host_running",
+        removal: {
+          state: "pending",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+          settled: false,
+          signOutRunning: false,
+          memberRemoved: true,
+          refusedStops: 3,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    const other = `/platform/computers/${OTHER}`;
+    const list = await (await route("/platform/computers")).text();
+    expect(list).toContain(`href="${other}/do/stop-without-saving"`);
+    const confirm = await route(`${other}/do/stop-without-saving`);
+    expect(confirm.status).toBe(200);
+    const html = await confirm.text();
+    expect(html).toContain("owner was removed from the team");
+    expect(html).toContain("that save failed 3 times");
+    expect(html).toContain("is lost");
+    expect(html).toContain("logins changed since the last save are lost too");
+    expect(html).toContain("Provider sessions may still need revoking.");
+    backend.actResult = { action: "stop_without_saving", outcome: "accepted" };
+    const posted = await route(`${other}/do/stop-without-saving`, form({ intent: INTENT, op: OP }));
+    expect(posted.status).toBe(303);
+    expect(backend.acts.map((a) => a.call.action)).toEqual(["stop_without_saving"]);
+  });
+
+  it("offers no stop without saving before 3 refused stops, nor outside a member removal", async () => {
+    for (const removal of [
+      { memberRemoved: true, refusedStops: 2 },
+      { memberRemoved: false, refusedStops: 5 },
+    ]) {
+      const { route, backend } = adminFleet();
+      backend.states.set(OTHER, {
+        action: "state",
+        computer: pageState({
+          computerId: OTHER,
+          access: "admin",
+          lifecycle: "host_running",
+          removal: { ...pageState().removal, state: "pending", ...removal },
+        }),
+        intentToken: INTENT,
+      });
+      const other = `/platform/computers/${OTHER}`;
+      expect(await (await route("/platform/computers")).text()).not.toContain(
+        `${other}/do/stop-without-saving`,
+      );
+      expect((await route(`${other}/do/stop-without-saving`)).status).toBe(409);
+    }
+  });
+
+  it("lists a computer whose saved files and logins are still being deleted as Deleting…", async () => {
+    const deleting = (still: boolean) =>
+      pageState({
+        computerId: OTHER,
+        hostName: "Alice's computer",
+        access: "admin",
+        ownerName: "alice",
+        lifecycle: "removed",
+        status: "stopped",
+        removal: { ...pageState().removal, state: "resolved", deleting: still },
+      });
+    const t = adminFleet();
+    t.backend.states.set(OTHER, { action: "state", computer: deleting(true), intentToken: INTENT });
+    const list = await (await t.route("/platform/computers")).text();
+    expect(list).toContain(`data-fleet-computer="${OTHER}"`);
+    expect(list).toContain("Deleting…");
+    expect(list).not.toContain(`/platform/computers/${OTHER}/do/`);
+    // Done: gone from the list.
+    t.backend.states.set(OTHER, {
+      action: "state",
+      computer: deleting(false),
+      intentToken: INTENT,
+    });
+    expect(await (await t.route("/platform/computers")).text()).not.toContain(
+      `data-fleet-computer="${OTHER}"`,
+    );
+    // The notice after the action says the deletion started, not that it is done.
+    const flash = await (
+      await t.route("/platform/computers?done=delete-without-sign-out&outcome=accepted")
+    ).text();
+    expect(flash).toContain("Deletion started");
+    expect(flash).not.toContain("Deleted.");
+    expect(
+      await (await t.route("/platform/computers?done=resolve-removal&outcome=accepted")).text(),
+    ).toContain("Deletion started");
   });
 
   it("names a computer that could not be read to an administrator only", async () => {

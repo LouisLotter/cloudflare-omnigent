@@ -48,6 +48,7 @@ import {
   pageAllows,
   personKey,
   removalFactsOf,
+  removalStopWithoutSavingDue,
   removeOffered,
 } from "./ownership.ts";
 import type { Store } from "./record.ts";
@@ -392,11 +393,19 @@ export class PageFront {
     const claimed = ownerIn(call as Record<string, unknown>);
     if (this.#access(claimed) === "none") this.#authorize(claimed, "fleet", state);
     const owner = await this.#checkIntent(call as Record<string, unknown>);
-    this.#authorize(
+    const access = this.#authorize(
       owner,
       PAGES_ACTIONS[call.action as Exclude<PagesCall["action"], "state">],
       state,
     );
+    // On someone else's computer only a removed member's, whose save keeps failing (WP8.9).
+    if (
+      access === "admin" &&
+      call.action === "stop_without_saving" &&
+      !removalStopWithoutSavingDue(removalFactsOf(state))
+    ) {
+      return { action: "stop_without_saving", outcome: "refused", reason: "not_offered" };
+    }
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
       return this.#exclusive(async () => {

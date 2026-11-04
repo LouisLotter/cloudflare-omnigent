@@ -285,8 +285,19 @@
             "removal": {
               "additionalProperties": {},
               "properties": {
+                "deleting": {
+                  "type": "boolean"
+                },
                 "loginPossiblyLost": {
                   "type": "boolean"
+                },
+                "memberRemoved": {
+                  "type": "boolean"
+                },
+                "refusedStops": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "revocationRecorded": {
                   "type": "boolean"
