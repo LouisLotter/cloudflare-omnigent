@@ -709,7 +709,7 @@ async function status(path: string, withLogs: boolean): Promise<void> {
     );
   }
   // A refused setting (exit 78): whether it holds the server now, and the earlier refusals.
-  for (const line of holdReport(logs, installation.installationId, now)) console.log(line);
+  for (const line of holdReport(logs, installation.installationId)) console.log(line);
   if (journal.releasedAt !== undefined) {
     console.log(
       `released at ${journal.releasedAt}${journal.verifiedAt ? `, checked at ${journal.verifiedAt}` : ", not checked yet"}: the lines above are from before the switch`,

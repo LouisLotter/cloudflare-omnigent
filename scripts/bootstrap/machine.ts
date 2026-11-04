@@ -65,6 +65,7 @@ import {
 } from "./access-app.ts";
 import type { DevicesRecord } from "./devices.ts";
 import {
+  currentHold,
   decide,
   FRESH_MS,
   newest,
@@ -872,23 +873,16 @@ async function r2Credentials(
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };
 
 /**
- * Whether the watchdog holds the server for a refused setting (exit 78) since `since`, with no
- * status of this installation logged after the hold: it will not answer until the setting changes.
+ * Whether a refused setting (exit 78) holds the server now, from a hold logged since `since`:
+ * `currentHold`, the reading `update` and `status --logs` share. It will not answer until the
+ * setting changes; a later status or another configuration's start ends the hold.
  */
 export function heldSince(
   logs: ReturnType<typeof parseLogs>,
   installationId: string,
   since: number,
 ): boolean {
-  const holds = [
-    ...logs.configErrors.filter((e) => e.held === true),
-    ...(logs.configHolds ?? []),
-  ].filter((e) => e.loggedAt >= since);
-  if (holds.length === 0) return false;
-  const hold = Math.max(...holds.map((e) => e.loggedAt));
-  return !logs.statuses.some(
-    (e) => e.status.installationId === installationId && e.loggedAt > hold,
-  );
+  return currentHold(logs, installationId, since).held;
 }
 
 async function waitForOwner(

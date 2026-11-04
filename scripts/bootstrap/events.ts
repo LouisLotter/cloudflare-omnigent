@@ -485,34 +485,81 @@ export type Verification =
   /** `held`: the server refused a setting and stays stopped, so waiting longer changes nothing. */
   | { readonly verified: false; readonly why: string; readonly held?: true };
 
-/** How recent a `config_held` line must be to show the hold is current: three checks. */
-export const HOLD_CURRENT_MS = 3 * 60_000;
+/** Whether a refused setting holds the server now, as `currentHold` reads the logs. */
+export type HoldState =
+  | {
+      readonly held: false;
+      /** When the last hold ended (a status, or another configuration started); none: no hold. */
+      readonly endedAt?: number;
+    }
+  | {
+      readonly held: true;
+      /** The newest line that says so. */
+      readonly at: number;
+      readonly versionId: string | undefined;
+      /** When the hold began (ISO), when known. */
+      readonly heldSince: string | undefined;
+    };
+
+/**
+ * Whether a refused setting (exit 78) holds the server now: the one reading `run`, `update` and
+ * `status --logs` share. The newest hold line logged since `since`, `config_error` holding the
+ * current configuration or the recurring `config_held`, unless a later line ends it: a status of
+ * this installation (a server answered) or `config_changed` (the watchdog started another
+ * configuration). A `config_error` that did not hold the current configuration (`held: false`)
+ * is history, never a hold. Nothing ends a hold by age alone.
+ */
+export function currentHold(
+  logs: ParsedLogs,
+  installationId: string,
+  since = Number.NEGATIVE_INFINITY,
+): HoldState {
+  const holds = [
+    ...logs.configErrors
+      .filter((e) => e.held === true && e.loggedAt >= since)
+      .map((e) => ({
+        at: e.loggedAt,
+        versionId: e.versionId,
+        heldSince: new Date(e.loggedAt).toISOString(),
+      })),
+    ...(logs.configHolds ?? [])
+      .filter((e) => e.loggedAt >= since)
+      .map((e) => ({ at: e.loggedAt, versionId: e.versionId, heldSince: e.heldSince })),
+  ];
+  const latest = holds.reduce<(typeof holds)[number] | undefined>(
+    (a, b) => (a === undefined || b.at >= a.at ? b : a),
+    undefined,
+  );
+  if (latest === undefined) return { held: false };
+  const ends = [
+    ...logs.statuses
+      .filter((e) => e.status.installationId === installationId && e.loggedAt > latest.at)
+      .map((e) => e.loggedAt),
+    ...logs.configChanges.filter((at) => at > latest.at),
+  ];
+  if (ends.length > 0) return { held: false, endedAt: Math.min(...ends) };
+  return { held: true, ...latest };
+}
 
 /**
  * What `status --logs` says about refused settings (exit 78), from the logs it read: whether a
- * hold is current (a `config_held` line within the last three checks, with no status of this
- * installation or configuration change after it), and each earlier refusal with what followed
- * it. Lines only, never a value.
+ * hold is current (`currentHold`), and each earlier refusal with what followed it. Lines only,
+ * never a value.
  */
-export function holdReport(logs: ParsedLogs, installationId: string, now: number): string[] {
+export function holdReport(logs: ParsedLogs, installationId: string): string[] {
   const iso = (ms: number) => new Date(ms).toISOString();
   const answeredAfter = (at: number) =>
     logs.statuses.some((e) => e.status.installationId === installationId && e.loggedAt > at) ||
     logs.configChanges.some((c) => c > at);
-  const holds = [...(logs.configHolds ?? [])].sort((a, b) => a.loggedAt - b.loggedAt);
-  const latest = holds.at(-1);
+  const hold = currentHold(logs, installationId);
   const lines: string[] = [];
-  if (
-    latest !== undefined &&
-    now - latest.loggedAt <= HOLD_CURRENT_MS &&
-    !answeredAfter(latest.loggedAt)
-  ) {
+  if (hold.held) {
     lines.push(
-      `the server is held now: it refused a setting${latest.heldSince ? ` at ${latest.heldSince}` : ""} and stays stopped (exit 78) until that setting changes (version ${latest.versionId ?? "?"}); its cfo.config.error line in Workers Logs names the setting`,
+      `the server is held now: it refused a setting${hold.heldSince ? ` at ${hold.heldSince}` : ""} and stays stopped (exit 78) until that setting changes (version ${hold.versionId ?? "?"}); its cfo.config.error line in Workers Logs names the setting`,
     );
-  } else if (latest !== undefined) {
+  } else if (hold.endedAt !== undefined) {
     lines.push(
-      `no current hold: the last check that held the server for a refused setting was at ${iso(latest.loggedAt)}${answeredAfter(latest.loggedAt) ? ", and the server answered or was restarted with another configuration since" : ""}`,
+      `no current hold: the last hold for a refused setting ended at ${iso(hold.endedAt)}, when the server answered or was restarted with another configuration`,
     );
   }
   for (const e of [...logs.configErrors].sort((a, b) => a.loggedAt - b.loggedAt)) {
@@ -607,18 +654,12 @@ export function verifyRelease(logs: ParsedLogs, rules: ReleaseRules): Verificati
     return { verified: false, why: "the bootstrap password was reported after the switch" };
   }
   const latest = appliedStatus(logs, rules);
-  // The released version's watchdog holds a server that refused a setting, and no server has
-  // answered since: it never will until the setting changes (a new version).
-  const held = [
-    ...logs.configErrors.filter((e) => e.held === true),
-    ...(logs.configHolds ?? []),
-  ].some(
-    (e) =>
-      e.versionId === released &&
-      e.loggedAt >= rules.releasedAt &&
-      (latest === undefined || e.loggedAt >= latest.loggedAt),
-  );
-  if (held) return { verified: false, why: SERVER_HELD_WHY, held: true };
+  // The released version's watchdog holds a server that refused a setting, and nothing has
+  // ended the hold since: no server answers until the setting changes (a new version).
+  const hold = currentHold(logs, rules.installationId, rules.releasedAt);
+  if (hold.held && hold.versionId === released) {
+    return { verified: false, why: SERVER_HELD_WHY, held: true };
+  }
   if (latest === undefined) {
     return {
       verified: false,
