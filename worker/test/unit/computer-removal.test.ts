@@ -673,6 +673,55 @@ describe("a removed member's computer whose save before stopping keeps failing (
     expect(sim.bucket.objects.size).toBe(0);
   });
 
+  for (const start of ["host_refused", "started_no_host"] as const) {
+    it(`counts the removal's saves past the no-host deadline, ${start} (Codex r2 CF-3)`, async () => {
+      // Default timing: the five-minute no-host deadline competes with the removal's retries.
+      const sim = new ComputerSim();
+      sim.client.owner = ALICE;
+      if (start === "host_refused") {
+        await sim.running();
+      } else {
+        await sim.call(sim.client.provisionRequest("managed-7f3c2a9e"));
+        await sim.call(sim.client.resumeRequest());
+        await sim.advance(1000);
+      }
+      live(sim).signIn("claude");
+      await sim.call(sim.client.checkpointRequest());
+      await sim.settle();
+      // A login changed since the last save, whose publication is held back.
+      live(sim).options.holdCredentials = true;
+      live(sim).refreshUnpublished("codex");
+      if (start === "host_refused") live(sim).refuseHost();
+      else live(sim).report();
+      await sim.settle();
+      expect(sim.record().lifecycle.context.state).toBe(start);
+      await omnigentRemovesAlice(sim);
+      // Past the deadline, then evicted.
+      await sim.advance(15 * 60_000);
+      await sim.restart();
+      await sim.advance(10 * 60_000);
+      expect(sim.computer.running).toBe(true);
+      expect((await state(sim)).removal.refusedStops ?? 0).toBeGreaterThanOrEqual(3);
+      expect((await offered(sim))?.stopWithoutSaving).toBe(true);
+      // Whatever its label, the save being retried gives way.
+      expect(await pageCall(sim, "stop_without_saving", 1)).toEqual({
+        action: "stop_without_saving",
+        outcome: "accepted",
+      });
+      await sim.advance(5 * 60_000);
+      const r = sim.record();
+      expect(sim.computer.running).toBe(false);
+      expect(r.lifecycle.context.state).toBe("removal_pending");
+      expect(r.signOut.loginPossiblyLost).toBe(true);
+      expect(await pageCall(sim, "delete_without_sign_out", 2)).toMatchObject({
+        outcome: "accepted",
+      });
+      await sim.advance(5 * 60_000);
+      expect(sim.record().lifecycle.context.state).toBe("removed");
+      expect(sim.bucket.objects.size).toBe(0);
+    });
+  }
+
   it("stops normally when its saves recover before anyone acts", async () => {
     const sim = new ComputerSim();
     await alicesComputer(sim);

@@ -862,7 +862,15 @@ export class WorkspaceController {
           const reason = d.stopJob?.failure ?? "checkpoint_failed";
           if (before.stopPrep === "sleep") d.refusedSleeps += 1;
           const memberRemoval = this.#memberRemoval();
-          if (before.stopPrep === "removal" && memberRemoval !== null) {
+          // Every save prepared while the member removal is pending serves it, whatever stop it
+          // was prepared for (the removal's own, or the no-host deadline's); only stopping
+          // without saving is not a save.
+          if (
+            memberRemoval !== null &&
+            before.removalIntent &&
+            before.stopPrep !== null &&
+            before.stopPrep !== "without_saving"
+          ) {
             this.#d.store.put(
               MEMBER_REMOVAL_KEY,
               MemberRemovalRecord.parse({
@@ -1968,8 +1976,10 @@ export class WorkspaceController {
       case "stop_without_saving":
         return act((d) => {
           const forRemoval = this.#memberRemovalStopDue(d);
-          // A removed member's computer: the save-before-stop being retried gives way.
-          if (forRemoval && d.lifecycle.context.stopPrep === "removal") {
+          // A removed member's computer: the save-before-stop being retried gives way, whatever
+          // stop it was prepared for.
+          const preparing = d.lifecycle.context.stopPrep;
+          if (forRemoval && preparing !== null && preparing !== "without_saving") {
             if (d.stopJob !== null) d.stopJob = { ...d.stopJob, failure: "checkpoint_failed" };
             this.#step(d, "stop_preparation_failed", {});
           }
