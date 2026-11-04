@@ -13,6 +13,7 @@ import {
   type ComputerId,
   type ControlCall,
   type ControlResult,
+  FORWARDED_PERSON_HEADER,
   type OutageRecord,
   type ReplicationHealth,
   type SupervisorMessage,
@@ -24,12 +25,21 @@ import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
 import type { PlatformEnv } from "../../src/env.ts";
 import { OmnigentServer as PlatformOmnigentServer } from "../../src/server/OmnigentServer.ts";
 import { CONTROL_OBJECT_NAME, type OmnigentServerCall } from "../../src/shared/rpc.ts";
+import { OWNER_SUB } from "../support/access-keys.ts";
 import { HOST } from "../support/computer-sim.ts";
 import { FakeBucket } from "../support/fake-bucket.ts";
 import { FakeLauncherClient, rpcTransport } from "../support/fake-launcher-client.ts";
 import { FakeServerContainer } from "../support/fake-server-container.ts";
 import { SimulatedComputer } from "../support/fake-supervisor.ts";
 import { fakeTtyd } from "./fake-shell.ts";
+import {
+  ASLEEP_HOST,
+  FULL_HOST,
+  FULL_REASON,
+  OMNIGENT_SESSION_COOKIE,
+  OTHER_SUB,
+  OTHERS_HOST,
+} from "./wake-hosts.ts";
 
 const call = { interfaceVersion: WORKSPACE_INTERFACE_VERSION };
 const bucket = new FakeBucket();
@@ -41,6 +51,25 @@ const lostContact = new Set<string>();
 const legacy = new Set<string>();
 const staging = new Set<string>();
 const failingSaves = new Set<string>();
+/** WP3.53: a computer's Omnigent host, where it is not the shared HOST. */
+const hostIds = new Map<string, string>();
+const hostIdOf = (computerId: string) => hostIds.get(computerId) ?? HOST;
+
+/**
+ * The fake Omnigent's persistent hosts (WP3.53): whose each is, its computer, the reason its wake
+ * fails with (null: it wakes), its `persistent_status`, and the `POST …/start` calls it answered.
+ */
+interface FakeHost {
+  readonly computerId: string;
+  readonly owner: string;
+  readonly fail: string | null;
+  state: "asleep" | "waking" | "awake" | "failed";
+  failure: string | null;
+  starts: number;
+  requests: number;
+}
+const omnigentHosts = new Map<string, FakeHost>();
+
 const scenario: { outages: OutageRecord[]; replication: ReplicationHealth } = {
   outages: [],
   replication: { state: "replicating", lastSyncAt: null, checkedAt: new Date().toISOString() },
@@ -108,7 +137,7 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
             propsVersion: 1,
             computerId: sup.computerId,
             generation: message.generation,
-            hostId: HOST,
+            hostId: hostIdOf(sup.computerId),
           },
           message,
         }).catch((error: unknown) => {
@@ -118,7 +147,7 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
               propsVersion: 1,
               computerId: sup.computerId,
               generation: message.generation,
-              hostId: HOST,
+              hostId: hostIdOf(sup.computerId),
             },
             message,
           });
@@ -205,9 +234,22 @@ export class OmnigentServer extends PlatformOmnigentServer {
     return scenario.replication;
   }
 
-  /** Omnigent's own interface, faked: the pages link to it. */
+  /**
+   * Omnigent's own interface, faked: the pages link to it, and the setup page wakes a computer
+   * with its `POST /v1/hosts/{id}/start` (WP3.53).
+   */
   override async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    const host = /^\/v1\/hosts\/([0-9a-f]{32})(\/start)?$/.exec(path);
+    if (host !== null) {
+      return fakeOmnigentHost(
+        this.env as Env,
+        this.ctx,
+        request,
+        host[1] ?? "",
+        host[2] !== undefined,
+      );
+    }
     return new Response(`<!doctype html><title>Omnigent (fake)</title><h1>Omnigent: ${path}</h1>`, {
       headers: { "content-type": "text/html; charset=utf-8" },
     });
@@ -250,6 +292,157 @@ async function create(env: Env, name: string) {
   return { computerId, stub, client };
 }
 
+/**
+ * A launcher client for `computerId` in the calling context (WP3.53): a stub made in one request
+ * cannot be used from another, so each call gets its own. `fresh` gives a request a new operation
+ * ID, as Omnigent mints them (`uuid.uuid4().hex`), so no call repeats an earlier one's ID and
+ * gets that call's recorded answer back.
+ */
+function clientOf(env: Env, computerId: string): FakeLauncherClient {
+  const stub = env.WORKSPACE.getByName(computerId) as unknown as E2eStub;
+  return new FakeLauncherClient(computerId as ComputerId, rpcTransport(stub));
+}
+const fresh = <T extends { operationId: string }>(request: T): T => ({
+  ...request,
+  operationId: crypto.randomUUID().replaceAll("-", ""),
+});
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The wake journeys' computers (WP3.53): each one's Omnigent host, its owner, how a wake ends. */
+const WAKE_HOSTS: Readonly<
+  Record<string, { readonly hostId: string; readonly owner: string; readonly fail: string | null }>
+> = {
+  "managed-asleep": { hostId: ASLEEP_HOST, owner: OWNER_SUB, fail: null },
+  "managed-full": { hostId: FULL_HOST, owner: OWNER_SUB, fail: FULL_REASON },
+  "managed-others": { hostId: OTHERS_HOST, owner: OTHER_SUB, fail: null },
+};
+
+/**
+ * The fake Omnigent's `GET /v1/hosts/{id}` and `POST …/start` (WP3.53), with Omnigent's own
+ * checks in its order: the person's Omnigent session (401), the host (404), the host's owner
+ * (`resolve_host_owner`: 403). The person is the one the platform forwarded, so a call from the
+ * owner's browser for someone else's host is refused. A start answers 202 while the wake runs,
+ * as Omnigent's does.
+ */
+async function fakeOmnigentHost(
+  env: Env,
+  ctx: DurableObjectState,
+  request: Request,
+  hostId: string,
+  start: boolean,
+): Promise<Response> {
+  const host = omnigentHosts.get(hostId);
+  // Every request that reaches Omnigent for the host, refused or not: a cross-origin one never does.
+  if (host !== undefined) host.requests += 1;
+  const cookies = request.headers.get("cookie") ?? "";
+  if (!new RegExp(`(?:^|;\\s*)${OMNIGENT_SESSION_COOKIE}=`).test(cookies)) {
+    return Response.json({ detail: "Not authenticated" }, { status: 401 });
+  }
+  if (host === undefined) return Response.json({ detail: "host not found" }, { status: 404 });
+  let person: { subject?: unknown } | null = null;
+  try {
+    person = JSON.parse(request.headers.get(FORWARDED_PERSON_HEADER) ?? "null");
+  } catch {
+    person = null;
+  }
+  if (person?.subject !== host.owner) {
+    return Response.json({ detail: "not your host" }, { status: 403 });
+  }
+  const payload = () => ({
+    host_id: hostId,
+    persistent_status: {
+      state: host.state,
+      failure: host.failure,
+      wake_stage: host.state === "waking" ? "starting" : null,
+    },
+  });
+  if (!start) {
+    return request.method === "GET"
+      ? Response.json(payload())
+      : new Response(null, { status: 405 });
+  }
+  if (request.method !== "POST") return new Response(null, { status: 405 });
+  host.starts += 1;
+  if (host.state !== "waking" && host.state !== "awake") {
+    host.state = "waking";
+    host.failure = null;
+    ctx.waitUntil(wakeFakeHost(env, hostId, host));
+  }
+  return Response.json(payload(), { status: 202 });
+}
+
+/**
+ * Omnigent's wake of a persistent host (`_bring_up_typed`), through the real launcher calls:
+ * `stopped` is resumed, a parked status is claimed and started, until the host runs. A host whose
+ * wake fails ends `failed` with its reason, as Omnigent records it.
+ */
+async function wakeFakeHost(env: Env, hostId: string, host: FakeHost): Promise<void> {
+  if (host.fail !== null) {
+    await pause(1_500);
+    host.state = "failed";
+    host.failure = host.fail;
+    return;
+  }
+  const stub = env.WORKSPACE.getByName(host.computerId) as unknown as E2eStub;
+  const client = clientOf(env, host.computerId);
+  try {
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline; ) {
+      const status = await client.send(fresh(client.statusRequest()));
+      if (status.operation !== "status") throw new Error("status");
+      if (status.status === "host_running") {
+        host.state = "awake";
+        return;
+      }
+      if (status.status === "stopped") await client.send(fresh(client.resumeRequest()));
+      else if (["started_no_host", "start_claimed", "host_refused"].includes(status.status)) {
+        const claim = await client.send(fresh(client.claimRequest()));
+        if (claim.operation === "claim_start" && claim.granted) {
+          await client.send(
+            fresh(
+              client.startRequest({
+                attempt: claim.startAttempt,
+                token: `synthetic-launch-token-canary-e2e-wake-${hostId.slice(0, 4)}`,
+                hostId,
+              }),
+            ),
+          );
+        }
+      }
+      await stub.e2eSettle();
+      await pause(300);
+    }
+    host.state = "failed";
+    host.failure = "The computer did not come online within 60s";
+  } catch (error) {
+    host.state = "failed";
+    host.failure = `The computer could not wake: ${String(error).slice(0, 200)}`;
+  }
+}
+
+/** Omnigent's sleep of an idle computer: `suspend`, repeated with its operation until stopped. */
+async function sleepComputer(env: Env, computerId: string): Promise<string> {
+  const stub = env.WORKSPACE.getByName(computerId) as unknown as E2eStub;
+  const client = clientOf(env, computerId);
+  // A sleep in progress is asked again with its operation; a refused one (a save still running,
+  // or a finished sign-in's lease until WorkspaceDO's 15 s check ends it) with a new one a second
+  // later, as Omnigent's next idle sweep would.
+  let suspend = fresh(client.suspendRequest());
+  let outcome = "none";
+  for (const deadline = Date.now() + 60_000; outcome !== "stopped" && Date.now() < deadline; ) {
+    const result = await client.send(suspend);
+    if (result.operation !== "suspend") throw new Error("suspend");
+    outcome = result.outcome === "refused" ? `refused: ${result.reason}` : result.outcome;
+    if (result.outcome === "refused") suspend = fresh(client.suspendRequest());
+    await stub.e2eSettle();
+    await pause(result.outcome === "refused" ? 1_000 : 100);
+  }
+  for (const host of omnigentHosts.values()) {
+    if (host.computerId === computerId && outcome === "stopped") host.state = "asleep";
+  }
+  return outcome;
+}
+
 async function seed(env: Env): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const name of [
@@ -260,8 +453,25 @@ async function seed(env: Env): Promise<Record<string, string>> {
     "managed-pagesignin",
     "managed-older",
     "managed-staging",
+    // WP3.53: asleep computers the setup page wakes through the fake Omnigent.
+    "managed-asleep",
+    "managed-full",
+    "managed-others",
   ]) {
     const { computerId, stub, client } = await create(env, name);
+    const wake = WAKE_HOSTS[name];
+    if (wake !== undefined) {
+      hostIds.set(computerId, wake.hostId);
+      omnigentHosts.set(wake.hostId, {
+        computerId,
+        owner: wake.owner,
+        fail: wake.fail,
+        state: "awake",
+        failure: null,
+        starts: 0,
+        requests: 0,
+      });
+    }
     if (name === "managed-lost") lostContact.add(computerId);
     if (name === "managed-older") legacy.add(computerId);
     if (name === "managed-staging") {
@@ -269,8 +479,18 @@ async function seed(env: Env): Promise<Record<string, string>> {
       failingSaves.add(computerId);
     }
     await client.send(client.provisionRequest(name));
-    await client.wake({ hostId: HOST, token: `synthetic-launch-token-canary-e2e-${name}` });
+    await client.wake({
+      hostId: hostIdOf(computerId),
+      token: `synthetic-launch-token-canary-e2e-${name}`,
+    });
     await stub.e2eSettle();
+    if (wake !== undefined) {
+      // Never signed in, and asleep, as the owner found it on 4 Nov.
+      const slept = await sleepComputer(env, computerId);
+      if (slept !== "stopped") throw new Error(`${name} did not go to sleep: ${slept}`);
+      out[name] = computerId;
+      continue;
+    }
     if (name !== "managed-new") {
       await stub.e2eSignIn("claude");
       await stub.e2eSignIn("codex");
@@ -339,6 +559,28 @@ export default {
       const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;
       await stub.e2eEndTerminals();
       return Response.json({ ended: true });
+    }
+    // WP3.53: the fake Omnigent's view of a host, its sleep, and one sleep attempt's outcome.
+    const hostId = url.searchParams.get("host");
+    if (request.method === "GET" && url.pathname === "/__e2e/omnigent" && hostId !== null) {
+      const host = omnigentHosts.get(hostId);
+      return Response.json(
+        host === undefined
+          ? null
+          : {
+              state: host.state,
+              failure: host.failure,
+              starts: host.starts,
+              requests: host.requests,
+            },
+      );
+    }
+    if (request.method === "POST" && url.pathname === "/__e2e/sleep" && id !== null) {
+      return Response.json({ outcome: await sleepComputer(env, id) });
+    }
+    if (request.method === "POST" && url.pathname === "/__e2e/suspend" && id !== null) {
+      const client = clientOf(env, id);
+      return Response.json(await client.send(fresh(client.suspendRequest())));
     }
     if (request.method === "POST" && url.pathname === "/__e2e/reset" && id !== null) {
       const stub = env.WORKSPACE.getByName(id) as unknown as E2eStub;

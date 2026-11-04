@@ -66,9 +66,16 @@ const FAILED: Readonly<Record<string, (s: SignInService) => string>> = {
   not_ready: () => "The computer is still starting. Start again in a moment.",
 };
 
+/** A card's note while the computer is not running and cannot be woken from the page. */
+export const NOT_RUNNING_NOTE =
+  "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then sign in here.";
+/** A card's note while the page can wake the computer for the sign-in (WP3.53). */
+export const WAKE_NOTE =
+  "The computer is not running now. Signing in wakes it first, which takes about a minute.";
+
 const REFUSED: Readonly<Record<SignInRefusal, string>> = {
   not_running:
-    "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then start again.",
+    "The computer is not running, so the sign-in did not start. Press the button again to wake it and sign in.",
   busy: "The computer is stopping or signing out. Try again shortly.",
   not_offered: "Signing in is not offered while a removal is pending.",
   unsupported:
@@ -85,15 +92,23 @@ function codexNote(service: SignInService): string {
     : "";
 }
 
-/** The start button (with what precedes a first attempt); `again` once the card is signed in. */
+/**
+ * The start button (with what precedes a first attempt); `again` once the card is signed in.
+ * `wake` (WP3.53): the computer is not running and the page's script wakes it first; without
+ * the script the button does nothing, so a `<noscript>` keeps the way that needs none.
+ */
 export function signInIdleHtml(
   service: SignInService,
   offered: boolean,
   note = "",
   again = false,
+  wake = false,
 ): string {
   const label = `Sign in to ${TITLE[service]}${again ? " again" : ""}`;
-  return `${note ? `<p data-sign-in-note>${escapeHtml(note)}</p>` : ""}${codexNote(service)}<div class="actions"><button type="button" class="primary" data-act="start"${offered ? "" : " disabled"}>${escapeHtml(label)}</button></div>`;
+  const noted = note
+    ? `<p data-sign-in-note>${escapeHtml(note)}</p>${wake ? `<noscript><p>${escapeHtml(NOT_RUNNING_NOTE)}</p></noscript>` : ""}`
+    : "";
+  return `${noted}${codexNote(service)}<div class="actions"><button type="button" class="primary" data-act="start"${wake ? " data-wake" : ""}${offered ? "" : " disabled"}>${escapeHtml(label)}</button></div>`;
 }
 
 /** The flow's markup for an attempt (or a refusal): escaped, and the link only on its host. */

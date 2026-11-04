@@ -126,6 +126,42 @@ describe("statuses", () => {
   });
 });
 
+describe("waking the computer from the setup page (WP3.53)", () => {
+  const HOST_ID = "7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f";
+  it.each([
+    // Not running, its host known: the page may wake it, whatever stopped it.
+    [{ lifecycle: "asleep", status: "stopped" }, HOST_ID],
+    [{ lifecycle: "stopped", status: "stopped" }, HOST_ID],
+    [{ lifecycle: "failed", status: "stopped" }, HOST_ID],
+    [{ lifecycle: "provisioned", status: "stopped" }, HOST_ID],
+    [{ lifecycle: "waking", status: "stopped" }, HOST_ID],
+    [{ lifecycle: "restoring", status: "started_no_host" }, HOST_ID],
+    [{ lifecycle: "stopping", status: "stopping" }, HOST_ID],
+    // A stop being prepared in a running state: not running, so a wake follows Omnigent's sleep.
+    [{ status: "stopping" }, HOST_ID],
+    // Running: nothing to wake.
+    [{}, null],
+    [{ lifecycle: "started_no_host", status: "started_no_host" }, null],
+    [{ lifecycle: "start_claimed", status: "start_claimed" }, null],
+    [{ lifecycle: "host_refused", status: "host_refused" }, null],
+    // Omnigent's host not known: no wake.
+    [{ lifecycle: "asleep", status: "stopped", hostId: null }, null],
+    [{ lifecycle: "provisioned", status: "stopped", hostId: null }, null],
+    // A host ID that is not one: never put in a URL.
+    [{ lifecycle: "asleep", status: "stopped", hostId: "../../v1/admin" as never }, null],
+    // A removal under way or done: never.
+    [{ lifecycle: "asleep", status: "stopped", ...removal({}) }, null],
+    [{ lifecycle: "removal_pending", status: "stopped", ...removal({}) }, null],
+    [{ lifecycle: "removal_pending", status: "stopped" }, null],
+    [{ lifecycle: "asleep", status: "stopped", ...removal({ state: "resolved" }) }, null],
+    [{ lifecycle: "removed", status: "stopped" }, null],
+  ] as const)("%o: wake host %s", (overrides, host) => {
+    const view = computerView(pageState(overrides as Partial<ComputerPageState>), NOW);
+    expect(view.wakeHost).toBe(host);
+    if (host !== null) expect(view.running).toBe(false);
+  });
+});
+
 describe("saves (RC-36) and notices", () => {
   it("shows saving, the last save, or none", () => {
     expect(computerView(pageState({ saving: true }), NOW).saving).toBe("Saving…");

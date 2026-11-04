@@ -19,6 +19,13 @@ import { fileURLToPath } from "node:url";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { makeOwnerPin } from "../../src/ingress/owner.ts";
 import { AUD, claims, makeKey, OWNER_EMAIL, SALT, sign, TEAM } from "../support/access-keys.ts";
+import {
+  ASLEEP_HOST,
+  FULL_HOST,
+  FULL_REASON,
+  OMNIGENT_SESSION_COOKIE,
+  OTHERS_HOST,
+} from "./wake-hosts.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(HERE, "..", "..");
@@ -147,7 +154,18 @@ async function main(): Promise<number> {
       executablePath: process.env.CHROME ?? "/usr/bin/chromium",
       headless: true,
     });
+    const chromiumBrowser = browser;
     const context = await browser.newContext({ extraHTTPHeaders: headers });
+    // The person's Omnigent session (WP3.53): the fake Omnigent answers 401 without it.
+    await context.addCookies([
+      { name: OMNIGENT_SESSION_COOKIE, value: "synthetic-omnigent-session", url: base },
+    ]);
+    const omnigent = async (host: string) =>
+      (await (await fetch(`${base}/__e2e/omnigent?host=${host}`)).json()) as {
+        state: string;
+        starts: number;
+        requests: number;
+      };
     const state = async (id: string) =>
       (
         (await (await fetch(`${base}/__e2e/state?computer=${id}`)).json()) as {
@@ -172,6 +190,10 @@ async function main(): Promise<number> {
             cards: s.setupCards,
             removal: s.removal,
           };
+        }
+        // WP3.53: the fake Omnigent's view of the wake journeys' hosts.
+        for (const host of [ASLEEP_HOST, FULL_HOST, OTHERS_HOST]) {
+          dump[`omnigent-${host.slice(0, 4)}`] = await omnigent(host).catch(() => null);
         }
         writeFileSync(join(DIR, `${journey}.state.json`), JSON.stringify(dump, null, 2));
         results.push({
@@ -450,6 +472,13 @@ async function main(): Promise<number> {
       checks.push(
         "cross-origin sign-in, code, cancel and switch POSTs refused; reads unreadable; no sign-in started",
       );
+      // WP3.53: Omnigent's wake call from another origin never reaches Omnigent.
+      if (report.wake !== "opaque" && report.wake !== "error") {
+        throw new Error(`wake: ${String(report.wake)}`);
+      }
+      if ((await omnigent(ASLEEP_HOST)).requests !== 0)
+        throw new Error("the wake reached Omnigent");
+      checks.push("a cross-origin POST to Omnigent's wake (…/start) never reached Omnigent");
       const after = await state(id);
       if (
         after.generation !== before.generation ||
@@ -694,10 +723,173 @@ async function main(): Promise<number> {
       checks.push("an older computer offers the terminal, plainly, and no buttons");
     });
 
+    // WP3.53: an asleep computer's setup page wakes it through Omnigent, then starts what was
+    // pressed: the owner's report of 4 Nov ("it should just wake up the machine and then start the
+    // log in process").
+    const running = new Set(["started_no_host", "start_claimed", "host_running"]);
+    await run("J14-codex-sign-in-wakes-an-asleep-computer", async (page, checks) => {
+      const id = ids["managed-asleep"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.locator("#status").getByText("Asleep").waitFor();
+      const card = page.locator('[data-card="codex"]');
+      const button = card.locator('[data-act="start"][data-wake]');
+      if (await button.isDisabled()) throw new Error("the button is disabled");
+      await card.getByText("Signing in wakes it first, which takes about a minute.").waitFor();
+      checks.push("asleep: the Codex button is enabled and says the computer wakes first");
+      await button.click();
+      await card
+        .locator('[data-sign-in-state="waking"]')
+        .getByText("Waking the computer")
+        .waitFor();
+      checks.push("pressed: the card says it is waking the computer");
+      const code = card.locator("[data-user-code]");
+      await code.waitFor({ timeout: 90_000 });
+      const issued = (await (
+        await fetch(`${base}/__e2e/issued?computer=${id}&service=codex`)
+      ).json()) as { userCode: string };
+      if ((await code.textContent()) !== issued.userCode) throw new Error("another code shown");
+      const host = await omnigent(ASLEEP_HOST);
+      if (host.starts !== 1) throw new Error(`${host.starts} wake calls`);
+      const woken = await state(id);
+      if (!running.has(String(woken.lifecycle))) throw new Error(`lifecycle ${woken.lifecycle}`);
+      checks.push(
+        "woken through Omnigent's POST …/start, once; then the Codex sign-in started by itself and shows its code",
+      );
+      // The running sign-in holds the computer awake: once Omnigent has it online, its sleep is
+      // refused meanwhile.
+      await waitFor(
+        "Omnigent to see the host online",
+        async () => (await omnigent(ASLEEP_HOST)).state === "awake",
+      );
+      const suspended = (await (
+        await fetch(`${base}/__e2e/suspend?computer=${id}`, { method: "POST" })
+      ).json()) as { outcome: string; reason?: string };
+      if (suspended.outcome !== "refused" || suspended.reason !== "terminal_open") {
+        throw new Error(`suspend: ${JSON.stringify(suspended)}`);
+      }
+      checks.push("while the sign-in runs, Omnigent's sleep is refused (terminal_open)");
+      await fetch(`${base}/__e2e/approve?computer=${id}&service=codex`, { method: "POST" });
+      await page
+        .locator('[data-card="codex"][data-state="signed_in"]')
+        .waitFor({ timeout: 30_000 });
+      checks.push("approved at OpenAI: the card shows signed in");
+      const slept = (await (
+        await fetch(`${base}/__e2e/sleep?computer=${id}`, { method: "POST" })
+      ).json()) as { outcome: string };
+      if (slept.outcome !== "stopped") throw new Error(`sleep: ${slept.outcome}`);
+      checks.push("afterwards Omnigent's sleep stops it again");
+    });
+
+    await run("J14b-terminal-wakes-an-asleep-computer", async (page, checks) => {
+      const id = ids["managed-asleep"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.locator("#status").getByText("Asleep").waitFor();
+      const open = page.locator("#terminal-open[data-wake]");
+      if (await open.isDisabled()) throw new Error("the terminal button is disabled");
+      await page.getByText("Opening the terminal wakes it first").waitFor();
+      checks.push("asleep: Open the terminal is enabled and says the computer wakes first");
+      await open.click();
+      await page
+        .locator("#terminal-status")
+        .getByText("Waking the computer… this takes about a minute.")
+        .waitFor();
+      await page.getByText("Connected.").waitFor({ timeout: 90_000 });
+      if ((await omnigent(ASLEEP_HOST)).starts !== 2) throw new Error("no second wake call");
+      checks.push("woken through Omnigent, then the terminal opened by itself");
+      await page.click("#terminal-close");
+      await page.getByText("Closed. The computer may go to sleep again.").waitFor();
+    });
+
+    await run("J14c-a-failed-wake-says-why", async (page, checks) => {
+      const id = ids["managed-full"] ?? "";
+      await page.goto(`${base}/platform/computers/${id}`);
+      await page.locator("#status").getByText("Asleep").waitFor();
+      const card = page.locator('[data-card="claude"]');
+      await card.locator('[data-act="start"][data-wake]').click();
+      await card.locator('[data-sign-in-state="waking"]').waitFor();
+      const message = card.locator("[data-sign-in-message]");
+      await message.waitFor({ timeout: 30_000 });
+      const text = (await message.textContent()) ?? "";
+      if (!text.includes(`The computer did not wake. Omnigent says: ${FULL_REASON}`)) {
+        throw new Error(`message: ${text.slice(0, 200)}`);
+      }
+      if ((await message.locator("b").count()) !== 0) throw new Error("the reason became markup");
+      checks.push(
+        "Omnigent's reason (the limit of awake computers) shown as text; its markup inert",
+      );
+      // The page's state refresh (every 5 s) replaces the card: the reason stays.
+      await page.waitForTimeout(6_000);
+      if (!((await message.textContent()) ?? "").includes(FULL_REASON)) {
+        throw new Error("the reason was wiped by a refresh");
+      }
+      checks.push("the reason is still shown after the page's state refresh");
+      const again = card.locator('[data-act="start"]');
+      if (await again.isDisabled()) throw new Error("the button is not usable");
+      if ((await state(id)).lifecycle !== "asleep") throw new Error("not asleep");
+      await again.click();
+      await card.locator('[data-sign-in-state="waking"]').waitFor();
+      await message.waitFor({ timeout: 30_000 });
+      if ((await omnigent(FULL_HOST)).starts !== 2) throw new Error("no second wake call");
+      checks.push("the button stays usable: a second press asks Omnigent again");
+      await page.click("#terminal-open");
+      await page
+        .locator("#terminal-status")
+        .getByText("Omnigent says:")
+        .waitFor({ timeout: 30_000 });
+      if (await page.locator("#terminal-open").isDisabled()) throw new Error("terminal disabled");
+      if ((await omnigent(FULL_HOST)).starts !== 3)
+        throw new Error("no wake call for the terminal");
+      checks.push("the terminal's wake fails the same way, and its button stays usable");
+    });
+
+    await run("J14d-signed-out-of-omnigent", async (_page, checks) => {
+      // A browser with Access but no Omnigent session: Omnigent answers 401.
+      const bare = await chromiumBrowser.newContext({ extraHTTPHeaders: headers });
+      try {
+        const page = await bare.newPage();
+        const id = ids["managed-full"] ?? "";
+        const before = await omnigent(FULL_HOST);
+        await page.goto(`${base}/platform/computers/${id}`);
+        const card = page.locator('[data-card="codex"]');
+        await card.locator('[data-act="start"][data-wake]').click();
+        await card
+          .locator("[data-sign-in-message]")
+          .getByText("Omnigent needs you to sign in before it can wake the computer.")
+          .waitFor({ timeout: 30_000 });
+        const after = await omnigent(FULL_HOST);
+        if (after.starts !== before.starts || after.requests !== before.requests + 1) {
+          throw new Error(`starts ${after.starts}, requests ${after.requests}`);
+        }
+        if (await card.locator('[data-act="start"]').isDisabled()) throw new Error("disabled");
+        checks.push("no Omnigent session: the card says to sign in to Omnigent; nothing woke");
+      } finally {
+        await bare.close();
+      }
+    });
+
+    await run("J14e-someone-elses-computer-is-not-woken", async (page, checks) => {
+      // The page's own origin and the owner's session, asking for another person's host.
+      await page.goto(`${base}/platform/computers/${ids["managed-asleep"] ?? ""}`);
+      const status = (await page.evaluate(
+        `fetch("/v1/hosts/${OTHERS_HOST}/start", { method: "POST", credentials: "same-origin" }).then((r) => r.status)`,
+      )) as number;
+      if (status !== 403) throw new Error(`status ${status}`);
+      const others = await omnigent(OTHERS_HOST);
+      if (others.starts !== 0 || others.state !== "asleep") throw new Error("it woke");
+      if ((await state(ids["managed-others"] ?? "")).lifecycle !== "asleep") {
+        throw new Error("the computer is not asleep");
+      }
+      checks.push(
+        "Omnigent refuses (403) another person's host to the owner's session; it stays asleep",
+      );
+    });
+
     await run("J13-no-sign-in-value-left-anywhere", async (_page, checks) => {
       const id = ids["managed-pagesignin"] ?? "";
       const { issued } = await signIns(id);
-      if (issued.length < 3) throw new Error(`${issued.length} issued values`);
+      // WP3.53's woken computer signed in to Codex from the page too.
+      issued.push(...(await signIns(ids["managed-asleep"] ?? "")).issued);
+      if (issued.length < 4) throw new Error(`${issued.length} issued values`);
       const log = (await import("node:fs")).readFileSync(join(DIR, "wrangler.log"), "utf8");
       const found = issued.filter((value) => log.includes(value));
       if (found.length > 0) throw new Error(`${found.length} sign-in values in the logs`);
@@ -768,6 +960,10 @@ function hostilePage(base: string, id: string): string {
       report[name] = "READABLE";
     } catch { report[name] = "unreadable"; }
   }
+  try {
+    await fetch("${base}/v1/hosts/${ASLEEP_HOST}/start", { method: "POST", mode: "no-cors", credentials: "include" });
+    report.wake = "opaque";
+  } catch { report.wake = "error"; }
   report.socket = await new Promise((resolve) => {
     const ws = new WebSocket("${base.replace("http", "ws")}/platform/computers/${id}/terminal", ["tty", "cfo-capability.${"A".repeat(43)}"]);
     ws.onopen = () => resolve("opened");
