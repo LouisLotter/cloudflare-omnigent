@@ -53,6 +53,7 @@ export function accessGroupPortFrom(
   ) {
     return undefined;
   }
+  // No setting changes where the token goes: a test reaches a stand-in through `fetcher` only.
   const url = `${CLOUDFLARE_API}/accounts/${accountId}/access/groups/${groupId}`;
   const call = async (method: "GET" | "PUT", body?: AccessGroup): Promise<Response> =>
     fetcher(url, {

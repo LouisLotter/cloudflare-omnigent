@@ -253,6 +253,21 @@ describe("the member group's API port", () => {
     }
   });
 
+  it("always calls Cloudflare's API: no setting points the token anywhere else", async () => {
+    const seen: string[] = [];
+    const fetcher = async (url: string) => {
+      seen.push(url);
+      return Response.json({ result: { name: "g", include: [] } });
+    };
+    const path = `/accounts/${ACCOUNT}/access/groups/${GROUP}`;
+    for (const local of ["http://127.0.0.1:8787", "https://evil.example", undefined]) {
+      seen.length = 0;
+      const settings = { ...vars, CFO_ACCESS_API_LOCAL_ONLY: local, CFO_ACCESS_API: local };
+      await accessGroupPortFrom(settings, fetcher)?.read();
+      expect(seen).toEqual([`${CLOUDFLARE_API}${path}`]);
+    }
+  });
+
   it("is absent for a missing or malformed setting, so admission fails closed", () => {
     expect(accessGroupPortFrom({ ...vars, CFO_ACCESS_GROUP_ID: "../organizations" })).toBe(
       undefined,

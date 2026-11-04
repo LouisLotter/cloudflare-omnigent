@@ -143,6 +143,7 @@ import {
   startFingerprint,
   UNKNOWN_DEADLINES,
 } from "./server-env.ts";
+import { identityModeOf, readTeamStatus, teamMoveOf } from "./team-move.ts";
 import {
   ANSWERING,
   type Effect,
@@ -406,7 +407,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
   }
 
   // -------------------------------------------------------------------------------------------
-  // Seams for the Workers-runtime tests, which run without containers and with a test clock.
+  // Seams for the Workers-runtime tests (no containers, a test clock) and the local end-to-end
+  // entrypoints (worker/test/e2e: Docker, and Cloudflare's API stand-in).
 
   /** The container port, or null when this class has no container configured. */
   protected openContainer(): ServerContainer | null {
@@ -420,6 +422,11 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
 
   protected now(): number {
     return Date.now();
+  }
+
+  /** How the member group's client reaches Cloudflare's API (access-group-api.ts). */
+  protected accessApiFetch(input: string, init: RequestInit): Promise<Response> {
+    return fetch(input, init);
   }
 
   protected timing(): ServerTiming {
@@ -1003,7 +1010,13 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     // version holds it, past the notice too (WP3.44).
     const window = this.#window();
     const held = notice !== null && window !== null;
-    if (!secretPresent && !recent && !held && stored.status?.initialized === true) return;
+    // A team move (WP8.11) is reported on every check while this version holds it, like a window.
+    const env = this.env as unknown as Record<string, unknown>;
+    const teamMove = teamMoveOf(env);
+    const moving = notice !== null && teamMove !== null;
+    if (!secretPresent && !recent && !held && !moving && stored.status?.initialized === true) {
+      return;
+    }
     // In this order: the position, /v1/info, the position again (see bootstrap.ts).
     const before = await this.#read(
       container,
@@ -1018,6 +1031,16 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
       window === null ? null : await this.#read(container, REPLICATION_POSITION_PORT, STATUS_PATH);
     const restorePoint = window === null ? null : restorePointOf(entrypoint);
     const mcpAdminServices = window === null ? null : mcpAdminServicesOf(entrypoint);
+    const cookieSecret = cookieSecretOf(env);
+    const team =
+      teamMove === null || cookieSecret === null
+        ? null
+        : await readTeamStatus(
+            (request) => container.fetch(OMNIGENT_PORT, request),
+            cookieSecret,
+            this.now(),
+            (n) => crypto.getRandomValues(new Uint8Array(n)),
+          );
     const check = checkBootstrap(
       this.env.CFO_INSTALLATION_ID,
       stored.target,
@@ -1090,6 +1113,17 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
         // its release only from a line of its own version naming both.
         maintenance: window,
         restorePoint,
+        // WP8.11: while the installer moves the team behind Access, the move's ID, the server's
+        // identity mode, the team's binding state (counts and host IDs only, null when the server
+        // did not say) and the admission revision applied to the member group (null: none yet).
+        ...(teamMove === null
+          ? {}
+          : {
+              teamMove,
+              identityMode: identityModeOf(env),
+              team,
+              admissionApplied: this.#appliedAdmission(),
+            }),
       });
     }
   }
@@ -1321,6 +1355,12 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     }
   }
 
+  /** The admission revision last applied to the member group, or null. */
+  #appliedAdmission(): number | null {
+    const value = this.#serverState(ADMISSION_APPLIED_KEY);
+    return typeof value === "number" && Number.isInteger(value) ? value : null;
+  }
+
   /** Writes who Access admits into the installation's member group; one call at a time. */
   async admission(raw: AccessAdmissionCall): Promise<AccessAdmissionResult> {
     const parsed = AccessAdmissionCallSchema.safeParse(raw);
@@ -1328,11 +1368,8 @@ export class OmnigentServer extends DurableObject<PlatformEnv> implements Omnige
     const env = this.env as unknown as Record<string, unknown>;
     const run = this.#admissions.then(() =>
       applyAdmission(parsed.data, {
-        port: accessGroupPortFrom(env),
-        appliedRevision: () => {
-          const value = this.#serverState(ADMISSION_APPLIED_KEY);
-          return typeof value === "number" && Number.isInteger(value) ? value : null;
-        },
+        port: accessGroupPortFrom(env, (input, init) => this.accessApiFetch(input, init)),
+        appliedRevision: () => this.#appliedAdmission(),
         recordApplied: (revision) => this.#putServerState(ADMISSION_APPLIED_KEY, revision),
         log: (fields) => logEvent("server", "access_admission", fields),
       }),

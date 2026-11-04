@@ -176,9 +176,14 @@ def test_magic_link_redemption_answers_424_not_its_redirect_while_blocked(
 
 
 def test_admin_invite_is_held_while_blocked(blocked: AppHarness) -> None:
-    bearer = blocked.bearer()
+    # Inviting needs a browser's sign-in (Omnigent refuses a CLI's or a host's): the cookie.
+    signed_in = blocked.client.post(
+        "/auth/login", json={"username": OWNER, "password": OWNER_PASSWORD}
+    )
+    assert signed_in.status_code == 200, signed_in.text
     _block(blocked)
-    response = blocked.client.post("/auth/invite", json={"is_admin": False}, headers=bearer)
+    response = blocked.client.post("/auth/invite", json={"is_admin": False})
+    blocked.client.cookies.clear()
     assert_unconfirmed(response, "/auth/invite")
 
 

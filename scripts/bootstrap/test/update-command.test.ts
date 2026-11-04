@@ -11,7 +11,13 @@ import { acquireLock } from "../../staging/lock.ts";
 import { runBootstrap } from "../machine.ts";
 import type { Installation } from "../settings.ts";
 import { fileStateStore, statePathFor, workerLockPath } from "../state.ts";
-import { codeVersion, realPorts, type UpdatePorts, updateCommand } from "../update-command.ts";
+import {
+  codeVersion,
+  realPorts,
+  teamOutcome,
+  type UpdatePorts,
+  updateCommand,
+} from "../update-command.ts";
 import { FakeWorld } from "./fake-cloud.ts";
 import {
   accountPlan,
@@ -76,6 +82,8 @@ async function finished(plan: Installation, path = statePathFor(plan.platformWor
   const ports = (over: Partial<UpdatePorts> = {}): UpdatePorts => ({
     cloud: () => world.cloud(),
     accessApi: () => undefined,
+    teamApis: () => undefined,
+    localHostId: () => undefined,
     codeVersion: () => CODE,
     random: (n) => new Uint8Array(n).map(() => next++ % 256),
     now: () => world.now,
@@ -210,6 +218,34 @@ describe("updateCommand", () => {
     expect(fileStateStore(path).load().journal.accessApp?.id).toBeDefined();
   });
 
+  it("moves the team with --team-admission members: this computer's host found or named first", async () => {
+    const plan = await accountPlan();
+    const { world, path, lines, ports } = await finished(plan);
+    const port = ports({
+      accessApi: () => world.accessApi(),
+      teamApis: () => ({ groups: world.groupsApi(), tokens: world.tokenApi() }),
+    });
+    const move = { root: ROOT, verify: true, teamAdmission: "members", ownerEmail: OWNER_EMAIL };
+    // No host ID where the host's configuration is kept, and none given: refused, nothing done.
+    await expect(updateCommand(path, move, port)).rejects.toThrow(
+      /host ID is not in .*omnigent-cfo\/config\.yaml/,
+    );
+    await expect(updateCommand(path, { ...move, hostId: "not-an-id" }, port)).rejects.toThrow(
+      /--host-id takes an Omnigent host ID/,
+    );
+    expect(world.calls.filter((c) => c.startsWith("deploy"))).toEqual([]);
+    expect(world.groups.size).toBe(0);
+    // Named (the owner uses no personal host): the update deploys in bind mode and the move
+    // waits for the server's report, telling the person to run it again.
+    expect(await updateCommand(path, { ...move, hostId: "none" }, port)).toBe(3);
+    const team = fileStateStore(path).load().journal.team;
+    expect(team?.memberGroup?.id).toBeDefined();
+    expect(
+      world.secretsOf(plan.platformWorker)?.get("SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE"),
+    ).toBe("bind");
+    expect(lines.at(-1)).toContain("Run bootstrap.ts update --team-admission members again");
+  });
+
   it("refuses while another command holds the installation's lock, deploying nothing", async () => {
     const plan = await accountPlan();
     const { world, path, ports } = await finished(plan);
@@ -305,5 +341,25 @@ describe("codeVersion: the commit of a clean checkout", () => {
 
   it("has no version outside a git checkout", () => {
     expect(codeVersion(join(dir, "nowhere"))).toBeUndefined();
+  });
+});
+
+describe("the team move's final words (WP8.11)", () => {
+  it("exits 3 while it waits or stopped at bind, and 0 with the steps left once finished", async () => {
+    const plan = await accountPlan();
+    const lines: string[] = [];
+    const log = (line: string) => lines.push(line);
+    expect(teamOutcome({ kind: "team", state: "waiting", why: "sign in" }, plan, log)).toBe(3);
+    expect(lines.at(-1)).toContain("Run bootstrap.ts update --team-admission members again");
+    expect(
+      teamOutcome({ kind: "team", state: "stopped", why: "another identity" }, plan, log),
+    ).toBe(3);
+    expect(lines.at(-1)).toContain("stopped in bind mode: another identity");
+    lines.length = 0;
+    expect(
+      teamOutcome({ kind: "team", state: "finished", why: "done", computers: 1 }, plan, log),
+    ).toBe(0);
+    expect(lines.join("\n")).toContain("restart each cloud computer from its page");
+    expect(lines.join("\n")).toContain("omnigent host status");
   });
 });

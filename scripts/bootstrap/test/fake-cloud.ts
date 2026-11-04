@@ -29,6 +29,7 @@
 // Test code only: it has no I/O, and it can make any call fail before or after its effect.
 
 import { createHash } from "node:crypto";
+import type { TeamStatusReport } from "../../../contracts/src/team.ts";
 import {
   MAINTENANCE_WINDOW_SECRET,
   maintenanceWindowOf,
@@ -36,6 +37,7 @@ import {
   ROLLBACK_SECRET,
   rollbackOrderOf,
 } from "../../../worker/src/server/maintenance.ts";
+import { identityModeOf, TEAM_MOVE_SECRET } from "../../../worker/src/server/team-move.ts";
 import { type AccessApi, AccessUnavailable, type IdentityProvider } from "../access-app.ts";
 import type { McpAdminServices } from "../events.ts";
 import {
@@ -60,6 +62,7 @@ import {
   PASSWORD_SECRET,
 } from "../settings.ts";
 import { parseState } from "../state.ts";
+import { ACCESS_GROUPS_WRITE_GROUP, type AccessGroupsApi } from "../team-admission.ts";
 import { latestNotDeployed } from "../window.ts";
 
 export const SWITCH_MS = 300_000;
@@ -213,6 +216,15 @@ export class FakeWorld {
   rollbackWorks = true;
   /** Status lines name the restore point the server took; false models one it never reports. */
   reportsRestorePoint = true;
+  /**
+   * The team's binding state a server reports while its version holds a team move (WP8.11): by
+   * default none (the server does not say).
+   */
+  teamTruth: (v: Version, t: number) => TeamStatusReport | null = () => null;
+  /** The admission revision the platform applied to the member group, as its line says. */
+  admissionApplied: (t: number) => number | null = () => null;
+  /** Access groups in the account, by ID (WP8.3's member group). */
+  readonly groups = new Map<string, Record<string, unknown>>();
   /** Every `deployVersion`: the Worker and the version deployed again. */
   readonly redeployed: { worker: string; versionId: string; at: number }[] = [];
   readonly counts = new Map<string, number>();
@@ -530,6 +542,28 @@ export class FakeWorld {
         call("accessRemove", this.accessForbidden, () =>
           this.accessApps.delete(id) ? "deleted" : "absent",
         ),
+      update: (id, body) =>
+        call("accessUpdate", this.accessForbidden, () => {
+          const app = this.accessApps.get(id);
+          if (app === undefined) throw new Error("cf zero-trust access applications update: 404");
+          // Cloudflare keeps what it generates; the body replaces the rest.
+          this.accessApps.set(id, { ...structuredClone(body), id, aud: app.aud });
+        }),
+    };
+  }
+
+  /** Access groups through the bootstrap's port (WP8.3, team-admission.ts). */
+  groupsApi(): AccessGroupsApi {
+    return {
+      groups: () => [...this.groups.values()].map((g) => structuredClone(g)),
+      group: (id) => structuredClone(this.groups.get(id)),
+      createGroup: (body) => {
+        const n = this.#enter("groupCreate");
+        const id = `group-${this.groups.size + 1}`;
+        this.groups.set(id, { id, ...structuredClone(body) });
+        this.#leave("groupCreate", n);
+        return id;
+      },
     };
   }
 
@@ -573,6 +607,8 @@ export class FakeWorld {
     return {
       permissionGroup: (name) =>
         call("tokenGroup", () => {
+          // R2's, and the team reconciler's (WP8.3, team-admission.ts).
+          if (name === ACCESS_GROUPS_WRITE_GROUP) return "pg-access-groups-write";
           if (name !== R2_WRITE_GROUP) throw new Error(`no permission group ${name}`);
           return R2_GROUP_ID;
         }),
@@ -742,12 +778,14 @@ export class FakeWorld {
         container !== undefined && t >= container.since && sameConfig(container.version, version);
       const secretPresent = version.secrets.has(PASSWORD_SECRET);
       const durableAt = container === undefined ? undefined : durableSince.get(container.since);
-      // And for as long as the version holds an update's window (WP3.44).
+      // And for as long as the version holds an update's window (WP3.44), or a team move (WP8.11).
+      const move = version.secrets.get(TEAM_MOVE_SECRET);
       const announcing =
         !truth.initialized ||
         durableAt === undefined ||
         t - durableAt < NOTICE_MS ||
-        maintenanceWindowOf(Object.fromEntries(version.secrets)) !== null;
+        maintenanceWindowOf(Object.fromEntries(version.secrets)) !== null ||
+        move !== undefined;
       if (!applied || !(secretPresent || (announcing && this.appliesReleases))) continue;
       events.push({
         timestamp: t,
@@ -792,6 +830,15 @@ export class FakeWorld {
             this.reportsRestorePoint
               ? { id: restorePoint, takenAt: new Date(container.since).toISOString() }
               : null,
+          // WP8.11: while the version holds a team move, the server's identity mode and team.
+          ...(move === undefined
+            ? {}
+            : {
+                teamMove: move,
+                identityMode: identityModeOf(Object.fromEntries(version.secrets)),
+                team: this.teamTruth(version, t),
+                admissionApplied: this.admissionApplied(t),
+              }),
         },
       });
     }

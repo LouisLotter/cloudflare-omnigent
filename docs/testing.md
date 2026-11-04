@@ -203,6 +203,19 @@ node worker/test/e2e/update-window-e2e.ts
 
 It creates and removes a `cfo-wp341-e2e-server` container, its helper and the `cfo-wp341-e2e-replica` volume; `CFO_E2E_DIR` chooses its directory (default `~/.pt/wp341-e2e`). The same paths on an S3 stand-in are in [`test_restore_point_image.py`](../images/server/tests/integration/test_restore_point_image.py) (the image suite). R2, a real version rollback and the object's switch on Cloudflare remain staging work.
 
+## A team's move behind Access end to end — local Docker
+
+[`worker/test/e2e/team-move-e2e.ts`](../worker/test/e2e/team-move-e2e.ts) runs the installer's real `update --team-admission members` (WP8.11) on the same harness, against the server image built from the Omnigent source the pin holds. The installer's Access application, member group and token APIs are the installer tests' fakes; the member group is also served over HTTP on the loopback address to the platform Worker's own group client, whose transport the e2e entrypoint injects (production code reads no setting that changes where it goes). The server image is the production one, unchanged: its container's hosts name `platform.internal` on its own loopback, where a relay in its network namespace takes the admission adapter's calls to the platform's private route, as the runtime's intercept does in production. A WebSocket client speaking Omnigent's host protocol stands in for this computer's host.
+
+It checks that another person's Access sign-in is refused under owner admission; that the update makes the member group with the owner's address alone and its token, deploys in bind mode and is accepted, then waits for the owner's browser sign-in and says how to give it; that the CLI's sign-in sets no cookie, and its session, as the host's credential, a request's bearer or a cookie, never takes the founding binding; that after the browser sign-in the next run sees the owner bound, the member group applied and the host connecting as its owner, requires Access's sign-in (the server restarts and the host reconnects), checks again from the required server, deploys members admission and switches the Access application to the member group; then that an invitation reaches the member group, the invited person joins through Access and works but cannot administer the team, the owner's credential is refused from another person's Access sign-in, and an uninvited sign-in cannot use the owner's password. It scans the logs for the run's secrets.
+
+```bash
+docker build -f images/server/Dockerfile --target server -t cfo-wp811-e2e-server:runtime .
+node worker/test/e2e/team-move-e2e.ts
+```
+
+It creates and removes the `cfo-wp811-e2e-server` and `cfo-wp811-e2e-relay` containers and the `cfo-wp811-e2e-replica` volume; `CFO_E2E_DIR` chooses its directory (default `~/.pt/wp811-e2e`). Real Access policies, the group's propagation, the Cloudflare One Client's device sign-in and two people's browsers remain staging work.
+
 ## Certificate trust checks
 
 Both Dockerfiles run [`images/trust/trust_check.py`](../images/trust/trust_check.py) during the build: it fails on a `ca-certificates` older than the release that removed a distrusted root, or on any shipped bundle that still holds one, matched by subject name and by public key. Its offline tests and the probe's ([`images/trust/tests`](../images/trust/tests/)) run in both images' test targets.

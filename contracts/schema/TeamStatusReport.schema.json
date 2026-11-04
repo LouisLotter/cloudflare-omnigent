@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "hosts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "hostId": {
+            "pattern": "^[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "identity": {
+            "enum": [
+              "owner",
+              "unbound",
+              "other",
+              "none"
+            ],
+            "type": "string"
+          },
+          "installationOwner": {
+            "type": "boolean"
+          },
+          "launchToken": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "hostId",
+          "launchToken",
+          "installationOwner",
+          "identity"
+        ],
+        "type": "object"
+      },
+      "maxItems": 1000,
+      "type": "array"
+    },
+    "owners": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ownersBound": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "revision": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "owners",
+    "ownersBound",
+    "revision",
+    "hosts"
+  ],
+  "title": "TeamStatusReport",
+  "type": "object"
+}

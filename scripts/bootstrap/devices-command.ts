@@ -12,6 +12,7 @@ import { cfDevicesApi } from "./cloud.ts";
 import { type DevicesApi, devicesNextSteps, ensureDevices } from "./devices.ts";
 import { BootstrapRefusal } from "./machine.ts";
 import { fileStateStore, locksDir, resourceLockPaths, workerLockPath } from "./state.ts";
+import { memberGroupIdOf } from "./team-move.ts";
 
 export interface DevicesCommandOptions {
   readonly ownerEmail?: string;
@@ -47,6 +48,7 @@ export async function devicesCommand(
       api: options.api ?? cfDevicesApi(spawnRunner(plan.accountId)),
       plan,
       accessApp: store.load().journal.accessApp,
+      memberGroupId: memberGroupIdOf(store.load().journal.team),
       ownerEmail: options.ownerEmail,
       session: options.session,
       recorded: () => store.load().journal.devices ?? {},

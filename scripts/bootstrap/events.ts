@@ -47,12 +47,17 @@
 // platform Worker, and only while it is fresh. A status from another installation, an older
 // one, a contradictory one, or one that does not parse as the contract is never accepted.
 
-import { BootstrapStatus, SUPPORTED_BOOTSTRAP_STATUS_VERSIONS } from "../../contracts/src/index.ts";
+import {
+  BootstrapStatus,
+  SUPPORTED_BOOTSTRAP_STATUS_VERSIONS,
+  TeamStatusReport,
+} from "../../contracts/src/index.ts";
 import {
   RESTORE_POINT_ID,
   type ReportedRestorePoint,
   restorePointOf,
 } from "../../worker/src/server/maintenance.ts";
+import type { TeamMoveLine } from "./team-move.ts";
 
 /** One bootstrap status line, as Workers Logs delivered it. */
 export interface StatusEvent {
@@ -99,6 +104,29 @@ export interface StatusEvent {
   readonly maintenance?: string | null | undefined;
   /** The restore point the answering server reports (WP3.41), null for none; undefined: unsaid. */
   readonly restorePoint?: ReportedRestorePoint | null | undefined;
+  /**
+   * While the installer moves the team behind Access (WP8.11): the move's ID, the server's
+   * identity mode, the team's binding state and the admission revision applied. Undefined when
+   * the line carries none (no move held, or a build from before it).
+   */
+  readonly teamMove?: TeamMoveLine | undefined;
+}
+
+/** A status line's team move fields, when they are well formed. */
+function teamMoveOf(line: Record<string, unknown>): TeamMoveLine | undefined {
+  const id = line.teamMove;
+  const mode = line.identityMode;
+  if (typeof id !== "string" || !/^tm-\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(id)) return undefined;
+  if (mode !== "off" && mode !== "bind" && mode !== "required") return undefined;
+  const team = line.team === null ? null : TeamStatusReport.safeParse(line.team);
+  const applied = line.admissionApplied;
+  return {
+    id,
+    identityMode: mode,
+    team: team === null ? null : team.success ? team.data : null,
+    admissionApplied:
+      typeof applied === "number" && Number.isInteger(applied) && applied >= 0 ? applied : null,
+  };
 }
 
 /** The MCP servers added on Omnigent's page at a server's start, as its status line says them. */
@@ -303,6 +331,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
                 : restorePointOf({ restorePoint: line.restorePoint }),
           }
         : {}),
+      ...("teamMove" in line ? { teamMove: teamMoveOf(line) } : {}),
     });
   }
   return { statuses, invocations, configErrors, configChanges, rollbacks, malformed };

@@ -214,15 +214,11 @@ describe("the application's check with the member group", () => {
 });
 
 describe("enabling team admission", () => {
-  it("waits for WP8.11: the update refuses before touching anything", async () => {
-    expect(TEAM_ADMISSION_SUPPORTED).toBe(false);
-    await expect(
-      updateCommand("/nonexistent/state.json", {
-        root: "/nonexistent",
-        verify: true,
-        teamAdmission: "members",
-      }),
-    ).rejects.toThrow(teamAdmissionRefusal());
+  it("is supported at this pin; any other admission is refused before touching anything", async () => {
+    // cfo/teams 922b69c62 carries WP8.11's fork part; a pin without it is refused through the
+    // update's ports (update.test.ts, `supported: false`) with this refusal.
+    expect(TEAM_ADMISSION_SUPPORTED).toBe(true);
+    expect(teamAdmissionRefusal()).toMatch(/WP8\.11's fork part/);
     await expect(
       updateCommand("/nonexistent/state.json", {
         root: "/nonexistent",
@@ -239,8 +235,9 @@ describe("enabling team admission", () => {
     expect(vars.platform).toMatchObject({
       CFO_IDENTITY_ENVELOPE: "on",
       CFO_ACCESS_GROUP_ID: "group-1",
-      SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE: "required",
     });
+    // The identity mode is a secret the move changes on its own (bind, then required).
+    expect(Object.keys(vars.platform)).not.toContain("SERVER_ENV_OMNIGENT_EXTERNAL_IDENTITY_MODE");
     expect(Object.keys(vars.platform)).not.toContain("CFO_ACCESS_GROUP_TOKEN");
     // The reconciler checks the team's current owners, not the planned owner's pin.
     expect(Object.keys(vars.platform)).not.toContain("OWNER_EMAIL_HASH");

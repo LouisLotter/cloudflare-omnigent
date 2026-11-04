@@ -265,6 +265,7 @@ describe("the bootstrap never talks to the installation, changes Access or makes
       "staging.ts",
       "state.ts",
       "team-admission.ts",
+      "team-move.ts",
       "update-command.ts",
       "update.ts",
       "window.ts",
@@ -353,15 +354,28 @@ describe("the bootstrap never talks to the installation, changes Access or makes
     expect(app).not.toMatch(/api\.remove\(/);
   });
 
+  it("changes the application's policy only to allow the recorded member group (WP8.11)", () => {
+    const code = (name: string) =>
+      (sources.find(([f]) => f === name)?.[1] ?? "").replace(/^\s*\/\/.*$/gm, "");
+    const move = code("team-move.ts");
+    // One update, of the installation's own application: as read, with the member group alone.
+    expect(move.match(/api\.update\(/g)).toHaveLength(1);
+    expect(move).toMatch(
+      /\{\s*\.\.\.writableApp\(app as Record<string, unknown>\),\s*policies: \[memberPolicy\(groupId\)\],?\s*\}/,
+    );
+    expect(move).toMatch(/api\.update\(appId, body\)/);
+    for (const name of sources.map(([f]) => f).filter((f) => f !== "team-move.ts")) {
+      expect(code(name), name).not.toMatch(/api\.update\(/);
+    }
+  });
+
   it("changes Access for devices only in cloud.ts's cfDevicesApi, as devices.ts asks (WP3.43)", () => {
     const cloud = sources.find(([f]) => f === "cloud.ts")?.[1] ?? "";
-    for (const update of [
-      /"organization",\s*"update"/g,
-      /"applications",\s*"update"/g,
-      /"default",\s*"update"/g,
-    ]) {
+    for (const update of [/"organization",\s*"update"/g, /"default",\s*"update"/g]) {
       expect(cloud.match(update), String(update)).toHaveLength(1);
     }
+    // cfDevicesApi's and cfAccessApi's (the team's move, below): one each.
+    expect(cloud.match(/"applications",\s*"update"/g)).toHaveLength(2);
     const devices = (sources.find(([f]) => f === "devices.ts")?.[1] ?? "").replace(
       /^\s*\/\/.*$/gm,
       "",

@@ -121,6 +121,8 @@ export interface DevicesContext {
   readonly plan: Installation;
   /** The Access application the bootstrap created for the hostname, from the journal. */
   readonly accessApp?: RecordedAccessApp | undefined;
+  /** The installation's member group, once recorded (WP8.11): its policy rule is accepted. */
+  readonly memberGroupId?: string | undefined;
   /** The owner's address, given to this run; needed only to write the enrollment policy. */
   readonly ownerEmail?: string | undefined;
   /**
@@ -372,7 +374,10 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
     }
     app = record(covering[0]) ?? {};
   }
-  const appProblems = ownerOnlyProblems(app, await pinCheck(app, host, plan.ownerPin));
+  const appProblems = ownerOnlyProblems(
+    app,
+    await pinCheck(app, host, plan.ownerPin, ctx.memberGroupId),
+  );
   if (appProblems.length > 0) {
     throw new AccessRefusal(
       describeProblems(`the Access application on ${host}`, appProblems, false),
@@ -477,7 +482,10 @@ export async function ensureDevices(ctx: DevicesContext): Promise<DevicesOutcome
         `the application for ${host} has another AUD tag after its update, which ingress does not accept: run bootstrap.ts update to deploy it`,
       );
     }
-    const problems = ownerOnlyProblems(after, await pinCheck(after, host, plan.ownerPin));
+    const problems = ownerOnlyProblems(
+      after,
+      await pinCheck(after, host, plan.ownerPin, ctx.memberGroupId),
+    );
     if (problems.length > 0) {
       throw new AccessRefusal(
         describeProblems(`after its update, the Access application on ${host}`, problems, true),

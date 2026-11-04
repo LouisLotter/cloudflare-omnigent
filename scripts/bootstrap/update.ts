@@ -74,15 +74,20 @@ import {
   RESTORE_POINT_VAR,
   ROLLBACK_SECRET,
 } from "../../worker/src/server/maintenance.ts";
+import { newTeamMoveId } from "../../worker/src/server/team-move.ts";
+import { coversHostname } from "./access.ts";
 import {
   type AccessApi,
   type AccessRecords,
   AccessRefusal,
+  type EnsureAccessContext,
   ensureOwnerAccess,
+  resolvePendingCreate,
 } from "./access-app.ts";
 import {
   appliedStatus,
   integrationsOff,
+  newest,
   parseLogs,
   type RequiredIntegrations,
   type StatusEvent,
@@ -103,6 +108,7 @@ import {
   slicedLogs,
   type WorkerIdentity,
 } from "./machine.ts";
+import type { RecordedToken, TokenApi } from "./r2-token.ts";
 // services.ts waits with pollServer, and this module names its list of services: a cycle, which
 // neither uses at load time.
 import { MCP_SERVICES_SECRET } from "./services.ts";
@@ -129,6 +135,25 @@ import {
   renderWebConfig,
   requiredSecretNames,
 } from "./settings.ts";
+import {
+  type AccessGroupsApi,
+  ensureMemberGroup,
+  makeAdmissionToken,
+  TeamAdmissionRefusal,
+  teamAdmissionRefusal,
+} from "./team-admission.ts";
+import {
+  ACCESS_GROUP_TOKEN_SECRET,
+  checkMove,
+  IDENTITY_MODE_VAR,
+  type MoveCheck,
+  memberGroupIdOf,
+  moveSecrets,
+  switchToMemberPolicy,
+  TEAM_MOVE_SECRET,
+  type TeamRecord,
+  teamVars,
+} from "./team-move.ts";
 import {
   acceptWindow,
   closeWindow,
@@ -179,10 +204,26 @@ export interface UpdateContext {
   readonly accessApi?: AccessApi;
   /** The owner's address, given to this run: only to create a missing Access application. */
   readonly ownerEmail?: string;
+  /** The team's move behind Access (WP8.11, team-move.ts): its ports, and whether it is asked. */
+  readonly team?: TeamPorts;
   readonly random: (bytes: number) => Uint8Array;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly log: (message: string) => void;
+}
+
+/** What the team's move needs beyond the update's own ports (WP8.11). */
+export interface TeamPorts {
+  /** `--team-admission members`: start the move, or go on with one under way. */
+  readonly requested: boolean;
+  /** Whether the pinned Omnigent has the team model (team-admission.ts). */
+  readonly supported: boolean;
+  readonly groups: AccessGroupsApi;
+  readonly tokens: TokenApi;
+  /** This computer's host, checked before `required`; `none`: the owner uses none. */
+  readonly hostId: string | undefined;
+  /** Where the host ID was looked for (team-move.ts, `hostConfigPath`), for the refusal. */
+  readonly hostConfig?: string;
 }
 
 export interface UpdateOptions {
@@ -196,6 +237,8 @@ export interface UpdateOptions {
   readonly verifyWaitMs: number;
   /** How long to wait for the object to run without the window once accepted (WP3.41). */
   readonly acceptWaitMs?: number;
+  /** How long one run waits for each step of the team's move (WP8.11). */
+  readonly teamWaitMs?: number;
 }
 
 export const DEFAULT_UPDATE_OPTIONS: UpdateOptions = {
@@ -224,6 +267,17 @@ export type UpdateOutcome =
        * which is off.
        */
       readonly integrationsOff?: true;
+    }
+  /**
+   * The update is accepted, and the team's move behind Access (WP8.11) is under way: `waiting`
+   * for a step (run update again to go on), `stopped` at `bind` (which keeps working; `why` says
+   * what to do), or `finished`. `computers`: cloud computers connected at the last check.
+   */
+  | {
+      readonly kind: "team";
+      readonly state: "waiting" | "stopped" | "finished";
+      readonly why: string;
+      readonly computers?: number;
     };
 
 /** A clean checkout's commit, as codeVersionFrom gives it and the journal keeps it. */
@@ -429,7 +483,18 @@ export async function runUpdate(
       );
     }
   }
-  const add = secretsToEnsure(plan, present, generatedSecrets(ctx));
+  // WP8.11: the team's move behind Access, asked for now or under way since an earlier run. Its
+  // stage before this run changed it is what the release running now carries: a window opened
+  // below keeps it with that release, for a rollback to restore.
+  const teamBefore = state.journal.team;
+  const moveSecretsToAdd = await prepareTeamMove(
+    ctx,
+    plan,
+    () => state.journal,
+    setJournal,
+    present,
+  );
+  const add = { ...secretsToEnsure(plan, present, generatedSecrets(ctx)), ...moveSecretsToAdd };
   const adding = Object.keys(add).sort();
   const lacking = requiredAfterRelease(plan).filter((n) => !present.has(n) && !(n in add));
   if (lacking.length > 0) {
@@ -441,6 +506,7 @@ export async function runUpdate(
   const envProblems = containerEnvProblems(
     {
       ...platformVars(plan),
+      ...teamVars(state.journal.team, plan.accountId).platform,
       [DEPLOY_ID_VAR]: "stand-in",
       [RESTORE_POINT_VAR]: "rp-20000101T000000Z-00000000",
     },
@@ -541,12 +607,16 @@ export async function runUpdate(
   if (checked && adding.length === 0 && deployed) {
     if (window === undefined) {
       // Just accepted: that update is done.
-      if (accepted) return { kind: "done" };
-      ctx.log(`https://${plan.hostname} already runs this checkout's version (${shortCode(code)})`);
-      return { kind: "current" };
+      if (accepted) return afterAcceptance({ kind: "done" });
+      if (!teamMoving(state.journal.team)) {
+        ctx.log(
+          `https://${plan.hostname} already runs this checkout's version (${shortCode(code)})`,
+        );
+      }
+      return afterAcceptance({ kind: "current" });
     }
     // Checked in its window, not accepted yet: accepted now.
-    return accept(ctx, () => state, setJournal, code, options);
+    return afterAcceptance(await accept(ctx, () => state, setJournal, code, options));
   }
   // MCP services the state file does not record (WP3.44): the check could not require what they
   // need, so nothing is deployed or checked. Before the window opens; inside one (opened by an
@@ -561,7 +631,13 @@ export async function runUpdate(
   if (resuming) {
     ctx.log(`continuing the update of https://${plan.hostname} to ${shortCode(code)}`);
   } else if (window === undefined) {
-    const previous = previousRelease(plan, platformIdentity, webIdentity, state.journal);
+    const previous = previousRelease(
+      plan,
+      platformIdentity,
+      webIdentity,
+      state.journal,
+      teamBefore,
+    );
     const id = newWindowId(ctx.now(), ctx.random);
     record({
       update: { code, startedAt: iso(ctx.now()) },
@@ -613,6 +689,7 @@ export async function runUpdate(
       window: { ...opening, deployStartedAt: opening.deployStartedAt ?? iso(ctx.now()) },
     });
     const rendered = renderPlatformConfig(ctx.baseConfigs.platform, plan);
+    const team = teamVars(state.journal.team, plan.accountId);
     const open = currentWindow();
     // The window's ID twice: the restore point the new server takes, and the window's secret,
     // which keeps every request from the server while this version (or a later one) holds it.
@@ -620,6 +697,7 @@ export async function runUpdate(
       ...rendered,
       vars: {
         ...(rendered.vars as Record<string, string>),
+        ...team.platform,
         [DEPLOY_ID_VAR]: deployId,
         [RESTORE_POINT_VAR]: open.id,
       },
@@ -676,7 +754,11 @@ export async function runUpdate(
     const access = { ...found, checkedAt: iso(ctx.now()) };
     record({ access });
     const webHeld = (await ours(plan.webWorker)).vars ?? {};
-    const webConfig = renderWebConfig(ctx.baseConfigs.web, plan, found);
+    const webConfig = withTeamWebVars(
+      renderWebConfig(ctx.baseConfigs.web, plan, found),
+      state.journal.team,
+      plan,
+    );
     progress({ webDeployStartedAt: iso(ctx.now()) });
     removes(plan.webWorker, webHeld, webConfig);
     ctx.log(`deploying the web Worker ${plan.webWorker} for https://${plan.hostname}`);
@@ -705,7 +787,21 @@ export async function runUpdate(
     options,
   );
   if (checkedUpdate.kind !== "done") return checkedUpdate;
-  return accept(ctx, () => state, setJournal, code, options);
+  return afterAcceptance(await accept(ctx, () => state, setJournal, code, options));
+
+  /** Once the update is accepted (or nothing needed deploying): the team's move goes on. */
+  async function afterAcceptance(outcome: UpdateOutcome): Promise<UpdateOutcome> {
+    if (outcome.kind !== "done" && outcome.kind !== "current") return outcome;
+    if (!teamMoving(state.journal.team)) return outcome;
+    if (!options.verify) {
+      return {
+        kind: "team",
+        state: "waiting",
+        why: "the team's move needs the check, which was skipped",
+      };
+    }
+    return continueTeamMove(ctx, () => state, setJournal, options);
+  }
 
   function currentWindow(): WindowRecord {
     const open = state.journal.window;
@@ -745,6 +841,7 @@ function previousRelease(
   platform: ServingIdentity,
   web: ServingIdentity,
   journal: Journal,
+  team: TeamRecord | undefined,
 ): PreviousRelease {
   for (const [worker, identity] of [
     [plan.platformWorker, platform],
@@ -761,6 +858,7 @@ function previousRelease(
     webVersionId: String(web.versionId),
     ...(journal.platformCode === undefined ? {} : { platformCode: journal.platformCode }),
     ...(journal.webCode === undefined ? {} : { webCode: journal.webCode }),
+    ...(team === undefined ? {} : { team }),
   };
 }
 
@@ -776,7 +874,22 @@ async function ownerAccess(
   setJournal: (journal: Journal) => void,
 ): Promise<AccessSettings> {
   if (ctx.accessApi === undefined) return ctx.cloud.access(plan);
-  // The Access records are replaced whole, and left out when empty (as in `run`).
+  try {
+    return await ensureOwnerAccess(accessContext(ctx, ctx.accessApi, plan, journal, setJournal));
+  } catch (error) {
+    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+    throw error;
+  }
+}
+
+/** The Access steps' context on the journal's records, replaced whole and left out when empty. */
+function accessContext(
+  ctx: UpdateContext,
+  api: AccessApi,
+  plan: Installation,
+  journal: () => Journal,
+  setJournal: (journal: Journal) => void,
+): EnsureAccessContext {
   const records = (r: AccessRecords) => {
     const { accessApp: _app, accessLoginMethod: _method, ...rest } = journal();
     setJournal({
@@ -785,28 +898,24 @@ async function ownerAccess(
       ...(r.loginMethod === undefined ? {} : { accessLoginMethod: r.loginMethod }),
     });
   };
-  try {
-    return await ensureOwnerAccess({
-      api: ctx.accessApi,
-      plan,
-      ownerEmail: ctx.ownerEmail,
-      recorded: () => {
-        const { accessApp, accessLoginMethod } = journal();
-        return {
-          ...(accessApp === undefined ? {} : { app: accessApp }),
-          ...(accessLoginMethod === undefined ? {} : { loginMethod: accessLoginMethod }),
-        };
-      },
-      record: records,
-      now: ctx.now,
-      sleep: ctx.sleep,
-      nonce: () => hex(ctx.random(4)),
-      log: ctx.log,
-    });
-  } catch (error) {
-    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
-    throw error;
-  }
+  return {
+    api,
+    plan,
+    ownerEmail: ctx.ownerEmail,
+    memberGroupId: memberGroupIdOf(journal().team),
+    recorded: () => {
+      const { accessApp, accessLoginMethod } = journal();
+      return {
+        ...(accessApp === undefined ? {} : { app: accessApp }),
+        ...(accessLoginMethod === undefined ? {} : { loginMethod: accessLoginMethod }),
+      };
+    },
+    record: records,
+    now: ctx.now,
+    sleep: ctx.sleep,
+    nonce: () => hex(ctx.random(4)),
+    log: ctx.log,
+  };
 }
 
 /** What `workerInstallation` says of a Worker that exists. */
@@ -971,5 +1080,349 @@ export async function pollServer<T>(
     }
     if (ctx.now() + options.pollMs > options.deadline) return seen;
     await ctx.sleep(options.pollMs);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The team's move behind Access (WP8.11, team-move.ts)
+
+/** How long one run waits for each step of the team's move, unless told. */
+const TEAM_WAIT_MS = 20 * 60_000;
+
+/** Whether a move is under way: recorded, and not finished. */
+function teamMoving(team: TeamRecord | undefined): boolean {
+  return team !== undefined && team.finishedAt === undefined;
+}
+
+/** The web Worker's configuration with the team's variables (members admission, once on). */
+function withTeamWebVars(
+  config: Record<string, unknown>,
+  team: TeamRecord | undefined,
+  plan: Installation,
+): Record<string, unknown> {
+  const web = teamVars(team, plan.accountId).web;
+  if (Object.keys(web).length === 0) return config;
+  return { ...config, vars: { ...(config.vars as Record<string, string>), ...web } };
+}
+
+/**
+ * Before the update's deploy: the move's record, its member group and the reconciler's token,
+ * each journaled before and after; returns the secrets the deploy must carry for it (nothing when
+ * no move is asked for or under way). A token made earlier whose value the platform Worker does
+ * not hold was lost with a stopped run: deleted, or listed for deletion when Cloudflare does not
+ * let the login delete it.
+ */
+async function prepareTeamMove(
+  ctx: UpdateContext,
+  plan: Installation,
+  journal: () => Journal,
+  setJournal: (journal: Journal) => void,
+  present: ReadonlySet<string>,
+): Promise<Record<string, string>> {
+  const asked = ctx.team?.requested === true;
+  let team = journal().team;
+  if (team === undefined && !asked) return {};
+  const ports = ctx.team;
+  if (ports === undefined) {
+    // A finished move (`run`'s update, which has no team ports): its variables render from the
+    // journal, and its identity mode is restored from it as the move left it, never weaker. Its
+    // token can be made again only with the token API: refused, with the one command that can.
+    if (team !== undefined && team.finishedAt !== undefined) {
+      if (!present.has(ACCESS_GROUP_TOKEN_SECRET)) {
+        throw new BootstrapRefusal(
+          `${plan.platformWorker} no longer holds ${ACCESS_GROUP_TOKEN_SECRET}, the member group's token, which only the installer's own Cloudflare login can make again: run bootstrap.ts update (it makes a new one and deploys it); nothing was changed`,
+        );
+      }
+      return moveSecrets(present, team, undefined);
+    }
+    throw new BootstrapRefusal(
+      "the team's move behind Access is under way: go on with bootstrap.ts update --team-admission members, from the installer's own Cloudflare account (not the staging tool); nothing was changed",
+    );
+  }
+  if (asked && !ports.supported) throw new BootstrapRefusal(teamAdmissionRefusal());
+  // Preflights, before anything changes: this computer's host, and an Access application the
+  // move may change, for the steps not done yet.
+  if (team?.boundAt === undefined && ports.hostId === undefined) {
+    throw new BootstrapRefusal(
+      `this computer's Omnigent host ID is not in ${ports.hostConfig ?? "the host's configuration"} (where scripts/host/omnigent-host.sh sets the host up), so the move could not check that host: run again with --host-id <its ID>, or --host-id none if the owner uses no personal host; nothing was changed`,
+    );
+  }
+  if (team?.policyAt === undefined) {
+    await accessOwnershipPreflight(ctx, plan, journal, setJournal);
+  }
+  const save = (next: TeamRecord) => {
+    team = next;
+    setJournal({ ...journal(), team: next });
+  };
+  if (team === undefined) {
+    save({ id: newTeamMoveId(ctx.now(), ctx.random), startedAt: iso(ctx.now()) });
+    ctx.log(
+      `moving https://${plan.hostname}'s team behind Access: the update also turns on Access's member group and Omnigent's identity binding, in bind mode first`,
+    );
+  }
+  const current = () => team as TeamRecord;
+  if (current().stopped !== undefined && asked) {
+    const { stopped: _s, stoppedAt: _a, ...rest } = current();
+    save(rest);
+  }
+  // The member group: created once, with the owner's address only.
+  if (memberGroupIdOf(current()) === undefined) {
+    if (ctx.ownerEmail === undefined) {
+      throw new BootstrapRefusal(
+        "moving the team behind Access creates Access's member group with the owner's address: run update again with --owner-email <the owner's address>; nothing was changed",
+      );
+    }
+    try {
+      await ensureMemberGroup({
+        api: ports.groups,
+        plan,
+        ownerEmail: ctx.ownerEmail,
+        recorded: () => current().memberGroup,
+        record: (group) => {
+          const { memberGroup: _g, ...rest } = current();
+          save(group === undefined ? rest : { ...rest, memberGroup: group });
+        },
+        now: ctx.now,
+        sleep: ctx.sleep,
+        nonce: () => hex(ctx.random(4)),
+        log: ctx.log,
+      });
+    } catch (error) {
+      if (error instanceof TeamAdmissionRefusal) throw new BootstrapRefusal(error.message);
+      throw error;
+    }
+  }
+  // The reconciler's token: its value goes with the deploy and nowhere else.
+  let value: string | undefined;
+  if (!present.has(ACCESS_GROUP_TOKEN_SECRET)) {
+    const lost = current().token;
+    if (lost !== undefined) {
+      let deleted = false;
+      if (lost.id !== undefined) {
+        try {
+          ports.tokens.remove(lost.id);
+          deleted = true;
+        } catch {
+          // An OAuth login may not delete tokens (403): listed for the person instead.
+        }
+      }
+      const { token: _t, ...rest } = current();
+      save(
+        deleted ? rest : { ...rest, tokensToDelete: [...(current().tokensToDelete ?? []), lost] },
+      );
+    }
+    const name = `${plan.platformWorker}-access`;
+    save({ ...current(), token: { name, createStartedAt: iso(ctx.now()) } });
+    const made = makeAdmissionToken(ports.tokens, plan, ctx.now());
+    const token: RecordedToken = {
+      name: made.name,
+      id: made.id,
+      createdAt: iso(ctx.now()),
+    };
+    save({ ...current(), token });
+    value = made.value;
+    ctx.log(
+      `made the member group's token ${made.name} (Access: Organizations, Identity Providers, and Groups Write); it goes into ${plan.platformWorker}'s secret ${ACCESS_GROUP_TOKEN_SECRET} only`,
+    );
+  }
+  return moveSecrets(present, current(), value);
+}
+
+/**
+ * After the update's acceptance: the steps of the move not yet done (team-move.ts, steps 3 to 5),
+ * each waited for at most `teamWaitMs`. A run that times out says what it waits for; the next
+ * one goes on from there and repeats nothing that is done.
+ */
+async function continueTeamMove(
+  ctx: UpdateContext,
+  state: () => BootstrapState,
+  setJournal: (journal: Journal) => void,
+  options: UpdateOptions,
+): Promise<UpdateOutcome> {
+  const plan = state().installation;
+  const team = (): TeamRecord => state().journal.team as TeamRecord;
+  const save = (change: Partial<TeamRecord>) =>
+    setJournal({ ...state().journal, team: { ...team(), ...change } });
+  const hostId = ctx.team?.hostId;
+  const wait = options.teamWaitMs ?? TEAM_WAIT_MS;
+  const since = Date.parse(state().journal.update?.platformDeployStartedAt ?? team().startedAt);
+  // Cloud computers connected at the move's last check, for the run's final words.
+  let computers: number | undefined;
+  const say = (check: Exclude<MoveCheck, { kind: "ready" }>): UpdateOutcome => {
+    if (check.kind === "stopped") {
+      save({ stopped: check.why, stoppedAt: iso(ctx.now()) });
+      return { kind: "team", state: "stopped", why: check.why };
+    }
+    return { kind: "team", state: "waiting", why: check.why };
+  };
+
+  // 3. Bound, reconciled, this computer's host through Access: then `required`.
+  if (team().requiredStartedAt === undefined) {
+    if (team().stopped !== undefined)
+      return { kind: "team", state: "stopped", why: String(team().stopped) };
+    const bound = await pollMove(ctx, plan, since, wait, options.pollMs, {
+      moveId: team().id,
+      mode: "bind",
+      hostId,
+      hostname: plan.hostname,
+    });
+    if (bound.kind !== "ready") return say(bound);
+    computers = bound.computers;
+    save({
+      boundAt: iso(ctx.now()),
+      ...(hostId === undefined ? {} : { hostId }),
+      requiredStartedAt: iso(ctx.now()),
+    });
+    ctx.log(
+      "checked in bind mode: the owner is bound, Access's member group is written and this computer's host connects with the owner's Access sign-in; requiring Access's sign-in now (the server restarts once)",
+    );
+    await ctx.cloud.updateSecrets(plan.platformWorker, { [IDENTITY_MODE_VAR]: "required" });
+    const versionId = await ctx.cloud.activeVersion(plan.platformWorker);
+    if (versionId !== undefined) save({ requiredVersionId: versionId });
+  }
+
+  // 4. The same checks from a server started in required mode, the host reconnected.
+  if (team().requiredAt === undefined) {
+    const from = Date.parse(String(team().requiredStartedAt));
+    const required = await pollMove(ctx, plan, from, wait, options.pollMs, {
+      moveId: team().id,
+      mode: "required",
+      hostId: team().hostId ?? hostId,
+      hostname: plan.hostname,
+    });
+    if (required.kind !== "ready") {
+      // Required mode gets one wait: anything it does not show by then (this computer's host not
+      // reconnected, say) goes back to bind, which keeps working, and the run says why.
+      await ctx.cloud.updateSecrets(plan.platformWorker, { [IDENTITY_MODE_VAR]: "bind" });
+      const { requiredStartedAt: _s, requiredVersionId: _v, ...rest } = team();
+      setJournal({ ...state().journal, team: rest });
+      return say({
+        kind: "stopped",
+        why: `in required mode, ${required.kind === "stopped" ? required.why : `after ${Math.round(wait / 60_000)} minutes, ${required.why}`}; the installation is back in bind mode, where it works`,
+      });
+    }
+    computers = required.computers;
+    save({ requiredAt: iso(ctx.now()) });
+    ctx.log(
+      "checked in required mode: Omnigent honours a person's sign-in only through Access now",
+    );
+  }
+
+  // 5. Members admission on the web Worker, then the application allows the member group.
+  if (team().webAt === undefined) {
+    const access = state().journal.access;
+    if (access === undefined) {
+      throw new Error("the journal holds no Access settings for the web Worker; run update again");
+    }
+    save({ webStartedAt: iso(ctx.now()) });
+    const config = withTeamWebVars(
+      renderWebConfig(ctx.baseConfigs.web, plan, access),
+      team(),
+      plan,
+    );
+    ctx.log(`deploying the web Worker ${plan.webWorker} with members admission`);
+    await ctx.cloud.deployWeb(plan, config);
+    save({ webAt: iso(ctx.now()) });
+  }
+  if (team().policyAt === undefined) {
+    const appId = state().journal.accessApp?.id;
+    const groupId = memberGroupIdOf(team());
+    if (ctx.accessApi !== undefined && appId !== undefined && groupId !== undefined) {
+      save({ policyStartedAt: iso(ctx.now()) });
+      try {
+        await switchToMemberPolicy(ctx.accessApi, plan, appId, groupId);
+      } catch (error) {
+        if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+        throw error;
+      }
+      ctx.log(
+        `the Access application on ${plan.hostname} allows the installation's member group now (it holds the owner alone until someone is invited)`,
+      );
+      save({ policyAt: iso(ctx.now()) });
+    } else {
+      // Never a success without the group's policy read back.
+      throw new BootstrapRefusal(
+        `the Access application on ${plan.hostname} is not one this installation created (or this run has no Access login), so the move cannot switch it to the member group and is not finished: ${notOursRemedy(plan)}`,
+      );
+    }
+  }
+
+  // Done: the move's secret goes, and with it the team fields on every status line.
+  await ctx.cloud.updateSecrets(plan.platformWorker, { [TEAM_MOVE_SECRET]: null });
+  save({ finishedAt: iso(ctx.now()) });
+  const left = team().tokensToDelete ?? [];
+  return {
+    kind: "team",
+    state: "finished",
+    why:
+      left.length === 0
+        ? "the team's move behind Access is finished"
+        : `the team's move behind Access is finished; delete the unused token${left.length === 1 ? "" : "s"} ${left.map((t) => t.name).join(", ")} (Cloudflare dashboard, My Profile, API Tokens)`,
+    ...(computers === undefined ? {} : { computers }),
+  };
+}
+
+/** Waits for one step of the move: the newest team line of the version serving, checked. */
+async function pollMove(
+  ctx: UpdateContext,
+  plan: Installation,
+  since: number,
+  waitMs: number,
+  pollMs: number,
+  rules: Parameters<typeof checkMove>[1],
+): Promise<MoveCheck> {
+  const logsSince = slicedLogs(ctx, plan.platformWorker);
+  const seen = await pollServer<MoveCheck>(
+    ctx,
+    { pollMs, deadline: ctx.now() + waitMs },
+    async () => {
+      const active = await ctx.cloud.activeVersion(plan.platformWorker);
+      const logs = parseLogs(await logsSince(since, ctx.now()), plan.platformWorker);
+      const lines = logs.statuses.filter(
+        (s) => s.teamMove !== undefined && s.configApplied === true && s.versionId === active,
+      );
+      const check = checkMove(newest(lines)?.teamMove, rules);
+      if (check.kind !== "waiting") return { decided: check };
+      return { why: check.why };
+    },
+  );
+  return "decided" in seen ? seen.decided : { kind: "waiting", why: seen.why };
+}
+
+/** How to let the installer own the hostname's Access application, so the move may switch it. */
+function notOursRemedy(plan: Installation): string {
+  return `delete that application (https://one.dash.cloudflare.com/, Access, Applications, the one for ${plan.hostname}) and run this command again: the update creates the installation's own owner-only application first (Omnigent is unreachable for the minute between), then the move goes on`;
+}
+
+/**
+ * Refuses a move that would have to change an Access application the installer does not own:
+ * the hostname's application must be the one the journal records as created by this
+ * installation, or none (the update then creates it). Never overwritten silently.
+ */
+async function accessOwnershipPreflight(
+  ctx: UpdateContext,
+  plan: Installation,
+  journal: () => Journal,
+  setJournal: (journal: Journal) => void,
+): Promise<void> {
+  if (ctx.accessApi === undefined) {
+    throw new BootstrapRefusal(
+      "the team's move switches the hostname's Access application to the member group, which needs the installer's own Cloudflare account and its Access login (not the staging tool); nothing was changed",
+    );
+  }
+  // This installation's own create that an interrupted run never saw answered is resolved first,
+  // as the Access step resolves it (by its journaled unique name, after the settle time).
+  try {
+    await resolvePendingCreate(accessContext(ctx, ctx.accessApi, plan, journal, setJournal));
+  } catch (error) {
+    if (error instanceof AccessRefusal) throw new BootstrapRefusal(error.message);
+    throw error;
+  }
+  if (journal().accessApp?.id !== undefined) return;
+  const covering = ctx.accessApi.apps().filter((app) => coversHostname(app, plan.hostname));
+  if (covering.length > 0) {
+    throw new BootstrapRefusal(
+      `the Access application on ${plan.hostname} was not created by this installation (the state file does not record it), and the move never changes an application it does not own: ${notOursRemedy(plan)}; nothing was changed`,
+    );
   }
 }

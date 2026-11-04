@@ -27,6 +27,7 @@ from cfo_server import admission
 from cfo_server import app as image_app
 from cfo_server import config as image_config
 from cfo_server import owner_password as op
+
 from conftest import COOKIE_SECRET
 
 BASE = {
@@ -162,6 +163,15 @@ def test_the_adapter_succeeds_on_applied_or_stale_and_raises_otherwise() -> None
             _adapter(status, answer)[0].apply(Snapshot(4, ()))
 
 
+def test_the_adapter_posts_to_platform_internal_whatever_the_environment_says() -> None:
+    env = {"CFO_LAUNCHER_SIGNING_KEY": "k" * 32, "CFO_LAUNCHER_SIGNING_KEY_ID": "key-1"}
+    assert admission.from_env(env)._url == "http://platform.internal/access/v1/admission"  # type: ignore[union-attr]
+    # No setting redirects it: a local test reaches its stand-in by the container's own hosts.
+    for name in ("CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY", "CFO_PLATFORM_INTERNAL_URL"):
+        other = {**env, name: "http://host.docker.internal:9123"}
+        assert admission.from_env(other)._url == admission.URL  # type: ignore[union-attr]
+
+
 def test_the_adapter_needs_the_launchers_key() -> None:
     assert admission.from_env({}) is None
     assert admission.from_env({"CFO_LAUNCHER_SIGNING_KEY": "k" * 32}) is None
@@ -193,11 +203,16 @@ async def _inner(scope: Any, receive: Any, send: Any) -> None:
     raise AssertionError("passed through")
 
 
-def _call(middleware: op.OwnerPasswordMiddleware, body: bytes, headers: dict[str, str]):
+def _call(
+    middleware: op.OwnerPasswordMiddleware,
+    body: bytes,
+    headers: dict[str, str],
+    path: str = op.PAGE_PERSON_PATH,
+):
     scope = {
         "type": "http",
         "method": "POST",
-        "path": op.PAGE_PERSON_PATH,
+        "path": path,
         "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
     }
     messages = [{"type": "http.request", "body": body, "more_body": False}]
@@ -213,16 +228,16 @@ def _call(middleware: op.OwnerPasswordMiddleware, body: bytes, headers: dict[str
     return sent[0]["status"], json.loads(sent[1]["body"])
 
 
-def _signed(body: bytes) -> dict[str, str]:
+def _signed(body: bytes, path: str = op.PAGE_PERSON_PATH) -> dict[str, str]:
     stamp = str(int(time.time()))
     key = op.platform_call_key(COOKIE_SECRET)
     return {
         "x-cfo-call-timestamp": stamp,
-        "x-cfo-call-signature": op.sign(key, "POST", op.PAGE_PERSON_PATH, stamp, body),
+        "x-cfo-call-signature": op.sign(key, "POST", path, stamp, body),
     }
 
 
-def _middleware(team_store: Any) -> op.OwnerPasswordMiddleware:
+def _middleware(team_store: Any, team_status: Any = None) -> op.OwnerPasswordMiddleware:
     return op.OwnerPasswordMiddleware(
         _inner,
         cookie_secret=COOKIE_SECRET,
@@ -231,6 +246,7 @@ def _middleware(team_store: Any) -> op.OwnerPasswordMiddleware:
         auth_provider=None,
         hash_password=lambda password: password,
         team_store=team_store,
+        team_status=team_status,
     )
 
 
@@ -277,6 +293,90 @@ def test_page_person_refuses_an_unsigned_or_replayed_call() -> None:
 def test_page_person_is_unsupported_without_the_team_model() -> None:
     body = _body("alice-sub")
     assert _call(_middleware(None), body, _signed(body))[0] == 501
+
+
+# ── /_cfo/team-status ──────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class FakeHost:
+    host_id: str
+    owner: str | None
+    launch_token: bool
+    identity: str
+
+
+@dataclass(frozen=True)
+class FakeStatus:
+    owners: int
+    owners_bound: int
+    revision: int
+    hosts: tuple[FakeHost, ...]
+
+
+def _status_body(**extra: Any) -> bytes:
+    return json.dumps({"nonce": secrets.token_hex(16), **extra}).encode()
+
+
+def test_team_status_reports_owners_and_hosts_by_id_only() -> None:
+    status = FakeStatus(
+        owners=1,
+        owners_bound=1,
+        revision=4,
+        hosts=(
+            FakeHost("a" * 32, "owner", False, "owner"),
+            FakeHost("b" * 32, "owner", True, "none"),
+            FakeHost("c" * 32, "alice", False, "unbound"),
+        ),
+    )
+    middleware = _middleware(None, lambda: status)
+    body = _status_body()
+    code, answer = _call(middleware, body, _signed(body, op.TEAM_STATUS_PATH), op.TEAM_STATUS_PATH)
+    assert code == 200
+    assert answer == {
+        "owners": 1,
+        "ownersBound": 1,
+        "revision": 4,
+        "hosts": [
+            {
+                "hostId": "a" * 32,
+                "launchToken": False,
+                "installationOwner": True,
+                "identity": "owner",
+            },
+            {
+                "hostId": "b" * 32,
+                "launchToken": True,
+                "installationOwner": True,
+                "identity": "none",
+            },
+            {
+                "hostId": "c" * 32,
+                "launchToken": False,
+                "installationOwner": False,
+                "identity": "unbound",
+            },
+        ],
+    }
+    # No account name or address leaves the server.
+    assert "alice" not in json.dumps(answer)
+
+
+def test_team_status_refuses_unsigned_malformed_or_unsupported_calls() -> None:
+    middleware = _middleware(None, lambda: FakeStatus(0, 0, 0, ()))
+    body = _status_body()
+    assert _call(middleware, body, {}, op.TEAM_STATUS_PATH)[0] == 401
+    # A signature over another path is not valid here.
+    assert _call(middleware, body, _signed(body), op.TEAM_STATUS_PATH)[0] == 401
+    extra = _status_body(hostId="x")
+    assert (
+        _call(middleware, extra, _signed(extra, op.TEAM_STATUS_PATH), op.TEAM_STATUS_PATH)[0] == 400
+    )
+    body = _status_body()
+    unsupported = _middleware(None, None)
+    assert (
+        _call(unsupported, body, _signed(body, op.TEAM_STATUS_PATH), op.TEAM_STATUS_PATH)[0] == 501
+    )
 
 
 # ── create_app's admission keyword ─────────────────────────────────────────────────────

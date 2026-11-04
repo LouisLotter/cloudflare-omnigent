@@ -12,6 +12,10 @@ python -m cfo_drill seed MEGABYTES
     Grow the live database with filler rows (cfo_drill.filler). For measurements only.
 python -m cfo_drill harness
     The staging measurement harness (cfo_drill.harness).
+python -m cfo_drill team-rehearsal DB_FILE --owner USERNAME
+    The team-of-one rehearsal (cfo_drill.team, WP8.11): migrate the copy of the database at
+    DB_FILE with this image's Omnigent and check it. Prints the report; exit 0 when every check
+    passed, 1 when one failed, 2 when it could not run. Changes DB_FILE: run it on a copy.
 """
 
 from __future__ import annotations
@@ -90,6 +94,22 @@ def _cmd_harness(_: argparse.Namespace) -> int:
     return harness.main()
 
 
+def _cmd_team_rehearsal(args: argparse.Namespace) -> int:
+    from cfo_drill import team
+
+    path = Path(args.db_file)
+    if not path.is_file():
+        print(json.dumps({"kind": "team-rehearsal", "ok": False, "error": "no such database file"}))
+        return 2
+    try:
+        report = team.rehearse(path, args.owner)
+    except Exception as exc:  # noqa: BLE001 - reported by type only: the report names nobody
+        print(json.dumps({"kind": "team-rehearsal", "ok": False, "error": type(exc).__name__}))
+        return 2
+    print(json.dumps(report, indent=2))
+    return 0 if report["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cfo_drill")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -110,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("megabytes", type=float)
     p.set_defaults(func=_cmd_seed)
     sub.add_parser("harness").set_defaults(func=_cmd_harness)
+    p = sub.add_parser("team-rehearsal")
+    p.add_argument("db_file")
+    p.add_argument("--owner", required=True)
+    p.set_defaults(func=_cmd_team_rehearsal)
     args = parser.parse_args(argv)
     return int(args.func(args))
 

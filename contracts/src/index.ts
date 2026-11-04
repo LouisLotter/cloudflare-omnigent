@@ -42,6 +42,7 @@ import {
   ForwardedPerson,
   PagePersonCall,
   PagePersonResult,
+  TeamStatusReport,
 } from "./team.ts";
 
 export * from "./access.ts";
@@ -104,6 +105,7 @@ export const wireSchemas = {
   ReservationState,
   SupervisorMessage,
   SupervisorReply,
+  TeamStatusReport,
   TerminalUpgrade,
   WorkspaceCommand,
   WorkspaceCommandReply,

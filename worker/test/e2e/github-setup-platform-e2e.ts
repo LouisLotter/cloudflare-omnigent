@@ -9,11 +9,21 @@
  * storage, as the runtime keeps it across instances. Everything else, the watchdog, its status
  * line, `githubSetup` and the cron's `scheduled` handler (`/__e2e/cron`), is production code.
  * WorkspaceDO and ControlDO are the production classes, for the web Worker's bindings.
+ *
+ * `/__e2e/platform-internal/<path>` (WP8.11, `team-move-e2e.ts`) is `platform.internal/<path>`:
+ * the production `PlatformInternal` entrypoint with the props OmnigentServer registers for its
+ * container, which the container reaches in production through its intercept. Here the server
+ * container reaches it through the run's relay (its own hosts name platform.internal on its
+ * loopback, then a Unix socket and the web Worker's `/__e2e/` route), since Docker gives it no
+ * intercept. And the member group's client reaches Cloudflare's API stand-in
+ * (`CFO_E2E_ACCESS_API`), injected here; without one it reaches nothing.
  */
+import { exports } from "cloudflare:workers";
 import { WorkspaceDO as PlatformWorkspaceDO } from "../../src/computer/WorkspaceDO.ts";
 import { ControlDO as PlatformControlDO } from "../../src/control/ControlDO.ts";
 import type { PlatformEnv } from "../../src/env.ts";
 import platform from "../../src/index.ts";
+import { CLOUDFLARE_API } from "../../src/server/access-group-api.ts";
 import type { ContainerExit, ServerContainer } from "../../src/server/container-port.ts";
 import {
   OmnigentServer as PlatformOmnigentServer,
@@ -24,6 +34,7 @@ type Env = PlatformEnv & {
   readonly CFO_E2E_SERVER_PORTS?: string;
   readonly CFO_E2E_CONTROL?: string;
   readonly CFO_E2E_CONTROL_TOKEN?: string;
+  readonly CFO_E2E_ACCESS_API?: string;
 };
 
 /** The real container, through the run's control server; its state in the object's storage. */
@@ -138,6 +149,15 @@ export class OmnigentServer extends PlatformOmnigentServer {
     return null;
   }
 
+  /** Cloudflare's API stand-in for the member group's client; an e2e run never reaches the real one. */
+  protected override accessApiFetch(input: string, init: RequestInit): Promise<Response> {
+    const standIn = (this.env as Env).CFO_E2E_ACCESS_API;
+    if (standIn === undefined || !input.startsWith(`${CLOUDFLARE_API}/`)) {
+      return Promise.resolve(new Response("no Cloudflare API stand-in", { status: 503 }));
+    }
+    return fetch(`${standIn}${input.slice(CLOUDFLARE_API.length)}`, init);
+  }
+
   /** Checks every 10 s instead of every minute, so the run waits less; nothing else changes. */
   protected override timing(): ServerTiming {
     return { ...super.timing(), intervalMs: 10_000 };
@@ -148,6 +168,11 @@ export class OmnigentServer extends PlatformOmnigentServer {
 // the launcher API), as in production.
 export { PlatformInternal } from "../../src/internal/entrypoints.ts";
 
+const SERVER_PROPS = { propsVersion: 1, caller: "omnigent-server" };
+const INTERNAL_PREFIX = "/__e2e/platform-internal/";
+
+type Factory = (options: { props: unknown }) => Fetcher;
+
 export class WorkspaceDO extends PlatformWorkspaceDO {}
 export class ControlDO extends PlatformControlDO {}
 
@@ -157,6 +182,14 @@ export default {
     if (new URL(request.url).pathname === "/__e2e/cron") {
       await platform.scheduled?.({} as ScheduledController, env, ctx);
       return new Response("ok");
+    }
+    const url = new URL(request.url);
+    if (url.pathname.startsWith(INTERNAL_PREFIX)) {
+      const path = url.pathname.slice(INTERNAL_PREFIX.length - 1);
+      const entry = (exports as unknown as Record<"PlatformInternal", Factory>).PlatformInternal;
+      return entry({ props: SERVER_PROPS }).fetch(
+        new Request(`http://platform.internal${path}${url.search}`, request),
+      );
     }
     return new Response("not found", { status: 404 });
   },

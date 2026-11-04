@@ -1,0 +1,13 @@
+{
+  "owners": 1,
+  "ownersBound": 1,
+  "revision": 3,
+  "hosts": [
+    {
+      "hostId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "launchToken": false,
+      "installationOwner": true,
+      "identity": "trusted"
+    }
+  ]
+}

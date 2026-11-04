@@ -61,6 +61,19 @@ describe("serverContainerEnv", () => {
     expect(JSON.stringify(skipped)).not.toContain("a\0b");
   });
 
+  it("never forwards a local test setting, so no deployment can turn a test path on", () => {
+    const { vars, skipped } = serverContainerEnv({
+      SERVER_ENV_CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY: "http://host.docker.internal:9123",
+      SERVER_ENV_ANY_LOCAL_ONLY: "x",
+      SERVER_ENV_CFO_REPLICA_URL: "file:///replica",
+    });
+    expect(vars).toEqual({ CFO_REPLICA_URL: "file:///replica" });
+    expect(skipped).toEqual([
+      { name: "SERVER_ENV_CFO_PLATFORM_INTERNAL_URL_LOCAL_ONLY", reason: "a local test setting" },
+      { name: "SERVER_ENV_ANY_LOCAL_ONLY", reason: "a local test setting" },
+    ]);
+  });
+
   it("never forwards a variable without the prefix", () => {
     fc.assert(
       fc.property(

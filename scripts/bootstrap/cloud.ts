@@ -763,6 +763,17 @@ export function cfAccessApi(run: Runner): AccessApi {
         `cf zero-trust access applications delete failed: ${diagnostic(result.stderr)}`,
       );
     },
+    update: (id, body) => {
+      accessCf(run, [
+        "zero-trust",
+        "access",
+        "applications",
+        "update",
+        id,
+        "--body",
+        JSON.stringify(body),
+      ]);
+    },
   };
 }
 

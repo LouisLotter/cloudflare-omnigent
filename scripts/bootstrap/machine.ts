@@ -109,6 +109,7 @@ import {
   type SuppliedSecrets,
   secretsToAdd,
 } from "./settings.ts";
+import { memberGroupIdOf, type TeamRecord } from "./team-move.ts";
 // update.ts uses this module's refusal, generator and log reader; step 7 calls its runUpdate:
 // a cycle that neither module uses at load time.
 import { DEFAULT_UPDATE_OPTIONS, runUpdate, type UpdateRecord } from "./update.ts";
@@ -245,6 +246,8 @@ export interface Journal {
   readonly mcpServices?: McpServicesRecord;
   /** The owner's personal devices, through the Cloudflare One Client (WP3.43, devices.ts). */
   readonly devices?: DevicesRecord;
+  /** The team's move behind Access, and its member group (WP8.11, team-move.ts). */
+  readonly team?: TeamRecord;
 }
 
 /**
@@ -518,6 +521,7 @@ export async function runBootstrap(
         api: ctx.accessApi,
         plan,
         ownerEmail: ctx.ownerEmail,
+        memberGroupId: memberGroupIdOf(ctx.store.load().journal.team),
         recorded: () => ({
           ...(state.journal.accessApp === undefined ? {} : { app: state.journal.accessApp }),
           ...(state.journal.accessLoginMethod === undefined
@@ -768,6 +772,8 @@ export async function runBootstrap(
     );
     if (updated.kind === "current") return { kind: "done" };
     if (updated.kind === "done") return { kind: "done", updated: true };
+    // `run` never asks for the team's move (WP8.11): only `update --team-admission members` does.
+    if (updated.kind === "team") return { kind: "released", why: updated.why, updated: true };
     // WP3.41: while the update's window is open, Omnigent is paused; it can go back.
     const why =
       updated.window === "open"
