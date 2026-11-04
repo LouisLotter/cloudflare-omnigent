@@ -28,7 +28,7 @@ An owner changes a role with the role menu next to the person. Making someone an
 
 ## The team's computers
 
-As an owner or administrator, you see the other members' cloud computers on the computers page, `/platform/computers`, under **The team's other computers**. To get there, use the link on Omnigent's **Settings → Computers** ("Other people's computers are on the computers page"), or **All computers** at the top of any of your own computers' pages.
+As an owner or administrator, you see the other members' cloud computers on the computers page, `/platform/computers`, under **The team's other computers**. To get there, use **Computers page** in Omnigent's sidebar, the link on **Settings → Computers** ("Other people's computers are on the computers page"), or **All computers** at the top of any of your own computers' pages.
 
 Each card says whose computer it is and how it is doing. You can **Stop** it, which ends its work in progress; it starts again when its owner next uses it. When a computer is being removed, you can also finish its removal there. You cannot open another person's computer page, sign in on it or open its terminal: its setup and its logins stay its owner's alone.
 
