@@ -94,8 +94,9 @@ function codexNote(service: SignInService): string {
 
 /**
  * The start button (with what precedes a first attempt); `again` once the card is signed in.
- * `wake` (WP3.53): the computer is not running and the page's script wakes it first; without
- * the script the button does nothing, so a `<noscript>` keeps the way that needs none.
+ * `wake` (WP3.53): the computer is not running and the page's script wakes it first. The note
+ * then says so only where the script runs (`data-js-only`); the setup page's `<noscript>` gives
+ * the way without it, whatever the cards show.
  */
 export function signInIdleHtml(
   service: SignInService,
@@ -106,7 +107,7 @@ export function signInIdleHtml(
 ): string {
   const label = `Sign in to ${TITLE[service]}${again ? " again" : ""}`;
   const noted = note
-    ? `<p data-sign-in-note>${escapeHtml(note)}</p>${wake ? `<noscript><p>${escapeHtml(NOT_RUNNING_NOTE)}</p></noscript>` : ""}`
+    ? `<p data-sign-in-note${wake ? " data-js-only" : ""}>${escapeHtml(note)}</p>`
     : "";
   return `${noted}${codexNote(service)}<div class="actions"><button type="button" class="primary" data-act="start"${wake ? " data-wake" : ""}${offered ? "" : " disabled"}>${escapeHtml(label)}</button></div>`;
 }

@@ -867,6 +867,28 @@ async function main(): Promise<number> {
       }
     });
 
+    await run("J14f-without-javascript-no-wake-is-promised", async (_page, checks) => {
+      // Codex WP3.53 r1-3: without the script, the page gives the way to wake the computer in
+      // Omnigent, and nothing on it says the page wakes it.
+      const bare = await chromiumBrowser.newContext({
+        extraHTTPHeaders: headers,
+        javaScriptEnabled: false,
+      });
+      try {
+        const page = await bare.newPage();
+        await page.goto(`${base}/platform/computers/${ids["managed-full"] ?? ""}`);
+        await page
+          .locator("[data-no-script]")
+          .getByText("To wake it, send it work in Omnigent")
+          .waitFor();
+        const text = await page.locator("body").innerText();
+        if (text.includes("wakes it first")) throw new Error("a wake is promised without JS");
+        checks.push("JavaScript off: the <noscript> way is shown; no wake is promised");
+      } finally {
+        await bare.close();
+      }
+    });
+
     await run("J14e-someone-elses-computer-is-not-woken", async (page, checks) => {
       // The page's own origin and the owner's session, asking for another person's host.
       await page.goto(`${base}/platform/computers/${ids["managed-asleep"] ?? ""}`);

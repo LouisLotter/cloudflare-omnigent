@@ -28,6 +28,8 @@ export const PAGES_CSS = `
   --danger: #f08a80; --accent: #ececea; --accent-fg: #161615; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* WP3.53: what only the page's script can do is said only once it runs (setup-client.js). */
+#computer-page[data-script="off"] [data-js-only] { display: none; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header.top { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap;

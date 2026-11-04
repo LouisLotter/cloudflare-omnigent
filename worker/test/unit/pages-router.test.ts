@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
+import { PAGES_CSS } from "../../src/pages/html.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
 import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
 import type { PersonSeam } from "../../src/pages/person.ts";
@@ -545,7 +546,9 @@ describe("the setup page", () => {
     });
     const asleep = await (await route(page)).text();
     expect(asleep).toContain('id="terminal-open" data-wake>Open the terminal</button>');
-    expect(asleep).toContain("Opening the terminal wakes it first, which takes about a minute.");
+    expect(asleep).toContain(
+      "<span data-js-only>The computer is not running now. Opening the terminal wakes it first, which takes about a minute.",
+    );
     expect(asleep).toContain(
       'data-running="no" data-host-url="/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"',
     );
@@ -563,7 +566,8 @@ describe("the setup page", () => {
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
     const awake = await (await route(page)).text();
     expect(awake).toContain('id="terminal-open">Open the terminal</button>');
-    expect(awake).toContain('data-running="yes" data-resume=');
+    expect(awake).toContain('data-running="yes" data-script="off" data-resume=');
+    expect(awake).not.toContain("<noscript>");
     expect(awake).not.toContain("data-wake");
     backend.states.set(PAGE_CMP, {
       action: "state",
@@ -1637,7 +1641,7 @@ describe("the status and the staging switch (WP3.23)", () => {
       intentToken: INTENT,
     });
     const asleep = await (await route(page)).text();
-    // Enabled, labelled for a wake; without the script, today's way stays in a <noscript>.
+    // Enabled, labelled for a wake; the wake is promised only where the script runs.
     expect(asleep).not.toContain('data-act="start" disabled');
     for (const service of ["Claude", "Codex"]) {
       expect(asleep).toContain(
@@ -1645,7 +1649,7 @@ describe("the status and the staging switch (WP3.23)", () => {
       );
     }
     expect(asleep).toContain(
-      "<p data-sign-in-note>The computer is not running now. Signing in wakes it first, which takes about a minute.</p><noscript><p>The computer is not running. Send it work in Omnigent",
+      "<p data-sign-in-note data-js-only>The computer is not running now. Signing in wakes it first, which takes about a minute.</p>",
     );
     // A signed-in card asleep: "again", with the wake and no note.
     backend.states.set(PAGE_CMP, {
@@ -1688,6 +1692,66 @@ describe("the status and the staging switch (WP3.23)", () => {
       intentToken: INTENT,
     });
     expect(await (await route(page)).text()).not.toContain("data-sign-in=");
+  });
+});
+
+describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
+  /** What a browser without JavaScript shows: the page with every `data-js-only` part hidden. */
+  const noScriptText = (html: string) =>
+    html
+      .replace(/<[a-z]+[^>]* data-js-only[^>]*>[^<]*<\/[a-z]+>/g, "")
+      .replace(/<\/?noscript>/g, "");
+
+  it.each([
+    ["both services signed in", {}],
+    ["an older computer (the terminal's way)", { signIn: { available: "no" as const } }],
+    ["neither signed in", { setupCards: [...NEVER_SIGNED_IN] }],
+  ])(
+    "asleep, %s: the common <noscript> gives the way to wake it, and no wake is promised",
+    async (_case, extra) => {
+      const { route, backend } = setup();
+      backend.states.set(PAGE_CMP, {
+        action: "state",
+        computer: pageState({ lifecycle: "asleep", status: "stopped", ...extra }),
+        intentToken: INTENT,
+      });
+      const html = await (await route(page)).text();
+      // Once, in the setup section, before the terminal and the cards.
+      expect(html.match(/<noscript>/g)).toHaveLength(1);
+      expect(html).toContain(
+        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.</p></noscript>',
+      );
+      expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="terminal-panel"'));
+      expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="cards"'));
+      expect(html).toContain('data-script="off"');
+      // Without the script, nothing on the page says the page wakes it.
+      const shown = noScriptText(html);
+      expect(shown).not.toMatch(/wakes it first/);
+      expect(shown).toContain("send it work in Omnigent");
+    },
+  );
+
+  it("is not shown while the computer runs or during a removal, and the stylesheet hides the script's promises until it runs", async () => {
+    const { route, backend } = setup();
+    expect(await (await route(page)).text()).not.toContain("<noscript>");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "removal_pending",
+        status: "stopped",
+        removal: {
+          state: "pending",
+          signOut: "none",
+          loginPossiblyLost: false,
+          revocationRecorded: false,
+        },
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).not.toContain("<noscript>");
+    expect(PAGES_CSS).toContain(
+      '#computer-page[data-script="off"] [data-js-only] { display: none; }',
+    );
   });
 });
 

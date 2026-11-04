@@ -81,15 +81,33 @@ export function omnigentHostPath(hostId: string): string {
   return `/v1/hosts/${encodeURIComponent(hostId)}`;
 }
 
-/** The terminal's status line before it is opened. */
+/** The terminal's status line before it is opened: escaped markup. */
 function terminalNote(view: ComputerView): string {
   if (view.running) {
-    return "The terminal opens for 30 minutes. While it is open the computer does not go to sleep.";
+    return escapeHtml(
+      "The terminal opens for 30 minutes. While it is open the computer does not go to sleep.",
+    );
   }
   if (view.wakeHost !== null) {
-    return "The computer is not running now. Opening the terminal wakes it first, which takes about a minute. While the terminal is open, the computer does not go to sleep.";
+    // Only the page's script wakes it: said only where the script runs (WP3.53).
+    return `<span data-js-only>${escapeHtml("The computer is not running now. Opening the terminal wakes it first, which takes about a minute. While the terminal is open, the computer does not go to sleep.")}</span>`;
   }
-  return "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep.";
+  return escapeHtml(
+    "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep.",
+  );
+}
+
+/**
+ * The page without its script (WP3.53, Codex r1-3): how to wake the computer, in the page's
+ * common part, whatever the cards show (both signed in, or an older computer's terminal way).
+ * Only the script wakes it from the page, so this promises no wake here.
+ */
+export const NO_SCRIPT_WAKE =
+  "The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.";
+
+function noScriptNote(view: ComputerView, removing: boolean): string {
+  if (view.running || removing) return "";
+  return `<noscript><p class="tone-warn" data-no-script>${escapeHtml(NO_SCRIPT_WAKE)}</p></noscript>`;
 }
 
 export const PASTE_HINT =
@@ -130,7 +148,7 @@ export async function setupPage(
 <div class="actions">
   <button type="button" class="primary" id="terminal-open"${view.running ? "" : view.wakeHost !== null ? " data-wake" : ""}${openable ? "" : " disabled"}>Open the terminal</button>
   <button type="button" id="terminal-close" hidden>Close the terminal</button>
-  <span id="terminal-status" class="muted" role="status">${escapeHtml(terminalNote(view))}</span>
+  <span id="terminal-status" class="muted" role="status">${terminalNote(view)}</span>
 </div>
 <p class="muted" data-paste-hint>${escapeHtml(PASTE_HINT)}</p>
 <div id="terminal" hidden></div>
@@ -138,7 +156,7 @@ export async function setupPage(
   const resume = JSON.stringify(state.computer.signIn?.attempts ?? []);
   const hostUrl =
     view.wakeHost === null ? "" : ` data-host-url="${escapeHtml(omnigentHostPath(view.wakeHost))}"`;
-  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-running="${view.running ? "yes" : "no"}"${hostUrl} data-resume="${escapeHtml(resume)}">
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-running="${view.running ? "yes" : "no"}"${hostUrl} data-script="off" data-resume="${escapeHtml(resume)}">
 <h1>${escapeHtml(view.name)}</h1>
 <p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
@@ -147,6 +165,7 @@ ${flashNotice(url)}
 <section>
 <h2>Set up this computer</h2>
 <p class="muted">Sign in once to each service with the buttons on its card. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself. The terminal below is for troubleshooting, and for signing in by hand if the buttons do not work.</p>
+${noScriptNote(view, removing)}
 ${terminalPanel}
 </section>
 <section>
