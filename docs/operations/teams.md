@@ -191,3 +191,11 @@ the code and their password, and [your cloud computer](../manual/your-computer.m
 their first computer and sign-in. Owners and administrators find the team's computers on
 `/platform/computers`, linked from Settings → Computers ([for owners and
 administrators](../manual/for-owners-and-admins.md#the-teams-computers)).
+
+Whenever you remove someone, first look on `/platform/computers` for a computer of theirs that
+they deleted themselves and whose removal is still waiting. It finishes once it saves. If its
+saves keep failing, it does not finish, and removing the person does not change that: Omnigent
+handed that computer to the platform when they deleted it, so the removal does not name it
+again, and its card offers an administrator neither Stop without saving nor Delete without
+signing out. Until that is built, keep them a member while such a computer is waiting, and
+report it.

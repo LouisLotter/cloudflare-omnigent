@@ -2140,13 +2140,13 @@ describe("the person behind a page (WP8.4)", () => {
     );
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      "/platform/computers?done=delete-without-sign-out&outcome=accepted",
+      "/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin",
     );
     expect(backend.acts.map((a) => [a.id, a.call.action])).toEqual([
       [OTHER, "delete_without_sign_out"],
     ]);
     const after = await (
-      await route("/platform/computers?done=delete-without-sign-out&outcome=accepted")
+      await route("/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin")
     ).text();
     expect(after).toContain("Its provider sessions were not revoked");
     expect(after).toContain("Deletion started");
