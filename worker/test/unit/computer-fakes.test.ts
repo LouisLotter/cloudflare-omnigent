@@ -7,6 +7,7 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
+import { DEFAULT_LIMITS } from "../../src/control/limits.ts";
 import {
   CONNECTION_LOST_MESSAGE,
   isConnectionLostError,
@@ -211,6 +212,26 @@ describe("FakeControl", () => {
       method: "forget_computer",
       forgotten: true,
     });
+  });
+
+  it("sets no awake cap by default, as ControlDO (D61): a third computer wakes", async () => {
+    const control = new FakeControl();
+    expect(control.maxAwakeComputers).toBe(DEFAULT_LIMITS.maxAwakeComputers);
+    for (const computerId of [
+      "cmp_01hzy3m8k6q4t2v9w7x5r0s1n3",
+      "cmp_01hzy3m8k6q4t2v9w7x5r0s1n4",
+      "cmp_01hzy3m8k6q4t2v9w7x5r0s1n5",
+    ]) {
+      expect(
+        await control.control({
+          method: "reserve",
+          ...rpc,
+          operationId: fresh(),
+          computerId,
+          generation: 1,
+        }),
+      ).toEqual({ method: "reserve", granted: true, maxInstanceSize: "standard-4" });
+    }
   });
 
   it("refuses a wake at the limit at once, and repeats a reservation's answer", async () => {

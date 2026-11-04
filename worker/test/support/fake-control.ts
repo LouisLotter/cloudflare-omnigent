@@ -24,6 +24,7 @@ import {
   type ControlResult,
   type InstanceSize,
 } from "@cfo/contracts";
+import { DEFAULT_LIMITS } from "../../src/control/limits.ts";
 import { platformError } from "../../src/shared/errors.ts";
 import type { ControlRpc } from "../../src/shared/rpc.ts";
 import { OperationJournal } from "./operation-journal.ts";
@@ -56,7 +57,8 @@ function operationIdOf(call: object): string | undefined {
 }
 
 export class FakeControl implements ControlRpc {
-  maxAwakeComputers = 2;
+  /** ControlDO's default (D61: no cap); tests of a deliberate cap set it. */
+  maxAwakeComputers = DEFAULT_LIMITS.maxAwakeComputers;
   maxInstanceSize: InstanceSize = "standard-4";
   unavailable = false;
   /** Grants carry the current `maxInstanceSize`, as ControlDO's do; false models an older

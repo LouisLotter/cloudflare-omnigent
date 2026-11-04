@@ -2,7 +2,7 @@
 // computers, `CFO_MAX_AWAKE_COMPUTERS`, set through the guarded staging tool and nothing else.
 // Laptop only, test tooling.
 //
-// The limit is a platform Worker variable that the bootstrap does not render (the default is 2).
+// The limit is a platform Worker variable that the bootstrap does not render (unset, there is no awake-computer cap: D61).
 // run.sh keeps the lead's value in $WP318_DIR/limit and passes it to soak-config.ts as
 // WP318_MAX_AWAKE, so that every platform deploy of the sitting renders it (soakPlatformConfig),
 // and deploys the platform Worker once through the staging tool. It is not a `SERVER_ENV_`
@@ -57,7 +57,7 @@ function main(argv: readonly string[]): number {
   if (verb === "check" && value !== undefined) {
     try {
       const limit = limitSetting(value);
-      console.log(JSON.stringify({ [LIMIT_VAR]: limit ?? "(unset: the default, 2)" }));
+      console.log(JSON.stringify({ [LIMIT_VAR]: limit ?? "(unset: no cap, D61)" }));
       return 0;
     } catch (error) {
       console.error(`run.sh: ${(error as Error).message}`);

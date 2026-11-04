@@ -43,6 +43,26 @@ describe("parseLimits", () => {
     });
   });
 
+  it("sets no cap on awake computers by default (D61): every recorded computer may be awake", () => {
+    expect(DEFAULT_LIMITS.maxAwakeComputers).toBe(MAX_COMPUTERS);
+    const slots = Array.from({ length: MAX_COMPUTERS - 1 }, (_, i) => ({
+      computerId: `cmp_${String(i).padStart(26, "0")}` as ComputerId,
+      generation: 0,
+    }));
+    expect(
+      decideReserve({
+        slots,
+        floor: NO_FLOOR,
+        limit: DEFAULT_LIMITS.maxAwakeComputers,
+        computerId: A,
+        generation: 0,
+      }).kind,
+    ).toBe("grant");
+    // A cap the installation sets still holds.
+    const capped = parseLimits({ CFO_MAX_AWAKE_COMPUTERS: "2" });
+    expect(capped.ok && capped.limits.maxAwakeComputers).toBe(2);
+  });
+
   it("reads whole numbers from 0 to the most computers, as text or a number", () => {
     for (const [value, expected] of [
       ["0", 0],
