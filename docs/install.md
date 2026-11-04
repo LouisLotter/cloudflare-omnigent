@@ -4,6 +4,8 @@ This guide sets up one personal installation of Omnigent in your own Cloudflare 
 
 The project is not production-qualified yet (see the [README](../README.md)). Expect rough edges, and keep anything important elsewhere too.
 
+Once it runs, the [user manual](manual/README.md) is for you and the people you invite: joining, cloud computers, sharing, approvals and connections, all from the pages.
+
 ## What you need first
 
 In your Cloudflare account:
@@ -76,7 +78,7 @@ Anyone else who opens the address stops at Access and never reaches Omnigent or 
 
 ## Forgot your password?
 
-Open `https://<your address>/platform/password` (also linked as "Omnigent password" at the top of the cloud-computers pages). After Access, it offers **Reset your Omnigent password**: choose a new one the same way. A reset signs you out of Omnigent everywhere, in every browser and on every device, so that anyone who might have had the old password is out too; your cloud computers keep running. Only you can reach this page: Access lets in your address alone, and the installation checks it again.
+Open `https://<your address>/platform/password` (also linked as "Omnigent password" at the top of the cloud-computers pages). After Access, it offers **Reset your Omnigent password**: choose a new one the same way. A reset signs you out of Omnigent everywhere, in every browser and on every device, so that anyone who might have had the old password is out too; your cloud computers keep running. Only you can use this page: the installation checks that you are its owner. Once your installation is a team, the members who open it see where their own password is changed instead ([your account](manual/your-account.md)).
 
 ## GitHub, for your cloud computers (optional)
 

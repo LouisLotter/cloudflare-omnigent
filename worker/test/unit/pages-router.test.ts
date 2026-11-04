@@ -409,6 +409,10 @@ describe("the cloud-computers page", () => {
     expect(html).toContain('href="/settings/computers" data-link="omnigent-delete"');
     expect(html).toContain(`href="${page}">Set up / manage`);
     expect(html).toContain("Last saved 09:14 UTC");
+    // Every page's header links the user manual (WP8.10), in a new tab.
+    expect(html).toContain(
+      '<a href="https://github.com/LouisLotter/cloudflare-omnigent/blob/main/docs/manual/README.md" target="_blank" rel="noopener noreferrer" data-link="help">Help</a>',
+    );
   });
 
   it("renders untrusted names as text only", async () => {
@@ -552,7 +556,7 @@ describe("the setup page", () => {
     expect(asleep).toContain(
       'data-running="no" data-host-url="/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"',
     );
-    // Never started, so Omnigent's host is not known: no wake, and today's way.
+    // Never started, so Omnigent's host is not known: no wake; it is starting.
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({ lifecycle: "provisioned", status: "stopped", hostId: null }),
@@ -560,7 +564,9 @@ describe("the setup page", () => {
     });
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('id="terminal-open" disabled');
-    expect(unknown).toContain("Send it work in Omnigent");
+    expect(unknown).toContain(
+      "The computer is starting. This page updates when it is ready, usually within a few minutes. While the terminal is open, the computer does not go to sleep.",
+    );
     expect(unknown).not.toContain("data-host-url");
     // Awake: opened as before, with no wake and no host URL.
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
@@ -1673,8 +1679,40 @@ describe("the status and the staging switch (WP3.23)", () => {
     });
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('data-act="start" disabled');
-    expect(unknown).toContain("The computer is not running. Send it work in Omnigent");
+    // Just added: Omnigent is starting it, and the page says so (never "send it work").
+    expect(unknown).toContain(
+      "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+    );
+    expect(unknown).not.toContain("Send it work");
     expect(unknown).not.toContain("data-wake");
+    // Its last start failed: where to start it again.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "failed",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer&#39;s last start failed. Start it again in Omnigent (Settings → Computers, Start again); this page updates when it is running.",
+    );
+    // Stopped some other way, with no host known: a new thread wakes it.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "stopped",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer is not running. Start a new thread on it in Omnigent to wake it, then come back to this page.",
+    );
     backend.states.set(PAGE_CMP, { action: "state", computer: pageState(), intentToken: INTENT });
     const awake = await (await route(page)).text();
     expect(awake).toContain("Sign in to Claude again");
@@ -1719,7 +1757,7 @@ describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
       // Once, in the setup section, before the terminal and the cards.
       expect(html.match(/<noscript>/g)).toHaveLength(1);
       expect(html).toContain(
-        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.</p></noscript>',
+        '<noscript><p class="tone-warn" data-no-script>The computer is not running. To wake it, start a new thread on it in Omnigent. Signing in and the terminal on this page need JavaScript.</p></noscript>',
       );
       expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="terminal-panel"'));
       expect(html.indexOf("data-no-script")).toBeLessThan(html.indexOf('id="cards"'));
@@ -1727,7 +1765,7 @@ describe("the setup page without its script (WP3.53, Codex r1-3)", () => {
       // Without the script, nothing on the page says the page wakes it.
       const shown = noScriptText(html);
       expect(shown).not.toMatch(/wakes it first/);
-      expect(shown).toContain("send it work in Omnigent");
+      expect(shown).toContain("start a new thread on it in Omnigent");
     },
   );
 
@@ -1896,9 +1934,23 @@ describe("the person behind a page (WP8.4)", () => {
   });
 
   it("keeps the installation owner's own pages from anyone else", async () => {
-    const { route } = setup(async () => ADMIN);
-    expect((await route("/platform/password")).status).toBe(404);
-    expect((await route("/platform/github")).status).toBe(404);
+    for (const person of [ADMIN, MEMBER]) {
+      const { route } = setup(async () => person);
+      // The password page says where their own password is changed, with no form (WP8.10).
+      const shown = await route("/platform/password");
+      expect(shown.status).toBe(200);
+      expectFramingProtection(shown);
+      const html = await shown.text();
+      expect(html).toContain(
+        'Change it in Omnigent: <a href="/settings/account">Settings → Account</a>, Change password.',
+      );
+      expect(html).toContain('<a href="/settings/members">Settings → Members</a>');
+      expect(html).not.toContain("<form");
+      expect(
+        (await route("/platform/password", form({ username: "x", password: "y" }))).status,
+      ).toBe(404);
+      expect((await route("/platform/github")).status).toBe(404);
+    }
   });
 
   function adminFleet() {
@@ -1940,7 +1992,13 @@ describe("the person behind a page (WP8.4)", () => {
   it("offers an administrator only the stop and the removal, and sends them back to the list", async () => {
     const { route, backend } = adminFleet();
     const other = `/platform/computers/${OTHER}`;
-    expect(await (await route(`${other}/do/restart`)).text()).toContain('data-confirm="restart"');
+    const stop = await (await route(`${other}/do/restart`)).text();
+    expect(stop).toContain('data-confirm="restart"');
+    // For someone else's computer it is a stop: it starts again when its owner next uses it.
+    expect(stop).toContain("<h1>Stop this computer</h1>");
+    expect(stop).toContain(">Stop, ending work in progress</button>");
+    expect(stop).toContain("It starts again when its owner next uses it.");
+    expect(stop).not.toContain("Restart");
     expect(await (await route(`${other}/do/remove`)).text()).toContain('data-confirm="remove"');
     for (const slug of ["set-size", "sign-out", "record-revocation", "stop-without-saving"]) {
       expect(await (await route(`${other}/do/${slug}`)).text(), slug).toContain(
@@ -1950,9 +2008,17 @@ describe("the person behind a page (WP8.4)", () => {
     const response = await route(`${other}/do/restart`, form({ intent: INTENT, op: OP }));
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      "/platform/computers?done=restart&outcome=accepted",
+      "/platform/computers?done=restart&outcome=accepted&as=admin",
     );
     expect(backend.acts.map((a) => a.id)).toEqual([OTHER]);
+    const back = await (
+      await route("/platform/computers?done=restart&outcome=accepted&as=admin")
+    ).text();
+    expect(back).toContain("Stop this computer: Done.");
+    // The owner's own restart keeps its wording.
+    expect(await (await route(`${page}/do/restart`)).text()).toContain(
+      "<h1>Restart this computer</h1>",
+    );
   });
 
   it("names a computer that could not be read to an administrator only", async () => {

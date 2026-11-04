@@ -370,8 +370,9 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await stopped.text();
     expect(stopped.status).toBe(303);
+    // Back to the list, whose notice names it a stop (WP8.10).
     expect(stopped.headers.get("location")).toBe(
-      "/platform/computers?done=restart&outcome=accepted",
+      "/platform/computers?done=restart&outcome=accepted&as=admin",
     );
     await settle(c);
     expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
@@ -496,9 +497,13 @@ describe("the pages in members admission, through the web Worker's route (WP8.3)
     expect(carolListed).toContain(`data-fleet-computer="${c.computerId}"`);
     expect((await statusOf("carol-sub", page))[0]).toBe(404);
 
-    // Nobody but the installation's owner reaches the owner's own pages.
+    // Nobody but the installation's owner reaches the owner's own pages: the others are told
+    // where their own password is changed, with no form (WP8.10).
     for (const subject of ["alice-sub", "carol-sub"]) {
-      expect((await statusOf(subject, "/platform/password"))[0]).toBe(404);
+      const [status, body] = await statusOf(subject, "/platform/password");
+      expect(status).toBe(200);
+      expect(body).toContain("data-member-password");
+      expect(body).not.toContain("<form");
     }
 
     // Suspended, or bound to nobody: no page at all.

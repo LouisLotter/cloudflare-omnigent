@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { SERVER_HELD_WHY } from "../events.ts";
 import {
   BootstrapRefusal,
   type BootstrapState,
@@ -395,6 +396,21 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(h.lines.some((l) => l.startsWith("checked:"))).toBe(false);
     // Once the server is replaced with the released configuration, a later run completes,
     // without another release.
+    h.world.appliesReleases = true;
+    expect(await h.run()).toEqual({ kind: "done" });
+    expect(h.world.secretChanges).toHaveLength(1);
+  });
+
+  it("says at once that a released server refused a setting, and what to do", async () => {
+    const h = harness(await accountPlan());
+    // The released configuration (no password) holds a setting the image refuses: exit 78.
+    h.world.refusesSettings = (v) => !v.secrets.has(PASSWORD_SECRET);
+    const started = h.world.now;
+    expect(await h.run()).toEqual({ kind: "released", why: SERVER_HELD_WHY });
+    expect(h.world.now - started).toBeLessThan(10 * 60_000);
+    expect(h.store.state.journal.verifiedAt).toBeUndefined();
+    // Once the setting is changed (the server answers), a later run completes without another release.
+    h.world.refusesSettings = () => false;
     h.world.appliesReleases = true;
     expect(await h.run()).toEqual({ kind: "done" });
     expect(h.world.secretChanges).toHaveLength(1);

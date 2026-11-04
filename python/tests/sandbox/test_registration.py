@@ -15,6 +15,7 @@ from cloudflare_omnigent.sandbox.launcher import CloudflareLauncher  # noqa: E40
 from cloudflare_omnigent.sandbox.registration import (  # noqa: E402
     cloudflare_sandbox_config,
     manage_url_template,
+    overview_url,
 )
 from cloudflare_omnigent.sandbox.settings import LauncherSettings  # noqa: E402
 
@@ -46,6 +47,8 @@ def test_the_entry_sets_what_omnigent_requires_for_cloud_computers() -> None:
     assert policy.sweep_interval_s == 30.0
     assert policy.token_refresh_margin_s == 24 * 3600.0
     assert policy.manage_url == "https://computers.example.test/platform/computers/{sandbox_id}"
+    # No computers page unless the server names one.
+    assert policy.overview_url is None
     # The token outlives the one-day margin by far, so a live host renews it at an idle moment.
     assert entry.token_ttl_s > policy.token_refresh_margin_s * 7
 
@@ -96,6 +99,18 @@ def test_computers_must_reach_the_server_on_omnigent_internal() -> None:
 def test_the_setup_link_needs_an_http_origin(base: str) -> None:
     with pytest.raises(ValueError):
         manage_url_template(base)
+
+
+def test_the_computers_page_is_declared_on_the_installations_origin() -> None:
+    page = overview_url("https://x.test:8443/some/path/")
+    assert page == "https://x.test:8443/platform/computers"
+    entry = _entry(overview=page)
+    assert entry.persistent is not None and entry.persistent.overview_url == page
+    deployment = ManagedSandboxDeployment.single(entry)
+    assert deployment.persistent_overview_urls() == {"cloudflare": page}
+    for base in ("ftp://x.test", "https://user@x.test", "not a url"):
+        with pytest.raises(ValueError):
+            overview_url(base)
 
 
 def test_the_setup_link_keeps_only_the_origin() -> None:

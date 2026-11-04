@@ -829,7 +829,7 @@ globalThis.cfoWake = (() => {
         reason === "not_running"
           ? live.hostUrl !== null
             ? "The computer is not running. Press Open the terminal again to wake it."
-            : "The computer is not running. Send it work in Omnigent to wake it, then reload this page."
+            : "The computer is not running. Start a new thread on it in Omnigent to wake it, then reload this page."
           : reason === "busy"
             ? "The computer is stopping or signing out. Try again shortly."
             : answer.status === 403

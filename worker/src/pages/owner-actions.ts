@@ -67,8 +67,15 @@ const FAILED: Readonly<Record<string, (s: SignInService) => string>> = {
 };
 
 /** A card's note while the computer is not running and cannot be woken from the page. */
-export const NOT_RUNNING_NOTE =
-  "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then sign in here.";
+/** Why the computer is not running, where the page cannot wake it (its host is not known yet). */
+export const NOT_RUNNING_NOTES: Readonly<Record<"starting" | "failed" | "other", string>> = {
+  starting:
+    "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+  failed:
+    "The computer's last start failed. Start it again in Omnigent (Settings → Computers, Start again); this page updates when it is running.",
+  other:
+    "The computer is not running. Start a new thread on it in Omnigent to wake it, then come back to this page.",
+};
 /** A card's note while the page can wake the computer for the sign-in (WP3.53). */
 export const WAKE_NOTE =
   "The computer is not running now. Signing in wakes it first, which takes about a minute.";

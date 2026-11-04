@@ -879,7 +879,7 @@ async function main(): Promise<number> {
         await page.goto(`${base}/platform/computers/${ids["managed-full"] ?? ""}`);
         await page
           .locator("[data-no-script]")
-          .getByText("To wake it, send it work in Omnigent")
+          .getByText("To wake it, start a new thread on it in Omnigent")
           .waitFor();
         const text = await page.locator("body").innerText();
         if (text.includes("wakes it first")) throw new Error("a wake is promised without JS");

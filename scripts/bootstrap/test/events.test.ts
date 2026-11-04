@@ -7,6 +7,7 @@ import {
   decide,
   integrationsOff,
   parseLogs,
+  SERVER_HELD_WHY,
   type StatusEvent,
   verifyRelease,
 } from "../events.ts";
@@ -456,6 +457,40 @@ describe("verifyRelease", () => {
     expect(verifyRelease(logsOf([]), { ...rules, releasedVersionId: undefined })).toMatchObject({
       verified: false,
       why: expect.stringContaining("did not say which version"),
+    });
+  });
+
+  it("says a server that refused a setting is held, until a server answers after it", () => {
+    const run = event(released + 360_000, { cfo: "watchdog", event: "first_alarm" }, "v2");
+    const refused = (at: number, version = "v2", held: unknown = true) =>
+      event(at, { cfo: "watchdog", event: "config_error", exitCode: 78, held }, version);
+    expect(verifyRelease(logsOf([run, refused(released + 400_000)]), rules)).toEqual({
+      verified: false,
+      why: SERVER_HELD_WHY,
+      held: true,
+    });
+    expect(SERVER_HELD_WHY).toContain("cfo.config.error");
+    // Not this version's, from before the release, or not holding the current configuration.
+    for (const other of [
+      refused(released + 400_000, "v1"),
+      refused(released - 1),
+      refused(released + 400_000, "v2", false),
+      refused(released + 400_000, "v2", "yes"),
+    ]) {
+      expect(verifyRelease(logsOf([run, other]), rules)).toMatchObject({
+        verified: false,
+        why: expect.stringMatching(/^released, not yet applied: /),
+      });
+    }
+    // A server answered after the hold (the setting changed): judged by that status.
+    const answered = event(released + 460_000, appliedLine(released + 460_000), "v2");
+    expect(verifyRelease(logsOf([run, refused(released + 400_000), answered]), rules)).toEqual({
+      verified: true,
+    });
+    // A hold after the newest status wins.
+    const before = event(released + 380_000, appliedLine(released + 380_000), "v2");
+    expect(verifyRelease(logsOf([run, before, refused(released + 400_000)]), rules)).toMatchObject({
+      held: true,
     });
   });
 });

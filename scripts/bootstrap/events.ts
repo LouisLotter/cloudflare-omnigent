@@ -456,7 +456,12 @@ export function decide(statuses: readonly StatusEvent[], rules: AcceptanceRules)
 
 export type Verification =
   | { readonly verified: true }
-  | { readonly verified: false; readonly why: string };
+  /** `held`: the server refused a setting and stays stopped, so waiting longer changes nothing. */
+  | { readonly verified: false; readonly why: string; readonly held?: true };
+
+/** Why a release check fails while the watchdog holds a server that refused a setting (exit 78). */
+export const SERVER_HELD_WHY =
+  "the server refused one of its settings and stays stopped until that setting changes, so Omnigent is down: the server's cfo.config.error line in the platform Worker's Workers Logs names the setting and why (bootstrap.ts status --logs shows the hold). Change or remove that setting, then run this command again";
 
 /** What the release check is about: an installation, the version a release deployed, and when. */
 export interface ReleaseRules {
@@ -500,7 +505,8 @@ export function appliedStatus(logs: ParsedLogs, rules: ReleaseRules): StatusEven
  * replaces it. So the check also needs a status from the released version, logged after the
  * release, from a server started with the released configuration (`configApplied`), without the
  * password, showing this installation's owner initialized and durable. Until then the release is
- * "released, not yet applied".
+ * "released, not yet applied", unless the released version's watchdog holds a server that refused
+ * a setting (exit 78) with nothing answering since: then it says so (`held`), and what to do.
  */
 export function verifyRelease(logs: ParsedLogs, rules: ReleaseRules): Verification {
   const released = rules.releasedVersionId;
@@ -533,6 +539,16 @@ export function verifyRelease(logs: ParsedLogs, rules: ReleaseRules): Verificati
     return { verified: false, why: "the bootstrap password was reported after the switch" };
   }
   const latest = appliedStatus(logs, rules);
+  // The released version's watchdog holds a server that refused a setting, and no server has
+  // answered since: it never will until the setting changes (a new version).
+  const held = logs.configErrors.some(
+    (e) =>
+      e.held === true &&
+      e.versionId === released &&
+      e.loggedAt >= rules.releasedAt &&
+      (latest === undefined || e.loggedAt >= latest.loggedAt),
+  );
+  if (held) return { verified: false, why: SERVER_HELD_WHY, held: true };
   if (latest === undefined) {
     return {
       verified: false,

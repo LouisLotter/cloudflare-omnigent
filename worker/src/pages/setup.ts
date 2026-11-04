@@ -44,7 +44,7 @@ import {
   readChange,
   socketOriginOf,
 } from "./http.ts";
-import { NOT_RUNNING_NOTE, signInIdleHtml, WAKE_NOTE } from "./owner-actions.ts";
+import { NOT_RUNNING_NOTES, signInIdleHtml, WAKE_NOTE } from "./owner-actions.ts";
 import { type CardView, type ComputerView, computerView } from "./view.ts";
 
 /** The terminal's way, for a computer whose software predates signing in from the page. */
@@ -65,7 +65,7 @@ function signInPart(c: CardView, view: ComputerView): string {
   if (view.signIn === "no") return CARD_HOW[c.provider];
   const wake = !view.running && view.wakeHost !== null;
   const offered = view.running || wake;
-  const note = view.running ? "" : wake ? WAKE_NOTE : NOT_RUNNING_NOTE;
+  const note = view.running ? "" : wake ? WAKE_NOTE : NOT_RUNNING_NOTES[view.notRunning ?? "other"];
   const signedIn = c.state === "signed_in";
   return `<div class="sign-in" data-sign-in="${c.provider}">${signInIdleHtml(
     c.provider,
@@ -93,7 +93,7 @@ function terminalNote(view: ComputerView): string {
     return `<span data-js-only>${escapeHtml("The computer is not running now. Opening the terminal wakes it first, which takes about a minute. While the terminal is open, the computer does not go to sleep.")}</span>`;
   }
   return escapeHtml(
-    "The computer is not running. Send it work in Omnigent (a new conversation on it wakes it), then reload this page. While the terminal is open, the computer does not go to sleep.",
+    `${NOT_RUNNING_NOTES[view.notRunning ?? "other"]} While the terminal is open, the computer does not go to sleep.`,
   );
 }
 
@@ -103,7 +103,7 @@ function terminalNote(view: ComputerView): string {
  * Only the script wakes it from the page, so this promises no wake here.
  */
 export const NO_SCRIPT_WAKE =
-  "The computer is not running. To wake it, send it work in Omnigent: a new conversation on it wakes it. Signing in and the terminal on this page need JavaScript.";
+  "The computer is not running. To wake it, start a new thread on it in Omnigent. Signing in and the terminal on this page need JavaScript.";
 
 function noScriptNote(view: ComputerView, removing: boolean): string {
   if (view.running || removing) return "";

@@ -268,19 +268,25 @@ describe("the pages in members admission", () => {
   });
 
   it("keep the owner's own pages for the installation's owner alone", async () => {
+    // The owner's password form, or (WP8.10) the page saying where a member's own is changed.
     const page = async (person: PagePersonResult, pinned: boolean) => {
       const { binding } = recordingBinding(person);
       const env = { OMNIGENT: binding } as unknown as WebEnv;
       const response = await routeAdmitted(at("/platform/password", pinned), env, ctx);
-      await response.text();
-      return response.status;
+      const body = await response.text();
+      return response.status === 200 && body.includes("data-member-password")
+        ? "member page"
+        : response.status;
     };
     expect(await page({ ...ACTIVE_OWNER, installationOwner: true }, true)).toBe(200);
-    // Another owner, an admin, a member, and the owner's address on another account: not found.
-    expect(await page({ ...ACTIVE_OWNER, userId: "bob" }, false)).toBe(404);
-    expect(await page({ ...ACTIVE_OWNER, role: "admin", installationOwner: true }, true)).toBe(404);
-    expect(await page(ALICE, false)).toBe(404);
-    expect(await page(ACTIVE_OWNER, true)).toBe(404);
+    // Another owner, an admin, a member, and the owner's address on another account: never the
+    // owner's form.
+    expect(await page({ ...ACTIVE_OWNER, userId: "bob" }, false)).toBe("member page");
+    expect(await page({ ...ACTIVE_OWNER, role: "admin", installationOwner: true }, true)).toBe(
+      "member page",
+    );
+    expect(await page(ALICE, false)).toBe("member page");
+    expect(await page(ACTIVE_OWNER, true)).toBe("member page");
   });
 
   it("send no one to the password page: Omnigent is reached directly", async () => {

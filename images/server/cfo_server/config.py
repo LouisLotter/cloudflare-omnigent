@@ -3,8 +3,8 @@
 The Worker forwards these as container environment variables (variables and secrets). Every
 value is checked here, once, before anything starts. Two rules:
 
-- **Unset means the restrictive default.** Sharing is off, public access is off, new sessions
-  are never public by default, and no extra admins or domains are listed.
+- **Unset means the default the image chooses.** Sharing between the installation's own people
+  is on, Omnigent's own default (owner decision D51); no extra admins or domains are listed.
 - **Malformed means refuse to start.** Omnigent's own parsers fail open (an unknown sharing
   mode becomes ``on``); this module never does. :class:`ConfigError` names the variable. An
   error never repeats a URL-valued setting: a mistaken one may carry credentials.
@@ -17,7 +17,8 @@ allows the disk in tests and local runs only (G2-DUR-001).
 
 Some settings are pinned by the image and cannot be changed by the environment at all:
 accounts mode, the release-feature set (``OMNIGENT_FEATURES``: Omnigent's release defaults,
-never ``harness_install``), default-public sessions off, Omnigent's product analytics off
+never ``harness_install``), public sharing off (no "anyone with the link" access, at the read
+level), default-public sessions off, Omnigent's product analytics off
 (``OMNIGENT_ANALYTICS=0``, owner decision D49), the database and data paths, and the
 managed-sandbox reaper. Variables that would select integrations the image does not wire
 (Databricks, AWS KMS, Vault) are removed from the app's environment.
@@ -84,10 +85,8 @@ LITESTREAM_BIN = Path("/usr/local/bin/litestream")
 APP_PORT = 8000
 
 SharingModeValue = Literal["off", "restricted_read_only", "read_only", "on"]
-MaxLevelValue = Literal["read", "edit"]
 
 SHARING_MODES: tuple[str, ...] = ("off", "restricted_read_only", "read_only", "on")
-MAX_LEVELS: tuple[str, ...] = ("read", "edit")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
@@ -226,9 +225,11 @@ class ConfigError(ValueError):
 class SharingSettings:
     """Omnigent's sharing settings, passed to ``create_app`` as static (authoritative) values."""
 
-    sharing_mode: SharingModeValue = "off"
-    public_sharing: bool = False
-    public_sharing_max_level: MaxLevelValue = "read"
+    sharing_mode: SharingModeValue = "on"
+    # Pinned: nothing an installation runs is public (the owner's standing rule). A thread is
+    # shared only with the installation's own signed-in people, never by link.
+    public_sharing: Literal[False] = False
+    public_sharing_max_level: Literal["read"] = "read"
     # Pinned: computers are managed sandboxes, and Omnigent's "sandbox" default would make
     # their sessions public.
     default_public_sessions: Literal["off"] = "off"
@@ -417,26 +418,33 @@ def _origin(url: str, name: str) -> str:
 
 
 def parse_sharing(env: Mapping[str, str]) -> SharingSettings:
-    """Parse the sharing settings; unset values are the restrictive defaults."""
-    mode = (_get(env, "OMNIGENT_SHARING_MODE") or "off").lower()
+    """Parse the sharing settings: the mode is the deployment's to choose (``on`` when unset,
+    Omnigent's own default); public sharing and default-public sessions are pinned off."""
+    mode = (_get(env, "OMNIGENT_SHARING_MODE") or "on").lower()
     if mode not in SHARING_MODES:
         raise ConfigError(
             f"OMNIGENT_SHARING_MODE must be one of {', '.join(SHARING_MODES)}, not {mode!r}"
         )
+    public = _get(env, "OMNIGENT_PUBLIC_SHARING")
+    if public is not None and public.lower() not in _FALSE:
+        raise ConfigError(
+            "OMNIGENT_PUBLIC_SHARING is pinned to off in this image: nothing an installation "
+            "runs is public, so a thread is shared only with the installation's own people, "
+            f"never by link. Remove the setting (or set it to off), not {public!r}"
+        )
     level = (_get(env, "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL") or "read").lower()
-    if level not in MAX_LEVELS:
-        raise ConfigError(f"OMNIGENT_PUBLIC_SHARING_MAX_LEVEL must be read or edit, not {level!r}")
+    if level != "read":
+        raise ConfigError(
+            "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL is pinned to read in this image "
+            f"(public sharing stays off), not {level!r}"
+        )
     default_public = (_get(env, "OMNIGENT_DEFAULT_PUBLIC_SESSIONS") or "off").lower()
     if default_public != "off":
         raise ConfigError(
             "OMNIGENT_DEFAULT_PUBLIC_SESSIONS is pinned to off in this image "
             f"(default-public sharing stays off), not {default_public!r}"
         )
-    return SharingSettings(
-        sharing_mode=mode,  # type: ignore[arg-type]
-        public_sharing=parse_bool(env, "OMNIGENT_PUBLIC_SHARING", False),
-        public_sharing_max_level=level,  # type: ignore[arg-type]
-    )
+    return SharingSettings(sharing_mode=mode)  # type: ignore[arg-type]
 
 
 def parse_replica(env: Mapping[str, str]) -> ReplicaSettings:

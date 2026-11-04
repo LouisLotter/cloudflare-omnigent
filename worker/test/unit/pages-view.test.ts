@@ -111,6 +111,20 @@ describe("statuses", () => {
     expect([view.status, view.statusTone]).toEqual([status, tone]);
   });
 
+  it.each([
+    [{}, null],
+    [{ lifecycle: "provisioned", status: "stopped" }, "starting"],
+    [{ lifecycle: "waking", status: "stopped" }, "starting"],
+    [{ lifecycle: "restoring", status: "stopped" }, "starting"],
+    [{ lifecycle: "failed", status: "stopped" }, "failed"],
+    [{ lifecycle: "asleep", status: "stopped" }, "other"],
+    [{ lifecycle: "stopped", status: "stopped" }, "other"],
+    [{ lifecycle: "host_running", status: "stopping" }, "other"],
+  ] as const)("%o is not running because: %s", (overrides, why) => {
+    const view = computerView(pageState(overrides as Partial<ComputerPageState>), NOW);
+    expect(view.notRunning).toBe(why);
+  });
+
   it("names an unnamed computer by its ID", () => {
     expect(computerView(pageState({ hostName: null }), NOW).name).toBe("Computer 01hzy3m8");
   });

@@ -38,6 +38,14 @@ The default server pin predates the no-redelivery correction. The separate serve
 
 A saved session's 201 response is distinct from `runner_launch: started|failed|unknown`. An interrupted/unknown tool outcome must stay visible until a matching result or the person's action resolves it. A replacement runner must not automatically replay uncertain external work. Preserve unreconciled transcript files; do not erase them or start a fresh transcript to make a history-outage error disappear. Current fork source includes refusal/preservation changes, with remaining real-replacement and missing-ID/bridge cases to qualify.
 
+## A server that refuses a setting
+
+The server image checks every setting before anything starts. A missing or malformed one, or one that asks for something the image pins (public sharing, for example), stops the server with exit 78, and the watchdog keeps it stopped until the configuration changes: Omnigent is down meanwhile.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| `bootstrap.ts run` or `update` says "the server refused one of its settings and stays stopped until that setting changes" | The released version's server exited 78, and no server has answered since. | The server's `cfo.config.error` line in the platform Worker's Workers Logs names the setting and why; `bootstrap.ts status --logs` lists the hold. Change or remove that setting (a `SERVER_ENV_<NAME>` secret: `wrangler secret delete SERVER_ENV_<NAME>`, or put the value the message names), then run the same command again. Inside an update's window, `update --rollback` also goes back. |
+
 ## GitHub setup
 
 `bootstrap.ts github-app` stores the installation's GitHub App and then waits until a server started with its settings reports GitHub linking on, before it sends the browser to GitHub's install page. GitHub's "Install" returns to `https://<hostname>/platform/github`, which opens Omnigent's Integrations settings once linking is on.

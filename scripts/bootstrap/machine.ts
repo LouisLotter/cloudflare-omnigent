@@ -950,7 +950,9 @@ async function verifyAfterRelease(
       );
       return { kind: "done" };
     }
-    if (ctx.now() + options.pollMs > deadline) return { kind: "released", why: result.why };
+    if (result.held === true || ctx.now() + options.pollMs > deadline) {
+      return { kind: "released", why: result.why };
+    }
     await ctx.sleep(options.pollMs);
   }
 }

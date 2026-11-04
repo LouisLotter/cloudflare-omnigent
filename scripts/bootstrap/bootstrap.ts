@@ -708,6 +708,12 @@ async function status(path: string, withLogs: boolean): Promise<void> {
       `${new Date(e.loggedAt).toISOString()} ${e.status.installationId === installation.installationId ? "this installation" : "another installation"}: initialized=${e.status.initialized} reason=${e.reason ?? "?"} password=${e.secretPresent ?? "?"} version=${e.versionId ?? "?"} applied=${e.configApplied ?? "?"} github=${e.githubLinking ?? "?"} mcp=${e.mcpRegistry ?? "?"} mcpRevision=${e.mcpRevision ?? "none"} mcpPage=${e.mcpAdminServices ? `${e.mcpAdminServices.served ?? "?"}/${e.mcpAdminServices.stored ?? "?"}` : "?"} window=${e.maintenance ?? "none"} restorePoint=${e.restorePoint?.id ?? "none"}`,
     );
   }
+  // A server that refused a setting (exit 78): the watchdog holds it until the setting changes.
+  for (const e of [...logs.configErrors].sort((a, b) => a.loggedAt - b.loggedAt)) {
+    console.log(
+      `${new Date(e.loggedAt).toISOString()} the server refused a setting and is stopped (exit 78): held=${e.held ?? "?"} version=${e.versionId ?? "?"}; its cfo.config.error line in Workers Logs names the setting`,
+    );
+  }
   if (journal.releasedAt !== undefined) {
     console.log(
       `released at ${journal.releasedAt}${journal.verifiedAt ? `, checked at ${journal.verifiedAt}` : ", not checked yet"}: the lines above are from before the switch`,

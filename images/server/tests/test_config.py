@@ -25,9 +25,10 @@ def env(tmp_path: Path) -> dict[str, str]:
     return base_env(tmp_path)
 
 
-def test_unset_settings_are_the_restrictive_defaults(env: dict[str, str]) -> None:
+def test_unset_settings_are_the_image_defaults(env: dict[str, str]) -> None:
     config = load(env)
-    assert config.sharing.sharing_mode == "off"
+    # Sharing between the installation's people is Omnigent's own default (D51); public is off.
+    assert config.sharing.sharing_mode == "on"
     assert config.sharing.public_sharing is False
     assert config.sharing.public_sharing_max_level == "read"
     assert config.sharing.default_public_sessions == "off"
@@ -50,8 +51,9 @@ def test_sync_interval_defaults_to_200ms_and_can_be_set(env: dict[str, str]) -> 
         ("CFO_INSTALLATION_INITIALIZED", "", "CFO_INSTALLATION_INITIALIZED is required"),
         ("CFO_INSTALLATION_INITIALIZED", "maybe", "true or false"),
         ("OMNIGENT_SHARING_MODE", "everyone", "OMNIGENT_SHARING_MODE"),
-        ("OMNIGENT_PUBLIC_SHARING", "yes please", "OMNIGENT_PUBLIC_SHARING"),
-        ("OMNIGENT_PUBLIC_SHARING_MAX_LEVEL", "manage", "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL"),
+        ("OMNIGENT_PUBLIC_SHARING", "yes please", "OMNIGENT_PUBLIC_SHARING is pinned to off"),
+        ("OMNIGENT_PUBLIC_SHARING_MAX_LEVEL", "manage", "pinned to read"),
+        ("OMNIGENT_PUBLIC_SHARING_MAX_LEVEL", "edit", "pinned to read"),
         ("OMNIGENT_DEFAULT_PUBLIC_SESSIONS", "sandbox", "pinned to off"),
         ("OMNIGENT_DEFAULT_PUBLIC_SESSIONS", "all", "pinned to off"),
         ("OMNIGENT_AUTH_PROVIDER", "header", "pinned to accounts"),
@@ -101,16 +103,38 @@ def test_s3_replica_needs_its_bucket_credentials(env: dict[str, str]) -> None:
 
 @settings(deadline=None)
 @given(
-    mode=st.sampled_from(["off", "OFF", " read_only ", "Restricted_Read_Only", "on"]),
-    public=st.sampled_from(["0", "false", "no", "OFF", "1", "true", "Yes", "on"]),
+    mode=st.sampled_from(["off", "OFF", " read_only ", "Restricted_Read_Only", "on", " On "]),
+    public=st.sampled_from(["", "0", "false", "no", "OFF", " Off "]),
+    level=st.sampled_from(["", "read", " READ "]),
 )
-def test_sharing_values_parse_case_insensitively(mode: str, public: str) -> None:
+def test_sharing_values_parse_case_insensitively(mode: str, public: str, level: str) -> None:
     env = base_env(Path("/nonexistent"))
     env["OMNIGENT_SHARING_MODE"] = mode
     env["OMNIGENT_PUBLIC_SHARING"] = public
+    env["OMNIGENT_PUBLIC_SHARING_MAX_LEVEL"] = level
     sharing = load(env).sharing
     assert sharing.sharing_mode == mode.strip().lower()
-    assert sharing.public_sharing is (public.lower() in {"1", "true", "yes", "on"})
+    assert sharing.public_sharing is False
+    assert sharing.public_sharing_max_level == "read"
+
+
+@settings(deadline=None)
+@given(
+    mode=st.sampled_from(["", "off", "read_only", "restricted_read_only", "on"]),
+    public=st.sampled_from(["1", "true", "Yes", "on", " ON ", "enabled", "edit"]),
+)
+def test_public_sharing_is_pinned_off_whatever_the_mode(mode: str, public: str) -> None:
+    """Nothing an installation runs is public: a deployment setting that asks for link sharing
+    refuses to start, with the reason, whatever the sharing mode between its people."""
+    env = base_env(Path("/nonexistent"))
+    env["OMNIGENT_SHARING_MODE"] = mode
+    env["OMNIGENT_PUBLIC_SHARING"] = public
+    with pytest.raises(ConfigError) as excinfo:
+        load(env)
+    message = str(excinfo.value)
+    assert "OMNIGENT_PUBLIC_SHARING is pinned to off" in message
+    assert "nothing an installation runs is public" in message
+    assert "Remove the setting" in message
 
 
 def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:

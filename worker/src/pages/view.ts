@@ -109,6 +109,12 @@ export interface ComputerView {
    * computer's sleep, before a sign-in or the terminal. Null otherwise.
    */
   readonly wakeHost: string | null;
+  /**
+   * Why it is not running, for the page's wording when it cannot wake it: it is starting (Omnigent
+   * started it, for example just after it was added), its last start failed, or anything else.
+   * Null while it runs.
+   */
+  readonly notRunning: "starting" | "failed" | "other" | null;
 }
 
 const PROVIDER_TITLE: Record<SetupProvider, string> = { claude: "Claude", codex: "Codex" };
@@ -220,6 +226,8 @@ function statusOf(state: ComputerPageState, notConnected: boolean): [string, Ton
 }
 
 const RUNNING = new Set(["started_no_host", "start_claimed", "host_running", "host_refused"]);
+/** Started by Omnigent, not running yet: a new computer is started as soon as it is added. */
+const STARTING = new Set(["provisioned", "waking", "restoring"]);
 
 /** The removal flow's next step (design, Signing in, "Removal"; Lifecycle step 9). */
 export function removalStep(state: ComputerPageState): RemovalStep {
@@ -378,6 +386,13 @@ export function computerView(state: ComputerPageState, nowMs: number): ComputerV
     signIn: state.signIn?.available ?? "unknown",
     lastSaveFailed: state.lastSave?.outcome === "failed",
     wakeHost: wakeHostOf(state, running, removing),
+    notRunning: running
+      ? null
+      : state.lifecycle === "failed"
+        ? "failed"
+        : STARTING.has(state.lifecycle)
+          ? "starting"
+          : "other",
   };
 }
 

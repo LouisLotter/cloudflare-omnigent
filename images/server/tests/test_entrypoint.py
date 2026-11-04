@@ -764,6 +764,20 @@ def test_bad_configuration_exits_78_before_starting_anything(rig: Rig) -> None:
     assert not rig.db.exists()
 
 
+def test_public_sharing_asked_for_exits_78_before_starting_anything(rig: Rig) -> None:
+    """The Worker secret ``SERVER_ENV_OMNIGENT_PUBLIC_SHARING=on`` reaches the container as
+    ``OMNIGENT_PUBLIC_SHARING=on`` (the mapping: worker/test/unit/server-env.test.ts). The image
+    pins public sharing off, so the server never runs: exit 78, which the watchdog holds and the
+    installer reports, with the reason in the config.error line."""
+    env = rig.env(OMNIGENT_PUBLIC_SHARING="on")
+    rig.start(env)
+    assert rig.wait(30) == entrypoint.EXIT_CONFIG
+    error = rig.events("config.error")
+    assert error and "OMNIGENT_PUBLIC_SHARING is pinned to off" in error[-1]["message"]
+    assert "nothing an installation runs is public" in error[-1]["message"]
+    assert not rig.db.exists() and not rig.marker.exists()
+
+
 def rig_events_live(rig: Rig) -> list[dict[str, Any]]:
     """Events printed so far by a running entrypoint."""
     rig.finish()

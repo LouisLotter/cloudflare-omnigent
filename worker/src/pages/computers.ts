@@ -52,6 +52,15 @@ export interface ActionSpec {
    * only while a removal is pending.
    */
   readonly admin: (view: ComputerView) => boolean;
+  /**
+   * Its wording for an administrator acting on someone else's computer, when it differs: a
+   * restart there is a stop, since the computer starts again only when its owner next uses it.
+   */
+  readonly asAdmin?: {
+    readonly title: string;
+    readonly button: string;
+    readonly explain: string;
+  };
 }
 
 const v = WORKSPACE_INTERFACE_VERSION;
@@ -83,6 +92,12 @@ export const ACTIONS: readonly ActionSpec[] = [
       "<p><strong>A restart ends work in progress.</strong> Turns that are running stop and are not replayed. The computer saves its files and logins first, then stops; Omnigent's next request starts it again and arms its host anew.</p>",
     call: (base) => ({ action: "restart", interfaceVersion: v, ...base }),
     admin: () => true,
+    asAdmin: {
+      title: "Stop this computer",
+      button: "Stop, ending work in progress",
+      explain:
+        "<p><strong>Stopping ends work in progress.</strong> Turns that are running stop and are not replayed. The computer saves its files and logins first, then stops. It starts again when its owner next uses it.</p>",
+    },
   },
   {
     slug: "stop-without-saving",
@@ -169,7 +184,10 @@ function flash(url: URL): string {
   const text = OUTCOME_TEXT[outcome];
   if (done === undefined || text === undefined) return "";
   const tone = outcome === "accepted" ? "ok" : "warn";
-  return notice({ tone, kind: "removal_pending", text: `${done.title}: ${text}` }).replace(
+  // An administrator's action on someone else's computer comes back with `as=admin`.
+  const title =
+    url.searchParams.get("as") === "admin" && done.asAdmin ? done.asAdmin.title : done.title;
+  return notice({ tone, kind: "removal_pending", text: `${title}: ${text}` }).replace(
     'data-notice="removal_pending"',
     'data-notice="flash" role="status"',
   );
@@ -488,21 +506,23 @@ export async function confirmPage(
       ),
     );
   }
+  const wording = asAdmin && spec.asAdmin !== undefined ? spec.asAdmin : null;
+  const title = wording?.title ?? spec.title;
   const extra =
     spec.slug === "set-size"
       ? `<label>Size <select name="size">${InstanceSize.options.map((s) => `<option value="${s}"${s === (state.computer.nextSize ?? state.computer.size) ? " selected" : ""}>${s}</option>`).join("")}</select></label>`
       : "";
-  const body = `<h1>${escapeHtml(spec.title)}</h1>
+  const body = `<h1>${escapeHtml(title)}</h1>
 <p class="muted">${escapeHtml(view.name)}</p>
-${spec.explain(view, state.computer)}
+${wording?.explain ?? spec.explain(view, state.computer)}
 <p class="muted">Opening this page changed nothing. Nothing happens until you press the button.</p>
 <form method="post" action="${actionPath(id, spec.slug)}" class="actions" data-confirm="${spec.slug}">
 ${hidden("intent", state.intentToken)}${hidden("op", newOperationId())}
 ${extra}
-<button type="submit" class="${spec.danger ? "danger" : "primary"}">${escapeHtml(spec.button)}</button>
+<button type="submit" class="${spec.danger ? "danger" : "primary"}">${escapeHtml(wording?.button ?? spec.button)}</button>
 ${back}
 </form>`;
-  return htmlResponse(layout(spec.title, body));
+  return htmlResponse(layout(title, body));
 }
 
 export function notFoundPage(): Response {
@@ -584,11 +604,16 @@ export async function performAction(
     "outcome" in result && result.outcome === "refused" && "reason" in result
       ? String(result.reason)
       : "accepted";
-  const query = new URLSearchParams({ done: spec.slug, outcome });
   // An administrator acting on someone else's computer goes back to the list: its setup page is
   // the owner's alone (WP8.4).
   const after = await backend.state(id, owner).catch(() => null);
-  const back = after?.computer.access === "admin" ? COMPUTERS_PATH : computerPath(id);
+  const asAdmin = after?.computer.access === "admin";
+  const query = new URLSearchParams({
+    done: spec.slug,
+    outcome,
+    ...(asAdmin ? { as: "admin" } : {}),
+  });
+  const back = asAdmin ? COMPUTERS_PATH : computerPath(id);
   return seeOther(`${back}?${query.toString()}`);
 }
 
