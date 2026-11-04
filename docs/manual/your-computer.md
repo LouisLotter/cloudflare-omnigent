@@ -36,6 +36,7 @@ A computer sleeps a few minutes after nothing is running on it, and wakes when t
 You never have to wake it yourself for normal work: starting a session on it wakes it, which takes about a minute. On its page, the sign-in buttons and **Open the terminal** also wake it first when it is asleep. The page tells you what it is doing meanwhile:
 
 - **Starting**: Omnigent is starting it, for example just after you added it. The page updates when it is ready.
+- **Not started yet**: no start is under way, for example because its first start was refused. In Omnigent's **Settings → Computers**, choose **Start again** if it says it failed to start.
 - **Failed to start**: its last start failed. Start it again in Omnigent, under **Settings → Computers**, with **Start again**.
 - **Not connected to Omnigent**: the page offers a restart, which ends work in progress.
 

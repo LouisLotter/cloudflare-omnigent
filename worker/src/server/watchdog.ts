@@ -253,6 +253,8 @@ export type WatchdogEventName =
   | "recovery_mode"
   | "recovery_left"
   | "config_error"
+  /** Said at every check while a 78 holds the server, so a current hold is always visible. */
+  | "config_held"
   | "rolled_back"
   | "config_changed"
   | "server_ready"
@@ -841,6 +843,13 @@ function stopped(
       // before it deploys the previous release, so a lost one must recur.
       if (state.outage?.exitCode === EXIT_ROLLED_BACK) {
         b.event("rolled_back", { exitCode: EXIT_ROLLED_BACK, held: true });
+      } else if (state.outage?.exitCode === EXIT_CONFIG) {
+        // A refused setting's hold says so at every check too, with when it began and no value:
+        // `config_error` said it once, and a log read of the last minutes may not reach it.
+        b.event("config_held", {
+          exitCode: EXIT_CONFIG,
+          heldSince: state.phaseSince === null ? null : new Date(state.phaseSince).toISOString(),
+        });
       }
       b.recordOutage();
       return b.done(state, now + timing.intervalMs);

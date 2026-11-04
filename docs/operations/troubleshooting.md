@@ -40,11 +40,13 @@ A saved session's 201 response is distinct from `runner_launch: started|failed|u
 
 ## A server that refuses a setting
 
-The server image checks every setting before anything starts. A missing or malformed one, or one that asks for something the image pins (public sharing, for example), stops the server with exit 78, and the watchdog keeps it stopped until the configuration changes: Omnigent is down meanwhile.
+The server image checks every setting before anything starts. A missing or malformed one, or one that asks for something the image pins (public sharing, for example), stops the server with exit 78, and the watchdog keeps it stopped until the configuration changes: Omnigent is down meanwhile. A sharing setting the image refuses is the one exception to "before anything starts": inside an update's window the server first takes the update's restore point, or carries out a rollback order, and refuses after that, so the way back stays open.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| `bootstrap.ts run` or `update` says "the server refused one of its settings and stays stopped until that setting changes" | The released version's server exited 78, and no server has answered since. | The server's `cfo.config.error` line in the platform Worker's Workers Logs names the setting and why; `bootstrap.ts status --logs` lists the hold. Change or remove that setting (a `SERVER_ENV_<NAME>` secret: `wrangler secret delete SERVER_ENV_<NAME>`, or put the value the message names), then run the same command again. Inside an update's window, `update --rollback` also goes back. |
+| `bootstrap.ts run` says "the server refused one of its settings and stays stopped until that setting changes" | The server exited 78, and none has answered since. | The server's `cfo.config.error` line in the platform Worker's Workers Logs names the setting and the rule, never its value; `bootstrap.ts status --logs` says whether the hold is current. Change or remove that setting (a `SERVER_ENV_<NAME>` secret: `wrangler secret delete SERVER_ENV_<NAME>`, or the value the message names), then run the same command again. |
+| `bootstrap.ts update` stops with "the new server refused one of its settings and stays stopped" (exit 1) | The update's server took its restore point, or refused before it could, and exited 78; Omnigent stays paused in the update's window. | Go back with `bootstrap.ts update --rollback`: the new server carries out the order whatever its sharing settings, and puts the restore point back (with none taken, the replica was never changed). Then change the setting and update again. Or change the setting first, and run `update` again to check. |
+| `bootstrap.ts status --logs` says "the server is held now" | The watchdog's last checks held the server for a refused setting (`config_held`, every minute while it lasts). | As above. "No current hold" means the server has answered, or was restarted with another configuration, since the last held check. |
 
 ## GitHub setup
 

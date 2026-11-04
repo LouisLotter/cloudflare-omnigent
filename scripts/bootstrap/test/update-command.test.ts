@@ -7,7 +7,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  MAINTENANCE_WINDOW_SECRET,
+  ROLLBACK_SECRET,
+} from "../../../worker/src/server/maintenance.ts";
 import { acquireLock } from "../../staging/lock.ts";
+import { SERVER_HELD_WHY } from "../events.ts";
 import { runBootstrap } from "../machine.ts";
 import type { Installation } from "../settings.ts";
 import { fileStateStore, statePathFor, workerLockPath } from "../state.ts";
@@ -140,6 +145,23 @@ describe("updateCommand", () => {
       `updated, but not checked yet: GitHub linking is off: this installation has a GitHub App set up, but Omnigent on the restarted server does not list GitHub linking. Omnigent stays paused, so nothing can be lost meanwhile, and its server is checked every minute: run bootstrap.ts update again to check, and it accepts the update once that is on (it deploys nothing again). If it stays off, go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback; bootstrap.ts github-app and services work again after that. Open https://${plan.hostname}`,
     );
     expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(3);
+    expect(await updateCommand(path, { root: ROOT, verify: true, rollback: true }, ports())).toBe(
+      0,
+    );
+    expect(lines.at(-1)).toBe(`rolled back. Open https://${plan.hostname}`);
+  });
+
+  it("exits 1 at once when the new server refuses a setting, and goes back with --rollback (WP8.10)", async () => {
+    const plan = await accountPlan();
+    const { world, path, lines, ports } = await finished(plan);
+    // The update's server refuses a setting the previous release accepted, and still carries out
+    // a rollback order, as the server image does.
+    world.refusesSettings = (v) =>
+      v.secrets.has(MAINTENANCE_WINDOW_SECRET) && !v.secrets.has(ROLLBACK_SECRET);
+    expect(await updateCommand(path, { root: ROOT, verify: true }, ports())).toBe(1);
+    expect(lines.at(-1)).toBe(
+      `updated, but the new server refused one of its settings and stays stopped: ${SERVER_HELD_WHY}. Omnigent stays paused, so nothing can be lost meanwhile. Or go back to the version from before the update, with Omnigent's data as it was then: bootstrap.ts update --rollback. Open https://${plan.hostname}`,
+    );
     expect(await updateCommand(path, { root: ROOT, verify: true, rollback: true }, ports())).toBe(
       0,
     );

@@ -113,7 +113,7 @@ describe("statuses", () => {
 
   it.each([
     [{}, null],
-    [{ lifecycle: "provisioned", status: "stopped" }, "starting"],
+    [{ lifecycle: "provisioned", status: "stopped" }, "not_started"],
     [{ lifecycle: "waking", status: "stopped" }, "starting"],
     [{ lifecycle: "restoring", status: "stopped" }, "starting"],
     [{ lifecycle: "failed", status: "stopped" }, "failed"],

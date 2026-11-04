@@ -11,9 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cfo_server import config as image_config  # noqa: E402
-from cfo_server.entrypoint import EXIT_CONFIG, Layout, run  # noqa: E402
-from cfo_server.events import log  # noqa: E402
+from cfo_server.entrypoint import Layout, start  # noqa: E402
 
 
 def main() -> int:
@@ -36,14 +34,9 @@ def main() -> int:
         app_env_overrides=tuple((k, v) for k, v in spec.get("app_env_overrides", {}).items()),
         build_info_path=Path(spec.get("build_info_path", "/nonexistent/build.json")),
     )
-    try:
-        config = image_config.load()
-    except image_config.ConfigError as exc:
-        log("config.error", message=str(exc))
-        return EXIT_CONFIG
     import os
 
-    return run(config, layout, os.environ)
+    return start(layout, os.environ)
 
 
 if __name__ == "__main__":

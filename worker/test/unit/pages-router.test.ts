@@ -15,6 +15,7 @@ import type {
   ReplicationHealth,
 } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
+import { INITIAL_LIFECYCLE, transition } from "../../src/computer/machine.ts";
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
@@ -556,7 +557,7 @@ describe("the setup page", () => {
     expect(asleep).toContain(
       'data-running="no" data-host-url="/v1/hosts/7f3c2a9e4b1d4e8a9c2f1a2b3c4d5e6f"',
     );
-    // Never started, so Omnigent's host is not known: no wake; it is starting.
+    // Never started, so Omnigent's host is not known: no wake, and where to start it.
     backend.states.set(PAGE_CMP, {
       action: "state",
       computer: pageState({ lifecycle: "provisioned", status: "stopped", hostId: null }),
@@ -565,7 +566,7 @@ describe("the setup page", () => {
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('id="terminal-open" disabled');
     expect(unknown).toContain(
-      "The computer is starting. This page updates when it is ready, usually within a few minutes. While the terminal is open, the computer does not go to sleep.",
+      "The computer has not started yet. If Omnigent&#39;s Settings → Computers says it failed to start, choose Start again there; this page updates when it is running. While the terminal is open, the computer does not go to sleep.",
     );
     expect(unknown).not.toContain("data-host-url");
     // Awake: opened as before, with no wake and no host URL.
@@ -1679,12 +1680,27 @@ describe("the status and the staging switch (WP3.23)", () => {
     });
     const unknown = await (await route(page)).text();
     expect(unknown).toContain('data-act="start" disabled');
-    // Just added: Omnigent is starting it, and the page says so (never "send it work").
+    // Never started (no start under way): where to start it, never "starting" or "send it work".
     expect(unknown).toContain(
-      "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+      "The computer has not started yet. If Omnigent&#39;s Settings → Computers says it failed to start, choose Start again there; this page updates when it is running.",
     );
+    expect(unknown).not.toContain("The computer is starting");
     expect(unknown).not.toContain("Send it work");
     expect(unknown).not.toContain("data-wake");
+    // A start under way: it says so.
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: "waking",
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain(
+      "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+    );
     // Its last start failed: where to start it again.
     backend.states.set(PAGE_CMP, {
       action: "state",
@@ -2031,5 +2047,45 @@ describe("the person behind a page (WP8.4)", () => {
       const html = await (await route("/platform/computers")).text();
       expect(html.includes("managed-7f3c2a9e"), person.role).toBe(shown);
     }
+  });
+});
+
+describe("a first start refused at the limit of awake computers (WP8.10, Codex r1 P-06)", () => {
+  it("leaves the computer not started, and its page says where to start it again", async () => {
+    // The controller's own transition: a refused first resume changes nothing and starts nothing.
+    const refused = transition(INITIAL_LIFECYCLE, "resume", new Set(["at_capacity"]));
+    expect(refused.reply).toEqual({ kind: "error", code: "at_capacity" });
+    expect(refused.effects).toEqual([]);
+    const state = refused.lifecycle.context.state;
+    expect(state).toBe("provisioned");
+    const { route, backend } = setup();
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: state,
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    const html = await (await route(page)).text();
+    expect(html).toContain("Not started yet");
+    expect(html).toContain("choose Start again there");
+    expect(html).not.toContain("The computer is starting");
+    // Granted, the same computer is starting, and the page says that instead.
+    const granted = transition(INITIAL_LIFECYCLE, "resume", new Set(), 1);
+    expect(granted.lifecycle.context.state).toBe("waking");
+    backend.states.set(PAGE_CMP, {
+      action: "state",
+      computer: pageState({
+        lifecycle: granted.lifecycle.context.state,
+        status: "stopped",
+        hostId: null,
+        setupCards: [...NEVER_SIGNED_IN],
+      }),
+      intentToken: INTENT,
+    });
+    expect(await (await route(page)).text()).toContain("The computer is starting.");
   });
 });

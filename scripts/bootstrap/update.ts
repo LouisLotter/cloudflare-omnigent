@@ -267,6 +267,11 @@ export type UpdateOutcome =
        * which is off.
        */
       readonly integrationsOff?: true;
+      /**
+       * The new release's server refused one of its settings and stays stopped (exit 78): checking
+       * again changes nothing until that setting changes, so the check stopped at once.
+       */
+      readonly held?: true;
     }
   /**
    * The update is accepted, and the team's move behind Access (WP8.11) is under way: `waiting`
@@ -1021,7 +1026,12 @@ async function checkUpdate(
         releasedAt: since,
       };
       const result: Verification = verifyRelease(logs, release);
-      if (!result.verified) return { why: result.why };
+      if (!result.verified) {
+        // A server held for a refused setting never answers until the setting changes.
+        return result.held === true
+          ? { decided: { kind: "deployed", why: result.why, window: "open", held: true } }
+          : { why: result.why };
+      }
       if (!held.ok) return { why: held.why };
       // From the very status the release check accepted: the integrations still on (WP3.44).
       const status = appliedStatus(logs, release) as StatusEvent;

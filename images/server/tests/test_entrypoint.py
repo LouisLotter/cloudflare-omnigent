@@ -778,6 +778,28 @@ def test_public_sharing_asked_for_exits_78_before_starting_anything(rig: Rig) ->
     assert not rig.db.exists() and not rig.marker.exists()
 
 
+SHARING_CANARY = "cfo-test-sharing-canary-0001"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OMNIGENT_SHARING_MODE",
+        "OMNIGENT_PUBLIC_SHARING",
+        "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL",
+        "OMNIGENT_DEFAULT_PUBLIC_SESSIONS",
+    ],
+)
+def test_a_refused_sharing_setting_never_repeats_its_value(rig: Rig, name: str) -> None:
+    """A value set by mistake may be a secret meant elsewhere: the refusal names the setting
+    and the fix, and nothing the entrypoint prints holds the value."""
+    rig.start(rig.env(**{name: SHARING_CANARY}))
+    assert rig.wait(30) == entrypoint.EXIT_CONFIG
+    error = rig.events("config.error")
+    assert error and name in error[-1]["message"]
+    assert SHARING_CANARY not in rig.output
+
+
 def rig_events_live(rig: Rig) -> list[dict[str, Any]]:
     """Events printed so far by a running entrypoint."""
     rig.finish()

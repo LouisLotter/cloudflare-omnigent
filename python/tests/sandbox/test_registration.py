@@ -13,9 +13,9 @@ from omnigent.stores.host_store import Host  # noqa: E402
 
 from cloudflare_omnigent.sandbox.launcher import CloudflareLauncher  # noqa: E402
 from cloudflare_omnigent.sandbox.registration import (  # noqa: E402
+    OVERVIEW_PATH,
     cloudflare_sandbox_config,
     manage_url_template,
-    overview_url,
 )
 from cloudflare_omnigent.sandbox.settings import LauncherSettings  # noqa: E402
 
@@ -101,16 +101,12 @@ def test_the_setup_link_needs_an_http_origin(base: str) -> None:
         manage_url_template(base)
 
 
-def test_the_computers_page_is_declared_on_the_installations_origin() -> None:
-    page = overview_url("https://x.test:8443/some/path/")
-    assert page == "https://x.test:8443/platform/computers"
-    entry = _entry(overview=page)
-    assert entry.persistent is not None and entry.persistent.overview_url == page
+def test_the_computers_page_is_declared_as_a_path_on_the_installations_origin() -> None:
+    assert OVERVIEW_PATH == "/platform/computers"
+    entry = _entry(overview=OVERVIEW_PATH)
+    assert entry.persistent is not None and entry.persistent.overview_url == OVERVIEW_PATH
     deployment = ManagedSandboxDeployment.single(entry)
-    assert deployment.persistent_overview_urls() == {"cloudflare": page}
-    for base in ("ftp://x.test", "https://user@x.test", "not a url"):
-        with pytest.raises(ValueError):
-            overview_url(base)
+    assert deployment.persistent_overview_urls() == {"cloudflare": OVERVIEW_PATH}
 
 
 def test_the_setup_link_keeps_only_the_origin() -> None:

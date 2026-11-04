@@ -11,7 +11,8 @@ launcher"; Timing budget):
 - a 600 s runner idle timeout, through the host configuration installed before the host starts
   (Omnigent's default is 3600 s);
 - the computers' ``manage_url``, the platform's setup page for each computer, and their
-  ``overview_url``, the platform's computers page, where administrators also find other people's;
+  ``overview_url``, the platform's computers page (a path on the installation's own origin),
+  where administrators also find other people's;
 - the 600 s keep-alive cadence and turn-aligned checkpoints (core change 15's defaults).
 """
 
@@ -41,6 +42,7 @@ TOKEN_REFRESH_MARGIN_S = 24 * 3600.0
 #: The platform's page for one computer, on the installation's own origin (WP3.5's pages).
 MANAGE_PATH = "/platform/computers/{sandbox_id}"
 #: The platform's computers page: a person's own, and an administrator's view of the team's.
+#: A path, so it can only ever name the installation's own origin.
 OVERVIEW_PATH = "/platform/computers"
 
 
@@ -49,21 +51,12 @@ def host_config() -> dict[str, object]:
     return {"runner": {"idle_timeout_s": RUNNER_IDLE_TIMEOUT_S}}
 
 
-def _origin(base_url: str) -> str:
+def manage_url_template(base_url: str) -> str:
+    """The setup page link Omnigent shows per computer, on the installation's origin."""
     parts = urlsplit(base_url)
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
         raise ValueError("the installation's base URL must be an http(s) origin")
-    return f"{parts.scheme}://{parts.netloc}"
-
-
-def manage_url_template(base_url: str) -> str:
-    """The setup page link Omnigent shows per computer, on the installation's origin."""
-    return _origin(base_url) + MANAGE_PATH
-
-
-def overview_url(base_url: str) -> str:
-    """The computers page Omnigent links administrators to, on the installation's origin."""
-    return _origin(base_url) + OVERVIEW_PATH
+    return f"{parts.scheme}://{parts.netloc}{MANAGE_PATH}"
 
 
 def cloudflare_sandbox_config(
@@ -79,7 +72,7 @@ def cloudflare_sandbox_config(
     :param settings: The launcher's settings, or ``None`` when it is not configured.
     :param durability_wait: The replication fence for lifecycle effects.
     :param manage_url: The per-computer setup page template (``{sandbox_id}``).
-    :param overview: The computers page (:func:`overview_url`), or ``None`` for no link.
+    :param overview: The computers page (:data:`OVERVIEW_PATH`), or ``None`` for no link.
     :param server_url: Where computers reach this server; must be ``http://omnigent.internal``.
     :raises ValueError: When *server_url* is anything else.
     """

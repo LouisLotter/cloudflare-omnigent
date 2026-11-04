@@ -69,6 +69,7 @@ import {
   FRESH_MS,
   newest,
   parseLogs,
+  SERVER_HELD_WHY,
   type StatusEvent,
   staleness,
   verifyRelease,
@@ -870,6 +871,26 @@ async function r2Credentials(
 
 type Accepted = { ok: true; event: StatusEvent } | { ok: false; why: string };
 
+/**
+ * Whether the watchdog holds the server for a refused setting (exit 78) since `since`, with no
+ * status of this installation logged after the hold: it will not answer until the setting changes.
+ */
+export function heldSince(
+  logs: ReturnType<typeof parseLogs>,
+  installationId: string,
+  since: number,
+): boolean {
+  const holds = [
+    ...logs.configErrors.filter((e) => e.held === true),
+    ...(logs.configHolds ?? []),
+  ].filter((e) => e.loggedAt >= since);
+  if (holds.length === 0) return false;
+  const hold = Math.max(...holds.map((e) => e.loggedAt));
+  return !logs.statuses.some(
+    (e) => e.status.installationId === installationId && e.loggedAt > hold,
+  );
+}
+
 async function waitForOwner(
   ctx: RunContext,
   current: () => BootstrapState,
@@ -894,6 +915,11 @@ async function waitForOwner(
     if (decision.accepted) {
       ctx.log(`the owner is initialized and durable (checked ${decision.event.status.checkedAt})`);
       return { ok: true, event: decision.event };
+    }
+    const deployedAt = Date.parse(String(current().journal.platformDeployedAt));
+    if (Number.isFinite(deployedAt) && heldSince(logs, plan.installationId, deployedAt)) {
+      // Waiting longer changes nothing: the server answers only once the setting changes.
+      return { ok: false, why: SERVER_HELD_WHY };
     }
     const ignored =
       logs.malformed > 0 ? ` (${logs.malformed} bootstrap lines ignored: not the watchdog's)` : "";

@@ -5,6 +5,7 @@ import {
   checkGitHubLinking,
   checkMcpServices,
   decide,
+  holdReport,
   integrationsOff,
   parseLogs,
   SERVER_HELD_WHY,
@@ -492,6 +493,80 @@ describe("verifyRelease", () => {
     expect(verifyRelease(logsOf([run, before, refused(released + 400_000)]), rules)).toMatchObject({
       held: true,
     });
+  });
+});
+
+describe("holdReport: a refused setting's hold, current or past (WP8.10)", () => {
+  const logsOf = (events: unknown[]) => parseLogs(events, SCRIPT);
+  const heldLine = (at: number, since: number, version = "v2") =>
+    event(
+      at,
+      {
+        cfo: "watchdog",
+        event: "config_held",
+        exitCode: 78,
+        heldSince: new Date(since).toISOString(),
+      },
+      version,
+    );
+  const refusedLine = (at: number, held: unknown = true, version = "v2") =>
+    event(at, { cfo: "watchdog", event: "config_error", exitCode: 78, held }, version);
+
+  it("says a hold is current from its recurring line, even once the refusal itself is out of the read", () => {
+    // The hold began an hour ago: the 15-minute read holds only its later checks.
+    const since = NOW - 3_600_000;
+    const logs = logsOf([heldLine(NOW - 120_000, since), heldLine(NOW - 60_000, since)]);
+    expect(logs.configErrors).toEqual([]);
+    expect(holdReport(logs, INSTALLATION, NOW)).toEqual([
+      `the server is held now: it refused a setting at ${new Date(since).toISOString()} and stays stopped (exit 78) until that setting changes (version v2); its cfo.config.error line in Workers Logs names the setting`,
+    ]);
+    // The release check counts the recurring line as a hold of the released version.
+    expect(
+      verifyRelease(
+        logsOf([
+          event(NOW - 300_000, { cfo: "watchdog", event: "first_alarm" }, "v2"),
+          heldLine(NOW - 60_000, since),
+        ]),
+        { installationId: INSTALLATION, releasedVersionId: "v2", releasedAt: NOW - 600_000 },
+      ),
+    ).toMatchObject({ held: true });
+  });
+
+  it("tells a recovered hold, an earlier configuration's exit and a stale line from a current hold", () => {
+    const since = NOW - 600_000;
+    // Recovered: the server answered after its last held check.
+    const recovered = holdReport(
+      logsOf([
+        refusedLine(since),
+        heldLine(NOW - 300_000, since),
+        event(NOW - 120_000, appliedLine(NOW - 120_000), "v3"),
+      ]),
+      INSTALLATION,
+      NOW,
+    );
+    expect(recovered[0]).toMatch(/^no current hold: the last check .* answered or was restarted/);
+    expect(recovered[1]).toMatch(/held the server \(exit 78\), since answered or restarted/);
+    expect(recovered.join("\n")).not.toContain("held now");
+    // A container started with an earlier configuration exited 78: no hold at all.
+    expect(holdReport(logsOf([refusedLine(NOW - 60_000, false)]), INSTALLATION, NOW)).toEqual([
+      `${new Date(NOW - 60_000).toISOString()} a container started with an earlier configuration exited 78; the current configuration was started (version v2)`,
+    ]);
+    // A held check older than three checks, with nothing after: not said to be current.
+    expect(holdReport(logsOf([heldLine(NOW - 600_000, since)]), INSTALLATION, NOW)[0]).toMatch(
+      /^no current hold: the last check that held the server for a refused setting was at /,
+    );
+    // Another installation's status after the hold does not end it.
+    expect(
+      holdReport(
+        logsOf([
+          heldLine(NOW - 60_000, since),
+          event(NOW - 30_000, appliedLine(NOW - 30_000, true, "durable", OTHER), "v3"),
+        ]),
+        INSTALLATION,
+        NOW,
+      )[0],
+    ).toMatch(/^the server is held now/);
+    expect(holdReport(logsOf([]), INSTALLATION, NOW)).toEqual([]);
   });
 });
 

@@ -416,6 +416,22 @@ describe("runBootstrap: the whole bootstrap", () => {
     expect(h.world.secretChanges).toHaveLength(1);
   });
 
+  it("says at once that the first server refused a setting, before any release", async () => {
+    const h = harness(await accountPlan());
+    // The first server (with the bootstrap password) refuses a setting: exit 78, no status.
+    h.world.refusesSettings = (v) => v.secrets.has(PASSWORD_SECRET);
+    const started = h.world.now;
+    expect(await h.run()).toEqual({ kind: "waiting", why: SERVER_HELD_WHY });
+    // Decided at the first read that sees the hold: well within the 30-minute wait.
+    expect(h.world.now - started).toBeLessThan(5 * 60_000);
+    const reads = h.world.calls.filter((c) => c === "logs").length;
+    expect(reads).toBeLessThan(10);
+    expect(h.world.released()).toBe(false);
+    // Fixed (the server answers): the next run releases and completes.
+    h.world.refusesSettings = () => false;
+    expect(await h.run()).toEqual({ kind: "done" });
+  });
+
   it("waits for the replacement within its existing deadline, and says so", async () => {
     const h = harness(await accountPlan());
     // The check after the switch stops after the released version ran, before the

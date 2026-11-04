@@ -300,6 +300,9 @@ class ServerImageConfig:
     #: The artifact store; the container's disk only with ``CFO_ALLOW_LOCAL_ARTIFACTS``.
     artifacts: ArtifactSettings = field(default_factory=lambda: ArtifactSettings(uri=None))
     sharing: SharingSettings = field(default_factory=SharingSettings)
+    #: Why the sharing settings were refused, when :func:`load` deferred it (the entrypoint
+    #: inside an update's window); never set for the app, which refuses at once.
+    sharing_refusal: str | None = None
     admins: tuple[str, ...] = ()
     allowed_domains: tuple[str, ...] = ()
     sandbox_server_url: str = "http://omnigent.internal"
@@ -419,30 +422,35 @@ def _origin(url: str, name: str) -> str:
 
 def parse_sharing(env: Mapping[str, str]) -> SharingSettings:
     """Parse the sharing settings: the mode is the deployment's to choose (``on`` when unset,
-    Omnigent's own default); public sharing and default-public sessions are pinned off."""
+    Omnigent's own default); public sharing and default-public sessions are pinned off.
+
+    A refusal names the setting, the rule and the fix, never the value given: a value set by
+    mistake may be a secret meant for another setting.
+    """
     mode = (_get(env, "OMNIGENT_SHARING_MODE") or "on").lower()
     if mode not in SHARING_MODES:
         raise ConfigError(
-            f"OMNIGENT_SHARING_MODE must be one of {', '.join(SHARING_MODES)}, not {mode!r}"
+            f"OMNIGENT_SHARING_MODE must be one of {', '.join(SHARING_MODES)}: set one of "
+            "them, or remove the setting for on"
         )
     public = _get(env, "OMNIGENT_PUBLIC_SHARING")
     if public is not None and public.lower() not in _FALSE:
         raise ConfigError(
             "OMNIGENT_PUBLIC_SHARING is pinned to off in this image: nothing an installation "
             "runs is public, so a thread is shared only with the installation's own people, "
-            f"never by link. Remove the setting (or set it to off), not {public!r}"
+            "never by link. Remove the setting, or set it to off"
         )
     level = (_get(env, "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL") or "read").lower()
     if level != "read":
         raise ConfigError(
-            "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL is pinned to read in this image "
-            f"(public sharing stays off), not {level!r}"
+            "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL is pinned to read in this image (public "
+            "sharing stays off). Remove the setting, or set it to read"
         )
     default_public = (_get(env, "OMNIGENT_DEFAULT_PUBLIC_SESSIONS") or "off").lower()
     if default_public != "off":
         raise ConfigError(
-            "OMNIGENT_DEFAULT_PUBLIC_SESSIONS is pinned to off in this image "
-            f"(default-public sharing stays off), not {default_public!r}"
+            "OMNIGENT_DEFAULT_PUBLIC_SESSIONS is pinned to off in this image (default-public "
+            "sharing stays off). Remove the setting, or set it to off"
         )
     return SharingSettings(sharing_mode=mode)  # type: ignore[arg-type]
 
@@ -727,12 +735,16 @@ def load(
     *,
     for_app: bool = False,
     manifests_dir: Path | None = None,
+    defer_sharing: bool = False,
 ) -> ServerImageConfig:
     """Parse and check every setting; raise :class:`ConfigError` on the first problem.
 
     :param for_app: Parse for the Omnigent app process, whose environment no longer holds the
         replica's credentials (only Litestream gets them); the replica is then not parsed.
     :param manifests_dir: The MCP manifests to read instead of the image's (tests only).
+    :param defer_sharing: Record a refused sharing setting in ``sharing_refusal`` instead of
+        raising, with sharing off meanwhile. The entrypoint defers it so that an update's
+        restore point and a rollback order, which need only the storage settings, still run.
     """
     env = os.environ if env is None else env
     warnings: list[str] = []
@@ -817,13 +829,21 @@ def load(
     replica = None if for_app else parse_replica(env)
     artifacts = parse_artifacts(env, replica, warnings)
     restore_point, rollback_to = parse_restore_point(env, replica)
+    sharing_refusal: str | None = None
+    try:
+        sharing = parse_sharing(env)
+    except ConfigError as exc:
+        if not defer_sharing:
+            raise
+        sharing, sharing_refusal = SharingSettings(sharing_mode="off"), str(exc)
     return ServerImageConfig(
         installation_initialized=initialized,
         replica=replica,
         base_url=base_url,
         ws_allowed_origins=origins,
         artifacts=artifacts,
-        sharing=parse_sharing(env),
+        sharing=sharing,
+        sharing_refusal=sharing_refusal,
         admins=parse_list(env, "CFO_OMNIGENT_ADMINS"),
         allowed_domains=parse_list(env, "CFO_OMNIGENT_ALLOWED_DOMAINS"),
         sandbox_server_url=sandbox_server_url,

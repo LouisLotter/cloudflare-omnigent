@@ -905,6 +905,11 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
                 return failed
         else:
             board.expect_admin_services(admin_services)
+        if config.sharing_refusal is not None:
+            # After the update's restore point: `update --rollback` can go back from here.
+            log("config.error", message=config.sharing_refusal)
+            board.update(phase="stopped")
+            return EXIT_CONFIG
         write_settings_files(config, layout)
         return supervisor.run()
     finally:
@@ -912,13 +917,28 @@ def run(config: image_config.ServerImageConfig, layout: Layout, env: Mapping[str
         status.server_close()
 
 
-def main() -> int:
+def start(layout: Layout, env: Mapping[str, str]) -> int:
+    """Read the settings, then run. Returns the process's exit code."""
     try:
-        config = image_config.load()
+        config = image_config.load(env, defer_sharing=True)
     except image_config.ConfigError as exc:
         log("config.error", message=str(exc))
         return EXIT_CONFIG
-    return run(config, Layout.production(), os.environ)
+    # A refused sharing setting stops the server before anything starts, except inside an
+    # update's window: there run() first takes the restore point or carries out the rollback.
+    if config.sharing_refusal is not None and not in_update_window(config):
+        log("config.error", message=config.sharing_refusal)
+        return EXIT_CONFIG
+    return run(config, layout, env)
+
+
+def main() -> int:
+    return start(Layout.production(), os.environ)
+
+
+def in_update_window(config: image_config.ServerImageConfig) -> bool:
+    """Whether this start is an update's: its restore point to take, or its rollback order."""
+    return config.restore_point is not None or config.rollback_to is not None
 
 
 if __name__ == "__main__":

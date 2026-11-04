@@ -137,6 +137,42 @@ def test_public_sharing_is_pinned_off_whatever_the_mode(mode: str, public: str) 
     assert "Remove the setting" in message
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OMNIGENT_SHARING_MODE",
+        "OMNIGENT_PUBLIC_SHARING",
+        "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL",
+        "OMNIGENT_DEFAULT_PUBLIC_SESSIONS",
+    ],
+)
+def test_a_sharing_refusal_names_the_setting_never_the_value(
+    env: dict[str, str], name: str
+) -> None:
+    env[name] = "cfo-test-sharing-canary-0001"
+    with pytest.raises(ConfigError) as excinfo:
+        load(env)
+    assert name in str(excinfo.value)
+    assert "cfo-test-sharing-canary-0001" not in str(excinfo.value)
+
+
+def test_the_entrypoint_may_defer_a_sharing_refusal_the_app_never_does(env: dict[str, str]) -> None:
+    env["OMNIGENT_PUBLIC_SHARING_MAX_LEVEL"] = "edit"
+    deferred = load(env, defer_sharing=True)
+    assert deferred.sharing_refusal is not None
+    assert "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL is pinned to read" in deferred.sharing_refusal
+    # Never served: sharing is off meanwhile, and the entrypoint refuses before Omnigent starts.
+    assert deferred.sharing.sharing_mode == "off" and deferred.sharing.public_sharing is False
+    with pytest.raises(ConfigError, match="pinned to read"):
+        load(env)
+    assert (
+        load(
+            {**env, "OMNIGENT_PUBLIC_SHARING_MAX_LEVEL": "read"}, defer_sharing=True
+        ).sharing_refusal
+        is None
+    )
+
+
 def test_app_environment_pins_and_scrubs(env: dict[str, str]) -> None:
     env.update(
         {

@@ -729,7 +729,8 @@ export class FakeWorld {
         t >= container.since &&
         this.refusesSettings(container.version)
       ) {
-        // Exit 78: the watchdog says so once and holds the server; no status follows.
+        // Exit 78: the watchdog says so once, holds the server, and says at every later check
+        // that the hold is current (`config_held`); no status follows.
         if (!refused.has(container.since)) {
           refused.add(container.since);
           events.push({
@@ -742,6 +743,17 @@ export class FakeWorld {
               held: true,
               githubApp: fakeAppTag(container.version.secrets),
               mcpRevision: fakeMcpRevision(container.version.secrets),
+            },
+          });
+        } else {
+          events.push({
+            timestamp: t,
+            $workers,
+            source: {
+              cfo: "watchdog",
+              event: "config_held",
+              exitCode: 78,
+              heldSince: new Date(container.since).toISOString(),
             },
           });
         }

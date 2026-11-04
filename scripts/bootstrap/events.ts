@@ -177,6 +177,17 @@ function appTag(value: unknown): string | null | undefined {
   return typeof value === "string" || value === null ? value : undefined;
 }
 
+/**
+ * The watchdog's `config_held` line, at every check while a refused setting (78) holds the
+ * server: the hold is current. No value, only when it began.
+ */
+export interface ConfigHoldEvent {
+  readonly loggedAt: number;
+  readonly versionId: string | undefined;
+  /** When the hold began (ISO), or undefined when the line does not say. */
+  readonly heldSince: string | undefined;
+}
+
 /** Any invocation of the platform Worker, for the check after the release. */
 export interface Invocation {
   readonly loggedAt: number;
@@ -191,6 +202,8 @@ export interface ParsedLogs {
   readonly invocations: readonly Invocation[];
   /** The watchdog's `config_error` lines, from the OmnigentServer object (WP3.36). */
   readonly configErrors: readonly ConfigErrorEvent[];
+  /** The watchdog's `config_held` lines: a refused setting holds the server at that check. */
+  readonly configHolds?: readonly ConfigHoldEvent[];
   /** When the watchdog said it replaces the server for a changed configuration (WP3.36). */
   readonly configChanges: readonly number[];
   /** The watchdog's `rolled_back` lines, from the OmnigentServer object (WP3.41). */
@@ -242,6 +255,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
   const statuses: StatusEvent[] = [];
   const invocations: Invocation[] = [];
   const configErrors: ConfigErrorEvent[] = [];
+  const configHolds: ConfigHoldEvent[] = [];
   const configChanges: number[] = [];
   const rollbacks: RollbackEvent[] = [];
   let malformed = 0;
@@ -276,6 +290,18 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
         held: typeof line.held === "boolean" ? line.held : undefined,
         githubApp: appTag(line.githubApp),
         mcpRevision: appTag(line.mcpRevision),
+      });
+      continue;
+    }
+    if (
+      line?.cfo === "watchdog" &&
+      line.event === "config_held" &&
+      workers.entrypoint === STATUS_ENTRYPOINT
+    ) {
+      configHolds.push({
+        loggedAt,
+        versionId,
+        heldSince: typeof line.heldSince === "string" ? line.heldSince : undefined,
       });
       continue;
     }
@@ -334,7 +360,7 @@ export function parseLogs(events: readonly unknown[], scriptName: string): Parse
       ...("teamMove" in line ? { teamMove: teamMoveOf(line) } : {}),
     });
   }
-  return { statuses, invocations, configErrors, configChanges, rollbacks, malformed };
+  return { statuses, invocations, configErrors, configHolds, configChanges, rollbacks, malformed };
 }
 
 /** A window's or restore point's ID on a line: the ID, null for none; undefined otherwise. */
@@ -459,6 +485,48 @@ export type Verification =
   /** `held`: the server refused a setting and stays stopped, so waiting longer changes nothing. */
   | { readonly verified: false; readonly why: string; readonly held?: true };
 
+/** How recent a `config_held` line must be to show the hold is current: three checks. */
+export const HOLD_CURRENT_MS = 3 * 60_000;
+
+/**
+ * What `status --logs` says about refused settings (exit 78), from the logs it read: whether a
+ * hold is current (a `config_held` line within the last three checks, with no status of this
+ * installation or configuration change after it), and each earlier refusal with what followed
+ * it. Lines only, never a value.
+ */
+export function holdReport(logs: ParsedLogs, installationId: string, now: number): string[] {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const answeredAfter = (at: number) =>
+    logs.statuses.some((e) => e.status.installationId === installationId && e.loggedAt > at) ||
+    logs.configChanges.some((c) => c > at);
+  const holds = [...(logs.configHolds ?? [])].sort((a, b) => a.loggedAt - b.loggedAt);
+  const latest = holds.at(-1);
+  const lines: string[] = [];
+  if (
+    latest !== undefined &&
+    now - latest.loggedAt <= HOLD_CURRENT_MS &&
+    !answeredAfter(latest.loggedAt)
+  ) {
+    lines.push(
+      `the server is held now: it refused a setting${latest.heldSince ? ` at ${latest.heldSince}` : ""} and stays stopped (exit 78) until that setting changes (version ${latest.versionId ?? "?"}); its cfo.config.error line in Workers Logs names the setting`,
+    );
+  } else if (latest !== undefined) {
+    lines.push(
+      `no current hold: the last check that held the server for a refused setting was at ${iso(latest.loggedAt)}${answeredAfter(latest.loggedAt) ? ", and the server answered or was restarted with another configuration since" : ""}`,
+    );
+  }
+  for (const e of [...logs.configErrors].sort((a, b) => a.loggedAt - b.loggedAt)) {
+    const what =
+      e.held === false
+        ? "a container started with an earlier configuration exited 78; the current configuration was started"
+        : answeredAfter(e.loggedAt)
+          ? "a refused setting held the server (exit 78), since answered or restarted with another configuration"
+          : "a refused setting held the server (exit 78)";
+    lines.push(`${iso(e.loggedAt)} ${what} (version ${e.versionId ?? "?"})`);
+  }
+  return lines;
+}
+
 /** Why a release check fails while the watchdog holds a server that refused a setting (exit 78). */
 export const SERVER_HELD_WHY =
   "the server refused one of its settings and stays stopped until that setting changes, so Omnigent is down: the server's cfo.config.error line in the platform Worker's Workers Logs names the setting and why (bootstrap.ts status --logs shows the hold). Change or remove that setting, then run this command again";
@@ -541,9 +609,11 @@ export function verifyRelease(logs: ParsedLogs, rules: ReleaseRules): Verificati
   const latest = appliedStatus(logs, rules);
   // The released version's watchdog holds a server that refused a setting, and no server has
   // answered since: it never will until the setting changes (a new version).
-  const held = logs.configErrors.some(
+  const held = [
+    ...logs.configErrors.filter((e) => e.held === true),
+    ...(logs.configHolds ?? []),
+  ].some(
     (e) =>
-      e.held === true &&
       e.versionId === released &&
       e.loggedAt >= rules.releasedAt &&
       (latest === undefined || e.loggedAt >= latest.loggedAt),

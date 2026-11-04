@@ -68,9 +68,13 @@ const FAILED: Readonly<Record<string, (s: SignInService) => string>> = {
 
 /** A card's note while the computer is not running and cannot be woken from the page. */
 /** Why the computer is not running, where the page cannot wake it (its host is not known yet). */
-export const NOT_RUNNING_NOTES: Readonly<Record<"starting" | "failed" | "other", string>> = {
+export const NOT_RUNNING_NOTES: Readonly<
+  Record<"starting" | "not_started" | "failed" | "other", string>
+> = {
   starting:
     "The computer is starting. This page updates when it is ready, usually within a few minutes.",
+  not_started:
+    "The computer has not started yet. If Omnigent's Settings → Computers says it failed to start, choose Start again there; this page updates when it is running.",
   failed:
     "The computer's last start failed. Start it again in Omnigent (Settings → Computers, Start again); this page updates when it is running.",
   other:
