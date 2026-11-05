@@ -12,9 +12,12 @@
  *   - a part fault seam: the next part uploads the backup gateway admits fail as R2's lost
  *     connection did on staging (27 Oct 2026), "502 Network connection lost.", and the upload
  *     retry's delays are shortened (WP3.22).
+ *   - OmnigentServer's `pagePerson`, as WorkspaceDO asks it again while an administrator's
+ *     terminal on someone else's computer is connected (WP8.15): an answer per Access subject,
+ *     "throws" for a call that fails, none for no answer at all.
  * workerd runs this module in the tests' own isolate, so a test and the objects share it.
  */
-import type { ComputerId } from "@cfo/contracts";
+import type { ComputerId, PagePersonResult } from "@cfo/contracts";
 import { FakeRuntimeContainer } from "./runtime-container.ts";
 
 const DAY_MS = 86_400_000;
@@ -32,6 +35,8 @@ class Assembly {
   loseCompletions = 0;
   /** WorkspaceDO's upload retry delays: production's, shortened for the tests' real timers. */
   readonly uploadRetryDelaysMs: readonly number[] = [5, 10];
+  /** WP8.15: what OmnigentServer answers about each Access subject. */
+  readonly pagePeople = new Map<string, PagePersonResult | "throws">();
 
   now(): number {
     return this.#now;

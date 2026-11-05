@@ -50,6 +50,10 @@ function harness(start = 1_000_000_000_000) {
     browser: null as FakeSocket | null,
     /** How often the bridge said a shell's end was recorded (WP3.28). */
     endsRecorded: 0,
+    /** WP8.15: the page front's answer whether the streams' person may still have them. */
+    allowed: true as boolean | "throws" | Promise<boolean>,
+    /** How often the bridge asked it. */
+    authorityAsked: 0,
     build(): TerminalBridge {
       h.bridge = new TerminalBridge({
         computerId: CMP,
@@ -79,6 +83,11 @@ function harness(start = 1_000_000_000_000) {
         log: (event, fields) => logs.push({ event, fields }),
         endRecorded: () => {
           h.endsRecorded += 1;
+        },
+        authority: async () => {
+          h.authorityAsked += 1;
+          if (h.allowed === "throws") throw new Error("the server cannot be asked");
+          return await h.allowed;
         },
       });
       return h.bridge;
@@ -369,6 +378,57 @@ describe("streams end (RC-24)", () => {
     expect(h.windows.at(-1)).toBeNull();
     expect((await h.connect(spare.capability)).status).toBe(403);
     expect(await h.bridge.close("again")).toBe(false);
+  });
+
+  // WP8.15 (D62): an administrator's terminal on someone else's computer ends once they lose
+  // authority, through the same periodic check; the page front decides (`supportAuthority`).
+  it("when its person may no longer have it, at the next periodic check", async () => {
+    const h = harness();
+    h.target = { ok: true, generation: 3, keepsShells: true };
+    const browser = browserOf(await h.connect((await h.open()).capability));
+    await until(() => h.ttyd.shell !== undefined);
+    await h.advance(15_000);
+    expect(browser.closed).toBeNull();
+    expect(h.authorityAsked).toBe(1);
+    h.allowed = false;
+    await h.advance(15_000);
+    await until(() => browser.closed !== null);
+    expect(browser.closed?.code).toBe(CLOSED_BY_PLATFORM);
+    expect(browser.closed?.reason).toContain("its administrator no longer has access");
+    expect(h.bridge.view().open).toBe(false);
+    expect(h.windows.at(-1)).toBeNull();
+    // Its shell on the computer is ended too: a `terminal_end` is owed.
+    expect(h.bridge.pendingEnd()).toMatchObject({ window: 1, generation: 3 });
+    expect(h.endsRecorded).toBeGreaterThan(0);
+  });
+
+  it("when the answer fails, and asks only while a stream exists", async () => {
+    const h = harness();
+    await h.open();
+    await h.advance(15_000);
+    await h.bridge.enforceAuthority();
+    expect(h.authorityAsked).toBe(0);
+    const browser = browserOf(await h.connect((await h.open(OP(2))).capability));
+    h.allowed = "throws";
+    await h.bridge.enforceAuthority();
+    expect(browser.closed?.code).toBe(CLOSED_BY_PLATFORM);
+    expect(h.bridge.view().open).toBe(false);
+  });
+
+  it("never closes a window opened while the answer was asked", async () => {
+    const h = harness();
+    browserOf(await h.connect((await h.open()).capability));
+    let release: (allowed: boolean) => void = () => undefined;
+    h.allowed = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    const asking = h.bridge.enforceAuthority();
+    // Meanwhile another window opens (the owner's, say), and its stream connects.
+    const mine = browserOf(await h.connect((await h.open(OP(2))).capability));
+    release(false);
+    await asking;
+    expect(mine.closed).toBeNull();
+    expect(h.bridge.view()).toMatchObject({ window: 2, open: true, streams: 1 });
   });
 
   it("enforce never throws when the computer cannot be asked, and keeps the stream", async () => {

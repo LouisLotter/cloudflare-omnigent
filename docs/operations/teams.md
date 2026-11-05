@@ -173,6 +173,11 @@ WP8.15's fork part)
 4. B: open the computer's page. It is still B's, and B's sign-in buttons are there. The
    platform Worker's log has `page_support_action` lines with A's member ID and no address.
 
+An administrator's terminal on someone else's computer lasts only while their authority does:
+WorkspaceDO asks Omnigent again every 15 seconds while it is connected, and closes it, ending
+its shell, within 35 seconds of the administrator being made a member, suspended or removed, or
+of Omnigent not answering. The platform Worker logs `page_support_ended` with the reason.
+
 **Suspension**
 
 1. A: Settings, Members, B, Suspend. B's next page is refused, B's open pages close, and B's

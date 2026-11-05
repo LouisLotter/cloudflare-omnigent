@@ -81,6 +81,16 @@ export const PageOwner = z.looseObject({
   sub: z.string().min(1).max(256),
   sessionId: z.string().regex(/^[0-9a-f]{64}$/),
   person: PagePerson.optional(),
+  /**
+   * Additive (WP8.15): how ingress admitted the request, and the validated assertion's issuer and
+   * audience, as the web Worker read them; nothing a browser sends sets them. WorkspaceDO asks
+   * OmnigentServer's `pagePerson` with them, while an administrator's terminal on someone else's
+   * computer is connected, whether that person may still help there (members admission). Absent
+   * (a web Worker before WP8.15): no such answer can be had, which counts as no.
+   */
+  admission: z.enum(["owner", "members"]).optional(),
+  issuer: z.string().min(1).max(512).optional(),
+  audience: z.string().min(1).max(255).optional(),
 });
 export type PageOwner = z.infer<typeof PageOwner>;
 

@@ -2,7 +2,12 @@
 // constant time before any effect (P1); owner and token stripped before the controller; the
 // terminal closed before every credential-sensitive step; removal offered only for a computer
 // Omnigent no longer calls (FH-29).
-import type { ComputerPageState, PagesResult } from "@cfo/contracts";
+import type {
+  ComputerPageState,
+  PagePersonCall,
+  PagePersonResult,
+  PagesResult,
+} from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
 import type { OwnerBinding } from "../../src/computer/ownership.ts";
 import {
@@ -108,6 +113,13 @@ function harness() {
     logged.push({ event, fields });
   };
   let front: PageFront | null = null;
+  /** WP8.15: OmnigentServer's `pagePerson`, as each test sets it, and every call made to it. */
+  const people = {
+    answer: (async () => ({ action: "unavailable" })) as (
+      call: PagePersonCall,
+    ) => Promise<PagePersonResult>,
+    asked: [] as PagePersonCall[],
+  };
   const terminal = new TerminalBridge({
     computerId: PAGE_CMP,
     store,
@@ -124,9 +136,20 @@ function harness() {
     setTimer: () => 0,
     clearTimer: () => undefined,
     log,
+    authority: () => (front as PageFront).supportAuthority(),
   });
-  front = new PageFront(PAGE_CMP, { store, controller, terminal, log });
-  return { store, controller, terminal, front, events, logged, ttyd };
+  front = new PageFront(PAGE_CMP, {
+    store,
+    controller,
+    terminal,
+    log,
+    person: (call) => {
+      people.asked.push(call);
+      return people.answer(call);
+    },
+    personTimeoutMs: 20,
+  });
+  return { store, controller, terminal, front, events, logged, ttyd, people };
 }
 
 async function intentOf(front: PageFront): Promise<string> {
@@ -1297,6 +1320,169 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
         action: "terminal_connect",
         actor: `member:${CAROL.person.memberId}`,
       },
+    });
+  });
+
+  // Codex WP8.15 r1 R1: an administrator's terminal on someone else's computer ends once that
+  // person loses their authority there (demoted, suspended, removed, no longer admitted),
+  // through the answer the pages' seam trusts; the owner's own streams never depend on it.
+  describe("an administrator's terminal while their authority holds (Codex r1 R1)", () => {
+    const ISSUER = "https://team.cloudflareaccess.com";
+    const AUD = "a".repeat(64);
+    const carolIn = { ...CAROL, admission: "members" as const, issuer: ISSUER, audience: AUD };
+    const carolAs = (fields: Partial<Extract<PagePersonResult, { action: "member" }>> = {}) =>
+      ({
+        action: "member",
+        memberId: CAROL.person.memberId,
+        userId: "carol",
+        role: "admin",
+        state: "active",
+        ...fields,
+      }) as PagePersonResult;
+
+    /** Alice's computer with `who`'s terminal connected; the answer is Carol's, active admin. */
+    async function connected(who: object) {
+      const h = alicesComputer();
+      h.people.answer = async () => carolAs();
+      const intent = (await tokenFor(h.front, who)) as string;
+      const opened = (await h.front.pages({
+        action: "open_terminal",
+        interfaceVersion: 1,
+        operationId: OP(110),
+        owner: who,
+        intent,
+        window: null,
+      })) as { outcome: string; capability: string };
+      expect(opened.outcome).toBe("accepted");
+      const bridged = await h.front.fetch(
+        new Request("https://w/", {
+          headers: {
+            upgrade: "websocket",
+            "x-cfo-terminal": JSON.stringify({
+              interfaceVersion: 1,
+              computerId: PAGE_CMP,
+              owner: who,
+              capability: opened.capability,
+            }),
+          },
+        }),
+      );
+      expect(bridged.status).not.toBe(403);
+      expect(h.terminal.view()).toMatchObject({ open: true, streams: 1 });
+      return h;
+    }
+
+    const ended = (h: Awaited<ReturnType<typeof connected>>) =>
+      h.logged.filter((e) => e.event === "page_support_ended").map((e) => e.fields);
+
+    it("keeps the terminal while the answer is unchanged, asking with the admitted identity", async () => {
+      const h = await connected(carolIn);
+      await h.terminal.enforceAuthority();
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: true, streams: 1 });
+      expect(h.people.asked).toEqual([
+        { interfaceVersion: 1, issuer: ISSUER, subject: "carol-sub", audience: AUD },
+        { interfaceVersion: 1, issuer: ISSUER, subject: "carol-sub", audience: AUD },
+      ]);
+      expect(ended(h)).toEqual([]);
+    });
+
+    it.each([
+      ["demoted to member", async () => carolAs({ role: "member" }), "not_admin"],
+      ["suspended", async () => carolAs({ state: "suspended" }), "suspended"],
+      ["removed", async () => carolAs({ state: "removed" }), "removed"],
+      ["no longer bound to a member", async () => ({ action: "none" }) as const, "not_bound"],
+      [
+        "bound to a new membership",
+        async () => carolAs({ memberId: "3d4e5f60718293a4b5c6d7e8f90a1b2c" }),
+        "another_member",
+      ],
+      [
+        "unanswered: the server is down",
+        async () => ({ action: "unavailable" }) as const,
+        "unanswered",
+      ],
+      [
+        "unanswered: an older server",
+        async () => ({ action: "unsupported" }) as const,
+        "unanswered",
+      ],
+      [
+        "unanswered: the call fails",
+        async () => {
+          throw new Error("no such method");
+        },
+        "unanswered",
+      ],
+      ["unanswered: no answer in time", () => new Promise<never>(() => undefined), "unanswered"],
+    ] as const)("ends it, and its shell, once Carol is %s", async (_name, answer, reason) => {
+      const h = await connected(carolIn);
+      h.people.answer = answer as (call: PagePersonCall) => Promise<PagePersonResult>;
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: false, streams: 0 });
+      expect(h.terminal.pendingEnd()).not.toBeNull();
+      expect(h.events).toContain("window:closed");
+      expect(ended(h)).toEqual([
+        { computer: PAGE_CMP, actor: `member:${CAROL.person.memberId}`, reason },
+      ]);
+      // Her next upgrade is refused: the window is closed.
+      expect(JSON.stringify(h.logged)).not.toContain("carol-sub");
+    });
+
+    it("never asks about the owner's own terminal, whatever the answer", async () => {
+      const h = await connected({ ...ALICE, admission: "members", issuer: ISSUER, audience: AUD });
+      h.people.answer = async () => ({ action: "none" });
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: true, streams: 1 });
+      expect(h.people.asked).toEqual([]);
+    });
+
+    it("stops asking once the owner opens a window of their own", async () => {
+      const h = await connected(carolIn);
+      const intent = (await tokenFor(h.front, ALICE)) as string;
+      const mine = (await h.front.pages({
+        action: "open_terminal",
+        interfaceVersion: 1,
+        operationId: OP(111),
+        owner: ALICE,
+        intent,
+        window: null,
+      })) as { capability: string };
+      expect(h.terminal.view().window).toBe(2);
+      await h.front.fetch(
+        new Request("https://w/", {
+          headers: {
+            upgrade: "websocket",
+            "x-cfo-terminal": JSON.stringify({
+              interfaceVersion: 1,
+              computerId: PAGE_CMP,
+              owner: ALICE,
+              capability: mine.capability,
+            }),
+          },
+        }),
+      );
+      h.people.answer = async () => ({ action: "none" });
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: true, streams: 1 });
+      expect(h.people.asked).toEqual([]);
+    });
+
+    it("keeps the installation's owner's in owner admission, where the owner pin is the answer", async () => {
+      const h = await connected({ ...FOUNDER, admission: "owner", issuer: ISSUER, audience: AUD });
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: true, streams: 1 });
+      expect(h.people.asked).toEqual([]);
+    });
+
+    it("ends one whose web Worker named no admission: no answer can be had", async () => {
+      const h = await connected(CAROL);
+      await h.terminal.enforceAuthority();
+      expect(h.terminal.view()).toMatchObject({ open: false, streams: 0 });
+      expect(h.people.asked).toEqual([]);
+      expect(ended(h)).toEqual([
+        { computer: PAGE_CMP, actor: `member:${CAROL.person.memberId}`, reason: "unanswered" },
+      ]);
     });
   });
 

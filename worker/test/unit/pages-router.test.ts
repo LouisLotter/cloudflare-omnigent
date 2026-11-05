@@ -116,7 +116,7 @@ function setup(person?: PersonSeam) {
       ok: true,
       request: new Request(`${ORIGIN}${path}`, init),
       origin: ORIGIN,
-      identity: { ...OWNER, issuedAt: 1, expiresAt: 2 },
+      identity: { sub: OWNER.sub, sessionId: OWNER.sessionId, issuedAt: 1, expiresAt: 2 },
     };
     return routePlatform(admitted, {} as WebEnv, {
       backend,
@@ -921,7 +921,7 @@ describe("edges", () => {
             form({ op: OP, intent: INTENT }, { origin: "https://evil.example" }),
           ),
           origin: ORIGIN,
-          identity: { ...OWNER, issuedAt: 1, expiresAt: 2 },
+          identity: { sub: OWNER.sub, sessionId: OWNER.sessionId, issuedAt: 1, expiresAt: 2 },
         },
         {} as WebEnv,
         { backend, assets: async () => ASSETS, now: () => NOW },
@@ -2130,7 +2130,10 @@ describe("the person behind a page (WP8.4)", () => {
     expect(html).toContain(`href="${other}/do/restart">Stop (ends work in progress)</a>`);
     expect(html).not.toContain("Restart (ends work in progress)");
     expect(html).toContain('data-removal-step="owner"');
-    expect(html).toContain("alice deletes this computer in Omnigent.");
+    // An administrator deletes it for Alice on her page in Omnigent (the fork's, WP8.15).
+    expect(html).toContain(
+      `You can delete this computer for alice on <a href="/settings/members/${ALICES_MEMBER}" data-link="omnigent-member">their page in Omnigent</a>, or alice deletes it in Omnigent.`,
+    );
     expect(html).not.toContain(`${other}/do/sign-out`);
     // Its live state: the same cards, still without a sign-in.
     const state = await route(`${other}/state`);
@@ -2166,6 +2169,7 @@ describe("the person behind a page (WP8.4)", () => {
     expect(html).toContain(
       "The installation's owner signs in to Claude and Codex from this page, with their own accounts.",
     );
+    expect(html).toContain("The installation's owner deletes this computer in Omnigent.");
     expect(html).not.toContain('data-link="omnigent-member"');
   });
 

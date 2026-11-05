@@ -532,7 +532,10 @@ function supportRemovalSection(view: ComputerView, state: StateResult["computer"
     case "sign_out":
     case "delete":
     case "delete_then_sign_out":
-      steps = `<p data-removal-step="owner">${escapeHtml(`${Owner} deletes this computer in Omnigent. Once its removal is recorded, its remaining steps appear here.`)}</p>`;
+      // With the fork's member page (WP8.15), an administrator deletes it there for its owner.
+      steps = state.ownerMemberId
+        ? `<p data-removal-step="owner">${escapeHtml(`You can delete this computer for ${owner} on`)} <a href="${escapeHtml(memberPath(state.ownerMemberId))}" data-link="omnigent-member">${escapeHtml("their page in Omnigent")}</a>${escapeHtml(`, or ${owner} deletes it in Omnigent. Once its removal is recorded, its remaining steps appear here.`)}</p>`
+        : `<p data-removal-step="owner">${escapeHtml(`${Owner} deletes this computer in Omnigent. Once its removal is recorded, its remaining steps appear here.`)}</p>`;
       break;
     case "signing_out":
       steps = `<p data-removal-step="signing_out">Signing out… This page updates when it is done.</p>`;

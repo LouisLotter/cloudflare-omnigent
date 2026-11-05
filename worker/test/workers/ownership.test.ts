@@ -276,12 +276,28 @@ const SESSIONS: Record<Who, string> = {
   carol: "c3".repeat(32),
 };
 
-function routeAs(who: Who, path: string, init: RequestInit = {}): Promise<Response> {
+/** The Access issuer and audience members admission validated (WP8.15's re-check asks with them). */
+const ACCESS_ISSUER = "https://team.cloudflareaccess.com";
+const ACCESS_AUD = "a".repeat(64);
+
+function routeAs(
+  who: Who,
+  path: string,
+  init: RequestInit = {},
+  admission?: "members",
+): Promise<Response> {
   const admitted: Admitted = {
     ok: true,
     request: new Request(`${ORIGIN}${path}`, init),
     origin: ORIGIN,
-    identity: { sub: `${who}-sub`, sessionId: SESSIONS[who], issuedAt: 1, expiresAt: 2 },
+    identity: {
+      sub: `${who}-sub`,
+      sessionId: SESSIONS[who],
+      issuedAt: 1,
+      expiresAt: 2,
+      ...(admission === undefined ? {} : { issuer: ACCESS_ISSUER, audience: ACCESS_AUD }),
+    },
+    ...(admission === undefined ? {} : { admission }),
   };
   return routePlatform(admitted, webEnv, {
     person: async () => PEOPLE[who],
@@ -322,24 +338,39 @@ function fakeTtyd(c: Computer): void {
   };
 }
 
-async function terminalAs(who: Who, page: string, body: Record<string, string>) {
-  const response = await routeAs(who, `${page}/terminal`, {
-    method: "POST",
-    headers: { origin: ORIGIN, "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function terminalAs(
+  who: Who,
+  page: string,
+  body: Record<string, string>,
+  admission?: "members",
+) {
+  const response = await routeAs(
+    who,
+    `${page}/terminal`,
+    {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    admission,
+  );
   return (await response.json()) as { outcome?: string; capability?: string; window?: number };
 }
 
 /** The browser's end of a bridged stream, and whether it has closed. */
-async function stream(page: string, capability: string, who: Who = "alice") {
-  const response = await routeAs(who, `${page}/terminal`, {
-    headers: {
-      upgrade: "websocket",
-      origin: ORIGIN,
-      "sec-websocket-protocol": `${TERMINAL_SUBPROTOCOL}, cfo-capability.${capability}`,
+async function stream(page: string, capability: string, who: Who = "alice", admission?: "members") {
+  const response = await routeAs(
+    who,
+    `${page}/terminal`,
+    {
+      headers: {
+        upgrade: "websocket",
+        origin: ORIGIN,
+        "sec-websocket-protocol": `${TERMINAL_SUBPROTOCOL}, cfo-capability.${capability}`,
+      },
     },
-  });
+    admission,
+  );
   const socket = response.webSocket;
   if (socket === null) return { status: response.status, closed: () => true, close: () => {} };
   socket.accept();
@@ -770,6 +801,100 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     });
     await settle(c);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Codex WP8.15 r1 R1: Carol's terminal on Alice's computer ends once Carol loses her authority
+// there, through WorkspaceDO's own re-check of OmnigentServer's answer, whatever Alice's computer
+// does meanwhile. The real routes, WorkspaceDO, bridge and simulated computer; OmnigentServer's
+// answer about Carol is the test's (`assembly.pagePeople`).
+
+describe("an administrator's terminal ends with their authority (Codex WP8.15 r1 R1)", () => {
+  const carolAs = (fields: Partial<Extract<PagePersonResult, { action: "member" }>> = {}) =>
+    ({
+      action: "member",
+      memberId: PEOPLE.carol.memberId,
+      userId: "carol",
+      role: "admin",
+      state: "active",
+      ...fields,
+    }) as PagePersonResult;
+
+  afterEach(() => {
+    assembly.pagePeople.clear();
+  });
+
+  /** Alice's awake computer with Carol's terminal bridged, in members admission. */
+  async function carolsTerminal() {
+    const host = newHost();
+    const c = await provisionFor(host, {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    });
+    await wake(c, { hostId: host, token: TOKEN });
+    fakeTtyd(c);
+    assembly.pagePeople.set("carol-sub", carolAs());
+    const page = `/platform/computers/${c.computerId}`;
+    const html = await (await routeAs("carol", page, {}, "members")).text();
+    const intent = /data-intent="([0-9a-f]{64})"/.exec(html)?.[1] as string;
+    const opened = await terminalAs(
+      "carol",
+      page,
+      { op: "op_01hzy4a7b8c9d0e1f2g3h4j5r1", intent, mode: "open" },
+      "members",
+    );
+    expect(opened.outcome).toBe("accepted");
+    const connected = await stream(page, opened.capability as string, "carol", "members");
+    expect(connected.status).toBe(101);
+    const terminal = async () =>
+      (
+        (await c.stub.pages({
+          action: "state",
+          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+          owner: { sub: "alice-sub", sessionId: SESSIONS.alice, person: PEOPLE.alice },
+        })) as { computer: { terminal: { open: boolean; streams: number } } }
+      ).computer.terminal;
+    expect(await terminal()).toMatchObject({ open: true, streams: 1 });
+    return { c, connected, terminal };
+  }
+
+  it("keeps it while Carol is still an active administrator", async () => {
+    const { c, connected, terminal } = await carolsTerminal();
+    await c.stub.checkSupport();
+    await c.stub.checkSupport();
+    expect(connected.closed()).toBe(false);
+    expect(await terminal()).toMatchObject({ open: true, streams: 1 });
+    connected.close();
+    await settle(c);
+  }, 60_000);
+
+  it.each([
+    ["demoted to member", carolAs({ role: "member" })],
+    ["suspended", carolAs({ state: "suspended" })],
+    ["removed", carolAs({ state: "removed" })],
+    ["unreachable: the call fails", "throws" as const],
+    ["unreachable: no answer in time", undefined],
+  ])(
+    "ends it, and its shell, once Carol is %s; Alice's computer is untouched",
+    async (_name, answer) => {
+      const { c, connected, terminal } = await carolsTerminal();
+      if (answer === undefined) assembly.pagePeople.delete("carol-sub");
+      else assembly.pagePeople.set("carol-sub", answer);
+      await c.stub.checkSupport();
+      for (let i = 0; i < 50 && !connected.closed(); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(connected.closed()).toBe(true);
+      expect(await terminal()).toMatchObject({ open: false, streams: 0 });
+      const after = await record(c.stub);
+      expect(after.lifecycle.context.state).toBe("host_running");
+      expect(after.ownership.binding).toMatchObject({ userId: "alice", memberId: ALICE_MEMBER });
+      await settle(c);
+    },
+    60_000,
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

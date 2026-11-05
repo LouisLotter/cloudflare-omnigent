@@ -40,7 +40,7 @@ Each card says whose computer it is and how it is doing, with the same notices i
 
 Signing in to Claude and Codex stays with the person: their own subscription, with their own account. Where they see sign-in buttons, you see whether each service is signed in, and the page tells you they sign in themselves. Don't sign in for them in the terminal either. The computer stays theirs whatever you do on it.
 
-A computer has one terminal at a time. Opening it closes any terminal its owner has open on that computer, so tell them first if they might be using it. Each thing you do on someone else's computer is logged with your member ID.
+A computer has one terminal at a time. Opening it closes any terminal its owner has open on that computer, so tell them first if they might be using it. Your terminal on someone else's computer stays open only while you are an owner or administrator: if you are made a member, suspended or removed, it closes within about half a minute. Each thing you do on someone else's computer is logged with your member ID.
 
 ## Removing someone
 

@@ -38,6 +38,11 @@
 //   restored, running generation they were opened for. A Durable Object restart drops every
 //   stream; the persisted window, its marker, the pending end and the used capabilities keep the
 //   rules after it.
+// - **Support access** (WP8.15, owner decision D62). After each check, while a stream exists,
+//   the bridge asks `authority` whether the person whose streams these are may still have them:
+//   WorkspaceDO's page front asks again for an administrator on someone else's computer, and
+//   answers yes for the computer's owner. A no, a failure or no answer closes the window, its
+//   streams and its shell.
 // - **Measurement.** Close codes of both sides are logged as numbers (never a reason's text).
 //
 // Platform code never reads what passes through: the sign-in codes the person pastes go to the
@@ -157,6 +162,12 @@ export interface TerminalDeps {
   readonly clearTimer: (handle: unknown) => void;
   /** One structured log line. Never given a capability, a token or terminal data. */
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  /**
+   * Support access (WP8.15): whether the person whose streams these are may still have them.
+   * Asked after every periodic check while a stream exists; a no, or a throw, closes the window.
+   * Absent: always yes.
+   */
+  readonly authority?: () => Promise<boolean>;
   /**
    * A `terminal_end` was recorded (WP3.28): the controller's runner should send it soon. Called
    * after the write, possibly inside one of the controller's own transitions (`closeNow`), so it
@@ -497,6 +508,31 @@ export class TerminalBridge {
     }
     // Every session belongs to the open window: opening a new one ends the old ones first.
     if (w.generation !== target.generation) await this.close("the computer was restarted");
+  }
+
+  /**
+   * Support access (WP8.15): closes the window, its streams and its shell once the person whose
+   * streams these are may no longer have them (`authority`). Runs after each periodic check while
+   * a stream exists, so the delay is at most the check interval plus the answer's own bound.
+   * Never throws.
+   */
+  async enforceAuthority(): Promise<void> {
+    if (this.#sessions.size === 0 || this.#d.authority === undefined) return;
+    // The answer is about the window open now: a window opened while it was asked (the owner's,
+    // say) is not closed by it.
+    const asked = this.#window().window;
+    let allowed = false;
+    try {
+      allowed = await this.#d.authority();
+    } catch {
+      allowed = false;
+    }
+    if (allowed || this.#sessions.size === 0 || this.#window().window !== asked) return;
+    try {
+      await this.close("its administrator no longer has access");
+    } catch {
+      // the next check closes it
+    }
   }
 
   /** The browser's upgrade, after the web Worker checked the origin (`TerminalUpgrade`). */
@@ -902,9 +938,11 @@ export class TerminalBridge {
     if (this.#checkTimer !== null) return;
     const tick = () => {
       this.#checkTimer = null;
-      void this.enforce().finally(() => {
-        if (this.#sessions.size > 0) this.#armCheck();
-      });
+      void this.enforce()
+        .then(() => this.enforceAuthority())
+        .finally(() => {
+          if (this.#sessions.size > 0) this.#armCheck();
+        });
     };
     this.#checkTimer = this.#d.setTimer(tick, this.#t.checkMs);
   }

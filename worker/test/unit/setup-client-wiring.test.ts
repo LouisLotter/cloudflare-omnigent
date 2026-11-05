@@ -105,7 +105,7 @@ function platform(backend: Backend, request: Request): Promise<Response> {
     ok: true,
     request,
     origin: ORIGIN,
-    identity: { ...OWNER, issuedAt: 1, expiresAt: 2 },
+    identity: { sub: OWNER.sub, sessionId: OWNER.sessionId, issuedAt: 1, expiresAt: 2 },
   };
   return routePlatform(admitted, {} as WebEnv, {
     backend,
