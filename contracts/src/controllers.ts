@@ -5,7 +5,15 @@ import {
   SignInService,
   SupervisorMessage,
 } from "./computer-protocol.ts";
-import { ComputerId, Generation, HostId, InstanceSize, OperationId, Timestamp } from "./ids.ts";
+import {
+  ComputerId,
+  Generation,
+  HostId,
+  InstanceSize,
+  OperationId,
+  TeamMemberId,
+  Timestamp,
+} from "./ids.ts";
 import { AdmissionReason, HostSandboxStatus, LauncherRequest, ProvisionName } from "./launcher.ts";
 import { LifecycleState, type PageRefusal } from "./lifecycle.ts";
 import { IntentToken, PageOwner, SaveOutcome, TerminalWindow } from "./pages.ts";
@@ -238,12 +246,20 @@ export const ComputerPageState = z.looseObject({
   // Additive (WP8.4): what the caller may do with this computer, from WorkspaceDO's page front.
   /**
    * `owner`: the computer is the caller's. `admin`: someone else's, seen by an administrator, who
-   * may stop it, remove it while Omnigent no longer calls it, and finish a pending removal; never
-   * its setup page, terminal or sign-ins. Absent from an older WorkspaceDO: the owner.
+   * helps its owner (D62, WP8.15): opens its setup page, status and terminal, changes its size,
+   * stops it, removes it while Omnigent no longer calls it, and finishes a pending removal. Its
+   * sign-ins stay the owner's: an administrator's state carries no `signIn` (no attempt, link or
+   * code), only each service's state in `setupCards`. Absent from an older WorkspaceDO: the owner.
    */
   access: z.enum(["owner", "admin"]).optional(),
   /** The owner's Omnigent account, for an administrator's view only. Rendered as text only. */
   ownerName: z.string().min(1).max(255).nullable().optional(),
+  /**
+   * Additive (WP8.15): the owner's team member ID from the computer's binding, for an
+   * administrator's view only, so the page links to the person's page in Omnigent
+   * (`/settings/members/<member ID>`). Null for a binding without a member.
+   */
+  ownerMemberId: TeamMemberId.nullable().optional(),
 });
 export type ComputerPageState = z.infer<typeof ComputerPageState>;
 

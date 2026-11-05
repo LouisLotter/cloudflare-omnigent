@@ -840,6 +840,9 @@ describe("pageAccess and pageAllows", () => {
     "staging",
   ] as const;
 
+  // WP8.15 (D62): an administrator helping the owner also gets the setup page and its status, the
+  // terminal and the size; the sign-ins, the revocation record and the staging switches stay the
+  // owner's, and so does a sign-out outside a removal.
   it("never lets a plain member past someone else's computer, and never an admin into what is the owner's alone", () => {
     fc.assert(
       fc.property(
@@ -855,7 +858,7 @@ describe("pageAccess and pageAllows", () => {
           const allowed = pageAllows(access, action, pending);
           if (access === "none") expect(allowed).toBe(false);
           if (access === "admin") {
-            const adminActions = ["fleet", "restart", "remove"];
+            const adminActions = ["fleet", "view", "terminal", "set_size", "restart", "remove"];
             const pendingActions = [
               "sign_out",
               "resolve_removal",
@@ -871,6 +874,22 @@ describe("pageAccess and pageAllows", () => {
         },
       ),
     );
+  });
+
+  it("keeps a person's sign-ins, revocation record and staging switches theirs, removal or not (D62)", () => {
+    for (const pending of [false, true]) {
+      for (const action of ["sign_in", "record_revocation", "staging"] as const) {
+        expect(pageAllows("admin", action, pending), `${action} ${pending}`).toBe(false);
+        expect(pageAllows("owner", action, pending), `${action} ${pending}`).toBe(true);
+      }
+      for (const action of ["view", "terminal", "set_size", "restart"] as const) {
+        expect(pageAllows("admin", action, pending), `${action} ${pending}`).toBe(true);
+        expect(pageAllows("none", action, pending), `${action} ${pending}`).toBe(false);
+      }
+    }
+    // A sign-out is an administrator's only inside a removal.
+    expect(pageAllows("admin", "sign_out", false)).toBe(false);
+    expect(pageAllows("admin", "sign_out", true)).toBe(true);
   });
 
   it("lets an admin stop someone else's computer without saving only while a removal is pending", () => {

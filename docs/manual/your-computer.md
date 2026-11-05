@@ -1,6 +1,8 @@
 # Your cloud computer
 
-Your agents work on a cloud computer that belongs to you. It keeps its files between sessions, holds your Claude or Codex login, and sleeps when nothing is running on it. Nobody else can open its setup page or its terminal, and nobody else's work runs on it unless you share a session with editing rights ([Sessions and sharing](threads-and-sharing.md)).
+Your agents work on a cloud computer that belongs to you. It keeps its files between sessions, holds your Claude or Codex login, and sleeps when nothing is running on it. Other members cannot open its page or its terminal, and nobody else's work runs on it unless you share a session with editing rights ([Sessions and sharing](threads-and-sharing.md)).
+
+Your team's owners and administrators can open your computer's page and its terminal to help you: they can wake it, change its size and stop it, and see whether you are signed in. Signing in to Claude or Codex stays yours: they cannot do it from the page, and the page tells them you sign in yourself. In the terminal they can see what your computer holds, your saved logins included, as they already could through your sessions ([Sessions and sharing](threads-and-sharing.md)). Your computer stays yours whatever they do on it, and what they do is logged with who did it.
 
 ## Adding one
 

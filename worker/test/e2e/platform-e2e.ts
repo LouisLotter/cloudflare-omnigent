@@ -14,6 +14,7 @@ import {
   type ControlCall,
   type ControlResult,
   FORWARDED_PERSON_HEADER,
+  type LauncherOwner,
   type OutageRecord,
   type ReplicationHealth,
   type SupervisorMessage,
@@ -36,6 +37,11 @@ import {
   ASLEEP_HOST,
   FULL_HOST,
   FULL_REASON,
+  MEMBER_ACCOUNT,
+  MEMBER_HOST,
+  MEMBER_ID,
+  MEMBER_SUB,
+  MEMBER_TEAM,
   OMNIGENT_SESSION_COOKIE,
   OTHER_SUB,
   OTHERS_HOST,
@@ -54,7 +60,11 @@ const failingSaves = new Set<string>();
 /** WP3.53: a computer's Omnigent host, where it is not the shared HOST. */
 const hostIds = new Map<string, string>();
 const hostIdOf = (computerId: string) => hostIds.get(computerId) ?? HOST;
-
+/**
+ * WP8.15: the owner Omnigent names on every launcher call for a computer bound to a team member
+ * (protocol version 2); the others are the installation owner's, named by none (version 1).
+ */
+const owners = new Map<string, LauncherOwner>();
 /**
  * The fake Omnigent's persistent hosts (WP3.53): whose each is, its computer, the reason its wake
  * fails with (null: it wakes), its `persistent_status`, and the `POST …/start` calls it answered.
@@ -62,6 +72,8 @@ const hostIdOf = (computerId: string) => hostIds.get(computerId) ?? HOST;
 interface FakeHost {
   readonly computerId: string;
   readonly owner: string;
+  /** WP8.15: who else may wake it, as the fork's `may_manage_host` allows a team administrator. */
+  readonly admins: readonly string[];
   readonly fail: string | null;
   state: "asleep" | "waking" | "awake" | "failed";
   failure: string | null;
@@ -289,6 +301,7 @@ async function create(env: Env, name: string) {
   const computerId = registered.computerId as ComputerId;
   const stub = env.WORKSPACE.getByName(computerId) as unknown as E2eStub;
   const client = new FakeLauncherClient(computerId, rpcTransport(stub));
+  client.owner = owners.get(name);
   return { computerId, stub, client };
 }
 
@@ -300,7 +313,9 @@ async function create(env: Env, name: string) {
  */
 function clientOf(env: Env, computerId: string): FakeLauncherClient {
   const stub = env.WORKSPACE.getByName(computerId) as unknown as E2eStub;
-  return new FakeLauncherClient(computerId as ComputerId, rpcTransport(stub));
+  const client = new FakeLauncherClient(computerId as ComputerId, rpcTransport(stub));
+  client.owner = owners.get(computerId);
+  return client;
 }
 const fresh = <T extends { operationId: string }>(request: T): T => ({
   ...request,
@@ -311,11 +326,21 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The wake journeys' computers (WP3.53): each one's Omnigent host, its owner, how a wake ends. */
 const WAKE_HOSTS: Readonly<
-  Record<string, { readonly hostId: string; readonly owner: string; readonly fail: string | null }>
+  Record<
+    string,
+    {
+      readonly hostId: string;
+      readonly owner: string;
+      readonly admins?: readonly string[];
+      readonly fail: string | null;
+    }
+  >
 > = {
   "managed-asleep": { hostId: ASLEEP_HOST, owner: OWNER_SUB, fail: null },
   "managed-full": { hostId: FULL_HOST, owner: OWNER_SUB, fail: FULL_REASON },
   "managed-others": { hostId: OTHERS_HOST, owner: OTHER_SUB, fail: null },
+  // WP8.15: a member's computer, which the owner (an administrator) may wake.
+  "managed-member": { hostId: MEMBER_HOST, owner: MEMBER_SUB, admins: [OWNER_SUB], fail: null },
 };
 
 /**
@@ -346,7 +371,8 @@ async function fakeOmnigentHost(
   } catch {
     person = null;
   }
-  if (person?.subject !== host.owner) {
+  const subject = person?.subject;
+  if (subject !== host.owner && !host.admins.includes(subject as string)) {
     return Response.json({ detail: "not your host" }, { status: 403 });
   }
   const payload = () => ({
@@ -457,14 +483,27 @@ async function seed(env: Env): Promise<Record<string, string>> {
     "managed-asleep",
     "managed-full",
     "managed-others",
+    // WP8.15: a team member's computer, bound to the member: the owner manages it as an admin.
+    "managed-member",
   ]) {
+    if (name === "managed-member") {
+      owners.set(name, {
+        userId: MEMBER_ACCOUNT,
+        memberId: MEMBER_ID,
+        teamId: MEMBER_TEAM,
+        hostId: MEMBER_HOST,
+      });
+    }
     const { computerId, stub, client } = await create(env, name);
+    const owner = owners.get(name);
+    if (owner !== undefined) owners.set(computerId, owner);
     const wake = WAKE_HOSTS[name];
     if (wake !== undefined) {
       hostIds.set(computerId, wake.hostId);
       omnigentHosts.set(wake.hostId, {
         computerId,
         owner: wake.owner,
+        admins: wake.admins ?? [],
         fail: wake.fail,
         state: "awake",
         failure: null,

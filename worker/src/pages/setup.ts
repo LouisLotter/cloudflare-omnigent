@@ -13,6 +13,11 @@
 // `POST /v1/hosts/{id}/start`, from the browser with the person's own Omnigent session (Omnigent
 // owns the computer's sleep, and checks that the host is the caller's), then starts what was
 // pressed. The platform never acts for the person here.
+//
+// Support access (WP8.15, owner decision D62): an owner or administrator helping someone else
+// opens the same page for that person's computer, under a plain header saying whose it is. They
+// get its status, its terminal, its size and Stop, and see each service's sign-in state; they
+// never get a sign-in button, attempt, link or code: signing in stays the person's own.
 
 import {
   CAPABILITY_SUBPROTOCOL_PREFIX,
@@ -27,15 +32,16 @@ import {
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
 import { errorCodeOf } from "../shared/errors.ts";
-import type { PagesBackend } from "./backend.ts";
+import type { PagesBackend, StateResult } from "./backend.ts";
 import {
   errorText,
   flashNotice,
   manageSection,
   notFoundPage,
+  ownerLabel,
   removalSection,
 } from "./computers.ts";
-import { ASSETS_PATH, badge, computerPath, layout, notice } from "./html.ts";
+import { ASSETS_PATH, badge, computerPath, layout, memberPath, notice } from "./html.ts";
 import {
   escapeHtml,
   htmlResponse,
@@ -113,12 +119,37 @@ function noScriptNote(view: ComputerView, removing: boolean): string {
 export const PASTE_HINT =
   "Paste into the terminal with Ctrl+Shift+V (Cmd+V on a Mac), Shift+Insert or a middle click.";
 
-function card(c: CardView, view: ComputerView): string {
+function card(c: CardView, view: ComputerView, support: boolean): string {
   return `<article class="card${c.open ? " open" : ""}" data-card="${c.provider}" data-state="${c.state}">
 <h3>${escapeHtml(c.title)} ${badge(c.tone, c.label)}</h3>
-<p data-detail>${escapeHtml(c.detail)}</p>
-${signInPart(c, view)}
+<p data-detail>${escapeHtml(support ? c.supportDetail : c.detail)}</p>
+${support ? "" : signInPart(c, view)}
 </article>`;
+}
+
+/** Whose computer it is, at the start of a sentence: the account, or the installation's owner. */
+function ownerAtStart(state: StateResult["computer"]): string {
+  const owner = ownerLabel(state);
+  return state.ownerName ? owner : owner.charAt(0).toUpperCase() + owner.slice(1);
+}
+
+/** The administrator's header (D62): whose computer it is, and a link to their Omnigent page. */
+function supportHeader(state: StateResult["computer"]): string {
+  const link = state.ownerMemberId
+    ? ` <a href="${escapeHtml(memberPath(state.ownerMemberId))}" data-link="omnigent-member">Open ${escapeHtml(ownerLabel(state))}'s page in Omnigent</a>`
+    : "";
+  return `<p class="support" data-support>This computer belongs to ${escapeHtml(ownerLabel(state))}. You're helping as an administrator.${link}</p>`;
+}
+
+/** Below an administrator's cards: the sign-ins are the owner's own. */
+export function supportSignInNote(state: StateResult["computer"]): string {
+  return `${ownerAtStart(state)} signs in to Claude and Codex from this page, with their own accounts. You can't sign in for them.`;
+}
+
+/** The administrator's terminal section text: what the terminal is, and what it ends. */
+export function supportTerminalText(state: StateResult["computer"]): string {
+  const owner = ownerLabel(state);
+  return `The terminal opens a shell on ${owner}'s computer for troubleshooting. Opening it closes any terminal ${owner} has open on this computer. Don't sign in to Claude or Codex in it: those logins are ${owner}'s to make.`;
 }
 
 /** GET `/platform/computers/{id}`. */
@@ -131,9 +162,9 @@ export async function setupPage(
   nowMs: number,
 ): Promise<Response> {
   const state = await backend.state(id, owner);
-  // The setup page is its owner's alone (WP8.4): an administrator's view has no setup page.
-  if (state === null || state.intentToken === undefined || state.computer.access === "admin")
-    return notFoundPage();
+  // Its owner's page, and an administrator's helping them (D62); anyone else's is not found.
+  if (state === null || state.intentToken === undefined) return notFoundPage();
+  const support = state.computer.access === "admin";
   const view = computerView(state.computer, nowMs);
   const removing = view.removal === "pending" || view.removal === "resolved";
   const terminal = state.computer.terminal;
@@ -156,33 +187,49 @@ export async function setupPage(
   const resume = JSON.stringify(state.computer.signIn?.attempts ?? []);
   const hostUrl =
     view.wakeHost === null ? "" : ` data-host-url="${escapeHtml(omnigentHostPath(view.wakeHost))}"`;
-  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-running="${view.running ? "yes" : "no"}"${hostUrl} data-script="off" data-resume="${escapeHtml(resume)}">
+  // An administrator's page names whose computer it is, for the script's wording too (D62).
+  const supportData = support
+    ? ` data-support="admin" data-support-owner="${escapeHtml(ownerLabel(state.computer))}"`
+    : "";
+  const intro = support
+    ? `<h2>The terminal</h2>
+<p class="muted" data-support-terminal>${escapeHtml(supportTerminalText(state.computer))}</p>`
+    : `<h2>Set up this computer</h2>
+<p class="muted">Sign in once to each service with the buttons on its card. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself. The terminal below is for troubleshooting, and for signing in by hand if the buttons do not work.</p>`;
+  const signInNote = support
+    ? `<p data-sign-in-owner>${escapeHtml(supportSignInNote(state.computer))}</p>`
+    : "";
+  // An administrator's status has no staging switches: they are the owner's (`view=support`
+  // only shapes the markup; WorkspaceDO refuses an administrator's switch either way).
+  const statusUrl = `${computerPath(id)}/status${support ? "?view=support" : ""}`;
+  const body = `<div id="computer-page" data-state-url="${escapeHtml(`${computerPath(id)}/state`)}" data-sign-in-url="${escapeHtml(`${computerPath(id)}/sign-in`)}" data-intent="${escapeHtml(state.intentToken)}" data-generation="${state.computer.generation}" data-running="${view.running ? "yes" : "no"}"${hostUrl}${supportData} data-script="off" data-resume="${escapeHtml(resume)}">
 <h1>${escapeHtml(view.name)}</h1>
+${support ? supportHeader(state.computer) : ""}
 <p><span id="status">${badge(view.statusTone, view.status)}</span> <span class="muted" data-saving>${escapeHtml(view.saving)}</span></p>
 ${flashNotice(url)}
 <div id="notices">${view.notices.map(notice).join("\n")}</div>
 <div class="layout">
 <section>
-<h2>Set up this computer</h2>
-<p class="muted">Sign in once to each service with the buttons on its card. The logins stay on this computer and are saved with it. There is no Omnigent sign-in here: Omnigent connects the computer itself. The terminal below is for troubleshooting, and for signing in by hand if the buttons do not work.</p>
+${intro}
 ${noScriptNote(view, removing)}
 ${terminalPanel}
 </section>
 <section>
 <h2>Sign-ins</h2>
-<div class="cards" id="cards">${view.cards.map((c) => card(c, view)).join("\n")}</div>
+<div class="cards" id="cards">${view.cards.map((c) => card(c, view, support)).join("\n")}</div>
+${signInNote}
 </section>
 </div>
-<section id="computer-status" data-status-url="${escapeHtml(`${computerPath(id)}/status`)}" data-staging-url="${escapeHtml(`${computerPath(id)}/staging-check`)}">
+<section id="computer-status" data-status-url="${escapeHtml(statusUrl)}" data-staging-url="${escapeHtml(`${computerPath(id)}/staging-check`)}">
 <h2>Computer status</h2>
 <div class="actions"><button type="button" id="status-refresh">Refresh</button></div>
 <div id="status-body"><p class="muted">Reading the computer's status…</p></div>
 </section>
 ${removing ? "" : manageSection(view, state.computer, state.intentToken)}
-${removalSection(view)}
+${removalSection(view, state.computer)}
 </div>`;
   return htmlResponse(
-    layout(`Set up ${view.name}`, body, [
+    layout(support ? view.name : `Set up ${view.name}`, body, [
       `${ASSETS_PATH}/xterm.js`,
       `${ASSETS_PATH}/addon-fit.js`,
       `${ASSETS_PATH}/setup-client.js`,
@@ -203,8 +250,8 @@ export async function stateJson(
   nowMs: number,
 ): Promise<Response> {
   const state = await backend.state(id, owner);
-  if (state === null || state.computer.access === "admin")
-    return jsonResponse({ error: { code: "not_found" } }, 404);
+  if (state === null) return jsonResponse({ error: { code: "not_found" } }, 404);
+  const support = state.computer.access === "admin";
   const view = computerView(state.computer, nowMs);
   return jsonResponse({
     status: view.status,
@@ -216,12 +263,12 @@ export async function stateJson(
     intent: state.intentToken ?? null,
     generation: state.computer.generation,
     terminal: state.computer.terminal ?? null,
-    cards: view.cards.map((c) => ({ ...c, html: card(c, view) })),
+    cards: view.cards.map((c) => ({ ...c, html: card(c, view, support) })),
     notices: view.notices,
     // Server-rendered, escaped markup the page swaps in, so its sections follow the state.
     statusHtml: badge(view.statusTone, view.status),
     noticesHtml: view.notices.map(notice).join("\n"),
-    removalHtml: removalSection(view),
+    removalHtml: removalSection(view, state.computer),
   });
 }
 

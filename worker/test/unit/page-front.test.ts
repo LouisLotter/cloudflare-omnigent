@@ -23,13 +23,16 @@ const OP = (n: number) => `op_${String(n).padStart(26, "0")}`;
 class FakeController implements FrontController {
   state: ComputerPageState | null = pageState();
   readonly calls: unknown[] = [];
+  /** Who each mutating call came from, as the front named it (WP8.15). */
+  readonly actors: (string | undefined)[] = [];
   readonly launches: unknown[] = [];
 
-  async pages(call: unknown): Promise<PagesResult> {
+  async pages(call: unknown, actor?: string): Promise<PagesResult> {
     if (this.state === null) throw platformError("not_found", "no such computer");
     const c = call as { action: string };
     if (c.action === "state") return { action: "state", computer: this.state };
     this.calls.push(call);
+    this.actors.push(actor);
     if (c.action === "set_size") return { action: "set_size", appliesAt: "next_start" };
     return { action: c.action, outcome: "accepted" } as PagesResult;
   }
@@ -98,6 +101,12 @@ function harness() {
   const controller = new FakeController();
   const ttyd = new FakeTtyd();
   const events: string[] = [];
+  /** Every log line with its fields (WP8.15: the support lines, and that no address is logged). */
+  const logged: { event: string; fields: Readonly<Record<string, unknown>> }[] = [];
+  const log = (event: string, fields: Readonly<Record<string, unknown>>) => {
+    events.push(event);
+    logged.push({ event, fields });
+  };
   let front: PageFront | null = null;
   const terminal = new TerminalBridge({
     computerId: PAGE_CMP,
@@ -114,10 +123,10 @@ function harness() {
     sleep: async () => undefined,
     setTimer: () => 0,
     clearTimer: () => undefined,
-    log: (event) => events.push(event),
+    log,
   });
-  front = new PageFront(PAGE_CMP, { store, controller, terminal, log: (e) => events.push(e) });
-  return { store, controller, terminal, front, events, ttyd };
+  front = new PageFront(PAGE_CMP, { store, controller, terminal, log });
+  return { store, controller, terminal, front, events, logged, ttyd };
 }
 
 async function intentOf(front: PageFront): Promise<string> {
@@ -894,25 +903,38 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     expect(controller.launches).toEqual(["remove"]);
   });
 
-  it("gives an administrator the fleet view and the stop, never a terminal, sign-in, status or setup change", async () => {
-    const { front, controller } = alicesComputer({ noContact: true });
+  // WP8.15 (D62) replaces WP8.4's "the fleet view and the stop only": an administrator helping the
+  // owner gets the setup page, its status, the terminal and the size too. The sign-ins, the
+  // revocation record and the staging switches stay the owner's, and so does a sign-out outside
+  // a removal.
+  it("gives an administrator the setup page, its status, the terminal, the size and the stop, never a sign-in", async () => {
+    const { front, controller } = alicesComputer({ noContact: true, signIn: { available: "yes" } });
     const state = await front.pages({ action: "state", interfaceVersion: 1, owner: CAROL });
-    expect(state).toMatchObject({ computer: { access: "admin", ownerName: "alice" } });
-    const computer = (state as { computer: Record<string, unknown> }).computer;
-    expect(computer.terminal).toBeUndefined();
-    expect(computer.signIn).toBeUndefined();
-    for (const read of [
-      { action: "computer_status", interfaceVersion: 1, owner: CAROL },
-      {
-        action: "sign_in_status",
-        interfaceVersion: 1,
-        owner: CAROL,
-        service: "claude",
-        attempt: 1,
+    expect(state).toMatchObject({
+      computer: {
+        access: "admin",
+        ownerName: "alice",
+        ownerMemberId: ALICE.person.memberId,
+        terminal: { window: 0, open: false },
+        setupCards: pageState().setupCards,
       },
-    ]) {
-      expect(await codeOf(front.pages(read)), read.action).toBe("forbidden");
-    }
+    });
+    const computer = (state as { computer: Record<string, unknown> }).computer;
+    expect(computer.signIn).toBeUndefined();
+    expect(
+      await codeOf(front.pages({ action: "computer_status", interfaceVersion: 1, owner: CAROL })),
+    ).toBeUndefined();
+    expect(
+      await codeOf(
+        front.pages({
+          action: "sign_in_status",
+          interfaceVersion: 1,
+          owner: CAROL,
+          service: "claude",
+          attempt: 1,
+        }),
+      ),
+    ).toBe("forbidden");
     const intent = (await tokenFor(front, CAROL)) as string;
     const allowed: string[] = [];
     for (const change of changes(CAROL, intent)) {
@@ -920,10 +942,20 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
       if (code === undefined) allowed.push(change.action);
       else expect(code, change.action).toBe("forbidden");
     }
-    // Without a pending removal: the stop, and the removal of a computer Omnigent no longer calls.
-    expect(allowed).toEqual(["restart", "remove"]);
-    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual(["restart"]);
-    expect(controller.signIns.filter((s) => s.method !== "sessionAttempts")).toEqual([]);
+    // Without a pending removal: the terminal, the size, the stop, and the removal of a computer
+    // Omnigent no longer calls; no sign-in, staging switch, sign-out or revocation record.
+    expect(allowed).toEqual(["open_terminal", "close_terminal", "set_size", "restart", "remove"]);
+    expect(controller.calls.map((c) => (c as { action: string }).action)).toEqual([
+      "set_size",
+      "restart",
+    ]);
+    expect(
+      controller.signIns.filter(
+        (s) => s.method !== "sessionAttempts" && s.method !== "computer_status",
+      ),
+    ).toEqual([]);
+    // Acting on the computer never moves it: the binding still names Alice.
+    expect(controller.ownership()?.binding).toEqual(alicesBinding);
     // Alice's token is hers: Carol presenting it is refused.
     const alicesToken = (await tokenFor(front, ALICE)) as string;
     expect(
@@ -937,6 +969,98 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
         }),
       ),
     ).toBe("forbidden");
+  });
+
+  it("never shows an administrator the owner's sign-in attempt, even while it runs, nor lets them read it", async () => {
+    const { front, controller } = alicesComputer({ signIn: { available: "yes" } });
+    controller.attempts = [{ service: "claude", attempt: 3 }];
+    // Alice's page resumes her running attempt.
+    const alices = await front.pages({ action: "state", interfaceVersion: 1, owner: ALICE });
+    expect((alices as { computer: { signIn: unknown } }).computer.signIn).toEqual({
+      available: "yes",
+      attempts: [{ service: "claude", attempt: 3 }],
+    });
+    // Carol's state carries no attempt, and her read of it is refused before the controller.
+    const carols = await front.pages({ action: "state", interfaceVersion: 1, owner: CAROL });
+    const text = JSON.stringify(carols);
+    expect(text).not.toContain('"signIn"');
+    expect(text).not.toContain('"attempts"');
+    const read = (owner: object) =>
+      front.pages({
+        action: "sign_in_status",
+        interfaceVersion: 1,
+        owner,
+        service: "claude",
+        attempt: 3,
+      });
+    expect(await codeOf(read(CAROL))).toBe("forbidden");
+    expect(await codeOf(read(FOUNDER))).toBe("forbidden");
+    expect(controller.signIns.filter((s) => s.method === "status")).toEqual([]);
+    expect(await codeOf(read(ALICE))).toBeUndefined();
+    expect(controller.signIns.filter((s) => s.method === "status")).toHaveLength(1);
+  });
+
+  it("logs each support action with the computer, the action and the actor's member ID, never an account or address", async () => {
+    const { front, logged } = alicesComputer({ noContact: true });
+    const carol = (await tokenFor(front, CAROL)) as string;
+    const founder = (await tokenFor(front, FOUNDER)) as string;
+    const alice = (await tokenFor(front, ALICE)) as string;
+    await front.pages({ action: "computer_status", interfaceVersion: 1, owner: CAROL });
+    const base = (owner: object, intent: string, n: number) => ({
+      interfaceVersion: 1,
+      operationId: OP(n),
+      owner,
+      intent,
+    });
+    await front.pages({ action: "open_terminal", ...base(CAROL, carol, 80), window: null });
+    await front.pages({ action: "set_size", ...base(CAROL, carol, 81), size: "basic" });
+    await front.pages({ action: "restart", ...base(FOUNDER, founder, 82) });
+    // The owner's own actions are not support actions.
+    await front.pages({ action: "set_size", ...base(ALICE, alice, 83), size: "basic" });
+    await front.pages({ action: "computer_status", interfaceVersion: 1, owner: ALICE });
+    // A refused call is not one either.
+    await codeOf(front.pages({ action: "record_revocation", ...base(CAROL, carol, 84) }));
+    const carolKey = `member:${CAROL.person.memberId}`;
+    expect(logged.filter((e) => e.event === "page_support_action").map((e) => e.fields)).toEqual([
+      { computer: PAGE_CMP, action: "computer_status", actor: carolKey },
+      { computer: PAGE_CMP, action: "open_terminal", actor: carolKey },
+      { computer: PAGE_CMP, action: "set_size", actor: carolKey },
+      { computer: PAGE_CMP, action: "restart", actor: "installation" },
+    ]);
+    const text = JSON.stringify(logged);
+    for (const personal of ["alice", "carol", "founder", "-sub", "@"]) {
+      expect(text, personal).not.toContain(personal);
+    }
+  });
+
+  it("names who acted to the controller's journal: a member, or the installation's owner", async () => {
+    const { front, controller } = alicesComputer();
+    for (const [who, n] of [
+      [CAROL, 90],
+      [ALICE, 91],
+      [FOUNDER, 92],
+    ] as const) {
+      const intent = (await tokenFor(front, who)) as string;
+      await front.pages({
+        action: "set_size",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner: who,
+        intent,
+        size: "basic",
+      });
+    }
+    expect(controller.actors).toEqual([
+      `member:${CAROL.person.memberId}`,
+      `member:${ALICE.person.memberId}`,
+      "installation",
+    ]);
+    // The owner and the token are still stripped: the actor goes beside the call, not in it.
+    for (const call of controller.calls) {
+      expect(Object.keys(call as object)).not.toContain("owner");
+      expect(Object.keys(call as object)).not.toContain("intent");
+      expect(Object.keys(call as object)).not.toContain("actor");
+    }
   });
 
   it("lets an administrator sign a computer being removed out and finish its removal, only then", async () => {
@@ -956,7 +1080,8 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
         action,
       ).toBeUndefined();
     }
-    for (const action of ["record_revocation", "set_size"]) {
+    // The revocation record and the staging switches stay the owner's (D62).
+    for (const action of ["record_revocation", "staging_check"]) {
       expect(
         await codeOf(
           front.pages({
@@ -965,7 +1090,7 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
             operationId: OP(31),
             owner: CAROL,
             intent,
-            size: "basic",
+            rc53: true,
           }),
         ),
         action,
@@ -1115,9 +1240,11 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     expect(controller.launches).toEqual([]);
   });
 
-  it("refuses the terminal's upgrade to anyone but the owner before its capability is looked at", async () => {
-    const { front } = alicesComputer();
-    const up = (owner: object) =>
+  // WP8.15 (D62) replaces WP8.4's "anyone but the owner": an administrator's upgrade reaches the
+  // capability check too, and the capability stays bound to their own Access session.
+  it("accepts an administrator's own terminal capability, never one replayed in another session, and refuses others before it is looked at", async () => {
+    const { front, logged } = alicesComputer();
+    const up = (owner: object, capability: string) =>
       front.fetch(
         new Request("https://w/", {
           headers: {
@@ -1126,16 +1253,51 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
               interfaceVersion: 1,
               computerId: PAGE_CMP,
               owner,
-              capability: "A".repeat(43),
+              capability,
             }),
           },
         }),
       );
-    expect((await up(BOB)).status).toBe(404);
-    expect((await up(CAROL)).status).toBe(404);
-    expect((await up(FOUNDER)).status).toBe(404);
-    // The owner reaches the capability check (an unknown capability: 403).
-    expect((await up(ALICE)).status).toBe(403);
+    const unknown = "A".repeat(43);
+    expect((await up(BOB, unknown)).status).toBe(404);
+    // The owner and the administrators reach the capability check (an unknown capability: 403).
+    for (const who of [ALICE, CAROL, FOUNDER]) expect((await up(who, unknown)).status).toBe(403);
+    const intent = (await tokenFor(front, CAROL)) as string;
+    const open = async (n: number, window: number | null) => {
+      const result = await front.pages({
+        action: "open_terminal",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner: CAROL,
+        intent,
+        window,
+      });
+      return result as { outcome: string; window: number; capability: string };
+    };
+    const first = await open(100, null);
+    expect(first.outcome).toBe("accepted");
+    // Replayed in another of Carol's sessions, or by Bob: refused; and spent either way.
+    expect((await up({ ...CAROL, sessionId: "c4".repeat(32) }, first.capability)).status).toBe(403);
+    expect(logged).toContainEqual({
+      event: "terminal_upgrade_refused",
+      fields: { reason: "wrong_session" },
+    });
+    expect((await up(BOB, first.capability)).status).toBe(404);
+    expect((await up(CAROL, first.capability)).status).toBe(403);
+    // A fresh capability for the same window, in her own session: bridged.
+    const again = await open(101, first.window);
+    const bridged = await up(CAROL, again.capability);
+    expect(bridged.status).not.toBe(403);
+    expect(bridged.status).not.toBe(404);
+    expect(logged.filter((e) => e.event === "terminal_upgrade_refused")).toHaveLength(5);
+    expect(logged).toContainEqual({
+      event: "page_support_action",
+      fields: {
+        computer: PAGE_CMP,
+        action: "terminal_connect",
+        actor: `member:${CAROL.person.memberId}`,
+      },
+    });
   });
 
   it("gives the installation's owner every computer recorded without an owner, and an administrator's view of a member's", async () => {

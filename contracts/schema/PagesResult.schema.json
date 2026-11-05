@@ -265,6 +265,17 @@
             "noContact": {
               "type": "boolean"
             },
+            "ownerMemberId": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "ownerName": {
               "anyOf": [
                 {

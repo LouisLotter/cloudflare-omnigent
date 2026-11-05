@@ -322,6 +322,10 @@ def build_app(
         # image that allowed it) gives nobody access, and the row is kept.
         public_grants_when_disabled="ignored",
         default_public_sessions=config.sharing.default_public_sessions,
+        # Support access (WP8.15, owner decision D62): a team owner or administrator, from a
+        # browser sign-in, manages a member's computers (read, wake, delete, harness install) and
+        # sees and clears their connections; signing in stays the member's.
+        admin_support_access=True,
         feature_flags=pinned_feature_flags(),
         durability_barrier=make_transcript_barrier(waiter, config.transcript_barrier_timeout_s),
         **team_admission_kwargs(create_app, config),

@@ -20,6 +20,24 @@ The [server Dockerfile](../images/server/Dockerfile) pins source/base inputs and
 
 The computer image pins the same fork commit as the server's default, so a computer's host and the server are built from one source; the selected assembly must still qualify them together.
 
+## Support access for owners and administrators (5 November 2026)
+
+WP8.15 (owner decision D62) lets every team owner and administrator manage other people's cloud computers from their pages: the page, its status, a wake through Omnigent, the terminal, the size and Stop. Sign-ins stay the person's own ([ADR 0004](decisions/0004-identity-credential-authority.md)). The supervisor, its protocol, the launcher protocol, the manifests and the checkpoint keys are unchanged.
+
+- **The page state.** `ComputerPageState` gains an optional `ownerMemberId`, the binding's team member ID, in an administrator's view only (for the link to the person's page in Omnigent). An administrator's state now carries the terminal's window, and still no `signIn`.
+- **WorkspaceDO's storage.** Unchanged in format. The operation journal's entry for a page action keeps its strict shape (`fingerprint`, `outcome`, `at`); the actor (`member:<id>` or `installation`) is recorded inside the outcome, which the entry already keeps as an opaque value. The fingerprint leaves the actor out, so it is the same as before; a repeat answers without the actor.
+- **The server image** passes `admin_support_access=True` to `create_app`, which only a fork build with WP8.15's fork part accepts. That build is the server's Omnigent pin from this release on; with an earlier pin the server does not start.
+
+| Pair during an update | Result |
+|---|---|
+| **Platform Worker downgrade:** the previous platform Worker on storage this one wrote, as `update --rollback` leaves it | Works. The previous Worker parses the journal's entries as before; a repeat of a page action this one recorded returns its outcome with an extra `actor` field, which the loose `PagesResult` the web Worker reads lets through and nothing reads. While it runs, administrators have the fleet card's actions only, as before WP8.15 |
+| New web Worker, WorkspaceDO before WP8.15 | Works with less: an administrator's computer page opens, but the older page front refuses its status, terminal and size (`forbidden`), and the page has no link to the person's Omnigent page |
+| Web Worker before WP8.15, new WorkspaceDO | Works as before WP8.15: the older pages answer an administrator's computer page as not found and ignore the new state fields |
+| New Worker, server whose Omnigent build refuses an administrator's start | Works but for the wake: an administrator's wake from the page is refused, and the page says so ("Omnigent did not let your account wake this computer"); the terminal of a computer already awake opens |
+| Computer image of either release | Unchanged: the supervisor never sees who opened the terminal |
+
+These pairs are read from the source. The downgrade is tested by reading a page action's journal entry this controller wrote with the previous release's own storage schema, and its replay with `PagesResult` ([its reader](../worker/test/fixtures/previous-worker/README.md)); the other pairs are not run.
+
 ## Sharing, and nothing public (4 November 2026)
 
 Both images moved from `922b69c62` to `f53990a30` on `cfo/teams`: WP8.10's fork part merged in, with no migration and no change to the fork's Dockerfile, entrypoint, `pyproject.toml` or `uv.lock`. The server image's own settings changed with it.

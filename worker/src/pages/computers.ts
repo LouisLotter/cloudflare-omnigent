@@ -2,6 +2,8 @@
 // server's outage notices and the replication warning; links to adding and deleting computers in
 // Omnigent's own interface; the removal flow, which runs the sign-out rules before it links to
 // Omnigent's deletion; and the page actions, each behind a confirmation page and a guarded POST.
+// Owners and administrators see the team's other computers as fleet cards, and manage them from
+// their pages (support access, WP8.15, owner decision D62).
 
 import {
   type ComputerId,
@@ -22,6 +24,7 @@ import {
   computerPath,
   hidden,
   layout,
+  memberPath,
   notice,
   OMNIGENT_COMPUTERS_PATH,
 } from "./html.ts";
@@ -51,9 +54,9 @@ export interface ActionSpec {
     form: Record<string, string>,
   ) => PagesCall | PageFrontCall | null;
   /**
-   * Whether an administrator may take it on someone else's computer (WP8.4; WorkspaceDO decides,
-   * this only keeps the pages from offering what it refuses): stop and remove, and a sign-out
-   * only while a removal is pending.
+   * Whether an administrator may take it on someone else's computer (WP8.4, D62; WorkspaceDO
+   * decides, this only keeps the pages from offering what it refuses): change the size, stop and
+   * remove, and a sign-out only while a removal is pending.
    */
   readonly admin: (view: ComputerView) => boolean;
   /**
@@ -84,7 +87,7 @@ export const ACTIONS: readonly ActionSpec[] = [
         ? { action: "set_size", interfaceVersion: v, ...base, size: size.data }
         : null;
     },
-    admin: () => false,
+    admin: () => true,
   },
   {
     slug: "restart",
@@ -268,15 +271,23 @@ ${view.notices.map(notice).join("\n")}
 </article>`;
 }
 
+/** Whose computer it is, for an administrator's view: the owner's account, as text. */
+export function ownerLabel(state: StateResult["computer"]): string {
+  return state.ownerName ?? "the installation's owner";
+}
+
 /**
- * Someone else's computer as an administrator sees it (WP8.4): whose it is, its status and the
- * administrator's own actions; never a link to its setup page, terminal or sign-ins.
+ * Someone else's computer as an administrator sees it (WP8.4, D62): whose it is, with a link to
+ * their page in Omnigent, its status and notices, Manage (its page) and the administrator's own
+ * actions.
  */
-function fleetCard(view: ComputerView, ownerName: string | null): string {
+function fleetCard(view: ComputerView, state: StateResult["computer"]): string {
   const lastSave = view.lastSaveFailed
     ? ` <span data-badge="last-save-failed">${badge("danger", "Last save failed")}</span>`
     : "";
-  const links: string[] = [];
+  const links: string[] = [
+    `<a class="button primary" href="${computerPath(view.id)}" data-admin-action="manage">Manage</a>`,
+  ];
   if (view.running && view.removal !== "pending") {
     links.push(
       `<a class="button danger" href="${actionPath(view.id, "restart")}" data-admin-action="restart">Stop (ends work in progress)</a>`,
@@ -307,13 +318,16 @@ function fleetCard(view: ComputerView, ownerName: string | null): string {
       `<a class="button danger" href="${actionPath(view.id, "delete-without-sign-out")}" data-admin-action="delete-without-sign-out">Delete without signing out</a>`,
     );
   }
-  const owner = ownerName === null ? "the installation's owner" : ownerName;
+  const member = state.ownerMemberId
+    ? ` · <a href="${escapeHtml(memberPath(state.ownerMemberId))}" data-link="omnigent-member">Their page in Omnigent</a>`
+    : "";
   return `<article class="card" data-fleet-computer="${escapeHtml(view.id)}">
 <h3>${escapeHtml(view.name)}</h3>
-<p class="muted" data-owner>Belongs to ${escapeHtml(owner)}</p>
+<p class="muted" data-owner>Belongs to ${escapeHtml(ownerLabel(state))}${member}</p>
 <p>${badge(view.statusTone, view.status)}${lastSave}</p>
 <p class="muted" data-saving>${escapeHtml(view.saving)}</p>
-${links.length > 0 ? `<div class="actions">${links.join("")}</div>` : ""}
+${view.notices.map(notice).join("\n")}
+<div class="actions">${links.join("")}</div>
 </article>`;
 }
 
@@ -366,7 +380,7 @@ export async function computersPage(
     }),
   );
   const views: ComputerView[] = [];
-  const fleet: { readonly view: ComputerView; readonly ownerName: string | null }[] = [];
+  const fleet: { readonly view: ComputerView; readonly state: StateResult["computer"] }[] = [];
   const unreadable: string[] = [];
   // Only an administrator is told which computers could not be read: anyone else learns nothing
   // about computers that are not theirs (WP8.4).
@@ -385,7 +399,7 @@ export async function computersPage(
     ) {
       const view = computerView(entry.state.computer, nowMs);
       if (entry.state.computer.access === "admin") {
-        fleet.push({ view, ownerName: entry.state.computer.ownerName ?? null });
+        fleet.push({ view, state: entry.state.computer });
       } else views.push(view);
     }
   }
@@ -415,15 +429,20 @@ ${notices.map(notice).join("\n")}
 ${active.length === 0 ? `<p class="muted" data-empty>No computers yet. <a href="${OMNIGENT_COMPUTERS_PATH}">Add one in Omnigent</a>.</p>` : `<div class="cards">${active.map(computerCard).join("\n")}</div>`}
 ${unreadable.length > 0 ? `<p class="tone-warn">Could not be read now: ${unreadable.map(escapeHtml).join(", ")}.</p>` : ""}
 ${pending.length > 0 ? `<h2>Removals in progress</h2><ul data-removals>${pending.map(pendingLine).join("")}</ul>` : ""}
-${fleet.length > 0 ? `<h2>The team's other computers</h2><p class="muted">As an administrator you can stop another person's computer, remove one Omnigent no longer calls, and finish its pending removal. Setting it up, signing in on it and its terminal are its owner's alone.</p><div class="cards" data-fleet>${fleet.map((f) => fleetCard(f.view, f.ownerName)).join("\n")}</div>` : ""}
+${fleet.length > 0 ? `<h2>The team's other computers</h2><p class="muted" data-fleet-intro>As an owner or administrator you can open another person's computer to help them: wake it, use its terminal, change its size and stop it. Signing in to Claude and Codex stays with the person whose computer it is.</p><div class="cards" data-fleet>${fleet.map((f) => fleetCard(f.view, f.state)).join("\n")}</div>` : ""}
 ${earlierOutages(outageGroups.earlier)}
 <h2>Deleting a computer</h2>
 <p>Open the computer and follow its removal steps first: they sign it out of Claude and Codex, then link to <a href="${OMNIGENT_COMPUTERS_PATH}" data-link="omnigent-delete">Omnigent's deletion</a>. A computer deleted in Omnigent first is listed under "Removals in progress" until its sign-out is done, and its saved logins are kept until then.</p>`;
   return htmlResponse(layout("Cloud computers", body));
 }
 
-/** The removal section of a computer's page (design, Signing in, "Removal"). */
-export function removalSection(view: ComputerView): string {
+/**
+ * The removal section of a computer's page (design, Signing in, "Removal"). For an administrator
+ * helping its owner (D62), only what an administrator may do: the owner's own removal steps
+ * before Omnigent's deletion are the owner's.
+ */
+export function removalSection(view: ComputerView, state?: StateResult["computer"]): string {
+  if (state?.access === "admin") return supportRemovalSection(view, state);
   const signOutNote =
     "Revocation at the providers rests on the CLIs' own logout and is not independently verified; the CLIs do not report a failed revocation. Check at claude.ai and in ChatGPT's settings.";
   const deleteLink = `<a href="${OMNIGENT_COMPUTERS_PATH}" data-link="omnigent-delete">delete it in Omnigent (Settings → Computers)</a>`;
@@ -501,8 +520,75 @@ export function removalSection(view: ComputerView): string {
 }
 
 /**
+ * The removal section as an administrator sees someone else's computer (D62, WP8.9): the owner
+ * deletes it in Omnigent; once a removal is pending, the administrator's own steps, as the fleet
+ * card offers them.
+ */
+function supportRemovalSection(view: ComputerView, state: StateResult["computer"]): string {
+  const owner = ownerLabel(state);
+  const Owner = state.ownerName ? owner : owner.charAt(0).toUpperCase() + owner.slice(1);
+  let steps: string;
+  switch (view.removal) {
+    case "sign_out":
+    case "delete":
+    case "delete_then_sign_out":
+      steps = `<p data-removal-step="owner">${escapeHtml(`${Owner} deletes this computer in Omnigent. Once its removal is recorded, its remaining steps appear here.`)}</p>`;
+      break;
+    case "signing_out":
+      steps = `<p data-removal-step="signing_out">Signing out… This page updates when it is done.</p>`;
+      break;
+    case "pending": {
+      const p = view.pending;
+      const items: string[] = [];
+      if (p?.signOut) {
+        items.push(
+          `<li><a class="button danger" href="${actionPath(view.id, "sign-out")}">Sign out of Claude and Codex</a>: starts the computer once for the CLIs' logouts.</li>`,
+        );
+      }
+      if (p?.signingOut) items.push("<li>Signing out… This page updates when it is done.</li>");
+      if (p?.verifying) {
+        items.push(
+          "<li>Signed out. The sign-out is being verified by restoring into a fresh computer; this page updates when it is done.</li>",
+        );
+      }
+      if (p?.stopWithoutSaving) {
+        items.push(
+          `<li>Its save before stopping keeps failing, so it keeps running. <a class="button danger" href="${actionPath(view.id, "stop-without-saving")}">Stop without saving</a></li>`,
+        );
+      }
+      if (p?.deleteWithoutSignOut) {
+        items.push(
+          `<li>The sign-out cannot finish. <a class="button danger" href="${actionPath(view.id, "delete-without-sign-out")}">Delete it without signing out</a>: its provider sessions are not revoked.</li>`,
+        );
+      }
+      if (p?.resolvable) {
+        items.push(
+          `<li><a class="button danger" href="${actionPath(view.id, "resolve-removal")}">Finish the removal</a>: deletes its saved files and logins.</li>`,
+        );
+      }
+      if (items.length === 0) {
+        items.push(
+          "<li>The removal can finish once the computer has stopped; this page updates when it has.</li>",
+        );
+      }
+      steps = `<p data-removal-step="pending">The removal is pending; its saved logins are kept until it is resolved.</p><ol class="steps">${items.join("")}</ol>`;
+      break;
+    }
+    case "deleting":
+      steps = `<p data-removal-step="deleting">Deleting its saved files and logins… This page shows Removed when they are deleted.</p>`;
+      break;
+    case "resolved":
+      steps = `<p data-removal-step="resolved">Removed.</p>`;
+      break;
+  }
+  return `<section id="removal"><h2>Remove this computer</h2>${steps}</section>`;
+}
+
+/**
  * The management sections of a computer's page: size, restart, stop without saving. Not shown
- * while a removal is pending or resolved.
+ * while a removal is pending or resolved. An administrator helping its owner (D62) gets the size
+ * and Stop (the restart, in an administrator's words); stopping without saving outside a removal
+ * stays the owner's.
  */
 export function manageSection(
   view: ComputerView,
@@ -520,13 +606,14 @@ ${hidden("intent", intent)}${hidden("op", newOperationId())}
 <label>Size <select name="size">${sizes}</select></label>
 <button type="submit">Apply at the next start</button>
 </form>`;
+  const support = state.access === "admin";
   const controls: string[] = [];
   if (view.running) {
     controls.push(
-      `<a class="button danger" href="${actionPath(view.id, "restart")}">Restart (ends work in progress)</a>`,
+      `<a class="button danger" href="${actionPath(view.id, "restart")}">${support ? "Stop (ends work in progress)" : "Restart (ends work in progress)"}</a>`,
     );
   }
-  if (view.offerStopWithoutSaving) {
+  if (view.offerStopWithoutSaving && !support) {
     controls.push(
       `<a class="button danger" href="${actionPath(view.id, "stop-without-saving")}" data-action="stop-without-saving">Stop without saving the latest changes</a>`,
     );
@@ -565,7 +652,8 @@ export async function confirmPage(
   if (state === null) return notFoundPage();
   const view = computerView(state.computer, nowMs);
   const asAdmin = state.computer.access === "admin";
-  const back = `<a class="button" href="${asAdmin ? COMPUTERS_PATH : computerPath(id)}">Cancel</a>`;
+  // An administrator has the computer's page too (D62): Cancel goes back to it, as the owner's.
+  const back = `<a class="button" href="${computerPath(id)}">Cancel</a>`;
   if (
     !spec.offered(view, state.computer) ||
     state.intentToken === undefined ||
@@ -683,8 +771,8 @@ export async function performAction(
     log({ event: "page_change_refused", reason: "not_offered", action: spec.slug });
     return refusedPage(409, "This is not offered for this computer now, so nothing was done.");
   }
-  // An administrator acting on someone else's computer goes back to the list: its setup page is
-  // the owner's alone (WP8.4).
+  // Back to the computer's page, an administrator's too (D62); `as=admin` keeps the notice in an
+  // administrator's words.
   const after = await backend.state(id, owner).catch(() => null);
   const asAdmin = after?.computer.access === "admin";
   const query = new URLSearchParams({
@@ -692,8 +780,7 @@ export async function performAction(
     outcome,
     ...(asAdmin ? { as: "admin" } : {}),
   });
-  const back = asAdmin ? COMPUTERS_PATH : computerPath(id);
-  return seeOther(`${back}?${query.toString()}`);
+  return seeOther(`${computerPath(id)}?${query.toString()}`);
 }
 
 export { flash as flashNotice };

@@ -1550,6 +1550,21 @@ describe("the status and the staging switch (WP3.23)", () => {
     expect(statusHtml(older, NOW)).not.toContain("keep-awake");
   });
 
+  it("says the staging switches to an administrator's page without offering them (D62)", async () => {
+    const { route, backend } = setup();
+    backend.readResult = { action: "computer_status", status: STATUS };
+    const owners = ((await (await route(`${page}/status`)).json()) as { html: string }).html;
+    expect(owners).toContain('data-act="rc53"');
+    expect(owners).toContain('data-act="keep-awake"');
+    const support = (
+      (await (await route(`${page}/status?view=support`)).json()) as { html: string }
+    ).html;
+    expect(support).not.toContain("data-act=");
+    expect(support).toContain("RC-53 save check (staging)");
+    expect(support).toContain("Keep awake (staging)");
+    expect(statusHtml(STATUS, NOW, false)).toBe(support);
+  });
+
   it("is read with a GET, and the switch changed only with a guarded POST", async () => {
     const { route, backend, logs } = setup();
     backend.readResult = { action: "computer_status", status: STATUS };
@@ -1981,6 +1996,7 @@ describe("the person behind a page (WP8.4)", () => {
     role: "member" as const,
   };
   const ADMIN = { ...MEMBER, userId: "carol", role: "admin" as const };
+  const ALICES_MEMBER = "0a1b2c3d4e5f40718293a4b5c6d7e8f9";
 
   it("refuses every page for an identity the seam gives no person", async () => {
     const { route, backend } = setup(async () => null);
@@ -2029,33 +2045,131 @@ describe("the person behind a page (WP8.4)", () => {
         hostName: "Alice's computer",
         access: "admin",
         ownerName: "alice",
+        ownerMemberId: ALICES_MEMBER,
         noContact: true,
+        setupCards: [
+          { provider: "claude", state: "signed_in" },
+          { provider: "codex", state: "needs_sign_in", reason: "not_signed_in" },
+        ],
       }),
       intentToken: INTENT,
     });
     return t;
   }
 
-  it("lists someone else's computer for an administrator with its owner and the stop, never its setup", async () => {
-    const { route } = adminFleet();
+  // WP8.15 (D62) replaces WP8.4's "never its setup" and "Stop only": an administrator manages a
+  // member's computer from its own page, and the fleet card links there and to the person's page
+  // in Omnigent, with the owner's notices.
+  it("lists someone else's computer for an administrator with its owner, Manage, its notices and the stop", async () => {
+    const { route, backend } = adminFleet();
     const html = await (await route("/platform/computers")).text();
     expect(html).toContain(`data-fleet-computer="${OTHER}"`);
     expect(html).toContain("Belongs to alice");
+    expect(html).toContain(
+      `<a href="/settings/members/${ALICES_MEMBER}" data-link="omnigent-member">Their page in Omnigent</a>`,
+    );
+    expect(html).toContain(
+      `<a class="button primary" href="/platform/computers/${OTHER}" data-admin-action="manage">Manage</a>`,
+    );
     expect(html).toContain(`href="/platform/computers/${OTHER}/do/restart"`);
     expect(html).toContain(`href="/platform/computers/${OTHER}/do/remove"`);
-    expect(html).not.toContain(`href="/platform/computers/${OTHER}"`);
+    // The owner's card's notices: here, not connected to Omnigent.
+    const card = html.slice(html.indexOf(`data-fleet-computer="${OTHER}"`));
+    expect(card.slice(0, card.indexOf("</article>"))).toContain('data-notice="not_connected"');
+    expect(html).toContain("As an owner or administrator you can open another person's computer");
+    expect(html).not.toContain(
+      "Setting it up, signing in on it and its terminal are its owner's alone",
+    );
     // The administrator's own computer keeps its setup link.
     expect(html).toContain(`href="/platform/computers/${PAGE_CMP}"`);
+    // A computer bound without a member has no member page to link to.
+    const without = backend.states.get(OTHER) as StateResult;
+    backend.states.set(OTHER, {
+      ...without,
+      computer: { ...without.computer, ownerMemberId: null, ownerName: null },
+    });
+    const bare = (await (await route("/platform/computers")).text()).replaceAll("&#39;", "'");
+    expect(bare).toContain("Belongs to the installation's owner");
+    expect(bare).not.toContain('data-link="omnigent-member"');
   });
 
-  it("answers an administrator's setup page and state of someone else's computer as not found", async () => {
+  it("opens someone else's computer page for an administrator: its state, terminal and size, never a sign-in", async () => {
     const { route } = adminFleet();
     const other = `/platform/computers/${OTHER}`;
-    expect((await route(other)).status).toBe(404);
-    expect((await route(`${other}/state`)).status).toBe(404);
+    const response = await route(other);
+    expect(response.status).toBe(200);
+    expectFramingProtection(response);
+    // The page's text, its escaped apostrophes read back.
+    const html = (await response.text()).replaceAll("&#39;", "'");
+    expect(html).toContain("This computer belongs to alice. You're helping as an administrator.");
+    expect(html).toContain(
+      `<a href="/settings/members/${ALICES_MEMBER}" data-link="omnigent-member">Open alice's page in Omnigent</a>`,
+    );
+    expect(html).toContain('data-support="admin" data-support-owner="alice"');
+    // Each service's state, without the owner's instructions or a sign-in button.
+    expect(html).toContain('data-card="claude" data-state="signed_in"');
+    expect(html).toContain('data-card="codex" data-state="needs_sign_in"');
+    expect(html).toContain("<p data-detail>Not signed in yet.</p>");
+    expect(html).toContain(
+      "alice signs in to Claude and Codex from this page, with their own accounts. You can't sign in for them.",
+    );
+    expect(html).not.toContain("data-sign-in=");
+    expect(html).not.toContain("data-act=");
+    expect(html).not.toContain("Set up this computer");
+    expect(html).not.toMatch(/herself|himself/);
+    // The terminal, for the administrator's own session, and what opening it ends.
+    expect(html).toContain('id="terminal-panel"');
+    expect(html).toContain(`data-intent="${INTENT}"`);
+    expect(html).toContain("Opening it closes any terminal alice has open on this computer.");
+    expect(html).toContain(
+      "Don't sign in to Claude or Codex in it: those logins are alice's to make.",
+    );
+    // The status without the staging switches, the size, and Stop, not Restart.
+    expect(html).toContain(`data-status-url="${other}/status?view=support"`);
+    expect(html).toContain('data-form="set-size"');
+    expect(html).toContain(`href="${other}/do/restart">Stop (ends work in progress)</a>`);
+    expect(html).not.toContain("Restart (ends work in progress)");
+    expect(html).toContain('data-removal-step="owner"');
+    expect(html).toContain("alice deletes this computer in Omnigent.");
+    expect(html).not.toContain(`${other}/do/sign-out`);
+    // Its live state: the same cards, still without a sign-in.
+    const state = await route(`${other}/state`);
+    expect(state.status).toBe(200);
+    const json = (await state.json()) as {
+      cards: { provider: string; html: string }[];
+      removalHtml: string;
+      intent: string;
+    };
+    expect(json.intent).toBe(INTENT);
+    for (const card of json.cards) {
+      expect(card.html, card.provider).not.toContain("data-sign-in=");
+      expect(card.html, card.provider).not.toContain("data-act=");
+    }
+    expect(json.cards.map((c) => c.html).join("")).toContain("Not signed in yet.");
+    expect(json.removalHtml).toContain('data-removal-step="owner"');
   });
 
-  it("offers an administrator only the stop and the removal, and sends them back to the list", async () => {
+  it("names the installation's owner when an administrator's view has no account", async () => {
+    const { route, backend } = adminFleet();
+    const state = backend.states.get(OTHER) as StateResult;
+    backend.states.set(OTHER, {
+      ...state,
+      computer: { ...state.computer, ownerName: null, ownerMemberId: null },
+    });
+    const html = (await (await route(`/platform/computers/${OTHER}`)).text()).replaceAll(
+      "&#39;",
+      "'",
+    );
+    expect(html).toContain(
+      "This computer belongs to the installation's owner. You're helping as an administrator.",
+    );
+    expect(html).toContain(
+      "The installation's owner signs in to Claude and Codex from this page, with their own accounts.",
+    );
+    expect(html).not.toContain('data-link="omnigent-member"');
+  });
+
+  it("offers an administrator the size, the stop and the removal, and sends them back to the computer's page", async () => {
     const { route, backend } = adminFleet();
     const other = `/platform/computers/${OTHER}`;
     const stop = await (await route(`${other}/do/restart`)).text();
@@ -2065,9 +2179,10 @@ describe("the person behind a page (WP8.4)", () => {
     expect(stop).toContain(">Stop, ending work in progress</button>");
     expect(stop).toContain("It starts again when its owner next uses it.");
     expect(stop).not.toContain("Restart");
+    expect(stop).toContain(`<a class="button" href="${other}">Cancel</a>`);
     expect(await (await route(`${other}/do/remove`)).text()).toContain('data-confirm="remove"');
+    expect(await (await route(`${other}/do/set-size`)).text()).toContain('data-confirm="set-size"');
     for (const slug of [
-      "set-size",
       "sign-out",
       "record-revocation",
       "stop-without-saving",
@@ -2080,12 +2195,19 @@ describe("the person behind a page (WP8.4)", () => {
     const response = await route(`${other}/do/restart`, form({ intent: INTENT, op: OP }));
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      "/platform/computers?done=restart&outcome=accepted&as=admin",
+      `${other}?done=restart&outcome=accepted&as=admin`,
     );
-    expect(backend.acts.map((a) => a.id)).toEqual([OTHER]);
-    const back = await (
-      await route("/platform/computers?done=restart&outcome=accepted&as=admin")
-    ).text();
+    const sized = await route(
+      `${other}/do/set-size`,
+      form({ intent: INTENT, op: OP, size: "basic" }),
+    );
+    expect(sized.status).toBe(303);
+    expect(sized.headers.get("location")).toBe(`${other}?done=set-size&outcome=accepted&as=admin`);
+    expect(backend.acts.map((a) => [a.id, a.call.action])).toEqual([
+      [OTHER, "restart"],
+      [OTHER, "set_size"],
+    ]);
+    const back = await (await route(`${other}?done=restart&outcome=accepted&as=admin`)).text();
     expect(back).toContain("Stop this computer: Done.");
     // The owner's own restart keeps its wording.
     expect(await (await route(`${page}/do/restart`)).text()).toContain(
@@ -2140,16 +2262,19 @@ describe("the person behind a page (WP8.4)", () => {
     );
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe(
-      "/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin",
+      `${other}?done=delete-without-sign-out&outcome=accepted&as=admin`,
     );
     expect(backend.acts.map((a) => [a.id, a.call.action])).toEqual([
       [OTHER, "delete_without_sign_out"],
     ]);
     const after = await (
-      await route("/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin")
+      await route(`${other}?done=delete-without-sign-out&outcome=accepted&as=admin`)
     ).text();
     expect(after).toContain("Its provider sessions were not revoked");
     expect(after).toContain("Deletion started");
+    // The computer's page shows the administrator's removal steps, never the owner's record.
+    expect(after).toContain(`href="${other}/do/delete-without-sign-out"`);
+    expect(after).not.toContain(`${other}/do/record-revocation`);
   });
 
   it("names a login that may have changed after the last save as the reason", async () => {

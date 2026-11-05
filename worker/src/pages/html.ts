@@ -26,6 +26,14 @@ export function computerPath(id: string): string {
   return `${COMPUTERS_PATH}/${id}`;
 }
 
+/**
+ * A person's page in Omnigent (WP8.15, the fork's member page): their computers, connections
+ * and threads, for an owner or administrator helping them. Keyed by the team member ID.
+ */
+export function memberPath(memberId: string): string {
+  return `${OMNIGENT_MEMBERS_PATH}/${encodeURIComponent(memberId)}`;
+}
+
 export const PAGES_CSS = `
 :root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1b1b1a; --muted: #6a6a66; --card: #fff;
   --line: #deded9; --ok: #1f7a3f; --info: #2f5f9e; --warn: #9a6200; --danger: #b3261e;

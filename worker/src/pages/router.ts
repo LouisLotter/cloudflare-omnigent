@@ -187,7 +187,7 @@ export async function routePlatform(
     }
     if (parts.length === 3 && parts[2] === "status") {
       if (!read) return methodNotAllowed("GET, HEAD");
-      return head(request, await statusRead(backend, owner, id, now(), log));
+      return head(request, await statusRead(backend, owner, id, now(), log, url));
     }
     if (parts.length === 3 && parts[2] === "staging-check") {
       if (request.method !== "POST") return methodNotAllowed("POST");

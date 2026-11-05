@@ -9,6 +9,12 @@
 //     saving", a sign-out, a removal, Omnigent's `terminate`, and a sleep or a start-deadline
 //     stop once the window has expired (design, "Live streams end");
 //   - adds the session's intent token and the terminal's window to the page state;
+//   - support access (WP8.15, owner decision D62): an owner or administrator helping someone else
+//     opens the computer's setup page, its status and its terminal, changes its size and stops
+//     it, but never signs in on it or reads a sign-in attempt. Their state carries each service's
+//     sign-in state only, never an attempt, link or code. Each support action logs
+//     `page_support_action` with the computer, the action and the actor's member ID (never an
+//     account or an address), and every journaled page action records its actor;
 //   - sign-in from the page (WP3.23): starts, input and cancels pass the same intent check, bound
 //     to the caller's Access session, and run one at a time with the terminal's steps; reads (an
 //     attempt's state, the computer's status) change nothing and carry no token, but an attempt is
@@ -60,7 +66,11 @@ type SignInAnswer =
 
 /** What the front needs from the controller: its public RPC answers. */
 export interface FrontController {
-  pages(call: unknown): Promise<PagesResult>;
+  /**
+   * The controller's page calls. `actor`: who made a mutating call (`personKey`: a member ID, or
+   * the installation's owner), recorded in the operation journal with its outcome (WP8.15).
+   */
+  pages(call: unknown, actor?: string): Promise<PagesResult>;
   /**
    * Records a removal intent, as Omnigent's `terminate` does, for the page (WP3.5). Not a launcher
    * call: it names no launcher owner, since the page front decides who may remove (WP8.4).
@@ -306,6 +316,19 @@ export class PageFront {
     return owner.data;
   }
 
+  /**
+   * An administrator's action on someone else's computer (D62): logged with the computer, the
+   * action and the actor's member ID (`personKey`), never the account or an address.
+   */
+  #support(access: PageAccess, owner: PageOwner | undefined, action: string): void {
+    if (access !== "admin") return;
+    this.#d.log("page_support_action", {
+      computer: this.#computerId,
+      action,
+      actor: personKey(personOf(owner)),
+    });
+  }
+
   #checkInterface(version: number): void {
     if (version > WORKSPACE_INTERFACE_VERSION) {
       throw platformError("unsupported_version", `interface ${version}`);
@@ -334,7 +357,13 @@ export class PageFront {
     if (read.success) {
       this.#checkInterface(read.data.interfaceVersion);
       const state = await this.#state(); // `not_found` for a computer that does not exist
-      this.#authorize(read.data.owner, "view", state);
+      // A sign-in attempt's read is the sign-in's: its link and code are the owner's alone (D62).
+      const access = this.#authorize(
+        read.data.owner,
+        read.data.action === "sign_in_status" ? "sign_in" : "view",
+        state,
+      );
+      this.#support(access, read.data.owner, read.data.action);
       return this.#read(read.data);
     }
     const front = PageFrontCall.safeParse(raw);
@@ -345,7 +374,8 @@ export class PageFront {
       if (this.#access(ownerIn(front.data)) === "none")
         this.#authorize(ownerIn(front.data), "fleet", state);
       const owner = await this.#checkIntent(front.data);
-      this.#authorize(owner, FRONT_ACTIONS[front.data.action], state);
+      const access = this.#authorize(owner, FRONT_ACTIONS[front.data.action], state);
+      this.#support(access, owner, front.data.action);
       return this.#exclusive(() => this.#front(front.data, owner));
     }
     const parsed = PagesCall.safeParse(raw);
@@ -361,15 +391,20 @@ export class PageFront {
         result.computer,
       );
       if (access === "admin") {
-        // An administrator's view of someone else's computer: its fleet facts, the owner's
-        // account and the token for the administrator's own actions; no terminal or sign-in.
-        const { terminal: _t, signIn: _s, ...facts } = result.computer;
+        // An administrator's view of someone else's computer (D62): its facts and terminal, the
+        // owner's account and member ID, and the token for the administrator's own actions.
+        // Each service's sign-in state is in `setupCards`; `signIn` (the owner's attempts, and
+        // whether sign-in is offered) is dropped, so no attempt, link or code is ever here.
+        const { signIn: _s, ...facts } = result.computer;
+        const binding = this.#d.controller.ownership()?.binding ?? null;
         return {
           ...result,
           computer: {
             ...facts,
+            terminal: this.#d.terminal.view(),
             access,
-            ownerName: this.#d.controller.ownership()?.binding?.userId ?? null,
+            ownerName: binding?.userId ?? null,
+            ownerMemberId: binding?.memberId ?? null,
           },
           ...(named.success ? { intentToken: await this.intentFor(named.data) } : {}),
         };
@@ -406,14 +441,17 @@ export class PageFront {
     ) {
       return { action: "stop_without_saving", outcome: "refused", reason: "not_offered" };
     }
+    this.#support(access, owner, call.action);
+    // The owner and the token go; who acted is journaled with the outcome (WP8.15).
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
+    const actor = personKey(personOf(owner));
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
       return this.#exclusive(async () => {
         await this.#d.terminal.close("a sign-in-sensitive step started");
-        return this.#d.controller.pages(stripped);
+        return this.#d.controller.pages(stripped, actor);
       });
     }
-    return this.#d.controller.pages(stripped);
+    return this.#d.controller.pages(stripped, actor);
   }
 
   async #front(call: PageFrontCall, owner: PageOwner): Promise<PageFrontResult> {
@@ -543,13 +581,15 @@ export class PageFront {
         { status: 400 },
       );
     }
-    // The terminal is its owner's alone (WP8.4): anyone else's upgrade is not found, before the
-    // capability is even looked at.
+    // The terminal is its owner's, and an administrator's helping them (D62): anyone else's
+    // upgrade is not found, before the capability is even looked at. The capability stays bound
+    // to the Access subject and session it was issued to (`terminal.ts`).
     const access = this.#access(upgrade.data.owner);
-    if (access !== "owner") {
+    if (!pageAllows(access, "terminal", false)) {
       this.#d.log("page_refused", { action: "terminal", access });
       return notFound();
     }
+    this.#support(access, upgrade.data.owner, "terminal_connect");
     return this.#d.terminal.connect(upgrade.data);
   }
 }

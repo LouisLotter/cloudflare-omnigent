@@ -220,9 +220,12 @@ export type PagePersonFields =
  * What a person may do with a computer:
  * - `owner`: everything the pages offer: it is theirs;
  * - `admin`: someone else's, seen by a human administrator (the installation's owner, or a team
- *   owner or admin), who may see it in the fleet, stop it, remove it while Omnigent no longer
- *   calls it, and finish a pending removal; never start it, sign in on it, read its status or
- *   sign-ins, or drive its terminal;
+ *   owner or admin), who helps its owner (support access, owner decision D62): sees it in the
+ *   fleet, opens its setup page and status, drives its terminal, changes its size, stops it,
+ *   removes it while Omnigent no longer calls it, and finishes a pending removal. An
+ *   administrator acts on the computer, never as its owner: never signs in on it, reads a
+ *   sign-in attempt, signs it out outside a removal, records a revocation or changes a staging
+ *   switch, and the binding never moves;
  * - `none`: nothing; the computer is answered as if it did not exist.
  */
 export type PageAccess = "owner" | "admin" | "none";
@@ -261,7 +264,7 @@ export function pageAccess(
 export type PageAction =
   /** The page state for the list and the confirmation pages. */
   | "fleet"
-  /** The setup page's own reads: the computer's status and a sign-in attempt. */
+  /** The setup page and its status read (a sign-in attempt's read is `sign_in`). */
   | "view"
   | "terminal"
   | "sign_in"
@@ -277,11 +280,13 @@ export type PageAction =
   | "staging";
 
 /**
- * Whether `access` allows `action`. An administrator may stop and remove; a sign-out and the
- * removal's end only while a removal is pending (signing a departing person's logins out of a
- * computer being removed protects that person). Everything else is the owner's alone, except
- * deleting without a sign-out, which is the administrator's alone: an owner who cannot sign out
- * records that they revoked the sessions themselves.
+ * Whether `access` allows `action`. An administrator may open the setup page and its terminal,
+ * change the size, stop and remove (D62); a sign-out and the removal's end only while a removal
+ * is pending (signing a departing person's logins out of a computer being removed protects that
+ * person). Signing in, a sign-in attempt, the revocation record and the staging switches are the
+ * owner's alone: a person's logins stay their own. Deleting without a sign-out is the
+ * administrator's alone: an owner who cannot sign out records that they revoked the sessions
+ * themselves.
  */
 export function pageAllows(
   access: PageAccess,
@@ -293,6 +298,9 @@ export function pageAllows(
   if (access === "none") return false;
   switch (action) {
     case "fleet":
+    case "view":
+    case "terminal":
+    case "set_size":
     case "restart":
     case "remove":
       return true;
