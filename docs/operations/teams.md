@@ -173,10 +173,15 @@ WP8.15's fork part)
 4. B: open the computer's page. It is still B's, and B's sign-in buttons are there. The
    platform Worker's log has `page_support_action` lines with A's member ID and no address.
 
-An administrator's terminal on someone else's computer lasts only while their authority does:
-WorkspaceDO asks Omnigent again every 15 seconds while it is connected, and closes it, ending
-its shell, within 35 seconds of the administrator being made a member, suspended or removed, or
-of Omnigent not answering. The platform Worker logs `page_support_ended` with the reason.
+An administrator's terminal on someone else's computer lasts only while their authority does,
+and stays the window of the person who opened it. WorkspaceDO asks Omnigent again every 15
+seconds while it is connected. The connected terminal (its input and output) ends within 35
+seconds of the administrator being made a member, suspended or removed, or of Omnigent not
+answering. The shell on the computer is ended by the terminal end WorkspaceDO then records; if
+WorkspaceDO was reset meanwhile, the computer's own reaper ends it about 45 seconds after it was
+left with nothing attached. The same Access identity bound to a new membership gets a new
+window, and the old one's shell ends. The platform Worker logs `page_support_ended` with the
+reason.
 
 **Suspension**
 

@@ -877,7 +877,7 @@ describe("an administrator's terminal ends with their authority (Codex WP8.15 r1
     ["unreachable: the call fails", "throws" as const],
     ["unreachable: no answer in time", undefined],
   ])(
-    "ends it, and its shell, once Carol is %s; Alice's computer is untouched",
+    "closes Carol's connected terminal and its window once she is %s; Alice's computer is untouched",
     async (_name, answer) => {
       const { c, connected, terminal } = await carolsTerminal();
       if (answer === undefined) assembly.pagePeople.delete("carol-sub");

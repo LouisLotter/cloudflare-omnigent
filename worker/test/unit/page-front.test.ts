@@ -44,6 +44,8 @@ class FakeController implements FrontController {
 
   /** The computer's owner binding (WP8.4); none: the installation owner's. */
   binding: OwnerBinding | null = null;
+  /** Whether the supervisor keeps the terminal's shells across streams (WP3.28); unset: no. */
+  terminalShellsKept?: () => boolean;
   installationOwner: string | null = "founder";
   ownership() {
     return this.state === null
@@ -112,7 +114,6 @@ function harness() {
     events.push(event);
     logged.push({ event, fields });
   };
-  let front: PageFront | null = null;
   /** WP8.15: OmnigentServer's `pagePerson`, as each test sets it, and every call made to it. */
   const people = {
     answer: (async () => ({ action: "unavailable" })) as (
@@ -120,36 +121,42 @@ function harness() {
     ) => Promise<PagePersonResult>,
     asked: [] as PagePersonCall[],
   };
-  const terminal = new TerminalBridge({
-    computerId: PAGE_CMP,
-    store,
-    now: () => 1_000_000,
-    target: () => (front as PageFront).target(),
-    dial: ttyd.dial,
-    setWindow: async (until) => {
-      events.push(until === null ? "window:closed" : "window:open");
-    },
-    pair: () => fakePair("browser"),
-    upgradeResponse: () => new Response(null, { status: 200 }),
-    socketOf: (r) => (r instanceof SocketResponse ? r.socket : null),
-    sleep: async () => undefined,
-    setTimer: () => 0,
-    clearTimer: () => undefined,
-    log,
-    authority: () => (front as PageFront).supportAuthority(),
-  });
-  front = new PageFront(PAGE_CMP, {
-    store,
-    controller,
-    terminal,
-    log,
-    person: (call) => {
-      people.asked.push(call);
-      return people.answer(call);
-    },
-    personTimeoutMs: 20,
-  });
-  return { store, controller, terminal, front, events, logged, ttyd, people };
+  /** A new bridge and front over the same storage, as a rebuilt WorkspaceDO has (R2-1). */
+  function build(): { readonly terminal: TerminalBridge; readonly front: PageFront } {
+    let front: PageFront | null = null;
+    const terminal = new TerminalBridge({
+      computerId: PAGE_CMP,
+      store,
+      now: () => 1_000_000,
+      target: () => (front as PageFront).target(),
+      dial: ttyd.dial,
+      setWindow: async (until) => {
+        events.push(until === null ? "window:closed" : "window:open");
+      },
+      pair: () => fakePair("browser"),
+      upgradeResponse: () => new Response(null, { status: 200 }),
+      socketOf: (r) => (r instanceof SocketResponse ? r.socket : null),
+      sleep: async () => undefined,
+      setTimer: () => 0,
+      clearTimer: () => undefined,
+      log,
+      authority: () => (front as PageFront).supportAuthority(),
+    });
+    front = new PageFront(PAGE_CMP, {
+      store,
+      controller,
+      terminal,
+      log,
+      person: (call) => {
+        people.asked.push(call);
+        return people.answer(call);
+      },
+      personTimeoutMs: 20,
+    });
+    return { terminal, front };
+  }
+  const { terminal, front } = build();
+  return { store, controller, terminal, front, events, logged, ttyd, people, rebuild: build };
 }
 
 async function intentOf(front: PageFront): Promise<string> {
@@ -1283,8 +1290,10 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
       );
     const unknown = "A".repeat(43);
     expect((await up(BOB, unknown)).status).toBe(404);
-    // The owner and the administrators reach the capability check (an unknown capability: 403).
+    // The owner reaches the capability check (an unknown capability: 403); an administrator is
+    // refused before it while no window of theirs is open (Codex r2 R2-1), changing nothing.
     for (const who of [ALICE, CAROL, FOUNDER]) expect((await up(who, unknown)).status).toBe(403);
+    expect(logged.filter((e) => e.event === "terminal_upgrade_refused")).toHaveLength(1);
     const intent = (await tokenFor(front, CAROL)) as string;
     const open = async (n: number, window: number | null) => {
       const result = await front.pages({
@@ -1312,7 +1321,7 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     const bridged = await up(CAROL, again.capability);
     expect(bridged.status).not.toBe(403);
     expect(bridged.status).not.toBe(404);
-    expect(logged.filter((e) => e.event === "terminal_upgrade_refused")).toHaveLength(5);
+    expect(logged.filter((e) => e.event === "terminal_upgrade_refused")).toHaveLength(3);
     expect(logged).toContainEqual({
       event: "page_support_action",
       fields: {
@@ -1341,8 +1350,9 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
       }) as PagePersonResult;
 
     /** Alice's computer with `who`'s terminal connected; the answer is Carol's, active admin. */
-    async function connected(who: object) {
+    async function connected(who: object, keepsShells = false) {
       const h = alicesComputer();
+      if (keepsShells) h.controller.terminalShellsKept = () => true;
       h.people.answer = async () => carolAs();
       const intent = (await tokenFor(h.front, who)) as string;
       const opened = (await h.front.pages({
@@ -1415,18 +1425,115 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
         "unanswered",
       ],
       ["unanswered: no answer in time", () => new Promise<never>(() => undefined), "unanswered"],
-    ] as const)("ends it, and its shell, once Carol is %s", async (_name, answer, reason) => {
+    ] as const)(
+      "closes the connected terminal and records its shell's end once Carol is %s",
+      async (_name, answer, reason) => {
+        const h = await connected(carolIn);
+        h.people.answer = answer as (call: PagePersonCall) => Promise<PagePersonResult>;
+        await h.terminal.enforceAuthority();
+        expect(h.terminal.view()).toMatchObject({ open: false, streams: 0 });
+        expect(h.terminal.pendingEnd()).not.toBeNull();
+        expect(h.events).toContain("window:closed");
+        expect(ended(h)).toEqual([
+          { computer: PAGE_CMP, actor: `member:${CAROL.person.memberId}`, reason },
+        ]);
+        // Her next upgrade is refused: the window is closed.
+        expect(JSON.stringify(h.logged)).not.toContain("carol-sub");
+      },
+    );
+
+    // Codex r2 R2-1: the window keeps the person who opened it, across upgrades, reconnects and
+    // a rebuilt WorkspaceDO. Carol's Access identity and session bound to a new membership, even
+    // an active admin, is someone else: she gets a new window, and the old one's shell ends.
+    const NEW_MEMBER = "3d4e5f60718293a4b5c6d7e8f90a1b2c";
+    const carolAgain = { ...carolIn, person: { ...CAROL.person, memberId: NEW_MEMBER } };
+    const upgradeAs = (front: PageFront, who: object, capability: string) =>
+      front.fetch(
+        new Request("https://w/", {
+          headers: {
+            upgrade: "websocket",
+            "x-cfo-terminal": JSON.stringify({
+              interfaceVersion: 1,
+              computerId: PAGE_CMP,
+              owner: who,
+              capability,
+            }),
+          },
+        }),
+      );
+    const reconnect = async (front: PageFront, who: object, n: number) =>
+      front.pages({
+        action: "open_terminal",
+        interfaceVersion: 1,
+        operationId: OP(n),
+        owner: who,
+        intent: (await tokenFor(front, who)) as string,
+        window: 1,
+      });
+
+    it("refuses a capability already issued to Carol's window when a new membership presents it, and ends the window", async () => {
       const h = await connected(carolIn);
-      h.people.answer = answer as (call: PagePersonCall) => Promise<PagePersonResult>;
-      await h.terminal.enforceAuthority();
+      const spare = (await reconnect(h.front, carolIn, 120)) as { capability: string };
+      expect(spare.capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      h.people.answer = async () => carolAs({ memberId: NEW_MEMBER });
+      const dials = h.ttyd.dials;
+      expect((await upgradeAs(h.front, carolAgain, spare.capability)).status).toBe(403);
+      expect(h.ttyd.dials).toBe(dials);
       expect(h.terminal.view()).toMatchObject({ open: false, streams: 0 });
       expect(h.terminal.pendingEnd()).not.toBeNull();
-      expect(h.events).toContain("window:closed");
       expect(ended(h)).toEqual([
-        { computer: PAGE_CMP, actor: `member:${CAROL.person.memberId}`, reason },
+        {
+          computer: PAGE_CMP,
+          actor: `member:${CAROL.person.memberId}`,
+          reason: "another_member",
+          action: "terminal_connect",
+        },
       ]);
-      // Her next upgrade is refused: the window is closed.
-      expect(JSON.stringify(h.logged)).not.toContain("carol-sub");
+    });
+
+    it("refuses a new membership's fresh reconnect after WorkspaceDO is rebuilt, ends the window, and gives it a new one", async () => {
+      const h = await connected(carolIn);
+      const rebuilt = h.rebuild();
+      expect(rebuilt.terminal.view()).toMatchObject({ window: 1, open: true, streams: 0 });
+      h.people.answer = async () => carolAs({ memberId: NEW_MEMBER });
+      expect(await reconnect(rebuilt.front, carolAgain, 121)).toEqual({
+        action: "open_terminal",
+        outcome: "refused",
+        reason: "window_closed",
+      });
+      expect(rebuilt.terminal.view()).toMatchObject({ window: 1, open: false });
+      expect(rebuilt.terminal.pendingEnd()).toMatchObject({ window: 1 });
+      // As the new membership she opens a window of her own, checked as that person.
+      const fresh = await rebuilt.front.pages({
+        action: "open_terminal",
+        interfaceVersion: 1,
+        operationId: OP(122),
+        owner: carolAgain,
+        intent: (await tokenFor(rebuilt.front, carolAgain)) as string,
+        window: null,
+      });
+      expect(fresh).toMatchObject({ outcome: "accepted", window: 2 });
+      const bridged = await upgradeAs(
+        rebuilt.front,
+        carolAgain,
+        (fresh as { capability: string }).capability,
+      );
+      expect(bridged.status).not.toBe(403);
+      await rebuilt.terminal.enforceAuthority();
+      expect(rebuilt.terminal.view()).toMatchObject({ window: 2, open: true, streams: 1 });
+    });
+
+    it("lets the same Carol reconnect after WorkspaceDO is rebuilt, and goes on checking her", async () => {
+      // A supervisor that keeps the shell, so the reconnect attaches to it (WP3.28).
+      const h = await connected(carolIn, true);
+      const rebuilt = h.rebuild();
+      const again = (await reconnect(rebuilt.front, carolIn, 123)) as { capability: string };
+      expect((await upgradeAs(rebuilt.front, carolIn, again.capability)).status).not.toBe(403);
+      await rebuilt.terminal.enforceAuthority();
+      expect(rebuilt.terminal.view()).toMatchObject({ window: 1, open: true, streams: 1 });
+      h.people.answer = async () => carolAs({ role: "member" });
+      await rebuilt.terminal.enforceAuthority();
+      expect(rebuilt.terminal.view()).toMatchObject({ open: false, streams: 0 });
     });
 
     it("never asks about the owner's own terminal, whatever the answer", async () => {

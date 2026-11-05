@@ -49,6 +49,7 @@ import {
   TerminalUpgrade,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
+import { z } from "zod";
 import { platformError } from "../shared/errors.ts";
 import { OMNIGENT_SERVER_INTERFACE_VERSION } from "../shared/rpc.ts";
 import {
@@ -212,6 +213,24 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
 type StateResult = Extract<PagesResult, { action: "state" }>;
 
 const INTENT_SECRET_KEY = "pages/intent-secret";
+
+/**
+ * The person who opened the terminal's current window, when it was an administrator helping on
+ * someone else's computer (WP8.15, Codex r2 R2-1), and the Access identity WorkspaceDO asks about
+ * them with. Written when such a window opens, deleted when its owner opens one. Under its own key,
+ * beside the bridge's strict `terminal/` records, so a Worker before WP8.15 still reads those.
+ */
+const SUPPORT_WINDOW_KEY = "pages/support-window";
+const SupportWindow = z.strictObject({
+  window: z.number().int().min(1),
+  /** The opener's `personKey`: a member ID, or the installation's owner. */
+  person: z.string().min(1).max(64),
+  sub: z.string().min(1).max(256),
+  admission: z.enum(["owner", "members"]).nullable(),
+  issuer: z.string().min(1).max(512).nullable(),
+  audience: z.string().min(1).max(255).nullable(),
+});
+type SupportWindow = z.infer<typeof SupportWindow>;
 const encoder = new TextEncoder();
 
 /** Page actions that touch the computer's logins: the terminal closes before each. */
@@ -271,13 +290,6 @@ export class PageFront {
    * never interleaves with a sign-out, a restart, a stop without saving or a removal.
    */
   #serial: Promise<unknown> = Promise.resolve();
-  /**
-   * The administrator whose terminal on someone else's computer is bridged now (WP8.15), with the
-   * window it is in: recorded when their upgrade is accepted, in memory only, since a restart
-   * drops every stream and a reconnect upgrades again. Null while the streams are the owner's.
-   */
-  #support: { readonly window: number; readonly owner: PageOwner } | null = null;
-
   constructor(computerId: string, deps: PageFrontDeps) {
     this.#computerId = computerId;
     this.#d = deps;
@@ -335,30 +347,50 @@ export class PageFront {
    * who cannot be demoted, suspended or removed: the pin is the answer, as for the pages.
    */
   async supportAuthority(): Promise<boolean> {
-    const support = this.#support;
+    const support = this.#supportWindow();
     if (support === null || support.window !== this.#d.terminal.view().window) return true;
-    const end = await this.#supportEnd(support.owner);
+    const end = await this.#supportEnd(support);
     if (end === null) return true;
-    if (this.#support === support) this.#support = null;
     this.#d.log("page_support_ended", {
       computer: this.#computerId,
-      actor: personKey(personOf(support.owner)),
+      actor: support.person,
       reason: end,
     });
     return false;
   }
 
-  /** Why the person behind `owner` may no longer help on this computer; null while they may. */
-  async #supportEnd(owner: PageOwner): Promise<SupportEnd | null> {
-    const helping = personOf(owner);
-    if (owner.admission === "owner") {
-      return helping.kind === "installation_owner" && this.#accessFor(helping) === "admin"
+  /** The current support window's record, if the stored one is well formed. */
+  #supportWindow(): SupportWindow | null {
+    const parsed = SupportWindow.safeParse(this.#d.store.get(SUPPORT_WINDOW_KEY));
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * Whether `owner`'s person is the person of `window` (Codex r2 R2-1): `same` for the
+   * administrator who opened a support window, or anyone but an administrator for a window
+   * without a record (the owner's); `rebound` for the opener's Access identity bound to another
+   * membership, which is someone else; `other` for anyone else.
+   */
+  #windowPerson(owner: PageOwner, window: number): "same" | "rebound" | "other" {
+    const support = this.#supportWindow();
+    if (support !== null && support.window === window) {
+      if (personKey(personOf(owner)) === support.person) return "same";
+      return owner.sub === support.sub ? "rebound" : "other";
+    }
+    return this.#access(owner) === "admin" ? "other" : "same";
+  }
+
+  /** Why the person who opened `support` may no longer help on this computer; null while they may. */
+  async #supportEnd(support: SupportWindow): Promise<SupportEnd | null> {
+    if (support.admission === "owner") {
+      return support.person === "installation" &&
+        this.#accessFor({ kind: "installation_owner" }) === "admin"
         ? null
         : "not_admin";
     }
-    const { issuer, audience } = owner;
+    const { issuer, audience } = support;
     const ask = this.#d.person;
-    if (owner.admission !== "members" || issuer === undefined || audience === undefined || !ask) {
+    if (support.admission !== "members" || issuer === null || audience === null || !ask) {
       return "unanswered";
     }
     let answer: PagePersonResult;
@@ -367,7 +399,7 @@ export class PageFront {
         ask({
           interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
           issuer,
-          subject: owner.sub,
+          subject: support.sub,
           audience,
         }),
         this.#d.personTimeoutMs ?? SUPPORT_ANSWER_MS,
@@ -383,8 +415,8 @@ export class PageFront {
         ? { kind: "installation_owner" }
         : { kind: "member", memberId: answer.memberId, userId: answer.userId, role: answer.role };
     // The same Access identity bound to a new membership (removed, then invited again) is
-    // someone new: the one who opened the terminal is gone.
-    if (personKey(now) !== personKey(helping)) return "another_member";
+    // someone new: the one who opened the window is gone.
+    if (personKey(now) !== support.person) return "another_member";
     return this.#accessFor(now) === "admin" ? null : "not_admin";
   }
 
@@ -565,12 +597,28 @@ export class PageFront {
 
   async #front(call: PageFrontCall, owner: PageOwner): Promise<PageFrontResult> {
     switch (call.action) {
-      case "open_terminal":
-        return this.#d.terminal.open({
+      case "open_terminal": {
+        const before = this.#d.terminal.view().window;
+        const opened = await this.#d.terminal.open({
           operationId: call.operationId,
           owner,
           window: call.window,
         });
+        if (opened.outcome !== "accepted") return opened;
+        if (opened.window > before) {
+          // A new window: whoever opened it is its person (Codex r2 R2-1).
+          this.#bindWindow(opened.window, owner);
+          return opened;
+        }
+        // A capability for an open window, only for its own person: another membership of the
+        // same Access identity (the only other person the bridge's session check lets this far)
+        // gets a new window, and this one, its shell and the capability just issued end now.
+        if (this.#windowPerson(owner, opened.window) !== "same") {
+          await this.#endForeignWindow("open_terminal");
+          return { action: "open_terminal", outcome: "refused", reason: "window_closed" };
+        }
+        return opened;
+      }
       case "close_terminal":
         return {
           action: "close_terminal",
@@ -627,6 +675,35 @@ export class PageFront {
           ...(await this.#d.controller.setStagingKeepAwake({ on: call.on })),
         };
     }
+  }
+
+  /** Records the person of a window just opened: an administrator's, or none (the owner's). */
+  #bindWindow(window: number, owner: PageOwner): void {
+    if (this.#access(owner) !== "admin") {
+      this.#d.store.delete(SUPPORT_WINDOW_KEY);
+      return;
+    }
+    const record: SupportWindow = {
+      window,
+      person: personKey(personOf(owner)),
+      sub: owner.sub,
+      admission: owner.admission ?? null,
+      issuer: owner.issuer ?? null,
+      audience: owner.audience ?? null,
+    };
+    this.#d.store.put(SUPPORT_WINDOW_KEY, record);
+  }
+
+  /** Ends the current window, its streams and its shell: it is another person's (R2-1). */
+  async #endForeignWindow(action: string): Promise<void> {
+    const support = this.#supportWindow();
+    await this.#d.terminal.close("its window was opened by someone else");
+    this.#d.log("page_support_ended", {
+      computer: this.#computerId,
+      actor: support?.person ?? "none",
+      reason: "another_member",
+      action,
+    });
   }
 
   /** A page GET's read: changes nothing. */
@@ -699,15 +776,21 @@ export class PageFront {
       return notFound();
     }
     this.#logSupport(access, upgrade.data.owner, "terminal_connect");
-    const response = await this.#d.terminal.connect(upgrade.data);
-    // Accepted (a refusal is 403): the stream is in the current window, which the capability's
-    // session opened. An administrator's is checked from now on; the owner's never are.
-    if (response.status !== 403) {
-      this.#support =
-        access === "admin"
-          ? { window: this.#d.terminal.view().window, owner: upgrade.data.owner }
-          : null;
+    // An administrator's stream only in the window they opened, as the same person (Codex r2
+    // R2-1): their Access identity as another membership ends that window and its shell; anyone
+    // else's upgrade is refused and changes nothing. The owner's are the bridge's to decide.
+    const person =
+      access === "admin"
+        ? this.#windowPerson(upgrade.data.owner, this.#d.terminal.view().window)
+        : "same";
+    if (person !== "same") {
+      if (person === "rebound") await this.#endForeignWindow("terminal_connect");
+      else this.#d.log("page_refused", { action: "terminal", access, reason: "not_its_window" });
+      return Response.json(
+        { error: { code: "forbidden", message: "Access denied.", retryable: false } },
+        { status: 403, headers: { "cache-control": "no-store" } },
+      );
     }
-    return response;
+    return this.#d.terminal.connect(upgrade.data);
   }
 }
