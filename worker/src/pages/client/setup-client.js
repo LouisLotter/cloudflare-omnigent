@@ -19,6 +19,9 @@
 //   own Omnigent session, waits until the platform says it runs, then starts what was pressed as
 //   its button would on an awake computer. Every button pressed meanwhile shares that one wake.
 //   It lives in memory only: a reload shows the computer's state now.
+// - Support access (WP8.15): on the page of someone else's computer (`data-support="admin"`), an
+//   owner or administrator has no sign-in buttons; the terminal and the wake work as above, and a
+//   wake Omnigent refuses says so in an administrator's words.
 // Nothing here stores or logs what the terminal shows, the provider's link, Codex's code or the
 // code the person pastes.
 
@@ -288,7 +291,9 @@ globalThis.cfoWake = (() => {
       case "signed_out":
         return "Omnigent needs you to sign in before it can wake the computer. Open Omnigent in this browser, sign in, then press the button again.";
       case "refused":
-        return "Omnigent did not wake the computer for the account this browser is signed in with. Open Omnigent, check that you are signed in as yourself, then try again.";
+        return root.dataset.support === "admin"
+          ? `Omnigent did not let your account wake this computer. ${root.dataset.supportOwner || "Its owner"} can wake it by starting a thread on it.`
+          : "Omnigent did not wake the computer for the account this browser is signed in with. Open Omnigent, check that you are signed in as yourself, then try again.";
       case "unknown":
         return "Omnigent does not know this computer. Check that Omnigent still lists it.";
       case "failed":

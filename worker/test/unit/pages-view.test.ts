@@ -61,6 +61,22 @@ describe("the sign-in cards", () => {
     expect(view.title).toBe(card.provider === "claude" ? "Claude" : "Codex");
   });
 
+  // WP8.15 (D62): an administrator helping the owner sees each card's state without the owner's
+  // instructions to sign in, since signing in is the owner's.
+  it.each([
+    [{ provider: "claude", state: "signed_in" }, "The login is saved with this computer."],
+    [{ provider: "claude", state: "unknown" }, "not the same as signed out"],
+    [{ provider: "codex", state: "saving" }, "Keep the computer awake"],
+    [{ provider: "codex", state: "needs_sign_in", reason: "not_signed_in" }, "Not signed in yet."],
+    [{ provider: "claude", state: "needs_sign_in" }, "Not signed in yet."],
+    [{ provider: "claude", state: "needs_sign_in", reason: "expired" }, "The login expired."],
+    [{ provider: "codex", state: "needs_sign_in", reason: "refused" }, "signed out or refused."],
+  ] as const)("says %o to an administrator as its state only", (card, text) => {
+    const view = cardView(card as SetupCard);
+    expect(view.supportDetail).toContain(text);
+    expect(view.supportDetail).not.toMatch(/sign in again|on this card/i);
+  });
+
   it("never shows an unknown login as signed out", () => {
     expect(cardView({ provider: "claude", state: "unknown" }).detail).toContain(
       "not the same as signed out",

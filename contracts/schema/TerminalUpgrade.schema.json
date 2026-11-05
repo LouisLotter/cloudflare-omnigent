@@ -18,6 +18,23 @@
     "owner": {
       "additionalProperties": {},
       "properties": {
+        "admission": {
+          "enum": [
+            "owner",
+            "members"
+          ],
+          "type": "string"
+        },
+        "audience": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "issuer": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
         "person": {
           "oneOf": [
             {

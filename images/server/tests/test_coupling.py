@@ -50,6 +50,8 @@ PLATFORM_KWARGS = {
     "public_sharing_max_level",
     "public_grants_when_disabled",
     "default_public_sessions",
+    # Support access for owners and administrators (WP8.15, D62).
+    "admin_support_access",
     "feature_flags",
     "durability_barrier",
     # Omnigent's own server command passes it; its Docker entrypoint does not (WP5.10).

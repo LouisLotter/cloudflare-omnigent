@@ -20,3 +20,15 @@ export const FULL_REASON =
 
 /** The other person's Access subject. */
 export const OTHER_SUB = "00000000-0000-4000-8000-0000000000ff";
+
+/**
+ * WP8.15: an asleep computer of a team member's, bound to that member. The journeys' browser is
+ * the installation's owner, an administrator here, who manages it from its page; the fake
+ * Omnigent lets that administrator wake it, as the fork's `may_manage_host` does.
+ */
+export const MEMBER_HOST = "3e".repeat(16);
+/** The member's Access subject, Omnigent account, team member ID and team ID. Synthetic. */
+export const MEMBER_SUB = "00000000-0000-4000-8000-0000000000aa";
+export const MEMBER_ACCOUNT = "e2e-member";
+export const MEMBER_ID = "3e3e3e3e3e3e4e3e8e3e3e3e3e3e3e3e";
+export const MEMBER_TEAM = "7e7e7e7e7e7e4e7e8e7e7e7e7e7e7e7e";

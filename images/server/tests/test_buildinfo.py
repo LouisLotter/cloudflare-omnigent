@@ -12,7 +12,7 @@ from cfo_server import buildinfo
 
 from conftest import IMAGE_DIR
 
-COMMIT = "e379f42d52ab81494c76935a0a2e955c0d0276a8"
+COMMIT = "b39cfba8c36d55c148d255ea928945675c01fac5"
 
 
 def _write(path: Path, **fields: object) -> Path:
@@ -65,6 +65,7 @@ def _dockerfile_commit() -> str:
 
 
 def test_the_dockerfile_pins_the_fork_commit_with_the_stop_fix() -> None:
+    # cfo/teams b39cfba8c (WP8.15): support access for owners and administrators, merged onto
     # cfo/teams e379f42d5 (WP8.9): member removal, merged onto cfo/teams f53990a30 (WP8.10):
     # the computers overview for administrators, the Share dialog's sentence on Edit and
     # plainer team wording, merged onto cfo/teams 922b69c62

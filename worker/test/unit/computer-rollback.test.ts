@@ -6,9 +6,11 @@
 // publications, an adoption, an owner-bound computer and a restart, and the previous Worker's own
 // schemas (`test/fixtures/previous-worker/`, copied from the release before WP8.4) read every key
 // it reads at boot and while it runs.
-import type { LauncherOwner } from "@cfo/contracts";
+import { type LauncherOwner, PagesResult } from "@cfo/contracts";
 import { describe, expect, it } from "vitest";
+import { fingerprintOf } from "../../src/computer/controller.ts";
 import {
+  OPERATION_PREFIX,
   OWNERSHIP_KEY,
   OwnershipRecord,
   RECORD_KEY,
@@ -142,5 +144,81 @@ describe("storage the previous platform Worker reads after a rollback (Codex r1-
     await sim.advance(30_000);
     expect(sim.record().lifecycle.context.state).toBe("host_running");
     expect(live(sim).tree.get("work/unstamped.txt")).toBe("unstamped.txt");
+  });
+});
+
+// WP8.15: the page journal records who acted, inside the entry's opaque outcome, so its storage
+// format is unchanged. Checked here as the previous Worker reads and replays an entry: its
+// `OperationRecord` parse, and its replay, which returns the recorded outcome to the web Worker
+// as a `PagesResult` (a loose object, unchanged since that release).
+describe("the page journal's actor, read by the previous Worker after a rollback (WP8.15)", () => {
+  const CAROL = "member:2c3d4e5f60718293a4b5c6d7e8f90a1b";
+  const op = (n: number) => `op_${String(n).padStart(26, "0")}`;
+  const setSize = (n: number) => ({
+    action: "set_size" as const,
+    interfaceVersion: 1,
+    operationId: op(n),
+    size: "basic" as const,
+  });
+
+  it("records the actor beside the outcome in the shape the previous Worker reads and replays", async () => {
+    const sim = new ComputerSim({ installationOwner: FOUNDER });
+    await sim.running();
+    const answer = await sim.controller.pages(setSize(1), CAROL);
+    expect(answer).toEqual({ action: "set_size", appliesAt: "next_start" });
+    const entry = sim.store.get(`${OPERATION_PREFIX}page:${op(1)}`) as {
+      fingerprint: string;
+      outcome: Record<string, unknown>;
+    };
+    expect(entry.outcome).toEqual({ action: "set_size", appliesAt: "next_start", actor: CAROL });
+    // The previous Worker reads the entry, and its replay is a `PagesResult` the web Worker
+    // reads; the extra field passes through and nothing reads it.
+    expect(previous.OperationRecord.safeParse(entry).success).toBe(true);
+    const replayed = PagesResult.safeParse(entry.outcome);
+    expect(replayed.success).toBe(true);
+    expect(replayed.data).toMatchObject({ action: "set_size", appliesAt: "next_start" });
+    expect(previousReaderProblems(sim)).toEqual([]);
+    // The fingerprint leaves the actor out: the same as before WP8.15.
+    const { interfaceVersion: _, ...identity } = setSize(1);
+    expect(entry.fingerprint).toBe(await fingerprintOf(identity));
+  });
+
+  it("answers a repeat without the actor, whoever repeats it, and records nothing it is not given", async () => {
+    const sim = new ComputerSim({ installationOwner: FOUNDER });
+    await sim.running();
+    await sim.controller.pages(setSize(2), CAROL);
+    expect(await sim.controller.pages(setSize(2), CAROL)).toEqual({
+      action: "set_size",
+      appliesAt: "next_start",
+    });
+    expect(await sim.controller.pages(setSize(2), "installation")).toEqual({
+      action: "set_size",
+      appliesAt: "next_start",
+    });
+    // The first actor stays recorded.
+    expect(
+      (sim.store.get(`${OPERATION_PREFIX}page:${op(2)}`) as { outcome: { actor: string } }).outcome
+        .actor,
+    ).toBe(CAROL);
+    // Without an actor, or with one that is not a member ID or the installation's owner (an
+    // address, say), the outcome is recorded as before.
+    for (const [n, actor] of [
+      [3, undefined],
+      [4, "carol@example.com"],
+    ] as const) {
+      await sim.controller.pages(setSize(n), actor);
+      expect(
+        (sim.store.get(`${OPERATION_PREFIX}page:${op(n)}`) as { outcome: unknown }).outcome,
+      ).toEqual({ action: "set_size", appliesAt: "next_start" });
+    }
+    // A restart's outcome and its actor, through the controller's other journaling path.
+    await sim.controller.pages(
+      { action: "restart", interfaceVersion: 1, operationId: op(5) },
+      CAROL,
+    );
+    expect(
+      (sim.store.get(`${OPERATION_PREFIX}page:${op(5)}`) as { outcome: unknown }).outcome,
+    ).toMatchObject({ action: "restart", actor: CAROL });
+    expect(previousReaderProblems(sim)).toEqual([]);
   });
 });

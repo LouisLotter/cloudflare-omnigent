@@ -51,6 +51,11 @@ export interface CardView {
   readonly tone: Tone;
   readonly label: string;
   readonly detail: string;
+  /**
+   * The detail for an owner or administrator helping the computer's owner (D62): the state only,
+   * without the owner's instructions, since signing in is the owner's.
+   */
+  readonly supportDetail: string;
   /** The card is open: the person has something to do on it. */
   readonly open: boolean;
 }
@@ -167,6 +172,7 @@ export function cardView(card: SetupCard): CardView {
         tone: "ok",
         label: "Signed in",
         detail: "The login is saved with this computer.",
+        supportDetail: "The login is saved with this computer.",
         open: false,
       };
     case "saving":
@@ -178,6 +184,8 @@ export function cardView(card: SetupCard): CardView {
         label: "Saving the login",
         detail:
           "The login changed and is being saved. Keep the computer awake until this says signed in.",
+        supportDetail:
+          "The login changed and is being saved. Keep the computer awake until this says signed in.",
         open: false,
       };
     case "unknown":
@@ -188,6 +196,7 @@ export function cardView(card: SetupCard): CardView {
         tone: "info",
         label: "Not known now",
         detail: "The computer cannot be asked now. This is not the same as signed out.",
+        supportDetail: "The computer cannot be asked now. This is not the same as signed out.",
         open: false,
       };
     case "needs_sign_in": {
@@ -196,6 +205,12 @@ export function cardView(card: SetupCard): CardView {
           ? "The login expired. Sign in again on this card only."
           : card.reason === "refused"
             ? "The CLI reports this login signed out or refused. Sign in again."
+            : "Not signed in yet.";
+      const supportDetail =
+        card.reason === "expired"
+          ? "The login expired."
+          : card.reason === "refused"
+            ? "The CLI reports this login signed out or refused."
             : "Not signed in yet.";
       return {
         provider: card.provider,
@@ -207,6 +222,7 @@ export function cardView(card: SetupCard): CardView {
             ? "Needs sign-in"
             : "Sign in again",
         detail,
+        supportDetail,
         open: true,
       };
     }

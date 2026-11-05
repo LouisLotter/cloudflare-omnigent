@@ -23,6 +23,9 @@ import {
   ASLEEP_HOST,
   FULL_HOST,
   FULL_REASON,
+  MEMBER_ACCOUNT,
+  MEMBER_HOST,
+  MEMBER_ID,
   OMNIGENT_SESSION_COOKIE,
   OTHERS_HOST,
 } from "./wake-hosts.ts";
@@ -192,7 +195,7 @@ async function main(): Promise<number> {
           };
         }
         // WP3.53: the fake Omnigent's view of the wake journeys' hosts.
-        for (const host of [ASLEEP_HOST, FULL_HOST, OTHERS_HOST]) {
+        for (const host of [ASLEEP_HOST, FULL_HOST, OTHERS_HOST, MEMBER_HOST]) {
           dump[`omnigent-${host.slice(0, 4)}`] = await omnigent(host).catch(() => null);
         }
         writeFileSync(join(DIR, `${journey}.state.json`), JSON.stringify(dump, null, 2));
@@ -904,6 +907,51 @@ async function main(): Promise<number> {
       checks.push(
         "Omnigent refuses (403) another person's host to the owner's session; it stays asleep",
       );
+    });
+
+    // WP8.15 (D62): the owner, an administrator here, helps a team member on the member's own
+    // computer: Manage on its fleet card, its page under the support header, each service's
+    // sign-in state without a sign-in, a wake through Omnigent, and its terminal.
+    await run("J15-an-administrator-helps-on-a-members-computer", async (page, checks) => {
+      const id = ids["managed-member"] ?? "";
+      await page.goto(`${base}/platform/computers`);
+      const card = page.locator(`[data-fleet-computer="${id}"]`);
+      await card.getByText(`Belongs to ${MEMBER_ACCOUNT}`).waitFor();
+      const member = await card.locator('[data-link="omnigent-member"]').getAttribute("href");
+      if (member !== `/settings/members/${MEMBER_ID}`) throw new Error(`member link ${member}`);
+      checks.push("fleet card: whose it is, a link to their page in Omnigent, and Manage");
+      await card.locator('[data-admin-action="manage"]').click();
+      await page.waitForURL(`${base}/platform/computers/${id}`);
+      await page
+        .getByText(
+          `This computer belongs to ${MEMBER_ACCOUNT}. You're helping as an administrator.`,
+        )
+        .waitFor();
+      await page.locator('[data-card="claude"]').getByText("Not signed in yet.").waitFor();
+      await page.locator('[data-card="codex"]').getByText("Not signed in yet.").waitFor();
+      await page
+        .getByText(`${MEMBER_ACCOUNT} signs in to Claude and Codex from this page`)
+        .waitFor();
+      if ((await page.locator("[data-sign-in], [data-act]").count()) !== 0) {
+        throw new Error("a sign-in is offered to an administrator");
+      }
+      checks.push("its page: the support header, both services not signed in, no sign-in offered");
+      await page.locator("#status").getByText("Asleep").waitFor();
+      await page.click("#terminal-open");
+      await page.getByText("Connected.").waitFor({ timeout: 90_000 });
+      if ((await omnigent(MEMBER_HOST)).starts !== 1) throw new Error("no wake call");
+      checks.push(
+        "woken through Omnigent's start (an admin's, allowed by the fake), terminal open",
+      );
+      // Acting on it never moved it: WorkspaceDO's state still names the member.
+      const after = await state(id);
+      if (after.access !== "admin" || after.ownerMemberId !== MEMBER_ID) {
+        throw new Error(`owner ${String(after.ownerMemberId)} ${String(after.access)}`);
+      }
+      checks.push("the computer still belongs to the member");
+      await page.click("#terminal-close");
+      await page.getByText("Closed. The computer may go to sleep again.").waitFor();
+      await page.screenshot({ path: join(DIR, "support-page.png"), fullPage: true });
     });
 
     await run("J13-no-sign-in-value-left-anywhere", async (_page, checks) => {

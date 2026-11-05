@@ -25,6 +25,8 @@ import type {
   LauncherResult,
   PageFrontCall,
   PageFrontResult,
+  PagePersonCall,
+  PagePersonResult,
   PageReadCall,
   PageReadResult,
   PagesCall,
@@ -167,6 +169,19 @@ export class WorkspaceDO extends PlatformWorkspaceDO {
   /** Waits until the controller's runner has nothing left to do now (tests only). */
   async settle(): Promise<void> {
     await this.controller.idle();
+  }
+
+  /** OmnigentServer's answer about an Access identity, from the test (WP8.15). */
+  protected override async pagePerson(call: PagePersonCall): Promise<PagePersonResult> {
+    const answer = assembly.pagePeople.get(call.subject);
+    if (answer === undefined) return new Promise<never>(() => undefined);
+    if (answer === "throws") throw new Error("OmnigentServer could not be asked");
+    return answer;
+  }
+
+  /** The terminal's periodic authority check, run now (tests only, WP8.15). */
+  async checkSupport(): Promise<void> {
+    await this.terminal.enforceAuthority();
   }
 }
 

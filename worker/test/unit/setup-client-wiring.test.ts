@@ -105,7 +105,7 @@ function platform(backend: Backend, request: Request): Promise<Response> {
     ok: true,
     request,
     origin: ORIGIN,
-    identity: { ...OWNER, issuedAt: 1, expiresAt: 2 },
+    identity: { sub: OWNER.sub, sessionId: OWNER.sessionId, issuedAt: 1, expiresAt: 2 },
   };
   return routePlatform(admitted, {} as WebEnv, {
     backend,
@@ -118,8 +118,9 @@ function platform(backend: Backend, request: Request): Promise<Response> {
 type Reply = Response | "hang" | Promise<Response>;
 
 /** The page, its script, and the network it talks to. */
-async function boot() {
+async function boot(computer?: ComputerPageState) {
   const backend = new Backend();
+  if (computer !== undefined) backend.computer = computer;
   const html = await (await platform(backend, new Request(`${ORIGIN}${PAGE}`))).text();
   const document = new FakeDocument(html);
   const calls: { method: string; path: string }[] = [];
@@ -412,5 +413,43 @@ describe("the setup page's wake, wired to the page (WP3.53, Codex r1)", () => {
     expect(message()).toContain("Omnigent did not wake the computer for the account");
     expect(page.signInStarts()).toHaveLength(0);
     expect(page.opens()).toHaveLength(0);
+  });
+});
+
+// WP8.15 (D62): an owner or administrator helping someone else wakes their computer through
+// Omnigent as its owner does. Until Omnigent lets an administrator wake it, the refusal says so in
+// an administrator's words.
+describe("an administrator's wake, on someone else's computer (WP8.15)", () => {
+  const alices = (state: ComputerPageState): ComputerPageState => ({
+    ...state,
+    access: "admin",
+    ownerName: "alice",
+    ownerMemberId: "0a1b2c3d4e5f40718293a4b5c6d7e8f9",
+  });
+
+  it("offers no sign-in, and says a refused wake in an administrator's words", async () => {
+    const page = await boot(alices(asleep()));
+    expect(page.document.querySelector('[data-act="start"]')).toBeNull();
+    page.world.startStatus = 403;
+    page.press("#terminal-open");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(page.el("#terminal-status").textContent).toBe(
+      "Omnigent did not let your account wake this computer. alice can wake it by starting a thread on it.",
+    );
+    expect(page.el("#terminal-open").disabled).toBe(false);
+    expect(page.opens()).toHaveLength(0);
+  });
+
+  it("wakes it through Omnigent once Omnigent allows it, then opens the terminal", async () => {
+    const page = await boot(alices(asleep()));
+    page.press("#terminal-open");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(page.starts()).toBe(1);
+    page.backend.computer = alices(running());
+    page.backend.intent = NEW_INTENT;
+    page.world.hostState = "awake";
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(page.opens()).toHaveLength(1);
+    expect(page.opens()[0]).toMatchObject({ action: "open_terminal", intent: NEW_INTENT });
   });
 });

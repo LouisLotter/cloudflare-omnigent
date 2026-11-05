@@ -424,8 +424,12 @@ function gb(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
-/** The status section's body: escaped, names and counts only. */
-export function statusHtml(view: ComputerStatusView, nowMs: number): string {
+/**
+ * The status section's body: escaped, names and counts only. `switches: false` (an administrator
+ * helping the computer's owner, D62): the staging switches are said, not offered, since they are
+ * the owner's.
+ */
+export function statusHtml(view: ComputerStatusView, nowMs: number, switches = true): string {
   const rows: string[] = [];
   const m = view.metrics;
   const row = (label: string, value: string, key: string) =>
@@ -509,7 +513,7 @@ export function statusHtml(view: ComputerStatusView, nowMs: number): string {
     const desired = rc53.desired === true;
     row(
       "RC-53 save check (staging)",
-      `${badge(desired ? "info" : "warn", desired ? "On" : "Off")} <span class="muted">${escapeHtml(appliedText(view.supervisor, desired, rc53.applied))}</span> ${switchButton("rc53", desired)}`,
+      `${badge(desired ? "info" : "warn", desired ? "On" : "Off")} <span class="muted">${escapeHtml(appliedText(view.supervisor, desired, rc53.applied))}</span>${switches ? ` ${switchButton("rc53", desired)}` : ""}`,
       "rc53",
     );
   } else if (m !== null) {
@@ -524,20 +528,24 @@ export function statusHtml(view: ComputerStatusView, nowMs: number): string {
         on
           ? "The computer stays awake even when Omnigent finds it idle, in every start, until this is turned off. For soaks: turn it off afterwards."
           : "The computer goes to sleep when Omnigent finds it idle, as usual.",
-      )}</span> ${switchButton("keep-awake", on)}`,
+      )}</span>${switches ? ` ${switchButton("keep-awake", on)}` : ""}`,
       "keep-awake",
     );
   }
   return `<p class="muted" data-observed>As of ${escapeHtml(formatTime(view.observedAt, nowMs))}.</p><dl class="facts">${rows.join("")}</dl>`;
 }
 
-/** GET `…/status`: the computer's status now. Changes nothing. */
+/**
+ * GET `…/status`: the computer's status now. Changes nothing. `?view=support`: an administrator's
+ * page asks for it without the staging switches (D62); WorkspaceDO decides what each may read.
+ */
 export async function statusRead(
   backend: PagesBackend,
   owner: PageOwner,
   id: ComputerId,
   nowMs: number,
   log: Log,
+  url?: URL,
 ): Promise<Response> {
   try {
     const result = await backend.read(id, {
@@ -547,7 +555,8 @@ export async function statusRead(
     });
     if (result.action !== "computer_status") throw new Error("not a status");
     const status = (result as { readonly status: ComputerStatusView }).status;
-    return jsonResponse({ status, html: statusHtml(status, nowMs) });
+    const switches = url?.searchParams.get("view") !== "support";
+    return jsonResponse({ status, html: statusHtml(status, nowMs, switches) });
   } catch (error) {
     return failure(error, "status_read_failed", log);
   }

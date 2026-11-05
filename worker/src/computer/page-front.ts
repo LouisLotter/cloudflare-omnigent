@@ -9,6 +9,15 @@
 //     saving", a sign-out, a removal, Omnigent's `terminate`, and a sleep or a start-deadline
 //     stop once the window has expired (design, "Live streams end");
 //   - adds the session's intent token and the terminal's window to the page state;
+//   - support access (WP8.15, owner decision D62): an owner or administrator helping someone else
+//     opens the computer's setup page, its status and its terminal, changes its size and stops
+//     it, but never signs in on it or reads a sign-in attempt. Their state carries each service's
+//     sign-in state only, never an attempt, link or code. Each support action logs
+//     `page_support_action` with the computer, the action and the actor's member ID (never an
+//     account or an address), and every journaled page action records its actor. While an
+//     administrator's terminal on someone else's computer is connected, every terminal check
+//     (15 s) asks OmnigentServer's `pagePerson` again, bounded at 10 s, whether that person may
+//     still help here; a no, a failure or no answer closes the terminal and ends its shell;
 //   - sign-in from the page (WP3.23): starts, input and cancels pass the same intent check, bound
 //     to the caller's Access session, and run one at a time with the terminal's steps; reads (an
 //     attempt's state, the computer's status) change nothing and carry no token, but an attempt is
@@ -27,6 +36,8 @@ import {
   PageFrontCall,
   type PageFrontResult,
   PageOwner,
+  type PagePersonCall,
+  type PagePersonResult,
   PageReadCall,
   type PageReadResult,
   type PageSignInView,
@@ -38,13 +49,15 @@ import {
   TerminalUpgrade,
   WORKSPACE_INTERFACE_VERSION,
 } from "@cfo/contracts";
+import { z } from "zod";
 import { platformError } from "../shared/errors.ts";
+import { OMNIGENT_SERVER_INTERFACE_VERSION } from "../shared/rpc.ts";
 import {
+  pageAccess as accessOf,
   type OwnerBinding,
   type PageAccess,
   type PageAction,
   type PagePersonFields,
-  pageAccess,
   pageAllows,
   personKey,
   removalFactsOf,
@@ -60,7 +73,11 @@ type SignInAnswer =
 
 /** What the front needs from the controller: its public RPC answers. */
 export interface FrontController {
-  pages(call: unknown): Promise<PagesResult>;
+  /**
+   * The controller's page calls. `actor`: who made a mutating call (`personKey`: a member ID, or
+   * the installation's owner), recorded in the operation journal with its outcome (WP8.15).
+   */
+  pages(call: unknown, actor?: string): Promise<PagesResult>;
   /**
    * Records a removal intent, as Omnigent's `terminate` does, for the page (WP3.5). Not a launcher
    * call: it names no launcher owner, since the page front decides who may remove (WP8.4).
@@ -160,11 +177,60 @@ export interface PageFrontDeps {
   readonly controller: FrontController;
   readonly terminal: TerminalBridge;
   readonly log: (event: string, fields: Readonly<Record<string, unknown>>) => void;
+  /**
+   * OmnigentServer's `pagePerson` (WP8.3), the answer the pages' seam trusts in members
+   * admission: asked again while an administrator's terminal on someone else's computer is
+   * connected (WP8.15). Absent: no answer, which counts as no.
+   */
+  readonly person?: (call: PagePersonCall) => Promise<PagePersonResult>;
+  /** How long that answer may take before it counts as no; 10 s unless a test sets it. */
+  readonly personTimeoutMs?: number;
+}
+
+/** How long OmnigentServer's answer about a helping administrator may take (WP8.15). */
+export const SUPPORT_ANSWER_MS = 10_000;
+
+/** Why a helping administrator's terminal ended (WP8.15); for the log. */
+export type SupportEnd =
+  | "suspended"
+  | "removed"
+  | "invited"
+  | "not_bound"
+  | "another_member"
+  | "not_admin"
+  | "unanswered";
+
+function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("no answer in time")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 type StateResult = Extract<PagesResult, { action: "state" }>;
 
 const INTENT_SECRET_KEY = "pages/intent-secret";
+
+/**
+ * The person who opened the terminal's current window, when it was an administrator helping on
+ * someone else's computer (WP8.15, Codex r2 R2-1), and the Access identity WorkspaceDO asks about
+ * them with. Written when such a window opens, deleted when its owner opens one. Under its own key,
+ * beside the bridge's strict `terminal/` records, so a Worker before WP8.15 still reads those.
+ */
+const SUPPORT_WINDOW_KEY = "pages/support-window";
+const SupportWindow = z.strictObject({
+  window: z.number().int().min(1),
+  /** The opener's `personKey`: a member ID, or the installation's owner. */
+  person: z.string().min(1).max(64),
+  sub: z.string().min(1).max(256),
+  admission: z.enum(["owner", "members"]).nullable(),
+  issuer: z.string().min(1).max(512).nullable(),
+  audience: z.string().min(1).max(255).nullable(),
+});
+type SupportWindow = z.infer<typeof SupportWindow>;
 const encoder = new TextEncoder();
 
 /** Page actions that touch the computer's logins: the terminal closes before each. */
@@ -224,7 +290,6 @@ export class PageFront {
    * never interleaves with a sign-out, a restart, a stop without saving or a removal.
    */
   #serial: Promise<unknown> = Promise.resolve();
-
   constructor(computerId: string, deps: PageFrontDeps) {
     this.#computerId = computerId;
     this.#d = deps;
@@ -264,9 +329,95 @@ export class PageFront {
    * computer with no record answers `none`: `#state()` refuses it as not found first anyway.
    */
   #access(owner: PageOwner | undefined): PageAccess {
+    return this.#accessFor(personOf(owner));
+  }
+
+  #accessFor(person: PagePersonFields): PageAccess {
     const ownership = this.#d.controller.ownership();
     if (ownership === null) return "none";
-    return pageAccess(personOf(owner), ownership.binding, ownership.installationOwner);
+    return accessOf(person, ownership.binding, ownership.installationOwner);
+  }
+
+  /**
+   * The terminal bridge's `authority` (WP8.15): whether the streams bridged now may go on. The
+   * owner's always may. An administrator's on someone else's computer may while OmnigentServer
+   * still answers, within `SUPPORT_ANSWER_MS`, that the same person is an active member whose
+   * role makes them an administrator here; any other answer, a failure or none ends them. In
+   * owner admission the only person Access admits is the installation's owner, by the owner pin,
+   * who cannot be demoted, suspended or removed: the pin is the answer, as for the pages.
+   */
+  async supportAuthority(): Promise<boolean> {
+    const support = this.#supportWindow();
+    if (support === null || support.window !== this.#d.terminal.view().window) return true;
+    const end = await this.#supportEnd(support);
+    if (end === null) return true;
+    this.#d.log("page_support_ended", {
+      computer: this.#computerId,
+      actor: support.person,
+      reason: end,
+    });
+    return false;
+  }
+
+  /** The current support window's record, if the stored one is well formed. */
+  #supportWindow(): SupportWindow | null {
+    const parsed = SupportWindow.safeParse(this.#d.store.get(SUPPORT_WINDOW_KEY));
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * Whether `owner`'s person is the person of `window` (Codex r2 R2-1): `same` for the
+   * administrator who opened a support window, or anyone but an administrator for a window
+   * without a record (the owner's); `rebound` for the opener's Access identity bound to another
+   * membership, which is someone else; `other` for anyone else.
+   */
+  #windowPerson(owner: PageOwner, window: number): "same" | "rebound" | "other" {
+    const support = this.#supportWindow();
+    if (support !== null && support.window === window) {
+      if (personKey(personOf(owner)) === support.person) return "same";
+      return owner.sub === support.sub ? "rebound" : "other";
+    }
+    return this.#access(owner) === "admin" ? "other" : "same";
+  }
+
+  /** Why the person who opened `support` may no longer help on this computer; null while they may. */
+  async #supportEnd(support: SupportWindow): Promise<SupportEnd | null> {
+    if (support.admission === "owner") {
+      return support.person === "installation" &&
+        this.#accessFor({ kind: "installation_owner" }) === "admin"
+        ? null
+        : "not_admin";
+    }
+    const { issuer, audience } = support;
+    const ask = this.#d.person;
+    if (support.admission !== "members" || issuer === null || audience === null || !ask) {
+      return "unanswered";
+    }
+    let answer: PagePersonResult;
+    try {
+      answer = await bounded(
+        ask({
+          interfaceVersion: OMNIGENT_SERVER_INTERFACE_VERSION,
+          issuer,
+          subject: support.sub,
+          audience,
+        }),
+        this.#d.personTimeoutMs ?? SUPPORT_ANSWER_MS,
+      );
+    } catch {
+      return "unanswered";
+    }
+    if (answer.action === "none") return "not_bound";
+    if (answer.action !== "member") return "unanswered";
+    if (answer.state !== "active") return answer.state;
+    const now: PagePersonFields =
+      answer.role === "owner" && answer.installationOwner === true
+        ? { kind: "installation_owner" }
+        : { kind: "member", memberId: answer.memberId, userId: answer.userId, role: answer.role };
+    // The same Access identity bound to a new membership (removed, then invited again) is
+    // someone new: the one who opened the window is gone.
+    if (personKey(now) !== support.person) return "another_member";
+    return this.#accessFor(now) === "admin" ? null : "not_admin";
   }
 
   /**
@@ -306,6 +457,19 @@ export class PageFront {
     return owner.data;
   }
 
+  /**
+   * An administrator's action on someone else's computer (D62): logged with the computer, the
+   * action and the actor's member ID (`personKey`), never the account or an address.
+   */
+  #logSupport(access: PageAccess, owner: PageOwner | undefined, action: string): void {
+    if (access !== "admin") return;
+    this.#d.log("page_support_action", {
+      computer: this.#computerId,
+      action,
+      actor: personKey(personOf(owner)),
+    });
+  }
+
   #checkInterface(version: number): void {
     if (version > WORKSPACE_INTERFACE_VERSION) {
       throw platformError("unsupported_version", `interface ${version}`);
@@ -334,7 +498,13 @@ export class PageFront {
     if (read.success) {
       this.#checkInterface(read.data.interfaceVersion);
       const state = await this.#state(); // `not_found` for a computer that does not exist
-      this.#authorize(read.data.owner, "view", state);
+      // A sign-in attempt's read is the sign-in's: its link and code are the owner's alone (D62).
+      const access = this.#authorize(
+        read.data.owner,
+        read.data.action === "sign_in_status" ? "sign_in" : "view",
+        state,
+      );
+      this.#logSupport(access, read.data.owner, read.data.action);
       return this.#read(read.data);
     }
     const front = PageFrontCall.safeParse(raw);
@@ -345,7 +515,8 @@ export class PageFront {
       if (this.#access(ownerIn(front.data)) === "none")
         this.#authorize(ownerIn(front.data), "fleet", state);
       const owner = await this.#checkIntent(front.data);
-      this.#authorize(owner, FRONT_ACTIONS[front.data.action], state);
+      const access = this.#authorize(owner, FRONT_ACTIONS[front.data.action], state);
+      this.#logSupport(access, owner, front.data.action);
       return this.#exclusive(() => this.#front(front.data, owner));
     }
     const parsed = PagesCall.safeParse(raw);
@@ -361,15 +532,20 @@ export class PageFront {
         result.computer,
       );
       if (access === "admin") {
-        // An administrator's view of someone else's computer: its fleet facts, the owner's
-        // account and the token for the administrator's own actions; no terminal or sign-in.
-        const { terminal: _t, signIn: _s, ...facts } = result.computer;
+        // An administrator's view of someone else's computer (D62): its facts and terminal, the
+        // owner's account and member ID, and the token for the administrator's own actions.
+        // Each service's sign-in state is in `setupCards`; `signIn` (the owner's attempts, and
+        // whether sign-in is offered) is dropped, so no attempt, link or code is ever here.
+        const { signIn: _s, ...facts } = result.computer;
+        const binding = this.#d.controller.ownership()?.binding ?? null;
         return {
           ...result,
           computer: {
             ...facts,
+            terminal: this.#d.terminal.view(),
             access,
-            ownerName: this.#d.controller.ownership()?.binding?.userId ?? null,
+            ownerName: binding?.userId ?? null,
+            ownerMemberId: binding?.memberId ?? null,
           },
           ...(named.success ? { intentToken: await this.intentFor(named.data) } : {}),
         };
@@ -406,24 +582,43 @@ export class PageFront {
     ) {
       return { action: "stop_without_saving", outcome: "refused", reason: "not_offered" };
     }
+    this.#logSupport(access, owner, call.action);
+    // The owner and the token go; who acted is journaled with the outcome (WP8.15).
     const { owner: _o, intent: _i, ...stripped } = call as Record<string, unknown>;
+    const actor = personKey(personOf(owner));
     if (CREDENTIAL_SENSITIVE.has(call.action)) {
       return this.#exclusive(async () => {
         await this.#d.terminal.close("a sign-in-sensitive step started");
-        return this.#d.controller.pages(stripped);
+        return this.#d.controller.pages(stripped, actor);
       });
     }
-    return this.#d.controller.pages(stripped);
+    return this.#d.controller.pages(stripped, actor);
   }
 
   async #front(call: PageFrontCall, owner: PageOwner): Promise<PageFrontResult> {
     switch (call.action) {
-      case "open_terminal":
-        return this.#d.terminal.open({
+      case "open_terminal": {
+        const before = this.#d.terminal.view().window;
+        const opened = await this.#d.terminal.open({
           operationId: call.operationId,
           owner,
           window: call.window,
         });
+        if (opened.outcome !== "accepted") return opened;
+        if (opened.window > before) {
+          // A new window: whoever opened it is its person (Codex r2 R2-1).
+          this.#bindWindow(opened.window, owner);
+          return opened;
+        }
+        // A capability for an open window, only for its own person: another membership of the
+        // same Access identity (the only other person the bridge's session check lets this far)
+        // gets a new window, and this one, its shell and the capability just issued end now.
+        if (this.#windowPerson(owner, opened.window) !== "same") {
+          await this.#endForeignWindow("open_terminal");
+          return { action: "open_terminal", outcome: "refused", reason: "window_closed" };
+        }
+        return opened;
+      }
       case "close_terminal":
         return {
           action: "close_terminal",
@@ -480,6 +675,35 @@ export class PageFront {
           ...(await this.#d.controller.setStagingKeepAwake({ on: call.on })),
         };
     }
+  }
+
+  /** Records the person of a window just opened: an administrator's, or none (the owner's). */
+  #bindWindow(window: number, owner: PageOwner): void {
+    if (this.#access(owner) !== "admin") {
+      this.#d.store.delete(SUPPORT_WINDOW_KEY);
+      return;
+    }
+    const record: SupportWindow = {
+      window,
+      person: personKey(personOf(owner)),
+      sub: owner.sub,
+      admission: owner.admission ?? null,
+      issuer: owner.issuer ?? null,
+      audience: owner.audience ?? null,
+    };
+    this.#d.store.put(SUPPORT_WINDOW_KEY, record);
+  }
+
+  /** Ends the current window, its streams and its shell: it is another person's (R2-1). */
+  async #endForeignWindow(action: string): Promise<void> {
+    const support = this.#supportWindow();
+    await this.#d.terminal.close("its window was opened by someone else");
+    this.#d.log("page_support_ended", {
+      computer: this.#computerId,
+      actor: support?.person ?? "none",
+      reason: "another_member",
+      action,
+    });
   }
 
   /** A page GET's read: changes nothing. */
@@ -543,12 +767,29 @@ export class PageFront {
         { status: 400 },
       );
     }
-    // The terminal is its owner's alone (WP8.4): anyone else's upgrade is not found, before the
-    // capability is even looked at.
+    // The terminal is its owner's, and an administrator's helping them (D62): anyone else's
+    // upgrade is not found, before the capability is even looked at. The capability stays bound
+    // to the Access subject and session it was issued to (`terminal.ts`).
     const access = this.#access(upgrade.data.owner);
-    if (access !== "owner") {
+    if (!pageAllows(access, "terminal", false)) {
       this.#d.log("page_refused", { action: "terminal", access });
       return notFound();
+    }
+    this.#logSupport(access, upgrade.data.owner, "terminal_connect");
+    // An administrator's stream only in the window they opened, as the same person (Codex r2
+    // R2-1): their Access identity as another membership ends that window and its shell; anyone
+    // else's upgrade is refused and changes nothing. The owner's are the bridge's to decide.
+    const person =
+      access === "admin"
+        ? this.#windowPerson(upgrade.data.owner, this.#d.terminal.view().window)
+        : "same";
+    if (person !== "same") {
+      if (person === "rebound") await this.#endForeignWindow("terminal_connect");
+      else this.#d.log("page_refused", { action: "terminal", access, reason: "not_its_window" });
+      return Response.json(
+        { error: { code: "forbidden", message: "Access denied.", retryable: false } },
+        { status: 403, headers: { "cache-control": "no-store" } },
+      );
     }
     return this.#d.terminal.connect(upgrade.data);
   }

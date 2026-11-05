@@ -106,10 +106,16 @@ export async function routePlatform(
       log({ event: "page_person_refused" });
       return refusedPage(403, "This account has no access to this installation's computers.");
     }
+    // With how ingress admitted it, and the Access issuer and audience (WP8.15): WorkspaceDO asks
+    // again whether an administrator still may help while their terminal is connected.
+    const { issuer, audience } = admitted.identity;
     const owner: PageOwner = {
       sub: admitted.identity.sub,
       sessionId: admitted.identity.sessionId,
       person,
+      ...(admitted.admission === undefined ? {} : { admission: admitted.admission }),
+      ...(issuer === undefined ? {} : { issuer }),
+      ...(audience === undefined ? {} : { audience }),
     };
     const backend = deps.backend ?? bindingsBackend(env);
     const parts = url.pathname.split("/").slice(2); // after "", "platform"
@@ -187,7 +193,7 @@ export async function routePlatform(
     }
     if (parts.length === 3 && parts[2] === "status") {
       if (!read) return methodNotAllowed("GET, HEAD");
-      return head(request, await statusRead(backend, owner, id, now(), log));
+      return head(request, await statusRead(backend, owner, id, now(), log, url));
     }
     if (parts.length === 3 && parts[2] === "staging-check") {
       if (request.method !== "POST") return methodNotAllowed("POST");

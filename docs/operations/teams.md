@@ -150,9 +150,9 @@ step below.
 2. B: `/platform/computers` lists B's computer and none of A's. Open A's computer page (A copies its
    address): not found.
 3. A: `/platform/computers` (linked from Settings → Computers, "Other people's computers are on the
-   computers page") lists B's computer as a fleet card ("Belongs to …") with Stop only;
-   its setup page and terminal are not found. Another person's computer setup and terminal stay
-   that person's alone, for owners and administrators too.
+   computers page") lists B's computer as a fleet card ("Belongs to …"), with **Manage**, Stop,
+   a link to B's page in Omnigent and the same notices as B's own card. Owners and administrators
+   may manage other people's computers (owner decision D62; the support access check below).
 4. B: open `/v1/sessions` in the browser: none of A's threads is listed. Open A's thread address:
    refused.
 5. A: B's thread **is** listed and opens. That is expected: owners and administrators keep access
@@ -160,6 +160,28 @@ step below.
 6. **Sharing:** A opens A's thread, Share, adds B as **Read**. B: the thread is now listed and
    opens, and B cannot send it a message. A: take B's access away again (the bin icon in the
    same dialog). B: the thread is refused again.
+
+**Support access** (owner decision D62; these steps need a release pinned at `cfo/teams`
+`b39cfba8c` or later, whose Omnigent lets an administrator wake a member's computer)
+
+1. B: leave B's computer asleep and signed out of Claude and Codex.
+2. A: on `/platform/computers`, B's fleet card, **Manage**. The page says "This computer belongs to
+   …. You're helping as an administrator." Both Claude and Codex say **Not signed in yet**, with
+   no sign-in button: "… signs in to Claude and Codex from this page, with their own accounts."
+3. A: **Open the terminal**. The page wakes B's computer through Omnigent ("Waking the
+   computer…") and then connects the terminal. Close it again.
+4. B: open the computer's page. It is still B's, and B's sign-in buttons are there. The
+   platform Worker's log has `page_support_action` lines with A's member ID and no address.
+
+An administrator's terminal on someone else's computer lasts only while their authority does,
+and stays the window of the person who opened it. WorkspaceDO asks Omnigent again every 15
+seconds while it is connected. The connected terminal (its input and output) ends within 35
+seconds of the administrator being made a member, suspended or removed, or of Omnigent not
+answering. The shell on the computer is ended by the terminal end WorkspaceDO then records; if
+WorkspaceDO was reset meanwhile, the computer's own reaper ends it about 45 seconds after it was
+left with nothing attached. The same Access identity bound to a new membership gets a new
+window, and the old one's shell ends. The platform Worker logs `page_support_ended` with the
+reason.
 
 **Suspension**
 

@@ -81,6 +81,7 @@ import {
   WorkspaceCommandReply,
   workspaceBackupPrefix,
 } from "@cfo/contracts";
+import { z } from "zod";
 import {
   type ComputerContainerPort,
   isConnectionLostError,
@@ -412,6 +413,18 @@ export async function fingerprintOf(request: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(stable(request)));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Who made a page action, as the page front names it (`personKey`): a team member, or the
+ * installation's owner. Never an account or an address.
+ */
+const PageActor = z.string().regex(/^(?:installation|member:[0-9a-f]{32})$/);
+
+/** A journaled page outcome as the page is answered: without the actor recorded beside it. */
+export function withoutActor(outcome: unknown): PagesResult {
+  const { actor: _a, ...result } = outcome as Record<string, unknown>;
+  return result as unknown as PagesResult;
 }
 
 /** The table's reply of the kind a call expects; anything else is a broken table. */
@@ -1913,7 +1926,15 @@ export class WorkspaceController {
   // -------------------------------------------------------------------------------------------
   // The pages (WP3.5's narrow interface; never the launcher's operations).
 
-  async pages(raw: unknown): Promise<PagesResult> {
+  /**
+   * The page calls, from WorkspaceDO's page front. `actor`: who made a mutating call, as the page
+   * front decided it (`personKey`: `member:<member ID>` or `installation`; WP8.15). It is
+   * journaled beside the call's outcome, inside the entry's opaque outcome, so the journal's
+   * storage format is unchanged: the fingerprint leaves it out, a repeat answers without it, and a
+   * previous release that replays the entry returns it as an extra field of a loose `PagesResult`
+   * its readers ignore.
+   */
+  async pages(raw: unknown, actor?: string): Promise<PagesResult> {
     const parsed = PagesCall.safeParse(raw);
     if (!parsed.success) throw platformError("bad_request", "not a PagesCall");
     checkInterface(parsed.data.interfaceVersion);
@@ -1926,15 +1947,19 @@ export class WorkspaceController {
     }
     const { interfaceVersion: _, ...identity } = call;
     const fingerprint = await fingerprintOf(identity);
+    const by = PageActor.safeParse(actor);
     try {
       return await this.#exclusive(async () => {
         this.#require();
         const prior = this.#opFind("page", call.operationId, fingerprint);
-        if (prior?.outcome) return prior.outcome as PagesResult;
+        if (prior?.outcome) return withoutActor(prior.outcome);
         // The action and its recorded outcome commit together, so a repeat after a crash returns
         // the outcome instead of acting again, perhaps on a later generation.
         return this.#pageAction(call, (result) =>
-          this.#opPut("page", call.operationId, fingerprint, result as unknown as Outcome),
+          this.#opPut("page", call.operationId, fingerprint, {
+            ...result,
+            ...(by.success ? { actor: by.data } : {}),
+          } as unknown as Outcome),
         );
       });
     } finally {

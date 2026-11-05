@@ -34,6 +34,8 @@ import {
   type LauncherResult,
   type PageFrontCall,
   type PageFrontResult,
+  type PagePersonCall,
+  type PagePersonResult,
   type PageReadCall,
   type PageReadResult,
   type PagesCall,
@@ -53,6 +55,8 @@ import { platformError } from "../shared/errors.ts";
 import {
   CONTROL_OBJECT_NAME,
   type ControlRpc,
+  OMNIGENT_SERVER_OBJECT_NAME,
+  type OmnigentServerRpc,
   type WorkspaceIdentity,
   type WorkspaceRpc,
   type WriteCheck,
@@ -127,6 +131,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
   /** This object's computer, from its name; null for an object not named by a computer ID. */
   readonly #computerId: ComputerId | null;
   readonly #front: PageFront | null;
+  readonly #terminal: TerminalBridge | null;
 
   constructor(ctx: DurableObjectState, env: PlatformEnv) {
     super(ctx, env);
@@ -136,6 +141,7 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       this.#computerId = null;
       this.#controller = null;
       this.#front = null;
+      this.#terminal = null;
       return;
     }
     this.#computerId = computerId.data;
@@ -222,13 +228,18 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       // A shell's end is owed to the supervisor (WP3.28): the runner sends it at once, not at its
       // next heartbeat. Deferred, since the bridge may record one inside a controller transition.
       endRecorded: () => queueMicrotask(() => controller.terminalEndOwed()),
+      // Support access (WP8.15): an administrator's terminal on someone else's computer goes on
+      // only while OmnigentServer still answers that they may help here.
+      authority: () => (front === null ? Promise.resolve(true) : front.supportAuthority()),
     });
     bridge = terminal;
+    this.#terminal = terminal;
     front = new PageFront(computerId.data, {
       store,
       controller,
       terminal,
       log: (event, fields) => logEvent("workspace", event, fields),
+      person: (call) => this.pagePerson(call),
     });
     this.#front = front;
     void ctx.blockConcurrencyWhile(async () => {
@@ -317,6 +328,18 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
     return CONTROLLER_TIMING;
   }
 
+  /**
+   * OmnigentServer's answer about an Access identity (WP8.3's `pagePerson`, the answer the pages'
+   * seam trusts): asked again while an administrator's terminal on someone else's computer is
+   * connected (WP8.15).
+   */
+  protected pagePerson(call: PagePersonCall): Promise<PagePersonResult> {
+    const server = this.env.OMNIGENT.getByName(
+      OMNIGENT_SERVER_OBJECT_NAME,
+    ) as unknown as OmnigentServerRpc;
+    return server.pagePerson(call);
+  }
+
   /** The setup terminal's timing (WP3.5); the production values unless a test overrides them. */
   protected terminalTiming(): Partial<TerminalTiming> {
     return {};
@@ -327,6 +350,14 @@ export class WorkspaceDO extends DurableObject<PlatformEnv> implements Workspace
       throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
     }
     return this.#controller;
+  }
+
+  /** The setup terminal's bridge (WP3.5). */
+  protected get terminal(): TerminalBridge {
+    if (this.#terminal === null) {
+      throw platformError("bad_request", "a WorkspaceDO is named by its computer ID");
+    }
+    return this.#terminal;
   }
 
   protected get front(): PageFront {

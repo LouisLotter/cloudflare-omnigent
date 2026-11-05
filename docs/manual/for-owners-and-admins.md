@@ -30,7 +30,17 @@ An owner changes a role with the role menu next to the person. Making someone an
 
 As an owner or administrator, you see the other members' cloud computers on the computers page, `/platform/computers`, under **The team's other computers**. To get there, use **Computers page** in Omnigent's sidebar, the link on **Settings → Computers** ("Other people's computers are on the computers page"), or **All computers** at the top of any of your own computers' pages.
 
-Each card says whose computer it is and how it is doing. You can **Stop** it, which ends its work in progress; it starts again when its owner next uses it. When a computer is being removed, you can also finish its removal there. You cannot open another person's computer page, sign in on it or open its terminal: its setup and its logins stay its owner's alone.
+Each card says whose computer it is and how it is doing, with the same notices its owner sees, and links to that person's page in Omnigent. **Stop** ends its work in progress; it starts again when its owner next uses it. When a computer is being removed, you can also finish its removal there.
+
+**Manage** opens the person's computer page, so you can help them with it. The page says whose computer it is and that you are helping as an administrator. From it you can:
+
+- see its status, its saves and whether Claude and Codex are signed in;
+- wake it, with **Open the terminal**, and use its terminal;
+- change its size, and stop it.
+
+Signing in to Claude and Codex stays with the person: their own subscription, with their own account. Where they see sign-in buttons, you see whether each service is signed in, and the page tells you they sign in themselves. Don't sign in for them in the terminal either. The computer stays theirs whatever you do on it.
+
+A computer has one terminal at a time. Opening it closes any terminal its owner has open on that computer, so tell them first if they might be using it. Your terminal on someone else's computer stays open only while you are an owner or administrator: if you are made a member, suspended or removed, it closes within about half a minute. Each thing you do on someone else's computer is logged with your member ID.
 
 ## Removing someone
 

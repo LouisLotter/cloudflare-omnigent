@@ -276,12 +276,28 @@ const SESSIONS: Record<Who, string> = {
   carol: "c3".repeat(32),
 };
 
-function routeAs(who: Who, path: string, init: RequestInit = {}): Promise<Response> {
+/** The Access issuer and audience members admission validated (WP8.15's re-check asks with them). */
+const ACCESS_ISSUER = "https://team.cloudflareaccess.com";
+const ACCESS_AUD = "a".repeat(64);
+
+function routeAs(
+  who: Who,
+  path: string,
+  init: RequestInit = {},
+  admission?: "members",
+): Promise<Response> {
   const admitted: Admitted = {
     ok: true,
     request: new Request(`${ORIGIN}${path}`, init),
     origin: ORIGIN,
-    identity: { sub: `${who}-sub`, sessionId: SESSIONS[who], issuedAt: 1, expiresAt: 2 },
+    identity: {
+      sub: `${who}-sub`,
+      sessionId: SESSIONS[who],
+      issuedAt: 1,
+      expiresAt: 2,
+      ...(admission === undefined ? {} : { issuer: ACCESS_ISSUER, audience: ACCESS_AUD }),
+    },
+    ...(admission === undefined ? {} : { admission }),
   };
   return routePlatform(admitted, webEnv, {
     person: async () => PEOPLE[who],
@@ -307,6 +323,72 @@ async function intentOn(who: Who, path: string): Promise<string | null> {
   const match =
     /data-intent="([0-9a-f]{64})"/.exec(html) ?? /name="intent" value="([0-9a-f]{64})"/.exec(html);
   return match?.[1] ?? null;
+}
+
+/** A fake ttyd on the computer's terminal port: each dial gets an open shell. */
+function fakeTtyd(c: Computer): void {
+  c.container.sim.terminal = () => {
+    const pair = new WebSocketPair();
+    pair[1].accept();
+    return new Response(null, {
+      status: 101,
+      webSocket: pair[0],
+      headers: { "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
+    });
+  };
+}
+
+async function terminalAs(
+  who: Who,
+  page: string,
+  body: Record<string, string>,
+  admission?: "members",
+) {
+  const response = await routeAs(
+    who,
+    `${page}/terminal`,
+    {
+      method: "POST",
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    admission,
+  );
+  return (await response.json()) as { outcome?: string; capability?: string; window?: number };
+}
+
+/** The browser's end of a bridged stream, and whether it has closed. */
+async function stream(page: string, capability: string, who: Who = "alice", admission?: "members") {
+  const response = await routeAs(
+    who,
+    `${page}/terminal`,
+    {
+      headers: {
+        upgrade: "websocket",
+        origin: ORIGIN,
+        "sec-websocket-protocol": `${TERMINAL_SUBPROTOCOL}, cfo-capability.${capability}`,
+      },
+    },
+    admission,
+  );
+  const socket = response.webSocket;
+  if (socket === null) return { status: response.status, closed: () => true, close: () => {} };
+  socket.accept();
+  let closed = false;
+  socket.addEventListener("close", () => {
+    closed = true;
+  });
+  return {
+    status: response.status,
+    closed: () => closed,
+    close: () => {
+      try {
+        socket.close(1000, "test over");
+      } catch {
+        // already closed
+      }
+    },
+  };
 }
 
 describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)", () => {
@@ -344,18 +426,42 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
       ),
     ).toBe(404);
 
-    // Carol: the fleet card, never the setup page; the stop.
+    // Carol, an administrator (WP8.15, D62): the fleet card with Manage and Alice's page in
+    // Omnigent; Alice's computer page under the support header, its status and the size; never a
+    // sign-in or a sign-in attempt.
     const list = await (await routeAs("carol", "/platform/computers")).text();
     expect(list).toContain(`data-fleet-computer="${c.computerId}"`);
     expect(list).toContain("Belongs to alice");
-    expect(await statusAs("carol", page)).toBe(404);
-    expect(await statusAs("carol", `${page}/status`)).toBe(403);
-    // Not offered to an administrator: 409, a page without the form.
+    expect(list).toContain(`href="${page}" data-admin-action="manage"`);
+    expect(list).toContain(`href="/settings/members/${ALICE_MEMBER}"`);
+    const carolsPage = await (await routeAs("carol", page)).text();
+    expect(carolsPage).toContain("This computer belongs to alice.");
+    expect(carolsPage).toContain("signs in to Claude and Codex from this page");
+    expect(carolsPage).not.toContain("data-sign-in=");
+    expect(await statusAs("carol", `${page}/state`)).toBe(200);
+    expect(await statusAs("carol", `${page}/status`)).toBe(200);
+    expect(await statusAs("carol", `${page}/sign-in?service=claude&attempt=1`)).toBe(403);
     const setSize = await routeAs("carol", `${page}/do/set-size`);
-    expect(setSize.status).toBe(409);
-    const notOffered = await setSize.text();
+    expect(setSize.status).toBe(200);
+    expect(await setSize.text()).toContain('data-confirm="set-size"');
+    // The revocation record stays the owner's: 409, a page without the form.
+    const record_ = await routeAs("carol", `${page}/do/record-revocation`);
+    expect(record_.status).toBe(409);
+    const notOffered = await record_.text();
     expect(notOffered).toContain('data-confirm="not-offered"');
     expect(notOffered).not.toContain("<form");
+    const sized = await routeAs(
+      "carol",
+      `${page}/do/set-size`,
+      post({
+        intent: (await intentOn("carol", page)) as string,
+        op: "op_01hzy4a7b8c9d0e1f2g3h4j5k9",
+        size: "basic",
+      }),
+    );
+    await sized.text();
+    expect(sized.status).toBe(303);
+    expect((await record(c.stub)).nextSize).toBe("basic");
     // Alice's token is hers: Carol presenting it is refused, and nothing stops.
     const alicesToken = (await intentOn("alice", page)) as string;
     expect(
@@ -374,12 +480,13 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await stopped.text();
     expect(stopped.status).toBe(303);
-    // Back to the list, whose notice names it a stop (WP8.10).
-    expect(stopped.headers.get("location")).toBe(
-      "/platform/computers?done=restart&outcome=accepted&as=admin",
-    );
+    // Back to the computer's page, whose notice names it a stop (WP8.10, WP8.15).
+    expect(stopped.headers.get("location")).toBe(`${page}?done=restart&outcome=accepted&as=admin`);
     await settle(c);
-    expect((await record(c.stub)).lifecycle.context.state).not.toBe("host_running");
+    const after = await record(c.stub);
+    expect(after.lifecycle.context.state).not.toBe("host_running");
+    // Carol acted on the computer, never as Alice: the binding still names Alice.
+    expect(after.ownership.binding).toMatchObject({ userId: "alice", memberId: ALICE_MEMBER });
   }, 60_000);
 
   it("never shows Alice's asleep computer as not connected, and offers only a lost host for removal", async () => {
@@ -501,7 +608,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await stopped.text();
     expect(stopped.headers.get("location")).toBe(
-      "/platform/computers?done=stop-without-saving&outcome=accepted&as=admin",
+      `${page}?done=stop-without-saving&outcome=accepted&as=admin`,
     );
     for (
       let i = 0;
@@ -586,9 +693,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
       }),
     );
     await signOut.text();
-    expect(signOut.headers.get("location")).toBe(
-      "/platform/computers?done=sign-out&outcome=accepted&as=admin",
-    );
+    expect(signOut.headers.get("location")).toBe(`${page}?done=sign-out&outcome=accepted&as=admin`);
     for (let i = 0; i < 60; i++) {
       const r = await record(c.stub);
       if (r.signOut.job === null && r.lifecycle.context.state === "removal_pending" && i > 0) break;
@@ -622,7 +727,7 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
     await deleted.text();
     expect(deleted.headers.get("location")).toBe(
-      "/platform/computers?done=delete-without-sign-out&outcome=accepted&as=admin",
+      `${page}?done=delete-without-sign-out&outcome=accepted&as=admin`,
     );
     const credentialKey = tried.credential?.object.key ?? "";
     expect(credentialKey).not.toBe("");
@@ -638,7 +743,9 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     );
   }, 120_000);
 
-  it("refuses Bob's and Carol's terminal upgrades before the capability is looked at", async () => {
+  // WP8.15 (D62) replaces WP8.4's "Bob's and Carol's": Carol, an administrator, opens Alice's
+  // terminal with her own capability, bound to her own Access session; Bob is not found.
+  it("bridges Carol's own terminal capability on Alice's computer, never one replayed in another session, and refuses Bob before the capability is looked at", async () => {
     const host = newHost();
     const alice: LauncherOwner = {
       userId: "alice",
@@ -648,7 +755,9 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
     };
     const c = await provisionFor(host, alice);
     await wake(c, { hostId: host, token: TOKEN });
-    const upgrade = (who: Who) =>
+    fakeTtyd(c);
+    const page = `/platform/computers/${c.computerId}`;
+    const upgrade = (who: Who, capability: string, sessionId = SESSIONS[who]) =>
       c.stub.fetch(
         new Request("https://workspace/", {
           headers: {
@@ -656,16 +765,136 @@ describe("a computer's pages through the real routes and WorkspaceDO (T3, T13)",
             "x-cfo-terminal": JSON.stringify({
               interfaceVersion: 1,
               computerId: c.computerId,
-              owner: { sub: `${who}-sub`, sessionId: SESSIONS[who], person: PEOPLE[who] },
-              capability: "A".repeat(43),
+              owner: { sub: `${who}-sub`, sessionId, person: PEOPLE[who] },
+              capability,
             }),
           },
         }),
       );
-    expect((await upgrade("bob")).status).toBe(404);
-    expect((await upgrade("carol")).status).toBe(404);
-    expect((await upgrade("alice")).status).toBe(403); // hers: the unknown capability is refused
+    expect((await upgrade("bob", "A".repeat(43))).status).toBe(404);
+    // Alice's and Carol's reach the capability check: an unknown one is refused.
+    expect((await upgrade("carol", "A".repeat(43))).status).toBe(403);
+    expect((await upgrade("alice", "A".repeat(43))).status).toBe(403);
+    const intent = (await intentOn("carol", page)) as string;
+    const opened = await terminalAs("carol", page, {
+      op: "op_01hzy4a7b8c9d0e1f2g3h4j5q1",
+      intent,
+      mode: "open",
+    });
+    expect(opened.outcome).toBe("accepted");
+    // Replayed in another of Carol's sessions: refused, and spent.
+    expect((await upgrade("carol", opened.capability as string, "c4".repeat(32))).status).toBe(403);
+    const fresh = await terminalAs("carol", page, {
+      op: "op_01hzy4a7b8c9d0e1f2g3h4j5q2",
+      intent,
+      mode: "reconnect",
+      window: String(opened.window),
+    });
+    expect(fresh.outcome).toBe("accepted");
+    const connected = await stream(page, fresh.capability as string, "carol");
+    expect(connected.status).toBe(101);
+    connected.close();
+    // Carol's terminal never moved the computer: the binding still names Alice.
+    expect((await record(c.stub)).ownership.binding).toMatchObject({
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+    });
+    await settle(c);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Codex WP8.15 r1 R1: Carol's terminal on Alice's computer ends once Carol loses her authority
+// there, through WorkspaceDO's own re-check of OmnigentServer's answer, whatever Alice's computer
+// does meanwhile. The real routes, WorkspaceDO, bridge and simulated computer; OmnigentServer's
+// answer about Carol is the test's (`assembly.pagePeople`).
+
+describe("an administrator's terminal ends with their authority (Codex WP8.15 r1 R1)", () => {
+  const carolAs = (fields: Partial<Extract<PagePersonResult, { action: "member" }>> = {}) =>
+    ({
+      action: "member",
+      memberId: PEOPLE.carol.memberId,
+      userId: "carol",
+      role: "admin",
+      state: "active",
+      ...fields,
+    }) as PagePersonResult;
+
+  afterEach(() => {
+    assembly.pagePeople.clear();
   });
+
+  /** Alice's awake computer with Carol's terminal bridged, in members admission. */
+  async function carolsTerminal() {
+    const host = newHost();
+    const c = await provisionFor(host, {
+      userId: "alice",
+      memberId: ALICE_MEMBER,
+      teamId: TEAM,
+      hostId: host,
+    });
+    await wake(c, { hostId: host, token: TOKEN });
+    fakeTtyd(c);
+    assembly.pagePeople.set("carol-sub", carolAs());
+    const page = `/platform/computers/${c.computerId}`;
+    const html = await (await routeAs("carol", page, {}, "members")).text();
+    const intent = /data-intent="([0-9a-f]{64})"/.exec(html)?.[1] as string;
+    const opened = await terminalAs(
+      "carol",
+      page,
+      { op: "op_01hzy4a7b8c9d0e1f2g3h4j5r1", intent, mode: "open" },
+      "members",
+    );
+    expect(opened.outcome).toBe("accepted");
+    const connected = await stream(page, opened.capability as string, "carol", "members");
+    expect(connected.status).toBe(101);
+    const terminal = async () =>
+      (
+        (await c.stub.pages({
+          action: "state",
+          interfaceVersion: WORKSPACE_INTERFACE_VERSION,
+          owner: { sub: "alice-sub", sessionId: SESSIONS.alice, person: PEOPLE.alice },
+        })) as { computer: { terminal: { open: boolean; streams: number } } }
+      ).computer.terminal;
+    expect(await terminal()).toMatchObject({ open: true, streams: 1 });
+    return { c, connected, terminal };
+  }
+
+  it("keeps it while Carol is still an active administrator", async () => {
+    const { c, connected, terminal } = await carolsTerminal();
+    await c.stub.checkSupport();
+    await c.stub.checkSupport();
+    expect(connected.closed()).toBe(false);
+    expect(await terminal()).toMatchObject({ open: true, streams: 1 });
+    connected.close();
+    await settle(c);
+  }, 60_000);
+
+  it.each([
+    ["demoted to member", carolAs({ role: "member" })],
+    ["suspended", carolAs({ state: "suspended" })],
+    ["removed", carolAs({ state: "removed" })],
+    ["unreachable: the call fails", "throws" as const],
+    ["unreachable: no answer in time", undefined],
+  ])(
+    "closes Carol's connected terminal and its window once she is %s; Alice's computer is untouched",
+    async (_name, answer) => {
+      const { c, connected, terminal } = await carolsTerminal();
+      if (answer === undefined) assembly.pagePeople.delete("carol-sub");
+      else assembly.pagePeople.set("carol-sub", answer);
+      await c.stub.checkSupport();
+      for (let i = 0; i < 50 && !connected.closed(); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(connected.closed()).toBe(true);
+      expect(await terminal()).toMatchObject({ open: false, streams: 0 });
+      const after = await record(c.stub);
+      expect(after.lifecycle.context.state).toBe("host_running");
+      expect(after.ownership.binding).toMatchObject({ userId: "alice", memberId: ALICE_MEMBER });
+      await settle(c);
+    },
+    60_000,
+  );
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -732,7 +961,7 @@ describe("the pages in members admission, through the web Worker's route (WP8.3)
     return [response.status, await response.text()];
   }
 
-  it("shows a member her own computer, hides it from another, and gives an admin the fleet view", async () => {
+  it("shows a member her own computer, hides it from another, and gives an admin the fleet view and her page", async () => {
     answers = { ...MEMBERS };
     const host = newHost();
     const c = await provisionFor(host, {
@@ -755,7 +984,10 @@ describe("the pages in members admission, through the web Worker's route (WP8.3)
 
     const [, carolListed] = await statusOf("carol-sub", "/platform/computers");
     expect(carolListed).toContain(`data-fleet-computer="${c.computerId}"`);
-    expect((await statusOf("carol-sub", page))[0]).toBe(404);
+    // An administrator manages a member's computer from its page (WP8.15, D62).
+    const [carolsStatus, carolsPage] = await statusOf("carol-sub", page);
+    expect(carolsStatus).toBe(200);
+    expect(carolsPage).toContain("You're helping as an administrator.");
 
     // Nobody but the installation's owner reaches the owner's own pages: the others are told
     // where their own password is changed, with no form (WP8.10).
@@ -785,57 +1017,6 @@ describe("the pages in members admission, through the web Worker's route (WP8.3)
 // connected stream and an issued capability not yet used.
 
 describe("a refused launcher call leaves the owner's terminal alone (Codex r1-1)", () => {
-  /** A fake ttyd on the computer's terminal port: each dial gets an open shell. */
-  function fakeTtyd(c: Computer): void {
-    c.container.sim.terminal = () => {
-      const pair = new WebSocketPair();
-      pair[1].accept();
-      return new Response(null, {
-        status: 101,
-        webSocket: pair[0],
-        headers: { "sec-websocket-protocol": TERMINAL_SUBPROTOCOL },
-      });
-    };
-  }
-
-  async function terminalAs(who: Who, page: string, body: Record<string, string>) {
-    const response = await routeAs(who, `${page}/terminal`, {
-      method: "POST",
-      headers: { origin: ORIGIN, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return (await response.json()) as { outcome?: string; capability?: string; window?: number };
-  }
-
-  /** The browser's end of a bridged stream, and whether it has closed. */
-  async function stream(page: string, capability: string) {
-    const response = await routeAs("alice", `${page}/terminal`, {
-      headers: {
-        upgrade: "websocket",
-        origin: ORIGIN,
-        "sec-websocket-protocol": `${TERMINAL_SUBPROTOCOL}, cfo-capability.${capability}`,
-      },
-    });
-    const socket = response.webSocket;
-    if (socket === null) return { status: response.status, closed: () => true, close: () => {} };
-    socket.accept();
-    let closed = false;
-    socket.addEventListener("close", () => {
-      closed = true;
-    });
-    return {
-      status: response.status,
-      closed: () => closed,
-      close: () => {
-        try {
-          socket.close(1000, "test over");
-        } catch {
-          // already closed
-        }
-      },
-    };
-  }
-
   const aliceOwner = {
     sub: "alice-sub",
     sessionId: SESSIONS.alice,
