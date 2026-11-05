@@ -1314,6 +1314,10 @@ describe("a computer's pages are its owner's (WP8.4)", () => {
     expect(
       await codeOf(unbound.front.pages({ action: "state", interfaceVersion: 1, owner: BOB })),
     ).toBe("not_found");
+    // An administrator helps on it as the installation owner's: no account or member to name.
+    expect(
+      await unbound.front.pages({ action: "state", interfaceVersion: 1, owner: CAROL }),
+    ).toMatchObject({ computer: { access: "admin", ownerName: null, ownerMemberId: null } });
     const { front } = alicesComputer();
     expect(
       await front.pages({ action: "state", interfaceVersion: 1, owner: FOUNDER }),

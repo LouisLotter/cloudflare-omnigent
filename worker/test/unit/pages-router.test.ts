@@ -26,7 +26,7 @@ import {
 import type { WebEnv } from "../../src/env.ts";
 import type { Admitted } from "../../src/ingress/index.ts";
 import type { PagesBackend, StateResult } from "../../src/pages/backend.ts";
-import { ACTIONS, PAGE_ACTION_OF } from "../../src/pages/computers.ts";
+import { ACTIONS, PAGE_ACTION_OF, removalSection } from "../../src/pages/computers.ts";
 import { PAGES_CSS } from "../../src/pages/html.ts";
 import { MAX_FORM_BYTES } from "../../src/pages/http.ts";
 import { signInHtml, statusHtml } from "../../src/pages/owner-actions.ts";
@@ -2214,6 +2214,131 @@ describe("the person behind a page (WP8.4)", () => {
       "<h1>Restart this computer</h1>",
     );
   });
+
+  // WP8.15 (D62): the removal section on an administrator's page offers only what WorkspaceDO
+  // lets an administrator do; the owner's own steps before Omnigent's deletion, and the
+  // revocation record, are never offered.
+  it.each([
+    ["before any removal", {}, ['data-removal-step="owner"'], []],
+    [
+      "signing out without a removal",
+      { removal: { ...pageState().removal, signOut: "requested" as const } },
+      ['data-removal-step="signing_out"'],
+      [],
+    ],
+    [
+      "pending, not signed out",
+      {
+        lifecycle: "removal_pending" as const,
+        status: "stopped" as const,
+        removal: { ...pageState().removal, state: "pending" as const, signOutRunning: false },
+      },
+      ['data-removal-step="pending"', "/do/sign-out"],
+      ["/do/resolve-removal", "/do/delete-without-sign-out"],
+    ],
+    [
+      "pending, signing out",
+      {
+        removal: {
+          ...pageState().removal,
+          state: "pending" as const,
+          signOut: "requested" as const,
+          signOutRunning: true,
+        },
+      },
+      ["Signing out…"],
+      ["/do/sign-out"],
+    ],
+    [
+      "pending, verifying",
+      {
+        removal: {
+          ...pageState().removal,
+          state: "pending" as const,
+          signOut: "tombstoned" as const,
+          signOutRunning: true,
+        },
+      },
+      ["being verified"],
+      ["/do/sign-out"],
+    ],
+    [
+      "pending, settled",
+      {
+        lifecycle: "removal_pending" as const,
+        status: "stopped" as const,
+        removal: {
+          ...pageState().removal,
+          state: "pending" as const,
+          signOut: "verified" as const,
+          settled: true,
+          signOutRunning: false,
+        },
+      },
+      ["/do/resolve-removal"],
+      ["/do/sign-out"],
+    ],
+    [
+      "pending, a removed member's computer whose save keeps failing",
+      {
+        removal: {
+          ...pageState().removal,
+          state: "pending" as const,
+          signOut: "verified" as const,
+          memberRemoved: true,
+          refusedStops: 3,
+          signOutRunning: false,
+        },
+      },
+      ["/do/stop-without-saving"],
+      [],
+    ],
+    [
+      "pending, verified, still running",
+      {
+        removal: {
+          ...pageState().removal,
+          state: "pending" as const,
+          signOut: "verified" as const,
+          signOutRunning: false,
+        },
+      },
+      ["The removal can finish once the computer has stopped"],
+      ["/do/"],
+    ],
+    [
+      "deleting",
+      {
+        lifecycle: "removed" as const,
+        removal: { ...pageState().removal, state: "resolved" as const, deleting: true },
+      },
+      ['data-removal-step="deleting"'],
+      [],
+    ],
+    [
+      "removed",
+      {
+        lifecycle: "removed" as const,
+        removal: { ...pageState().removal, state: "resolved" as const },
+      },
+      ['data-removal-step="resolved"'],
+      [],
+    ],
+  ] as const)(
+    "shows an administrator only their own removal steps: %s",
+    (_name, fields, has, lacks) => {
+      const state = pageState({
+        ...(fields as Partial<ComputerPageState>),
+        access: "admin",
+        ownerName: "alice",
+      });
+      const html = removalSection(computerView(state, NOW), state);
+      for (const text of has) expect(html).toContain(text);
+      for (const text of lacks) expect(html).not.toContain(text);
+      expect(html).not.toContain("/do/record-revocation");
+      expect(html).not.toContain('data-link="omnigent-delete"');
+    },
+  );
 
   /** Alice's computer as an administrator sees it with its removal pending. */
   function pendingFleet(removal: Partial<ComputerPageState["removal"]>) {
