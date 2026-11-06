@@ -202,9 +202,11 @@ def test_a_policy_allow_window_stops_the_app(tmp_path: Path) -> None:
             "RuntimeCaps",
             partial(runtime_caps.RuntimeCaps, native_hook_allow_cache_seconds=lambda: 60.0),
         )
-        with pytest.raises(RuntimeError, match="native_hook_allow_cache_seconds"):
-            with serve_app(tmp_path):
-                pass
+        with (
+            pytest.raises(RuntimeError, match="native_hook_allow_cache_seconds"),
+            serve_app(tmp_path),
+        ):
+            pass
 
 
 def test_launcher_is_registered_through_sandbox_config_with_the_reaper(

@@ -17,8 +17,9 @@ allows the disk in tests and local runs only (G2-DUR-001).
 
 Some settings are pinned by the image and cannot be changed by the environment at all:
 accounts mode, the release-feature set (``OMNIGENT_FEATURES``: the features reviewed at the pinned
-commit, never ``harness_install`` or ``session_orchestration``), public sharing off (no "anyone with the link" access, at the read
-level), default-public sessions off, Omnigent's product analytics off
+commit, never ``harness_install`` or ``session_orchestration``), public sharing off (no "anyone
+with the link" access, at the read level), default-public sessions off, Omnigent's product
+analytics off
 (``OMNIGENT_ANALYTICS=0``, owner decision D49), the database and data paths, and the
 managed-sandbox reaper. Variables that would select integrations the image does not wire
 (Databricks, AWS KMS, Vault) are removed from the app's environment.
