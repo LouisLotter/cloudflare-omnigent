@@ -40,7 +40,7 @@ def test_pinned_versions() -> None:
     assert _run("/usr/local/bin/claude", "--version").split()[0] == claude
     codex_line = _run("/usr/local/bin/codex", "--version").strip().splitlines()[-1]
     assert codex_line == f"codex-cli {codex}"
-    assert _run("/opt/venv/bin/omnigent", "--version").split()[1] == "0.20.0"
+    assert _run("/opt/venv/bin/omnigent", "--version").split()[1] == "0.21.0"
     assert _run("/usr/local/bin/gh", "--version").split()[2] == _pin("GH_VERSION")
     assert _run("/usr/local/bin/ttyd", "--version").split()[2].startswith(_pin("TTYD_VERSION"))
     assert _run("/usr/bin/tmux", "-V").strip() == "tmux 3.5a"  # WP3.28

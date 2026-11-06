@@ -9,7 +9,7 @@
 #
 # What it holds:
 #   - Omnigent's host, built from the fork LouisLotter/omnigent at the pinned commit, the same as
-#     the server image's (0.20.0, `cfo/upgrade-0.20.0`). The stages mirror the `host` target of
+#     the server image's (0.21.0, `cfo/upgrade-0.21.0`). The stages mirror the `host` target of
 #     the fork's deploy/docker/Dockerfile, whose SHA-256 is checked, so a commit bump fails here
 #     until the mirror is reviewed. Differences:
 #     Python packages install from the fork's uv.lock; only Claude Code and Codex are installed
@@ -33,7 +33,7 @@
 # token only with `start_host`.
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
-ARG OMNIGENT_COMMIT=b39cfba8c36d55c148d255ea928945675c01fac5
+ARG OMNIGENT_COMMIT=67358a0f7d6b73c51c79e54147ec1028ae55a19e
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
@@ -256,7 +256,7 @@ RUN /usr/local/bin/python3 -I -c "import cfo_computer.main, cfo_computer.capture
  && /opt/venv/bin/python -I -c "import omnigent.host.connect, omnigent.onboarding.sandboxes.base"
 
 LABEL org.opencontainers.image.source="https://github.com/LouisLotter/cloudflare-omnigent" \
-      cloudflare-omnigent.omnigent-commit="b39cfba8c36d55c148d255ea928945675c01fac5" \
+      cloudflare-omnigent.omnigent-commit="67358a0f7d6b73c51c79e54147ec1028ae55a19e" \
       cloudflare-omnigent.claude-code="${CLAUDE_CODE_VERSION}" \
       cloudflare-omnigent.codex="${CODEX_VERSION}" \
       cloudflare-omnigent.gh="${GH_VERSION}" \

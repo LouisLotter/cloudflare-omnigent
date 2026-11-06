@@ -110,6 +110,32 @@ def test_create_app_accepts_every_keyword_the_image_passes() -> None:
 
 
 @requires_omnigent
+def test_what_the_image_leaves_to_create_apps_defaults_stays_off() -> None:
+    """0.21.0's ``create_app`` arguments the image does not pass, each at the default reviewed:
+    ``harness_install`` follows the feature, off here; ``automations`` keeps the schedules page;
+    the suppressed names are only for a caller that seeded agents itself."""
+    from omnigent.server.app import create_app
+
+    parameters = inspect.signature(create_app).parameters
+    assert parameters["harness_install"].default is None
+    assert parameters["automations"].default is None
+    assert parameters["suppressed_agent_names"].default == frozenset()
+    assert parameters["default_agents_seeded"].default is False
+
+
+@requires_omnigent
+def test_a_policy_allow_window_comes_from_no_default_and_no_entrypoint() -> None:
+    import dataclasses
+
+    from omnigent.runtime.caps import RuntimeCaps
+
+    fields = {f.name: f for f in dataclasses.fields(RuntimeCaps)}
+    assert fields["native_hook_allow_cache_seconds"].default is None
+    assert "native_hook_allow_cache_seconds" not in DOCKER_ENTRYPOINT.read_text()
+    assert "native_hook_allow_cache_seconds=" not in inspect.getsource(image_app)
+
+
+@requires_omnigent
 def test_omnigent_takes_the_pinned_runner_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     # Omnigent ignores, with only a warning, a value outside its lease and its ceiling.
     from omnigent.server.routes._sessions import common
@@ -289,13 +315,16 @@ def test_the_page_count_reads_omnigents_service_table() -> None:
     assert "row.deleted_at is None" in inspect.getsource(mcp_service_store.McpServiceStore.scan)
 
 
-#: Omnigent's head revision at the previous pin (``0116b9f53``), and the MCP page's migration
-#: after it at this pin (WP8.14, docs/compatibility.md).
+#: Omnigent's head revision at ``0116b9f53``, and the MCP page's migration after it (WP8.14,
+#: docs/compatibility.md).
 PREVIOUS_HEAD = "c0201a2b3c4d"
 PAGE_MIGRATION = "mr1a2b3c4d5e"
-#: The head at this pin: the team model's migrations after the page's (WP8.11), then the record
-#: of member removals (WP8.9, compatibility.md).
-HEAD = "rm1a2b3c4d5e"
+#: The head at the previous pin ``b39cfba8c``: the team model's migrations after the page's
+#: (WP8.11), then the record of member removals (WP8.9, compatibility.md).
+TEAM_HEAD = "rm1a2b3c4d5e"
+#: The head at this pin: the migration that joins ``TEAM_HEAD`` and Omnigent 0.21.0's
+#: ``d0a1f879a01d``.
+HEAD = "c0211a2b3c4d"
 
 
 @requires_omnigent
@@ -329,6 +358,33 @@ def test_a_database_of_the_previous_pin_is_upgraded_at_start_with_the_page_table
     assert {"mcp_registry_services", "mcp_registry_service_tools"} <= tables
     assert {"teams", "team_members", "team_identity_bindings", "team_invitations"} <= tables
     assert count_admin_services(db) == 0
+
+
+@requires_omnigent
+def test_a_database_of_the_team_pin_is_upgraded_at_start_to_the_joined_head(
+    tmp_path: Path,
+) -> None:
+    """The step an installation on 0.20.0 takes at its first start on this pin: 0.21.0's one
+    migration, then the join, leaving a single head and the schedule's new columns."""
+    from alembic import command
+    from omnigent.db.utils import _build_alembic_config, _create_engine, _get_current_db_heads
+
+    ep = image_app.load_docker_entrypoint(DOCKER_ENTRYPOINT)
+    db = tmp_path / "omnigent.db"
+    url = f"sqlite:///{db}"
+    command.upgrade(_build_alembic_config(url), TEAM_HEAD)
+    engine = _create_engine(url)
+    try:
+        assert _get_current_db_heads(engine) == (TEAM_HEAD,)
+        ep.run_migrations(url)
+        assert _get_current_db_heads(engine) == (HEAD,)
+    finally:
+        engine.dispose()
+    import sqlite3
+
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(scheduled_tasks)")}
+    assert {"session_mode", "session_id"} <= columns
 
 
 @requires_omnigent
