@@ -163,7 +163,7 @@ step below.
 
 **Support access** (owner decision D62; these steps need a release pinned at `b39cfba8c` or
 later on the fork, whose Omnigent lets an administrator wake a member's computer; this release
-pins `67358a0f7`)
+pins `5daae9272`)
 
 1. B: leave B's computer asleep and signed out of Claude and Codex.
 2. A: on `/platform/computers`, B's fleet card, **Manage**. The page says "This computer belongs to
