@@ -366,6 +366,41 @@
       "path": "work/logs_2.sqlite",
       "action": "save",
       "rule": "workspace"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/child_usage_baselines.json",
+      "action": "save",
+      "rule": "codex-bridge-continuation"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/child_usage_baselines.json.a1b2c3d4",
+      "action": "exclude",
+      "rule": "codex-bridge-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/child_usage_baselines.lock",
+      "action": "exclude",
+      "rule": "codex-bridge-locks"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/policy_allow_until",
+      "action": "exclude",
+      "rule": "codex-bridge-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/policy_allow_until.lock",
+      "action": "exclude",
+      "rule": "codex-bridge-locks"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/policy_allow_until.revoked",
+      "action": "exclude",
+      "rule": "codex-bridge-runtime"
+    },
+    {
+      "path": ".omnigent/codex-native/0123456789abcdef0123456789abcdef/.policy_allow_until.4242.tmp",
+      "action": "exclude",
+      "rule": "codex-bridge-runtime"
     }
   ]
 }
