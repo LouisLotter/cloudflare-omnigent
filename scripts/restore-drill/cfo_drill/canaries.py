@@ -5,7 +5,7 @@
 - a password change (it rotates the account generation, so it comes first: grants issued
   before it stop refreshing);
 - a login that issues a refresh grant, and a second one whose grant is then revoked;
-- an admin invite;
+- an admin invite, from a browser sign-in (Omnigent refuses a bearer credential here);
 - schedules: one created, one created then edited, one created then deleted;
 - transcript items in a new conversation (core change 14's acknowledged items).
 
@@ -134,6 +134,18 @@ class Omnigent:
         if response.status_code != 200:
             raise RuntimeError(f"login failed with {response.status_code}")
         return {"Authorization": f"Bearer {response.json()['token']}"}
+
+    def browser(self, password: str) -> dict[str, str]:
+        """A browser's sign-in, as the header that presents its session cookie.
+
+        Only the cookie a sign-in sets carries Omnigent's browser mark, and inviting people takes
+        that mark. It stays out of the client's jar, as in :meth:`login`: there it would ride on
+        every later call, and a secure cookie would not go over the harness's plain connection.
+        """
+        response = self.login(password)
+        if response.status_code != 200:
+            raise RuntimeError(f"login failed with {response.status_code}")
+        return {"Cookie": "; ".join(f"{k}={v}" for k, v in response.cookies.items())}
 
     def agent_id(self, bearer: dict[str, str]) -> str:
         body = self.http.get("/v1/agents", headers=bearer).json()
@@ -267,10 +279,11 @@ def write_canaries(
             )
 
     bearer = client.bearer(secrets.password)
+    browser = client.browser(secrets.password)
     before = _ids(live, tokens_sql)
     response = _timed(
         "admin_invite",
-        lambda: client.http.post("/auth/invite", json={"is_admin": False}, headers=bearer),
+        lambda: client.http.post("/auth/invite", json={"is_admin": False}, headers=browser),
         run,
     )
     for token_id in _new_ids(live, tokens_sql, before):
