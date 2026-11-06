@@ -507,7 +507,7 @@ def test_running_image_pins_features_and_wires_no_extra_integrations(
     ).start()
     server.wait_healthy()
     info = httpx.get(f"{server.url}/v1/info", timeout=10).json()
-    assert not any(info["features"].values())
+    assert {name for name, on in info["features"].items() if on} == {"codex_plan_at_launch"}
     assert info["sharing_mode"] == "on" and info["public_sharing_enabled"] is False
     names = _process_env_names(server, "cfo_server.app")
     assert "OMNIGENT_DATABRICKS_CLIENT_ID" not in names

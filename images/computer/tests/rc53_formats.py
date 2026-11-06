@@ -69,6 +69,7 @@ def write() -> dict:
     from omnigent.harnesses.codex_native import bridge as xb
     from omnigent.host import connect
     from omnigent.inner import codex_executor
+    from omnigent.native import policy_allow_cache
     from omnigent.runner import subagent_routing
     from omnigent.runner.tool_dispatch import build_native_relay_tool_schemas
 
@@ -170,6 +171,14 @@ def write() -> dict:
     codex_executor.materialize_codex_provider_config(
         codex_home, overrides, key_file=xbridge / "provider_key"
     )
+    # What a Codex hook leaves after a server's answer, and a child thread's inherited usage.
+    policy_allow_cache.record(
+        xbridge,
+        policy_allow_cache.generation(xbridge),
+        {"result": "POLICY_ACTION_ALLOW"},
+        requested_at=0.0,
+    )
+    xb.record_child_usage_baseline(xbridge, "thread_child", (5000, 4000, 100))
 
     # The CLIs' logins, in their own formats.
     claude = HOME / ".claude"

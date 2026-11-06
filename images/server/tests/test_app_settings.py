@@ -4,10 +4,11 @@ registration and the reaper. In process, against the pinned Omnigent build."""
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
-from conftest import AppHarness, requires_omnigent
+from conftest import AppHarness, omnigent_available, requires_omnigent, serve_app
 
 pytestmark = requires_omnigent
 
@@ -61,52 +62,151 @@ def test_sharing_writes_are_refused_by_omnigent_itself(
         assert not (data_dir / name).exists()
 
 
+#: The release features the app runs with at the pinned commit, written out here on purpose: a
+#: fork bump that moves a default fails until someone reviews the feature and changes this line
+#: and ``REVIEWED_FEATURES``. ``claude_osc_status`` is a runner feature; ``/v1/info`` lists only
+#: what the web app reads.
+ENABLED_FEATURES = ("claude_osc_status", "codex_plan_at_launch")
+ENABLED_IN_INFO = {"codex_plan_at_launch"}
+
+
 def test_info_reports_pinned_features_and_sharing(app_harness: AppHarness) -> None:
     info = app_harness.client.get("/v1/info").json()
     assert info["sharing_mode"] == "on"
     assert info["public_sharing_enabled"] is False
-    assert not any(info.get("features", {}).values())
-    assert info["features"].get("harness_install") is False
+    assert {name for name, on in info["features"].items() if on} == ENABLED_IN_INFO
+    assert info["features"]["harness_install"] is False
+    assert info["features"]["session_orchestration"] is False
+    assert info["features"]["sandbox_profiles"] is False
+    assert info["features"]["automations_v2"] is False
+    # create_app's 0.21.0 arguments the image leaves alone: nothing new is on.
+    assert info["harness_install_enabled"] is False
+    assert info["installable_harnesses"] == []
+    assert info["automations_enabled"] is True
+    assert info["picker"] == {"restrict_to_agent_names": [], "default_agent_name": None}
 
 
-def test_the_app_runs_with_omnigents_release_defaults(
+def test_the_app_runs_with_exactly_the_reviewed_features(
     app_harness: AppHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Since 0.20.0 an empty ``OMNIGENT_FEATURES`` means each feature's release default. The app
-    gets exactly those, never ``harness_install`` and never 0.20.0's scheduler (D38)."""
+    """Omnigent's release defaults less ``session_orchestration`` (D63), and nothing else."""
     from omnigent.server.feature_flags import FEATURE_DEFINITIONS, Feature
 
     from cfo_server.app import pinned_feature_flags
 
-    defaults = {d.feature for d in FEATURE_DEFINITIONS if d.default_enabled}
     flags = app_harness.app.state.feature_flags
-    assert {f for f in Feature if flags.enabled(f)} == defaults
-    assert not flags.enabled(Feature.HARNESS_INSTALL)
-    assert not flags.enabled(Feature.AUTOMATIONS_V2)
+    assert flags.enabled_names() == ENABLED_FEATURES
+    defaults = {d.feature for d in FEATURE_DEFINITIONS if d.default_enabled}
+    assert {f for f in Feature if flags.enabled(f)} == defaults - {Feature.SESSION_ORCHESTRATION}
     # The environment never changes it.
-    monkeypatch.setenv("OMNIGENT_FEATURES", "harness_install,automations_v2")
+    monkeypatch.setenv("OMNIGENT_FEATURES", "harness_install,automations_v2,session_orchestration")
     assert pinned_feature_flags() == flags
 
 
-def test_a_release_that_turns_harness_install_on_stops_the_app(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _release_with(monkeypatch: pytest.MonkeyPatch, **defaults: bool) -> None:
+    """Omnigent's feature table with these release defaults changed, as a release would."""
     from omnigent.server import feature_flags
-
-    from cfo_server.app import pinned_feature_flags
 
     monkeypatch.setattr(
         feature_flags,
         "FEATURE_DEFINITIONS",
         tuple(
-            dataclasses.replace(d, default_enabled=True)
-            if d.feature == feature_flags.Feature.HARNESS_INSTALL
-            else d
+            dataclasses.replace(d, default_enabled=defaults.get(d.feature.value, d.default_enabled))
             for d in feature_flags.FEATURE_DEFINITIONS
         ),
     )
+
+
+def test_a_release_that_turns_harness_install_on_stops_the_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cfo_server.app import pinned_feature_flags
+
+    _release_with(monkeypatch, harness_install=True)
     with pytest.raises(RuntimeError, match="harness_install"):
         pinned_feature_flags()
+
+
+def _unreviewed_features() -> list[str]:
+    from omnigent.server.feature_flags import Feature
+
+    return sorted(set(Feature) - set(ENABLED_FEATURES) - {"session_orchestration"})
+
+
+@pytest.mark.parametrize("feature", _unreviewed_features() if omnigent_available() else [])
+def test_a_release_that_turns_on_any_other_feature_stops_the_app(
+    monkeypatch: pytest.MonkeyPatch, feature: str
+) -> None:
+    from cfo_server.app import pinned_feature_flags
+
+    _release_with(monkeypatch, **{feature: True})
+    with pytest.raises(RuntimeError, match=feature):
+        pinned_feature_flags()
+
+
+@pytest.mark.parametrize("feature", ENABLED_FEATURES)
+def test_a_release_that_turns_a_reviewed_feature_off_stops_the_app(
+    monkeypatch: pytest.MonkeyPatch, feature: str
+) -> None:
+    from cfo_server.app import pinned_feature_flags
+
+    _release_with(monkeypatch, **{feature: False})
+    with pytest.raises(RuntimeError, match=feature):
+        pinned_feature_flags()
+
+
+def test_session_orchestration_stays_off_whatever_its_release_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cfo_server.app import pinned_feature_flags
+
+    _release_with(monkeypatch, session_orchestration=False)
+    assert pinned_feature_flags().enabled_names() == ENABLED_FEATURES
+
+
+def test_an_agents_session_message_is_refused_while_orchestration_is_off(
+    app_harness: AppHarness,
+) -> None:
+    """What the pin is for, at the gate every orchestration route goes through."""
+    from omnigent.errors import OmnigentError
+    from omnigent.server.session_orchestration import require_orchestration_source
+    from starlette.requests import Request
+
+    request = Request({"type": "http", "headers": [], "app": app_harness.app})
+    with pytest.raises(OmnigentError, match="Session orchestration is disabled"):
+        require_orchestration_source(request, "owner", None, None)
+
+
+def test_every_policy_hook_asks_the_server(app_harness: AppHarness) -> None:
+    """No allow window: a policy someone adds mid-session reaches the next hook, not one up to
+    300 s later. The answer a hook gets carries no window."""
+    from omnigent.native.policy_allow_cache import ALLOW_CACHE_FIELD
+    from omnigent.runtime import get_caps, get_policy_store
+    from omnigent.server.routes.sessions.routes_hooks import _no_policy_allow_body
+
+    caps = get_caps()
+    assert caps.native_hook_allow_cache_seconds is None
+    body = _no_policy_allow_body(caps, "conv_cfo", get_policy_store())
+    assert ALLOW_CACHE_FIELD not in body
+
+
+def test_a_policy_allow_window_stops_the_app(tmp_path: Path) -> None:
+    """If a release turned the window on, or the image passed one, the app would not start."""
+    from functools import partial
+
+    from omnigent.runtime import caps as runtime_caps
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            runtime_caps,
+            "RuntimeCaps",
+            partial(runtime_caps.RuntimeCaps, native_hook_allow_cache_seconds=lambda: 60.0),
+        )
+        with (
+            pytest.raises(RuntimeError, match="native_hook_allow_cache_seconds"),
+            serve_app(tmp_path),
+        ):
+            pass
 
 
 def test_launcher_is_registered_through_sandbox_config_with_the_reaper(

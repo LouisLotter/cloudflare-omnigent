@@ -60,6 +60,13 @@ logger = logging.getLogger("cfo-server")
 DOCKER_ENTRYPOINT = Path(os.environ.get("CFO_OMNIGENT_DOCKER_ENTRYPOINT", "/app/entrypoint.py"))
 _MODULE_NAME = "omnigent_docker_entrypoint"
 
+#: Release defaults the image turns off (D63).
+FEATURES_PINNED_OFF = ("session_orchestration",)
+#: The release features the app runs with, reviewed at each fork bump: ``claude_osc_status``, a
+#: runner feature the server does not read, and ``codex_plan_at_launch``, which offers Plan mode
+#: at launch only on a host that advertises it.
+REVIEWED_FEATURES = frozenset({"claude_osc_status", "codex_plan_at_launch"})
+
 
 def load_docker_entrypoint(path: Path = DOCKER_ENTRYPOINT) -> ModuleType:
     """Import Omnigent's Docker entrypoint as a module. Importing it has no side effects."""
@@ -76,21 +83,49 @@ def load_docker_entrypoint(path: Path = DOCKER_ENTRYPOINT) -> ModuleType:
 
 
 def pinned_feature_flags() -> Any:
-    """Omnigent's release defaults, whatever ``OMNIGENT_FEATURES`` says.
+    """The release features the image runs with, whatever ``OMNIGENT_FEATURES`` says.
 
-    Since 0.20.0 an empty setting means each feature's release default rather than every
-    feature off: 0.20.0 turns on only ``claude_osc_status``, a runner feature the server does not
-    read. Everything a release ships off stays off, ``automations_v2`` (0.20.0's scheduler, D38)
-    among them. ``harness_install`` must stay off: its harness-credential route could redirect
-    another computer's model traffic (design, "Trust inside a cloud computer"). Should a release
-    turn it on by default, the app refuses to start.
+    An empty setting means each feature's release default, less :data:`FEATURES_PINNED_OFF`.
+    0.21.0 turns ``session_orchestration`` on by default. It lets an agent in a private session
+    message its owner's other sessions and start independent workers, and it has had no team
+    review, so it stays off (D63). Everything a release ships off stays off, ``automations_v2``
+    (the newer scheduler, D38) and ``sandbox_profiles`` among them. ``harness_install`` must stay
+    off: its harness-credential route could redirect another computer's model traffic (design,
+    "Trust inside a cloud computer"), and it carries upstream's sign-in routes (D62).
+
+    What is left must be exactly :data:`REVIEWED_FEATURES`, or the app refuses to start. The
+    image's tests assert the same set, so a fork bump that changes a default fails there first;
+    this check covers a build whose tests did not run, such as one with another
+    ``OMNIGENT_COMMIT``. A feature nobody reviewed never serves a team, and a stopped server
+    inside an update's window can still go back.
     """
-    from omnigent.server.feature_flags import Feature, resolve_feature_flags
+    from omnigent.server.feature_flags import FEATURES_ENV_VAR, resolve_feature_flags
 
-    flags = resolve_feature_flags({})
-    if flags.enabled(Feature.HARNESS_INSTALL):
-        raise RuntimeError("Omnigent turns harness_install on by default; the image refuses it")
+    flags = resolve_feature_flags(
+        {FEATURES_ENV_VAR: ",".join(f"-{name}" for name in FEATURES_PINNED_OFF)}
+    )
+    unreviewed = sorted(set(flags.enabled_names()) ^ REVIEWED_FEATURES)
+    if unreviewed:
+        raise RuntimeError(
+            f"Omnigent's release features differ from the reviewed set: {', '.join(unreviewed)}; "
+            "the image refuses them until they are reviewed"
+        )
     return flags
+
+
+def refuse_policy_allow_window(caps: Any) -> None:
+    """Stop the app if native policy hooks may reuse a "no policies apply" answer.
+
+    With ``native_hook_allow_cache_seconds`` set, a hook answers from a cached window, and a
+    policy someone adds mid-session waits for it to pass, up to 300 s. Unset, every hook asks the
+    server. Omnigent's ``omnigent server`` reads that setting from its configuration; the Docker
+    entrypoint this image mirrors does not, so it stays unset unless a release changes that.
+    """
+    if caps.native_hook_allow_cache_seconds is not None:
+        raise RuntimeError(
+            "native_hook_allow_cache_seconds is set; the image needs every policy hook to ask "
+            "the server"
+        )
 
 
 def github_linking(config: image_config.ServerImageConfig, database_url: str) -> tuple[Any, Any]:
@@ -259,6 +294,7 @@ def build_app(
         routing_client=routing_client,
         routing_settings=routing_settings,
     )
+    refuse_policy_allow_window(caps)
     init_runtime(
         agent_cache=agent_cache,
         caps=caps,

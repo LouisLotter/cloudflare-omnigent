@@ -21,10 +21,12 @@ import time
 from pathlib import Path
 
 from cfo_computer import rc53_collect
+from cfo_computer.policy import Policy
 
 HERE = Path(__file__).resolve().parent
 FORMATS = HERE / "rc53_formats.py"
 FIXTURE = HERE.parents[2] / "python" / "tests" / "computer" / "fixtures" / "rc53-formats.json"
+POLICY = HERE.parents[2] / "contracts" / "fixtures" / "CheckpointPolicy" / "v1.json"
 VENV_PYTHON = "/opt/venv/bin/python"
 
 
@@ -63,6 +65,28 @@ def test_live_writers_credentials_are_collected_and_identifiers_are_not(tmp_path
     assert sorted(k for k, v in creds.items() if v not in got) == []
     assert [v[:24] for v in got if not any(c in v for c in creds.values())] == []
     assert sorted(k for k, v in record["identifiers"].items() if v in got) == []
+
+
+def test_every_file_the_writers_leave_has_a_rule_and_no_saved_file_holds_a_credential(
+    tmp_path: Path,
+) -> None:
+    """A file a release adds to a bridge fails here, not as "A save left some paths out" on every
+    computer after its first hook. What the policy saves stays clear of every credential."""
+    out = tmp_path / "out.json"
+    _generate(tmp_path, "write", out)
+    record = json.loads(out.read_text())
+    home = Path(record["home"])
+    policy = Policy.load(POLICY)
+    decided = {
+        path: policy.classify(str(path.relative_to(home)))
+        for path in map(Path, record["files"])
+        if path.is_relative_to(home)
+    }
+    assert sorted(p.name for p, d in decided.items() if d.action == "unclassified") == []
+    saved = [path for path, decision in decided.items() if decision.saved]
+    assert any(path.name == "child_usage_baselines.json" for path in saved)
+    credentials = list(record["credentials"].values())
+    assert [p.name for p in saved if any(c in p.read_text() for c in credentials)] == []
 
 
 def _keys(value: object, prefix: str = "") -> set[str]:
