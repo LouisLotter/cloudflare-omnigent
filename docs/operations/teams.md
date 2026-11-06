@@ -161,8 +161,9 @@ step below.
    opens, and B cannot send it a message. A: take B's access away again (the bin icon in the
    same dialog). B: the thread is refused again.
 
-**Support access** (owner decision D62; these steps need a release pinned at `cfo/teams`
-`b39cfba8c` or later, whose Omnigent lets an administrator wake a member's computer)
+**Support access** (owner decision D62; these steps need a release pinned at `b39cfba8c` or
+later on the fork, whose Omnigent lets an administrator wake a member's computer; this release
+pins `67358a0f7`)
 
 1. B: leave B's computer asleep and signed out of Claude and Codex.
 2. A: on `/platform/computers`, B's fleet card, **Manage**. The page says "This computer belongs to
