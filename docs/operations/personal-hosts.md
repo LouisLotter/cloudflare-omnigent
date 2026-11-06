@@ -88,6 +88,7 @@ A user service runs while you are signed in to the machine. For a machine you ne
 - **The client's session ended** (after 30 days, or after a revocation): the client asks you to sign in again. Until you do, Access refuses the machine with a `401`; the host keeps retrying and reconnects by itself once you are signed in. `status` shows `Access … lapsed`.
 - **Omnigent's sign-in ended** (you changed your Omnigent password, which signs out every session and every machine's command line): `status` shows the sign-in as missing; run `setup` again and sign in.
 - **The host does not come online:** `journalctl --user -u omnigent-cfo-host` shows Omnigent's own messages.
+- **A Codex session fails with "is not a valid shim":** the service's PATH reached Codex through a mise link, which picks the tool from `argv[0]`, and Omnigent puts a process tag there. Setup leaves mise's command wrappers (Omarchy's agent accounts) off the service's PATH, so run it again. The host then uses each CLI's default account, not one chosen in Omarchy.
 
 The setup never works around a refusal with a public route, a service token or copied Cloudflare credentials.
 
