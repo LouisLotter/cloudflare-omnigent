@@ -12,11 +12,13 @@ Keep three distinct barriers:
 
 | Boundary | What must wait | Failure meaning and retry |
 | --- | --- | --- |
-| Security response | A response for effective account, grant, token, host or schedule writes waits until `replicated_txid` covers the committed position. | An otherwise successful response becomes `424 durability_unconfirmed`, `applied: true`; retain cookies and the route's error shape. Check state before repeating. |
+| Security response | A response for effective account, grant, token, host, schedule, linked-account or MCP-server writes, and for what a team takes away (invitations, memberships, approvers, approval settings, policies, thread shares), waits until `replicated_txid` covers the committed position. | An otherwise successful response becomes `424 durability_unconfirmed`, `applied: true`; retain cookies and the route's error shape. Check state before repeating. |
 | Transcript acknowledgement | Transcript items and turn-end `idle`/`failed` edges wait through `create_app(durability_barrier=...)`. | HTTP 503 or a retryable tunnel error asks the sender to retry with the same `source_id` or status `Idempotency-Key`. |
 | Launcher effect | Before `provision`, `start_host`, `suspend` or `terminate`, wait for all database commits made before the call. | A timed-out fence sends no effect. Unknown outcomes after a sent call reconcile under stable operation identity. |
 
 The response barrier observes SQLAlchemy writes and wraps the app as outermost ASGI middleware. Bookkeeping-only updates and inserts changing no row do not count. A WebSocket has its own scope; its writes must not hold unrelated responses. No blocking database commit hook may freeze the server event loop.
+
+A table joins the barrier when a person is told a change took effect and losing it would give back access, a credential or a permission someone took away, or undo a narrowing. Each table makes its writes wait for the replica and answer `424` while it is blocked, so ordinary work stays out. Identity bindings are written by a first sign-in and approval verdicts by every protected action, so neither is held. A thread's new grants are not held either: every new thread inserts its owner's, and a lost grant gives back nothing. Revoking one is held, and so is the sharing route, because a share can lower a level through the same upsert. A thread's deletion removes its grants, so it is held as well.
 
 The transcript hook uses one bounded asynchronous deadline below sender acknowledgement timeouts. Running edges, usage and arbitrary state do not acquire this guarantee automatically. The launcher runs its synchronous replication wait in the worker thread used by Omnigent's launcher calls.
 

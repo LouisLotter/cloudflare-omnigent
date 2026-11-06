@@ -6,7 +6,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from cfo_server.barrier import IGNORED_UPDATE_COLUMNS, SECURITY_TABLES, classify
+from cfo_server.barrier import (
+    ADDITIVE_INSERT_TABLES,
+    IGNORED_UPDATE_COLUMNS,
+    SECURITY_TABLES,
+    classify,
+    is_held_route,
+)
 
 OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "preferences", "projects"]
 
@@ -34,6 +40,40 @@ OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "prefe
             "scheduled_tasks",
         ),
         ("DELETE FROM scheduled_tasks WHERE scheduled_tasks.id = ?", 1, "scheduled_tasks"),
+        # What a team takes away (WP3.56).
+        (
+            "UPDATE team_invitations SET state=?, closed_at=? WHERE team_invitations.id = ?",
+            1,
+            "team_invitations",
+        ),
+        (
+            "UPDATE team_members SET role=?, updated_at=? WHERE team_members.id = ?",
+            1,
+            "team_members",
+        ),
+        ("DELETE FROM approver_grants WHERE approver_grants.id = ?", 1, "approver_grants"),
+        (
+            "UPDATE approval_resources SET allow_initiator=?, updated_at=? WHERE id = ?",
+            1,
+            "approval_resources",
+        ),
+        (
+            "UPDATE protected_policies SET enabled=?, updated_at=? WHERE id = ?",
+            1,
+            "protected_policies",
+        ),
+        ("INSERT INTO policies (id, name) VALUES (?, ?)", 1, "policies"),
+        # A thread's grants: taking one away counts, adding one never does (every new thread does).
+        (
+            "INSERT INTO session_permissions (workspace_id, user_id, conversation_id, level) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, user_id, conversation_id) "
+            "DO UPDATE SET level = ?",
+            1,
+            None,
+        ),
+        ("DELETE FROM session_permissions WHERE user_id = ?", 1, "session_permissions"),
+        ("DELETE FROM session_permissions WHERE user_id = ?", 0, None),
+        ("UPDATE session_permissions SET user_id=? WHERE id = ?", 1, "session_permissions"),
         (
             "INSERT INTO hosts (workspace_id, host_id, user_id, name) VALUES (?, ?, ?, ?)",
             1,
@@ -105,8 +145,10 @@ def test_classify(statement: str, rowcount: int, expected: str | None) -> None:
 def test_every_effective_insert_or_delete_on_a_security_table_is_marked(
     table: str, verb: str, rowcount: int
 ) -> None:
-    statement = f"{verb} {table} (x) VALUES (?)" if "insert" in verb.lower() else f"{verb} {table}"
-    assert classify(statement, rowcount) == table
+    insert = "insert" in verb.lower()
+    statement = f"{verb} {table} (x) VALUES (?)" if insert else f"{verb} {table}"
+    expected = None if insert and table in ADDITIVE_INSERT_TABLES else table
+    assert classify(statement, rowcount) == expected
 
 
 @settings(deadline=None)
@@ -150,3 +192,21 @@ def test_an_update_is_ignored_only_when_every_column_is_bookkeeping(
 def test_other_tables_are_never_marked(table: str, verb: str, rowcount: int) -> None:
     suffix = " SET a=?" if verb == "UPDATE" else ""
     assert classify(f"{verb} {table}{suffix}", rowcount) is None
+
+
+def test_additive_inserts_are_on_security_tables() -> None:
+    assert ADDITIVE_INSERT_TABLES <= SECURITY_TABLES
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "held"),
+    [
+        ("PUT", "/v1/sessions/abc/permissions", True),
+        ("POST", "/v1/sessions/abc/permissions", False),
+        ("PUT", "/v1/sessions/abc/permissions/bob", False),
+        ("PUT", "/v1/sessions/abc", False),
+        ("PUT", None, False),
+    ],
+)
+def test_the_sharing_route_is_the_held_route(method: str, path: str | None, held: bool) -> None:
+    assert is_held_route(method, path) is held

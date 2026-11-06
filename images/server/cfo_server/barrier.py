@@ -5,7 +5,8 @@ spike S4):
 
 - Engine-wide SQLAlchemy events only *mark* a request that committed an effective write to a
   security table (:data:`SECURITY_TABLES`), ignoring updates that touch only bookkeeping
-  columns (:data:`IGNORED_UPDATE_COLUMNS`). Nothing blocks in a commit hook: S4 showed that
+  columns (:data:`IGNORED_UPDATE_COLUMNS`) and inserts that only add
+  (:data:`ADDITIVE_INSERT_TABLES`). Nothing blocks in a commit hook: S4 showed that
   freezes Omnigent's event loop and that Omnigent swallows or masks the hook's error.
 - :class:`ResponseBarrierMiddleware`, the outermost ASGI middleware, holds such a request's
   response until Litestream's ``replicated_txid`` covers the commit. On timeout a 2xx or 3xx
@@ -45,6 +46,13 @@ from cfo_server.litestream import ReplicationWaiter, WaitOutcome
 #: (WP8.14): where agents' tool calls may go and which tools they may call. A removed server, a
 #: changed address or a narrowed allowlist must not come back undone with a restore either; their
 #: logins are in ``connections``, removed in the same transaction.
+#: And what a team takes away (WP3.56). A table belongs here when a person is told a change took
+#: effect and losing it would give back access, a credential or a permission someone took away,
+#: or undo a narrowing: a revoked invitation, whose link a restore made work again; a lowered role;
+#: a removed approver; self-approval turned off; a rule added or tightened; a share revoked. Each
+#: table makes its writes wait for the replica and answer 424 while it is blocked, so ordinary
+#: work stays out: ``team_identity_bindings`` (a first sign-in writes it), ``approval_verdicts``
+#: (every protected action does) and the removal records (committed with ``users``).
 SECURITY_TABLES: frozenset[str] = frozenset(
     {
         "users",
@@ -55,15 +63,32 @@ SECURITY_TABLES: frozenset[str] = frozenset(
         "connections",
         "mcp_registry_services",
         "mcp_registry_service_tools",
+        "team_invitations",
+        "team_members",
+        "approver_grants",
+        "approval_resources",
+        "protected_policies",
+        "policies",
+        "session_permissions",
     }
 )
 #: Updates that touch only these columns are bookkeeping, not security changes: the login
 #: timestamp and a host's heartbeat. Without this, every browser login would wait for the
-#: replica and fail while it is blocked.
+#: replica and fail while it is blocked. The team, approval, policy and sharing tables need no
+#: entry: none has a last-seen stamp, and their ``updated_at`` moves only with a real change.
 IGNORED_UPDATE_COLUMNS: dict[str, frozenset[str]] = {
     "users": frozenset({"last_login_at"}),
     "hosts": frozenset({"updated_at"}),
 }
+#: Tables where a new row only adds, and taking one away is the security change: every new thread
+#: inserts its owner's grant, which must not wait for the replica, and a lost grant gives back
+#: nothing anyone took away. Their updates and deletes still count.
+ADDITIVE_INSERT_TABLES: frozenset[str] = frozenset({"session_permissions"})
+#: Requests held whenever they succeed, whatever they wrote. Sharing a thread can lower a level
+#: through the same upsert as a new thread's owner grant, so the statement cannot tell them apart.
+HELD_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("PUT", re.compile(r"^/v1/sessions/[^/]+/permissions$")),
+)
 
 UNCONFIRMED_STATUS = 424
 UNCONFIRMED_CODE = "durability_unconfirmed"
@@ -93,6 +118,8 @@ def classify(statement: str, rowcount: int) -> str | None:
     verb, table = match.group(1).upper(), match.group(2).lower()
     if table not in SECURITY_TABLES:
         return None
+    if verb.startswith("INSERT") and table in ADDITIVE_INSERT_TABLES:
+        return None
     if rowcount == 0:
         # An UPDATE or DELETE that matched nothing, or an INSERT that a conflict clause
         # ignored, changed nothing. An unknown count (-1) counts as a change.
@@ -107,6 +134,11 @@ def classify(statement: str, rowcount: int) -> str | None:
             if columns and columns <= IGNORED_UPDATE_COLUMNS[table]:
                 return None
     return table
+
+
+def is_held_route(method: str | None, path: str | None) -> bool:
+    """Whether a successful request on this route is held even if it marked no table."""
+    return any(method == verb and route.match(path or "") for verb, route in HELD_ROUTES)
 
 
 def _split_assignments(text: str) -> Iterable[str]:
@@ -258,10 +290,11 @@ class ResponseBarrierMiddleware:
             orphaned = method not in ("GET", "HEAD", "OPTIONS") and (
                 orphan_commits() != orphans_at_start
             )
-            if not (record.commits or orphaned):
+            status = int(message["status"])
+            held_route = status < 400 and is_held_route(method, path)
+            if not (record.commits or orphaned or held_route):
                 await send(message)
                 return
-            status = int(message["status"])
             outcome = await self._wait(self._timeout_s)
             log(
                 "barrier.response",
@@ -270,7 +303,13 @@ class ResponseBarrierMiddleware:
                 status=status,
                 tables=sorted(record.tables),
                 commits=record.commits,
-                why="request" if record.commits else "orphan_commit_during_request",
+                why=(
+                    "request"
+                    if record.commits
+                    else "route"
+                    if held_route
+                    else "orphan_commit_during_request"
+                ),
                 **outcome.log_fields(),
             )
             headers = list(message.get("headers", []))
