@@ -353,13 +353,17 @@ ensure_signin() {
   say "Omnigent's command line is signed in to $SERVER"
 }
 
-# The service's PATH: the setup's own, without entries a service file cannot hold.
+# The service's PATH: the setup's own, without entries a service file cannot hold. mise's command
+# wrappers (Omarchy's agent accounts) are left out too: each is a link to mise, which chooses the
+# tool from argv[0], and Omnigent starts Codex with a process tag in argv[0], so Codex exits at
+# once. The real CLIs follow later on PATH; the account Omarchy selects by default is the same.
 service_path() {
   local out="" entry
   local IFS=:
   for entry in $PATH; do
     [[ $entry == /* ]] || continue
     case "$entry" in *[\"\'\\%\$\`]*) continue ;; esac
+    case "$entry" in */mise/command-wrappers/bin) continue ;; esac
     out=${out:+$out:}$entry
   done
   printf '%s' "$out"

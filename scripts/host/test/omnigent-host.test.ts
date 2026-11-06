@@ -203,6 +203,8 @@ interface Env {
   readonly unitFile: string;
   readonly wrapper: string;
   run(...args: string[]): { status: number | null; out: string };
+  /** Entries put ahead of the fake tools on the PATH of later runs. */
+  pathAhead: string;
   calls(): string[];
   flag(name: string, content?: string): void;
   unflag(name: string): void;
@@ -267,13 +269,14 @@ function makeEnv(): Env {
     cfoConfig,
     unitFile: join(home, ".config", "systemd", "user", UNIT),
     wrapper: join(home, ".local", "bin", "omnigent-cfo"),
+    pathAhead: "",
     run: (...args) => {
       const result = spawnSync(join(sys, "bash"), [script, ...args], {
         encoding: "utf8",
         input: "",
         env: {
           HOME: home,
-          PATH: `${bin}:${sys}`,
+          PATH: `${e.pathAhead}${bin}:${sys}`,
           TMPDIR: join(dir, "tmp"),
           FAKE_WORLD: world,
           FAKE_BIN: bin,
@@ -511,6 +514,27 @@ describe("omnigent-host.sh setup", () => {
     expect(e.run("setup", "--server", SERVER).status).toBe(0);
     expect(e.calls()).toContain(`systemctl --user restart ${UNIT}`);
     expect(readFileSync(e.unitFile, "utf8")).toContain("omnigent.host.service_entry");
+  });
+
+  it("leaves mise's command wrappers off the service's PATH: Codex would not start through one", () => {
+    const e = current();
+    const wrappers = join(e.dir, "home", ".local", "share", "mise", "command-wrappers", "bin");
+    const real = join(
+      e.dir,
+      "home",
+      ".local",
+      "share",
+      "mise",
+      "installs",
+      "codex",
+      "latest",
+      "bin",
+    );
+    e.pathAhead = `${wrappers}:${real}:`;
+    expect(e.run("setup", "--server", SERVER).status).toBe(0);
+    const path = /Environment="PATH=([^"]*)"/.exec(readFileSync(e.unitFile, "utf8"))?.[1] ?? "";
+    expect(path.split(":")).toContain(real);
+    expect(path.split(":")).not.toContain(wrappers);
   });
 
   it("exits 3 when the host does not come online", () => {
