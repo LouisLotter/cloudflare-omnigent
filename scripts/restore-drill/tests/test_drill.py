@@ -18,9 +18,9 @@ from harness_stack import Server, Stack, checks_by_name, manifest
 
 pytestmark = requires_docker
 
-#: One of each: password change, grant issued, grant revoked, admin invite, schedule created,
-#: schedule edit, schedule delete, and the transcript items.
-SECURITY_CANARIES = 7
+#: One of each: password change, grant issued, grant revoked, admin invite, invitation revoked,
+#: schedule created, schedule edit, schedule delete, and the transcript items.
+SECURITY_CANARIES = 8
 ITEMS = 5
 
 
@@ -59,6 +59,9 @@ def test_drill_passes_and_finds_every_acknowledged_change(link: Stack, prefix: s
     assert checks["row_counts"]["ok"], checks["row_counts"]
     security = checks["security_tables"]["detail"]
     assert security["users"]["rows"] >= 1 and security["device_grants"]["rows"] >= 2
+    # Compared row by row: a restored invitation in any other state is a difference.
+    assert security["team_invitations"]["rows"] == 1 and security["team_members"]["rows"] >= 1
+    assert security["session_permissions"]["rows"] >= 1
     assert checks["transcript_items"]["detail"]["rows"] == ITEMS
     acknowledged = checks["acknowledged_changes"]["detail"]
     assert acknowledged["acknowledged"] == acknowledged["present"] == SECURITY_CANARIES + ITEMS
@@ -90,6 +93,7 @@ def test_drill_fails_a_valid_restore_that_misses_acknowledged_changes(
         "grant_issued",
         "grant_revoked",
         "admin_invite",
+        "invitation_revoked",
     } <= set(missing)
     assert sum(1 for m in missing if m.startswith("item_")) == ITEMS
 
@@ -111,6 +115,7 @@ def test_acknowledged_changes_survive_server_replacement(link: Stack, prefix: st
         "http.password_change",
         "http.grant_issued",
         "http.grant_revoked",
+        "http.invitation_revoked",
         "http.schedule_created",
         "http.schedule_edited",
         "http.schedule_deleted",

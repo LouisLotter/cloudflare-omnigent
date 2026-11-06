@@ -6,6 +6,7 @@
   before it stop refreshing);
 - a login that issues a refresh grant, and a second one whose grant is then revoked;
 - an admin invite, from a browser sign-in (Omnigent refuses a bearer credential here);
+- a team invitation made and revoked, whose row must come back revoked, not pending;
 - schedules: one created, one created then edited, one created then deleted;
 - transcript items in a new conversation (core change 14's acknowledged items).
 
@@ -87,6 +88,7 @@ class CanaryRun:
     canaries: list[db.Canary] = field(default_factory=list)
     acks: list[Ack] = field(default_factory=list)
     conversation: str | None = None
+    invitation: str | None = None  # the revoked team invitation's id (hex)
     schedules: dict[str, str] = field(default_factory=dict)  # role -> schedule id (hex)
     items: list[tuple[str, str]] = field(default_factory=list)  # (source_id, item_id)
     last_ack_at: float | None = None
@@ -198,6 +200,37 @@ def _ids(live: LiveQuery | None, sql: str) -> set[Any]:
     return {row[0] for row in live(sql, ())} if live is not None else set()
 
 
+def _revoke_an_invitation(
+    client: Omnigent, browser: dict[str, str], run: CanaryRun, live: LiveQuery | None
+) -> None:
+    """Invite an address and revoke it. A 424 has no body, so ``live`` then finds the row."""
+    email = f"drill-{run.run_id}@example.test"
+    made = client.http.post(
+        "/v1/team/invitations", json={"email": email, "role": "member"}, headers=browser
+    )
+    invitation = made.json()["invitation"]["invitation_id"] if made.status_code == 200 else None
+    if invitation is None and live is not None:
+        rows = live("SELECT hex(id) FROM team_invitations WHERE email = ?", (email,))
+        invitation = rows[0][0] if rows else None
+    if invitation is None:
+        return
+    run.invitation = invitation.replace("-", "").lower()
+    response = _timed(
+        "invitation_revoked",
+        lambda: client.http.delete(f"/v1/team/invitations/{run.invitation}", headers=browser),
+        run,
+    )
+    run.canaries.append(
+        db.Canary(
+            "invitation_revoked",
+            "team_invitations",
+            (0, bytes.fromhex(run.invitation)),
+            run.acks[-1].acknowledged,
+            status=response.status_code,
+        )
+    )
+
+
 def write_canaries(
     client: Omnigent,
     password: str,
@@ -296,6 +329,8 @@ def write_canaries(
                 status=response.status_code,
             )
         )
+
+    _revoke_an_invitation(client, browser, run, live)
 
     agent = client.agent_id(bearer)
 
@@ -484,6 +519,24 @@ def verify_http(client: Omnigent, run: CanaryRun) -> list[db.Check]:
                     "refresh_status": response.status_code,
                     "error": error if isinstance(error, str) else None,
                     "acknowledged": acked.get("grant_revoked"),
+                },
+            )
+        )
+    if run.invitation is not None and "invitation_revoked" in acked:
+        team = client.http.get("/v1/team", headers=client.browser(password))
+        states = {
+            str(i.get("invitation_id")).replace("-", "").lower(): i.get("state")
+            for i in _json(team).get("invitations", [])
+        }
+        state = states.get(run.invitation)
+        checks.append(
+            db.Check(
+                "http.invitation_revoked",
+                (team.status_code == 200 and state != "pending") or not acked["invitation_revoked"],
+                {
+                    "status": team.status_code,
+                    "state": state,
+                    "acknowledged": acked["invitation_revoked"],
                 },
             )
         )
