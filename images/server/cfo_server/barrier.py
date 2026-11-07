@@ -118,7 +118,8 @@ def classify(statement: str, rowcount: int) -> str | None:
     verb, table = match.group(1).upper(), match.group(2).lower()
     if table not in SECURITY_TABLES:
         return None
-    if verb.startswith("INSERT") and table in ADDITIVE_INSERT_TABLES:
+    if table in ADDITIVE_INSERT_TABLES and re.fullmatch(r"INSERT\s+INTO", verb):
+        # A plain insert (``ON CONFLICT`` included); ``INSERT OR REPLACE`` can take away.
         return None
     if rowcount == 0:
         # An UPDATE or DELETE that matched nothing, or an INSERT that a conflict clause

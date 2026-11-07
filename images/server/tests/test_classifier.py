@@ -71,6 +71,13 @@ OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "prefe
             1,
             None,
         ),
+        # Only a plain insert adds: a replacing one can lower a level or swap a grantee.
+        (
+            "INSERT OR REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)",
+            1,
+            "session_permissions",
+        ),
+        ("REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)", 1, "session_permissions"),
         ("DELETE FROM session_permissions WHERE user_id = ?", 1, "session_permissions"),
         ("DELETE FROM session_permissions WHERE user_id = ?", 0, None),
         ("UPDATE session_permissions SET user_id=? WHERE id = ?", 1, "session_permissions"),
