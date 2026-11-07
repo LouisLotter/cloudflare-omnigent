@@ -629,3 +629,47 @@ def test_the_dockerfile_installs_the_s3_extra_from_the_lock() -> None:
     dockerfile = (IMAGE_DIR / "Dockerfile").read_text()
     assert re.search(r"uv export --frozen --no-dev --extra s3 ", dockerfile)
     assert 'python -c "import cfo_server.entrypoint, cfo_server.app, boto3"' in dockerfile
+
+
+@requires_omnigent
+@pytest.mark.parametrize("value", ["", "/", "omnigent", "/omnigent/", " /proxy/6767/ "])
+def test_the_barrier_normalizes_the_base_path_as_omnigent_does(value: str) -> None:
+    from omnigent.server.app import _normalize_base_path
+
+    from cfo_server.barrier import normalize_base_path
+
+    assert normalize_base_path(value) == _normalize_base_path(value)
+
+
+@requires_omnigent
+@pytest.mark.parametrize(
+    ("path", "root_path", "base_path"),
+    [
+        ("/omnigent/v1/sessions/a/permissions", "", "/omnigent"),
+        ("/v1/sessions/a/permissions", "", "/omnigent"),
+        ("/omnigentx/v1/sessions/a", "", "/omnigent"),
+        ("/mount/v1/sessions/a", "/mount", ""),
+        ("/v1/sessions/a", "/mount", ""),
+        ("/v1/sessions/a", "", ""),
+    ],
+)
+def test_the_barrier_matches_the_path_omnigent_routes(
+    path: str, root_path: str, base_path: str
+) -> None:
+    """The barrier sees a request before Omnigent's BasePathMiddleware; it must match the path
+    Starlette's router then matches."""
+    import asyncio
+
+    from omnigent.server.app import BasePathMiddleware
+    from starlette._utils import get_route_path
+
+    from cfo_server.barrier import routed_path
+
+    seen: list[dict] = []
+
+    async def inner(scope: dict, receive: object, send: object) -> None:
+        seen.append(scope)
+
+    scope = {"type": "http", "path": path, "root_path": root_path, "raw_path": path.encode()}
+    asyncio.run(BasePathMiddleware(inner, base_path)(scope, None, None))
+    assert routed_path(scope, base_path) == (get_route_path(seen[0]) or "/")

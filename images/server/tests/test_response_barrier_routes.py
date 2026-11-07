@@ -486,6 +486,59 @@ def test_deleting_a_thread_removes_its_grants_so_it_is_held_while_blocked(
     assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
 
 
+def _overrides(h: AppHarness, session_id: str) -> str:
+    sql = "SELECT session_overrides FROM conversations WHERE lower(hex(id)) = ?"
+    return rows(h.db_path, sql, session_id.replace("-", "").lower())[0][0] or ""
+
+
+def test_turning_off_workspace_sharing_is_held_and_a_title_change_is_not(
+    blocked: AppHarness,
+) -> None:
+    """View-level collaborators browse the workspace while the flag is on: a lost "off" would
+    give that back. The flag lives in ``conversations`` with ordinary settings, so the request
+    is held when its body sets it."""
+    bearer = blocked.bearer()
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    session_id = session.json()["id"]
+    path = f"/v1/sessions/{session_id}"
+    on = blocked.client.patch(path, json={"share_workspace_files": True}, headers=bearer)
+    assert_confirmed(on)
+    assert "share_workspace_files" in _overrides(blocked, session_id)
+    _block(blocked)
+    off = blocked.client.patch(path, json={"share_workspace_files": False}, headers=bearer)
+    assert_unconfirmed(off, path)
+    assert "share_workspace_files" not in _overrides(blocked, session_id)  # applied
+    assert_not_held(blocked.client.patch(path, json={"title": "renamed"}, headers=bearer))
+
+
+def test_a_base_path_does_not_skip_the_held_routes(tmp_path: Path) -> None:
+    """The barrier sees the path before Omnigent strips ``OMNIGENT_WEB_BASE_PATH``: prefixed and
+    unprefixed requests are held alike, and an auth route keeps its own 424 shape."""
+    with serve_app(tmp_path, {"OMNIGENT_WEB_BASE_PATH": "/omnigent"}) as h:
+        bearer = h.bearer()
+        _, name = _member(h, _browser(h))
+        agent_id = _agent_id(h, bearer)
+        made = h.client.post("/omnigent/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+        session_id = made.json()["id"]
+        for prefix in ("/omnigent", ""):
+            h.fake.mode = "healthy"
+            share = f"{prefix}/v1/sessions/{session_id}/permissions"
+            grant = {"user_id": name, "level": 3}
+            assert_confirmed(h.client.put(share, json=grant, headers=bearer))
+            _block(h)
+            lowered = h.client.put(share, json={"user_id": name, "level": 1}, headers=bearer)
+            assert_unconfirmed(lowered, share)
+            settings = f"{prefix}/v1/sessions/{session_id}"
+            off = h.client.patch(settings, json={"share_workspace_files": False}, headers=bearer)
+            assert_unconfirmed(off, settings)
+        login = h.client.post(
+            "/omnigent/auth/login",
+            json={"username": OWNER, "password": OWNER_PASSWORD, "issue_refresh": True},
+        )
+        assert_unconfirmed(login, "/auth/login")
+
+
 def test_signing_in_under_required_identity_is_not_held_while_blocked(tmp_path: Path) -> None:
     """Live runs in ``required`` mode: a first sign-in binds the identity, a later one only
     stamps the login. Neither may wait for the replica."""

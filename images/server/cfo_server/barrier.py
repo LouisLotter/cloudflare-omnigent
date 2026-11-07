@@ -84,11 +84,56 @@ IGNORED_UPDATE_COLUMNS: dict[str, frozenset[str]] = {
 #: inserts its owner's grant, which must not wait for the replica, and a lost grant gives back
 #: nothing anyone took away. Their updates and deletes still count.
 ADDITIVE_INSERT_TABLES: frozenset[str] = frozenset({"session_permissions"})
-#: Requests held whenever they succeed, whatever they wrote. Sharing a thread can lower a level
-#: through the same upsert as a new thread's owner grant, so the statement cannot tell them apart.
-HELD_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("PUT", re.compile(r"^/v1/sessions/[^/]+/permissions$")),
+
+
+@dataclass(frozen=True)
+class HeldRoute:
+    """A request held when it succeeds, whatever it wrote, matched on the path Omnigent routes.
+
+    :param fields: Held only when the JSON body sets one of these fields, whatever their value
+        (presence is the signal, as in Omnigent's own permission tiers); ``None`` holds every
+        successful request.
+    :param label_keys: Also held when the body's ``labels`` sets one of these keys.
+    """
+
+    method: str
+    path: re.Pattern[str]
+    fields: frozenset[str] | None = None
+    label_keys: frozenset[str] = frozenset()
+
+    def holds(self, body: dict[str, Any] | None) -> bool:
+        """Whether a successful request with this JSON body is held; ``None`` is a body too
+        large, unread or not a JSON object, which is held to be safe."""
+        if self.fields is None or body is None:
+            return True
+        if self.fields & body.keys():
+            return True
+        labels = body.get("labels")
+        return isinstance(labels, dict) and bool(self.label_keys & labels.keys())
+
+
+#: Requests held whenever they succeed, whatever they wrote:
+#: - sharing a thread, which can lower a level through the same upsert as a new thread's owner
+#:   grant, so the statement cannot tell them apart;
+#: - a thread's settings that decide who may see or do what in it (Omnigent's manage and owner
+#:   tiers in ``PATCH /v1/sessions/{id}``): ``share_workspace_files`` (view-level collaborators
+#:   browse the workspace), and the permission and approval modes, launch arguments and Codex
+#:   sandbox bypass (what the agent may do without asking). They live in ``conversations``,
+#:   labels and launch metadata with a thread's ordinary state, so the request is held instead
+#:   of a table. A title, archive or model change is not.
+HELD_ROUTES: tuple[HeldRoute, ...] = (
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/permissions$")),
+    HeldRoute(
+        "PATCH",
+        re.compile(r"^/v1/sessions/[^/]+$"),
+        fields=frozenset(
+            {"share_workspace_files", "permission_mode", "approval_mode", "terminal_launch_args"}
+        ),
+        label_keys=frozenset({"omnigent.codex_native.bypass_sandbox"}),
+    ),
 )
+#: A held route's body is kept up to this size; a larger one is held without reading it.
+HELD_BODY_LIMIT = 64 * 1024
 
 UNCONFIRMED_STATUS = 424
 UNCONFIRMED_CODE = "durability_unconfirmed"
@@ -137,9 +182,69 @@ def classify(statement: str, rowcount: int) -> str | None:
     return table
 
 
-def is_held_route(method: str | None, path: str | None) -> bool:
-    """Whether a successful request on this route is held even if it marked no table."""
-    return any(method == verb and route.match(path or "") for verb, route in HELD_ROUTES)
+def normalize_base_path(value: str | None) -> str:
+    """``OMNIGENT_WEB_BASE_PATH`` as Omnigent normalizes it: ``"/prefix"``, or ``""`` for none.
+    (Omnigent refuses to start on an invalid one, so only valid values reach a request.)"""
+    trimmed = (value or "").strip()
+    if trimmed in ("", "/"):
+        return ""
+    return ("/" + trimmed.lstrip("/")).rstrip("/")
+
+
+def routed_path(scope: dict[str, Any], base_path: str) -> str:
+    """The path Omnigent routes a request on: its ``BasePathMiddleware`` strips the base path when
+    the request carries it and makes it the ``root_path``; Starlette's router then matches the
+    path below the ``root_path``."""
+    path = scope.get("path") or ""
+    root_path = scope.get("root_path") or ""
+    if base_path and (path == base_path or path.startswith(f"{base_path}/")):
+        path, root_path = path[len(base_path) :] or "/", base_path
+    if root_path and path.startswith(root_path) and path[len(root_path) :][:1] in ("", "/"):
+        path = path[len(root_path) :] or "/"
+    return path
+
+
+def held_route(method: str | None, path: str) -> HeldRoute | None:
+    """The held route this request is on, if any (``path`` as Omnigent routes it)."""
+    return next((r for r in HELD_ROUTES if method == r.method and r.path.match(path)), None)
+
+
+class _BodyTap:
+    """The request body as the app pulls it through ``receive``: every message passes unchanged
+    and nothing is read twice. Kept up to :data:`HELD_BODY_LIMIT`."""
+
+    def __init__(self, receive: Any) -> None:
+        self._receive = receive
+        self._chunks: list[bytes] = []
+        self._size = 0
+        self._complete = False
+        self._overflowed = False
+
+    async def __call__(self) -> Any:
+        message = await self._receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            if not self._overflowed:
+                self._size += len(body)
+                if self._size > HELD_BODY_LIMIT:
+                    self._overflowed = True
+                    self._chunks.clear()
+                else:
+                    self._chunks.append(body)
+            if not message.get("more_body", False):
+                self._complete = True
+        return message
+
+    def json_object(self) -> dict[str, Any] | None:
+        """The body as a JSON object; ``None`` when it was too large, not read to its end, or
+        not a JSON object."""
+        if self._overflowed or not self._complete:
+            return None
+        try:
+            data = json.loads(b"".join(self._chunks))
+        except ValueError:  # UnicodeDecodeError included
+            return None
+        return data if isinstance(data, dict) else None
 
 
 def _split_assignments(text: str) -> Iterable[str]:
@@ -255,10 +360,11 @@ class ResponseBarrierMiddleware:
     on a WebSocket is held.
     """
 
-    def __init__(self, app: Any, *, wait: Wait, timeout_s: float) -> None:
+    def __init__(self, app: Any, *, wait: Wait, timeout_s: float, base_path: str = "") -> None:
         self.app = app
         self._wait = wait
         self._timeout_s = timeout_s
+        self._base_path = normalize_base_path(base_path)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         kind = scope.get("type")
@@ -277,6 +383,9 @@ class ResponseBarrierMiddleware:
         token = _current.set(record)
         method = scope.get("method")
         path = scope.get("path")
+        route_path = routed_path(scope, self._base_path)
+        route = held_route(method, route_path)
+        tap = _BodyTap(receive) if route is not None and route.fields is not None else None
         orphans_at_start = orphan_commits()
         replaced = False
 
@@ -292,8 +401,12 @@ class ResponseBarrierMiddleware:
                 orphan_commits() != orphans_at_start
             )
             status = int(message["status"])
-            held_route = status < 400 and is_held_route(method, path)
-            if not (record.commits or orphaned or held_route):
+            held = (
+                status < 400
+                and route is not None
+                and route.holds(tap.json_object() if tap is not None else None)
+            )
+            if not (record.commits or orphaned or held):
                 await send(message)
                 return
             outcome = await self._wait(self._timeout_s)
@@ -308,7 +421,7 @@ class ResponseBarrierMiddleware:
                     "request"
                     if record.commits
                     else "route"
-                    if held_route
+                    if held
                     else "orphan_commit_during_request"
                 ),
                 **outcome.log_fields(),
@@ -321,7 +434,7 @@ class ResponseBarrierMiddleware:
                 headers.append((DURABILITY_HEADER, verdict))
                 await send({**message, "headers": headers})
                 return
-            body = json.dumps(unconfirmed_payload(path)).encode()
+            body = json.dumps(unconfirmed_payload(route_path)).encode()
             # Keep cookies (a password change rotates the session); drop the original body
             # and its framing headers.
             kept = [(k, v) for k, v in headers if k.lower() == b"set-cookie"]
@@ -338,7 +451,7 @@ class ResponseBarrierMiddleware:
             replaced = True
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, tap if tap is not None else receive, send_wrapper)
         finally:
             _current.reset(token)
 

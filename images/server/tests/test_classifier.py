@@ -11,7 +11,9 @@ from cfo_server.barrier import (
     IGNORED_UPDATE_COLUMNS,
     SECURITY_TABLES,
     classify,
-    is_held_route,
+    held_route,
+    normalize_base_path,
+    routed_path,
 )
 
 OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "preferences", "projects"]
@@ -77,7 +79,11 @@ OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "prefe
             1,
             "session_permissions",
         ),
-        ("REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)", 1, "session_permissions"),
+        (
+            "REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)",
+            1,
+            "session_permissions",
+        ),
         ("DELETE FROM session_permissions WHERE user_id = ?", 1, "session_permissions"),
         ("DELETE FROM session_permissions WHERE user_id = ?", 0, None),
         ("UPDATE session_permissions SET user_id=? WHERE id = ?", 1, "session_permissions"),
@@ -205,15 +211,67 @@ def test_additive_inserts_are_on_security_tables() -> None:
     assert ADDITIVE_INSERT_TABLES <= SECURITY_TABLES
 
 
+BYPASS = "omnigent.codex_native.bypass_sandbox"
+
+
 @pytest.mark.parametrize(
-    ("method", "path", "held"),
+    ("method", "path", "body", "held"),
     [
-        ("PUT", "/v1/sessions/abc/permissions", True),
-        ("POST", "/v1/sessions/abc/permissions", False),
-        ("PUT", "/v1/sessions/abc/permissions/bob", False),
-        ("PUT", "/v1/sessions/abc", False),
-        ("PUT", None, False),
+        ("PUT", "/v1/sessions/abc/permissions", {"user_id": "bob", "level": 1}, True),
+        ("PUT", "/v1/sessions/abc/permissions", None, True),
+        # A thread's settings: held when they decide who may see or do what, whatever the value.
+        ("PATCH", "/v1/sessions/abc", {"share_workspace_files": False}, True),
+        ("PATCH", "/v1/sessions/abc", {"share_workspace_files": True}, True),
+        ("PATCH", "/v1/sessions/abc", {"permission_mode": "default"}, True),
+        ("PATCH", "/v1/sessions/abc", {"approval_mode": "on-request"}, True),
+        ("PATCH", "/v1/sessions/abc", {"terminal_launch_args": ["--x"]}, True),
+        ("PATCH", "/v1/sessions/abc", {"labels": {BYPASS: "false"}}, True),
+        # Too large, unread or not a JSON object: held, to be safe.
+        ("PATCH", "/v1/sessions/abc", None, True),
+        # Ordinary settings are not.
+        ("PATCH", "/v1/sessions/abc", {"title": "t"}, False),
+        ("PATCH", "/v1/sessions/abc", {"archived": True, "model_override": "m"}, False),
+        ("PATCH", "/v1/sessions/abc", {"labels": {"omnigent.pinned.bob": "1"}}, False),
+        ("PATCH", "/v1/sessions/abc", {"labels": "not-a-map"}, False),
+        # Other routes are not held routes at all.
+        ("POST", "/v1/sessions/abc/permissions", None, False),
+        ("PUT", "/v1/sessions/abc/permissions/bob", None, False),
+        ("PATCH", "/v1/sessions/abc/labels", None, False),
+        ("PUT", "/v1/sessions/abc", None, False),
     ],
 )
-def test_the_sharing_route_is_the_held_route(method: str, path: str | None, held: bool) -> None:
-    assert is_held_route(method, path) is held
+def test_the_held_routes(method: str, path: str, body: dict | None, held: bool) -> None:
+    route = held_route(method, path)
+    assert (route is not None and route.holds(body)) is held
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    [(None, ""), ("", ""), ("/", ""), ("omnigent", "/omnigent"), (" /a/b/ ", "/a/b")],
+)
+def test_the_base_path_is_normalized_as_omnigent_does(value: str | None, normalized: str) -> None:
+    assert normalize_base_path(value) == normalized
+
+
+@pytest.mark.parametrize(
+    ("scope", "base_path", "routed"),
+    [
+        ({"path": "/v1/sessions/a/permissions"}, "", "/v1/sessions/a/permissions"),
+        (
+            {"path": "/omnigent/v1/sessions/a/permissions"},
+            "/omnigent",
+            "/v1/sessions/a/permissions",
+        ),
+        # A proxy that strips the prefix itself: the path arrives as Omnigent routes it.
+        ({"path": "/v1/sessions/a/permissions"}, "/omnigent", "/v1/sessions/a/permissions"),
+        ({"path": "/omnigentx/v1/sessions/a"}, "/omnigent", "/omnigentx/v1/sessions/a"),
+        ({"path": "/omnigent"}, "/omnigent", "/"),
+        # An ASGI root_path the server was started with.
+        ({"path": "/mount/v1/sessions/a", "root_path": "/mount"}, "", "/v1/sessions/a"),
+        ({"path": "/v1/sessions/a", "root_path": "/mount"}, "", "/v1/sessions/a"),
+    ],
+)
+def test_routes_are_matched_on_the_path_omnigent_routes(
+    scope: dict, base_path: str, routed: str
+) -> None:
+    assert routed_path(scope, base_path) == routed
