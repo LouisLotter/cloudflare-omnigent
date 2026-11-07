@@ -120,9 +120,21 @@ class HeldRoute:
 #:   browse the workspace), and the permission and approval modes, launch arguments and Codex
 #:   sandbox bypass (what the agent may do without asking). They live in ``conversations``,
 #:   labels and launch metadata with a thread's ordinary state, so the request is held instead
-#:   of a table. A title, archive or model change is not.
+#:   of a table. A title, archive or model change is not;
+#: - an agent's configuration, which decides what the agent may do: its bundle carries its
+#:   policies and MCP servers, and a restore that brings back an older ``agents.bundle_location``
+#:   undoes a tightening. Installing (or reinstalling) a person's agent, editing or removing it,
+#:   replacing a thread's agent, and changing or taking off a thread's MCP server. The ``agents``
+#:   table itself is written by every thread created with its own bundle, so it stays out, as
+#:   does adding an MCP server to a thread, which takes nothing away.
 HELD_ROUTES: tuple[HeldRoute, ...] = (
     HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/permissions$")),
+    HeldRoute("POST", re.compile(r"^/v1/agents$")),
+    HeldRoute("PATCH", re.compile(r"^/v1/agents/[^/]+$")),
+    HeldRoute("DELETE", re.compile(r"^/v1/agents/[^/]+$")),
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/agent$")),
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/agent/mcp-servers/[^/]+$")),
+    HeldRoute("DELETE", re.compile(r"^/v1/sessions/[^/]+/agent/mcp-servers/[^/]+$")),
     HeldRoute(
         "PATCH",
         re.compile(r"^/v1/sessions/[^/]+$"),

@@ -233,6 +233,17 @@ BYPASS = "omnigent.codex_native.bypass_sandbox"
         ("PATCH", "/v1/sessions/abc", {"archived": True, "model_override": "m"}, False),
         ("PATCH", "/v1/sessions/abc", {"labels": {"omnigent.pinned.bob": "1"}}, False),
         ("PATCH", "/v1/sessions/abc", {"labels": "not-a-map"}, False),
+        # An agent's configuration: its bundle carries its policies and MCP servers.
+        ("POST", "/v1/agents", None, True),
+        ("PATCH", "/v1/agents/a1", {"description": "only a description"}, True),
+        ("DELETE", "/v1/agents/a1", None, True),
+        ("PUT", "/v1/sessions/abc/agent", None, True),
+        ("PUT", "/v1/sessions/abc/agent/mcp-servers/docs", None, True),
+        ("DELETE", "/v1/sessions/abc/agent/mcp-servers/docs", None, True),
+        # Adding an MCP server takes nothing away; a new thread is ordinary work.
+        ("POST", "/v1/sessions/abc/agent/mcp-servers", None, False),
+        ("POST", "/v1/sessions", None, False),
+        ("GET", "/v1/agents/a1", None, False),
         # Other routes are not held routes at all.
         ("POST", "/v1/sessions/abc/permissions", None, False),
         ("PUT", "/v1/sessions/abc/permissions/bob", None, False),

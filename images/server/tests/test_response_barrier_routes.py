@@ -10,8 +10,10 @@ image tests repeat the blocked case against real Litestream.
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import tarfile
 import threading
 import time
 import uuid
@@ -537,6 +539,129 @@ def test_a_base_path_does_not_skip_the_held_routes(tmp_path: Path) -> None:
             json={"username": OWNER, "password": OWNER_PASSWORD, "issue_refresh": True},
         )
         assert_unconfirmed(login, "/auth/login")
+
+
+# An agent's configuration: its bundle carries its policies and MCP servers.
+
+DOCS_MCP = b"name: docs\ntransport: http\nurl: https://mcp.example.test/mcp\n"
+DENY_ALL = (
+    b"guardrails:\n  policies:\n    deny_all:\n      type: function\n      on: [tool_call]\n"
+    b"      function:\n        path: omnigent.policies.builtins.cel.cel_policy\n"
+    b'        arguments:\n          expression: \'{"result": "DENY"}\'\n'
+)
+
+
+def _bundle(name: str, *, extra: bytes = b"", mcp: bool = False) -> bytes:
+    files = {
+        "config.yaml": (
+            f"spec_version: 1\nname: {name}\nexecutor:\n  type: omnigent\n"
+            "  config:\n    harness: codex\n"
+        ).encode()
+        + extra
+    }
+    if mcp:
+        files["tools/mcp/docs.yaml"] = DOCS_MCP
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for path, body in files.items():
+            info = tarfile.TarInfo(path)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return buffer.getvalue()
+
+
+def _upload(name: str, **kw: object) -> dict:
+    return {"bundle": (f"{name}.tar.gz", _bundle(name, **kw), "application/gzip")}  # type: ignore[arg-type]
+
+
+def _thread_with_its_own_agent(h: AppHarness, bearer: dict[str, str], name: str, **kw: object):  # noqa: ANN202
+    return h.client.post(
+        "/v1/sessions", data={"metadata": "{}"}, files=_upload(name, **kw), headers=bearer
+    )
+
+
+def _bundle_location(h: AppHarness, *, session_id: str | None = None, agent_id: str | None = None):  # noqa: ANN202
+    if session_id is not None:
+        sql = (
+            "SELECT a.bundle_location FROM agents a JOIN conversations c"
+            " ON c.workspace_id = a.workspace_id AND c.agent_id = a.id WHERE lower(hex(c.id)) = ?"
+        )
+        return rows(h.db_path, sql, session_id.replace("-", "").lower())[0][0]
+    sql = "SELECT bundle_location FROM agents WHERE lower(hex(id)) = ? OR id = ?"
+    return rows(h.db_path, sql, str(agent_id).replace("-", "").lower(), agent_id)[0][0]
+
+
+def test_creating_a_thread_with_its_own_agent_is_not_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    _block(blocked)
+    made = _thread_with_its_own_agent(blocked, bearer, f"own-{uuid.uuid4().hex[:8]}", mcp=True)
+    assert made.status_code == 201, made.text
+    assert "x-cfo-durability" not in made.headers
+
+
+def test_taking_a_registry_service_off_a_thread_is_held_while_blocked(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    session_id = session.json()["id"]
+    key = "omnigent.mcp_service.tracker"
+    # The selection Settings → MCP leaves on a thread (no registry is configured here).
+    with sqlite3.connect(blocked.db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversation_labels"
+            " (workspace_id, conversation_id, key, value, updated_at) VALUES (0, ?, ?, '1', ?)",
+            (bytes.fromhex(session_id.replace("-", "")), key, int(time.time())),
+        )
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent/mcp-servers/tracker"
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+    sql = "SELECT value FROM conversation_labels WHERE lower(hex(conversation_id)) = ? AND key = ?"
+    assert rows(blocked.db_path, sql, session_id.replace("-", "").lower(), key) == [("0",)]
+
+
+def test_taking_a_bundled_mcp_server_off_a_thread_is_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    made = _thread_with_its_own_agent(blocked, bearer, f"mcp-{uuid.uuid4().hex[:8]}", mcp=True)
+    assert made.status_code == 201, made.text
+    session_id = made.json()["session_id"]
+    before = _bundle_location(blocked, session_id=session_id)
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent/mcp-servers/docs"
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+    assert _bundle_location(blocked, session_id=session_id) != before  # applied
+
+
+def test_a_thread_agent_with_a_new_deny_policy_is_held_while_blocked(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    name = f"deny-{uuid.uuid4().hex[:8]}"
+    made = _thread_with_its_own_agent(blocked, bearer, name)
+    assert made.status_code == 201, made.text
+    session_id = made.json()["session_id"]
+    before = _bundle_location(blocked, session_id=session_id)
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent"
+    replaced = blocked.client.put(path, files=_upload(name, extra=DENY_ALL), headers=bearer)
+    assert_unconfirmed(replaced, path)
+    assert _bundle_location(blocked, session_id=session_id) != before  # applied
+
+
+def test_installing_editing_and_removing_an_agent_are_held(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    name = f"mine-{uuid.uuid4().hex[:8]}"
+    installed = blocked.client.post("/v1/agents", files=_upload(name, mcp=True), headers=bearer)
+    assert_confirmed(installed)
+    agent_id = installed.json()["id"]
+    before = _bundle_location(blocked, agent_id=agent_id)
+    _block(blocked)
+    path = f"/v1/agents/{agent_id}"
+    edited = blocked.client.patch(path, json={"mcp_servers": {"docs": None}}, headers=bearer)
+    assert_unconfirmed(edited, path)
+    assert _bundle_location(blocked, agent_id=agent_id) != before  # the declaration is gone
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
 
 
 def test_signing_in_under_required_identity_is_not_held_while_blocked(tmp_path: Path) -> None:
