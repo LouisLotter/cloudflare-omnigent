@@ -208,3 +208,121 @@ def test_lifespan_and_other_scopes_pass_through() -> None:
     app = ResponseBarrierMiddleware(inner, wait=ScriptedWait(OK), timeout_s=1)
     run(app({"type": "lifespan"}, None, None))
     assert seen == ["lifespan"]
+
+
+# ── Held routes: the body as the app reads it, and the routed path ─────────────────────
+
+
+def reading_app(*, commit: set[str] | None = None, read: bool = True):  # noqa: ANN202
+    """An app that reads the whole body through ``receive``, keeps what it got, answers 200."""
+    seen: list[bytes] = []
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        while read:
+            message = await receive()
+            seen.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        if commit:
+            record_commit(commit)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    app.seen = seen  # type: ignore[attr-defined]
+    return app
+
+
+async def call_with_body(
+    app: Any, method: str, path: str, chunks: list[bytes], root_path: str = ""
+) -> dict:
+    sent: list[dict[str, Any]] = []
+    pending = list(chunks)
+
+    async def receive() -> dict[str, Any]:
+        body = pending.pop(0) if pending else b""
+        return {"type": "http.request", "body": body, "more_body": bool(pending)}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope = {"type": "http", "method": method, "path": path, "root_path": root_path, "headers": []}
+    await app(scope, receive, send)
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return {"status": start["status"], "body": body}
+
+
+def _held(inner: Any, method: str, path: str, chunks: list[bytes], **kw: Any) -> tuple[int, int]:
+    """``(status, waits)`` of one request through the barrier, the replica blocked."""
+    wait = ScriptedWait(TIMEOUT)
+    base_path = kw.pop("base_path", "")
+    app = ResponseBarrierMiddleware(inner, wait=wait, timeout_s=1, base_path=base_path)
+    result = run(call_with_body(app, method, path, chunks, **kw))
+    return result["status"], wait.calls
+
+
+def test_turning_off_workspace_sharing_is_held_and_the_app_reads_the_body_unchanged() -> None:
+    chunks = [b'{"share_workspace_', b'files": false}']
+    inner = reading_app()
+    assert _held(inner, "PATCH", "/v1/sessions/s1", chunks) == (424, 1)
+    assert inner.seen == chunks  # every chunk reached the app as sent, once
+
+
+def test_an_ordinary_thread_setting_is_not_held() -> None:
+    inner = reading_app()
+    chunks = [b'{"title": "renamed", "archived": true}']
+    assert _held(inner, "PATCH", "/v1/sessions/s1", chunks) == (200, 0)
+    assert inner.seen == chunks
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [b"x" * (barrier.HELD_BODY_LIMIT + 1)],
+        [b'{"title": "t"', b"x" * barrier.HELD_BODY_LIMIT, b"}"],
+        [b"not json"],
+        [b'["share_workspace_files"]'],
+    ],
+    ids=["too-large", "too-large-in-chunks", "not-json", "not-an-object"],
+)
+def test_a_body_it_cannot_read_as_a_json_object_is_held(chunks: list[bytes]) -> None:
+    assert _held(reading_app(), "PATCH", "/v1/sessions/s1", chunks)[1] == 1
+
+
+def test_a_body_the_app_never_read_is_held() -> None:
+    assert _held(reading_app(read=False), "PATCH", "/v1/sessions/s1", [b'{"title": "t"}']) == (
+        424,
+        1,
+    )
+
+
+def test_other_requests_keep_the_receive_they_were_given() -> None:
+    inner = reading_app()
+    assert _held(inner, "POST", "/v1/sessions/s1/events", [b'{"share_workspace_files": 1}']) == (
+        200,
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "kw"),
+    [
+        ("/omnigent/v1/sessions/s1", {"base_path": "/omnigent"}),
+        ("/v1/sessions/s1", {"base_path": "/omnigent"}),
+        ("/mount/v1/sessions/s1", {"root_path": "/mount"}),
+    ],
+)
+def test_a_base_path_or_root_path_does_not_skip_a_held_route(path: str, kw: dict) -> None:
+    body = [b'{"share_workspace_files": false}']
+    assert _held(reading_app(), "PATCH", path, body, **kw) == (424, 1)
+    assert _held(reading_app(), "PUT", f"{path}/permissions", [b"{}"], **kw) == (424, 1)
+
+
+def test_a_prefixed_auth_route_gets_the_auth_routes_424_shape() -> None:
+    wait = ScriptedWait(TIMEOUT)
+    app = ResponseBarrierMiddleware(
+        reading_app(commit={"device_grants"}), wait=wait, timeout_s=1, base_path="/omnigent"
+    )
+    result = run(call_with_body(app, "POST", "/omnigent/auth/login", [b"{}"]))
+    assert result["status"] == 424
+    assert json.loads(result["body"])["code"] == "durability_unconfirmed"

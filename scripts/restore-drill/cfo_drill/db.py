@@ -35,6 +35,17 @@ SECURITY_TABLE_KEYS: dict[str, tuple[str, ...]] = {
     "scheduled_tasks": ("workspace_id", "id"),
     # Omnigent's linked accounts (GitHub, WP5.9), sealed by the key service: digests only.
     "connections": ("workspace_id", "user_id", "provider", "account_id"),
+    # The MCP servers administrators add, and their tool allowlists (WP8.14).
+    "mcp_registry_services": ("workspace_id", "service_id"),
+    "mcp_registry_service_tools": ("workspace_id", "service_id", "tool_name"),
+    # What a team takes away (WP3.56).
+    "team_invitations": ("workspace_id", "id"),
+    "team_members": ("workspace_id", "id"),
+    "approver_grants": ("workspace_id", "resource_cksum", "approver_user_id"),
+    "approval_resources": ("workspace_id", "resource_cksum"),
+    "protected_policies": ("workspace_id", "id"),
+    "policies": ("workspace_id", "id"),
+    "session_permissions": ("workspace_id", "user_id", "conversation_id"),
 }
 ITEMS_TABLE = "conversation_items"
 ITEM_KEY = ("workspace_id", "conversation_id", "id")

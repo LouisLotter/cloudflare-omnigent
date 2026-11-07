@@ -6,7 +6,15 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from cfo_server.barrier import IGNORED_UPDATE_COLUMNS, SECURITY_TABLES, classify
+from cfo_server.barrier import (
+    ADDITIVE_INSERT_TABLES,
+    IGNORED_UPDATE_COLUMNS,
+    SECURITY_TABLES,
+    classify,
+    held_route,
+    normalize_base_path,
+    routed_path,
+)
 
 OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "preferences", "projects"]
 
@@ -34,6 +42,51 @@ OTHER_TABLES = ["conversations", "conversation_items", "agents", "files", "prefe
             "scheduled_tasks",
         ),
         ("DELETE FROM scheduled_tasks WHERE scheduled_tasks.id = ?", 1, "scheduled_tasks"),
+        # What a team takes away (WP3.56).
+        (
+            "UPDATE team_invitations SET state=?, closed_at=? WHERE team_invitations.id = ?",
+            1,
+            "team_invitations",
+        ),
+        (
+            "UPDATE team_members SET role=?, updated_at=? WHERE team_members.id = ?",
+            1,
+            "team_members",
+        ),
+        ("DELETE FROM approver_grants WHERE approver_grants.id = ?", 1, "approver_grants"),
+        (
+            "UPDATE approval_resources SET allow_initiator=?, updated_at=? WHERE id = ?",
+            1,
+            "approval_resources",
+        ),
+        (
+            "UPDATE protected_policies SET enabled=?, updated_at=? WHERE id = ?",
+            1,
+            "protected_policies",
+        ),
+        ("INSERT INTO policies (id, name) VALUES (?, ?)", 1, "policies"),
+        # A thread's grants: taking one away counts, adding one never does (every new thread does).
+        (
+            "INSERT INTO session_permissions (workspace_id, user_id, conversation_id, level) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, user_id, conversation_id) "
+            "DO UPDATE SET level = ?",
+            1,
+            None,
+        ),
+        # Only a plain insert adds: a replacing one can lower a level or swap a grantee.
+        (
+            "INSERT OR REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)",
+            1,
+            "session_permissions",
+        ),
+        (
+            "REPLACE INTO session_permissions (user_id, level) VALUES (?, ?)",
+            1,
+            "session_permissions",
+        ),
+        ("DELETE FROM session_permissions WHERE user_id = ?", 1, "session_permissions"),
+        ("DELETE FROM session_permissions WHERE user_id = ?", 0, None),
+        ("UPDATE session_permissions SET user_id=? WHERE id = ?", 1, "session_permissions"),
         (
             "INSERT INTO hosts (workspace_id, host_id, user_id, name) VALUES (?, ?, ?, ?)",
             1,
@@ -105,8 +158,10 @@ def test_classify(statement: str, rowcount: int, expected: str | None) -> None:
 def test_every_effective_insert_or_delete_on_a_security_table_is_marked(
     table: str, verb: str, rowcount: int
 ) -> None:
-    statement = f"{verb} {table} (x) VALUES (?)" if "insert" in verb.lower() else f"{verb} {table}"
-    assert classify(statement, rowcount) == table
+    insert = "insert" in verb.lower()
+    statement = f"{verb} {table} (x) VALUES (?)" if insert else f"{verb} {table}"
+    expected = None if insert and table in ADDITIVE_INSERT_TABLES else table
+    assert classify(statement, rowcount) == expected
 
 
 @settings(deadline=None)
@@ -150,3 +205,84 @@ def test_an_update_is_ignored_only_when_every_column_is_bookkeeping(
 def test_other_tables_are_never_marked(table: str, verb: str, rowcount: int) -> None:
     suffix = " SET a=?" if verb == "UPDATE" else ""
     assert classify(f"{verb} {table}{suffix}", rowcount) is None
+
+
+def test_additive_inserts_are_on_security_tables() -> None:
+    assert ADDITIVE_INSERT_TABLES <= SECURITY_TABLES
+
+
+BYPASS = "omnigent.codex_native.bypass_sandbox"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "held"),
+    [
+        ("PUT", "/v1/sessions/abc/permissions", {"user_id": "bob", "level": 1}, True),
+        ("PUT", "/v1/sessions/abc/permissions", None, True),
+        # A thread's settings: held when they decide who may see or do what, whatever the value.
+        ("PATCH", "/v1/sessions/abc", {"share_workspace_files": False}, True),
+        ("PATCH", "/v1/sessions/abc", {"share_workspace_files": True}, True),
+        ("PATCH", "/v1/sessions/abc", {"permission_mode": "default"}, True),
+        ("PATCH", "/v1/sessions/abc", {"approval_mode": "on-request"}, True),
+        ("PATCH", "/v1/sessions/abc", {"terminal_launch_args": ["--x"]}, True),
+        ("PATCH", "/v1/sessions/abc", {"labels": {BYPASS: "false"}}, True),
+        # Too large, unread or not a JSON object: held, to be safe.
+        ("PATCH", "/v1/sessions/abc", None, True),
+        # Ordinary settings are not.
+        ("PATCH", "/v1/sessions/abc", {"title": "t"}, False),
+        ("PATCH", "/v1/sessions/abc", {"archived": True, "model_override": "m"}, False),
+        ("PATCH", "/v1/sessions/abc", {"labels": {"omnigent.pinned.bob": "1"}}, False),
+        ("PATCH", "/v1/sessions/abc", {"labels": "not-a-map"}, False),
+        # An agent's configuration: its bundle carries its policies and MCP servers.
+        ("POST", "/v1/agents", None, True),
+        ("PATCH", "/v1/agents/a1", {"description": "only a description"}, True),
+        ("DELETE", "/v1/agents/a1", None, True),
+        ("PUT", "/v1/sessions/abc/agent", None, True),
+        ("PUT", "/v1/sessions/abc/agent/mcp-servers/docs", None, True),
+        ("DELETE", "/v1/sessions/abc/agent/mcp-servers/docs", None, True),
+        # Adding an MCP server takes nothing away; a new thread is ordinary work.
+        ("POST", "/v1/sessions/abc/agent/mcp-servers", None, False),
+        ("POST", "/v1/sessions", None, False),
+        ("GET", "/v1/agents/a1", None, False),
+        # Other routes are not held routes at all.
+        ("POST", "/v1/sessions/abc/permissions", None, False),
+        ("PUT", "/v1/sessions/abc/permissions/bob", None, False),
+        ("PATCH", "/v1/sessions/abc/labels", None, False),
+        ("PUT", "/v1/sessions/abc", None, False),
+    ],
+)
+def test_the_held_routes(method: str, path: str, body: dict | None, held: bool) -> None:
+    route = held_route(method, path)
+    assert (route is not None and route.holds(body)) is held
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    [(None, ""), ("", ""), ("/", ""), ("omnigent", "/omnigent"), (" /a/b/ ", "/a/b")],
+)
+def test_the_base_path_is_normalized_as_omnigent_does(value: str | None, normalized: str) -> None:
+    assert normalize_base_path(value) == normalized
+
+
+@pytest.mark.parametrize(
+    ("scope", "base_path", "routed"),
+    [
+        ({"path": "/v1/sessions/a/permissions"}, "", "/v1/sessions/a/permissions"),
+        (
+            {"path": "/omnigent/v1/sessions/a/permissions"},
+            "/omnigent",
+            "/v1/sessions/a/permissions",
+        ),
+        # A proxy that strips the prefix itself: the path arrives as Omnigent routes it.
+        ({"path": "/v1/sessions/a/permissions"}, "/omnigent", "/v1/sessions/a/permissions"),
+        ({"path": "/omnigentx/v1/sessions/a"}, "/omnigent", "/omnigentx/v1/sessions/a"),
+        ({"path": "/omnigent"}, "/omnigent", "/"),
+        # An ASGI root_path the server was started with.
+        ({"path": "/mount/v1/sessions/a", "root_path": "/mount"}, "", "/v1/sessions/a"),
+        ({"path": "/v1/sessions/a", "root_path": "/mount"}, "", "/v1/sessions/a"),
+    ],
+)
+def test_routes_are_matched_on_the_path_omnigent_routes(
+    scope: dict, base_path: str, routed: str
+) -> None:
+    assert routed_path(scope, base_path) == routed

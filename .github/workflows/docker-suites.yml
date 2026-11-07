@@ -3,8 +3,8 @@
 #     SIGKILL replacements, the 424 and 503 answers, recovery mode, S7's sharing variants, the
 #     final sync, and the image's fork revision, checked file by file against the fork;
 #   - the durability suite (scripts/restore-drill/tests): the restore drill, the lag warning,
-#     the harness rehearsal, and the in-process launcher fence suite inside the image's test
-#     target.
+#     the harness rehearsal, and, inside the image's test target, the in-process suite: the
+#     launcher fence, the drill's coupling to the image, and the team rehearsal.
 # They take about ten minutes after the build and pull MinIO and Toxiproxy (pinned by digest in
 # their compose files), so they run nightly on main and on demand, not on every pull request.
 # A skipped test fails the run: a missing prerequisite is never a pass. (The fence suite broke
@@ -115,7 +115,10 @@ jobs:
             exit 1
           fi
 
+      # Runs whatever the image tests did: a failure there kept this suite from running for three
+      # days in November. The job stays red if either step fails.
       - name: Durability suite, the fence suite included (scripts/restore-drill/tests)
+        if: ${{ !cancelled() }}
         run: |
           uv run --python 3.12 --no-project --with pytest==9.1.1 --with httpx==0.28.1 \
             --with hypothesis==6.169.0 --with boto3==1.40.0 \

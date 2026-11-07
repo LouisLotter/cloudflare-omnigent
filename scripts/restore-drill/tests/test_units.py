@@ -202,6 +202,8 @@ def _make_db(path: Path) -> sqlite3.Connection:
                                       PRIMARY KEY (workspace_id, id));
         CREATE TABLE conversation_items (workspace_id INT, conversation_id BLOB, id BLOB,
                                          created_at INT, data TEXT);
+        CREATE TABLE team_invitations (workspace_id INT, id BLOB, state INT, closed_at INT,
+                                       PRIMARY KEY (workspace_id, id));
         CREATE TABLE _litestream_seq (id INT);
         """
     )
@@ -276,6 +278,22 @@ def test_snapshot_compare_and_canaries(tmp_path: Path) -> None:
     assert db.check_canaries(carried, None, broken).detail["differ"] == ["schedule"]
     assert db.check_canaries(carried, None, same).ok
     conn.close()
+
+
+def test_a_revoked_invitation_that_comes_back_pending_is_a_difference(tmp_path: Path) -> None:
+    """The count stays the same; only the row says the revocation was lost."""
+    conn = _make_db(tmp_path / "live.db")
+    conn.execute("INSERT INTO team_invitations VALUES (0, ?, 3, 100)", (TASK,))
+    live = db.snapshot(conn)
+    conn.execute("UPDATE team_invitations SET state = 1, closed_at = NULL")
+    restored = db.snapshot(conn)
+    checks = {c.name: c for c in db.compare(live, restored)}
+    assert checks["row_counts"].ok
+    assert not checks["security_tables"].ok
+    assert checks["security_tables"].detail["team_invitations"]["changed"] == 1
+    canary = db.Canary("invitation_revoked", "team_invitations", (0, TASK), True)
+    check = db.check_canaries([canary], live, restored)
+    assert not check.ok and check.detail["differ"] == ["invitation_revoked"]
 
 
 def test_schema_and_table_differences(tmp_path: Path) -> None:

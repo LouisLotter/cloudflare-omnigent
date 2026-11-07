@@ -384,7 +384,11 @@ def build_app(
     )
     # Outermost user middleware: added last, so it wraps everything create_app added.
     app.add_middleware(
-        ResponseBarrierMiddleware, wait=waiter.wait, timeout_s=config.response_barrier_timeout_s
+        ResponseBarrierMiddleware,
+        wait=waiter.wait,
+        timeout_s=config.response_barrier_timeout_s,
+        # Read where create_app reads it, so the barrier matches the paths Omnigent routes.
+        base_path=os.environ.get("OMNIGENT_WEB_BASE_PATH", ""),
     )
     ep.log_capabilities(sandbox_config, github_config, github_store)
     return app

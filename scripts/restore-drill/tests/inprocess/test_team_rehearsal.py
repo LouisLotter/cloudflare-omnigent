@@ -3,7 +3,10 @@
 The database is made at Omnigent's head and taken back to ``mr1a2b3c4d5e`` (the release before the
 team model), then given what today's installation has: the owner's account, a personal host and a
 cloud computer, each with a thread bound to a runner. The rehearsal must migrate it and pass every
-check; a second owner makes it fail. Skipped where Omnigent has no team model (an older pin).
+check; a second owner makes it fail.
+
+It needs Omnigent, so it runs inside the image's test target with the rest of this directory
+(``tests/test_fence_suite.py`` starts them). Without a team model it fails: nothing here skips.
 """
 
 from __future__ import annotations
@@ -12,11 +15,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-import pytest
-
-team_store = pytest.importorskip("omnigent.stores.team_store")
-
-from cfo_drill import team  # noqa: E402
+from cfo_drill import team
 
 PREVIOUS = "mr1a2b3c4d5e"
 OWNER = "owner-canary-account"

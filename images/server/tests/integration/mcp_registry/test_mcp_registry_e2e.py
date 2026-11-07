@@ -15,10 +15,12 @@ The pieces, each the real one:
   test switch: the destination rules apply as in production;
 - **a computer:** the computer image, where the runner's own client
   (``omnigent.runner.proxy_mcp_manager.ProxyMcpManager``) calls the gateway with a runner's
-  delegated owner token, as a runner on a cloud computer does. Shortcut: the token is minted in
-  the server container with Omnigent's own ``mint_runner_token`` (a runner's launch is tested
-  elsewhere), and the computer reaches the server directly instead of through its intercept and
-  the platform's computer route (WP5.13 checks those on Cloudflare).
+  machine token, as a runner on a cloud computer does. Shortcut: the records a launch leaves (a
+  host of the owner's, the thread bound to it and to the runner) are written in the server
+  container with Omnigent's own stores (a runner's launch is tested elsewhere), and the runner
+  gets its token from the server's ``POST /v1/runners/{id}/token`` with its tunnel binding token.
+  The computer reaches the server directly instead of through its intercept and the platform's
+  computer route (WP5.13 checks those on Cloudflare).
 
 Flow: Settings → MCP's connect (Omnigent's redirect with PKCE, the provider's consent, the
 callback); the login only as ciphertext through the key service, in the database and its
@@ -470,20 +472,28 @@ print(json.dumps({"connected": True, "access": conn.secret["access_token"],
 """
 KEY_SERVICE_ENV = ("OMNIGENT_CREDENTIAL_CIPHER=http", "NO_PROXY=platform.internal")
 
-#: A runner's delegated owner token, as Omnigent mints one for a runner it binds: its own
-#: ``mint_runner_token``, under the owner's account generation (from the owner's session).
-MINT_RUNNER = r"""
-import base64, json, sys
+#: The records a runner's launch leaves, through Omnigent's own stores: a host of the owner's,
+#: under the owner's account generation (from the owner's session), and the thread bound to that
+#: host and to the runner its tunnel binding token names. The token itself is the server's to
+#: mint, from these records: see :func:`_runner_token`.
+BIND_RUNNER = r"""
+import base64, json, sys, uuid
 from omnigent.db.account_authority import account_authority_scope
-from omnigent.server.auth import create_auth_provider
+from omnigent.runner.identity import token_bound_runner_id
+from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+from omnigent.stores.host_store import HostStore
 given = json.loads(sys.stdin.read())
-part = given["session"].split(".")[1]
+part = given["owner_session"].split(".")[1]
 claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+uri = "sqlite:////data/omnigent.db"
+host, runner = uuid.uuid4().hex, token_bound_runner_id(given["binding_token"])
 with account_authority_scope("owner", claims["account_generation"]):
-    token = create_auth_provider().mint_runner_token("owner", 900)
-print(json.dumps({"token": token}))
+    HostStore(uri).upsert_on_connect(host, "mcp-e2e-computer", "owner")
+    conversations = SqlAlchemyConversationStore(uri)
+    conversations.set_host_id(given["session"], host, workspace="/home/omnigent/work")
+    conversations.replace_runner_id(given["session"], runner)
+print(json.dumps({"host": host, "runner": runner}))
 """
-RUNNER_ENV = ("OMNIGENT_AUTH_PROVIDER=accounts", "OMNIGENT_AUTH_ENABLED=1")
 
 #: The runner's own MCP client, on the computer, with the runner's token: the gateway's tool
 #: list, then each call, and how long each took.
@@ -605,6 +615,32 @@ def _bundle(name: str) -> bytes:
     return buffer.getvalue()
 
 
+def _runner_token(stack: Stack, owner_session: str, session: str) -> str:
+    """A runner's machine token, as a launched runner gets one: the server mints it from its own
+    records for whoever holds the tunnel binding token, with no person's credential in the call."""
+    binding_token = secrets.token_urlsafe(32)
+    bound = stack.server_python(
+        BIND_RUNNER,
+        {"owner_session": owner_session, "session": session, "binding_token": binding_token},
+    )
+    minted = httpx.post(
+        f"{stack.server_url}/v1/runners/{bound['runner']}/token",
+        headers={"X-Omnigent-Runner-Tunnel-Token": binding_token},
+        timeout=60,
+    )
+    assert minted.status_code == 200, minted.status_code
+    token = minted.json()["token"]
+    part = token.split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    assert (claims["aud"], claims["kind"], claims["sub"]) == ("omnigent:runner", "runner", OWNER)
+    assert (claims["sid"], claims["rid"], claims["host"]) == (
+        session,
+        bound["runner"],
+        bound["host"],
+    )
+    return token
+
+
 def _scan(stack: Stack, logins: dict[str, str]) -> dict[str, object]:
     done = _docker(
         "exec",
@@ -698,7 +734,7 @@ def test_connect_call_from_a_computer_and_disconnect(stack: Stack) -> None:
     )
     assert created.status_code == 201, created.status_code
     session = created.json()["session_id"]
-    runner = stack.server_python(MINT_RUNNER, {"session": session_token}, *RUNNER_ENV)["token"]
+    runner = _runner_token(stack, session_token, session)
     calls = stack.computer_python(
         RUNNER_CALLS,
         {

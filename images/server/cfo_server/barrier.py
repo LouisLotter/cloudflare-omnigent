@@ -5,7 +5,8 @@ spike S4):
 
 - Engine-wide SQLAlchemy events only *mark* a request that committed an effective write to a
   security table (:data:`SECURITY_TABLES`), ignoring updates that touch only bookkeeping
-  columns (:data:`IGNORED_UPDATE_COLUMNS`). Nothing blocks in a commit hook: S4 showed that
+  columns (:data:`IGNORED_UPDATE_COLUMNS`) and inserts that only add
+  (:data:`ADDITIVE_INSERT_TABLES`). Nothing blocks in a commit hook: S4 showed that
   freezes Omnigent's event loop and that Omnigent swallows or masks the hook's error.
 - :class:`ResponseBarrierMiddleware`, the outermost ASGI middleware, holds such a request's
   response until Litestream's ``replicated_txid`` covers the commit. On timeout a 2xx or 3xx
@@ -45,6 +46,13 @@ from cfo_server.litestream import ReplicationWaiter, WaitOutcome
 #: (WP8.14): where agents' tool calls may go and which tools they may call. A removed server, a
 #: changed address or a narrowed allowlist must not come back undone with a restore either; their
 #: logins are in ``connections``, removed in the same transaction.
+#: And what a team takes away (WP3.56). A table belongs here when a person is told a change took
+#: effect and losing it would give back access, a credential or a permission someone took away,
+#: or undo a narrowing: a revoked invitation, whose link a restore made work again; a lowered role;
+#: a removed approver; self-approval turned off; a rule added or tightened; a share revoked. Each
+#: table makes its writes wait for the replica and answer 424 while it is blocked, so ordinary
+#: work stays out: ``team_identity_bindings`` (a first sign-in writes it), ``approval_verdicts``
+#: (every protected action does) and the removal records (committed with ``users``).
 SECURITY_TABLES: frozenset[str] = frozenset(
     {
         "users",
@@ -55,15 +63,89 @@ SECURITY_TABLES: frozenset[str] = frozenset(
         "connections",
         "mcp_registry_services",
         "mcp_registry_service_tools",
+        "team_invitations",
+        "team_members",
+        "approver_grants",
+        "approval_resources",
+        "protected_policies",
+        "policies",
+        "session_permissions",
     }
 )
 #: Updates that touch only these columns are bookkeeping, not security changes: the login
 #: timestamp and a host's heartbeat. Without this, every browser login would wait for the
-#: replica and fail while it is blocked.
+#: replica and fail while it is blocked. The team, approval, policy and sharing tables need no
+#: entry: none has a last-seen stamp, and their ``updated_at`` moves only with a real change.
 IGNORED_UPDATE_COLUMNS: dict[str, frozenset[str]] = {
     "users": frozenset({"last_login_at"}),
     "hosts": frozenset({"updated_at"}),
 }
+#: Tables where a new row only adds, and taking one away is the security change: every new thread
+#: inserts its owner's grant, which must not wait for the replica, and a lost grant gives back
+#: nothing anyone took away. Their updates and deletes still count.
+ADDITIVE_INSERT_TABLES: frozenset[str] = frozenset({"session_permissions"})
+
+
+@dataclass(frozen=True)
+class HeldRoute:
+    """A request held when it succeeds, whatever it wrote, matched on the path Omnigent routes.
+
+    :param fields: Held only when the JSON body sets one of these fields, whatever their value
+        (presence is the signal, as in Omnigent's own permission tiers); ``None`` holds every
+        successful request.
+    :param label_keys: Also held when the body's ``labels`` sets one of these keys.
+    """
+
+    method: str
+    path: re.Pattern[str]
+    fields: frozenset[str] | None = None
+    label_keys: frozenset[str] = frozenset()
+
+    def holds(self, body: dict[str, Any] | None) -> bool:
+        """Whether a successful request with this JSON body is held; ``None`` is a body too
+        large, unread or not a JSON object, which is held to be safe."""
+        if self.fields is None or body is None:
+            return True
+        if self.fields & body.keys():
+            return True
+        labels = body.get("labels")
+        return isinstance(labels, dict) and bool(self.label_keys & labels.keys())
+
+
+#: Requests held whenever they succeed, whatever they wrote:
+#: - sharing a thread, which can lower a level through the same upsert as a new thread's owner
+#:   grant, so the statement cannot tell them apart;
+#: - a thread's settings that decide who may see or do what in it (Omnigent's manage and owner
+#:   tiers in ``PATCH /v1/sessions/{id}``): ``share_workspace_files`` (view-level collaborators
+#:   browse the workspace), and the permission and approval modes, launch arguments and Codex
+#:   sandbox bypass (what the agent may do without asking). They live in ``conversations``,
+#:   labels and launch metadata with a thread's ordinary state, so the request is held instead
+#:   of a table. A title, archive or model change is not;
+#: - an agent's configuration, which decides what the agent may do: its bundle carries its
+#:   policies and MCP servers, and a restore that brings back an older ``agents.bundle_location``
+#:   undoes a tightening. Installing (or reinstalling) a person's agent, editing or removing it,
+#:   replacing a thread's agent, and changing or taking off a thread's MCP server. The ``agents``
+#:   table itself is written by every thread created with its own bundle, so it stays out, as
+#:   does adding an MCP server to a thread, which takes nothing away.
+HELD_ROUTES: tuple[HeldRoute, ...] = (
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/permissions$")),
+    HeldRoute("POST", re.compile(r"^/v1/agents$")),
+    HeldRoute("PATCH", re.compile(r"^/v1/agents/[^/]+$")),
+    HeldRoute("DELETE", re.compile(r"^/v1/agents/[^/]+$")),
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/agent$")),
+    HeldRoute("PUT", re.compile(r"^/v1/sessions/[^/]+/agent/mcp-servers/[^/]+$")),
+    HeldRoute("DELETE", re.compile(r"^/v1/sessions/[^/]+/agent/mcp-servers/[^/]+$")),
+    HeldRoute(
+        "PATCH",
+        re.compile(r"^/v1/sessions/[^/]+$"),
+        fields=frozenset(
+            {"share_workspace_files", "permission_mode", "approval_mode", "terminal_launch_args"}
+        ),
+        label_keys=frozenset({"omnigent.codex_native.bypass_sandbox"}),
+    ),
+)
+#: A held route's body is kept up to this size; a larger one is held without reading it.
+HELD_BODY_LIMIT = 64 * 1024
 
 UNCONFIRMED_STATUS = 424
 UNCONFIRMED_CODE = "durability_unconfirmed"
@@ -93,6 +175,9 @@ def classify(statement: str, rowcount: int) -> str | None:
     verb, table = match.group(1).upper(), match.group(2).lower()
     if table not in SECURITY_TABLES:
         return None
+    if table in ADDITIVE_INSERT_TABLES and re.fullmatch(r"INSERT\s+INTO", verb):
+        # A plain insert (``ON CONFLICT`` included); ``INSERT OR REPLACE`` can take away.
+        return None
     if rowcount == 0:
         # An UPDATE or DELETE that matched nothing, or an INSERT that a conflict clause
         # ignored, changed nothing. An unknown count (-1) counts as a change.
@@ -107,6 +192,71 @@ def classify(statement: str, rowcount: int) -> str | None:
             if columns and columns <= IGNORED_UPDATE_COLUMNS[table]:
                 return None
     return table
+
+
+def normalize_base_path(value: str | None) -> str:
+    """``OMNIGENT_WEB_BASE_PATH`` as Omnigent normalizes it: ``"/prefix"``, or ``""`` for none.
+    (Omnigent refuses to start on an invalid one, so only valid values reach a request.)"""
+    trimmed = (value or "").strip()
+    if trimmed in ("", "/"):
+        return ""
+    return ("/" + trimmed.lstrip("/")).rstrip("/")
+
+
+def routed_path(scope: dict[str, Any], base_path: str) -> str:
+    """The path Omnigent routes a request on: its ``BasePathMiddleware`` strips the base path when
+    the request carries it and makes it the ``root_path``; Starlette's router then matches the
+    path below the ``root_path``."""
+    path = scope.get("path") or ""
+    root_path = scope.get("root_path") or ""
+    if base_path and (path == base_path or path.startswith(f"{base_path}/")):
+        path, root_path = path[len(base_path) :] or "/", base_path
+    if root_path and path.startswith(root_path) and path[len(root_path) :][:1] in ("", "/"):
+        path = path[len(root_path) :] or "/"
+    return path
+
+
+def held_route(method: str | None, path: str) -> HeldRoute | None:
+    """The held route this request is on, if any (``path`` as Omnigent routes it)."""
+    return next((r for r in HELD_ROUTES if method == r.method and r.path.match(path)), None)
+
+
+class _BodyTap:
+    """The request body as the app pulls it through ``receive``: every message passes unchanged
+    and nothing is read twice. Kept up to :data:`HELD_BODY_LIMIT`."""
+
+    def __init__(self, receive: Any) -> None:
+        self._receive = receive
+        self._chunks: list[bytes] = []
+        self._size = 0
+        self._complete = False
+        self._overflowed = False
+
+    async def __call__(self) -> Any:
+        message = await self._receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            if not self._overflowed:
+                self._size += len(body)
+                if self._size > HELD_BODY_LIMIT:
+                    self._overflowed = True
+                    self._chunks.clear()
+                else:
+                    self._chunks.append(body)
+            if not message.get("more_body", False):
+                self._complete = True
+        return message
+
+    def json_object(self) -> dict[str, Any] | None:
+        """The body as a JSON object; ``None`` when it was too large, not read to its end, or
+        not a JSON object."""
+        if self._overflowed or not self._complete:
+            return None
+        try:
+            data = json.loads(b"".join(self._chunks))
+        except ValueError:  # UnicodeDecodeError included
+            return None
+        return data if isinstance(data, dict) else None
 
 
 def _split_assignments(text: str) -> Iterable[str]:
@@ -222,10 +372,11 @@ class ResponseBarrierMiddleware:
     on a WebSocket is held.
     """
 
-    def __init__(self, app: Any, *, wait: Wait, timeout_s: float) -> None:
+    def __init__(self, app: Any, *, wait: Wait, timeout_s: float, base_path: str = "") -> None:
         self.app = app
         self._wait = wait
         self._timeout_s = timeout_s
+        self._base_path = normalize_base_path(base_path)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         kind = scope.get("type")
@@ -244,6 +395,9 @@ class ResponseBarrierMiddleware:
         token = _current.set(record)
         method = scope.get("method")
         path = scope.get("path")
+        route_path = routed_path(scope, self._base_path)
+        route = held_route(method, route_path)
+        tap = _BodyTap(receive) if route is not None and route.fields is not None else None
         orphans_at_start = orphan_commits()
         replaced = False
 
@@ -258,10 +412,15 @@ class ResponseBarrierMiddleware:
             orphaned = method not in ("GET", "HEAD", "OPTIONS") and (
                 orphan_commits() != orphans_at_start
             )
-            if not (record.commits or orphaned):
+            status = int(message["status"])
+            held = (
+                status < 400
+                and route is not None
+                and route.holds(tap.json_object() if tap is not None else None)
+            )
+            if not (record.commits or orphaned or held):
                 await send(message)
                 return
-            status = int(message["status"])
             outcome = await self._wait(self._timeout_s)
             log(
                 "barrier.response",
@@ -270,7 +429,13 @@ class ResponseBarrierMiddleware:
                 status=status,
                 tables=sorted(record.tables),
                 commits=record.commits,
-                why="request" if record.commits else "orphan_commit_during_request",
+                why=(
+                    "request"
+                    if record.commits
+                    else "route"
+                    if held
+                    else "orphan_commit_during_request"
+                ),
                 **outcome.log_fields(),
             )
             headers = list(message.get("headers", []))
@@ -281,7 +446,7 @@ class ResponseBarrierMiddleware:
                 headers.append((DURABILITY_HEADER, verdict))
                 await send({**message, "headers": headers})
                 return
-            body = json.dumps(unconfirmed_payload(path)).encode()
+            body = json.dumps(unconfirmed_payload(route_path)).encode()
             # Keep cookies (a password change rotates the session); drop the original body
             # and its framing headers.
             kept = [(k, v) for k, v in headers if k.lower() == b"set-cookie"]
@@ -298,7 +463,7 @@ class ResponseBarrierMiddleware:
             replaced = True
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, tap if tap is not None else receive, send_wrapper)
         finally:
             _current.reset(token)
 

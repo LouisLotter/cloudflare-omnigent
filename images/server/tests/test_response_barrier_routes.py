@@ -10,16 +10,28 @@ image tests repeat the blocked case against real Litestream.
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
+import tarfile
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from conftest import OWNER, OWNER_PASSWORD, REPO_ROOT, AppHarness, requires_omnigent
+from conftest import (
+    COOKIE_SECRET,
+    OWNER,
+    OWNER_PASSWORD,
+    REPO_ROOT,
+    AppHarness,
+    requires_omnigent,
+    serve_app,
+)
 
 pytestmark = requires_omnigent
 
@@ -329,14 +341,384 @@ def test_launch_token_rearm_and_revocation_are_security_writes(app_harness: AppH
 # ── Not held ───────────────────────────────────────────────────────────────────────────
 
 
+# ── What a team takes away (WP3.56) ────────────────────────────────────────────────────
+
+CEL = "omnigent.policies.builtins.cel.cel_policy"
+
+
+def _browser(h: AppHarness) -> dict[str, str]:
+    """A browser's sign-in: team and approval changes refuse a bearer credential."""
+    response = h.client.post("/auth/login", json={"username": OWNER, "password": OWNER_PASSWORD})
+    assert response.status_code == 200, response.text
+    h.client.cookies.clear()
+    return {"Cookie": "; ".join(f"{k}={v}" for k, v in response.cookies.items())}
+
+
+def _invite(h: AppHarness, browser: dict[str, str], name: str):  # noqa: ANN202
+    body = {"email": f"{name}@example.test", "role": "member"}
+    return h.client.post("/v1/team/invitations", json=body, headers=browser)
+
+
+def _member(h: AppHarness, browser: dict[str, str]) -> tuple[str, str]:
+    """A second member, through a real invitation, as ``(member id, username)``."""
+    name = f"member-{uuid.uuid4().hex[:8]}"
+    made = _invite(h, browser, name)
+    assert made.status_code == 200, made.text
+    token = parse_qs(urlsplit(made.json()["invite_url"]).query)["invite"][0]
+    joined = h.client.post(
+        "/auth/register",
+        json={"invite": token, "username": name, "password": "member-password-0001"},
+    )
+    assert joined.status_code == 200, joined.text
+    h.client.cookies.clear()
+    members = h.client.get("/v1/team", headers=browser).json()["members"]
+    (member,) = [m for m in members if m["user_id"] == name]
+    return member["member_id"], name
+
+
+def _invitation_state(h: AppHarness, invitation: str) -> list[tuple]:
+    sql = "SELECT state, closed_at IS NOT NULL FROM team_invitations WHERE lower(hex(id)) = ?"
+    return rows(h.db_path, sql, invitation.replace("-", "").lower())
+
+
+def test_a_revoked_invitation_is_held_and_applied_while_blocked(blocked: AppHarness) -> None:
+    browser = _browser(blocked)
+    made = _invite(blocked, browser, f"revoked-{uuid.uuid4().hex[:8]}")
+    assert_confirmed(made)
+    invitation = made.json()["invitation"]["invitation_id"]
+    assert _invitation_state(blocked, invitation) == [(1, 0)]
+    _block(blocked)
+    path = f"/v1/team/invitations/{invitation}"
+    assert_unconfirmed(blocked.client.delete(path, headers=browser), path)
+    assert _invitation_state(blocked, invitation) == [(3, 1)]
+
+
+def test_a_revoked_invitation_is_confirmed_when_healthy(healthy: AppHarness) -> None:
+    browser = _browser(healthy)
+    made = _invite(healthy, browser, f"revoked-{uuid.uuid4().hex[:8]}")
+    invitation = made.json()["invitation"]["invitation_id"]
+    assert_confirmed(healthy.client.delete(f"/v1/team/invitations/{invitation}", headers=browser))
+
+
+def test_a_new_invitation_is_held_while_blocked(blocked: AppHarness) -> None:
+    browser = _browser(blocked)
+    _block(blocked)
+    assert_unconfirmed(
+        _invite(blocked, browser, f"new-{uuid.uuid4().hex[:8]}"), "/v1/team/invitations"
+    )
+
+
+def test_a_lowered_role_a_suspension_and_a_removal_are_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    browser = _browser(blocked)
+    member, _ = _member(blocked, browser)
+    role = f"/v1/team/members/{member}/role"
+    assert_confirmed(blocked.client.put(role, json={"role": "admin"}, headers=browser))
+    _block(blocked)
+    assert_unconfirmed(blocked.client.put(role, json={"role": "member"}, headers=browser), role)
+    for action in ("suspend", "remove"):
+        path = f"/v1/team/members/{member}/{action}"
+        assert_unconfirmed(blocked.client.post(path, headers=browser), path)
+
+
+def test_removing_an_approver_and_turning_off_self_approval_are_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    browser = _browser(blocked)
+    _, name = _member(blocked, browser)
+    named = blocked.client.post(
+        "/v1/approvers", json={"kind": "team", "user_id": name}, headers=browser
+    )
+    assert_confirmed(named)
+    _block(blocked)
+    path = "/v1/approvers"
+    gone = blocked.client.delete(path, params={"kind": "team", "user_id": name}, headers=browser)
+    assert_unconfirmed(gone, path)
+    sql = "SELECT 1 FROM approver_grants WHERE approver_user_id = ?"
+    assert rows(blocked.db_path, sql, name) == []
+    settings = "/v1/approval-settings"
+    off = {"kind": "team", "allow_initiator": False}
+    assert_unconfirmed(blocked.client.put(settings, json=off, headers=browser), settings)
+
+
+def test_a_new_or_changed_policy_is_held_while_blocked(blocked: AppHarness) -> None:
+    browser = _browser(blocked)
+    rule = {"handler": CEL, "factory_params": {"expression": '{"result": "ALLOW"}'}}
+    name = f"rule-{uuid.uuid4().hex[:8]}"
+    made = blocked.client.post(
+        "/v1/protected-policies",
+        json={"domain": "team", "name": name, **rule},
+        headers=browser,
+    )
+    assert_confirmed(made)
+    _block(blocked)
+    path = f"/v1/protected-policies/{made.json()['id']}"
+    assert_unconfirmed(blocked.client.patch(path, json={"enabled": False}, headers=browser), path)
+    path = "/v1/protected-policies"
+    tightened = {"domain": "team", "name": f"{name}-2", **rule}
+    assert_unconfirmed(blocked.client.post(path, json=tightened, headers=browser), path)
+    path = "/v1/policies"
+    default = {"name": f"{name}-default", "type": "python", **rule}
+    assert_unconfirmed(blocked.client.post(path, json=default, headers=browser), path)
+
+
+def test_a_share_revoked_or_lowered_is_held_while_blocked(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    browser = _browser(blocked)
+    _, name = _member(blocked, browser)
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    path = f"/v1/sessions/{session.json()['id']}/permissions"
+    assert_confirmed(blocked.client.put(path, json={"user_id": name, "level": 3}, headers=bearer))
+    _block(blocked)
+    lowered = blocked.client.put(path, json={"user_id": name, "level": 1}, headers=bearer)
+    assert_unconfirmed(lowered, path)
+    assert_unconfirmed(blocked.client.delete(f"{path}/{name}", headers=bearer), path)
+
+
+def test_deleting_a_thread_removes_its_grants_so_it_is_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    path = f"/v1/sessions/{session.json()['id']}"
+    _block(blocked)
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+
+
+def _overrides(h: AppHarness, session_id: str) -> str:
+    sql = "SELECT session_overrides FROM conversations WHERE lower(hex(id)) = ?"
+    return rows(h.db_path, sql, session_id.replace("-", "").lower())[0][0] or ""
+
+
+def test_turning_off_workspace_sharing_is_held_and_a_title_change_is_not(
+    blocked: AppHarness,
+) -> None:
+    """View-level collaborators browse the workspace while the flag is on: a lost "off" would
+    give that back. The flag lives in ``conversations`` with ordinary settings, so the request
+    is held when its body sets it."""
+    bearer = blocked.bearer()
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    session_id = session.json()["id"]
+    path = f"/v1/sessions/{session_id}"
+    on = blocked.client.patch(path, json={"share_workspace_files": True}, headers=bearer)
+    assert_confirmed(on)
+    assert "share_workspace_files" in _overrides(blocked, session_id)
+    _block(blocked)
+    off = blocked.client.patch(path, json={"share_workspace_files": False}, headers=bearer)
+    assert_unconfirmed(off, path)
+    assert "share_workspace_files" not in _overrides(blocked, session_id)  # applied
+    assert_not_held(blocked.client.patch(path, json={"title": "renamed"}, headers=bearer))
+
+
+def test_a_base_path_does_not_skip_the_held_routes(tmp_path: Path) -> None:
+    """The barrier sees the path before Omnigent strips ``OMNIGENT_WEB_BASE_PATH``: prefixed and
+    unprefixed requests are held alike, and an auth route keeps its own 424 shape."""
+    with serve_app(tmp_path, {"OMNIGENT_WEB_BASE_PATH": "/omnigent"}) as h:
+        bearer = h.bearer()
+        _, name = _member(h, _browser(h))
+        agent_id = _agent_id(h, bearer)
+        made = h.client.post("/omnigent/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+        session_id = made.json()["id"]
+        for prefix in ("/omnigent", ""):
+            h.fake.mode = "healthy"
+            share = f"{prefix}/v1/sessions/{session_id}/permissions"
+            grant = {"user_id": name, "level": 3}
+            assert_confirmed(h.client.put(share, json=grant, headers=bearer))
+            _block(h)
+            lowered = h.client.put(share, json={"user_id": name, "level": 1}, headers=bearer)
+            assert_unconfirmed(lowered, share)
+            settings = f"{prefix}/v1/sessions/{session_id}"
+            off = h.client.patch(settings, json={"share_workspace_files": False}, headers=bearer)
+            assert_unconfirmed(off, settings)
+        login = h.client.post(
+            "/omnigent/auth/login",
+            json={"username": OWNER, "password": OWNER_PASSWORD, "issue_refresh": True},
+        )
+        assert_unconfirmed(login, "/auth/login")
+
+
+# An agent's configuration: its bundle carries its policies and MCP servers.
+
+DOCS_MCP = b"name: docs\ntransport: http\nurl: https://mcp.example.test/mcp\n"
+DENY_ALL = (
+    b"guardrails:\n  policies:\n    deny_all:\n      type: function\n      on: [tool_call]\n"
+    b"      function:\n        path: omnigent.policies.builtins.cel.cel_policy\n"
+    b'        arguments:\n          expression: \'{"result": "DENY"}\'\n'
+)
+
+
+def _bundle(name: str, *, extra: bytes = b"", mcp: bool = False) -> bytes:
+    files = {
+        "config.yaml": (
+            f"spec_version: 1\nname: {name}\nexecutor:\n  type: omnigent\n"
+            "  config:\n    harness: codex\n"
+        ).encode()
+        + extra
+    }
+    if mcp:
+        files["tools/mcp/docs.yaml"] = DOCS_MCP
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for path, body in files.items():
+            info = tarfile.TarInfo(path)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return buffer.getvalue()
+
+
+def _upload(name: str, **kw: object) -> dict:
+    return {"bundle": (f"{name}.tar.gz", _bundle(name, **kw), "application/gzip")}  # type: ignore[arg-type]
+
+
+def _thread_with_its_own_agent(h: AppHarness, bearer: dict[str, str], name: str, **kw: object):  # noqa: ANN202
+    return h.client.post(
+        "/v1/sessions", data={"metadata": "{}"}, files=_upload(name, **kw), headers=bearer
+    )
+
+
+def _bundle_location(h: AppHarness, *, session_id: str | None = None, agent_id: str | None = None):  # noqa: ANN202
+    if session_id is not None:
+        sql = (
+            "SELECT a.bundle_location FROM agents a JOIN conversations c"
+            " ON c.workspace_id = a.workspace_id AND c.agent_id = a.id WHERE lower(hex(c.id)) = ?"
+        )
+        return rows(h.db_path, sql, session_id.replace("-", "").lower())[0][0]
+    sql = "SELECT bundle_location FROM agents WHERE lower(hex(id)) = ? OR id = ?"
+    return rows(h.db_path, sql, str(agent_id).replace("-", "").lower(), agent_id)[0][0]
+
+
+def test_creating_a_thread_with_its_own_agent_is_not_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    _block(blocked)
+    made = _thread_with_its_own_agent(blocked, bearer, f"own-{uuid.uuid4().hex[:8]}", mcp=True)
+    assert made.status_code == 201, made.text
+    assert "x-cfo-durability" not in made.headers
+
+
+def test_taking_a_registry_service_off_a_thread_is_held_while_blocked(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    agent_id = _agent_id(blocked, bearer)
+    session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
+    session_id = session.json()["id"]
+    key = "omnigent.mcp_service.tracker"
+    # The selection Settings → MCP leaves on a thread (no registry is configured here).
+    with sqlite3.connect(blocked.db_path) as conn:
+        conn.execute(
+            "INSERT INTO conversation_labels"
+            " (workspace_id, conversation_id, key, value, updated_at) VALUES (0, ?, ?, '1', ?)",
+            (bytes.fromhex(session_id.replace("-", "")), key, int(time.time())),
+        )
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent/mcp-servers/tracker"
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+    sql = "SELECT value FROM conversation_labels WHERE lower(hex(conversation_id)) = ? AND key = ?"
+    assert rows(blocked.db_path, sql, session_id.replace("-", "").lower(), key) == [("0",)]
+
+
+def test_taking_a_bundled_mcp_server_off_a_thread_is_held_while_blocked(
+    blocked: AppHarness,
+) -> None:
+    bearer = blocked.bearer()
+    made = _thread_with_its_own_agent(blocked, bearer, f"mcp-{uuid.uuid4().hex[:8]}", mcp=True)
+    assert made.status_code == 201, made.text
+    session_id = made.json()["session_id"]
+    before = _bundle_location(blocked, session_id=session_id)
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent/mcp-servers/docs"
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+    assert _bundle_location(blocked, session_id=session_id) != before  # applied
+
+
+def test_a_thread_agent_with_a_new_deny_policy_is_held_while_blocked(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    name = f"deny-{uuid.uuid4().hex[:8]}"
+    made = _thread_with_its_own_agent(blocked, bearer, name)
+    assert made.status_code == 201, made.text
+    session_id = made.json()["session_id"]
+    before = _bundle_location(blocked, session_id=session_id)
+    _block(blocked)
+    path = f"/v1/sessions/{session_id}/agent"
+    replaced = blocked.client.put(path, files=_upload(name, extra=DENY_ALL), headers=bearer)
+    assert_unconfirmed(replaced, path)
+    assert _bundle_location(blocked, session_id=session_id) != before  # applied
+
+
+def test_installing_editing_and_removing_an_agent_are_held(blocked: AppHarness) -> None:
+    bearer = blocked.bearer()
+    name = f"mine-{uuid.uuid4().hex[:8]}"
+    installed = blocked.client.post("/v1/agents", files=_upload(name, mcp=True), headers=bearer)
+    assert_confirmed(installed)
+    agent_id = installed.json()["id"]
+    before = _bundle_location(blocked, agent_id=agent_id)
+    _block(blocked)
+    path = f"/v1/agents/{agent_id}"
+    edited = blocked.client.patch(path, json={"mcp_servers": {"docs": None}}, headers=bearer)
+    assert_unconfirmed(edited, path)
+    assert _bundle_location(blocked, agent_id=agent_id) != before  # the declaration is gone
+    assert_unconfirmed(blocked.client.delete(path, headers=bearer), path)
+
+
+def test_signing_in_under_required_identity_is_not_held_while_blocked(tmp_path: Path) -> None:
+    """Live runs in ``required`` mode: a first sign-in binds the identity, a later one only
+    stamps the login. Neither may wait for the replica."""
+    from omnigent.server.external_identity import (
+        ENVELOPE_HEADER,
+        ExternalIdentity,
+        sign_envelope,
+    )
+
+    from cfo_server.config import envelope_key
+
+    def sign_in(h: AppHarness):  # noqa: ANN202
+        now = int(time.time())
+        identity = ExternalIdentity(
+            issuer="https://issuer.example.test",
+            subject="owner-subject",
+            audience="barrier-test",
+            email="owner@example.test",
+            installation_owner=True,
+            issued_at=now,
+            expires_at=now + 50,
+        )
+        envelope = sign_envelope(identity, envelope_key(COOKIE_SECRET).encode())
+        response = h.client.post(
+            "/auth/login",
+            json={"username": OWNER, "password": OWNER_PASSWORD},
+            headers={ENVELOPE_HEADER: envelope},
+        )
+        h.client.cookies.clear()
+        return response
+
+    with serve_app(tmp_path, {"OMNIGENT_EXTERNAL_IDENTITY_MODE": "required"}) as harness:
+        harness.fake.mode = "blocked"
+        assert_not_held(sign_in(harness))
+        assert rows(harness.db_path, "SELECT COUNT(*) FROM team_identity_bindings") == [(1,)]
+        assert_not_held(sign_in(harness))
+
+
 def test_ordinary_writes_and_reads_are_not_held_while_blocked(blocked: AppHarness) -> None:
     bearer = blocked.bearer()
+    browser = _browser(blocked)
     agent_id = _agent_id(blocked, bearer)
     _block(blocked)
     session = blocked.client.post("/v1/sessions", json={"agent_id": agent_id}, headers=bearer)
     assert_not_held(session)
     assert_not_held(blocked.client.get("/v1/scheduled-tasks", headers=bearer))
     assert_not_held(blocked.client.get("/health"))
+    assert_not_held(blocked.client.get("/v1/team", headers=browser))
+    assert_not_held(
+        blocked.client.post(
+            f"/v1/sessions/{session.json()['id']}/events",
+            json={"type": "external_session_status", "data": {"status": "running"}},
+            headers=bearer,
+        )
+    )
 
 
 def test_a_held_request_never_blocks_the_event_loop(blocked: AppHarness) -> None:

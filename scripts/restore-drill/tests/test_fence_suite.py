@@ -1,7 +1,8 @@
-"""Runs ``tests/inprocess`` (the launcher fence, FH-29) inside the server image's test target.
+"""Runs ``tests/inprocess`` inside the server image's test target: the launcher fence (FH-29),
+the drill's coupling to the image, and the team rehearsal (WP8.11).
 
 The in-process tests need Omnigent, Litestream and the image's ``cfo_server``, which the
-image's ``test`` target has; they need the S3 stand-in and Toxiproxy, which this suite's
+image's ``test`` target has; the fence needs the S3 stand-in and Toxiproxy, which this suite's
 stack runs. So they run in a container on the stack's network, with this directory mounted
 read-only and the stack's generated credentials passed in an environment file.
 """
