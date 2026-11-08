@@ -34,8 +34,8 @@
 
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
 ARG OMNIGENT_COMMIT=5daae927238cde7bc2998943b457ebf36422dd55
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
-ARG NODE_IMAGE=node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+ARG NODE_IMAGE=node:22-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
 ARG SANDBOX_IMAGE=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
 ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
@@ -170,11 +170,11 @@ FROM runtime-base AS runtime
 # (.github/workflows/tool-versions.yml): it records the digests with the cli-digests stage
 # above, from an install whose registry signatures (and Codex's provenance) it has checked, and
 # this build then checks them in an independent install.
-ARG CLAUDE_CODE_VERSION=2.1.318
-ARG CODEX_VERSION=0.166.0
-ARG CLAUDE_CODE_TREE_SHA256=9297d16f1f2e2d56aeaee136764f9cfbfc40ea1deb6c58efb328c5f553dd2252
-ARG CLAUDE_CODE_INSTALLED_SHA256=1f1515c62fa192ebabc7b7321b324dc39f65e1fd581404980074408fd6acc38c
-ARG CODEX_TREE_SHA256=9293cf0b1c9aa7aa61f3eee4cfd25295cbc35f3f196552a7b53671fb224cb8e0
+ARG CLAUDE_CODE_VERSION=2.1.319
+ARG CODEX_VERSION=0.167.0
+ARG CLAUDE_CODE_TREE_SHA256=a2f1335c60dcc27c1cdb4f8e79dfcb141a82e4b21a89603830460c1afbdfb4e1
+ARG CLAUDE_CODE_INSTALLED_SHA256=a2d27dfca0f24e9021fb40e41a955ffe656835cebefe198bf0b9b2462685cbaa
+ARG CODEX_TREE_SHA256=1e97504a8f4512fa90a226702d297a128240acafbad814965e250ab23cca8395
 RUN --mount=type=bind,source=images/computer/install_clis.sh,target=/cfo-build/install_clis.sh \
     sh /cfo-build/install_clis.sh check
 
