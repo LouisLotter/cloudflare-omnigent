@@ -71,12 +71,12 @@
 ARG OMNIGENT_REPO=https://github.com/LouisLotter/omnigent.git
 ARG OMNIGENT_COMMIT=5daae927238cde7bc2998943b457ebf36422dd55
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
-ARG NODE_IMAGE=node:22-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+ARG NODE_IMAGE=node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 # Trust pins over the fork's lock, hash-checked (see the builder stage).
-ARG CERTIFI_PIN="certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+ARG CERTIFI_PIN="certifi==2026.11.20 --hash=sha256:7422df25243767b9877031a2248cb14d09ddac9beee846f4cef3d5c9191d488f"
 ARG PIP_PIN="pip==26.3 --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13"
 # uv for the builder, hash-checked: the base image's pip (25.0.1) would accept a forged chain.
-ARG UV_PIN="uv==0.13.7 --hash=sha256:2c9bdc4a872b60a93c5f26c0791089ea11585a4f9d3b3c017d78eb8487505e25 --hash=sha256:8b8ac028ae4ebb2a3f9d04907c61794f2cf8d7a7002bfbb4019a3dee28351fb2"
+ARG UV_PIN="uv==0.13.9 --hash=sha256:d7f459fe4fd247d830351c75686d3996ace3c6f3f728eb0e85a30b7ada0cef19 --hash=sha256:2c45530751517d6c3bbc69a19473f6effe47cce047bede01ffd8af7ea7b36b25"
 
 # ── Omnigent's source at the pinned commit ───────────────────────────────────────────────
 FROM scratch AS omnigent-src
